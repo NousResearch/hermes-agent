@@ -21,6 +21,7 @@ _FLAG_TO_KEY = {
     "-c": "ctx-size", "-b": "batch-size", "-ub": "ubatch-size",
     "-ctk": "cache-type-k", "-ctv": "cache-type-v", "-fa": "flash-attn",
     "-ot": "override-tensor", "--spec-type": "spec-type", "--spec-draft-n-max": "spec-draft-n-max",
+    "--parallel": "parallel",
 }
 
 
@@ -76,7 +77,8 @@ def _choose_mtp_posture(profile: ModelProfile, budget: HardwareBudget,
 
 
 def _restore_grown_window(model_id: str, profile: ModelProfile, budget: HardwareBudget,
-                          decision: WindowDecision, overhead: int) -> WindowDecision:
+                          decision: WindowDecision, *, fixed_overhead: int,
+                          logits_bytes: int, slots: int, flash_attention: bool) -> WindowDecision:
     """Session growth (growth.py): a persisted override lifts the launch window to where the ladder
     last grew it — capped at native, and only when physics still clears the bigger window on THIS
     boot's budget (a smaller-VRAM day re-fits honestly back down)."""
@@ -87,8 +89,12 @@ def _restore_grown_window(model_id: str, profile: ModelProfile, budget: Hardware
         native = profile.n_ctx_train or decision.window
         if override and override > decision.window:
             target = min(int(override), native)
-            kv = ctx_bytes(profile, target)
-            need = profile.weights_bytes + kv + overhead
+            # A grown window predates the current advanced request. Re-price
+            # it using the same shared-weights/per-slot accounting as the
+            # launch planner; otherwise two slots could restore a one-slot
+            # window that no longer fits.
+            kv = ctx_bytes(profile, target, flash_attention=flash_attention)
+            need = profile.weights_bytes + fixed_overhead + slots * (kv + logits_bytes)
             if need <= budget.usable_vram_bytes + budget.ram_available_bytes:
                 return WindowDecision(
                     window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
@@ -99,8 +105,8 @@ def _restore_grown_window(model_id: str, profile: ModelProfile, budget: Hardware
     return decision
 
 
-def _preset_for(gguf: Path, budget: HardwareBudget,
-                mtp_capable: set[str]) -> PresetEntry | None:
+def _preset_for(gguf: Path, budget: HardwareBudget, mtp_capable: set[str],
+                launch_overrides: dict[str, object]) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable."""
     from hermes_cli.local_runtime.catalog import entry_for_model
 
@@ -113,6 +119,8 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
         return None
     entry = entry_for_model(model_id)
     is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
+    from hermes_cli.local_runtime.advanced import LaunchRequest, plan_launch
+    request = LaunchRequest.from_mapping(launch_overrides.get(model_id))
     if is_mtp and profile.kv_scale == 1.0:
         # Header-derived profiles don't know about MTP's draft context; apply the calibrated KV
         # multiplier so the launch fit prices what the server will actually allocate.
@@ -131,12 +139,29 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
     decision = initial_window(profile, budget, overhead_bytes=overhead)
     if isinstance(decision, PhysicsRefusal):
         return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message)
-    decision = _restore_grown_window(model_id, profile, budget, decision, overhead)
+    planned = plan_launch(
+        profile, budget, request, default_context_tokens=decision.window,
+        mtp_supported=is_mtp, default_mtp_depth=entry.mtp_draft_depth if entry is not None else 3,
+        fixed_overhead_bytes=fixed_overhead)
+    if not planned.fits:
+        return PresetEntry(model_id=model_id, window=0, spilled=False, refusal="; ".join(planned.reasons))
+    is_mtp = planned.mtp_enabled
+    if not is_mtp and profile.kv_scale != 1.0:
+        profile = replace(profile, kv_scale=1.0)
+    decision = replace(decision, window=planned.effective_context_tokens)
+    # An explicit context is a durable operator choice, not a starting point for automatic
+    # window growth. Auto plans keep the existing restore behavior.
+    if request.context_tokens is None:
+        decision = _restore_grown_window(
+            model_id, profile, budget, decision, fixed_overhead=fixed_overhead,
+            logits_bytes=logits_bytes, slots=request.slots,
+            flash_attention=request.kv_cache == "q8_0")
 
     # The launch flags MUST match the pricing above (same entry/is_mtp/posture).
     keys = _args_to_keys(launch_args(
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=mtp_prefill,
-        mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
+        mtp_draft_depth=planned.mtp_draft_depth or 3, slots=request.slots,
+        kv_cache=request.kv_cache))
     if entry is not None and is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
         # against the vendor's published llama.cpp recipes).
@@ -155,7 +180,7 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
         if mmproj_path is not None:
             keys["mmproj"] = str(mmproj_path)
         draft_path = _asset_path(entry.draft) if decision.spilled else None
-        if draft_path is not None:
+        if draft_path is not None and request.speculation != "off":
             keys["model-draft"] = str(draft_path)
             keys["spec-type"] = "draft-dspark"
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
@@ -165,7 +190,8 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
-                     mtp_capable: set[str] | None = None) -> list[PresetEntry]:
+                     mtp_capable: set[str] | None = None,
+                     launch_overrides: dict[str, object] | None = None) -> list[PresetEntry]:
     """Walk the staged models, run the launch decision per model, and write one INI. Refused
     models get no section (the picker surfaces the refusal from the returned entries)."""
     from hermes_cli.local_runtime.bootstrap import staged_in
@@ -173,7 +199,7 @@ def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path
     entries: list[PresetEntry] = []
     sections: list[str] = []
     for gguf in staged_in(models_dir, require_complete=False):
-        entry = _preset_for(gguf, budget, mtp_capable or set())
+        entry = _preset_for(gguf, budget, mtp_capable or set(), launch_overrides or {})
         if entry is None:
             continue
         entries.append(entry)

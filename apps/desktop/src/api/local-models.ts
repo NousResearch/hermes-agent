@@ -111,6 +111,76 @@ export function setLocalServer(action: 'start' | 'stop'): Promise<{ ok: boolean 
   })
 }
 
+export interface LocalAdvancedLaunchRequest {
+  context_tokens: number | null
+  slots: number
+  kv_cache: 'f16' | 'q8_0'
+  mtp_draft_depth: number | null
+  speculation: 'auto' | 'off' | 'mtp'
+}
+
+export interface LocalAdvancedLaunchPlan {
+  aggregate_context_tokens: number
+  available_bytes: number
+  effective_context_tokens: number
+  estimated_bytes: number
+  fits: boolean
+  mtp_draft_depth: number | null
+  mtp_enabled: boolean
+  reasons: string[]
+  request: LocalAdvancedLaunchRequest
+}
+
+export function previewLocalAdvancedLaunch(modelId: string, request: LocalAdvancedLaunchRequest): Promise<LocalAdvancedLaunchPlan> {
+  return hermesApi<LocalAdvancedLaunchPlan>({
+    ...profileScoped(),
+    body: { ...request, model_id: modelId },
+    method: 'POST',
+    path: '/api/local-models/advanced/plan'
+  })
+}
+
+export function applyLocalAdvancedLaunch(
+  modelId: string,
+  request: LocalAdvancedLaunchRequest
+): Promise<{ model_id: string; ok: boolean; plan: LocalAdvancedLaunchPlan; restarted: boolean }> {
+  return hermesApi({
+    ...profileScoped(),
+    body: { ...request, model_id: modelId },
+    method: 'POST',
+    path: '/api/local-models/advanced/apply'
+  })
+}
+
+export type LocalGatewayRouteMode = 'agent' | 'raw'
+
+export interface LocalGatewayRoute {
+  alias: string
+  mode: LocalGatewayRouteMode
+  model_id: string
+}
+
+export function getLocalGatewayRoutes(): Promise<{ routes: LocalGatewayRoute[] }> {
+  return hermesApi({ ...profileScoped(), path: '/api/local-models/gateway-routes' })
+}
+
+export function publishLocalGatewayRoute(
+  alias: string,
+  modelId: string,
+  mode: LocalGatewayRouteMode
+): Promise<{ alias: string; mode: LocalGatewayRouteMode; ok: boolean; restart_required: boolean }> {
+  return hermesApi({
+    ...profileScoped(), body: { alias, mode, model_id: modelId }, method: 'POST',
+    path: '/api/local-models/gateway-routes'
+  })
+}
+
+export function unpublishLocalGatewayRoute(alias: string): Promise<{ alias: string; ok: boolean; restart_required: boolean }> {
+  return hermesApi({
+    ...profileScoped(), method: 'DELETE', path: `/api/local-models/gateway-routes/${encodeURIComponent(alias)}`
+  })
+}
+
 // ── Hugging Face browser + sideload ─────────────────────────────
 
 export interface HFSearchHit {

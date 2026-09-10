@@ -17,6 +17,7 @@ vi.mock('@/hermes', () => ({
   downloadLocalModel: vi.fn(),
   ejectLocalModel: vi.fn(),
   getLocalCatalog: vi.fn(),
+  getLocalGatewayRoutes: vi.fn().mockResolvedValue({ routes: [] }),
   getLocalHardware: vi.fn(),
   getLocalModelsJobs: vi.fn(),
   getLocalModelsStatus: vi.fn(),
@@ -25,7 +26,8 @@ vi.mock('@/hermes', () => ({
   listHFRepoFiles: vi.fn(),
   quickstartLocalModels: vi.fn(),
   searchHFModels: vi.fn(),
-  sideloadLocalModel: vi.fn()
+  sideloadLocalModel: vi.fn(),
+  unpublishLocalGatewayRoute: vi.fn()
 }))
 
 import * as hermes from '@/hermes'

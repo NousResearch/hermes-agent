@@ -8,7 +8,7 @@ description: "Send text from any shell script, cron job, CI hook, or monitoring 
 
 `hermes send` is a small, scriptable CLI that pushes a message to any
 messaging platform Hermes is already configured for. Think of it as a
-cross-platform `curl` for notifications — you don't need a running
+cross-platform `curl` for notifications â€” you don't need a running
 gateway, you don't need an LLM, and you don't need to re-paste bot tokens
 into each of your scripts.
 
@@ -62,7 +62,7 @@ hermes send --list telegram
 | `-f, --file PATH` | Read the body from a file. `--file -` forces stdin. |
 | `-s, --subject LINE` | Prepend a header/subject line before the body. |
 | `-l, --list` | List available targets. Optional positional platform filter. |
-| `-q, --quiet` | No stdout on success (exit code only — ideal for scripts). |
+| `-q, --quiet` | No stdout on success (exit code only â€” ideal for scripts). |
 | `--json` | Emit the raw JSON result of the send. |
 | `-h, --help` | Show the built-in help text. |
 
@@ -98,11 +98,11 @@ branch on them the same way they would on `curl` or `grep`.
 
 `hermes send` resolves the message body in this order:
 
-1. **Positional argument** — `hermes send --to telegram "hi"`
-2. **`--file PATH`** — `hermes send --to telegram --file msg.txt`
-3. **Piped stdin** — `echo hi | hermes send --to telegram`
+1. **Positional argument** â€” `hermes send --to telegram "hi"`
+2. **`--file PATH`** â€” `hermes send --to telegram --file msg.txt`
+3. **Piped stdin** â€” `echo hi | hermes send --to telegram`
 
-When stdin is a TTY (no pipe), Hermes does **not** wait for input — you'll
+When stdin is a TTY (no pipe), Hermes does **not** wait for input â€” you'll
 get a clear usage error instead. This keeps scripts from hanging if they
 accidentally omit the body.
 
@@ -119,13 +119,13 @@ with a single portable line:
 #!/usr/bin/env bash
 ram_pct=$(free | awk '/^Mem:/ {printf "%d", $3 * 100 / $2}')
 if [ "$ram_pct" -ge 85 ]; then
-  hermes send --to telegram --subject "⚠ MEMORY WARNING" \
+  hermes send --to telegram --subject "âš  MEMORY WARNING" \
     "RAM ${ram_pct}% on $(hostname)"
 fi
 ```
 
 Because `hermes send` reuses your Hermes config, the same script works on
-any host where Hermes is installed — no need to export bot tokens into
+any host where Hermes is installed â€” no need to export bot tokens into
 each machine's environment manually.
 
 :::tip Don't alert the gateway about itself
@@ -140,10 +140,10 @@ thrashing, you still want that alert to go out.
 ```bash
 # In .github/workflows/deploy.yml or any CI script
 if ./scripts/deploy.sh; then
-  hermes send --to slack:#deploys "✅ ${CI_COMMIT_SHA:0:7} deployed"
+  hermes send --to slack:#deploys "âœ… ${CI_COMMIT_SHA:0:7} deployed"
 else
   tail -n 100 deploy.log | hermes send \
-    --to slack:#deploys --subject "❌ deploy failed"
+    --to slack:#deploys --subject "âŒ deploy failed"
   exit 1
 fi
 ```
@@ -183,8 +183,8 @@ msg_id=$(hermes send --to discord:#ops --json "build started" \
 
 ## Does `hermes send` Need the Gateway Running?
 
-**Usually no.** For any bot-token platform — Telegram, Discord, Slack,
-Signal, SMS, WhatsApp Cloud API, and most others — `hermes send` calls
+**Usually no.** For any bot-token platform â€” Telegram, Discord, Slack,
+Signal, SMS, WhatsApp Cloud API, and most others â€” `hermes send` calls
 the platform's REST endpoint directly using credentials from
 `~/.hermes/.env` and `~/.hermes/config.yaml`. It's a standalone subprocess
 that exits as soon as the message is delivered.
@@ -226,12 +226,12 @@ IDs.
 
 | Approach | Multi-platform | Reuses Hermes creds | Needs gateway | Best for |
 |----------|----------------|---------------------|---------------|----------|
-| `hermes send` | ✅ | ✅ | No (bot-token) | Everything below |
+| `hermes send` | âœ… | âœ… | No (bot-token) | Everything below |
 | Raw `curl` to each platform | Each scripted separately | Manual | No | Critical watchdogs |
-| `cron` job with `--deliver` | ✅ | ✅ | No | Scheduled agent tasks |
+| `cron` job with `--deliver` | âœ… | âœ… | No | Scheduled agent tasks |
 
 `hermes send` is intentionally the simplest possible surface. If you need
-an agent to decide what to say, schedule a cron job — the agent's final
+an agent to decide what to say, schedule a cron job â€” the agent's final
 response is auto-delivered to the configured `deliver:` target (the agent
 no longer fires messages itself). If you need a scheduled run with LLM-generated content,
 use `cronjob(action='create', prompt=...)` with `deliver='telegram:...'`.
@@ -241,9 +241,9 @@ If you just need to pipe a raw string, reach for `hermes send`.
 
 ## Related
 
-- [Automate Anything with Cron](/guides/automate-with-cron) —
+- [Automate Anything with Cron](/guides/automate-with-cron) â€”
   scheduled jobs whose output auto-delivers to any platform.
-- [Gateway Internals](/developer-guide/gateway-internals) —
+- [Gateway Internals](/developer-guide/gateway-internals) â€”
   the delivery router that `hermes send` shares with cron delivery.
-- [Messaging Platform Setup](/user-guide/messaging/) —
+- [Messaging Platform Setup](/user-guide/messaging/) â€”
   one-time configuration for each platform.

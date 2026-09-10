@@ -1173,10 +1173,24 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5007, str(e))
 
 
-@_session_method("message.react")
-def _(rid, params: dict, session: dict) -> dict:
+@method("message.react")
+def _(rid, params: dict) -> dict:
     """Set/clear one author's emoji reaction (Tapback semantics: one per author, same emoji retracts, null
-    clears). ``row_id`` is ``messages.id``; a not-yet-persisted live message names ``newest_role`` instead."""
+    clears). ``row_id`` is ``messages.id``; a not-yet-persisted live message names ``newest_role`` instead.
+
+    Like ``approval.respond``, accepts a STORED session_key even after the live runtime id has been
+    re-minted (multi-agent UI actions retain the durable key across a reconnect) -- unlike most
+    session-scoped RPCs, this is a lightweight action on already-persisted data, not a conversational
+    turn that needs the live agent."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        if (err.get("error") or {}).get("code") != 4001:
+            return err
+        target = str(params.get("session_id") or "")
+        live = _find_live_session_by_key(target) if target else None
+        if live is None:
+            return err
+        session = live[1]
     newest_role = _str_param(params, "newest_role")
     row_id = params.get("row_id")
     if row_id is None and newest_role not in {"user", "assistant"}:

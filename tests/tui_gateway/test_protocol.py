@@ -688,11 +688,11 @@ def test_approval_respond_falls_back_to_stored_session_id(server, monkeypatch):
 
 def test_approval_respond_finds_exact_request_after_live_session_record_is_gone(server):
     """A still-blocked approval remains answerable after its UI runtime is re-minted."""
-    from tools import approval
+    from tools import approval, approval_gateway_wait
 
     session_key = "orphaned-agent-session"
     request_id = "req-orphaned-approval"
-    entry = approval._ApprovalEntry(
+    entry = approval_gateway_wait._ApprovalEntry(
         {
             "command": "git branch -D stale-branch",
             "description": "force delete a local branch",

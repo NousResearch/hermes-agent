@@ -1128,7 +1128,11 @@ def _(rid, params: dict) -> dict:
 def _approval_respond_session_fallback(params: dict):
     """Durable-identity fallback for a stale live sid (re-minted after a reconnect while
     the prompt stayed on screen): (1) the ``request_id`` against every live session's
-    pending approvals, then (2) ``session_id`` as a STORED id.  Live session or None.
+    pending approvals, (2) ``session_id`` as a STORED id, then (3) the ``request_id`` against
+    every pending approval queue directly -- the UI runtime may be fully gone from ``_sessions``
+    (not just re-minted under a different id), and the approval queue itself is the durable
+    record of which session_key still owns this exact request. Live session, a minimal
+    ``{"session_key": ...}`` stand-in for tier 3, or None.
 
     See #91684.
     """
@@ -1152,6 +1156,13 @@ def _approval_respond_session_fallback(params: dict):
                 return live[1]
         except Exception:
             logger.debug("approval.respond stored-id fallback failed", exc_info=True)
+    if request_id:
+        try:
+            from tools.approval import find_gateway_approval_session
+            if key := find_gateway_approval_session(request_id):
+                return {"session_key": key}
+        except Exception:
+            logger.debug("approval.respond queue-scan fallback failed", exc_info=True)
     return None
 
 

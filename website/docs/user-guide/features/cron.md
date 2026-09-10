@@ -41,6 +41,19 @@ Whichever provider a job resolves to, its provider-specific request settings (e.
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::
 
+## Admission recovery
+
+Agent-backed runs retain their fire identity until output and a durable delivery handoff are recorded.
+The scheduler reconciles unfinished receipts on each tick, including after an owner restart. A known
+terminal result is handed to the delivery queue without running the agent again; duplicate handoffs
+and bookkeeping use the original fire identity. Delivery interrupted after a send claim stays
+unknown and is not retried automatically.
+
+An interrupted execution or a prepared fire that cannot be found stays paused for operator review.
+Recovery never creates another admission for it. Paused jobs are not automatically resumed, even
+when their completed result is recovered. `hermes cron run` exits nonzero for a known synchronous
+execution failure; background dispatch is not a terminal success/failure verdict.
+
 ## Creating scheduled tasks
 
 ### In chat with `/cron`

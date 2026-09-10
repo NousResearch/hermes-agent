@@ -100,6 +100,29 @@ def _create(authority, actor, params):
 async def operation(authority, name, params, actor=None):
     actor = _actor(authority, actor)
     authority._require_admission_open()
+    if name == 'recover':
+        from gateway.session_local_recovery import local_identity
+        if (set(params) != {'job_id', 'request_id', 'extra_prompt'}
+                or any(not isinstance(params[k], str) or not params[k] for k in ('job_id', 'request_id'))
+                or (params['extra_prompt'] is not None and not isinstance(params['extra_prompt'], str))):
+            raise RuntimeStoreError('invalid_params')
+        request_id = 'cron:' + params['job_id'] + ':' + params['request_id']
+        sid = local_identity(authority.profile_id, actor.subject, request_id)
+        from hermes_state_runtime import list_session_admissions
+        rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        row = next((r for r in rows if r['request_id'] == request_id and r['principal_id'] == actor.subject), None)
+        if row is None:
+            return {'status': 'missing', 'result': None}
+        state = await operation(authority, 'status', {'session_id': sid, 'admission_id': row['admission_id']}, actor)
+        from gateway.session_local_recovery import restore_local_session
+        restore_local_session(authority, sid)
+        from gateway.config import Platform
+        policy = authority.runner.adapters[Platform.LOCAL].policies[sid]
+        frozen = json.loads(policy.request_json)
+        if frozen['extra_prompt'] != params['extra_prompt']:
+            raise RuntimeStoreError('admission_conflict')
+        state['job'] = frozen['cron_job']
+        return state
     if name == 'submit':
         ref, request_id = _create(authority, actor, params)
         row = admit_session_input(authority.db, epoch=authority.epoch, principal_id=actor.subject,

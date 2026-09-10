@@ -2683,6 +2683,12 @@ def _save_compose_deliver(
 
     if not d.should_deliver:
         return
+    execution_id = job.get('execution_id')
+    if execution_id and not job.get('no_agent'):
+        from cron.delivery_queue import enqueue
+        queued = enqueue(execution_id, job, deliver_content, for_failure=not d.success)
+        job['last_delivery_queued'] = {'canonical': {'status': queued['status'], 'execution_id': execution_id}}
+        return
     d.unresolved_origin = (
         _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "origin"
         and not _resolve_delivery_targets(job, for_failure=not d.success)
@@ -2736,6 +2742,10 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         update_job(job["id"], {"last_delivery_queued": None})
         job["last_delivery_queued"] = None
     mark_kwargs = {"delivery_error": d.delivery_error}
+    from cron.scheduler_authority import journal_path
+    journal = journal_path(job['id'], execution_id)
+    if not job.get('no_agent'):
+        mark_kwargs['execution_id'] = execution_id
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:
@@ -2763,6 +2773,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         _mark_incident_alerted(d.failure_incident_id)
     finish_execution(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
+    journal.unlink(missing_ok=True)
     return True
 
 
@@ -2818,6 +2829,7 @@ def _run_one_job_body(
     if not execution_id:
         execution_id = create_execution(
             job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))["id"]
+    job = dict(job, execution_id=execution_id)
     delivery_attempted = False
     delivery_error = None
     from agent.secret_scope import (
@@ -3723,6 +3735,8 @@ def tick(
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
+        from cron.scheduler_authority import reconcile_pending
+        reconcile_pending()
         _maybe_reap_dead_owners()
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:

@@ -1819,6 +1819,46 @@ class CLICommandsMixin:
         if output:
             print(output)
 
+    def _handle_project_status_command(self, cmd: str):
+        """Handle the feature-gated, read-only Phase-C status adapter."""
+        from hermes_cli.kanban_status import (
+            project_status_command_enabled,
+            run_project_status_slash,
+        )
+
+        if not project_status_command_enabled():
+            print("Project status is not enabled (kanban.project_status_command).")
+            return
+        print(run_project_status_slash(cmd))
+
+    def _handle_implement_command(self, cmd: str):
+        """Handle the feature-gated canonical /implement adapter."""
+        from hermes_cli.kanban_implement import run_implement_slash_rendered
+        print(run_implement_slash_rendered(cmd))
+
+    def _handle_review_command(self, cmd: str):
+        """Handle the feature-gated canonical /review adapter."""
+        from hermes_cli.kanban_review import review_command_enabled, run_review_slash_rendered
+        if not review_command_enabled():
+            print("/review is disabled (kanban.review_command)")
+            return
+        print(run_review_slash_rendered(cmd))
+
+    def _handle_fix_review_command(self, cmd: str):
+        """Handle the feature-gated canonical /fix-review correction adapter."""
+        from hermes_cli.kanban_fix_review import run_fix_review_slash_rendered
+        print(run_fix_review_slash_rendered(cmd))
+
+    def _handle_continue_command(self, cmd: str):
+        """Handle the feature-gated canonical /continue state-aware adapter."""
+        from hermes_cli.kanban_continue import run_continue_slash_rendered
+        print(run_continue_slash_rendered(cmd))
+
+    def _handle_recover_command(self, cmd: str):
+        """Handle the feature-gated canonical /recover recovery adapter."""
+        from hermes_cli.kanban_recover import run_recover_slash_rendered
+        print(run_recover_slash_rendered(cmd))
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the
         write-approval review subcommands (pending/approve/reject/diff/mode)."""
@@ -2165,23 +2205,6 @@ class CLICommandsMixin:
         _cp(f"  ⚗ Reviewing this conversation in the background{tail} — "
             f"any memory/skill updates will be reported when done.")
 
-    def _handle_review_command(self, cmd: str) -> None:
-        """Dispatch /review — snapshot the last N messages (+ argument text as instructions) and
-        spawn an independent reviewer subagent via async delegation; the review re-enters this
-        session as a normal delegation completion."""
-        prompt = _command_arg(cmd)
-        agent = getattr(self, "agent", None)
-        if agent is None:
-            return _cp(_dim_line('Nothing to review yet — send a message first.'))
-        snapshot = list(getattr(self, "conversation_history", None) or [])
-        try:
-            from agent.review_engine import format_dispatch_note, start_review
-            result = start_review(agent, snapshot, prompt)
-        except ValueError as exc:
-            return _cp(_dim_line(str(exc)))
-        except Exception as exc:
-            return _cp(f"  /review failed to start: {exc}")
-        _cp(f"  {format_dispatch_note(result, prompt)}")
 
     # ---- /goal, /loop, /subgoal -----------------------------------------------------------
     def _handle_goal_command(self, cmd: str) -> None:

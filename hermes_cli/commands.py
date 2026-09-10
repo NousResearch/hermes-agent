@@ -119,8 +119,18 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch"),
     CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
                args_hint="[focus instructions]"),
-    CommandDef("review", "Spawn an independent subagent to review the work just discussed (PR, code, docs)", "Session",
-               args_hint="[review instructions]"),
+    CommandDef("review", "Start review for an eligible Kanban task", "Tools & Skills",
+               args_hint="<task|reference> [--board <board>]", cli_only=True,
+               gateway_config_gate="kanban.review_command", busy_policy="dispatch"),
+    CommandDef("fix-review", "Start correction for a task with requested changes", "Tools & Skills",
+               args_hint="<task|reference> [--board <board>] [--profile <profile>]", cli_only=True,
+               gateway_config_gate="kanban.fix_review_command", busy_policy="dispatch"),
+    CommandDef("continue", "Continue a Kanban task using its authoritative lifecycle state", "Tools & Skills",
+               args_hint="<task|reference> [--board <board>]", cli_only=True,
+               gateway_config_gate="kanban.continue_command", busy_policy="dispatch"),
+    CommandDef("recover", "Normalize recovery state for a Kanban task without starting a worker", "Tools & Skills",
+               args_hint="<task|reference> [--requeue] [--board <board>]", cli_only=True,
+               gateway_config_gate="kanban.recover_command", busy_policy="dispatch"),
     CommandDef("loop", "Re-run a prompt on a recurring interval in this session", "Session",
                aliases=("proactive",),
                args_hint="[interval] <prompt> [--times N] [--until <condition>] | status | pause | resume | stop",
@@ -252,6 +262,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "notify-list", "notify-unsubscribe", "log", "runs",
                             "heartbeat", "assignees", "context", "specify", "gc"),
                busy_policy="dispatch", desktop="advanced"),
+    CommandDef("project-status", "Show a read-only Kanban task or project snapshot",
+               "Tools & Skills", aliases=("project_status",),
+               args_hint="<task|project> [--board <board>]",
+               cli_only=True, gateway_config_gate="kanban.project_status_command",
+               busy_policy="dispatch", desktop="advanced"),
+    CommandDef("implement", "Start implementation for an eligible Kanban task",
+               "Tools & Skills", args_hint="<task|reference> [--board <board>] [--profile <profile>]",
+               cli_only=True,
+               gateway_config_gate="kanban.implement_command", busy_policy="dispatch", desktop="advanced"),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True, desktop="terminal"),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -378,13 +397,21 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     for name in (cmd.name, *cmd.aliases))
 
 
+def resolve_plugin_command(name: str | None) -> str | None:
+    """Return the registered plugin command matching a gateway command name."""
+    if not name:
+        return None
+    registered_names = [entry[0] for entry in _iter_plugin_command_entries()]
+    if name in registered_names:
+        return name
+    plugin_name = name.replace("_", "-")
+    return plugin_name if plugin_name in registered_names else None
+
+
 def is_gateway_known_command(name: str | None) -> bool:
     """True if ``name`` is a built-in or plugin gateway slash command (plugins looked
     up lazily); decides whether the gateway emits ``command:<name>`` hooks."""
-    if not name:
-        return False
-    return name in GATEWAY_KNOWN_COMMANDS or any(
-        plugin_name == name for plugin_name, _d, _h in _iter_plugin_command_entries())
+    return bool(name and (name in GATEWAY_KNOWN_COMMANDS or resolve_plugin_command(name)))
 
 
 # Commands with explicit mid-run handling (busy_policy != "reject"). Kept
@@ -411,7 +438,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
 
     See #10370, #4665, #5057, #6252.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    return is_gateway_known_command(command_name)
 
 
 def _resolve_config_gates() -> set[str]:

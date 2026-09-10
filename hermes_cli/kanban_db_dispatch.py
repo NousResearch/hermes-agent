@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -23,6 +24,8 @@ from typing import Callable
 from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
+
+from agent import estop
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -62,6 +65,11 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # wall, burning a worker slot every tick for hours. Overridable via
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
+
+_RECOVERY_REQUIRED_OUTCOMES = frozenset({
+    "crashed", "timed_out", "spawn_failed", "reclaimed", "stale", "gave_up",
+    "rate_limited",
+})
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
@@ -133,6 +141,10 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    paused: bool = False
+    """True when ESTOP prevented this tick from starting or mutating work."""
+    pause_reason: Optional[str] = None
+    """Authoritative ESTOP reason, when available."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1196,7 +1208,7 @@ def check_respawn_guard(
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed', 'changes_requested') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
@@ -1213,6 +1225,59 @@ def check_respawn_guard(
             return "active_pr"
 
     return None
+
+
+def recovery_requirement_for_task(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Return the dispatcher-owned recovery reason for a task, read-only.
+
+    The current guard owns retry/cooldown eligibility. A closed failure run is
+    authoritative until a later lifecycle requeue event or a newer run
+    supersedes it; this prevents an old failure from poisoning a genuinely
+    requeued task while still making ``/continue`` stop before routing.
+    """
+    guard_reason = check_respawn_guard(conn, task_id)
+    if guard_reason == "rate_limit_cooldown":
+        return guard_reason
+
+    latest = conn.execute(
+        "SELECT id, outcome, ended_at FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if latest is None:
+        return None
+
+    # ``check_respawn_guard`` deliberately returns None once a rate-limit
+    # cooldown expires.  That is an eligibility decision, not a recovery
+    # requirement; do not turn the historical rate-limited run into a permanent
+    # /recover gate.
+    if latest["outcome"] == "rate_limited":
+        return None
+
+    if latest["outcome"] not in _RECOVERY_REQUIRED_OUTCOMES:
+        return guard_reason if guard_reason == "blocker_auth" else None
+
+    failure_event = conn.execute(
+        "SELECT MAX(id) AS event_id FROM task_events "
+        "WHERE task_id = ? AND run_id = ?",
+        (task_id, int(latest["id"])),
+    ).fetchone()
+    failure_event_id = int(failure_event["event_id"] or 0)
+    requeued = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND id > ? "
+        "AND kind IN ('status', 'promoted', 'promoted_manual', 'unblocked', 'requeued', 'recovered') "
+        "LIMIT 1",
+        (task_id, failure_event_id),
+    ).fetchone()
+    if requeued:
+        return None
+    if guard_reason == "blocker_auth":
+        return guard_reason
+    return str(latest["outcome"])
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
@@ -1429,6 +1494,9 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    task_id: Optional[str] = None,
+    before_spawn_fn=None,
+    spawn_profile: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1438,6 +1506,10 @@ def dispatch_once(
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
     """
+    if dispatch_paused():
+        state = estop.get_state() or {}
+        return DispatchResult(paused=True, pause_reason=state.get("reason"))
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,
@@ -1452,6 +1524,9 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            task_id=task_id,
+            before_spawn_fn=before_spawn_fn,
+            spawn_profile=spawn_profile,
         )
 
     try:
@@ -1474,14 +1549,26 @@ def dispatch_once(
     return result
 
 
-def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
+def dispatch_paused() -> bool:
+    """Return whether the authoritative ESTOP blocks a new Kanban dispatch."""
+    return estop.check_paused("kanban", _kb._log)
+
+
+def _call_spawn_fn(
+    spawn_fn, task: Task, workspace: str, board: Optional[str], lane: str,
+) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
     import inspect
     try:
         sig = inspect.signature(spawn_fn)
+        kwargs = {}
         if "board" in sig.parameters:
-            return spawn_fn(task, workspace, board=board)
+            kwargs["board"] = board
+        if "lane" in sig.parameters:
+            kwargs["lane"] = lane
+        if kwargs:
+            return spawn_fn(task, workspace, **kwargs)
         return spawn_fn(task, workspace)
     except (TypeError, ValueError):
         return spawn_fn(task, workspace)
@@ -1501,6 +1588,8 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    before_spawn_fn=None,
+    spawn_profile: Optional[str] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1511,16 +1600,17 @@ def _dispatch_lane_task(
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
+    effective_assignee = spawn_profile or assignee
     profile_exists = _profile_exists_fn()
-    if profile_exists is not None and not profile_exists(assignee):
+    if profile_exists is not None and not profile_exists(effective_assignee):
         result.skipped_nonspawnable.append(task_id)
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
-        current = per_profile_running.get(assignee, 0)
+        current = per_profile_running.get(effective_assignee, 0)
         if current >= per_profile_cap:
-            result.skipped_per_profile_capped.append((task_id, assignee, current))
+            result.skipped_per_profile_capped.append((task_id, effective_assignee, current))
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
@@ -1544,14 +1634,27 @@ def _dispatch_lane_task(
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
     if dry_run:
-        result.spawned.append((task_id, assignee, ""))
-        _count_spawn(assignee)
+        result.spawned.append((task_id, effective_assignee, ""))
+        _count_spawn(effective_assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    on_claim_fn = None
+    if before_spawn_fn is not None:
+        on_claim_fn = lambda claim_conn, claimed: before_spawn_fn(
+            claim_conn, claimed, board=board, lane=lane, workspace=None,
+        )
+    if spawn_profile is None:
+        claimed = claim(conn, task_id, ttl_seconds=ttl_seconds, on_claim_fn=on_claim_fn)
+    else:
+        claimed = claim(
+            conn, task_id, ttl_seconds=ttl_seconds, on_claim_fn=on_claim_fn,
+            profile_override=spawn_profile,
+        )
     if claimed is None:
         return False
     try:
+        if spawn_profile:
+            claimed.assignee = spawn_profile
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
             workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
@@ -1573,7 +1676,13 @@ def _dispatch_lane_task(
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
-        pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
+        pid = _call_spawn_fn(
+            spawn_fn if spawn_fn is not None else _default_spawn,
+            claimed,
+            str(workspace),
+            board,
+            lane,
+        )
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid))
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
@@ -1717,6 +1826,16 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def _lane_rows_for_task(conn: sqlite3.Connection, status: str, task_id: Optional[str]) -> list[sqlite3.Row]:
+    if task_id is None:
+        return _lane_rows(conn, status)
+    return conn.execute(
+        "SELECT id, assignee FROM tasks "
+        f"WHERE id = ? AND status = '{status}' AND claim_lock IS NULL",
+        (task_id,),
+    ).fetchall()
+
+
 def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
     """Mirrors the review loop's own gate so human-pulled control-plane lanes
     don't tax ready throughput; assumes spawnable when profiles are unimportable."""
@@ -1761,6 +1880,9 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    task_id: Optional[str] = None,
+    before_spawn_fn=None,
+    spawn_profile: Optional[str] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -1778,10 +1900,10 @@ def _dispatch_once_locked(
     if not may_spawn:
         return result
 
-    ready_rows = _lane_rows(conn, "ready")
+    ready_rows = _lane_rows_for_task(conn, "ready", task_id)
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
-    review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    review_rows = _lane_rows_for_task(conn, "review", task_id) if review_dispatch_enabled() else []
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
@@ -1811,6 +1933,7 @@ def _dispatch_once_locked(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        before_spawn_fn=before_spawn_fn, spawn_profile=spawn_profile,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2160,7 +2283,9 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     )
 
 
-def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
+def _default_spawn(
+    task: Task, workspace: str, *, board: Optional[str] = None, lane: str = "implementation",
+) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
     Returns the child's PID so the dispatcher can detect crashes before the
@@ -2243,6 +2368,13 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Board slug — defense-in-depth pin if a path is resolved without the
     # DB / workspaces env vars.
     env["HERMES_KANBAN_BOARD"] = _kb._normalize_board_slug(board) or _kb.get_current_board()
+    from hermes_cli.kanban_db_routing import build_dispatch_routing_context
+    env["HERMES_ROUTING_CONTEXT"] = json.dumps(
+        build_dispatch_routing_context(
+            task, board=env["HERMES_KANBAN_BOARD"], lane=lane,
+        ),
+        separators=(",", ":"),
+    )
     # kanban_comment reads HERMES_PROFILE for its default author; `-p` alone
     # doesn't set the env var.
     env["HERMES_PROFILE"] = profile_arg

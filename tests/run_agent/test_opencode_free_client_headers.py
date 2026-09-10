@@ -41,7 +41,7 @@ def _zen_call_headers(mock_openai):
     return dict(matching[-1].kwargs.get("default_headers") or {})
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_opencode_free_blanks_authorization_header(mock_openai):
     """Whatever api_key value reaches the client build (placeholder, stale
     key, empty), the Authorization default header must be blanked so the
@@ -62,7 +62,7 @@ def test_opencode_free_blanks_authorization_header(mock_openai):
         )
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_opencode_free_sends_hermes_attribution(mock_openai):
     """Keyless requests still identify as Hermes (attribution headers match
     the opencode zen/go profiles)."""
@@ -78,7 +78,7 @@ def test_opencode_free_sends_hermes_attribution(mock_openai):
     assert str(headers.get("User-Agent", "")).startswith("HermesAgent/")
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_other_providers_unaffected(mock_openai):
     """The opencode-free header policy must not leak to other providers."""
     mock_openai.return_value = MagicMock()

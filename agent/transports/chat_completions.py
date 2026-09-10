@@ -53,6 +53,37 @@ def _rename_tool_search_bridge_for_xai(tools: list[dict[str, Any]]) -> tuple[lis
     )
 
 
+def _is_multimodal_envelope(value: Any) -> bool:
+    """True for the ``{"_multimodal": True, "content": [...]}`` tool-result envelope.
+
+    Mirrors ``agent.tool_dispatch_helpers._is_multimodal_tool_result`` deliberately
+    rather than importing it: a transport should not pull in the tool-dispatch layer
+    (which reaches into ``tools.*``).  Keep the two in sync if the envelope changes.
+    """
+    return (
+        isinstance(value, dict)
+        and value.get("_multimodal") is True
+        and isinstance(value.get("content"), list)
+    )
+
+
+def _tool_content_needs_stringify(msg: dict[str, Any]) -> bool:
+    """True for a ``role: "tool"`` message whose content cannot go on the wire.
+
+    Chat Completions requires ``content`` to be a string on tool messages.  Plugin
+    tools (e.g. the ``custom-tools`` plugin) may return a ``dict``; passing it
+    through makes strict providers reject the whole request with
+    ``messages.N.content: Invalid input``.  Recognized multimodal envelopes are
+    left alone so the multimodal path can still handle them.  See #19814.
+    """
+    if msg.get("role") != "tool":
+        return False
+    content = msg.get("content")
+    if content is None or isinstance(content, str):
+        return False
+    return not _is_multimodal_envelope(content)
+
+
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
     """Stable leading system/developer prefix used for cache routing (later messages are conversation state)."""
     first = messages[0] if messages and isinstance(messages[0], dict) else {}
@@ -311,6 +342,13 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
     if msg.get("role") == "tool" and "name" in msg:
         strip_keys.append("name")
     out_msg = {k: v for k, v in msg.items() if k not in strip_keys}
+    # #19814 — stringify non-str tool content before it hits the wire.  Chat
+    # Completions requires ``content`` to be a string on tool messages; a plugin
+    # tool returning a dict otherwise makes strict providers reject the whole
+    # request with ``messages.N.content: Invalid input``.
+    stringified_content = _tool_content_needs_stringify(msg)
+    if stringified_content:
+        out_msg["content"] = json.dumps(msg["content"], ensure_ascii=False, default=str)
     tool_calls = msg.get("tool_calls")
     copied_tool_calls = None
     if msg.get("role") == "assistant" and "tool_calls" in msg and (tool_calls is None or (isinstance(tool_calls, list) and not tool_calls)):
@@ -329,7 +367,7 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
                 copied_tool_calls[tc_idx] = {k: v for k, v in tc.items() if k not in keys}
         if copied_tool_calls is not None:
             out_msg["tool_calls"] = copied_tool_calls
-    return out_msg if strip_keys or copied_tool_calls is not None else None
+    return out_msg if strip_keys or copied_tool_calls is not None or stringified_content else None
 
 
 class ChatCompletionsTransport(ProviderTransport):

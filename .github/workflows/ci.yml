@@ -1,0 +1,78 @@
+name: Node Package Checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'ui-tui/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'ui-tui/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-package-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-build:
+    name: web build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Build web package
+        run: npm run build
+        working-directory: web
+
+  tui-build-and-test:
+    name: ui-tui build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui-tui/package-lock.json
+
+      - name: Install TUI dependencies
+        run: npm ci
+        working-directory: ui-tui
+
+      - name: Build TUI package
+        run: npm run build
+        working-directory: ui-tui
+
+      - name: Test TUI package
+        run: npm test
+        working-directory: ui-tui

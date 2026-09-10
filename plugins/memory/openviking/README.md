@@ -9,11 +9,11 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
   then `openviking-server doctor`)
 - OpenViking server running and reachable from Hermes
 
-OpenViking 0.2.10 or newer is recommended. For backward compatibility,
-Hermes can identify older servers that expose the legacy status-only health
-response, but only when anonymous OpenAPI metadata also identifies the service
-as OpenViking. OpenViking 0.2.6 and earlier are deprecated for this integration;
-upgrade them to receive the current health contract and compatibility fixes.
+OpenViking 0.2.14 or newer is required. Hermes can identify older servers that
+expose the legacy status-only health response, but those releases do not provide
+the authenticated-user identity contract required by this integration.
+The `viking://~` home alias requires OpenViking 0.4.16 or newer for user and
+admin credentials, and OpenViking 0.4.17 or newer for root or local development.
 
 ## Setup
 

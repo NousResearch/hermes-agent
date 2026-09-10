@@ -742,7 +742,8 @@ def test_get_tool_schemas_omits_profile_and_keeps_narrow_forget_tools():
     ],
 )
 def test_validate_forget_memory_uri_accepts_canonical(uri):
-    assert _validate_forget_memory_uri(uri) == (uri, None)
+    user_space = "zayn" if uri.startswith("viking://user/") else None
+    assert _validate_forget_memory_uri(uri, user_space=user_space) == (uri, None)
 
 
 @pytest.mark.parametrize(
@@ -775,8 +776,22 @@ def test_validate_forget_memory_uri_rejects_other_user_space():
 
     resolved, error = _validate_forget_memory_uri(theirs, user_space="zayn")
     assert resolved is None and "your own memories" in error
-    # Unverified identity leaves the check to the server rather than blocking a legitimate delete.
-    assert _validate_forget_memory_uri(theirs, user_space=None) == (theirs, None)
+    resolved, error = _validate_forget_memory_uri(theirs, user_space=None)
+    assert resolved is None and "verify the current OpenViking user" in error
+
+
+def test_tool_forget_rejects_explicit_user_when_identity_unavailable():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.side_effect = RuntimeError("identity probe unavailable")
+
+    result = json.loads(provider._tool_forget({
+        "uri": "viking://user/alice/memories/preferences/mem_abc123.md",
+    }))
+
+    assert "error" in result
+    assert "identity" in result["error"].lower()
+    provider._client.delete.assert_not_called()
 
 
 def test_viking_client_delete_uses_identity_headers(monkeypatch):
@@ -1060,7 +1075,7 @@ def test_legacy_health_requires_openviking_openapi_identity_before_auth(monkeypa
     assert valid is False
     assert role is None
     assert "0.2.6 or earlier" in message
-    assert "0.2.10 or newer" in message
+    assert "0.2.14 or newer" in message
     assert events == ["health", "openapi"]
 
 

@@ -479,6 +479,13 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
 
+    # Deterministic Schema Minifier & Prefix Cache Canonicalizer
+    try:
+        from tools.schema_minifier import minify_and_canonicalize_tools
+        filtered_tools = minify_and_canonicalize_tools(filtered_tools)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("Schema minification and canonicalization skipped: %s", e)
+
     return filtered_tools
 
 

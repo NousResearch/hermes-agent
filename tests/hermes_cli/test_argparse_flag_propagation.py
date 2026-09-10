@@ -101,6 +101,29 @@ class TestChatVerboseArg:
         assert captured["quiet"] is False
         assert "verbose" not in captured
 
+    def test_cmd_chat_forwards_machine_result(self, monkeypatch):
+        import types
+
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(["chat", "--machine-result"])
+        captured = {}
+        fake_cli = types.ModuleType("cli")
+        fake_cli.main = lambda **kwargs: captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_start_chat_background_prefetch", lambda: None)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+        monkeypatch.setattr(main_mod, "_warn_retired_xai_models", lambda: None)
+
+        main_mod.cmd_chat(args)
+
+        assert captured["machine_result"] is True
+
 
 class TestYoloEnvVar:
     """Verify --yolo sets HERMES_YOLO_MODE regardless of flag position.

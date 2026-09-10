@@ -55,6 +55,8 @@ class CLIChatTurnMixin:
         agent = self.agent
         if agent is None:
             return None
+        from hermes_cli.machine_result import capture_usage
+        self._last_turn_usage_before = capture_usage(agent)
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, SubagentNotification):
@@ -92,6 +94,7 @@ class CLIChatTurnMixin:
             print(f"Error: {e}")
             return None
         finally:
+            self._last_turn_usage_after = capture_usage(agent)
             self._chat_release_turn_audio(turn)
 
     def _chat_release_turn_audio(self, turn):

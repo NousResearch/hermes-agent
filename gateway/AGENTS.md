@@ -75,8 +75,10 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
-Cron deliveries are NOT mirrored into the target gateway session — they land in their own cron
-session with a header/footer frame so the main conversation's role alternation stays intact
+Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
+reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
+or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
+briefs are labelled user turns appended at a turn boundary, preserving role alternation
 (`cron/AGENTS.md`).
 
 ## Gateway lifecycle vs. the Desktop app

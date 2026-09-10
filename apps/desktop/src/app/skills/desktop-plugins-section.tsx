@@ -1,8 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect } from 'react'
-import { Link } from 'react-router'
+import type { ReactNode } from 'react'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
@@ -11,18 +9,17 @@ import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/p
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { FolderOpen, Monitor, Package, RefreshCw } from '@/lib/icons'
-import { $agentPlugins, $agentPluginsStatus, loadAgentPlugins } from '@/store/agent-plugins'
+import { FolderOpen, Monitor, RefreshCw } from '@/lib/icons'
+import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { notifyError } from '@/store/notifications'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
-import { $gatewayState } from '@/store/session'
 
-import { EmptyState, Pill, SettingsContent, SettingsSection } from './primitives'
-import { useDeepLinkHighlight } from './use-deep-link-highlight'
+import { Pill } from '../settings/primitives'
 
 const KIND_ORDER: Record<PluginRecord['kind'], number> = { disk: 0, runtime: 1, bundled: 2 }
 
-/** Deep-link anchor for a plugin row (`?tab=plugins&plugin=<id>`). */
+/** Deep-link anchor for a plugin row (`/skills?tab=plugins&plugin=<id>`); shared
+ *  by desktop rows (record id) and agent rows (canonical key). */
 export const pluginElementId = (target: string) => `plugin-${target}`
 
 function reveal(file: string) {
@@ -53,36 +50,6 @@ async function revealPluginsDir() {
   }
 }
 
-// Compact row: name + pills and a wrapping description on the left, controls
-// pinned top-right. Same type scale as ListRow, without its wide control grid.
-function PluginLine({
-  title,
-  description,
-  controls,
-  id
-}: {
-  title: ReactNode
-  description?: ReactNode
-  controls: ReactNode
-  id?: string
-}) {
-  return (
-    <div className="flex items-start gap-3 rounded-lg py-2" id={id}>
-      <div className="min-w-0 flex-1 pr-4">
-        <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-          {title}
-        </div>
-        {description && (
-          <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) break-words text-(--ui-text-tertiary)">
-            {description}
-          </div>
-        )}
-      </div>
-      <div className="flex shrink-0 items-center gap-2">{controls}</div>
-    </div>
-  )
-}
-
 /** Folder name when a desktop plugin entry lives in the UNIFIED agent-plugins
  *  root (`~/.hermes/plugins/<name>/desktop/plugin.js`) — i.e. it is the
  *  desktop half of a bundled agent+desktop package. Null for standalone
@@ -100,9 +67,9 @@ function unifiedPackageName(file?: string): null | string {
 /** Open the dual-target install modal pre-filled to install ONLY the agent
  *  half of a bundled package (drift repair). Provenance comes from the
  *  package's catalog sidecar when present; otherwise the git remote of the
- *  plugin folder is unknown and we fall back to asking the user via the
- *  standard flow with the folder name as identifier hint. */
-async function repairAgentHalf(record: PluginRecord, packageName: string) {
+ *  plugin folder is unknown and we fall back to the folder name as the
+ *  identifier hint. */
+async function repairAgentHalf(record: PluginRecord, packageName: string, profile: null | string) {
   let repo = ''
   let catalogName: string | undefined
   let sha: string | undefined
@@ -130,17 +97,58 @@ async function repairAgentHalf(record: PluginRecord, packageName: string) {
   openPluginInstallRequest({
     catalogName,
     legacyHint: 'agent',
+    profile,
     repo: repo || packageName,
     sha
   })
 }
 
-function PluginRow({ record, agentHalfMissing }: { record: PluginRecord; agentHalfMissing?: boolean }) {
+/** One list row, same type scale and rhythm as the agent-plugin rows above it. */
+export function PluginListRow({
+  title,
+  description,
+  controls,
+  icon,
+  id
+}: {
+  title: ReactNode
+  description?: ReactNode
+  controls: ReactNode
+  icon: ReactNode
+  id?: string
+}) {
+  return (
+    <div className="flex items-start gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2 last:border-b-0" id={id}>
+      {icon}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+          {title}
+        </div>
+        {description && (
+          <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] break-words text-(--ui-text-tertiary)">
+            {description}
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">{controls}</div>
+    </div>
+  )
+}
+
+function DesktopPluginRow({
+  record,
+  agentHalfMissing,
+  profile
+}: {
+  record: PluginRecord
+  agentHalfMissing?: boolean
+  profile: null | string
+}) {
   const { t } = useI18n()
   const p = t.settings.plugins
 
   return (
-    <PluginLine
+    <PluginListRow
       controls={
         <>
           {record.file && (
@@ -167,6 +175,7 @@ function PluginRow({ record, agentHalfMissing }: { record: PluginRecord; agentHa
           (record.description ?? record.file ?? record.id)
         )
       }
+      icon={<Monitor aria-hidden className="mt-0.5 size-4 shrink-0 text-(--ui-text-tertiary)" />}
       id={pluginElementId(record.id)}
       title={
         <>
@@ -177,7 +186,7 @@ function PluginRow({ record, agentHalfMissing }: { record: PluginRecord; agentHa
             <Tip label={p.agentHalfMissingTip}>
               <Button
                 className="h-5 px-1.5 text-[0.65rem]"
-                onClick={() => void repairAgentHalf(record, unifiedPackageName(record.file) ?? record.name)}
+                onClick={() => void repairAgentHalf(record, unifiedPackageName(record.file) ?? record.name, profile)}
                 size="xs"
                 variant="outline"
               >
@@ -191,99 +200,77 @@ function PluginRow({ record, agentHalfMissing }: { record: PluginRecord; agentHa
   )
 }
 
-export function PluginsSettings() {
+/** Plugins that extend THIS app (bundled, dropped into the desktop-plugins
+ *  folder, or the desktop half of a unified package). They belong to the
+ *  desktop, not to a profile, so the section is the same for every scope;
+ *  the drift badge compares against the SCOPED profile's agent list so a
+ *  bundled package missing its agent half where the user is looking gets a
+ *  one-click repair. */
+export function DesktopPluginsSection({ profile }: { profile: null | string }) {
   const { t } = useI18n()
   const p = t.settings.plugins
   const records = useStore($pluginRecords)
-  const { requestGateway } = useGatewayRequest()
-  const gatewayState = useStore($gatewayState)
-  // The agent-plugin list for the CURRENTLY connected backend's active
-  // profile — used only to flag bundled packages whose desktop half is local
-  // but whose agent half is not installed where the app is now pointing (one
-  // desktop app, N agents: switching gateway/profile makes this drift visible
-  // instead of silent). Management of agent plugins lives in Capabilities →
-  // Plugins; this page keeps just the badge.
   const agentRows = useStore($agentPlugins)
   const agentStatus = useStore($agentPluginsStatus)
   const agentNames = new Set(agentRows.flatMap(row => [row.name, row.key ?? row.name]))
-
-  useEffect(() => {
-    if (gatewayState !== 'open') {
-      return
-    }
-
-    void loadAgentPlugins(requestGateway)
-  }, [gatewayState, requestGateway])
-
-  // Deep-link from settings search (?plugin=<id or key>): rows render as soon
-  // as their store hydrates, so "ready" is simply target-present; the polling
-  // in the hook rides out the async list loads (agent rows arrive via RPC).
-  useDeepLinkHighlight({
-    param: 'plugin',
-    ready: () => true,
-    elementId: pluginElementId
-  })
 
   const rows = Object.values(records).sort(
     (a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.name.localeCompare(b.name)
   )
 
   return (
-    <SettingsContent>
-      <div className="mb-4">
-        <Button onClick={() => openPluginInstallRequest({ repo: '' })} size="sm" type="button" variant="secondary">
-          {p.installModal.installFromGit}
-        </Button>
-      </div>
-      <SettingsSection icon={Monitor} meta={p.count(rows.length)} title={p.title}>
-        <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{p.blurb}</p>
-
-        <div className="mb-2 flex items-center gap-3">
-          <Button onClick={() => void revealPluginsDir()} size="sm" type="button" variant="textStrong">
-            <FolderOpen className="size-3.5" />
-            <span>{p.openFolder}</span>
-          </Button>
-          <Button
-            onClick={() => {
-              triggerHaptic('selection')
-              void discoverRuntimePlugins()
-            }}
-            size="sm"
-            type="button"
-            variant="textStrong"
-          >
-            <RefreshCw className="size-3.5" />
-            <span>{p.rescan}</span>
-          </Button>
-        </div>
-
-        {rows.length === 0 ? (
-          <EmptyState title={p.empty} />
-        ) : (
-          <div>
-            {rows.map(record => {
-              const packageName = unifiedPackageName(record.file)
-
-              return (
-                <PluginRow
-                  agentHalfMissing={packageName !== null && agentStatus === 'ready' && !agentNames.has(packageName)}
-                  key={record.id}
-                  record={record}
-                />
-              )
-            })}
+    <section>
+      <div className="flex items-center justify-between gap-3 px-3 pt-3 pb-1">
+        <div className="min-w-0">
+          <div className="text-[0.62rem] font-medium tracking-wide uppercase text-(--ui-text-quaternary)">
+            {p.title} · {p.count(rows.length)}
           </div>
-        )}
-      </SettingsSection>
+          <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {p.blurb}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <Tip label={p.openFolder}>
+            <Button onClick={() => void revealPluginsDir()} size="icon" type="button" variant="ghost">
+              <FolderOpen className="size-3.5" />
+            </Button>
+          </Tip>
+          <Tip label={p.rescan}>
+            <Button
+              onClick={() => {
+                triggerHaptic('selection')
+                void discoverRuntimePlugins()
+              }}
+              size="icon"
+              type="button"
+              variant="ghost"
+            >
+              <RefreshCw className="size-3.5" />
+            </Button>
+          </Tip>
+        </div>
+      </div>
 
-      <SettingsSection icon={Package} title={p.agent.title}>
-        <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          {p.agent.movedToCapabilities}{' '}
-          <Link className="text-(--ui-text-link,var(--ui-accent))" to="/skills?tab=plugins">
-            {p.agent.openCapabilities}
-          </Link>
+      {rows.length === 0 ? (
+        <p className="px-3 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+          {p.empty}
         </p>
-      </SettingsSection>
-    </SettingsContent>
+      ) : (
+        <div className="flex flex-col">
+          {rows.map(record => {
+            const packageName = unifiedPackageName(record.file)
+
+            return (
+              <DesktopPluginRow
+                agentHalfMissing={packageName !== null && agentStatus === 'ready' && !agentNames.has(packageName)}
+                key={record.id}
+                profile={profile}
+                record={record}
+              />
+            )
+          })}
+        </div>
+      )}
+    </section>
   )
 }

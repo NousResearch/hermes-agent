@@ -190,7 +190,7 @@ function frontPaneInGroup(paneId: string) {
  *    removed from the tree and remembered so adoption doesn't re-add them.
  *    Reveal intent (a preview target, ⌘G) or a layout reset un-dismisses;
  *  - closing the sole pane from a plugin disables that plugin, preserving the
- *    discoverable Settings → Plugins recovery path for single-pane plugins.
+ *    discoverable Capabilities → Plugins recovery path for single-pane plugins.
  */
 const DISMISSED_KEY = 'hermes.desktop.dismissedPanes.v1'
 
@@ -914,7 +914,7 @@ export function closeTreePane(paneId: string) {
     }
 
     // A single-pane plugin keeps the existing symmetric behavior: Close uses
-    // the same switch as Settings → Plugins. Its contribution unregisters but
+    // the same switch as Capabilities → Plugins. Its contribution unregisters but
     // the pane id stays in the tree, so re-enabling restores its exact place.
     const pluginId = source.slice('plugin:'.length)
     void setPluginEnabled(pluginId, false)

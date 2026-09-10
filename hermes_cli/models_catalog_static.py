@@ -205,7 +205,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-6", "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929",
         "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-haiku-4-5-20251001",
     ],
-    "deepseek": ["deepseek-v4-pro", "deepseek-v4-flash"],
+    "deepseek": ["deepseek-v4-pro", "deepseek-flash"],
     "xiaomi": ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"],
     "tencent-tokenhub": list(_TENCENT_MODELS),
     "tencent-tokenplan": list(_TENCENT_MODELS),

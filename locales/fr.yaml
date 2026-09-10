@@ -66,6 +66,8 @@ gateway:
     session_plural:        "✅ Commandes approuvées (modèle approuvé pour cette session) ({count} commandes). L'agent reprend..."
     always_singular:       "✅ Commande approuvée (modèle approuvé de manière permanente). L'agent reprend..."
     always_plural:         "✅ Commandes approuvées (modèle approuvé de manière permanente) ({count} commandes). L'agent reprend..."
+    grant_singular:        "✅ Commande approuvée {scope}. L'agent reprend..."
+    grant_plural:          "✅ Commandes approuvées {scope} ({count} commandes). L'agent reprend..."
 
   background:
     usage:                 "Usage : /bg <prompt>\nExemple : /bg Résume les meilleures histoires HN d'aujourd'hui\n\nExécute le prompt dans une session séparée. Vous pouvez continuer à discuter — le résultat apparaîtra ici une fois terminé."
@@ -449,6 +451,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_all:             "TTS (réponse vocale à tous les messages)"
     help:                  "{toggle}\n\n**Comment fonctionne /voice**\n• `/voice on` — réponse vocale quand vous envoyez un message vocal\n• `/voice tts` — réponse vocale à *chaque* message\n• `/voice off` — retour aux réponses texte uniquement\n• `/voice status` — afficher le mode actuel\n• `/voice` (sans argument) — bascule rapide entre activé et désactivé{channels}"
     help_channels:         "\n\n**Salons vocaux en direct (Discord)**\n• Rejoignez d'abord un salon vocal, puis `/voice channel` — je rejoins, j'écoute et je parle mes réponses\n• `/voice leave` — se déconnecter du salon vocal"
+
+  grants:
+    none:                  "Aucune autorisation active dans cette discussion."
+    header:                "🔑 **Autorisations actives** ({count}) :"
+    row:                   "• `{id}` — {description} — {remaining} restant{uses}"
+    uses_left:             ", {count} utilisation(s) restante(s)"
+    footer:                "Révoquez-en une avec `/grants revoke <id>`, ou toutes avec `/grants revoke all`."
+    none_revoked:          "Rien à révoquer."
+    revoked_singular:      "🔒 1 autorisation révoquée."
+    revoked_plural:        "🔒 {count} autorisations révoquées."
 
   yolo:
     disabled:                   "⚠️ Mode YOLO **DÉSACTIVÉ** pour cette session — les commandes dangereuses nécessiteront une approbation."

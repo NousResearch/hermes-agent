@@ -66,6 +66,8 @@ gateway:
     session_plural:        "✅ Befehle genehmigt (Muster für diese Sitzung genehmigt) ({count} Befehle). Der Agent wird fortgesetzt..."
     always_singular:       "✅ Befehl genehmigt (Muster dauerhaft genehmigt). Der Agent wird fortgesetzt..."
     always_plural:         "✅ Befehle genehmigt (Muster dauerhaft genehmigt) ({count} Befehle). Der Agent wird fortgesetzt..."
+    grant_singular:        "✅ Befehl genehmigt {scope}. Der Agent macht weiter..."
+    grant_plural:          "✅ Befehle genehmigt {scope} ({count} Befehle). Der Agent macht weiter..."
 
   background:
     usage:                 "Verwendung: /bg <prompt>\nBeispiel: /bg Fasse die Top-HN-Storys von heute zusammen\n\nFührt den Prompt in einer separaten Sitzung aus. Sie können weiter chatten — das Ergebnis erscheint hier, wenn es fertig ist."
@@ -449,6 +451,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_all:             "TTS (Sprachantwort auf alle Nachrichten)"
     help:                  "{toggle}\n\n**So funktioniert /voice**\n• `/voice on` — Sprachantwort, wenn du eine Sprachnachricht sendest\n• `/voice tts` — Sprachantwort auf *jede* Nachricht\n• `/voice off` — zurück zu reinen Textantworten\n• `/voice status` — aktuellen Modus anzeigen\n• `/voice` (ohne Argument) — schnelles Umschalten zwischen an und aus{channels}"
     help_channels:         "\n\n**Live-Sprachkanäle (Discord)**\n• Tritt zuerst einem Sprachkanal bei, dann `/voice channel` — ich trete bei, höre zu und spreche meine Antworten\n• `/voice leave` — vom Sprachkanal trennen"
+
+  grants:
+    none:                  "Keine aktiven Genehmigungen in diesem Chat."
+    header:                "🔑 **Aktive Genehmigungen** ({count}):"
+    row:                   "• `{id}` — {description} — noch {remaining}{uses}"
+    uses_left:             ", noch {count} Verwendung(en)"
+    footer:                "Eine widerrufen mit `/grants revoke <id>`, alle mit `/grants revoke all`."
+    none_revoked:          "Nichts zu widerrufen."
+    revoked_singular:      "🔒 1 Genehmigung widerrufen."
+    revoked_plural:        "🔒 {count} Genehmigungen widerrufen."
 
   yolo:
     disabled:                   "⚠️ YOLO-Modus für diese Sitzung **AUS** — gefährliche Befehle benötigen eine Genehmigung."

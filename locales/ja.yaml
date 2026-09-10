@@ -66,6 +66,8 @@ gateway:
     session_plural:        "✅ コマンドを承認しました (このセッション中はパターンを許可) ({count} 件)。エージェントを再開しています..."
     always_singular:       "✅ コマンドを承認しました (パターンを永続的に許可)。エージェントを再開しています..."
     always_plural:         "✅ コマンドを承認しました (パターンを永続的に許可) ({count} 件)。エージェントを再開しています..."
+    grant_singular:        "✅ コマンドを承認しました（{scope}）。エージェントを再開しています..."
+    grant_plural:          "✅ コマンドを承認しました（{scope}、{count} 件）。エージェントを再開しています..."
 
   background:
     usage:                 "使い方: /bg <プロンプト>\n例: /bg 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"
@@ -449,6 +451,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_all:             "TTS (すべてのメッセージに音声で返信)"
     help:                  "{toggle}\n\n**/voice の使い方**\n• `/voice on` — 音声メッセージを送ると音声で返信\n• `/voice tts` — *すべての*メッセージに音声で返信\n• `/voice off` — テキストのみの返信に戻す\n• `/voice status` — 現在のモードを表示\n• `/voice`（引数なし）— オンとオフをすばやく切り替え{channels}"
     help_channels:         "\n\n**ライブ音声チャンネル (Discord)**\n• 先に音声チャンネルに参加してから `/voice channel` — 参加して聞き取り、音声で返信します\n• `/voice leave` — 音声チャンネルから切断"
+
+  grants:
+    none:                  "このチャットに有効な承認はありません。"
+    header:                "🔑 **有効な承認** ({count} 件):"
+    row:                   "• `{id}` — {description} — 残り {remaining}{uses}"
+    uses_left:             "、残り {count} 回"
+    footer:                "`/grants revoke <id>` で 1 件、`/grants revoke all` で全件を取り消します。"
+    none_revoked:          "取り消すものはありません。"
+    revoked_singular:      "🔒 承認を 1 件取り消しました。"
+    revoked_plural:        "🔒 承認を {count} 件取り消しました。"
 
   yolo:
     disabled:                   "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"

@@ -142,6 +142,43 @@ class TestOrdering:
 
 
 class TestCoalescing:
+    def test_ac2_mixed_provider_hosts_get_separate_usage_rows(self, db):
+        db.create_session("s-hosts", "test")
+        db.update_token_counts("s-hosts", input_tokens=10, model="m", billing_provider="openrouter",
+                               provider_name="Baidu", estimated_cost_usd=0.1, api_call_count=1)
+        db.update_token_counts("s-hosts", input_tokens=20, model="m", billing_provider="openrouter",
+                               provider_name="StreamLake", estimated_cost_usd=0.2, api_call_count=1)
+        rows = db._conn.execute(
+            "SELECT provider_name, input_tokens, estimated_cost_usd FROM session_model_usage "
+            "WHERE session_id = ? ORDER BY provider_name", ("s-hosts",)
+        ).fetchall()
+        assert [(r["provider_name"], r["input_tokens"], r["estimated_cost_usd"]) for r in rows] == [
+            ("Baidu", 10, 0.1), ("StreamLake", 20, 0.2)
+        ]
+
+    def test_ac2_same_provider_host_stays_one_usage_row(self, db):
+        db.create_session("s-one-host", "test")
+        for tokens in (10, 20):
+            db.update_token_counts("s-one-host", input_tokens=tokens, model="m", billing_provider="openrouter",
+                                   provider_name="Baidu", api_call_count=1)
+        rows = db._conn.execute(
+            "SELECT provider_name, input_tokens FROM session_model_usage WHERE session_id = ?",
+            ("s-one-host",),
+        ).fetchall()
+        assert [(r["provider_name"], r["input_tokens"]) for r in rows] == [("Baidu", 30)]
+
+    def test_ac3_empty_provider_is_its_own_row(self, db):
+        db.create_session("s-empty-host", "test")
+        db.update_token_counts("s-empty-host", input_tokens=10, model="m", billing_provider="openrouter",
+                               provider_name="Baidu", api_call_count=1)
+        db.update_token_counts("s-empty-host", input_tokens=20, model="m", billing_provider="openrouter",
+                               provider_name="", api_call_count=1)
+        rows = db._conn.execute(
+            "SELECT provider_name, input_tokens FROM session_model_usage "
+            "WHERE session_id = ? ORDER BY provider_name", ("s-empty-host",)
+        ).fetchall()
+        assert [(r["provider_name"], r["input_tokens"]) for r in rows] == [("", 20), ("Baidu", 10)]
+
     def test_backlog_coalesces_and_sums_match(self, db):
         """When a backlog forms, same-route deltas merge into fewer applies
         while totals stay exact."""

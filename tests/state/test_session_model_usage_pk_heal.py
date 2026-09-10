@@ -40,6 +40,10 @@ LEGACY_SQL = """
         actual_cost_usd REAL NOT NULL DEFAULT 0,
         cost_status TEXT,
         cost_source TEXT,
+        native_tokens_prompt INTEGER NOT NULL DEFAULT 0,
+        native_tokens_cached INTEGER NOT NULL DEFAULT 0,
+        cache_discount REAL NOT NULL DEFAULT 0,
+        total_cost REAL NOT NULL DEFAULT 0,
         first_seen REAL,
         last_seen REAL,
         PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode)
@@ -64,6 +68,7 @@ def _make_stale_v22_db(tmp_path, usage_rows=(), sessions=("s1",)):
     conn.execute(LEGACY_SQL)
     # Mimic the column reconciler: task appended OUTSIDE the primary key.
     conn.execute('ALTER TABLE session_model_usage ADD COLUMN "task" TEXT')
+    conn.execute('ALTER TABLE session_model_usage ADD COLUMN "provider_name" TEXT')
     conn.executemany(
         "INSERT INTO session_model_usage "
         "(session_id, model, input_tokens, output_tokens) VALUES (?, ?, ?, ?)",
@@ -92,14 +97,15 @@ class TestSessionModelUsagePkHeal:
         )
         db = SessionDB(db_path=db_path)
         try:
-            assert "task" in _pk_cols(db)
-            # Existing rows survive the rebuild (task backfilled to '').
+            assert _pk_cols(db) == ["billing_base_url", "billing_mode", "billing_provider", "model", "provider_name", "session_id", "task"]
+            # Existing rows survive the rebuild (task and provider backfilled to '').
             row = db._conn.execute(
-                "SELECT task, input_tokens FROM session_model_usage "
+                "SELECT task, provider_name, input_tokens FROM session_model_usage "
                 "WHERE session_id='s1' AND model='m-old'"
             ).fetchone()
             assert row is not None
             assert row["task"] == ""
+            assert row["provider_name"] == ""
             assert row["input_tokens"] == 10
             # The killed write path works again: the upsert used to abort
             # the whole transaction with an ON CONFLICT mismatch.
@@ -115,6 +121,32 @@ class TestSessionModelUsagePkHeal:
         finally:
             db.close()
 
+    def test_heal_preserves_every_usage_sum_column(self, tmp_path):
+        db_path = _make_stale_v22_db(tmp_path, usage_rows=[("s1", "m-old", 11, 22)])
+        conn = sqlite3.connect(db_path)
+        expected = (3, 11, 22, 33, 44, 55, 1.25, 2.5, 66, 77, 0.75, 12.34)
+        conn.execute(
+            """UPDATE session_model_usage SET api_call_count=?, input_tokens=?, output_tokens=?,
+               cache_read_tokens=?, cache_write_tokens=?, reasoning_tokens=?, estimated_cost_usd=?,
+               actual_cost_usd=?, native_tokens_prompt=?, native_tokens_cached=?, cache_discount=?, total_cost=?
+               WHERE session_id='s1' AND model='m-old'""",
+            expected,
+        )
+        conn.commit()
+        conn.close()
+
+        db = SessionDB(db_path=db_path)
+        try:
+            row = db._conn.execute(
+                """SELECT api_call_count, input_tokens, output_tokens, cache_read_tokens,
+                   cache_write_tokens, reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                   native_tokens_prompt, native_tokens_cached, cache_discount, total_cost
+                   FROM session_model_usage WHERE session_id='s1' AND model='m-old'"""
+            ).fetchone()
+            assert tuple(row) == expected
+        finally:
+            db.close()
+
     def test_orphan_rows_survive_fk_enforcement(self, tmp_path):
         """The rebuild copies rows inside an FK-off window: an orphaned
         usage row (session pruned while accounting was broken) must not
@@ -125,7 +157,7 @@ class TestSessionModelUsagePkHeal:
         )
         db = SessionDB(db_path=db_path)
         try:
-            assert "task" in _pk_cols(db)
+            assert _pk_cols(db) == ["billing_base_url", "billing_mode", "billing_provider", "model", "provider_name", "session_id", "task"]
             rows = db._conn.execute(
                 "SELECT session_id FROM session_model_usage ORDER BY session_id"
             ).fetchall()

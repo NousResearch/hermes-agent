@@ -30,6 +30,29 @@ recent conversation. Discovery does not create, restore, or unarchive sessions,
 open sibling profile databases, or run inference. Cross-profile discovery requires
 a separately authenticated connection to the relevant owner.
 
+## Canonical ancillary reads
+
+Desktop and Ink use authenticated `session.control.read`, `process.list`,
+`subagent.list`, and `subagent.tail` with `session_id`. They require
+`session:read` and the owning profile/session identity. These polls never restore
+a cold session: use `session.resume` first. A retired route binding returns
+`stale_generation` rather than exposing its replacement conversation.
+
+Control reads project the physical transcript's persisted goal, loop and heartbeat
+through the existing frontend field allowlists, without constructing managers or
+clearing wait barriers. Revisions hash the visible snapshot; timed wait barriers
+can disappear when their deadline passes without changing persisted state.
+Process reads use already-owned registry objects and include a bounded output tail;
+they do not recover processes, consume notifications or scan retained receipts.
+Subagent reads require the current parent's live object ancestry, not merely equal
+session IDs; tails are bounded to 16 KiB. Missing or retired children return
+`available: false`. These are reads, not child steering or stop controls.
+
+Managed-worker policies return `unsupported_projection` for process/subagent reads:
+the owner's process-local registry cannot truthfully describe another interpreter.
+Control mutations (`session.control`), process mutations and subagent steering are
+not enabled by these read projections.
+
 ## Shared authority pending-input snapshots
 
 `session.resume` returns each pending admission with its original `input_id` and

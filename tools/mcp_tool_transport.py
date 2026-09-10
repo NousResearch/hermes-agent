@@ -414,7 +414,15 @@ class MCPServerTransportMixin:
         else:
             transport = self._streamable_http_transport(*common, configured_header_names)
             label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
-        return await self._serve_transport(transport, label, float(connect_timeout))
+            
+        try:
+            return await self._serve_transport(transport, label, float(connect_timeout))
+        except Exception as exc:
+            if "transport" not in config and "Server returned an error response" in str(exc):
+                raise RuntimeError(
+                    f"{exc} (Hint: if this is a standard SSE server, add `transport: sse` to its config)"
+                ) from exc
+            raise
 
     # -------------------------------------------------------------- discovery
 

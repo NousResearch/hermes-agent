@@ -83,16 +83,19 @@ def _snapshot_bootstrap_script(
     """Login-shell bootstrap that captures env/functions/aliases into the snapshot. Atomic publish:
     assemble in a ``mktemp`` file, then ``mv`` over the final path so a concurrent ``source`` never
     reads a half-written snapshot (``$$`` is the parent PID in ``&``-launched subshells and macOS
-    bash 3.2 lacks ``$BASHPID``, so only ``mktemp`` is portable). Functions are filtered by NAME via
-    ``declare -F`` (a line-based ``declare -f | grep -v`` strips the header and leaves an orphaned
-    body that breaks every sourced command); the non-empty guard matters because bare ``declare -f``
-    dumps ALL functions. The trailing ``cd`` restores the configured cwd after profile scripts (e.g.
+    bash 3.2 lacks ``$BASHPID``, so only ``mktemp`` is portable). Functions are captured by NAME via
+    ``declare -F`` + ``declare -f $names`` (a line-based ``declare -f | grep -v`` strips the header
+    and leaves an orphaned body that breaks every sourced command). We capture ALL functions — do not
+    filter underscore-prefixed names — because a captured alias/function may depend on a private
+    helper (e.g. scm_breeze's ``_safe_eval``); dropping the helper but keeping its dependents leaves a
+    dangling reference that fails every command touching it. Function bodies are inert until called,
+    so capturing them is safe. The trailing ``cd`` restores the configured cwd after profile scripts (e.g.
     ``cd ~``) so ``pwd -P`` reports terminal.cwd, not the profile's directory."""
     return (
         "umask 077\n"
         f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) || exit 1\n"
         f"{_export_dump_excluding_session_vars(_SNAP_TMP, excluded_names)}\n"
-        "__hermes_fns=$(declare -F | awk '{print $3}' | grep -vE '^_[^_]') || true\n"
+        "__hermes_fns=$(declare -F | awk '{print $3}') || true\n"
         f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns >> {_SNAP_TMP} 2>/dev/null || true\n"
         f"alias -p >> {_SNAP_TMP}\n"
         f"echo 'shopt -s expand_aliases' >> {_SNAP_TMP}\n"

@@ -9936,11 +9936,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _TOKEN_DELTA_SUM_FIELDS = (
         "input_tokens", "output_tokens", "cache_read_tokens",
         "cache_write_tokens", "reasoning_tokens", "api_call_count",
+        "native_tokens_prompt", "native_tokens_cached", "total_cost",
     )
     _TOKEN_DELTA_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
     _TOKEN_DELTA_ROUTE_FIELDS = (
         "model", "cost_status", "cost_source", "pricing_version",
         "billing_provider", "billing_base_url", "billing_mode",
+        "provider_name", "cache_discount",
     )
 
     def queue_token_counts(self, session_id: str, **kwargs) -> None:

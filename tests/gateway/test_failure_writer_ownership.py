@@ -98,12 +98,17 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
                 MessageEvent(text="same", source=source, message_id=pid),
                 source, entry, entry.session_key, prepared,
             )
-            assert db.message_count() == before + (not owned), location
+            # Exception fallback adds the missing user only when unowned, then always
+            # closes the failed turn with a durable assistant safety boundary.
+            assert db.message_count() == before + (not owned) + 1, location
             assert store.has_input_owner(sid, owner), location
+            live_messages = db.get_messages(child)
+            assert live_messages[-1]["role"] == "assistant"
+            assert "not processed" in live_messages[-1]["content"]
             if not owned:
-                latest = db.get_messages(child)[-1]
-                assert latest["content"] == prepared.persist_user_message
-                assert latest["display_metadata"]["gateway_input_owner"] == owner
+                persisted_user = live_messages[-2]
+                assert persisted_user["content"] == prepared.persist_user_message
+                assert persisted_user["display_metadata"]["gateway_input_owner"] == owner
         db.close()
 
     asyncio.run(check())

@@ -1519,6 +1519,17 @@ class GatewayTurnMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
+    _FAILED_TURN_NOTICE = (
+        "Your request was not processed. Send it again if you still want me to carry it out."
+    )
+
+    def _hmwa_add_failed_turn_notice(self, response):
+        """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
+        response = str(response or "").strip()
+        if self._FAILED_TURN_NOTICE in response:
+            return response
+        return f"{response}\n\n{self._FAILED_TURN_NOTICE}" if response else self._FAILED_TURN_NOTICE
+
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
         ``(agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure)``.
@@ -1602,11 +1613,10 @@ class GatewayTurnMixin:
     @staticmethod
     def _hmwa_user_transcript_entry(event, prepared, ts):
         """Transcript row for the inbound user turn (clean text + event time when captured)."""
-        # Transient failure (429/timeout/5xx): persist only the user message so the next message can load a
-        # transcript that reflects what was said. Skip the assistant error text since it's a
-        # gateway-generated hint, not model output. Hidden- reasoning-only incomplete turns follow the same
-        # persistence rule so peer-agent channels don't ingest them as completed assistant turns. (#7100,
-        # #51628)
+        # Transient failure (429/timeout/5xx): persist the user message so the next message can load a
+        # transcript that reflects what was said. The caller pairs it with a stable assistant safety
+        # boundary rather than the provider error text. Hidden-reasoning-only incomplete turns follow the
+        # same persistence rule so peer-agent channels don't ingest provider details. (#7100, #51628)
         _user_entry = {
             "role": "user",
             "content": (
@@ -1627,8 +1637,8 @@ class GatewayTurnMixin:
         self, *, event, source, session_entry, session_key, agent_result, agent_messages,
         prepared, response, agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure,
     ):
-        """Persist this turn to the transcript (session_meta on first turn, user-only on transient
-        failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
+        """Persist this turn to the transcript (session_meta on first turn, closed failed turn on
+        transient failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
         cached agent's message count."""
         from gateway.run import _resolve_gateway_model
         ts = time.time()  # Unix epoch float — consistent with DB storage
@@ -1661,8 +1671,8 @@ class GatewayTurnMixin:
                     "timestamp": ts,
                 })
             if agent_failed_early or hidden_reasoning_incomplete:
-                # Transient failure / hidden-reasoning incomplete: persist only the user message (the
-                # assistant error text is a gateway hint, not model output). Dedupe on platform
+                # Transient failure / hidden-reasoning incomplete: persist the user message without
+                # the provider error text (a gateway hint, not model output). Dedupe on platform
                 # message_id (Telegram retries after transient failures).
                 if event.message_id and await store.has_platform_message_id(sid, str(event.message_id)):
                     logger.info(
@@ -1671,6 +1681,14 @@ class GatewayTurnMixin:
                     )
                 else:
                     await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
+                # Close the failed turn with a durable assistant boundary. Leaving a user-only tail
+                # lets alternation repair merge this request into an unrelated future message and
+                # can replay stale side effects. Persist only the stable safety statement, not raw
+                # provider details; this row is gateway-owned and was not written by the agent.
+                await store.append_to_transcript(
+                    sid,
+                    {"role": "assistant", "content": self._FAILED_TURN_NOTICE, "timestamp": ts},
+                )
             else:
                 # Only the NEW messages: history_offset (what the agent saw), not len(history), which
                 # counts session_meta entries stripped before the agent saw them.
@@ -1775,6 +1793,14 @@ class GatewayTurnMixin:
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
+                await self.async_session_store.append_to_transcript(
+                    session_entry.session_id,
+                    {
+                        "role": "assistant",
+                        "content": self._FAILED_TURN_NOTICE,
+                        "timestamp": time.time(),
+                    },
+                )
         except Exception:
             logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
         # Never expose raw exception types/messages to end users (info-leakage risk).
@@ -1798,13 +1824,13 @@ class GatewayTurnMixin:
         elif status_code in {400, 500}:
             # 400/500 on a large session: context overflow / payload too large.
             if len(prepared.history) > 50:
-                return (
+                return self._hmwa_add_failed_turn_notice(
                     "⚠️ Session too large for the model's context window.\nUse /compact to "
                     "compress the conversation, or /reset to start fresh."
                 )
             elif status_code == 400:
                 status_hint = " The request was rejected by the API."
-        return (
+        return self._hmwa_add_failed_turn_notice(
             f"Sorry, I encountered an unexpected error.{status_hint}\n"
             "Try again or use /reset to start a fresh session."
         )
@@ -2010,6 +2036,8 @@ class GatewayTurnMixin:
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
+            if agent_failed_early and not is_context_overflow_failure:
+                response = self._hmwa_add_failed_turn_notice(response)
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
             )

@@ -347,11 +347,7 @@ export function ModelCatalogMenu({
       : catalogProviderMatches(row.provider, current.provider) &&
         (row.family.id === current.model || row.family.fastId === current.model)
 
-  const autoIndex = q
-    ? kbRows.length > 0
-      ? 0
-      : -1
-    : kbRows.findIndex(row => rowIsCurrent(row))
+  const autoIndex = q ? (kbRows.length > 0 ? 0 : -1) : kbRows.findIndex(row => rowIsCurrent(row))
 
   const kbIndex = kbOverride !== null && kbOverride < kbRows.length ? kbOverride : autoIndex
   const kbActiveKey = kbIndex >= 0 ? kbRows[kbIndex].key : null

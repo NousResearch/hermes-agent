@@ -1409,9 +1409,9 @@ DEFAULT_CONFIG = {
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
         "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
-        # Multi-bot rooms: another bot must type @thisbot (a reply/quote alone won't) to trigger a
-        # reply — stops two bots replying to each other forever. Humans unaffected.
-        "bots_require_inline_mention": False,
+        # Bot authors must type @thisbot to trigger a reply; Discord reply pings alone do not count.
+        # Set False only for trusted legacy relays. Humans are unaffected.
+        "bots_require_inline_mention": True,
         # Prepend recent channel scrollback when triggered (recovers messages gated out by
         # require_mention); limit = max messages scanned.
         "history_backfill": True,

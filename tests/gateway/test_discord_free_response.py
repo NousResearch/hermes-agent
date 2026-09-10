@@ -1,5 +1,6 @@
 """Tests for Discord free-response defaults and mention gating."""
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -225,6 +226,66 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_bot_chunks_join_recent_tag_batch(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    adapter._ready_event.set()
+    adapter._text_batch_delay_seconds = 0.6
+    adapter._text_batch_split_delay_seconds = 2.0
+    channel = FakeTextChannel(channel_id=321)
+    bot_user = adapter._client.user
+    bot_user.bot = True
+    tagged = make_message(
+        channel=channel,
+        content=f"<@{bot_user.id}> first chunk",
+        mentions=[bot_user],
+    )
+    tagged.author.bot = True
+    second = make_message(channel=channel, content="second chunk")
+    second.id = 124
+    second.author.bot = True
+    third = make_message(channel=channel, content="third chunk")
+    third.id = 125
+    third.author.bot = True
+    assert await adapter._dispatch_discord_message(tagged) is True
+    assert await adapter._dispatch_discord_message(second) is True
+    assert await adapter._dispatch_discord_message(third) is True
+    await asyncio.wait_for(
+        asyncio.gather(*adapter._pending_text_batch_tasks.values()), timeout=5.0,
+    )
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "first chunk\nsecond chunk\nthird chunk"
+
+
+@pytest.mark.asyncio
+async def test_short_tagged_bot_chunk_waits_for_followup_window(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._text_batch_delay_seconds = 0.01
+    adapter._text_batch_split_delay_seconds = 0.08
+    channel = FakeTextChannel(channel_id=321)
+    bot_user = adapter._client.user
+    tagged = make_message(
+        channel=channel,
+        content=f"<@{bot_user.id}> short chunk",
+        mentions=[bot_user],
+    )
+    tagged.author.bot = True
+    adapter._record_bot_tag_debounce(tagged)
+
+    # Assert the selected quiet period without a wall-clock race on busy CI.
+    with patch.object(discord_platform.asyncio, "sleep", new_callable=AsyncMock) as sleep:
+        assert await adapter._handle_message(tagged, role_authorized=True) is True
+        adapter.handle_message.assert_not_awaited()
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        sleep.assert_awaited_once_with(adapter._text_batch_split_delay_seconds)
+    adapter.handle_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio

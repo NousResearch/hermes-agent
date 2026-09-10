@@ -44,7 +44,13 @@ def run_preflight_gate(
         _last_preflight_pressure=None,
     )
 
-    is_review = getattr(agent, "_memory_write_origin", None) == "background_review"
+    # The budget attribute identifies cache-parity forks even when disabled
+    # (None). Write origin excludes /btw; provenance alone also tags the standalone
+    # skill curator, which is not a snapshot review and must keep its own behavior.
+    is_review = (
+        getattr(agent, "_memory_write_origin", None) == "background_review"
+        and hasattr(agent, "_review_input_token_budget")
+    )
     review_threshold = getattr(getattr(agent, "context_compressor", None), "threshold_tokens", None)
 
     def skip_review(reason: str) -> PreflightGateVerdict:

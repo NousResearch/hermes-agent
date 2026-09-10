@@ -40,6 +40,7 @@ def _restore_review_origin():
 def test_initial_review_rejects_oversized_or_unavailable_pressure(pressure):
     agent = _make_loop_agent()
     agent._memory_write_origin = "background_review"
+    agent._review_input_token_budget = None
     agent._review_defer_compaction_before_first_response = True
     agent.context_compressor.threshold_tokens = 1000
     agent.compression_enabled = True
@@ -52,12 +53,15 @@ def test_initial_review_rejects_oversized_or_unavailable_pressure(pressure):
     assert result["turn_exit_reason"] in {"review_request_oversized", "review_request_size_unavailable"}
 
 
-@pytest.mark.parametrize("origin", [None, "side_question", "background_review"])
-def test_under_limit_and_nonreview_requests_proceed(origin):
+@pytest.mark.parametrize(("origin", "threshold"), [
+    (None, 1000), (None, None), ("side_question", 1000), ("side_question", None),
+    ("background_review", 1000),
+])
+def test_under_limit_and_nonreview_requests_proceed(origin, threshold):
     agent = _make_loop_agent()
     agent._memory_write_origin = origin
     agent._review_input_token_budget = 600000
-    agent.context_compressor.threshold_tokens = 1000
+    agent.context_compressor.threshold_tokens = threshold
     with _pressure(999 if origin == "background_review" else 1001):
         result = _run_with_responses(agent, [_final_response()])
     assert result["completed"] is True
@@ -68,6 +72,7 @@ def test_under_limit_and_nonreview_requests_proceed(origin):
 def test_review_missing_threshold_skips(threshold):
     agent = _make_loop_agent()
     agent._memory_write_origin = "background_review"
+    agent._review_input_token_budget = None
     agent.context_compressor.threshold_tokens = threshold
     with _pressure(100):
         result = _run_with_responses(agent, [_final_response()])
@@ -78,6 +83,7 @@ def test_review_missing_threshold_skips(threshold):
 def test_later_oversized_prepared_request_never_reaches_provider():
     agent = _make_loop_agent()
     agent._memory_write_origin = "background_review"
+    agent._review_input_token_budget = None
     agent.context_compressor.threshold_tokens = 1000
     with _pressure(100, 1001):
         result = _run_with_responses(agent, [_tool_response(100), _final_response()])
@@ -121,6 +127,7 @@ def test_skipped_review_reports_skip_and_releases_ownership(reason):
 def test_later_detached_compaction_rebuild_is_checked(rebuilt_pressure):
     agent = _make_loop_agent()
     agent._memory_write_origin = "background_review"
+    agent._review_input_token_budget = None
     agent._review_defer_compaction_before_first_response = True
     agent.compression_enabled = True
     agent.context_compressor.threshold_tokens = 1000
@@ -164,3 +171,14 @@ def test_routed_fork_uses_own_window_not_parent_capacity():
     assert result["turn_exit_reason"] == "review_request_oversized"
     assert parent.context_compressor.threshold_tokens == 999_999_999
     fork.release_clients()
+
+
+def test_standalone_curator_is_not_a_snapshot_review_fork():
+    agent = _make_loop_agent()
+    agent._memory_write_origin = "background_review"  # curator's skill-write protection
+    assert not hasattr(agent, "_review_input_token_budget")
+    agent.context_compressor.threshold_tokens = 1000
+    with _pressure(1001):
+        result = _run_with_responses(agent, [_final_response()])
+    assert agent.client.chat.completions.create.call_count == 1
+    assert result["completed"] is True

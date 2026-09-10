@@ -101,6 +101,7 @@ import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
+import { usePluginStylesheets } from "@/plugins/usePluginStylesheets";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
@@ -304,6 +305,20 @@ function partitionSidebarNav(
   return { coreItems, pluginItems };
 }
 
+/** Stable element refs so plugin-manifest refresh does not remount builtin pages. */
+const STABLE_BUILTIN_ROUTE_ELEMENTS = new Map<string, ReactNode>();
+
+function getStableRouteElement(
+  path: string,
+  Component: ComponentType,
+): ReactNode {
+  const cached = STABLE_BUILTIN_ROUTE_ELEMENTS.get(path);
+  if (cached) return cached;
+  const element = <Component key={path} />;
+  STABLE_BUILTIN_ROUTE_ELEMENTS.set(path, element);
+  return element;
+}
+
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
   manifests: PluginManifest[],
@@ -338,7 +353,11 @@ function buildRoutes(
         element: <PluginPage name={om.name} />,
       });
     } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
+      routes.push({
+        key: `builtin:${path}`,
+        path,
+        element: getStableRouteElement(path, Component),
+      });
     }
   }
 
@@ -373,6 +392,7 @@ export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
+  usePluginStylesheets(manifests, pathname);
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);

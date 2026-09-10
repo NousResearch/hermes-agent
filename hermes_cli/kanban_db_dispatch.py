@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -70,6 +71,120 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+# Parses owner/repo/number back out of a matched PR URL.
+_PR_URL_PARTS_RE = re.compile(
+    r"https?://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/pull/(?P<number>\d+)",
+    re.IGNORECASE,
+)
+
+# Per-process cache of guard verdicts: pr_url -> (applies, cached_at). The
+# dispatcher re-checks the same handful of PR URLs every tick; an uncached
+# ``gh`` call per task per tick makes dispatch unusably slow.
+_PR_GUARD_CACHE: dict[str, tuple[bool, float]] = {}
+_PR_GUARD_CACHE_TTL = 120  # seconds
+
+# ``conclusion`` values (CheckRun shape) that mean the check failed.
+_PR_CHECK_FAILURE_CONCLUSIONS = {
+    "FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE",
+}
+# ``state`` values (StatusContext shape) that mean the check failed.
+_PR_CHECK_FAILURE_STATES = {"FAILURE", "ERROR"}
+
+
+def _fetch_pr_status(owner: str, repo: str, number: str) -> Optional[dict]:
+    """Return {'state','reviewDecision','statusCheckRollup'} for a PR, or None.
+
+    None means indeterminate (no ``gh``, network failure, non-zero exit, bad JSON).
+    Isolated as a module-level function so tests can monkeypatch it without a
+    network or a GitHub account.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "gh", "pr", "view", str(number),
+                "--repo", f"{owner}/{repo}",
+                "--json", "state,reviewDecision,statusCheckRollup",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env={**os.environ, "PAGER": "cat", "GH_PAGER": "cat"},
+        )
+        if proc.returncode != 0:
+            return None
+        data = json.loads(proc.stdout)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _rollup_has_failure(rollup: Any) -> bool:
+    """True when any status-check entry is in a failed terminal state.
+
+    Derived from the entry's own fields (never a whitelist of check names): a
+    CheckRun carries ``conclusion``, a StatusContext carries ``state``. An
+    unknown/missing value on a still-running check is NOT a failure.
+    """
+    if not isinstance(rollup, list):
+        return False
+    for entry in rollup:
+        if not isinstance(entry, dict):
+            continue
+        conclusion = (entry.get("conclusion") or "").upper()
+        if conclusion in _PR_CHECK_FAILURE_CONCLUSIONS:
+            return True
+        state = (entry.get("state") or "").upper()
+        if state in _PR_CHECK_FAILURE_STATES:
+            return True
+    return False
+
+
+def _active_pr_guard_applies(pr_url: str) -> bool:
+    """True when this PR is a reason to SUPPRESS respawn.
+
+    The guard exists to stop a duplicate-PR storm while a PR is green and
+    awaiting review/merge. It must NOT fire when the PR is in a state that
+    only the implementer can clear, or the card deadlocks (t_108177c6: 4h of
+    respawn_guarded while #4774 sat on CHANGES_REQUESTED).
+
+    Guard applies  -> True
+    Exempt         -> False, when:
+      * PR is not OPEN (MERGED / CLOSED: finished work, guarding freezes the card)
+      * reviewDecision == "CHANGES_REQUESTED"
+      * any statusCheckRollup entry is a failure
+    Indeterminate status (fetch returned None, or URL is unparsable) -> True
+    (fail CLOSED: keep the old conservative behaviour; a network blip must not
+    stampede duplicate workers onto a task whose PR is genuinely in flight).
+    """
+    now = time.time()
+    cached = _PR_GUARD_CACHE.get(pr_url)
+    if cached is not None and (now - cached[1]) < _PR_GUARD_CACHE_TTL:
+        return cached[0]
+
+    applies = _compute_active_pr_guard(pr_url)
+    _PR_GUARD_CACHE[pr_url] = (applies, now)
+    return applies
+
+
+def _compute_active_pr_guard(pr_url: str) -> bool:
+    """Uncached verdict for :func:`_active_pr_guard_applies`."""
+    m = _PR_URL_PARTS_RE.match(pr_url)
+    if m is None:
+        return True
+    status = _fetch_pr_status(m.group("owner"), m.group("repo"), m.group("number"))
+    if status is None:
+        return True
+
+    if (status.get("state") or "").upper() != "OPEN":
+        return False
+    if (status.get("reviewDecision") or "").upper() == "CHANGES_REQUESTED":
+        return False
+    if _rollup_has_failure(status.get("statusCheckRollup")):
+        return False
+    return True
 
 
 @dataclass
@@ -1135,7 +1250,11 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
+    (PR URL in a recent comment; re-spawning risks a duplicate PR). ``"active_pr"``
+    is EXEMPT when the PR is one only the implementer can clear — not OPEN
+    (merged/closed), ``CHANGES_REQUESTED``, or with a failing status check — since
+    guarding those deadlocks the card; an indeterminate PR status fails closed and
+    still guards. The review
     lane skips the last two: they are the *inputs* to a review handoff. Stale /
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
@@ -1209,7 +1328,10 @@ def check_respawn_guard(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        if not c["body"]:
+            continue
+        match = _RESPAWN_GUARD_PR_URL_RE.search(c["body"])
+        if match and _active_pr_guard_applies(match.group(0)):
             return "active_pr"
 
     return None

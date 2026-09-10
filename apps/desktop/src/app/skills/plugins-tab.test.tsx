@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $pluginRecords } from '@/contrib/plugins-store'
+import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
@@ -12,6 +13,10 @@ const requestGateway = vi.fn(async () => ({ plugins: [] }))
 
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
+}))
+
+vi.mock('@/contrib/runtime-loader', () => ({
+  discoverRuntimePlugins: vi.fn()
 }))
 
 describe('PluginsTab', () => {
@@ -245,6 +250,17 @@ describe('PluginsTab', () => {
 
     await waitFor(() => {
       expect($pluginInstallRequest.get()?.repo).toBe('https://github.com/example/plugins-monorepo#nested-plugin')
+    })
+  })
+
+  it('rescan still invokes discoverRuntimePlugins', async () => {
+    vi.mocked(discoverRuntimePlugins).mockClear()
+    render(<PluginsTab profile={null} />)
+
+    screen.getByRole('button', { name: 'Rescan' }).click()
+
+    await waitFor(() => {
+      expect(discoverRuntimePlugins).toHaveBeenCalled()
     })
   })
 })

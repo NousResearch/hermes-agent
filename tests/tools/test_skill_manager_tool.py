@@ -662,6 +662,151 @@ class TestSkillManageDispatcher:
         assert result["staged"] is True
         assert result["provenance"] == "hub"
 
+    def test_same_name_skill_in_other_category_is_not_bundled(
+        self, tmp_path, monkeypatch
+    ):
+        """A user-owned skill sharing a bundled skill's name in another
+        category must not be staged as bundled."""
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        # User-owned skill lives in a category; the bundled origin ships
+        # the same name at the top level.
+        user_skill = skills_root / "othercat" / "test-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        (skills_root / ".bundled_manifest").write_text(
+            "test-skill:origin-hash\n", encoding="utf-8"
+        )
+        bundled_src = tmp_path / "bundled-src"
+        bundled_skill = bundled_src / "test-skill"
+        bundled_skill.mkdir(parents=True)
+        (bundled_skill / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(bundled_src))
+        with _skill_dir(skills_root):
+            monkeypatch.setattr(
+                "tools.write_approval.write_approval_enabled",
+                lambda _subsystem: False,
+            )
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="test-skill",
+                    old_string="Step 1: Do the thing.",
+                    new_string="Step 1: Do the local thing.",
+                )
+            )
+
+        assert result["success"] is True
+        assert result.get("staged") is None
+        assert result.get("provenance") is None
+        assert "local thing" in (user_skill / "SKILL.md").read_text()
+
+    def test_bundled_skill_at_synced_path_still_stages(self, tmp_path, monkeypatch):
+        """Path-awareness must not weaken the original #63482 protection:
+        a skill sitting at the bundled install destination still stages."""
+        skills_root = tmp_path / "skills"
+        (skills_root / "mlops" / "test-skill").mkdir(parents=True)
+        (skills_root / "mlops" / "test-skill" / "SKILL.md").write_text(
+            VALID_SKILL_CONTENT
+        )
+        (skills_root / ".bundled_manifest").write_text(
+            "test-skill:origin-hash\n", encoding="utf-8"
+        )
+        bundled_src = tmp_path / "bundled-src"
+        (bundled_src / "mlops" / "test-skill").mkdir(parents=True)
+        (bundled_src / "mlops" / "test-skill" / "SKILL.md").write_text(
+            VALID_SKILL_CONTENT
+        )
+        monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(bundled_src))
+        with _skill_dir(skills_root):
+            monkeypatch.setattr(
+                "tools.write_approval.write_approval_enabled",
+                lambda _subsystem: False,
+            )
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="test-skill",
+                    old_string="Step 1: Do the thing.",
+                    new_string="Step 1: Do the local thing.",
+                )
+            )
+
+        assert result["staged"] is True
+        assert result["provenance"] == "bundled"
+        assert "freeze future package updates" in result["message"]
+
+    def test_hub_edit_stages_with_overwrite_warning(self, tmp_path, monkeypatch):
+        """Hub mutations beyond patch also stage, and their warning names
+        the hub-specific risk (overwrite on reinstall), not the bundled
+        update-starvation wording."""
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        with _skill_dir(skills_root):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            hub_dir = skills_root / ".hub"
+            hub_dir.mkdir()
+            (hub_dir / "lock.json").write_text(
+                json.dumps(
+                    {
+                        "installed": {
+                            "upstream-name": {"install_path": "test-skill"}
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            monkeypatch.setattr(
+                "tools.write_approval.write_approval_enabled",
+                lambda _subsystem: False,
+            )
+            result = json.loads(
+                skill_manage(
+                    action="edit",
+                    name="test-skill",
+                    content=VALID_SKILL_CONTENT_2,
+                )
+            )
+
+        assert result["staged"] is True
+        assert result["provenance"] == "hub"
+        assert "overwritten" in result["message"]
+        assert "freeze future package updates" not in result["message"]
+
+    def test_hub_write_file_stages(self, tmp_path, monkeypatch):
+        """write_file against a hub-managed skill stages too."""
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        with _skill_dir(skills_root):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            hub_dir = skills_root / ".hub"
+            hub_dir.mkdir()
+            (hub_dir / "lock.json").write_text(
+                json.dumps(
+                    {
+                        "installed": {
+                            "upstream-name": {"install_path": "test-skill"}
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            monkeypatch.setattr(
+                "tools.write_approval.write_approval_enabled",
+                lambda _subsystem: False,
+            )
+            result = json.loads(
+                skill_manage(
+                    action="write_file",
+                    name="test-skill",
+                    file_path="references/local.md",
+                    content="local",
+                )
+            )
+
+        assert result["staged"] is True
+        assert result["provenance"] == "hub"
+
     def test_user_owned_patch_remains_autonomous(self, tmp_path, monkeypatch):
         skills_root = tmp_path / "skills"
         skills_root.mkdir()

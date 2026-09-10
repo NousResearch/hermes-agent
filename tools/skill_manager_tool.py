@@ -1256,6 +1256,40 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
 )
 
 
+def _bundled_install_relpath(name: str) -> Optional[str]:
+    """Return the install-relative path of bundled skill ``name``.
+
+    Bundled skills sync into the skills root preserving their category
+    structure (e.g. ``bundled/skills/mlops/axolotl`` ->
+    ``~/.hermes/skills/mlops/axolotl``), while the bundled manifest records
+    only the skill name. Comparing names alone lets a user-owned skill that
+    merely shares the name in another category be misread as bundled, so
+    the provenance check must also confirm the on-disk path.
+
+    Returns the posix relative path (e.g. ``"mlops/axolotl"``), or None when
+    the bundled origin cannot be located or does not ship ``name``.
+    """
+    try:
+        from agent.skill_utils import is_excluded_skill_path
+        from hermes_constants import get_bundled_skills_dir
+    except Exception:
+        return None
+    try:
+        bundled_dir = get_bundled_skills_dir(
+            Path(__file__).parent.parent / "skills"
+        )
+        if not bundled_dir.exists():
+            return None
+        for skill_md in bundled_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            if skill_md.parent.name == name:
+                return skill_md.parent.relative_to(bundled_dir).as_posix()
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def _managed_skill_provenance(name: str) -> Optional[str]:
     """Return upstream provenance for an installed skill, if any.
 
@@ -1282,8 +1316,15 @@ def _managed_skill_provenance(name: str) -> Optional[str]:
     try:
         for line in manifest_path.read_text(encoding="utf-8").splitlines():
             manifest_name = line.partition(":")[0].strip()
-            if manifest_name == name:
+            if manifest_name != name:
+                continue
+            # Name-only is not enough: bundled skills keep their category
+            # structure on disk, so a user-owned skill that merely shares
+            # the name in another category must not be treated as bundled.
+            expected = _bundled_install_relpath(name)
+            if expected is None or expected == relative_path:
                 return "bundled"
+            break
     except FileNotFoundError:
         pass
     except OSError:
@@ -1327,12 +1368,26 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     provenance = None if action == "create" else _managed_skill_provenance(name)
     decision = wa.evaluate_gate(wa.SKILLS)
     if provenance and not decision.blocked:
+        if provenance == "hub":
+            # Hub skills reinstall from the stored lock on update, so the
+            # risk is overwrite of local edits — not update starvation.
+            risk = (
+                "hub updates reinstall the skill from the stored lock, "
+                "so local edits will be overwritten and lost"
+            )
+        else:
+            # Bundled skills are package-managed as a unit: mutating one
+            # file makes the updater preserve the whole local directory,
+            # withholding unrelated files added upstream.
+            risk = (
+                "editing it will freeze future package updates, including "
+                "supporting files added upstream"
+            )
         decision = wa.GateDecision(
             stage=True,
             message=(
                 f"Staged for approval because '{name}' is an upstream-managed "
-                f"{provenance} skill. Not yet saved: editing it will freeze future "
-                "package updates, including supporting files added upstream. "
+                f"{provenance} skill. Not yet saved: {risk}. "
                 "Prefer SOUL, project context, or a user-owned overlay skill for "
                 "user-specific guidance. Review with /skills pending."
             ),

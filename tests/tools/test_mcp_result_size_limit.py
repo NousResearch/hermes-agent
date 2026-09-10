@@ -13,7 +13,7 @@ see _MCP_HARD_RESULT_CAP_CHARS in tools/mcp_tool.py.
 
 from __future__ import annotations
 
-from tools.mcp_tool import _MCP_HARD_RESULT_CAP_CHARS, _truncate_mcp_text_result
+from tools.mcp_tool_content import _MCP_HARD_RESULT_CAP_CHARS, _truncate_mcp_text_result
 
 
 class TestTruncateMcpTextResult:

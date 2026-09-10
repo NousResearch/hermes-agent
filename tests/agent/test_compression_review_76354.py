@@ -461,10 +461,14 @@ class TestF6ExecutorSaturation:
 
 
 class TestS3IdleChargedFromLastProgress:
-    def test_silence_cannot_approach_double_idle_timeout(self):
-        """Progress early in an interval must not extend silence to ~2x idle."""
-        _drain_admission_slots()
-        idle = 0.4
+    @staticmethod
+    def _run_stall_to_fallback(idle: float):
+        """Drive one silent-stall attempt; return ``(prompt, elapsed)``.
+
+        ``elapsed`` spans worker dispatch to host return, so it covers the
+        thread-pool spawn and the post-timeout stall-fallback attempt as well
+        as the idle wait itself.
+        """
         release = threading.Event()
 
         def worker(fence: CompressionCommitFence):
@@ -475,7 +479,7 @@ class TestS3IdleChargedFromLastProgress:
 
         t0 = time.monotonic()
         try:
-            msgs, prompt = run_compress_context_with_progress_timeout(
+            _msgs, prompt = run_compress_context_with_progress_timeout(
                 worker=worker,
                 messages=[{"role": "user", "content": "a"}],
                 system_prompt_fallback="fb",
@@ -486,6 +490,27 @@ class TestS3IdleChargedFromLastProgress:
         finally:
             elapsed = time.monotonic() - t0
             release.set()
+        return prompt, elapsed
+
+    def test_silence_cannot_approach_double_idle_timeout(self):
+        """Progress early in an interval must not extend silence to ~2x idle."""
+        _drain_admission_slots()
+        idle = 0.4
+
+        # Warm up first, and time the SECOND attempt. The first call in a
+        # process pays one-off costs that land inside the measured window but
+        # are not what this test asserts: spawning the compress-timeout pool
+        # thread before the worker's first touch_progress, and the
+        # stall-fallback path's own first-use imports. Measured here, cold
+        # ~0.97s vs warm ~0.45s against a 0.72s budget — so a fresh pytest
+        # process failed deterministically while the same test passed once
+        # anything else had warmed the pool. The assertion below is about
+        # WHERE the idle budget is charged from, not about import speed.
+        warm_prompt, _warm_elapsed = self._run_stall_to_fallback(idle)
+        assert warm_prompt == "fb"
+        _drain_admission_slots()
+
+        prompt, elapsed = self._run_stall_to_fallback(idle)
         assert prompt == "fb"
         # Old behavior waited a full interval from the CHECK (~2x idle ≈
         # 0.85s+). New behavior times out ~idle after the last progress

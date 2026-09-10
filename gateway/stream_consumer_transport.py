@@ -158,26 +158,57 @@ class StreamTransportMixin:
             return False
 
     async def _send_draft_frame(self, text: str) -> bool:
-        """Emit one draft frame; any failure permanently disables drafts for this run.
-        Drafts have no message_id and clear on the client when the final send lands."""
+        """Emit a single animated draft frame for the current accumulated text.
+
+        Returns True when the frame landed. Tolerates up to _MAX_DRAFT_FAILURES
+        consecutive errors before permanently disabling draft streaming for this
+        run. A single transient failure (short flood-control wait, temporary
+        Bot API hiccup) should not cascade into edit-mode flood control for the
+        entire remaining response. Consecutive successes reset the failure count.
+
+        A long flood-control wait (``SendResult.retry_after``) sets
+        ``_draft_cooldown_until`` instead of counting a failure: frames are
+        skipped outright until the deadline passes. ``_last_draft_retryable``
+        tells ``_send_or_edit`` this miss was a cooldown, not a decision to
+        give up on drafts, so it should wait rather than fall through to a
+        real send/edit for this tick — falling through would spend another
+        call in the same flood-control window (or worse, create a real
+        message the very next tick would have made redundant). Ordinary
+        (non-retryable) misses are unaffected and still fall through
+        immediately, same as always.
+        """
+        self._last_draft_retryable = False
         if self._draft_id is None:
             # Should never happen (set in tandem with _use_draft_streaming in run()).
             self._use_draft_streaming = False
             return False
+        if (
+            self._draft_cooldown_until is not None
+            and time.monotonic() < self._draft_cooldown_until
+        ):
+            self._last_draft_retryable = True
+            return False
+        self._draft_cooldown_until = None
         try:
             result = await self.adapter.send_draft(
                 chat_id=self.chat_id, draft_id=self._draft_id, content=text,
                 metadata=self._draft_metadata())
         except Exception as e:
-            logger.debug("send_draft raised, disabling draft transport for this run: %s", e)
-        else:
-            if getattr(result, "success", False):
-                self._last_sent_text = text  # parity with the edit-based no-op skip
-                return True
+            logger.debug(
+                "send_draft raised (failure %d/%d): %s",
+                self._draft_failures + 1, self._MAX_DRAFT_FAILURES, e,
+            )
+            self._draft_failures += 1
+            if self._draft_failures >= self._MAX_DRAFT_FAILURES:
+                self._use_draft_streaming = False
+            return False
+        if not getattr(result, "success", False):
+            error = getattr(result, "error", "unknown")
             # P5(b): an AUTHORIZATION decline is terminal for the whole run, not
-            # merely "drafts are unusable". Disabling drafts alone routes the
-            # turn-final to _first_send — a plain send into the chat the
-            # connector just refused. Verified: ops were ['draft', 'send'].
+            # merely "drafts are unusable" — checked before the retryable/failure-
+            # count logic below so a decline is never absorbed into the ordinary
+            # retry budget. Disabling drafts alone routes the turn-final to
+            # _first_send — a plain send into the chat the connector just refused.
             from gateway.relay.egress import declined_send
 
             if declined_send(result):
@@ -187,11 +218,33 @@ class StreamTransportMixin:
                     "is not approved for this connection)"
                 )
                 self._egress_declined = True
-            logger.debug("send_draft returned success=False, disabling draft transport: %s",
-                         getattr(result, "error", "unknown"))
-        self._draft_failures += 1
-        self._use_draft_streaming = False
-        return False
+                self._use_draft_streaming = False
+                return False
+            # Retryable failures (long flood-control waits handled by the
+            # adapter) don't count toward the permanent-disable threshold —
+            # they're transient and the next frame will likely succeed.
+            if getattr(result, "retryable", False):
+                self._last_draft_retryable = True
+                retry_after = getattr(result, "retry_after", None)
+                if retry_after is not None and retry_after > 0:
+                    self._draft_cooldown_until = time.monotonic() + float(retry_after)
+                logger.debug(
+                    "send_draft retryable failure (not counted), cooldown=%s: %s",
+                    retry_after, error,
+                )
+                return False
+            logger.debug(
+                "send_draft success=False (failure %d/%d): %s",
+                self._draft_failures + 1, self._MAX_DRAFT_FAILURES, error,
+            )
+            self._draft_failures += 1
+            if self._draft_failures >= self._MAX_DRAFT_FAILURES:
+                self._use_draft_streaming = False
+            return False
+        # Frame delivered — reset the failure streak.
+        self._draft_failures = 0
+        self._last_sent_text = text
+        return True
 
     async def _abandon_native_stream(self) -> None:
         """Seal an orphaned draft stream on turn death (stale exit / cancel): else the live
@@ -426,7 +479,17 @@ class StreamTransportMixin:
             return True
         # Deliberately NOT _already_sent on success: the gateway's fallback final
         # send must still fire so the user gets a real message.
-        return True if await self._send_draft_frame(frame_text) else None
+        if await self._send_draft_frame(frame_text):
+            return True
+        if self._last_draft_retryable:
+            # Flood-control cooldown, not a decision to give up on drafts.
+            # Treat this tick as handled with nothing new to show rather
+            # than falling through to a real send/edit, which would spend
+            # another call in the same flood-control window (or create a
+            # real message the very next tick would have made redundant).
+            # Ordinary (non-retryable) misses still fall through below.
+            return True
+        return None
 
     async def _first_send(self, text: str, *, finalize: bool) -> bool:
         """First send, threaded to the user's message (correct topic/thread)."""

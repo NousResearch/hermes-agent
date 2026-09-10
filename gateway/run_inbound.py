@@ -484,8 +484,26 @@ class GatewayInboundMixin:
             logger.debug("reaped-session staleness check failed", exc_info=True)
 
     def _hm_evict_running_agent(self, _quick_key: str, reason: str) -> None:
+        from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_EVICTED, request_hard_interrupt
+        state = self._peek_session_state(_quick_key)
+        running_agent = state.turn.agent if state else None
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                request_hard_interrupt(running_agent, _INTERRUPT_REASON_EVICTED)
+            except Exception:
+                # Eviction must still invalidate and release the slot if a legacy or third-party
+                # agent cannot accept the interrupt request; otherwise the stale session remains
+                # unroutable and the pre-existing cleanup path is lost.
+                logger.warning(
+                    "Failed to interrupt evicted agent for %s; continuing eviction cleanup",
+                    _quick_key,
+                    exc_info=True,
+                )
         self._invalidate_session_run_generation(_quick_key, reason=reason)
         self._release_running_agent_state(_quick_key)
+        # The interrupt flag is cleared only by the turn finalizer. Remove the cached instance after
+        # releasing the slot so a late-finishing orphan cannot poison the replacement turn.
+        self._evict_cached_agent(_quick_key)
 
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False

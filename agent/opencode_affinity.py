@@ -17,6 +17,7 @@ so the header cannot drift per code path.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
@@ -72,7 +73,13 @@ def opencode_session_headers(
         )
     except Exception:
         key = str(session_id or "")
-    return {OPENCODE_SESSION_HEADER: key} if key else {}
+    if not key:
+        # Stateless one-shot requests (commit messages, summaries, standalone prompts outside
+        # a session) lack an ambient conversation or session id. OpenCode Go strictly requires
+        # x-opencode-session on every request (HTTP 400 MissingSessionID if absent, #105841)
+        # so generate an ephemeral session id fallback.
+        key = f"oneshot-{uuid.uuid4().hex[:16]}"
+    return {OPENCODE_SESSION_HEADER: key}
 
 
 def merge_opencode_session_headers(

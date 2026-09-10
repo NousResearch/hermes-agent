@@ -561,18 +561,26 @@ class HindsightMemoryProvider(MemoryProvider):
         """Schedule *coro* on the shared loop using the configured timeout."""
         return _run_sync(coro, timeout=self._timeout)
 
+    def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
+        """A stale-embedded-daemon connection failure worth one client recreate + retry."""
+        if self._mode != "local_embedded":
+            return False
+        text = f"{type(exc).__name__}: {exc}".lower()
+        return any(marker in text for marker in _RETRIABLE_CONNECTION_MARKERS)
+
     def _run_hindsight_operation(self, operation):
         """Run an async client operation; for local_embedded, a stale-daemon
-        connection failure recreates the client and retries once."""
+        connection failure retires the client and retries once on a replacement."""
+        client = self._get_client()
         try:
-            return self._run_sync(operation(self._get_client()))
+            return self._run_sync(operation(client))
         except Exception as exc:
-            text = f"{type(exc).__name__}: {exc}".lower()
-            if self._mode != "local_embedded" or not any(m in text for m in _RETRIABLE_CONNECTION_MARKERS):
+            if not self._is_retriable_embedded_connection_error(exc):
                 raise
-            logger.info("Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s", exc)
-            self._client = None
-            self._client = client = self._get_client()
+            logger.info("Hindsight embedded daemon appears unreachable; "
+                        "recreating client and retrying once: %s", exc)
+            self._retire_hindsight_client(client)
+            client = self._publish_replacement_client(self._get_client())
             return self._run_sync(operation(client))
 
     # -- retain writer thread + server-side visibility -------------------------
@@ -1138,9 +1146,399 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_completed_request = request
         self._prefetch_result_request = request
 
+    def _forget_closed_client_ref(
+        self,
+        client_key: int,
+        client_ref: weakref.ReferenceType[Any],
+    ) -> None:
+        try:
+            with self._prefetch_condition:
+                if self._closed_client_refs.get(client_key) is client_ref:
+                    self._closed_client_refs.pop(client_key, None)
+        except Exception:
+            pass
+
+    def _client_is_closed_locked(self, client: Any) -> bool:
+        try:
+            if getattr(client, _CLIENT_CLOSED_ATTR, None) is _CLIENT_CLOSED_MARKER:
+                return True
+        except Exception:
+            pass
+
+        client_key = id(client)
+        client_ref = self._closed_client_refs.get(client_key)
+        if client_ref is not None:
+            closed_client = client_ref()
+            if closed_client is client:
+                return True
+            if closed_client is None:
+                self._closed_client_refs.pop(client_key, None)
+            else:
+                raise RuntimeError("Hindsight closed-client identity collision")
+
+        fallback = self._closed_client_fallbacks.get(client_key)
+        if fallback is client:
+            return True
+        if fallback is not None:
+            raise RuntimeError("Hindsight closed-client identity collision")
+        return False
+
+    def _mark_client_closed_locked(self, client: Any) -> None:
+        """Mark *client* closed; slotted clients that can't carry the marker
+        attribute fall back to a weakref (or, unweakrefable, a bounded strong
+        registry keyed by id())."""
+        try:
+            setattr(client, _CLIENT_CLOSED_ATTR, _CLIENT_CLOSED_MARKER)
+            if getattr(client, _CLIENT_CLOSED_ATTR, None) is _CLIENT_CLOSED_MARKER:
+                return
+        except Exception:
+            pass
+
+        client_key = id(client)
+        try:
+            provider_ref = weakref.ref(self)
+
+            def _forget(client_ref, key=client_key, owner_ref=provider_ref):
+                owner = owner_ref()
+                if owner is not None:
+                    owner._forget_closed_client_ref(key, client_ref)
+
+            client_ref = weakref.ref(client, _forget)
+        except TypeError:
+            fallback = self._closed_client_fallbacks.get(client_key)
+            if fallback is not None and fallback is not client:
+                raise RuntimeError("Hindsight closed-client identity collision")
+            self._closed_client_fallbacks[client_key] = client
+            while (
+                len(self._closed_client_fallbacks)
+                > _MAX_UNWEAKREFABLE_CLOSED_CLIENTS
+            ):
+                oldest_key = next(iter(self._closed_client_fallbacks))
+                self._closed_client_fallbacks.pop(oldest_key, None)
+            return
+
+        existing_ref = self._closed_client_refs.get(client_key)
+        if existing_ref is not None:
+            existing_client = existing_ref()
+            if existing_client is not None and existing_client is not client:
+                raise RuntimeError("Hindsight closed-client identity collision")
+        self._closed_client_refs[client_key] = client_ref
+
+    def _reserve_prefetch_client_locked(self, client: Any) -> object:
+        client_key = id(client)
+        if self._client_is_closed_locked(client):
+            raise RuntimeError("Hindsight client is already closed")
+
+        closing_client = self._prefetch_closing_clients.get(client_key)
+        if closing_client is not None:
+            if closing_client is not client:
+                raise RuntimeError("Hindsight closing-client identity collision")
+            raise RuntimeError("Hindsight client is closing")
+
+        owner = self._prefetch_client_owners.get(client_key)
+        if owner is None:
+            reservations: set[object] = set()
+            self._prefetch_client_owners[client_key] = (client, reservations)
+        else:
+            if owner[0] is not client:
+                raise RuntimeError("Hindsight client-owner identity collision")
+            reservations = owner[1]
+
+        reservation = object()
+        reservations.add(reservation)
+        return reservation
+
+    def _release_prefetch_client_locked(
+        self,
+        client: Any,
+        reservation: object,
+    ) -> bool:
+        client_key = id(client)
+        owner = self._prefetch_client_owners.get(client_key)
+        if owner is None:
+            return False
+        if owner[0] is not client:
+            raise RuntimeError("Hindsight client-owner identity collision")
+        reservations = owner[1]
+        if reservation not in reservations:
+            return False
+        reservations.remove(reservation)
+        if not reservations:
+            self._prefetch_client_owners.pop(client_key, None)
+        return True
+
+    def _rollback_prefetch_client_reservation(
+        self,
+        client: Any,
+        reservation: object,
+    ) -> None:
+        with self._prefetch_condition:
+            self._release_prefetch_client_locked(client, reservation)
+            clients_to_close = self._take_ready_deferred_clients_locked()
+            self._prefetch_condition.notify_all()
+        for deferred_client in clients_to_close:
+            self._schedule_prefetch_client_close(deferred_client)
+
+    def _publish_replacement_client(self, client: Any) -> Any:
+        """Publish *client* as the current client unless one won the race."""
+        self._ensure_prefetch_state()
+        with self._client_lock:
+            current = self._client
+            if current is None:
+                self._client = client
+            elif current is not client:
+                client = current
+            return client
+
+    def _register_prefetch_future_locked(
+        self,
+        request: _PrefetchRequest,
+        client: Any,
+        reservation: object,
+        future: Any,
+    ) -> None:
+        operation = self._prefetch_operations.get(request.inflight_key)
+        if operation is None:
+            raise RuntimeError("Hindsight prefetch operation was retired")
+        owner = self._prefetch_client_owners.get(id(client))
+        if (
+            owner is None
+            or owner[0] is not client
+            or reservation not in owner[1]
+        ):
+            raise RuntimeError("Hindsight prefetch client reservation was lost")
+        operation.futures[reservation] = future
+
+    def _claim_client_close_locked(self, client: Any) -> bool:
+        """Claim the right to close *client*; False when an owner still holds
+        a reservation (deferred) or another thread is already closing it."""
+        client_key = id(client)
+        if self._client_is_closed_locked(client):
+            return False
+
+        closing_client = self._prefetch_closing_clients.get(client_key)
+        if closing_client is not None:
+            if closing_client is not client:
+                raise RuntimeError("Hindsight closing-client identity collision")
+            return False
+
+        owner = self._prefetch_client_owners.get(client_key)
+        if owner is not None:
+            if owner[0] is not client:
+                raise RuntimeError("Hindsight client-owner identity collision")
+            deferred_client = self._prefetch_deferred_clients.get(client_key)
+            if deferred_client is not None and deferred_client is not client:
+                raise RuntimeError("Hindsight deferred-client identity collision")
+            self._prefetch_deferred_clients[client_key] = client
+            return False
+
+        self._prefetch_closing_clients[client_key] = client
+        deferred_client = self._prefetch_deferred_clients.pop(client_key, None)
+        if deferred_client is not None and deferred_client is not client:
+            raise RuntimeError("Hindsight deferred-client identity collision")
+        return True
+
+    def _finish_client_close(self, client: Any) -> None:
+        client_key = id(client)
+        with self._client_lock:
+            if self._client is client:
+                self._client = None
+            with self._prefetch_condition:
+                closing_client = self._prefetch_closing_clients.pop(
+                    client_key,
+                    None,
+                )
+                if closing_client is not None and closing_client is not client:
+                    raise RuntimeError(
+                        "Hindsight closing-client identity collision"
+                    )
+                deferred_client = self._prefetch_deferred_clients.pop(
+                    client_key,
+                    None,
+                )
+                if deferred_client is not None and deferred_client is not client:
+                    raise RuntimeError(
+                        "Hindsight deferred-client identity collision"
+                    )
+                self._mark_client_closed_locked(client)
+                self._prefetch_close_threads.discard(
+                    threading.current_thread()
+                )
+                self._prefetch_condition.notify_all()
+
+    def _close_claimed_client(self, client: Any) -> None:
+        try:
+            self._close_hindsight_client(client)
+        finally:
+            self._finish_client_close(client)
+
+    def _retire_hindsight_client(
+        self,
+        client: Any,
+        *,
+        clear_current: bool = True,
+    ) -> None:
+        """Stop using *client*; close it now, or defer while prefetch owners
+        hold reservations on it (#64745)."""
+        self._ensure_prefetch_state()
+        with self._client_lock:
+            if clear_current and self._client is client:
+                self._client = None
+            with self._prefetch_condition:
+                should_close = self._claim_client_close_locked(client)
+        if should_close:
+            self._close_claimed_client(client)
+
+    def _take_ready_deferred_clients_locked(self) -> list[Any]:
+        ready: list[Any] = []
+        for client_key, client in list(self._prefetch_deferred_clients.items()):
+            if self._client_is_closed_locked(client):
+                self._prefetch_deferred_clients.pop(client_key, None)
+                continue
+            owner = self._prefetch_client_owners.get(client_key)
+            if owner is not None:
+                if owner[0] is not client:
+                    raise RuntimeError("Hindsight client-owner identity collision")
+                continue
+            closing_client = self._prefetch_closing_clients.get(client_key)
+            if closing_client is not None:
+                if closing_client is not client:
+                    raise RuntimeError(
+                        "Hindsight closing-client identity collision"
+                    )
+                continue
+            ready.append(client)
+        return ready
+
+    def _schedule_prefetch_client_close(self, client: Any) -> None:
+        with self._prefetch_condition:
+            if not self._claim_client_close_locked(client):
+                return
+            thread = threading.Thread(
+                target=self._close_claimed_client,
+                args=(client,),
+                daemon=True,
+                name="hindsight-prefetch-client-close",
+            )
+            self._prefetch_close_threads.add(thread)
+        thread.start()
+
+    def _prefetch_future_done(
+        self,
+        request: _PrefetchRequest,
+        client: Any,
+        reservation: object,
+        future: Any,
+    ) -> None:
+        text = ""
+        succeeded = False
+        try:
+            text = future.result() or ""
+            succeeded = True
+        except Exception:
+            pass
+
+        clients_to_close: list[Any] = []
+        with self._prefetch_condition:
+            operation = self._prefetch_operations.get(request.inflight_key)
+            registered = False
+            if operation is not None:
+                registered_future = operation.futures.get(reservation)
+                if registered_future is future:
+                    operation.futures.pop(reservation, None)
+                    registered = True
+                elif registered_future is not None:
+                    raise RuntimeError(
+                        "Hindsight prefetch-future identity collision"
+                    )
+
+            self._release_prefetch_client_locked(client, reservation)
+
+            if succeeded and registered:
+                self._publish_prefetch_result_locked(request, text)
+
+            if (
+                operation is not None
+                and operation.worker_done
+                and not operation.futures
+            ):
+                self._prefetch_operations.pop(request.inflight_key, None)
+            self._maybe_start_pending_prefetch_locked()
+            clients_to_close = self._take_ready_deferred_clients_locked()
+            self._prefetch_condition.notify_all()
+
+        for deferred_client in clients_to_close:
+            self._schedule_prefetch_client_close(deferred_client)
+
+    def _execute_prefetch_attempt(self, request, operation, client) -> str:
+        """Run one attempt on *client*: reserve the client, schedule the
+        coroutine, and hand result publication to the future's done-callback
+        so a timeout here never loses or double-publishes the result."""
+        from agent.async_utils import safe_schedule_threadsafe
+
+        with self._prefetch_condition:
+            reservation = self._reserve_prefetch_client_locked(client)
+
+        try:
+            coroutine = operation(client)
+        except BaseException:
+            self._rollback_prefetch_client_reservation(client, reservation)
+            raise
+
+        try:
+            future = safe_schedule_threadsafe(coroutine, _get_loop())
+        except BaseException:
+            coroutine.close()
+            self._rollback_prefetch_client_reservation(client, reservation)
+            raise
+        if future is None:
+            self._rollback_prefetch_client_reservation(client, reservation)
+            raise RuntimeError("Hindsight loop unavailable")
+
+        try:
+            with self._prefetch_condition:
+                self._register_prefetch_future_locked(
+                    request,
+                    client,
+                    reservation,
+                    future,
+                )
+        except BaseException:
+            future.add_done_callback(
+                lambda done: self._prefetch_future_done(
+                    request,
+                    client,
+                    reservation,
+                    done,
+                )
+            )
+            raise
+
+        future.add_done_callback(
+            lambda done: self._prefetch_future_done(
+                request,
+                client,
+                reservation,
+                done,
+            )
+        )
+        return future.result(timeout=self._timeout)
+
     def _execute_prefetch_request(self, request, operation) -> str:
-        """Run one request-scoped prefetch operation on the shared loop."""
-        return self._run_hindsight_operation(operation)
+        client = self._get_client()
+        try:
+            return self._execute_prefetch_attempt(request, operation, client)
+        except Exception as exc:
+            if not self._is_retriable_embedded_connection_error(exc):
+                raise
+            logger.info(
+                "Hindsight embedded daemon appears unreachable during prefetch; "
+                "recreating client and retrying once: %s",
+                exc,
+            )
+            self._retire_hindsight_client(client)
+            client = self._publish_replacement_client(self._get_client())
+            return self._execute_prefetch_attempt(request, operation, client)
 
     def _prefetch_worker(self, request: _PrefetchRequest) -> None:
         current_thread = threading.current_thread()
@@ -1214,6 +1612,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 exc_info=True,
             )
         finally:
+            clients_to_close: list[Any] = []
             with self._prefetch_condition:
                 operation_state = self._prefetch_operations.get(
                     request.inflight_key
@@ -1243,7 +1642,11 @@ class HindsightMemoryProvider(MemoryProvider):
                         None,
                     )
                 self._maybe_start_pending_prefetch_locked()
+                clients_to_close = self._take_ready_deferred_clients_locked()
                 self._prefetch_condition.notify_all()
+
+            for deferred_client in clients_to_close:
+                self._schedule_prefetch_client_close(deferred_client)
 
     # -- recall ------------------------------------------------------------------
 
@@ -1625,20 +2028,22 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
                      self._session_id, self._parent_session_id, reset, self._document_id)
 
-    def _close_client(self) -> None:
-        if self._mode != "local_embedded":
-            self._run_sync(self._client.aclose())
-            return
-        # HindsightEmbedded.close() closes its sync client from this thread ("attached
-        # to a different loop" before aiohttp releases the session): aclose the inner
-        # client on the shared loop first, then let the wrapper clean up bookkeeping.
-        inner_client = getattr(self._client, "_client", None)
-        if inner_client is not None and hasattr(inner_client, "aclose"):
-            _run_sync(inner_client.aclose())
-            with contextlib.suppress(Exception):
-                self._client._client = None
-        with contextlib.suppress(RuntimeError):
-            self._client.close()
+    def _close_hindsight_client(self, client: Any) -> None:
+        """Close one Hindsight client (embedded: inner async client first on
+        the shared loop); best-effort — failures must not break retirement."""
+        try:
+            if self._mode == "local_embedded":
+                inner_client = getattr(client, "_client", None)
+                if inner_client is not None and hasattr(inner_client, "aclose"):
+                    _run_sync(inner_client.aclose())
+                    with contextlib.suppress(Exception):
+                        client._client = None
+                with contextlib.suppress(RuntimeError):
+                    client.close()
+            else:
+                self._run_sync(client.aclose())
+        except Exception:
+            pass
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
@@ -1671,10 +2076,15 @@ class HindsightMemoryProvider(MemoryProvider):
                 break
             if thread.is_alive():
                 thread.join(timeout=remaining)
-        if self._client is not None:
-            with contextlib.suppress(Exception):
-                self._close_client()
-            self._client = None
+        with self._client_lock:
+            client = self._client
+        if client is not None:
+            self._retire_hindsight_client(client, clear_current=False)
+
+        with self._prefetch_condition:
+            clients_to_close = self._take_ready_deferred_clients_locked()
+        for deferred_client in clients_to_close:
+            self._schedule_prefetch_client_close(deferred_client)
         # The module-global loop is intentionally NOT stopped: it's shared by every
         # provider in the process (one per gateway chat session); stopping it would
         # strand siblings' aiohttp sessions ("Unclosed client session"). Daemon

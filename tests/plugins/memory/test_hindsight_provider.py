@@ -1228,6 +1228,481 @@ class TestPrefetchSessionIdentity:
         assert provider._prefetch_pending_request is None
 
 
+class TestPrefetchClientLifecycle:
+    """PR #64745 client lifecycle: prefetch owns its client while a scheduled
+    async future may still resolve; a close must be deferred until every
+    owner releases, claimed exactly once, and never reuses a closed client."""
+
+    def test_operation_timeout_retires_key_but_defers_owned_client_close(
+        self, provider, monkeypatch
+    ):
+        from agent import async_utils
+
+        scheduled = threading.Event()
+        closed = threading.Event()
+        late_future = Future()
+        real_schedule = async_utils.safe_schedule_threadsafe
+        client = provider._client
+
+        async def _close_client():
+            closed.set()
+
+        client.aclose = AsyncMock(side_effect=_close_client)
+
+        def _schedule_without_completion(coro, loop):
+            coro.close()
+            scheduled.set()
+            return late_future
+
+        monkeypatch.setattr(
+            async_utils,
+            "safe_schedule_threadsafe",
+            _schedule_without_completion,
+        )
+        provider._timeout = 0
+
+        provider.queue_prefetch("timed out", session_id="test-session")
+        worker = provider._prefetch_thread
+        assert scheduled.wait(timeout=2.0)
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+
+        with provider._prefetch_condition:
+            assert provider._prefetch_inflight == {}
+            assert len(provider._prefetch_operations) == 1
+
+        provider.shutdown()
+        assert not closed.is_set()
+        assert provider._client is client
+
+        monkeypatch.setattr(
+            async_utils,
+            "safe_schedule_threadsafe",
+            real_schedule,
+        )
+        late_future.set_result(SimpleNamespace(results=[]))
+
+        assert closed.wait(timeout=2.0)
+        with provider._prefetch_condition:
+            assert provider._prefetch_condition.wait_for(
+                lambda: not provider._prefetch_operations,
+                timeout=2.0,
+            )
+        assert provider._client is None
+
+    @pytest.mark.parametrize(
+        "scheduler_accepts",
+        [True, False],
+        ids=["accepted", "rejected"],
+    )
+    def test_close_between_schedule_and_future_publication_is_owned(
+        self,
+        provider,
+        monkeypatch,
+        scheduler_accepts,
+    ):
+        from agent import async_utils
+
+        client = provider._client
+        late_future = Future()
+        scheduler_entered = threading.Event()
+        release_scheduler = threading.Event()
+        future_published = threading.Event()
+        client_closed = threading.Event()
+        close_calls = []
+        real_register = provider._register_prefetch_future_locked
+
+        def _register(request, owned_client, reservation, future):
+            real_register(request, owned_client, reservation, future)
+            future_published.set()
+
+        def _schedule(coro, loop):
+            scheduler_entered.set()
+            assert release_scheduler.wait(timeout=2.0)
+            coro.close()
+            return late_future if scheduler_accepts else None
+
+        def _close_client(closing_client):
+            close_calls.append(closing_client)
+            client_closed.set()
+
+        monkeypatch.setattr(
+            provider,
+            "_register_prefetch_future_locked",
+            _register,
+        )
+        monkeypatch.setattr(async_utils, "safe_schedule_threadsafe", _schedule)
+        monkeypatch.setattr(provider, "_close_hindsight_client", _close_client)
+        provider._timeout = 0
+
+        provider.queue_prefetch("ownership barrier", session_id="test-session")
+        worker = provider._prefetch_thread
+        assert scheduler_entered.wait(timeout=2.0)
+
+        provider._retire_hindsight_client(client)
+
+        assert not client_closed.is_set()
+        with provider._prefetch_condition:
+            owner = provider._prefetch_client_owners[id(client)]
+            assert owner[0] is client
+            assert len(owner[1]) == 1
+            assert provider._prefetch_deferred_clients[id(client)] is client
+            assert all(
+                not operation.futures
+                for operation in provider._prefetch_operations.values()
+            )
+
+        release_scheduler.set()
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+
+        if scheduler_accepts:
+            assert future_published.is_set()
+            assert not client_closed.is_set()
+            late_future.set_result("- late memory")
+        else:
+            assert not future_published.is_set()
+
+        assert client_closed.wait(timeout=2.0)
+        with provider._prefetch_condition:
+            assert provider._prefetch_condition.wait_for(
+                lambda: (
+                    not provider._prefetch_client_owners
+                    and not provider._prefetch_deferred_clients
+                    and not provider._prefetch_closing_clients
+                    and not provider._prefetch_close_threads
+                    and not provider._prefetch_operations
+                ),
+                timeout=2.0,
+            )
+
+        provider.shutdown()
+        assert close_calls == [client]
+
+    def test_repeated_reconnect_cleanup_is_bounded_and_identity_safe(
+        self,
+        provider,
+        monkeypatch,
+    ):
+        class _WeakClient:
+            __slots__ = ("index", "successes", "__weakref__")
+
+            def __init__(self, index, successes):
+                self.index = index
+                self.successes = successes
+
+        created_refs = []
+        close_counts = {}
+        next_index = 0
+
+        def _create_client():
+            nonlocal next_index
+            client = _WeakClient(
+                next_index,
+                0 if next_index == 0 else 1,
+            )
+            next_index += 1
+            created_refs.append(weakref.ref(client))
+            return client
+
+        def _run_client(client):
+            if client.successes:
+                client.successes -= 1
+                return f"client-{client.index}"
+            raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+
+        def _close_client(client):
+            close_counts[client.index] = close_counts.get(client.index, 0) + 1
+
+        provider._mode = "local_embedded"
+        provider._client = _create_client()
+        monkeypatch.setattr(provider, "_new_embedded_client", _create_client)
+        monkeypatch.setattr(provider, "_run_sync", _run_client)
+        monkeypatch.setattr(provider, "_close_hindsight_client", _close_client)
+
+        for expected_index in range(1, 65):
+            assert provider._run_hindsight_operation(lambda client: client) == (
+                f"client-{expected_index}"
+            )
+            gc.collect()
+            with provider._prefetch_condition:
+                assert not provider._closed_client_refs
+                assert not provider._closed_client_fallbacks
+                assert not provider._prefetch_client_owners
+                assert not provider._prefetch_deferred_clients
+                assert not provider._prefetch_closing_clients
+
+        provider.shutdown()
+        gc.collect()
+
+        assert close_counts == {index: 1 for index in range(65)}
+        assert all(client_ref() is None for client_ref in created_refs)
+        with provider._prefetch_condition:
+            assert not provider._closed_client_refs
+            assert not provider._closed_client_fallbacks
+            assert not provider._prefetch_client_owners
+            assert not provider._prefetch_deferred_clients
+            assert not provider._prefetch_closing_clients
+
+            stale_client = _WeakClient(100, 0)
+            replacement_client = _WeakClient(101, 0)
+            stale_ref = weakref.ref(stale_client)
+            replacement_ref = weakref.ref(replacement_client)
+            reused_key = id(stale_client)
+            provider._closed_client_refs[reused_key] = replacement_ref
+            provider._forget_closed_client_ref(reused_key, stale_ref)
+            assert provider._closed_client_refs[reused_key] is replacement_ref
+            provider._closed_client_refs.pop(reused_key)
+
+    def test_timed_out_future_ownership_does_not_consume_worker_capacity(
+        self, provider, monkeypatch
+    ):
+        from agent import async_utils
+
+        late_futures = [Future(), Future()]
+        newest_future = Future()
+        newest_future.set_result("- newest memory")
+        scheduled_newest = threading.Event()
+        futures = iter([*late_futures, newest_future])
+        real_schedule = async_utils.safe_schedule_threadsafe
+
+        def _schedule(coro, loop):
+            coro.close()
+            future = next(futures)
+            if future is newest_future:
+                scheduled_newest.set()
+            return future
+
+        monkeypatch.setattr(async_utils, "safe_schedule_threadsafe", _schedule)
+        provider._timeout = 0
+
+        try:
+            for query in ("timed out one", "timed out two"):
+                provider.queue_prefetch(query, session_id="test-session")
+                worker = provider._prefetch_thread
+                worker.join(timeout=2.0)
+                assert not worker.is_alive()
+
+            with provider._prefetch_condition:
+                assert provider._prefetch_inflight == {}
+                assert len(provider._prefetch_operations) == 2
+                assert not provider._prefetch_threads
+
+            provider.queue_prefetch("newest", session_id="test-session")
+            assert scheduled_newest.wait(timeout=2.0)
+            with provider._prefetch_condition:
+                assert provider._prefetch_condition.wait_for(
+                    lambda: (
+                        provider._prefetch_completed_request
+                        is provider._prefetch_latest_request
+                        and not provider._prefetch_inflight
+                        and not provider._prefetch_threads
+                    ),
+                    timeout=2.0,
+                )
+
+            result = provider.prefetch("newest", session_id="test-session")
+            assert "newest memory" in result
+        finally:
+            monkeypatch.setattr(
+                async_utils,
+                "safe_schedule_threadsafe",
+                real_schedule,
+            )
+            for future in late_futures:
+                if not future.done():
+                    future.set_result("- late memory")
+
+        with provider._prefetch_condition:
+            assert provider._prefetch_condition.wait_for(
+                lambda: not provider._prefetch_operations,
+                timeout=2.0,
+            )
+
+    def test_local_embedded_prefetch_recreates_client_and_retries_once(
+        self, provider, monkeypatch
+    ):
+        first_client = _make_mock_client()
+        first_client.arecall.side_effect = RuntimeError(
+            "Cannot connect to host 127.0.0.1:8888"
+        )
+        second_client = _make_mock_client()
+        second_client.arecall.return_value = SimpleNamespace(
+            results=[SimpleNamespace(text="reconnected memory")]
+        )
+        clients = iter([first_client, second_client])
+
+        def _get_client():
+            client = next(clients)
+            provider._client = client
+            return client
+
+        provider._mode = "local_embedded"
+        provider._client = first_client
+        monkeypatch.setattr(provider, "_get_client", _get_client)
+        monkeypatch.setattr(provider, "_close_hindsight_client", MagicMock())
+
+        result = provider.prefetch("reconnect query", session_id="test-session")
+
+        assert "reconnected memory" in result
+        first_client.arecall.assert_awaited_once()
+        second_client.arecall.assert_awaited_once()
+
+    def test_get_client_serializes_concurrent_creation(
+        self, provider, monkeypatch
+    ):
+        from plugins.memory import hindsight as hindsight_mod
+
+        constructor_entered = threading.Event()
+        release_constructor = threading.Event()
+        constructed = []
+        constructed_lock = threading.Lock()
+        observed_lock = _InstrumentedRLock("client-creator-2")
+
+        class _FakeHindsight:
+            def __init__(self, **kwargs):
+                with constructed_lock:
+                    constructed.append(self)
+                constructor_entered.set()
+                assert release_constructor.wait(timeout=2.0)
+
+        provider._client = None
+        provider._client_lock = observed_lock
+        monkeypatch.setattr(
+            hindsight_mod,
+            "_ensure_client_dependency",
+            lambda: None,
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hindsight_client",
+            SimpleNamespace(Hindsight=_FakeHindsight),
+        )
+        results = []
+
+        first = threading.Thread(target=lambda: results.append(provider._get_client()))
+        second = threading.Thread(
+            target=lambda: results.append(provider._get_client()),
+            name="client-creator-2",
+        )
+        first.start()
+        assert constructor_entered.wait(timeout=2.0)
+        second.start()
+        lock_contended = observed_lock.acquire_attempted.wait(timeout=2.0)
+        release_constructor.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert lock_contended
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert len(constructed) == 1
+        assert results == [constructed[0], constructed[0]]
+
+    def test_retain_reconnect_defers_prefetch_owned_client_close(
+        self, provider, monkeypatch
+    ):
+        from agent import async_utils
+
+        first_client = _make_mock_client()
+        second_client = _make_mock_client()
+        late_future = Future()
+        scheduled = threading.Event()
+        first_closed = threading.Event()
+        closed_clients = []
+        real_schedule = async_utils.safe_schedule_threadsafe
+
+        def _schedule(coro, loop):
+            coro.close()
+            scheduled.set()
+            return late_future
+
+        def _get_client():
+            if provider._client is None:
+                provider._client = second_client
+            return provider._client
+
+        def _close_client(client):
+            closed_clients.append(client)
+            if client is first_client:
+                first_closed.set()
+
+        provider._mode = "local_embedded"
+        provider._client = first_client
+        provider._timeout = 0
+        monkeypatch.setattr(async_utils, "safe_schedule_threadsafe", _schedule)
+        monkeypatch.setattr(provider, "_get_client", _get_client)
+        monkeypatch.setattr(provider, "_close_hindsight_client", _close_client)
+
+        provider.queue_prefetch("owned query", session_id="test-session")
+        worker = provider._prefetch_thread
+        assert scheduled.wait(timeout=2.0)
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+
+        monkeypatch.setattr(
+            async_utils,
+            "safe_schedule_threadsafe",
+            real_schedule,
+        )
+        provider._run_sync = MagicMock(
+            side_effect=[
+                RuntimeError("Cannot connect to host 127.0.0.1:8888"),
+                "retained",
+            ]
+        )
+        assert provider._run_hindsight_operation(lambda client: client) == "retained"
+        assert provider._client is second_client
+        assert first_client not in closed_clients
+
+        late_future.set_result("- late memory")
+        closed_after_release = first_closed.wait(timeout=2.0)
+        provider.shutdown()
+
+        assert closed_after_release
+        assert closed_clients.count(first_client) == 1
+        assert closed_clients.count(second_client) == 1
+
+    def test_concurrent_shutdown_claims_client_close_once(
+        self, provider, monkeypatch
+    ):
+        client = provider._client
+        first_close_entered = threading.Event()
+        release_first_close = threading.Event()
+        second_shutdown_finished = threading.Event()
+        close_calls = []
+        close_lock = threading.Lock()
+
+        def _close_client(closing_client):
+            with close_lock:
+                close_calls.append(closing_client)
+                is_first = len(close_calls) == 1
+            if is_first:
+                first_close_entered.set()
+                assert release_first_close.wait(timeout=2.0)
+
+        monkeypatch.setattr(provider, "_close_hindsight_client", _close_client)
+        first = threading.Thread(target=provider.shutdown)
+
+        def _second_shutdown():
+            provider.shutdown()
+            second_shutdown_finished.set()
+
+        second = threading.Thread(target=_second_shutdown)
+        first.start()
+        assert first_close_entered.wait(timeout=2.0)
+        second.start()
+        assert second_shutdown_finished.wait(timeout=2.0)
+        exactly_one_before_release = close_calls == [client]
+        release_first_close.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert exactly_one_before_release
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert close_calls == [client]
+
 
 # ---------------------------------------------------------------------------
 # recall_status (deterministic recall indicator) tests

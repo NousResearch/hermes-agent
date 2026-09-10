@@ -34,6 +34,19 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 ## Quick Install
 
+### PyPI (pip)
+
+If you already have a working Python 3.11+ environment, the simplest install is straight from PyPI:
+
+```bash
+pip install hermes-agent
+hermes
+```
+
+The wheel ships with the Ink TUI bundle and the shell launcher, so the full experience works out of the box. (Released in [v0.14.0](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.5.16).)
+
+If you'd rather have the installer set up everything (uv, Python 3.11, Node.js, ripgrep, ffmpeg, …) for you, use one of the platform installers below.
+
 ### Linux, macOS, WSL2, Termux
 
 ```bash

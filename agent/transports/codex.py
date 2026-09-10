@@ -704,6 +704,16 @@ class ResponsesApiTransport(ProviderTransport):
         """
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
+        provenance_missing = object()
+        provenance_sidecar = provenance_missing
+        public_kwargs = api_kwargs
+        if isinstance(api_kwargs, dict) and "_hermes_source_provenance" in api_kwargs:
+            provenance_sidecar = api_kwargs["_hermes_source_provenance"]
+            public_kwargs = {
+                key: value
+                for key, value in api_kwargs.items()
+                if key != "_hermes_source_provenance"
+            }
         normalized = _preflight_codex_api_kwargs(
             api_kwargs, allow_stream=allow_stream, is_github_responses=is_github_responses,
             sanitize_harmony_tokens=sanitize_harmony_tokens,

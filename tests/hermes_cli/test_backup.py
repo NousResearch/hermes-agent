@@ -432,6 +432,45 @@ class TestImport:
 
         assert calls and calls[0].get("context") == "import"
 
+    @pytest.mark.parametrize("default_has_config", [False, True])
+    def test_import_uses_active_home_and_does_not_start_gateway_for_alternate_home(
+        self, tmp_path, monkeypatch, default_has_config
+    ):
+        """An alternate HERMES_HOME is the restore target and stays inert.
+
+        The native default may be empty or populated; neither state should
+        permit an import into an alternate home to install a second gateway.
+        """
+        import hermes_cli.gateway as gateway_mod
+
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        if default_has_config:
+            (default_home / "config.yaml").write_text("model: live\n")
+        alternate_home = tmp_path / "restore"
+        monkeypatch.setenv("HERMES_HOME", str(alternate_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        calls = []
+        monkeypatch.setattr(
+            gateway_mod,
+            "ensure_gateway_service",
+            lambda **kw: calls.append(kw) or True,
+        )
+        monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {"config.yaml": "model: restored\n"})
+
+        from hermes_cli.backup import run_import
+
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert (alternate_home / "config.yaml").read_text() == "model: restored\n"
+        if default_has_config:
+            assert (default_home / "config.yaml").read_text() == "model: live\n"
+        assert not calls
+
     def test_import_skips_service_when_already_running(self, tmp_path, monkeypatch):
         """A live gateway is left alone — no reinstall churn during import."""
         import hermes_cli.gateway as gateway_mod
@@ -1223,6 +1262,7 @@ class TestSafeCopyDb:
         assert not dst.exists()
 
 
+    @pytest.mark.live_system_guard_bypass
     def test_locked_source_fails_fast_not_hang(self, tmp_path):
         import subprocess
         import sys

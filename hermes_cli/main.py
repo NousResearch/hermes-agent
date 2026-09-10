@@ -1709,6 +1709,10 @@ def cmd_chat(args):
             **passthrough,
         )
 
+    # Import and run the CLI only after startup guards and the TUI fast path;
+    # this keeps CLI module-level config reads behind --ignore-user-config.
+    from cli import main as cli_main
+
     _read_query_file(args)
 
     safe_mode = getattr(args, "safe_mode", False)
@@ -1727,20 +1731,12 @@ def cmd_chat(args):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
-        from cli import main as cli_main
-
         cli_main(**kwargs)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
     except ImportError as e:
-        # Mixed-version installs (new cli.py, older hermes_cli.config) crash
-        # here — e.g. missing resolve_turn_limit / split_model_config_default
-        # (#96900). The agent-setup mixin prints this hint too late: HermesCLI
-        # construction already failed. Fast-chat launch also goes through
-        # cmd_chat, so this one catch covers `hermes` / `hermes chat`.
         from hermes_constants import emit_partial_update_hint
-
         if emit_partial_update_hint(e):
             sys.exit(1)
         raise
@@ -2618,9 +2614,9 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update", "federation",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
-        "browser",
+        "secure-worker", "browser",
         "verify",
         # Plugin commands missing from top-level --help is an accepted trade-off.
         "help",
@@ -3265,6 +3261,10 @@ def _build_cli_parser():
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
+    from hermes_cli.federation import cmd_federation
+    from hermes_cli.subcommands.federation import build_federation_parser
+
+    build_federation_parser(subparsers, cmd_federation=cmd_federation)
     build_completion_parser(subparsers, cmd_completion=cmd_completion, parser=parser)
     build_dashboard_parser(
         subparsers,

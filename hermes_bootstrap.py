@@ -116,4 +116,5 @@ def activate_durable_lazy_target() -> None:
 # Apply on import — entry points only need ``import hermes_bootstrap`` first.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
+harden_import_path()
 activate_durable_lazy_target()

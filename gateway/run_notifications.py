@@ -245,6 +245,10 @@ class GatewayNotificationsMixin:
                 "owning session %s; dropping injection.", session_entry.session_key, target_session_id,
             )
             return None
+        # The displaced session_entry may hold a conversation-worktree root lease that differs
+        # from the newly-bound session's; release it now, matching every other session-rebind
+        # path (switch_session races, compression-exhausted auto-reset, etc.).
+        self.session_store.reconcile_conversation_root_transition(session_entry, switched)
         logger.info(
             "Pinned async-delegation completion to owning session %s (was %s) for routing key %s (#57498)",
             target_session_id, prior_session_id, session_entry.session_key,

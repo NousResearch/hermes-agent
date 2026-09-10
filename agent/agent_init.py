@@ -1016,6 +1016,8 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
 
 def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
     """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
+    if os.environ.get("HERMES_KANBAN_LOCAL_ONLY") == "1":
+        return []
     if isinstance(fallback_model, dict):
         fallback_model = [fallback_model]
     if not isinstance(fallback_model, list):

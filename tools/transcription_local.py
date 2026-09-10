@@ -120,7 +120,9 @@ def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
 
 
-def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
+def _load_local_whisper_model(
+    model_name: str, device: str = "auto", compute_type: str = "auto", *, force_cpu: Optional[bool] = None,
+):
     """Load faster-whisper with graceful CUDA → CPU fallback. ``device="auto"`` picks CUDA
     whenever the ctranslate2 wheel ships CUDA libs, even on hosts without the NVIDIA runtime (WSL2,
     headless servers): try the requested config first; on a CUDA library load failure fall back to
@@ -128,8 +130,13 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
 
     ``device`` / ``compute_type`` default to ``"auto"`` so the historical behaviour is unchanged; pass
     explicit values from ``stt.local.device`` / ``stt.local.compute_type`` to pin a configuration (#9088).
+
+    ``force_cpu`` defaults to ``_should_force_faster_whisper_cpu()``'s own verdict; callers may pass
+    an explicit override (tests neutralizing Apple Silicon's forced-CPU path to exercise the
+    requested device/compute_type instead).
     """
-    force_cpu = _should_force_faster_whisper_cpu()
+    if force_cpu is None:
+        force_cpu = _should_force_faster_whisper_cpu()
     if force_cpu:
         # Importing ctranslate2 can itself abort on Apple Silicon/Rosetta when
         # multiple Intel OpenMP runtimes are loaded — set before the import.

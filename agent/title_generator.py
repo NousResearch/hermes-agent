@@ -7,6 +7,7 @@ and neither replaces a name the user typed."""
 
 import json
 import logging
+import os
 import re
 import threading
 from contextlib import suppress
@@ -427,6 +428,11 @@ def maybe_auto_title(
 ) -> None:
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
     if not session_db or not session_id or not user_message:
+        return
+    # Dispatcher-owned Kanban worker sessions are never surfaced in the regular Sessions
+    # sidebar, so an LLM title upgrade (and its aux-model call) would be pure waste.
+    session_row = session_db.get_session(session_id)
+    if session_row and session_row.get("source") == "kanban":
         return
     # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
     # left a machinery-opened session nameless; title alone never titles on an old store.

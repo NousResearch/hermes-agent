@@ -187,6 +187,7 @@ def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim)
     ctx = SimpleNamespace(rid=1, owns_db=False, db=None, cols=80, omit_messages=True,
                           defer_history=False, target="stored", profile=None,
                           profile_home=None, profile_resume_cwd=None, found={},
+                          conversation_worktree={},
                           messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
                           restore=lambda: ([], [], []), display_prefix=lambda: [])
     if path == "eager":

@@ -6,14 +6,16 @@
  * passes `hidden: true` unconditionally (pinned in
  * canonical-chat-creation.test.ts), and this reconciliation sweep pushes rows
  * born visible under the old pref — or minted outside the plugin entirely —
- * back to hidden on load and on every reconnect.
+ * back to hidden through bounded reconciliation.
  *
- * The sweep has two halves and runs BOTH, id-based first:
- *   1. by id — every group room's member sessions, which the plugin recorded;
- *   2. by title — each roster bot's own profile listing, which is the only
+ * Reconciliation has two paths:
+ *   1. by id — group room member sessions recorded by the plugin, repaired
+ *      cheaply on load/reconnect without listing profile databases;
+ *   2. by title — the explicitly opened bot's own profile listing, which is the only
  *      thing that reaches CLI-born "Agent Inbox" / extra "Bot Chat" rows AND
  *      the only thing that hides a canonical Bot Chat. Canonical chats are
- *      identified by NAME; no stored id pointer is consulted anywhere here.
+ *      identified by NAME; no stored id pointer is consulted and idle peers
+ *      stay asleep.
  *
  * Ported from tests/hide-bot-chats.test.mjs, which sliced the sweep out of
  * the old plugin.js bundle and ran it under `vm`. The functions are module-
@@ -87,6 +89,12 @@ async function runSweep() {
   for (let turn = 0; turn < 3; turn += 1) {
     await new Promise(resolve => setTimeout(resolve, 0))
   }
+}
+
+async function reconcileProfiles(...bots: RosterRow[]) {
+  const { reconcileBotProfileSessions } = await import('./session-sweep')
+
+  await Promise.all(bots.map(bot => reconcileBotProfileSessions(bot)))
 }
 
 beforeEach(() => {
@@ -234,7 +242,7 @@ describe('the title half: each roster bot’s own profile listing', () => {
   })
 
   it('hides Bot-Mode plumbing titles per roster bot, and only those', async () => {
-    await runSweep()
+    await reconcileProfiles(...lastRoster.value)
 
     const lists = hostMock.listPersistedSessions.mock.calls as Array<
       [null | ProfileRoute, { include_hidden?: boolean; profile: string }]
@@ -255,14 +263,23 @@ describe('the title half: each roster bot’s own profile listing', () => {
     expect(hiddenCalls().find(([, options]) => options.sessionId === 'r-1')?.[0]?.connectionId).toBe('mini')
   })
 
-  it('runs beside the id half, and a throwing title sweep never breaks it', async () => {
-    // The load/reconnect entrypoint runs BOTH halves; the title sweep is
-    // best-effort, so an unreachable source must not cost the known ids.
+  it('keeps the automatic id repair independent from an unreachable on-demand profile', async () => {
+    // Automatic repair owns only session ids already recorded in group state.
+    // An unreachable on-demand profile reconciliation must not cost those ids.
     groupChats.value = { Core: { sessions: { alpha: 'room-core-a' } } }
     hostMock.listPersistedSessions.mockRejectedValue(new Error('gateway not ready'))
 
     await runSweep()
+    await reconcileProfiles({ name: 'alpha' } as RosterRow)
 
     expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['room-core-a'])
+  })
+
+  it('does not enumerate the fleet automatically on load', async () => {
+    lastRoster.value = Array.from({ length: 12 }, (_, index) => ({ name: `bot-${index}` })) as RosterRow[]
+
+    await runSweep()
+
+    expect(hostMock.listPersistedSessions).not.toHaveBeenCalled()
   })
 })

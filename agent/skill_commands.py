@@ -155,10 +155,10 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     if not raw_identifier:
         return None
     try:
-        from tools.skills_tool import _skills_dir, skill_view
+        from tools import skills_tool
         from agent.skill_utils import normalize_skill_lookup_name
         normalized = normalize_skill_lookup_name(raw_identifier)
-        loaded_skill = json.loads(skill_view(normalized, task_id=task_id, preprocess=False))
+        loaded_skill = json.loads(skills_tool.skill_view(normalized, task_id=task_id, preprocess=False))
     except Exception:
         return None
     if not loaded_skill.get("success"):
@@ -171,7 +171,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         skill_dir = Path(loaded_skill["skill_dir"])
     elif skill_path:
         try:
-            skill_dir = _skills_dir() / Path(skill_path).parent
+            skill_dir = skills_tool._skills_dir() / Path(skill_path).parent
         except Exception:
             skill_dir = None
     return loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)
@@ -235,6 +235,7 @@ def _build_skill_message(
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import _skills_dir
+    active_skills_dir = _skills_dir()
     # Preprocess first so downstream blocks see the expanded content.
     content = preprocess_skill_content(
         str(loaded_skill.get("content") or ""), skill_dir, session_id, skills_cfg=_load_skills_config(),
@@ -250,7 +251,7 @@ def _build_skill_message(
     supporting = _supporting_files(loaded_skill, skill_dir)
     if supporting and skill_dir:
         try:
-            skill_view_target = str(skill_dir.relative_to(_skills_dir()))
+            skill_view_target = str(skill_dir.relative_to(active_skills_dir))
         except ValueError:
             skill_view_target = skill_dir.name  # external dir — use the skill name
         parts += ["", "[This skill has supporting files (paths relative to the skill directory above):]"]

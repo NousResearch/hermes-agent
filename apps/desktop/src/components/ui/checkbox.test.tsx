@@ -32,10 +32,10 @@ function shownGlyphs(container: HTMLElement) {
 }
 
 beforeAll(() => {
-  // eslint-disable-next-line no-restricted-globals -- the cascade is the assertion; it needs a real stylesheet
+
   const style = document.createElement('style')
   style.textContent = `${CODICON_CSS}\n${TAILWIND_CSS}`
-  // eslint-disable-next-line no-restricted-globals -- see above
+
   document.head.append(style)
 })
 

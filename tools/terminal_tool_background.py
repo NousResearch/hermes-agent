@@ -19,7 +19,7 @@ _SILENT_BACKGROUND_HINT = (
     'will not be told when it exits. If this is a bounded task (test suite, build, CI poller, '
     'deploy, anything with a defined end), you almost certainly wanted notify_on_complete=true '
     'so the system pings you on exit. Re-launch with notify_on_complete=true, or call '
-    "process(action='poll') / process(action='wait') yourself to learn the outcome. Only "
+    "process_manage(action='poll') / process_manage(action='wait') yourself to learn the outcome. Only "
     'ignore this hint for genuine long-lived processes that never exit (servers, watchers, '
     'daemons).'
 )
@@ -41,7 +41,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     '"$2==\\"pending\\""`) for sharded matrices. Load '
     "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
-    "each tick to a known file (`tee -a /tmp/ci.log`) and rely on `process(action='log')` to "
+    "each tick to a known file (`tee -a /tmp/ci.log`) and rely on `process_manage(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '
     'loops.'
 )
@@ -50,7 +50,7 @@ _ASYNC_UNSUPPORTED_NOTE = (
     'notify_on_complete / watch_patterns are not available in this session — it cannot receive '
     'an async completion after the turn ends (a one-shot runner such as `hermes -z`, a cron '
     'job, a Kanban worker, or a stateless HTTP endpoint). The process is running in the '
-    "background; retrieve its result with process(action='poll') or process(action='wait')."
+    "background; retrieve its result with process_manage(action='poll') or process_manage(action='wait')."
 )
 
 # proc_session attribute -> HERMES_SESSION_* env var carrying it.

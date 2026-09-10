@@ -165,8 +165,9 @@ class TestForegroundMaxTimeoutConstant:
         assert FOREGROUND_MAX_TIMEOUT == 600
 
     def test_schema_mentions_max(self):
-        """Tool schema description should mention the max timeout."""
-        from tools.terminal_tool import TERMINAL_SCHEMA, FOREGROUND_MAX_TIMEOUT
+        """Schema explains the cap without embedding an env-derived token."""
+        from tools.terminal_tool import FOREGROUND_MAX_TIMEOUT, TERMINAL_SCHEMA
+
         timeout_desc = TERMINAL_SCHEMA["parameters"]["properties"]["timeout"]["description"]
         assert str(FOREGROUND_MAX_TIMEOUT) in timeout_desc
         assert "background process" in timeout_desc

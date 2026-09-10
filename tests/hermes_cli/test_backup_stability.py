@@ -103,3 +103,41 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"
     assert list(tmp_path.glob(".*.partial")) == []
+
+
+def test_full_zip_backup_streams_scan_into_archive(tmp_path, monkeypatch) -> None:
+    """The automatic backup must not materialize the whole tree before writing."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "first.txt").write_text("first")
+    (home / "second.txt").write_text("second")
+    archive = tmp_path / "automatic.zip"
+    events: list[str] = []
+
+    from hermes_cli import backup
+
+    def walk(_root, followlinks=False):
+        assert followlinks is False
+        events.append("first-batch")
+        yield str(home), [], ["first.txt"]
+        events.append("second-batch")
+        yield str(home), [], ["second.txt"]
+
+    monkeypatch.setattr(backup.os, "walk", walk)
+    real_write = backup.zipfile.ZipFile.write
+    written: list[str] = []
+
+    def write(self, *args, **kwargs):
+        if not written:
+            assert events == ["first-batch"], "second batch was scanned before first archive write"
+        arcname = kwargs.get("arcname")
+        if arcname is None and len(args) > 1:
+            arcname = args[1]
+        written.append(str(arcname))
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(backup.zipfile.ZipFile, "write", write)
+
+    assert backup._write_full_zip_backup(archive, home) == archive
+    assert written == ["first.txt", "second.txt"]
+    assert events == ["first-batch", "second-batch"]

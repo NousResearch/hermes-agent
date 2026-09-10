@@ -1324,6 +1324,9 @@ function Test-Python {
     }
 
     Write-Err "Failed to install Python $PythonVersion"
+    Write-Info "Install Python 3.13.6 manually, then re-run this script:"
+    Write-Info "  https://www.python.org/downloads/"
+    Write-Info "  Or: winget install Python.Python.3.13"
     Write-Info "Check network access to uv's managed Python downloads, then retry."
     return $false
 }

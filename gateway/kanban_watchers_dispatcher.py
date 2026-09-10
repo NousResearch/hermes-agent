@@ -11,7 +11,7 @@ import contextlib
 import os
 import sqlite3
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
 from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
@@ -29,6 +29,33 @@ def _kbd():
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
 
 
+def _dispatcher_tick_is_unhealthy(
+    *,
+    ready_pending: bool,
+    any_spawned: bool,
+    all_capacity_saturated: bool,
+) -> bool:
+    """Return whether a dispatcher tick represents actionable non-progress.
+
+    A ready queue behind the configured host concurrency cap is deferred work,
+    not a broken dispatcher.  Counting that steady state as unhealthy emits a
+    false profile/credential warning while every available worker slot is busy.
+    """
+    return ready_pending and not any_spawned and not all_capacity_saturated
+
+def _dispatcher_capacity_saturated(results: list[tuple[str, Any]]) -> bool:
+    """Return whether every board result reports host-cap saturation.
+
+    One full board must not suppress health telemetry for another board that
+    had capacity but still made no progress.  This signal only classifies
+    host-cap deferral; it does not claim that occupied worker slots are live.
+    """
+    return bool(results) and all(
+        res is not None and getattr(res, "host_capacity_saturated", False)
+        for _slug, res in results
+    )
+
+
 @dataclass
 class _DispatcherSettings:
     """``kanban.*`` dispatch settings, read once at boot (restart to apply)."""
@@ -41,6 +68,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    priority_runtime_guard: dict = field(default_factory=dict)
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -61,7 +89,9 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
     # out. Explicit config wins; otherwise a memory-derived default (unbounded
     # fan-out swap-thrashes small hosts), or None where total memory can't be read.
     max_in_progress = _positive_int_setting(kanban_cfg, "max_in_progress")
-    effective_max_in_progress = _kbd().resolve_max_in_progress(max_in_progress)
+    effective_max_in_progress = _kbd().resolve_max_in_progress(
+        max_in_progress, priority_runtime_guard={},
+    )
     if max_in_progress is None and effective_max_in_progress is not None:
         logger.info(
             "kanban dispatcher: kanban.max_in_progress unset; using "
@@ -105,6 +135,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         interval=interval,
         max_spawn=max_spawn,
         max_in_progress=effective_max_in_progress,
+        priority_runtime_guard=kanban_cfg.get("priority_runtime_guard", {}),
         failure_limit=failure_limit,
         stale_timeout_seconds=stale_timeout_seconds,
         # Requeue 'running' cards with broken claim bookkeeping (zombie-card
@@ -181,6 +212,10 @@ class _KanbanDispatcher:
         if not self._quarantine_lifted(slug, fingerprint):
             return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
+        guard = kwargs.pop("priority_runtime_guard")
+        kwargs["max_in_progress"] = _kbd().resolve_max_in_progress(
+            self.settings.max_in_progress, priority_runtime_guard=guard,
+        )
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).
@@ -263,6 +298,20 @@ class _KanbanDispatcher:
                 for tid in triage_ids:
                     if attempted >= auto_decompose_per_tick:
                         break
+                    try:
+                        with _kbc().connect_closing(board=slug) as conn:
+                            history = {row["kind"] for row in conn.execute(
+                                "SELECT kind FROM task_events WHERE task_id = ? AND kind IN ('decomposed', 'specified')", (tid,))}
+                            if "decomposed" in history:
+                                continue
+                            if "specified" in history:
+                                task = self.kb.get_task(conn, tid)
+                                if task and task.body and task.title and task.block_kind != "needs_input":
+                                    successes += int(self.kb.specify_triage_task(conn, tid, author="auto-decomposer"))
+                                continue
+                    except Exception:
+                        logger.exception("kanban auto-decompose: history unavailable for %s; skipping", tid)
+                        continue
                     attempted += 1
                     successes += self._decompose_one(_decomp, slug, tid)
             finally:

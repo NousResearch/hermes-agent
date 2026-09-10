@@ -178,6 +178,27 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def owns_reasoning_policy(self, **context: Any) -> bool:
+        """Return True when this profile owns whether reasoning is emitted.
+
+        This is an explicit contract for profiles whose policy may intentionally
+        omit a reasoning field (for example, when a route rejects a disable).
+        Overriding an unrelated API-kwargs hook must not implicitly claim
+        ownership of generic reasoning configuration.
+        """
+        return False
+
+    def sanitize_request_kwargs(self, api_kwargs: dict[str, Any], **context: Any) -> dict[str, Any]:
+        """Apply provider-owned safety cleanup after request overrides merge.
+
+        ``request_overrides`` are intentionally applied late so users can
+        customize provider requests.  A provider may nevertheless have a
+        capability boundary that those overrides must not cross.  Profiles
+        can override this hook to remove only fields that are invalid for the
+        verified route/model.  The default preserves the request unchanged.
+        """
+        return api_kwargs
+
     def default_vision_model(self) -> str | None:
         """Return a default vision model id for this provider, or None.
 

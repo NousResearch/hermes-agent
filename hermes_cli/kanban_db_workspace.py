@@ -394,21 +394,53 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
 
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+    from hermes_cli.worktree_base import resolve_worktree_base
+    from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _git_common_dir(target) == repo_common:
+        bootstrap_worktree_environments(
+            repo_root, target, require_python=False, allow_venv_fallback=False,
+        )
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
         args = ["worktree", "add", str(target), branch_name]
     else:
-        args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
+        base_ref = _configured_worktree_base(repo_root)
+        if base_ref is None:
+            base_ref, _ = resolve_worktree_base(str(repo_root), prefer_current_upstream=False)
+        args = ["worktree", "add", "--no-track", "-b", branch_name, str(target), base_ref]
     result = _git(repo_root, *args, timeout=60)
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    bootstrap_worktree_environments(repo_root, target)
+
+
+def _configured_worktree_base(repo_root: Path) -> Optional[str]:
+    """A shared-board source choice must survive the worker's profile boundary."""
+    from hermes_cli.config import read_user_config_raw
+
+    config_path = _kb.kanban_home() / "config.yaml"
+    if not config_path.is_file():
+        return None
+    config = read_user_config_raw(config_path) or {}
+    refs = (config.get("kanban") or {}).get("worktree_base_refs", {})
+    if not isinstance(refs, dict):
+        raise ValueError("kanban.worktree_base_refs must map repository paths to Git refs")
+    ref = refs.get(str(repo_root.resolve()))
+    if ref is None:
+        return None
+    if not isinstance(ref, str) or not ref.strip() or ref.startswith("-"):
+        raise ValueError("configured Kanban worktree base must be a Git ref")
+    result = _git(repo_root, "rev-parse", "--verify", "--end-of-options", ref + "^{commit}", timeout=20)
+    if result.returncode:
+        raise ValueError(f"configured Kanban worktree base does not resolve: {ref}")
+    return result.stdout.strip()
 
 
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
@@ -460,6 +492,14 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
+            from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
+            bootstrap_root = _repo_root_for_worktree_target(requested.parent)
+            common = _git_common_dir(requested)
+            if bootstrap_root is not None and common is not None and _git_common_dir(bootstrap_root) == common:
+                bootstrap_worktree_environments(
+                    bootstrap_root, requested, require_python=False, allow_venv_fallback=False,
+                )
             return requested_resolved, actual_branch
         # The requested path is an existing checkout of a DIFFERENT task's
         # branch (decompose children inherit the root's workspace_path

@@ -157,6 +157,7 @@ import {
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { stopDesktopBackgroundServices } from './desktop-background-shutdown'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
@@ -170,6 +171,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
+import { runDispatcherReadinessGate } from './dispatcher-readiness'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
@@ -233,7 +235,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { ensureMainWindow } from './main-window-lifecycle'
+import { closeWindowsForDrain, ensureMainWindow, shouldQuitAfterWindowAllClosed } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -383,6 +385,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { shouldHealMissingUpdateBranch } from './update-branch-policy'
 import {
   compareApiUrl,
   parseCompareBehindCount,
@@ -411,7 +414,6 @@ import {
   scanVenvBlockers,
   stopSafeVenvBlockers
 } from './venv-blocker-scan'
-import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
@@ -3135,6 +3137,17 @@ async function resolveHealedBranch(updateRoot, branch) {
     return branch
   }
 
+  const current = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
+  const currentBranch = current.code === 0 ? current.stdout.trim() : ''
+
+  if (!shouldHealMissingUpdateBranch({ configuredBranch: branch, currentBranch })) {
+    rememberLog(
+      `[updates] origin/${branch} is gone, but it is the active local checkout; retaining it instead of falling back to main`
+    )
+
+    return branch
+  }
+
   rememberLog(`[updates] origin/${branch} is gone (merged?); falling back to main`)
   const config = readDesktopUpdateConfig()
 
@@ -3373,13 +3386,9 @@ async function readCommitLog(cwd, branch, isShallow) {
 let updateInFlight = false
 
 // Set to true when the desktop is about to quit so a detached swap/install/
-// uninstall script can take over. On macOS, app.quit() closes windows but
-// window-all-closed deliberately keeps the process alive (standard Electron
-// macOS convention). Without this flag the process never exits — the detached
-// hand-off script spins its PID-wait for the full timeout, and the user sees a
-// blank app with no window (and an uninstall that appears to do nothing). When
-// set, window-all-closed calls app.quit() on every platform so the process
-// actually dies and the hand-off script can proceed immediately.
+// uninstall script can take over. This also bypasses the active-work prompt:
+// the app is replacing itself rather than abandoning the user's work, and the
+// detached hand-off script must not be stranded behind a modal.
 let isQuittingForHandoff = false
 
 // Quit-guard latches: one while the confirmation is on screen (a second
@@ -3461,54 +3470,6 @@ function isShimLocked(shimPath) {
       } catch {
         void 0
       }
-    }
-  }
-}
-
-// Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:
-// exe under venv\Scripts AND cmdline referencing hindsight_api.main). The
-// daemon is spawned DETACHED, so it outlives the backend tree-kill and keeps
-// venv files mapped. External holders (a user terminal running `hermes`,
-// unrelated scripts) are NOT killed — scanVenvBlockers reports them and the
-// hand-off aborts, per existing design. Selection lives in the pure
-// venv-holder-select module (ordinal path-prefix, no PowerShell -like
-// wildcard hazards) so it's testable without Electron.
-function killHermesOwnedVenvDaemons(updateRoot) {
-  if (!IS_WINDOWS) {
-    return
-  }
-
-  const scriptsDir = path.join(updateRoot, 'venv', 'Scripts')
-
-  let holders = []
-
-  try {
-    const out = execFileSync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-Command',
-        'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.CommandLine } | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress'
-      ],
-      hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 })
-    )
-
-    const parsed = JSON.parse(String(out || '[]'))
-
-    holders = (Array.isArray(parsed) ? parsed : [parsed]).filter(p =>
-      isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir)
-    )
-  } catch {
-    // Best-effort: the venv-blocker scan downstream is the real backstop.
-    return
-  }
-
-  for (const holder of holders) {
-    const pid = Number(holder?.ProcessId)
-
-    if (Number.isInteger(pid) && pid > 0) {
-      rememberLog(`[updates] stopping Hermes-owned venv daemon (hindsight) PID ${pid} before hand-off`)
-      forceKillProcessTree(pid)
     }
   }
 }
@@ -3885,13 +3846,6 @@ async function releaseBackendLock(updateRoot, tag) {
   // agents, and force-kills survivors. Best-effort; abort paths restore via
   // startGatewaysAfterUpdateAbort. No-op off Windows.
   stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
-
-  // Reap Hermes-OWNED venv daemons the tree-kill above cannot reach: the
-  // memory plugin's hindsight daemon is spawned DETACHED (it outlives the
-  // backend) yet runs off venv\Scripts\pythonw.exe, keeping venv files
-  // mapped past the backend teardown (#75477/#75478). Narrowly scoped
-  // (venv-holder-select) — external holders are never killed here.
-  killHermesOwnedVenvDaemons(updateRoot)
 
   const shim = venvHermesShimPath(updateRoot)
 
@@ -12670,8 +12624,10 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
         TERMINAL_CWD: hermesCwd,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
         // Marks this dashboard backend as desktop-spawned so it runs the cron
-        // scheduler tick loop (the gateway isn't running under the app).
+        // lifecycle. Pool helpers must not also become machine-wide cron
+        // authorities: the primary backend alone multiplexes every profile.
         HERMES_DESKTOP: '1',
+        HERMES_DESKTOP_POOL: '1',
         // Exact parent identity lets the backend self-exit after an unclean
         // Desktop death without mistaking a reused PID for its owner. If the
         // optional marker probe fails, retain legacy PID-only tracking.
@@ -12826,12 +12782,19 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
   stopBackendChild(primary)
   const pooledStops = stopAllPoolBackends()
 
+  const backgroundServicesStop = stopDesktopBackgroundServices({
+    resolveBackend: resolveHermesBackend,
+    spawnFn: spawn,
+    env: { ...process.env, HERMES_HOME },
+    onError: message => rememberLog(`[shutdown] ${message}`)
+  })
+
   if (poolIdleReaper) {
     clearInterval(poolIdleReaper)
     poolIdleReaper = null
   }
 
-  await Promise.all([waitForBackendExit(primary), pooledStops])
+  await Promise.all([waitForBackendExit(primary), pooledStops, backgroundServicesStop])
 })
 
 async function exitAfterBackendShutdown(code) {
@@ -13242,6 +13205,8 @@ async function startHermes() {
         `Local Hermes backend is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
       )
     }
+
+    await runDispatcherReadinessGate(baseUrl, authToken, fetchJson, advanceBootProgress)
 
     updateBootProgress({
       phase: 'backend.ready',
@@ -18295,6 +18260,10 @@ app.on('before-quit', event => {
 
   if (!backendQuitTeardownDone) {
     event.preventDefault()
+    // before-quit is deferred while gateway-owned workers drain. Stop every
+    // renderer first so its autosaves, Kanban polls, and reconnect loops cannot
+    // race the backend teardown and surface expected ECONNRESET/offline errors.
+    closeWindowsForDrain(BrowserWindow.getAllWindows())
     void backendShutdown.run().finally(() => {
       backendQuitTeardownDone = true
       app.quit()
@@ -18398,13 +18367,11 @@ app.on('before-quit', event => {
 })
 
 app.on('window-all-closed', () => {
-  // macOS convention: keep the process alive in the Dock when the user closes
-  // the last window. But when we're handing off to a detached updater / swap /
-  // uninstall script, the process MUST exit so the script can replace or remove
-  // the bundle and relaunch — without this the script's PID-wait spins to its
-  // full timeout and the user is left with an invisible app (or an uninstall
-  // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  // Stop-gap: closing the last window means the user closed Hermes, including
+  // on macOS. Enter the normal quit path so the active-work guard runs and the
+  // bounded teardown stops app-owned CLI/backend trees, pooled profiles, PTYs,
+  // and every local supervised gateway that owns cron/Kanban automation.
+  if (shouldQuitAfterWindowAllClosed()) {
     app.quit()
   }
 })

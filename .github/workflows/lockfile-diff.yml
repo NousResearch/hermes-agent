@@ -47,12 +47,14 @@ jobs:
 
       - name: Generate semantic lockfile diff
         id: diff
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           # Three-dot semantics by hand: diff from the merge base with the
           # target branch to the PR head, so changes that landed on main
           # after the branch point don't show up as this PR's doing.
-          BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          BASE_SHA=$(git merge-base "origin/$BASE_BRANCH" HEAD)
           echo "Merge base: ${BASE_SHA}"
           python3 scripts/ci/lockfile_diff.py \
             --base "$BASE_SHA" \

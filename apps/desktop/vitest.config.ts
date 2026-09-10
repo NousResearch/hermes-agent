@@ -12,7 +12,15 @@ const reactUi: TestProjectConfiguration = {
     // The first test in each file pays jsdom env init + full module transform,
     // which can exceed vitest's 5000ms default under CI/load. 15s gives the
     // cold start headroom without masking genuinely hung tests.
-    testTimeout: 15_000
+    testTimeout: 15_000,
+    // Each worker thread pays its own jsdom environment; vitest's default
+    // (one thread per CPU) has been observed crashing this suite outright on
+    // memory-constrained CI runners (the whole run dies before a single file
+    // reports a result -- no assertion failure, just silence). Capping
+    // concurrency trades some wall-clock time for staying inside the
+    // runner's memory budget.
+    maxWorkers: 4,
+    minWorkers: 1
   }
 }
 

@@ -3406,6 +3406,7 @@ class GatewayRunner(
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._load_performance_routes()
 
     def _init_session_store(self) -> None:
         """Build the SessionStore (with process-registry reset guard), its async facade and the router."""
@@ -4140,6 +4141,7 @@ class GatewayRunner(
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=context.cwd,
             async_delivery=_async_delivery,
             cron_session="")
 

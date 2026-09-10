@@ -315,9 +315,10 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
                     name: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree -> ``{path, branch, repo_root, base}``, or None on failure.
 
-    *sync_base* branches from the fetched remote tip (``_resolve_worktree_base``), else local
-    HEAD. *name* replaces the random ``hermes-<id>``; named trees lack the ``hermes-`` prefix so
-    the pruner ages them on its slower schedule.
+    *sync_base* branches from the fetched remote default (``worktree_base.resolve_worktree_base``,
+    ``prefer_current_upstream=False`` since this is new work), else local HEAD. *name* replaces
+    the random ``hermes-<id>``; named trees lack the ``hermes-`` prefix so the pruner ages them on
+    its slower schedule.
 
     Set ``worktree_sync: false`` in config to branch from local ``HEAD`` (the pre-#10760-followup behavior).
     """
@@ -343,9 +344,14 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
 
     # Resolve the base ref. By default branch from the freshly-fetched remote tip so the worktree starts
     # current with the project, not from the (possibly stale) local HEAD of the standalone clone (#10760
-    # follow-up).
-    base_ref, base_label = (_resolve_worktree_base(repo_root) if sync_base
-                            else ("HEAD", "HEAD (local — worktree_sync disabled)"))
+    # follow-up). This is a new-work flow (a fresh worktree, not a resume/continuation), so
+    # prefer_current_upstream=False: a branch the caller happens to have checked out and pushed
+    # (a "parked" feature) must not silently become the base for unrelated new work.
+    if sync_base:
+        from hermes_cli.worktree_base import resolve_worktree_base
+        base_ref, base_label = resolve_worktree_base(repo_root, prefer_current_upstream=False)
+    else:
+        base_ref, base_label = "HEAD", "HEAD (local — worktree_sync disabled)"
 
     added = _worktree_add(repo_root, wt_path, branch_name, base_ref, base_label)
     if added is None:
@@ -672,6 +678,8 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
     check is a read-only query on a distinct worktree (no repo-wide lock), so a bounded pool is
     safe; mutation stays serial. ``git cherry`` verdicts are memoized on disk.
     """
+    from agent.conversation_worktree import conversation_worktree_is_manager_owned
+
     merge_cache = _load_worktree_merge_cache()
     cache_size_before = len(merge_cache)
     cache_lock = threading.Lock()
@@ -688,6 +696,9 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
 
     def _classify(item):
         entry, mtime, force = item
+        ownership = conversation_worktree_is_manager_owned(entry)
+        if ownership is not False:
+            return (entry, mtime, force, "conversation-preserved", None)
         # Never delete real work regardless of age: only clean, merged/pushed trees are reaped.
         if _worktree_is_dirty(str(entry), timeout=5):
             return (entry, mtime, force, "dirty", None)
@@ -743,6 +754,8 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
     *kept_branches* must survive the orphaned-branch pass. Branch deletion is gated on
     ``worktree remove`` succeeding so a failed removal never orphans reachable commits.
     """
+    from agent.conversation_worktree import conversation_worktree_reclaim_guard
+
     preserved_stale: list = []
     kept_branches: set = set()
     for entry, mtime, force, verdict, lock_state in verdicts:
@@ -751,25 +764,28 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
             if mtime <= stale_work_cutoff:
                 preserved_stale.append(f"{entry.name} ({reason})")
             continue
-        if verdict == "locked-live":
+        if verdict in {"locked-live", "conversation-preserved"}:
             logger.debug("Skipping live-locked worktree: %s", entry.name)
             continue
 
-        if lock_state == "dead":
-            _git_quiet(["worktree", "unlock", str(entry)], repo_root,
-                       log=f"Failed to unlock dead worktree {entry.name}")
-
         try:
-            branch = _git(["branch", "--show-current"], str(entry), timeout=5).stdout.strip()
-            remove_result = _git(["worktree", "remove", str(entry), "--force"], repo_root, timeout=15)
-            if remove_result.returncode != 0:
-                logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())
-                continue
-            if branch and verdict == "reap-keep-branch":
-                kept_branches.add(branch)
-            elif branch:
-                _git(["branch", "-D", branch], repo_root)
-            logger.debug("Pruned stale worktree: %s (force=%s)", entry.name, force)
+            with conversation_worktree_reclaim_guard(Path(repo_root), entry) as ownership:
+                if ownership is not False:
+                    continue
+                if lock_state == "dead":
+                    _git_quiet(["worktree", "unlock", str(entry)], repo_root,
+                               log=f"Failed to unlock dead worktree {entry.name}")
+
+                branch = _git(["branch", "--show-current"], str(entry), timeout=5).stdout.strip()
+                remove_result = _git(["worktree", "remove", str(entry), "--force"], repo_root, timeout=15)
+                if remove_result.returncode != 0:
+                    logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())
+                    continue
+                if branch and verdict == "reap-keep-branch":
+                    kept_branches.add(branch)
+                elif branch:
+                    _git(["branch", "-D", branch], repo_root)
+                logger.debug("Pruned stale worktree: %s (force=%s)", entry.name, force)
         except Exception as e:
             logger.debug("Failed to prune worktree %s: %s", entry.name, e)
     return preserved_stale, kept_branches

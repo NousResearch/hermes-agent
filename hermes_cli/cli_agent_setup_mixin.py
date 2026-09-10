@@ -4,6 +4,7 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import os
 import sys
 
 from rich.markup import escape as _escape
@@ -169,6 +170,28 @@ def _resume_panel_colors() -> tuple:
         return tuple(_skin.get_color(key, default) for key, default in _RESUME_SKIN_COLORS)
     except Exception:
         return tuple(default for _, default in _RESUME_SKIN_COLORS)
+
+
+def _remote_kanban_private_work(provider: str | None) -> bool:
+    """Return whether this CLI is a protected-remote Kanban worker."""
+
+    if not str(os.environ.get("HERMES_KANBAN_TASK") or "").strip():
+        return False
+    from agent.llm_egress_runtime import provider_uses_egress_firewall
+
+    return provider_uses_egress_firewall(provider)
+
+
+def _remote_kanban_toolsets(_configured: list[str] | None) -> list[str]:
+    """Return the bounded capability set for protected-remote workers.
+
+    Kanban lifecycle tools are injected by ``model_tools`` from the task
+    environment. Keeping this list explicit prevents profile-loading drift
+    from exposing desktop, memory, delegation, and skill-management schemas
+    to a short-lived reviewer or repair worker.
+    """
+
+    return ["terminal", "file", "web"]
 
 
 class CLIAgentSetupMixin:

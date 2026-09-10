@@ -89,10 +89,14 @@ def _read_sqlite_application_id(db_path: Path) -> "Optional[int]":
 
 
 def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
-    """Snapshot ``(st_dev, st_ino)`` for existing WAL/SHM sidecars."""
-    base = os.fspath(db_path)
-    idents = {suffix: _stat_db_file_identity(Path(base + suffix)) for suffix in ("-wal", "-shm")}
-    return {suffix: ident for suffix, ident in idents.items() if ident is not None}
+    """Snapshot ``(st_dev, st_ino)`` for existing WAL/SHM sidecars.
+
+    Delegates to hermes_state_holders.sqlite_sidecar_identity() (equivalent os.stat-based logic,
+    same dev/ino-truthy filter) so the process-holder module split has one identity-scan
+    implementation, not two that could silently drift apart.
+    """
+    import hermes_state_holders
+    return hermes_state_holders.sqlite_sidecar_identity(db_path)
 
 
 def _canonical_sqlite_path(path: str) -> str:
@@ -124,18 +128,14 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     """Return processes holding an unlinked ``state.db-wal`` / ``-shm``.  Linux-only; ``[]``
     elsewhere (Windows cannot unlink a held sidecar, macOS has no `` (deleted)`` suffix).
     Includes this process: on the open/write refuse path the in-process writer holding the orphan
-    inode must not mint a replacement WAL (``_foreign_state_db_holders`` skips this PID)."""
-    if not sys.platform.startswith("linux"):
-        return []
-    holders: List[Tuple[int, str]] = []
-    watched = _watched_sqlite_sidecar_paths(db_path)
-    try:
-        for pid, target in _iter_proc_fd_targets():
-            if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
-                holders.append((pid, target))
-    except Exception as exc:
-        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
-    return holders
+    inode must not mint a replacement WAL (``_foreign_state_db_holders`` skips this PID).
+
+    Delegates to hermes_state_holders.deleted_sqlite_sidecar_holders() (same /proc/<pid>/fd scan,
+    same "includes this process" default) so the process-holder module split has one scan
+    implementation, not two that could silently drift apart.
+    """
+    import hermes_state_holders
+    return hermes_state_holders.deleted_sqlite_sidecar_holders(db_path, include_self=True)
 
 
 def refuse_deleted_wal_generation(db_path) -> None:

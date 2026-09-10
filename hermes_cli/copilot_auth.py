@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -178,6 +179,14 @@ def copilot_device_code_login(
         time.sleep(interval + _DEVICE_CODE_POLL_SAFETY_MARGIN)
         try:
             result = _post_form(f"https://{domain}/login/oauth/access_token", poll_fields, 10)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                print(f"\n  Rate limited by GitHub — waiting {retry_after or interval}s before retrying...",
+                      end="", flush=True)
+                continue
+            print(".", end="", flush=True)
+            continue
         except Exception:
             print(".", end="", flush=True)
             continue

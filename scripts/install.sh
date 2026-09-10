@@ -56,7 +56,7 @@ else
     INSTALL_DIR=""
     INSTALL_DIR_EXPLICIT=false
 fi
-PYTHON_VERSION="3.11"
+PYTHON_VERSION="3.13.6"
 NODE_VERSION="26"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
@@ -1741,7 +1741,7 @@ setup_venv() {
     # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
     # user's shell env). uv honours UV_PYTHON over an existing venv for the
     # later `uv sync` / `uv pip install` tiers, so without this it would
-    # silently delete this 3.11 venv and recreate it at the inherited
+    # silently delete this 3.13.6 venv and recreate it at the inherited
     # version — building Rust transitives that have no wheel for that
     # version from source via maturin, which fails. Pinning UV_PYTHON to the
     # interpreter we just created forces every subsequent uv command onto it.

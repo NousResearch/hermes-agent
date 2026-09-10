@@ -322,6 +322,28 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
   }
 })
 
+test('addWorktree: omitted base uses remote default, not parked feature HEAD', async () => {
+  const { cloneDir, remoteDir } = seedRemoteAndClone('implicit-remote-default', [])
+
+  const git = (...args) =>
+    execFileSync('git', ['-C', cloneDir, ...args])
+      .toString()
+      .trim()
+
+  try {
+    const mainSha = git('rev-parse', 'origin/main')
+    git('switch', '-c', 'parked-feature')
+    git('-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes', 'commit', '--allow-empty', '-m', 'feature only')
+
+    const result = await addWorktree(cloneDir, { branch: 'fresh-default', name: 'fresh-default' }, 'git')
+
+    assert.equal(git('-C', result.path, 'rev-parse', 'HEAD'), mainSha)
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
+
 // A pair of repos: a bare "remote" with `main` and the extra branches in
 // `branches`, plus a clone of it. Returns both paths. The caller must remove
 // them.

@@ -6,10 +6,15 @@ other anchor exists (a relative/sentinel ``TERMINAL_CWD`` would silently anchor
 edits to the agent process cwd, e.g. the main repo during a worktree session).
 """
 
+import logging
 import os
 import posixpath
 import sys
 from pathlib import Path, PurePosixPath
+
+# Named to match the pre-decomposition module (tools.file_tools) so existing
+# log-level configuration for it keeps working.
+logger = logging.getLogger("tools.file_tools")
 
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
@@ -113,12 +118,33 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
+def _inherited_session_cwd(task_id: str) -> str | None:
+    """A delegated child task (no cwd record of its own) inherits its parent
+    session's cwd, so a subagent built inside a desktop/gateway session resolves
+    relative paths against that session's workspace rather than the process cwd."""
+    try:
+        from tools.terminal_tool import _current_session_key, get_session_cwd
+
+        session_key = _current_session_key()
+        if not session_key or session_key == task_id:
+            return None
+        return get_session_cwd(session_key)
+    except Exception:
+        logger.debug(
+            "session cwd inheritance unavailable for task_id=%r", task_id, exc_info=True)
+        return None
+
+
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     """Best-effort absolute workspace root, or ``None`` when no reliable anchor exists.
 
-    Order: (1) the session's own cwd record (per-session, so one session's
-    ``cd`` never leaks into another); (2) a registered raw-keyed cwd override
-    (TUI/Desktop/ACP); (3) a sentinel-free absolute ``$TERMINAL_CWD``.
+    Order: (1) the session's own cwd record, constrained to the Kanban worker's
+    assigned workspace when running under a Kanban task (a stale session cwd
+    from a prior worktree can otherwise leak in — one session's ``cd`` must
+    never leak into another); (2) the current session's cwd, inherited by a
+    delegated child task with no cwd record of its own; (3) a registered
+    raw-keyed cwd override (TUI/Desktop/ACP); (4) a sentinel-free absolute
+    ``$TERMINAL_CWD``.
     """
     try:
         from tools.terminal_tool import get_session_cwd
@@ -126,7 +152,13 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
         recorded = get_session_cwd(task_id)
     except Exception:
         recorded = None
-    return recorded or _registered_task_cwd_override(task_id) or _configured_terminal_cwd()
+    from agent.runtime_cwd import resolve_kanban_worker_cwd
+
+    kanban_scoped = resolve_kanban_worker_cwd(recorded)
+    if kanban_scoped is not None:
+        return kanban_scoped
+    return (recorded or _inherited_session_cwd(task_id)
+            or _registered_task_cwd_override(task_id) or _configured_terminal_cwd())
 
 
 def _host_text(text: str, container_paths: bool) -> str:

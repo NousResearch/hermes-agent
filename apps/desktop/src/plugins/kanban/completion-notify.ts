@@ -38,6 +38,18 @@ export interface CompletionEvent {
   task_id?: string
   kind?: string
   payload?: Record<string, unknown> | null
+  created_at?: unknown
+}
+
+export type KanbanEventsListener = (board: string, events: CompletionEvent[]) => void
+
+const kanbanEventsListeners = new Set<KanbanEventsListener>()
+
+/** Subscribe to new, cursor-accepted Kanban events without opening another socket. */
+export function subscribeKanbanEvents(listener: KanbanEventsListener): () => void {
+  kanbanEventsListeners.add(listener)
+
+  return () => kanbanEventsListeners.delete(listener)
 }
 
 type ToastKind = 'error' | 'success' | 'warning'
@@ -191,6 +203,7 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
 
   let fired = false
   let cursor = seen
+  const accepted: CompletionEvent[] = []
 
   for (const ev of events) {
     if (typeof ev.id !== 'number' || ev.id <= cursor) {
@@ -199,6 +212,7 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
 
     cursor = ev.id
     seenEventIdByBoard.set(slug, cursor)
+    accepted.push(ev)
     const spec = TERMINAL_NOTIFY.get(ev.kind ?? '')
 
     if (spec) {
@@ -207,6 +221,16 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
         fired = true
       } catch {
         /* swallowed */
+      }
+    }
+  }
+
+  if (accepted.length > 0) {
+    for (const listener of kanbanEventsListeners) {
+      try {
+        listener(slug, accepted)
+      } catch {
+        /* world presentation cannot interfere with notifications */
       }
     }
   }

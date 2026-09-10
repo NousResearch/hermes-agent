@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from hermes_cli.worktree_base import resolve_worktree_base
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -353,7 +354,10 @@ def _review_push(cwd: str) -> None:
         return
     branch = _git_line(cwd, ["rev-parse", "--abbrev-ref", "HEAD"])
     if branch and branch != "HEAD":
-        _git_ok(cwd, ["push", "-u", "origin", branch])
+        push_remote = _git_out(cwd, ["config", "--get", "remote.pushDefault"]).strip()
+        if not push_remote:
+            push_remote = "origin"
+        _git_ok(cwd, ["push", "-u", push_remote, branch])
 
 
 def review_push(cwd: str) -> dict:
@@ -485,16 +489,71 @@ def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> 
 
 
 def review_create_pr(cwd: str) -> dict:
-    """Create a PR for the current branch (push first), letting gh fill title/body."""
+    """Create or reuse the PR for the current exact branch head.
+
+    GitHub emits one pull-request event per open PR, even when many PRs point
+    at the same branch and commit.  A writer that blindly calls ``pr create``
+    can therefore multiply every branch update into a hosted-CI fanout.  Push
+    first, then fail closed unless GitHub proves whether this exact head
+    already has an open PR.
+    """
+    _review_push(cwd)
+    branch = _git_out(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).strip()
+    head_sha = _git_out(cwd, ["rev-parse", "--verify", "HEAD"]).strip().casefold()
+    if not branch or branch == "HEAD" or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        raise RuntimeError("cannot verify the current branch and exact head")
+
+    listed, raw = _gh(
+        cwd,
+        [
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--limit",
+            "100",
+            "--json",
+            "number,url,headRefName,headRefOid",
+        ],
+    )
+    if not listed:
+        raise RuntimeError("cannot verify existing pull requests for the exact head")
     try:
-        _review_push(cwd)
-    except RuntimeError:
-        pass
+        candidates = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "cannot verify existing pull requests for the exact head"
+        ) from error
+    if not isinstance(candidates, list):
+        raise RuntimeError("cannot verify existing pull requests for the exact head")
+
+    exact = sorted(
+        (
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, dict)
+            and candidate.get("headRefName") == branch
+            and str(candidate.get("headRefOid") or "").casefold() == head_sha
+            and isinstance(candidate.get("number"), int)
+            and str(candidate.get("url") or "").strip()
+        ),
+        key=lambda candidate: int(candidate["number"]),
+    )
+    if exact:
+        existing = exact[0]
+        return {
+            "url": str(existing["url"]),
+            "number": int(existing["number"]),
+            "reused": True,
+        }
+
     created, out = _gh(cwd, ["pr", "create", "--fill"])
     if not created:
         raise RuntimeError("gh pr create failed (is gh installed and authenticated?)")
     url = next((line for line in reversed(out.strip().splitlines()) if line.strip()), "")
-    return {"url": url}
+    return {"url": url, "reused": False}
 
 
 # ── worktrees & branches ─────────────────────────────────────────────────────
@@ -629,6 +688,11 @@ def worktree_add(cwd: str, options: dict) -> dict:
             # a standalone local branch (Electron-op parity).
             args.append("--no-track")
         args.append(base)
+    else:
+        base, _base_label = resolve_worktree_base(
+            root, prefer_current_upstream=False
+        )
+        args.extend(["--no-track", base])
     code, _, err = _git(root, args)
     if code != 0:
         if "already exists" not in (err or "").lower():

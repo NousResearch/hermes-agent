@@ -124,6 +124,7 @@ jobs:
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-issues: write
 
       - name: Open issue on degraded / failed probe
         if: steps.probe.outputs.status != 'ok'

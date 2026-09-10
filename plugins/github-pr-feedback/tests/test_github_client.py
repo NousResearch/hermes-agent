@@ -1,21 +1,62 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
-import threading
+from contextlib import AbstractContextManager
 
 import pytest
 
 from github_pr_feedback.github_client import (
+    MAX_DISCOVERED_PULL_REQUESTS,
     MAX_FEEDBACK_BODY_CHARS,
     CheckState,
     GitHubClient,
     GitHubClientError,
+    GitHubRequestGate,
     PullRequestMergeState,
     RepositoryMergePolicy,
     ReviewState,
     SubprocessCommandRunner,
 )
+
+
+def test_automation_identity_replaces_scrubbed_gh_config_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """Cron's /dev/null gh sentinel must not break governed bot reads."""
+    import github_pr_feedback.github_client as github_client_module
+
+    runners = []
+
+    class FakeRunner:
+        def __init__(self, *, env_overrides=None, **_kwargs):
+            env = dict(os.environ)
+            env.update({key: value for key, value in (env_overrides or {}).items() if value is not None})
+            for key, value in (env_overrides or {}).items():
+                if value is None:
+                    env.pop(key, None)
+            self.env = env
+            runners.append(self)
+
+        def run(self, _argv):
+            return json.dumps({"login": "mrkillbobbot"})
+
+    monkeypatch.setattr(github_client_module, "SubprocessCommandRunner", FakeRunner)
+    monkeypatch.setattr(github_client_module, "get_default_hermes_root", lambda: tmp_path)
+    monkeypatch.setenv("GH_CONFIG_DIR", os.devnull)
+    monkeypatch.setenv("HERMES_GITHUB_BOT_TOKEN", "test-token")
+
+    github_client_module.GitHubClient.for_automation_identity(
+        expected_login="mrkillbobbot",
+        token_env="HERMES_GITHUB_BOT_TOKEN",
+    )
+
+    assert len(runners) == 1
+    config_dir = tmp_path / "github-pr-feedback" / "bot-gh-config"
+    assert runners[0].env["GH_CONFIG_DIR"] == str(config_dir)
+    assert config_dir.is_dir()
+    assert runners[0].env["GH_TOKEN"] == "test-token"
 
 
 class RecordingRunner:
@@ -29,17 +70,20 @@ class RecordingRunner:
         return json.dumps(self.responses[key])
 
 
-class FeedbackBarrierRunner(RecordingRunner):
-    """Prove the three independent feedback reads overlap in production code."""
+class RecordingGate(AbstractContextManager):
+    def __init__(self) -> None:
+        self.entries = 0
+        self.deferrals: list[float] = []
 
-    def __init__(self, responses: dict[tuple[str, ...], object]) -> None:
-        super().__init__(responses)
-        self.barrier = threading.Barrier(3)
+    def __enter__(self):
+        self.entries += 1
+        return self
 
-    def run(self, argv: list[str]) -> str:
-        if "--paginate" in argv:
-            self.barrier.wait(timeout=1)
-        return super().run(argv)
+    def defer(self, seconds: float) -> None:
+        self.deferrals.append(seconds)
+
+    def __exit__(self, *_args) -> None:
+        return None
 
 
 def test_subprocess_runner_retries_one_bounded_rate_limit_failure(
@@ -61,11 +105,180 @@ def test_subprocess_runner_retries_one_bounded_rate_limit_failure(
         return next(results)
 
     monkeypatch.setattr("github_pr_feedback.github_client.subprocess.run", fake_run)
-    runner = SubprocessCommandRunner(sleeper=sleeps.append, rate_limit_backoff=0.25)
+    gate = RecordingGate()
+    runner = SubprocessCommandRunner(
+        sleeper=sleeps.append, rate_limit_backoff=0.25, request_gate=gate
+    )
 
     assert runner.run(["gh", "api", "rate_limit"]) == "{}"
     assert calls == [["gh", "api", "rate_limit"], ["gh", "api", "rate_limit"]]
-    assert sleeps == [0.25]
+    assert sleeps == []
+    assert gate.entries == 2
+    assert gate.deferrals == [1.0]
+
+
+def test_request_gate_shares_secondary_limit_cooldown_across_instances(tmp_path) -> None:
+    now = [100.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    path = tmp_path / "github-request-gate.json"
+    with GitHubRequestGate(path, sleeper=sleep, clock=lambda: now[0]) as gate:
+        gate.defer(30)
+    with GitHubRequestGate(path, sleeper=sleep, clock=lambda: now[0]):
+        pass
+
+    assert sleeps == [30.0]
+
+
+def test_request_gate_fails_fast_when_cooldown_exceeds_wait_budget(tmp_path) -> None:
+    path = tmp_path / "github-request-gate.json"
+    path.write_text('{"cooldown_until": 1945.0}\n', encoding="utf-8")
+    sleeps: list[float] = []
+
+    with pytest.raises(GitHubClientError) as raised:
+        with GitHubRequestGate(
+            path,
+            sleeper=sleeps.append,
+            clock=lambda: 100.0,
+            max_wait_seconds=30.0,
+        ):
+            pass
+
+    assert raised.value.code == "rate_limited"
+    assert "cooldown" in str(raised.value)
+    assert sleeps == []
+
+
+def test_request_gate_spaces_shared_requests_at_a_conservative_rate(tmp_path) -> None:
+    now = [100.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    path = tmp_path / "github-request-gate.json"
+    with GitHubRequestGate(path, sleeper=sleep, clock=lambda: now[0]):
+        pass
+    with GitHubRequestGate(path, sleeper=sleep, clock=lambda: now[0]):
+        pass
+
+    assert sleeps == [1.0]
+
+
+def test_request_gate_recovers_conservatively_from_nonfinite_state(tmp_path) -> None:
+    path = tmp_path / "github-request-gate.json"
+    path.write_text('{"cooldown_until": NaN}\n', encoding="utf-8")
+    sleeps: list[float] = []
+    now = [100.0]
+
+    with GitHubRequestGate(
+        path, sleeper=lambda seconds: sleeps.append(seconds), clock=lambda: now[0]
+    ):
+        pass
+
+    assert sleeps == [5.0]
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["cooldown_until"] == 105.0
+    assert all(value == value and abs(value) != float("inf") for value in stored.values())
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    (
+        "HTTP 429: Too Many Requests",
+        "HTTP 403: secondary rate limit",
+        "x-ratelimit-remaining: 0",
+    ),
+)
+def test_subprocess_runner_retries_all_github_rate_limit_shapes(
+    monkeypatch: pytest.MonkeyPatch, stderr: str
+) -> None:
+    calls: list[list[str]] = []
+    results = iter(
+        (
+            subprocess.CompletedProcess(["gh", "api", "rate_limit"], 1, "", stderr),
+            subprocess.CompletedProcess(["gh", "api", "rate_limit"], 0, "{}", ""),
+        )
+    )
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return next(results)
+
+    monkeypatch.setattr("github_pr_feedback.github_client.subprocess.run", fake_run)
+    gate = RecordingGate()
+    runner = SubprocessCommandRunner(
+        sleeper=lambda _delay: None, request_gate=gate
+    )
+
+    assert runner.run(["gh", "api", "rate_limit"]) == "{}"
+    assert len(calls) == 2
+    assert gate.deferrals == [60.0]
+
+
+def test_subprocess_runner_retries_timeout_without_rate_limit_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+    results = iter(
+        (
+            subprocess.TimeoutExpired(["gh", "api", "pull"], 60),
+            subprocess.CompletedProcess(["gh", "api", "pull"], 0, "{}", ""),
+        )
+    )
+
+    def fake_run(_argv, **_kwargs):
+        result = next(results)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr("github_pr_feedback.github_client.subprocess.run", fake_run)
+    runner = SubprocessCommandRunner(
+        sleeper=sleeps.append,
+        request_gate=RecordingGate(),
+    )
+
+    assert runner.run(["gh", "api", "pull"]) == "{}"
+    assert sleeps == [1.0]
+
+
+@pytest.mark.parametrize(
+    ("stderr", "code"),
+    [
+        ("HTTP 403: Resource not accessible by integration", "permission_denied"),
+        ("HTTP 401: Bad credentials", "authentication"),
+        ("HTTP 429: Too Many Requests", "rate_limited"),
+    ],
+)
+def test_subprocess_runner_exposes_safe_failure_code_without_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    stderr: str,
+    code: str,
+) -> None:
+    monkeypatch.setattr(
+        "github_pr_feedback.github_client.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["gh", "api", "labels"], 1, "", stderr
+        ),
+    )
+    with pytest.raises(GitHubClientError) as raised:
+        SubprocessCommandRunner(
+            sleeper=lambda _delay: None,
+            request_gate=GitHubRequestGate(
+                tmp_path / "github-request-gate.json",
+                sleeper=lambda _delay: None,
+                min_interval_seconds=0,
+            ),
+        ).run(["gh", "api", "labels"])
+    assert raised.value.code == code
+    assert stderr not in str(raised.value)
 
 
 def test_subprocess_runner_does_not_retry_an_ordinary_failure(
@@ -80,7 +293,9 @@ def test_subprocess_runner_does_not_retry_an_ordinary_failure(
     monkeypatch.setattr("github_pr_feedback.github_client.subprocess.run", fake_run)
 
     with pytest.raises(GitHubClientError, match="GitHub command failed"):
-        SubprocessCommandRunner(sleeper=lambda _delay: None).run(["gh", "api", "missing"])
+        SubprocessCommandRunner(
+            sleeper=lambda _delay: None, request_gate=RecordingGate()
+        ).run(["gh", "api", "missing"])
 
     assert calls == [["gh", "api", "missing"]]
 
@@ -97,9 +312,9 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
         "--author",
         "owner",
         "--limit",
-        "100",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
-        "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+        "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
     )
     comments_argv = (
         "gh",
@@ -124,7 +339,10 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
     )
     runner = RecordingRunner(
         {
-            pulls_argv: [canonical_list_pull(), canonical_list_pull(number=18)],
+            pulls_argv: [
+                canonical_list_pull(labels=("codex", "type/perf")),
+                canonical_list_pull(number=18),
+            ],
             comments_argv: [
                 [canonical_feedback("issue-1", "first")],
                 [canonical_feedback("issue-2", "second")],
@@ -148,6 +366,9 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
     feedback = client.list_feedback("acme/widgets", 17)
 
     assert [pull_request.number for pull_request in pull_requests] == [17, 18]
+    assert pull_requests[0].labels == ("codex", "type/perf")
+    assert pull_requests[0].base_branch == "stable"
+    assert pull_requests[0].base_sha == "b" * 40
     assert [(item.kind, item.feedback_id, item.body) for item in feedback] == [
         ("issue_comment", "issue-1", "first"),
         ("issue_comment", "issue-2", "second"),
@@ -162,8 +383,8 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
     }
 
 
-def test_github_client_reads_independent_feedback_endpoints_concurrently() -> None:
-    runner = FeedbackBarrierRunner(feedback_responses("ordinary"))
+def test_github_client_reads_independent_feedback_endpoints_without_nested_fanout() -> None:
+    runner = RecordingRunner(feedback_responses("ordinary"))
 
     feedback = GitHubClient(runner).list_feedback("acme/widgets", 17)
 
@@ -178,13 +399,59 @@ def test_github_client_posts_bounded_issue_comment_with_fixed_argv() -> None:
         "repos/acme/widgets/issues/17/comments",
         "--method",
         "POST",
-        "--field",
+        "--raw-field",
         "body=exact-head receipt passed",
     )
     runner = RecordingRunner({argv: {"id": 1}})
 
     GitHubClient(runner).post_issue_comment(
         "acme/widgets", 17, "exact-head receipt passed"
+    )
+
+    assert runner.calls == [argv]
+
+
+def test_github_client_decodes_accidentally_base64_encoded_receipt_comment() -> None:
+    body = (
+        "Hermes automated repair (task-orchestrator)\n\n"
+        "Verification passed.\n\n"
+        "<!-- pr-maintenance-receipt:v1 status=completed kind=review_comment "
+        "head=" + "a" * 40 + " -->"
+    )
+    encoded = __import__("base64").b64encode(body.encode()).decode()
+    argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/issues/17/comments",
+        "--method",
+        "POST",
+        "--raw-field",
+        f"body={body}",
+    )
+    runner = RecordingRunner({argv: {"id": 1}})
+
+    GitHubClient(runner).post_issue_comment("acme/widgets", 17, encoded)
+
+    assert runner.calls == [argv]
+
+
+def test_github_client_posts_review_body_as_literal_raw_field() -> None:
+    body = "Hermes automated review\n\nNo blocking findings."
+    argv = (
+        "gh",
+        "api",
+        "-X",
+        "POST",
+        "repos/acme/widgets/pulls/17/reviews",
+        "--raw-field",
+        "event=COMMENT",
+        "--raw-field",
+        f"body={body}",
+    )
+    runner = RecordingRunner({argv: {"id": 1}})
+
+    GitHubClient(runner).submit_pull_request_review(
+        "acme/widgets", 17, event="COMMENT", body=body
     )
 
     assert runner.calls == [argv]
@@ -356,14 +623,43 @@ def test_github_client_fails_closed_when_filtered_pr_list_lacks_canonical_fields
         "--author",
         "owner",
         "--limit",
-        "100",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
-        "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+        "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
     )
     runner = RecordingRunner({argv: [{"number": 17}]})
 
     with pytest.raises(GitHubClientError, match="missing required fields"):
         GitHubClient(runner).list_open_pull_requests("acme/widgets", "owner")
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [None, ["codex"], [{"name": 7}]],
+)
+def test_github_client_fails_closed_on_malformed_list_labels(labels: object) -> None:
+    argv = (
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        "acme/widgets",
+        "--state",
+        "open",
+        "--author",
+        "owner",
+        "--limit",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
+        "--json",
+        "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
+    )
+    row = canonical_list_pull()
+    row["labels"] = labels
+
+    with pytest.raises(GitHubClientError, match="missing required fields"):
+        GitHubClient(RecordingRunner({argv: [row]})).list_open_pull_requests(
+            "acme/widgets", "owner"
+        )
 
 
 def test_github_client_fails_closed_if_owned_pr_query_hits_coverage_cap() -> None:
@@ -378,16 +674,49 @@ def test_github_client_fails_closed_if_owned_pr_query_hits_coverage_cap() -> Non
         "--author",
         "owner",
         "--limit",
-        "100",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
-        "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+        "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
     )
     runner = RecordingRunner(
-        {argv: [canonical_list_pull(number=number) for number in range(1, 101)]}
+        {
+            argv: [
+                canonical_list_pull(number=number)
+                for number in range(1, MAX_DISCOVERED_PULL_REQUESTS + 1)
+            ]
+        }
     )
 
     with pytest.raises(GitHubClientError, match="coverage cap"):
         GitHubClient(runner).list_open_pull_requests("acme/widgets", "owner")
+
+
+def test_github_client_covers_current_large_owned_pr_backlog() -> None:
+    pulls_argv = (
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        "acme/widgets",
+        "--state",
+        "open",
+        "--author",
+        "owner",
+        "--limit",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
+        "--json",
+        "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
+    )
+    runner = RecordingRunner(
+        {
+            pulls_argv: [canonical_list_pull(number=number) for number in range(1, 330)]
+        }
+    )
+
+    pulls = GitHubClient(runner).list_open_pull_requests("acme/widgets", "owner")
+
+    assert len(pulls) == 329
+    assert pulls[-1].number == 329
 
 
 def test_github_client_reads_all_open_prs_and_exact_base_head_for_maintenance() -> None:
@@ -400,9 +729,9 @@ def test_github_client_reads_all_open_prs_and_exact_base_head_for_maintenance() 
         "--state",
         "open",
         "--limit",
-        "100",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
-        "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
+        "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
     )
     branch_argv = ("gh", "api", "repos/acme/widgets/branches/stable")
     runner = RecordingRunner(
@@ -419,6 +748,95 @@ def test_github_client_reads_all_open_prs_and_exact_base_head_for_maintenance() 
     ] == [17]
     assert client.get_branch_head("acme/widgets", "stable") == "b" * 40
     assert runner.calls == [pulls_argv, branch_argv]
+
+
+def test_github_client_adds_labels_with_fixed_issue_endpoint() -> None:
+    argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/issues/17/labels",
+        "--method",
+        "POST",
+        "--field",
+        "labels[]=codex",
+        "--field",
+        "labels[]=area/hermes",
+    )
+    runner = RecordingRunner({argv: {"labels": [{"name": "codex"}]}})
+
+    GitHubClient(runner).add_issue_labels(
+        "acme/widgets", 17, ("codex", "area/hermes")
+    )
+
+    assert runner.calls == [argv]
+
+
+def test_github_client_creates_missing_label_on_collection_endpoint() -> None:
+    read_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/labels/codex",
+    )
+    create_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/labels",
+        "--method",
+        "POST",
+        "--field",
+        "name=codex",
+        "--field",
+        "color=1f6feb",
+        "--field",
+        "description=PR authored by Codex",
+    )
+
+    class MissingLabelRunner:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def run(self, argv: list[str]) -> str:
+            key = tuple(argv)
+            self.calls.append(key)
+            if key == read_argv:
+                raise GitHubClientError("label does not exist", code="not_found")
+            assert key == create_argv
+            return "{}"
+
+    runner = MissingLabelRunner()
+    GitHubClient(runner).ensure_issue_label(
+        "acme/widgets", "codex", color="1F6FEB", description="PR authored by Codex"
+    )
+
+    assert runner.calls == [read_argv, create_argv]
+
+
+def test_github_client_updates_existing_label_after_exact_read() -> None:
+    read_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/labels/codex",
+    )
+    update_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/labels/codex",
+        "--method",
+        "PATCH",
+        "--field",
+        "new_name=codex",
+        "--field",
+        "color=1f6feb",
+        "--field",
+        "description=PR authored by Codex",
+    )
+    runner = RecordingRunner({read_argv: {"name": "codex"}, update_argv: {}})
+
+    GitHubClient(runner).ensure_issue_label(
+        "acme/widgets", "codex", color="1f6feb", description="PR authored by Codex"
+    )
+
+    assert runner.calls == [read_argv, update_argv]
 
 
 def test_github_client_bounds_untrusted_feedback_body_at_intake() -> None:
@@ -493,14 +911,56 @@ def test_github_client_gets_the_current_pull_request_with_fixed_argv() -> None:
     assert runner.calls == [argv]
 
 
+def test_github_client_rejects_pull_request_identity_mismatch() -> None:
+    argv = ("gh", "api", "repos/acme/widgets/pulls/17")
+    payload = canonical_pull()
+    payload["number"] = 99
+    with pytest.raises(GitHubClientError, match="missing required fields"):
+        GitHubClient(RecordingRunner({argv: payload})).get_pull_request("acme/widgets", 17)
+
+    payload = canonical_pull()
+    payload["base"]["sha"] = "short"
+    with pytest.raises(GitHubClientError, match="missing required fields"):
+        GitHubClient(RecordingRunner({argv: payload})).get_pull_request("acme/widgets", 17)
+
+
 def test_github_client_reads_repository_actions_enabled_with_fixed_argv() -> None:
     argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
     runner = RecordingRunner({argv: {"enabled": False, "sha_pinning_required": False}})
 
-    enabled = GitHubClient(runner).actions_enabled("acme/widgets")
+    client = GitHubClient(runner)
+    enabled = client.actions_enabled("acme/widgets")
+    cached = client.actions_enabled("acme/widgets")
 
     assert enabled is False
+    assert cached is False
     assert runner.calls == [argv]
+
+
+def test_github_client_refreshes_actions_enabled_after_cache_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
+    responses = iter(({"enabled": False}, {"enabled": True}))
+
+    class ChangingRunner:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def run(self, command: list[str]) -> str:
+            self.calls.append(tuple(command))
+            return json.dumps(next(responses))
+
+    now = [100.0]
+    monkeypatch.setattr("github_pr_feedback.github_client.time.monotonic", lambda: now[0])
+    runner = ChangingRunner()
+    client = GitHubClient(runner)
+
+    assert client.actions_enabled("acme/widgets") is False
+    assert client.actions_enabled("acme/widgets") is False
+    now[0] += 61.0
+    assert client.actions_enabled("acme/widgets") is True
+    assert runner.calls == [argv, argv]
 
 
 def test_github_client_reads_private_repository_and_canonical_merge_state() -> None:
@@ -679,6 +1139,145 @@ def test_github_client_treats_disabled_actions_as_a_distinct_known_state() -> No
     assert runner.calls == [permissions_argv]
 
 
+def test_github_client_detects_a_billing_lockout_from_check_run_annotations() -> None:
+    permissions_argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
+    checks_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?per_page=100",
+    )
+    statuses_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/status?per_page=100",
+    )
+    annotations_argv = (
+        "gh",
+        "api",
+        "--paginate",
+        "--slurp",
+        "repos/acme/widgets/check-runs/98764105373/annotations",
+    )
+    runner = RecordingRunner(
+        {
+            permissions_argv: {"enabled": True},
+            checks_argv: {
+                "total_count": 1,
+                "check_runs": [
+                    {
+                        "id": 98764105373,
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "output": {"annotations_count": 1},
+                    }
+                ],
+            },
+            statuses_argv: {"state": "failure", "statuses": []},
+            annotations_argv: [
+                [
+                    {
+                        "message": (
+                            "The job was not started because recent account "
+                            "payments have failed or your spending limit needs "
+                            "to be increased. Please check the 'Billing & "
+                            "plans' section in your settings"
+                        )
+                    }
+                ]
+            ],
+        }
+    )
+
+    state = GitHubClient(runner).get_check_state("acme/widgets", "a" * 40)
+
+    assert state == CheckState(
+        actions_enabled=True, all_green=False, check_count=1, billing_blocked=True
+    )
+
+
+def test_github_client_does_not_flag_a_genuine_test_failure_as_billing_blocked() -> None:
+    permissions_argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
+    checks_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?per_page=100",
+    )
+    statuses_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/status?per_page=100",
+    )
+    annotations_argv = (
+        "gh",
+        "api",
+        "--paginate",
+        "--slurp",
+        "repos/acme/widgets/check-runs/1/annotations",
+    )
+    runner = RecordingRunner(
+        {
+            permissions_argv: {"enabled": True},
+            checks_argv: {
+                "total_count": 1,
+                "check_runs": [
+                    {
+                        "id": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "output": {"annotations_count": 1},
+                    }
+                ],
+            },
+            statuses_argv: {"state": "failure", "statuses": []},
+            annotations_argv: [
+                [{"message": "AssertionError: expected 200, got 500"}]
+            ],
+        }
+    )
+
+    state = GitHubClient(runner).get_check_state("acme/widgets", "a" * 40)
+
+    assert state == CheckState(
+        actions_enabled=True, all_green=False, check_count=1, billing_blocked=False
+    )
+
+
+def test_github_client_flags_a_check_run_waiting_on_human_approval_as_action_required() -> None:
+    permissions_argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
+    checks_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?per_page=100",
+    )
+    statuses_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/status?per_page=100",
+    )
+    runner = RecordingRunner(
+        {
+            permissions_argv: {"enabled": True},
+            checks_argv: {
+                "total_count": 1,
+                "check_runs": [
+                    {"id": 1, "status": "completed", "conclusion": "action_required"}
+                ],
+            },
+            statuses_argv: {"state": "failure", "statuses": []},
+        }
+    )
+
+    state = GitHubClient(runner).get_check_state("acme/widgets", "a" * 40)
+
+    assert state == CheckState(
+        actions_enabled=True,
+        all_green=False,
+        check_count=1,
+        billing_blocked=False,
+        action_required=True,
+    )
+
+
 @pytest.mark.parametrize(
     "method,flag",
     [("squash", "--squash"), ("rebase", "--rebase"), ("merge", "--merge")],
@@ -809,7 +1408,9 @@ def canonical_pull(number: int = 17, head_sha: str = "a" * 40) -> dict[str, obje
 
 
 def canonical_list_pull(
-    number: int = 17, head_sha: str = "a" * 40
+    number: int = 17,
+    head_sha: str = "a" * 40,
+    labels: tuple[str, ...] = (),
 ) -> dict[str, object]:
     return {
         "number": number,
@@ -818,7 +1419,10 @@ def canonical_list_pull(
         "author": {"login": "owner"},
         "headRefName": "codex/fix",
         "headRefOid": head_sha,
+        "baseRefName": "stable",
+        "baseRefOid": "b" * 40,
         "updatedAt": "2026-08-26T08:00:00Z",
+        "labels": [{"name": label} for label in labels],
     }
 
 
@@ -863,3 +1467,12 @@ def feedback_responses(body: str) -> dict[tuple[str, ...], object]:
             "repos/acme/widgets/pulls/17/reviews?per_page=100",
         ): [[]],
     }
+
+
+@pytest.mark.parametrize("permissions,allowed", [({},False),({"pull":True},False),({"triage":True},True),({"push":True},True),({"admin":"true"},False)])
+def test_label_permission_requires_explicit_write_capability(permissions, allowed):
+    class Runner:
+        def run(self, argv):
+            assert argv == ["gh", "api", "repos/acme/widgets"]
+            return json.dumps({"permissions":permissions})
+    assert GitHubClient(Runner()).can_label_repository("acme/widgets") is allowed

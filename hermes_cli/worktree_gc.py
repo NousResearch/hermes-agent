@@ -113,6 +113,13 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     path = str(entry)
     if _KANBAN_RE.match(entry.name):
         return "keep", "kanban task tree (owned by kanban gc)", []
+    from agent.conversation_worktree import conversation_worktree_is_manager_owned
+
+    ownership = conversation_worktree_is_manager_owned(entry)
+    if ownership is True:
+        return "keep", "manager-owned conversation worktree", []
+    if ownership is None:
+        return "keep", "conversation ownership could not be verified", []
     if _ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
         return "keep", "in use by a running hermes session", []
     tracked_dirty, untracked = _dirty_split(path)
@@ -183,6 +190,37 @@ def reclaim_worktrees(
     destructive loop, so trees created by concurrent sessions after the audit are out of scope."""
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
+    from agent.conversation_worktree import conversation_worktree_reclaim_guard
+
+    def reclaim_one(record: TreeRecord) -> List[str]:
+        record_actions: List[str] = []
+        entry = Path(record.path)
+        if record.untracked:
+            archive = _archive_untracked(entry, record.untracked)
+            if archive is None:
+                return [f"kept {record.name} (archive of untracked files failed)"]
+            record_actions.append(
+                f"archived {len(record.untracked)} untracked file(s) → {archive}"
+            )
+
+        # Dead-pid locks must be unlocked or `remove --force` refuses.
+        with contextlib.suppress(Exception):
+            _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
+        try:
+            remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
+            if remove_result.returncode != 0:
+                record_actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
+                return record_actions
+            if record.verdict == "reap-keep-branch":
+                record_actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
+                return record_actions
+            if record.branch and record.branch not in _PROTECTED_BRANCHES:
+                _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
+            record_actions.append(f"removed {record.name}")
+        except Exception as exc:
+            record_actions.append(f"failed to remove {record.name}: {exc}")
+        return record_actions
+
     actions: List[str] = []
     for record in records:
         if record.verdict not in _REAP_VERDICTS:
@@ -191,30 +229,26 @@ def reclaim_worktrees(
             actions.append(f"would remove {record.name} ({record.reason})")
             continue
 
-        entry = Path(record.path)
-        if record.untracked:
-            archive = _archive_untracked(entry, record.untracked)
-            if archive is None:
-                actions.append(f"kept {record.name} (archive of untracked files failed)")
-                continue
-            actions.append(f"archived {len(record.untracked)} untracked file(s) → {archive}")
-
-        # Dead-pid locks must be unlocked or `remove --force` refuses.
-        with contextlib.suppress(Exception):
-            _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
         try:
-            remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
-            if remove_result.returncode != 0:
-                actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
-                continue
-            if record.verdict == "reap-keep-branch":
-                actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
-                continue
-            if record.branch and record.branch not in _PROTECTED_BRANCHES:
-                _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
-            actions.append(f"removed {record.name}")
+            with conversation_worktree_reclaim_guard(
+                Path(repo_root), Path(record.path)
+            ) as manager_owned:
+                if manager_owned is True:
+                    actions.append(
+                        f"kept {record.name} (manager-owned conversation worktree)"
+                    )
+                    continue
+                if manager_owned is None:
+                    actions.append(
+                        f"kept {record.name} (conversation ownership could not be verified)"
+                    )
+                    continue
+                actions.extend(reclaim_one(record))
         except Exception as exc:
-            actions.append(f"failed to remove {record.name}: {exc}")
+            logger.warning("Could not lock worktree reclaim for %s: %s", record.name, exc)
+            actions.append(
+                f"kept {record.name} (conversation ownership could not be verified)"
+            )
 
     if not dry_run:
         with contextlib.suppress(Exception):

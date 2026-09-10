@@ -372,6 +372,7 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(return_value=mock_model)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
@@ -408,6 +409,7 @@ class TestTranscribeLocalExtended:
         }
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None), \
@@ -1061,7 +1063,7 @@ class TestLocalModelLock:
         load_count = 0
         load_started = threading.Event()
 
-        def slow_load(model_name, device="auto", compute_type="auto"):
+        def slow_load(model_name, device="auto", compute_type="auto", force_cpu=None):
             nonlocal load_count
             load_count += 1
             load_started.set()

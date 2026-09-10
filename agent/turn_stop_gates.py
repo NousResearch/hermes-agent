@@ -30,6 +30,7 @@ class StopGateVerdict:
     final_response: Any
     pending_verification_response: Any
     pending_verification_response_previewed: Any
+    kanban_shutdown_paused: bool = False
 
 
 def _verify_on_stop_nudge(agent) -> Optional[str]:
@@ -150,6 +151,15 @@ def apply_stop_gates(
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)
         return verdict
 
+    from agent.kanban_stop import kanban_shutdown_drain_requested, pause_current_kanban_run
+    if kanban_shutdown_drain_requested() and pause_current_kanban_run():
+        return StopGateVerdict(
+            continue_turn=False, final_response=final_response,
+            pending_verification_response=pending_verification_response,
+            pending_verification_response_previewed=pending_verification_response_previewed,
+            kanban_shutdown_paused=True,
+        )
+
     _kanban_nudge = _kanban_stop_nudge(agent, messages)
     if _kanban_nudge:
         agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
@@ -167,6 +177,11 @@ def apply_stop_gates(
             "kanban_complete/kanban_block — nudging to finish"
         )
         return verdict
+    from agent.kanban_stop import reconcile_kanban_stop_to_review
+    reconcile_kanban_stop_to_review(
+        messages=messages, final_response=final_response,
+        attempts=getattr(agent, "_kanban_stop_nudges", 0),
+    )
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

@@ -1350,9 +1350,13 @@ def _live_system_guard(request, monkeypatch):
             # Stale PID — kill would be a no-op anyway, allow it.
             return True
         try:
-            for parent in walker.parents():
-                if parent.pid == test_pid:
+            parent_pid = int(walker.ppid())
+            seen: set[int] = set()
+            while parent_pid > 1 and parent_pid not in seen:
+                if parent_pid == test_pid:
                     return True
+                seen.add(parent_pid)
+                parent_pid = int(_psutil.Process(parent_pid).ppid())
         except Exception:
             return False
         return False

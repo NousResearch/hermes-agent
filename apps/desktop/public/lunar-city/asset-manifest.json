@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "scene": "lunar-city-baseline",
+  "source": "procedural-blender-baseline",
+  "units": "meters",
+  "renderProfile": "desktop-preview",
+  "profileManifest": "lunar-city/profile-assets.json",
+  "assets": [
+    { "id": "terrain-colony-basin", "kind": "terrain", "collection": "Terrain", "lod": ["high", "low"] },
+    { "id": "road-network-primary", "kind": "road", "collection": "Roads", "lod": ["high", "low"] },
+    { "id": "library", "kind": "building", "role": "knowledge", "collection": "Buildings", "lod": ["high", "low"] },
+    { "id": "research-lab", "kind": "building", "role": "research", "collection": "Buildings", "lod": ["high", "low"] },
+    { "id": "arts-studio", "kind": "building", "role": "creative", "collection": "Buildings", "lod": ["high", "low"] },
+    { "id": "council-hall", "kind": "building", "role": "governance", "collection": "Buildings", "lod": ["high", "low"] },
+    { "id": "engineering-workshop", "kind": "building", "role": "engineering", "collection": "Buildings", "lod": ["high", "low"] },
+    { "id": "triage-clinic", "kind": "building", "role": "medical", "collection": "Buildings", "lod": ["high", "low"] },
+    { "id": "review-office", "kind": "building", "role": "review", "collection": "Buildings", "lod": ["high", "low"] },
+    { "id": "archive", "kind": "building", "role": "archive", "collection": "Buildings", "lod": ["high", "low"] },
+    { "id": "leader-prototype", "kind": "character", "role": "leader", "collection": "Characters", "lod": ["high", "low"] },
+    { "id": "worker-prototype", "kind": "character", "role": "worker", "collection": "Characters", "lod": ["high", "low"] },
+    { "id": "dispatcher-cube", "kind": "character", "role": "dispatcher", "collection": "Characters", "lod": ["high", "low"] }
+  ]
+}

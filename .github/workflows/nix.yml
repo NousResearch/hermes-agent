@@ -13,7 +13,9 @@ name: Nix flake check
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: read

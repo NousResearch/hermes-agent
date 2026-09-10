@@ -55,6 +55,8 @@ def worker_env(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    for name in ("test-worker", "peer", "reviewer", "qa"):
+        (home / "profiles" / name).mkdir(parents=True)
 
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -79,6 +81,268 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert d["task"]["status"] == "running"
     assert "worker_context" in d
     assert "runs" in d
+
+
+def test_protected_show_surfaces_completed_parent_handoff(monkeypatch, worker_env):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        parent_id = kb.create_task(conn, title="Upstream verifier", assignee="verifier")
+        assert kb.claim_task(conn, parent_id) is not None
+        assert kb.complete_task(
+            conn,
+            parent_id,
+            summary="Canonical receipt passed.",
+            metadata={"receipt_status": "passed"},
+        )
+        child_id = kb.create_task(
+            conn,
+            title="Downstream repair",
+            assignee="test-worker",
+            parents=[parent_id],
+        )
+        assert kb.claim_task(conn, child_id) is not None
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", child_id)
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    payload = json.loads(kt._handle_show({}))
+
+    assert payload["parent_handoffs"] == [
+        {
+            "id": parent_id,
+            "title": "Upstream verifier",
+            "completed_at": str(payload["parent_handoffs"][0]["completed_at"]),
+            "summary": "Canonical receipt passed.",
+            "metadata": {"receipt_status": "passed"},
+        }
+    ]
+
+
+def test_remote_worker_payload_replaces_private_paths_with_local_tokens():
+    from tools.kanban_tools import (
+        _project_remote_worker_state,
+        _sanitize_remote_worker_payload,
+    )
+
+    workspace = "/Users/example/.hermes/kanban/boards/demo/workspaces/t_12345678"
+    payload = {
+        "task": {
+            "workspace_path": workspace,
+            "body": (
+                "Run env HERMES_HOME=/Users/example/.hermes hermes check "
+                "then inspect /home/user/private.txt; command --worktree "
+                f"{workspace}. Then continue."
+            ),
+        },
+        "events": [{"payload": {"workspace": workspace}}],
+    }
+    projected = _project_remote_worker_state(payload, current_run_id=None)
+    sanitized = _sanitize_remote_worker_payload(
+        projected,
+        workspace_path=workspace,
+        control_home="/Users/example/.hermes",
+    )
+
+    rendered = json.dumps(sanitized)
+    assert "/Users/" not in rendered
+    assert "/home/" not in rendered
+    assert sanitized["task"]["workspace_path"] is None
+    assert sanitized["task"]["workspace_access"] == "dispatcher_current_directory"
+    assert sanitized["protected_task_spec"]["version"] == "v1"
+    assert sanitized["protected_task_spec"]["body"] == sanitized["task"]["body"]
+    assert "$HERMES_CONTROL_HOME" in sanitized["task"]["body"]
+    assert "--worktree $HERMES_KANBAN_WORKSPACE. Then" in sanitized["task"]["body"]
+    assert "--worktree .." not in sanitized["task"]["body"]
+    assert "<private-path>" in sanitized["task"]["body"]
+
+
+def test_remote_worker_projection_preserves_dispatcher_python_token():
+    from tools.kanban_tools import _sanitize_remote_worker_payload
+
+    canonical_python = "/Users/operator/.codex/worktrees/hermes/venv/bin/python"
+    payload = {
+        "task": {
+            "body": (
+                "Run env HERMES_HOME=$HERMES_CONTROL_HOME "
+                f"{canonical_python} -m hermes_cli.main inspect-pr."
+            )
+        }
+    }
+
+    sanitized = _sanitize_remote_worker_payload(
+        payload,
+        workspace_path="/Users/operator/.hermes/workspaces/t_12345678",
+        control_home="/Users/operator/.hermes",
+        worker_python=canonical_python,
+    )
+
+    body = sanitized["task"]["body"]
+    assert canonical_python not in body
+    assert "$HERMES_KANBAN_WORKTREE_PYTHON -m hermes_cli.main" in body
+
+
+def test_remote_worker_projection_separates_canonical_hermes_python_token():
+    from tools.kanban_tools import _sanitize_remote_worker_payload
+
+    project_python = "/Users/operator/project/.venv/bin/python"
+    dispatcher_python = "/Users/operator/.codex/worktrees/hermes/venv/bin/python"
+    payload = {
+        "task": {
+            "body": (
+                f"Use {dispatcher_python} -m hermes_cli.main github-pr-feedback "
+                f"after project checks use {project_python}."
+            )
+        }
+    }
+
+    sanitized = _sanitize_remote_worker_payload(
+        payload,
+        workspace_path="/Users/operator/.hermes/workspaces/t_12345678",
+        control_home="/Users/operator/.hermes",
+        worker_python=project_python,
+        dispatcher_python=dispatcher_python,
+    )
+
+    body = sanitized["task"]["body"]
+    assert dispatcher_python not in body
+    assert project_python not in body
+    assert "$HERMES_KANBAN_HERMES_PYTHON -m hermes_cli.main" in body
+    assert "$HERMES_KANBAN_WORKTREE_PYTHON" in body
+
+
+def test_remote_worker_projection_excludes_obsolete_attempt_history():
+    from tools.kanban_tools import _project_remote_worker_state
+
+    payload = {
+        "task": {
+            "id": "t_12345678",
+            "body": "Repair current PR state.",
+            "status": "running",
+        },
+        "parents": [],
+        "children": [],
+        "comments": [{"author": "worker", "body": "protocol violation"}],
+        "events": [
+            {"kind": "blocked", "run_id": "run-old", "payload": "old failure"},
+            {"kind": "started", "run_id": "run-current", "payload": "current"},
+        ],
+        "runs": [
+            {"id": "run-old", "status": "blocked", "error": "manual_reclaim"},
+            {
+                "id": "run-review",
+                "status": "review_requested",
+                "outcome": "review_requested",
+                "summary": "Verify canonical head and the bounded CI handoff; do not reimplement.",
+            },
+            {"id": "run-current", "status": "running", "error": None},
+        ],
+        "worker_context": "Prior attempts: protocol violation and manual reclaim",
+    }
+
+    projected = _project_remote_worker_state(payload, current_run_id="run-current")
+
+    rendered = json.dumps(projected)
+    assert projected["protected_task_spec"]["version"] == "v1"
+    assert projected["protected_task_spec"]["body"] == "Repair current PR state."
+    assert "run-old" not in rendered
+    assert "old failure" not in rendered
+    assert "protocol violation" not in rendered
+    assert projected["comments"] == []
+    assert projected["runs"] == []
+    assert projected["events"] == []
+    assert projected["task"].get("current_run_id") is None
+    assert projected["review_assignment"] is True
+    assert "This is a review run" in projected["worker_context"]
+    assert "bounded CI handoff" not in rendered
+    assert "Verify canonical current state" in projected["history_policy"]
+    assert "role-owned decision" in projected["worker_context"]
+    assert "no change is needed" in projected["worker_context"]
+
+
+def test_remote_worker_projection_keeps_only_bounded_sanitized_completed_parent_handoffs():
+    from tools.kanban_tools import (
+        _project_remote_worker_state,
+        _sanitize_remote_worker_payload,
+    )
+
+    private_root = "/Users/operator/private-repo"
+    payload = {
+        "task": {"id": "t_12345678", "status": "running"},
+        "parents": ["t_aaaaaaaa", "t_bbbbbbbb"],
+        "children": [],
+        "runs": [],
+        "parent_handoffs": [
+            {
+                "id": "t_aaaaaaaa",
+                "title": "Completed evidence parent",
+                "status": "done",
+                "completed_at": "2026-08-26T12:00:00Z",
+                "summary": "verified at " + private_root + "/report.json\n" + "x" * 9000,
+                "metadata": {
+                    "artifact": private_root + "/receipt.json",
+                    "token": "token=super-secret-value",
+                    "nested": {"result": "passed"},
+                },
+                "comments": ["obsolete attempt"],
+                "events": ["obsolete event"],
+                "runs": ["obsolete run"],
+            },
+            {
+                "id": "t_bbbbbbbb",
+                "title": "Still running",
+                "status": "running",
+                "summary": "must not be treated as a handoff",
+            },
+        ],
+    }
+
+    projected = _project_remote_worker_state(payload, current_run_id="run-current")
+    sanitized = _sanitize_remote_worker_payload(
+        projected,
+        workspace_path=private_root,
+        control_home="/Users/operator/.hermes",
+    )
+
+    assert len(sanitized["parent_handoffs"]) == 1
+    handoff = sanitized["parent_handoffs"][0]
+    assert set(handoff) == {"id", "title", "completed_at", "summary", "metadata"}
+    assert len(handoff["summary"].encode("utf-8")) <= 4096
+    assert private_root not in json.dumps(handoff)
+    assert "super-secret-value" not in json.dumps(handoff)
+    assert handoff["metadata"]["nested"] == {"result": "passed"}
+
+
+def test_remote_worker_projection_does_not_reuse_superseded_review_handoff():
+    from tools.kanban_tools import _project_remote_worker_state
+
+    payload = {
+        "task": {
+            "id": "t_12345678",
+            "body": "Original implementation assignment.",
+            "status": "running",
+        },
+        "runs": [
+            {
+                "status": "review_requested",
+                "summary": "obsolete review handoff",
+            },
+            {
+                "outcome": "blocked",
+                "summary": "reviewer failed after the handoff",
+            },
+            {"status": "running"},
+        ],
+    }
+
+    projected = _project_remote_worker_state(payload, current_run_id="run-current")
+
+    assert projected["review_assignment"] is False
+    assert "obsolete review handoff" not in json.dumps(projected)
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):
@@ -131,6 +395,75 @@ def test_complete_happy_path(worker_env):
         assert run.outcome == "completed"
         assert run.summary == "got the thing done"
         assert run.metadata == {"files": 2}
+    finally:
+        conn.close()
+
+
+def test_complete_runs_governed_ci_gate_at_kanban_boundary(monkeypatch, worker_env):
+    """The worker boundary enforces CI receipts without plugin discovery."""
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(
+        "tools.kanban_ci_guard.completion_block",
+        lambda task_id=None: "CI completion rejected by the control ledger",
+    )
+
+    out = json.loads(kt._handle_complete({"summary": "invented CI output"}))
+    assert out["error"] == "CI completion rejected by the control ledger"
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert kb.latest_run(conn, worker_env).outcome is None
+    finally:
+        conn.close()
+
+
+def test_verifier_cannot_complete_with_pytest_usage_failure(
+    monkeypatch, worker_env,
+):
+    """A verifier must block, not complete, when no tests were collected.
+
+    Regression: a contract verifier reported ``pytest`` exit 4 and explicitly
+    said behavioral evidence was unavailable, yet ``kanban_complete`` moved
+    the task to done and released its downstream writer.
+    """
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET title = ?, body = ?, assignee = ? WHERE id = ?",
+                (
+                    "Verify contracts and focused tests",
+                    "Acceptance criteria: focused behavioral tests pass or "
+                    "fail with a concrete regression.",
+                    "test-contract-steward",
+                    worker_env,
+                ),
+            )
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_PROFILE", "test-contract-steward")
+
+    out = json.loads(kt._handle_complete({
+        "summary": (
+            "Static checks passed, but pytest cannot discover a test suite; "
+            "pytest -q exited 4, so behavioral verification is unavailable."
+        ),
+        "metadata": {
+            "results": {"pytest": "exit 4; no focused test result available"},
+        },
+    }))
+
+    assert "Verifier completion rejected" in out["error"]
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
     finally:
         conn.close()
 
@@ -230,6 +563,99 @@ def test_block_happy_path(worker_env):
     conn = kbc.connect()
     try:
         assert kb.get_task(conn, worker_env).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_worker_created_task_rejects_invented_needs_input(monkeypatch, worker_env):
+    """A produced card must execute its fixed scope rather than reopen it.
+
+    This is a lifecycle guard, not prompt-only advice: repeated local-model
+    requests for a human to choose analysis metrics were previously accepted as
+    real blocks and escalated the card to triage.
+    """
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="bounded generated analysis",
+            body="Inspect the named source and report factual findings.",
+            assignee="test-worker",
+            created_by="cron-worktree-governance",
+        )
+        assert kb.claim_task(conn, tid) is not None
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    out = kt._handle_block({
+        "kind": "needs_input",
+        "reason": "Please choose which metrics to analyze.",
+    })
+    assert "error" in json.loads(out)
+    assert "worker- and cron-created" in out
+
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_auto_decomposed_leaf_allows_real_capability_block(monkeypatch, worker_env):
+    """The guard must not suppress a factual external access escalation."""
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="generated external audit",
+            assignee="test-worker",
+            created_by="auto-decomposer",
+        )
+        assert kb.claim_task(conn, tid) is not None
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    out = kt._handle_block({
+        "kind": "capability",
+        "reason": "gh pr view failed: authentication is unavailable.",
+        "command": "gh pr view 1 --repo example/repo",
+        "stderr": "authentication is unavailable",
+    })
+    assert json.loads(out)["ok"] is True
+
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_capability_block_requires_current_command_evidence(worker_env):
+    """Workers may not turn an unexecuted predicted failure into a block."""
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_block({
+        "kind": "capability",
+        "reason": "This command will probably time out.",
+    })
+    assert "error" in json.loads(out)
+    assert "require command and stderr" in out
+
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
     finally:
         conn.close()
 
@@ -429,6 +855,35 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_normalizes_worker_supplied_scratch_path(worker_env):
+    """Model-generated scratch paths must stay under Hermes-managed storage."""
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    import hermes_cli.kanban_db_workspace as _hermes_cli_kanban_db_workspace
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "review child",
+        "assignee": "reviewer",
+        "workspace_kind": "scratch",
+        "workspace_path": "/home/user/worktrees/guessed-parent",
+    })
+    result = json.loads(out)
+    assert result["ok"] is True
+    assert result["workspace_kind"] == "scratch"
+    assert result["workspace_path"] is None
+
+    from hermes_cli import kanban_db as kb
+
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        child = kb.get_task(conn, result["task_id"])
+        assert child.workspace_path is None
+        resolved = _hermes_cli_kanban_db_workspace.resolve_workspace(child)
+        assert kb._is_managed_scratch_path(resolved)
+    finally:
+        conn.close()
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -594,6 +1049,60 @@ def test_kanban_guidance_orchestrator_decision_ownership():
     assert KANBAN_GUIDANCE.count("Decision ownership.") == 1
     assert "Never let two subtree cards decide the same question" in KANBAN_GUIDANCE
     assert "workers cannot see sibling context" in KANBAN_GUIDANCE
+
+
+def test_kanban_guidance_rejects_self_referential_reclaim_and_crash_blockers():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "attempt-management evidence, not task blockers" in KANBAN_GUIDANCE
+    assert "Never block because an earlier worker crashed" in KANBAN_GUIDANCE
+    assert "Do not pass the literal environment-variable token" in KANBAN_GUIDANCE
+
+
+def test_kanban_guidance_uses_governed_pr_inspection_for_remote_intake():
+    """Workers must use the shared paginated, rate-gated PR inspection path."""
+
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "github-pr-feedback inspect-pr" in KANBAN_GUIDANCE
+    # $HERMES_HOME is read from the worker's own shell env, not baked in as the
+    # author's hardcoded macOS path -- other workers (other accounts, Linux,
+    # Windows) don't have that literal path.
+    assert 'HERMES_HOME="$HERMES_HOME"' in KANBAN_GUIDANCE
+    assert "/Users/mikedemott/.local/bin/hermes" not in KANBAN_GUIDANCE
+    assert "Codex, Claude, or Hermes workers" in KANBAN_GUIDANCE
+    assert "github-pr-feedback submit-review" in KANBAN_GUIDANCE
+    assert "--event APPROVE|REQUEST_CHANGES|COMMENT" in KANBAN_GUIDANCE
+    assert "do not use raw `gh pr view`" in KANBAN_GUIDANCE
+
+
+def test_kanban_guidance_uses_shared_rate_gated_pr_inspection():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "github-pr-feedback inspect-pr" in KANBAN_GUIDANCE
+    assert "paginate issue comments, review comments, and reviews" in KANBAN_GUIDANCE
+    assert "On protected routes" in KANBAN_GUIDANCE
+    assert "do not use raw `gh pr view`" in KANBAN_GUIDANCE
+
+
+def test_kanban_guidance_resolves_board_context_before_needs_input_block():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "missing task output" in KANBAN_GUIDANCE
+    assert "kanban_show(task_id=...)" in KANBAN_GUIDANCE
+    assert "profile roster" in KANBAN_GUIDANCE
+    assert "only then block" in KANBAN_GUIDANCE.lower()
+    assert "producer has already fixed the scope" in KANBAN_GUIDANCE
+    assert "literal argv and redacted stderr" in KANBAN_GUIDANCE
+
+
+def test_kanban_guidance_keeps_board_record_receipts_off_the_filesystem():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "board-record-only" in KANBAN_GUIDANCE
+    assert "Kanban as source of truth" in KANBAN_GUIDANCE
+    assert "Never search the checkout for board records" in KANBAN_GUIDANCE
+    assert "complete with a no-op receipt" in KANBAN_GUIDANCE
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +1464,7 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     # home to avoid mkdir() colliding with the worker's directory.
     home = tmp_path / "gate-home" / ".hermes"
     home.mkdir(parents=True)
+    (home / "profiles" / "peer").mkdir(parents=True)
     (home / "config.yaml").write_text(
         "kanban:\n  auto_subscribe_on_create: false\n"
     )
@@ -1159,5 +1669,35 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert [a.filename for a in atts] == ["spec.pdf"]
         assert atts[0].content_type == "application/pdf"
         assert Path(atts[0].stored_path).read_bytes() == payload
+    finally:
+        conn.close()
+
+
+def test_create_rejects_missing_profile_without_leaving_a_card(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    conn = kbc.connect()
+    try:
+        before = len(kb.list_tasks(conn))
+        result = json.loads(kt._handle_create({"title": "unroutable", "assignee": "missing-profile"}))
+        assert "error" in result
+        assert "profile" in str(result).lower()
+        assert len(kb.list_tasks(conn)) == before
+    finally:
+        conn.close()
+
+
+def test_create_preserves_explicit_failure_budget(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    result = json.loads(kt._handle_create({"title": "bounded", "assignee": "peer", "max_retries": 1}))
+    assert result["ok"]
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, result["task_id"]).max_retries == 1
     finally:
         conn.close()

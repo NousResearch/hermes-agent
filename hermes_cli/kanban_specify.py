@@ -177,6 +177,37 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
         return "", ""
 
 
+_CONCRETE_OUTCOME_MARKERS = (
+    "acceptance criteria",
+    "authoritative local ci failure receipt",
+    "untrusted evidence (json)",
+    "canonical pr repair receipt (json)",
+    "deliverable:",
+    "if nothing clears the bar",
+    "when sources and local evidence agree",
+    "within 10 minutes",
+)
+
+
+def _is_already_concrete(task: object) -> bool:
+    """Recognize detailed recovery cards without another model call.
+
+    This is deliberately conservative: a substantive body, an explicit
+    assignee, and terminal/outcome language are all required. Rough ideas
+    continue through the auxiliary specifier.
+    """
+    title = str(getattr(task, "title", "") or "").strip()
+    body = str(getattr(task, "body", "") or "").strip()
+    assignee = str(getattr(task, "assignee", "") or "").strip()
+    lowered = body.casefold()
+    return (
+        len(title) >= 12
+        and len(body) >= 800
+        and bool(assignee)
+        and any(marker in lowered for marker in _CONCRETE_OUTCOME_MARKERS)
+    )
+
+
 def specify_task(
     task_id: str,
     *,
@@ -189,6 +220,11 @@ def specify_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return SpecifyOutcome(task_id, False, reason)
+
+    if _is_already_concrete(task):
+        with kbc.connect_closing() as conn:
+            ok = kb.specify_triage_task(conn, task_id, author=author or _profile_author())
+        return SpecifyOutcome(task_id, ok, "already concrete" if ok else "task moved out of triage before promotion")
 
     raw, reason = _call_aux(
         "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,

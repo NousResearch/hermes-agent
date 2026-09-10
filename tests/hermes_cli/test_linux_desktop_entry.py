@@ -226,6 +226,7 @@ def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypat
     assert exec_line == f"{hermes_bin} desktop"
 
 
+@pytest.mark.linux_only
 def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch):
     import sys
 

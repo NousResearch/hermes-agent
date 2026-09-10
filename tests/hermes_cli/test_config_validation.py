@@ -111,6 +111,27 @@ class TestVoiceSubmitModeValidation:
         )
 
 
+class TestCodeExecutionValidation:
+    def test_negative_max_tool_calls_is_rejected(self):
+        issues = validate_config_structure(
+            {"code_execution": {"max_tool_calls": -1}}
+        )
+
+        assert any(
+            issue.severity == "error"
+            and "code_execution.max_tool_calls" in issue.message
+            and "zero" in issue.hint
+            for issue in issues
+        )
+
+    def test_zero_max_tool_calls_is_valid(self):
+        issues = validate_config_structure(
+            {"code_execution": {"max_tool_calls": 0}}
+        )
+
+        assert not any("code_execution.max_tool_calls" in issue.message for issue in issues)
+
+
 class TestUnknownTopLevelKeys:
     """Arbitrary top-level keys must NOT warn — they are bridged to os.environ.
 
@@ -140,4 +161,3 @@ class TestUnknownTopLevelKeys:
         ]
         assert any("base_url" in i.message for i in misplaced)
         assert any("api_key" in i.message for i in misplaced)
-

@@ -71,16 +71,20 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
         # Memory-derived default when unset — same fallback the gateway applies.
         max_in_progress = kbd.resolve_max_in_progress(
-            kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
+            kbd._positive_int(_kanban_cfg.get("max_in_progress"), None),
+            priority_runtime_guard=_kanban_cfg.get("priority_runtime_guard", {}),
         )
         # CLI --max is the more explicit signal, so it wins over kanban.max_spawn.
         cli_max = getattr(args, "max", None)
         max_spawn = (
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
-    except Exception:
-        default_assignee = max_in_progress_per_profile = max_in_progress = None
-        max_spawn = getattr(args, "max", None)
+    except Exception as exc:
+        if getattr(args, "json", False):
+            _print_json({"error": type(exc).__name__, "status": "config_unavailable"})
+        else:
+            print(f"Dispatch paused: configuration unavailable ({type(exc).__name__}).")
+        return 1
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -90,6 +94,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_by_profile=_kanban_cfg.get("max_in_progress_by_profile"),
+            max_in_progress_per_model=_kanban_cfg.get("max_in_progress_per_model"),
+            max_in_progress_by_model=_kanban_cfg.get("max_in_progress_by_model"),
         )
     if getattr(args, "json", False):
         _print_json({

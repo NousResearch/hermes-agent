@@ -24,9 +24,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -48,6 +45,11 @@ jobs:
 
   deploy-docs:
     if: github.repository == 'NousResearch/hermes-agent'
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pages: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -62,6 +64,8 @@ jobs:
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: read
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:

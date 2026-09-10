@@ -285,6 +285,22 @@ class TestJsonFields:
 
 class TestAuthHeaders:
 
+    @pytest.mark.parametrize("file_read", [False, True])
+    def test_authorization_identifier_preserves_python_syntax(self, file_read):
+        import ast
+
+        source = "submit_authorization: SubmitAuthorizationResult | None = None\n"
+        result = redact_sensitive_text(source, force=True, file_read=file_read)
+        assert ast.dump(ast.parse(result)) == ast.dump(ast.parse(source))
+
+    @pytest.mark.parametrize("header", ["Authorization", "Proxy-Authorization"])
+    def test_actual_auth_header_still_masks_credential_in_source(self, header):
+        credential = "opaque-private-value"
+        source = f'header = "{header}: Bearer {credential}"'
+        result = redact_sensitive_text(source, force=True, file_read=True)
+        assert credential not in result
+        assert f"{header}: Bearer " in result
+
 
 
 

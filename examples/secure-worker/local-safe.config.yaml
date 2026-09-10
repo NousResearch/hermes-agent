@@ -1,0 +1,29 @@
+model:
+  provider: ollama-launch
+  default: hermes-qwen3-fast
+  base_url: http://127.0.0.1:11434/v1
+  api_key: ollama
+fallback_providers: []
+toolsets: []
+terminal:
+  backend: docker
+  docker_image: REPLACE_WITH_ADMITTED_IMAGE@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  cwd: /ABSOLUTE/PATH/TO/ISOLATED/LOCAL/WORKTREE
+  container_persistent: false
+  docker_persist_across_processes: false
+  persistent_shell: false
+  docker_network: false
+  docker_isolate_host_data: true
+  docker_mount_cwd_to_workspace: true
+  docker_volumes: []
+  docker_forward_env: []
+  docker_env: {}
+  docker_run_as_host_user: false
+  docker_extra_args: []
+  home_mode: isolated
+platform_toolsets:
+  cli: [terminal, file]
+mcp_servers: {}
+telemetry:
+  shared_metrics:
+    enabled: false

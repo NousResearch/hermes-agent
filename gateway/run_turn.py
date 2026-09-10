@@ -1569,6 +1569,11 @@ class GatewayTurnMixin:
             logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
             new_entry = await self.async_session_store.reset_session(session_key)
             self._evict_cached_agent(session_key)
+            if new_entry is not None:
+                # The bloated compressed child (session_entry) may hold a conversation-worktree
+                # root lease that differs from the fresh session's; release it now, or the old
+                # root stays leased with nothing left to use it (#35809 follow-up).
+                self.session_store.reconcile_conversation_root_transition(session_entry, new_entry)
             # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
             self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
             if new_entry is not None:

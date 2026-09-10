@@ -75,7 +75,11 @@ class ActivityTrackingMixin:
                 from tools.kanban_tools import (
                     heartbeat_current_worker_from_env, inject_new_comments_from_env
                 )
-                heartbeat_current_worker_from_env()
+                from agent.interrupt_compat import request_hard_interrupt
+                heartbeat_current_worker_from_env(on_lease_lost=lambda tid: request_hard_interrupt(
+                    self, f"Kanban lease lost for {tid}; stopping superseded worker.",
+                    tool_reason="kanban lease lost",
+                ))
                 # Fold new operator notes into the running turn (OUT-OF-BAND steer).
                 inject_new_comments_from_env(self)
         if force_persist:

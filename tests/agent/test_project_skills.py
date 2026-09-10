@@ -1,6 +1,7 @@
 """Tests for project-local skill discovery (skills.trusted_project_dirs)."""
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,10 @@ import agent.skill_utils as su
 
 @pytest.fixture
 def project_env(tmp_path, monkeypatch):
-    """A temp HERMES_HOME + a git-marked project with skills in both subdirs."""
+    """A temp HERMES_HOME + a git-marked project with skills in all supported subdirs."""
+    user_home = tmp_path / "home"
+    user_home.mkdir()
+    monkeypatch.setenv("HOME", str(user_home))
     home = tmp_path / ".hermes"
     (home / "skills").mkdir(parents=True)
     config = home / "config.yaml"
@@ -27,6 +31,16 @@ def project_env(tmp_path, monkeypatch):
     ag.mkdir(parents=True)
     (ag / "SKILL.md").write_text(
         "---\nname: conv-skill\ndescription: convention\n---\nbody\n"
+    )
+    codex = repo / ".codex" / "skills" / "codex-skill"
+    codex.mkdir(parents=True)
+    (codex / "SKILL.md").write_text(
+        "---\nname: codex-skill\ndescription: Codex convention\n---\nbody\n"
+    )
+    claude = repo / ".claude" / "skills" / "claude-skill"
+    claude.mkdir(parents=True)
+    (claude / "SKILL.md").write_text(
+        "---\nname: claude-skill\ndescription: Claude convention\n---\nbody\n"
     )
 
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -77,17 +91,90 @@ class TestTrustGate:
         assert notice is not None
         root, count = notice
         assert root == project_env["repo"].resolve()
-        assert count == 2
+        assert count == 4
 
-    def test_trusted_returns_both_subdirs(self, project_env):
+    def test_trusted_returns_all_supported_subdirs(self, project_env):
         _trust(project_env["config"], project_env["repo"])
         dirs = su.get_project_skills_dirs()
         assert (project_env["repo"] / ".hermes" / "skills").resolve() in dirs
         assert (project_env["repo"] / ".agents" / "skills").resolve() in dirs
+        assert (project_env["repo"] / ".codex" / "skills").resolve() in dirs
+        assert (project_env["repo"] / ".claude" / "skills").resolve() in dirs
 
     def test_trusted_no_notice(self, project_env):
         _trust(project_env["config"], project_env["repo"])
         assert su.get_untrusted_project_skills_root() is None
+
+    def test_dispatcher_task_worktree_inherits_trusted_stable_root(
+        self, project_env, monkeypatch
+    ):
+        _trust(project_env["config"], project_env["repo"])
+        workspaces_root = project_env["repo"] / ".worktrees"
+        workspace = workspaces_root / "t_example"
+        (workspace / ".agents" / "skills" / "task-skill").mkdir(parents=True)
+        (workspace / ".git").write_text("gitdir: /fixture/worktree\n")
+        (
+            workspace / ".agents" / "skills" / "task-skill" / "SKILL.md"
+        ).write_text("# Task skill\n")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_example")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(workspaces_root))
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        dirs = su.get_project_skills_dirs()
+
+        assert (workspace / ".agents" / "skills").resolve() in dirs
+
+    def test_migrated_dispatcher_worktree_uses_trusted_dot_worktrees_parent(
+        self, project_env, monkeypatch, tmp_path
+    ):
+        _trust(project_env["config"], project_env["repo"])
+        workspace = project_env["repo"] / ".worktrees" / "t_migrated"
+        (workspace / ".agents" / "skills" / "task-skill").mkdir(parents=True)
+        (workspace / ".git").write_text("gitdir: /fixture/worktree\n")
+        (
+            workspace / ".agents" / "skills" / "task-skill" / "SKILL.md"
+        ).write_text("# Task skill\n")
+        board_workspaces_root = tmp_path / "board" / "workspaces"
+        board_workspaces_root.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_migrated")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv(
+            "HERMES_KANBAN_WORKSPACES_ROOT", str(board_workspaces_root)
+        )
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        dirs = su.get_project_skills_dirs()
+
+        assert (workspace / ".agents" / "skills").resolve() in dirs
+
+    def test_nested_worktree_without_dispatcher_identity_stays_untrusted(
+        self, project_env, monkeypatch
+    ):
+        _trust(project_env["config"], project_env["repo"])
+        workspace = project_env["repo"] / ".worktrees" / "untrusted"
+        (workspace / ".agents" / "skills" / "task-skill").mkdir(parents=True)
+        (workspace / ".git").write_text("gitdir: /fixture/worktree\n")
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        assert su.get_project_skills_dirs() == []
+
+    def test_dispatcher_identity_cannot_trust_unapproved_dot_worktrees_parent(
+        self, project_env, monkeypatch, tmp_path
+    ):
+        _trust(project_env["config"], project_env["repo"])
+        untrusted = tmp_path / "untrusted"
+        workspace = untrusted / ".worktrees" / "t_untrusted"
+        (workspace / ".agents" / "skills" / "task-skill").mkdir(parents=True)
+        (workspace / ".git").write_text("gitdir: /fixture/worktree\n")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_untrusted")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv(
+            "HERMES_KANBAN_WORKSPACES_ROOT", str(tmp_path / "board" / "workspaces")
+        )
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        assert su.get_project_skills_dirs() == []
 
     def test_discovery_disabled_kills_both(self, project_env):
         project_env["config"].write_text(
@@ -109,6 +196,48 @@ class TestTrustGate:
         su._external_dirs_cache_clear()
         assert su.get_untrusted_project_skills_root() is None
 
+    def test_trust_inherits_to_linked_worktree_of_same_repository(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        subprocess.run(["git", "init", "-q", str(primary)], check=True)
+        skill = primary / ".agents" / "skills" / "repo-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: repo-skill\ndescription: from repo\n---\nbody\n"
+        )
+        subprocess.run(["git", "-C", str(primary), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(primary),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            check=True,
+        )
+        linked = tmp_path / "linked"
+        subprocess.run(
+            ["git", "-C", str(primary), "worktree", "add", "-q", str(linked)],
+            check=True,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(linked)
+        _trust(config, primary)
+
+        assert su.is_project_root_trusted(linked) is True
+        assert (linked / ".agents" / "skills").resolve() in su.get_project_skills_dirs()
+
 
 class TestPrecedence:
     def test_project_paths_are_readonly_owned(self, project_env):
@@ -123,6 +252,8 @@ class TestPrecedence:
         assert dirs[0] == su.get_skills_dir()
         for d in dirs:
             assert ".agents" not in str(d)
+            assert ".codex" not in str(d)
+            assert ".claude" not in str(d)
 
 
 class TestNonInteractiveInheritance:

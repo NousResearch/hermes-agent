@@ -353,23 +353,31 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
 
     if _quiet(_install_method) in {"docker", "apt"}:
         return None
-    # Cache is invalidated when the embedded rev OR installed version changed since the last check.
+    # Cache is invalidated when the checkout/embedded rev OR installed version changed since the
+    # last check. For a git install (no HERMES_REVISION), the "rev" key is the local checkout's
+    # own HEAD, resolved up front so a refreshed checkout invalidates a same-version cache entry
+    # instead of reusing a stale "behind" count from before the pull (#82166 follow-up).
     now = time.time()
     cached = _read_json(cache_file)
+    repo_dir = None
+    if embedded_rev:
+        current_rev = embedded_rev
+    else:
+        repo_dir = _resolve_repo_dir()
+        current_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
     if (cached is not None and now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION):
+            and cached.get("rev") == current_rev and cached.get("ver") == VERSION):
         return cached.get("behind")
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
         # No checkout and no embedded revision — status can't be determined.
-        repo_dir = _resolve_repo_dir()
         behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
     # Don't cache inconclusive results: None means the check could not run (typically a failed
     # fetch), and caching it would suppress retries for the full 6-hour window (#82166).
     if behind is not None:
         _quiet(lambda: cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}), encoding="utf-8"))
+            json.dumps({"ts": now, "behind": behind, "rev": current_rev, "ver": VERSION}), encoding="utf-8"))
     return behind
 
 

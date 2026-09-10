@@ -1,10 +1,9 @@
 /**
- * The bot row's two side effects: pre-warming and opening.
+ * The bot row's only activation side effect is opening.
  *
- * Pre-warm is per-row and hover-scoped. Warming the whole roster on paint
- * spun up every profile backend the moment the Bots rail rendered, so the row
- * warms exactly one bot and only once a pointer is actually over it — and a
- * source-scoped row pre-dials its OWN source rather than the active gateway.
+ * A roster may contain hundreds of rows and can reflow under a stationary
+ * pointer. Pointer-entry pre-warming therefore behaves like roster-wide
+ * warming in practice and must not start profile backends.
  *
  * Opening is delegated whole: the row hands its exact roster row to
  * openRosterBot and does nothing else. It never activates a connection
@@ -71,19 +70,19 @@ beforeEach(() => {
   requestProfile.mockResolvedValue({})
 })
 
-describe('pre-warm is hover-scoped, never roster-wide', () => {
-  it('warms nothing on paint and exactly the hovered bot on pointer entry', async () => {
+describe('roster browsing never starts profile backends', () => {
+  it('does not warm a local row on paint or pointer entry', () => {
     const row = renderRow({ name: 'alpha' } as RosterRow)
 
     expect(warmProfile).not.toHaveBeenCalled()
 
     fireEvent.pointerEnter(row)
 
-    expect(warmProfile.mock.calls).toEqual([['alpha']])
+    expect(warmProfile).not.toHaveBeenCalled()
     expect(warmAgent).not.toHaveBeenCalled()
   })
 
-  it('pre-dials a source-scoped row on its own source', async () => {
+  it('does not pre-dial a source-scoped row on pointer entry', () => {
     const row = renderRow({
       connectionId: 'work',
       connectionLabel: 'Work',
@@ -94,7 +93,7 @@ describe('pre-warm is hover-scoped, never roster-wide', () => {
 
     fireEvent.pointerEnter(row)
 
-    expect(warmAgent.mock.calls).toEqual([['work', 'research']])
+    expect(warmAgent).not.toHaveBeenCalled()
     expect(warmProfile).not.toHaveBeenCalled()
   })
 })

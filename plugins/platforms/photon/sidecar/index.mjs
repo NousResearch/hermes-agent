@@ -607,7 +607,10 @@ const readReceiptsEnabled =
 
 async function acknowledgeInboundRead(message) {
   if (!readReceiptsEnabled) return;
-  if (message?.content?.type === "read") return;
+  if (
+    message?.content?.type === "read" ||
+    message?.content?.type === "read_receipt"
+  ) return;
   if (typeof message?.read !== "function") return;
   try {
     await message.read();

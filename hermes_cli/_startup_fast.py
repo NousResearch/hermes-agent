@@ -51,7 +51,7 @@ def is_termux_env() -> bool:
 
 
 def is_termux_fast_version_argv(argv: list[str]) -> bool:
-    return argv in (["--version"], ["-V"])
+    return argv in (["--version"], ["-V"], ["--version-local"])
 
 
 is_global_fast_version_argv = is_termux_fast_version_argv
@@ -188,6 +188,7 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
     """
     if argv is None:
         argv = sys.argv[1:]
+    local_only = argv == ["--version-local"]
     is_termux = is_termux_env()
     if is_termux and os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
         return False
@@ -196,5 +197,5 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
             return False
     elif not is_global_fast_version_argv(argv) or container_mode_may_be_active():
         return False
-    print_fast_version_info()
+    print_fast_version_info(check_updates=not local_only)
     return True

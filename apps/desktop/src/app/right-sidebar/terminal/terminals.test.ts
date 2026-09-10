@@ -5,12 +5,16 @@ const STORAGE_KEY = 'hermes.desktop.terminals.v1'
 
 async function loadTerminalStore() {
   const $currentCwd = atom('/workspace')
+  const $freshDraftReady = atom(false)
+  const workspaceCwdBelongsToSelectedSession = vi.fn(() => true)
 
   vi.doMock('@/store/session', () => ({
-    $currentCwd
+    $currentCwd,
+    $freshDraftReady,
+    workspaceCwdBelongsToSelectedSession
   }))
 
-  return { ...(await import('./terminals')), $currentCwd }
+  return { ...(await import('./terminals')), $currentCwd, $freshDraftReady, workspaceCwdBelongsToSelectedSession }
 }
 
 describe('terminal store persistence', () => {
@@ -56,6 +60,15 @@ describe('terminal store persistence', () => {
       activeTerminalId: userId,
       terminals: [{ auto: false, cwd: '/repo', id: userId, reviveBuffer: 'recent scrollback', title: 'server' }]
     })
+  })
+
+  it('does not launch a new terminal in the previous chat workspace while a fresh draft resolves', async () => {
+    const { $freshDraftReady, $terminals, createTerminal } = await loadTerminalStore()
+    $freshDraftReady.set(true)
+
+    const id = createTerminal()
+
+    expect($terminals.get().find(term => term.id === id)?.cwd).toBe('')
   })
 
   it('never attaches a revive buffer to an agent tab', async () => {

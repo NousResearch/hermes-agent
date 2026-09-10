@@ -179,32 +179,19 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? 'This device' : '')
   const showDetailsRow = Boolean(showHandle || displayPreview || fromBot)
 
-  const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
+  const federationLabel = bot.federation_role?.display_name || bot.federation_role?.role_id
+  const departmentLabel = bot.federation_role?.department
+
+  const rowTooltip = [
+    displayName(bot, meta),
+    federationLabel,
+    departmentLabel,
+    `@${handle}`,
+    gatewayLabel,
+    sourceStatus.label
+  ]
     .filter(Boolean)
     .join(' · ')
-
-  const warm = () => {
-    // Multi-source row: pre-dial the agent's OWN source (feature-detected).
-    if (bot.sourceScoped && typeof host.warmAgent === 'function') {
-      try {
-        host.warmAgent(bot.connectionId, bot.name)
-      } catch {
-        /* warm is best-effort */
-      }
-
-      return
-    }
-
-    if (typeof host.warmProfile !== 'function') {
-      return
-    }
-
-    try {
-      host.warmProfile(bot.name)
-    } catch {
-      /* warm is best-effort */
-    }
-  }
 
   // Rows and Active Now share the exact-owner open path; only that path may
   // activate a source and resolve the canonical Bot Chat.
@@ -239,7 +226,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         event.dataTransfer.effectAllowed = 'move'
         $draggingBot.set(rosterKey)
       }}
-      onPointerEnter={warm}
+
     >
       <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
         <BotFace

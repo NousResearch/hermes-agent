@@ -31,6 +31,16 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
+def _large_codex_input(n: int) -> str:
+    """An *n*-char filler string sized for the large-request token-estimate gate under test,
+    but shaped as ordinary words (not a single repeated-character run) so it doesn't read as a
+    base64 payload to the egress firewall's content scan -- unlike direct calls to
+    _resolve_nonstream_watchdogs(), interruptible_api_call() now dispatches through the real
+    firewall for a protected provider."""
+    words = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod "
+    return (words * (n // len(words) + 1))[:n]
+
+
 def _make_codex_agent(
     tmp_path,
     monkeypatch,
@@ -56,6 +66,16 @@ def _make_codex_agent(
     # The watchdog is gated on the codex_responses api_mode; assert/force it so
     # the test is robust to detection-logic changes elsewhere.
     agent.api_mode = "codex_responses"
+    # openai-codex is a protected-egress provider: every physical request now goes through
+    # the egress firewall, which requires a request identity.
+    agent.session_id = "session-1"
+    agent._current_turn_id = "turn-1"
+    agent._current_api_request_id = "turn-1:api:1"
+    from hashlib import sha256
+    agent._llm_egress_policy_digest = sha256(b"policy").hexdigest()
+    # The default 32KB sanitized-bytes cap is well under the >40KB "large request" inputs these
+    # watchdog tests construct to cross the token-estimate size gate.
+    agent._llm_egress_max_sanitized_bytes = 200_000
     monkeypatch.setattr(agent, "_emit_status", lambda *a, **k: None)
     # Keep the wall-clock stale timeout high so any early kill is unambiguously
     # the TTFB path, not the stale-call path.
@@ -374,7 +394,7 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
 
     if mode in {"initial_gap", "retry_gap"}:
         response = h.interruptible_api_call(
-            agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
+            agent, {"model": "gpt-5.6-sol", "input": _large_codex_input(40_004)}
         )
         assert response.output_text == "done"
         assert attempts["count"] == (1 if mode == "initial_gap" else 2)
@@ -382,7 +402,7 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
         error_match = "no parsed stream event" if mode == "retry_no_event" else "no SSE events"
         with pytest.raises(TimeoutError, match=error_match):
             h.interruptible_api_call(
-                agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
+                agent, {"model": "gpt-5.6-sol", "input": _large_codex_input(40_004)}
             )
 
     assert ("codex_stream_idle_kill" in closes) is (mode == "stall")
@@ -580,7 +600,7 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
 
     monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
 
-    large_input = "x" * 44_000  # ~11k estimated tokens → TTFB disabled, stale raised
+    large_input = _large_codex_input(44_000)  # ~11k estimated tokens → TTFB disabled, stale raised
     t0 = time.time()
     try:
         with pytest.raises(TimeoutError) as excinfo:

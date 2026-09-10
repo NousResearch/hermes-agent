@@ -9,11 +9,14 @@ import pytest
 
 from github_pr_feedback.ci_runner import (
     CIAuditIdentity,
+    CIAuditReceipt,
+    CI_MODE_BUDGET_EXHAUSTED_LOCAL_EQUIVALENT,
     CIValidationError,
     CompletedCommand,
     LocalCIRunner,
 )
-from github_pr_feedback.github_client import CheckState, PullRequestMergeState
+from github_pr_feedback.ci_coordinator import CIAuditJob, GroupedCICoordinator
+from github_pr_feedback.github_client import CheckState, GitHubClientError, PullRequestMergeState
 from github_pr_feedback.ledger import FeedbackLedger
 
 
@@ -249,6 +252,113 @@ def test_dead_stale_ci_supervisor_allows_one_fenced_takeover(tmp_path: Path) -> 
     ledger.close()
 
 
+def test_local_ci_runner_passes_prevalidated_actions_hint_to_both_exact_head_reads(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    state = merge_state()
+
+    class HintGitHub:
+        def __init__(self) -> None:
+            self.states = [state, state]
+            self.hints: list[bool | None] = []
+            self.permission_refreshes = 0
+
+        def actions_enabled(self, _repository: str, *, refresh: bool = False) -> bool:
+            assert refresh is True
+            self.permission_refreshes += 1
+            return True
+
+        def get_merge_state(self, _repository: str, _number: int) -> PullRequestMergeState:
+            return self.states.pop(0)
+
+        def get_check_state(
+            self,
+            _repository: str,
+            _head_sha: str,
+            *,
+            actions_enabled_hint: bool | None = None,
+        ) -> CheckState:
+            self.hints.append(actions_enabled_hint)
+            return CheckState(
+                actions_enabled=True,
+                all_green=False,
+                check_count=1,
+                billing_blocked=True,
+            )
+
+    github = HintGitHub()
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    runner = LocalCIRunner(
+        github,
+        ledger,
+        command_runner=RecordingRunner(),
+        inspector=FakeInspector(),
+        python_argv=("python3",),
+        now=lambda: NOW,
+        supervisor_pid=lambda: 4242,
+        pid_is_alive=lambda _pid: True,
+        actions_enabled_hint=True,
+    )
+
+    receipt = runner.run(
+        CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree
+    )
+
+    assert github.hints == [True, True]
+    assert github.permission_refreshes == 2
+    assert receipt.ci_mode == CI_MODE_BUDGET_EXHAUSTED_LOCAL_EQUIVALENT
+    ledger.close()
+
+
+def test_local_ci_runner_rejects_actions_permission_change_during_audit(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    state = merge_state()
+
+    class ChangingGitHub:
+        def __init__(self) -> None:
+            self.states = [state, state]
+            self.permissions = iter((False, True))
+
+        def get_merge_state(self, _repository: str, _number: int) -> PullRequestMergeState:
+            return self.states.pop(0)
+
+        def actions_enabled(self, _repository: str, *, refresh: bool = False) -> bool:
+            assert refresh is True
+            return next(self.permissions)
+
+        def get_check_state(
+            self,
+            _repository: str,
+            _head_sha: str,
+            *,
+            actions_enabled_hint: bool | None = None,
+        ) -> CheckState:
+            assert actions_enabled_hint is False
+            return CheckState(False, True, 0)
+
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    receipt = LocalCIRunner(
+        ChangingGitHub(),
+        ledger,
+        command_runner=RecordingRunner(),
+        inspector=FakeInspector(),
+        python_argv=("python3",),
+        now=lambda: NOW,
+        supervisor_pid=lambda: 4242,
+        pid_is_alive=lambda _pid: True,
+        actions_enabled_hint=False,
+    ).run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+
+    assert receipt.status == "failed"
+    assert "Actions permission changed" in (receipt.failure_reason or "")
+    ledger.close()
+
+
 def test_local_ci_runner_executes_only_required_lanes_and_records_exact_head_receipt(
     tmp_path: Path,
 ) -> None:
@@ -277,6 +387,129 @@ def test_local_ci_runner_executes_only_required_lanes_and_records_exact_head_rec
         not_before=NOW - timedelta(hours=1),
     ) == receipt
     ledger.close()
+
+
+def test_local_ci_receipt_types_budget_exhausted_full_local_substitution(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    github = FakeGitHub(merge_state())
+    billing_state = CheckState(True, False, 4, True)
+    github.checks = [billing_state, billing_state]
+    runner, ledger, commands = build_runner(tmp_path, github=github)
+
+    receipt = runner.run(
+        CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree
+    )
+
+    assert receipt.status == "passed"
+    assert receipt.ci_mode == CI_MODE_BUDGET_EXHAUSTED_LOCAL_EQUIVALENT
+    assert len(commands.calls) == 4
+    assert CIAuditReceipt.from_payload(receipt.to_payload()) == receipt
+    tampered = receipt.to_payload()
+    tampered["ci_mode"] = "standard"
+    with pytest.raises(ValueError, match="receipt_id"):
+        CIAuditReceipt.from_payload(tampered)
+    ledger.close()
+
+
+def test_fresh_exact_head_rerun_reconciles_identical_receipt(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    github = FakeGitHub(merge_state())
+    github.states = [merge_state(), merge_state(), merge_state(), merge_state()]
+    github.checks = [
+        CheckState(actions_enabled=False, all_green=True, check_count=0)
+    ] * 4
+    inspector = FakeInspector()
+    inspector.heads = [HEAD_SHA, HEAD_SHA, HEAD_SHA, HEAD_SHA]
+    inspector.clean = [True, True, True, True]
+    runner, ledger, _commands = build_runner(
+        tmp_path, github=github, inspector=inspector
+    )
+    identity = CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA)
+
+    first = runner.run(identity, worktree)
+    second = runner.run(identity, worktree)
+
+    assert second == first
+    lifecycle = ledger.latest_ci_run("acme/widgets", 17, HEAD_SHA)
+    assert lifecycle is not None
+    assert lifecycle["status"] == "completed"
+    assert lifecycle["lease_version"] == 2
+    assert lifecycle["receipt_id"] == first.receipt_id
+    ledger.close()
+
+
+def test_local_ci_runner_recovers_receipt_when_finalizer_reports_after_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    runner, ledger, _commands = build_runner(
+        tmp_path, commands=RecordingRunner(fail_at=2)
+    )
+    original_finalize = ledger.finalize_ci_run
+
+    def finalize_then_report_failure(*args: object, **kwargs: object) -> None:
+        original_finalize(*args, **kwargs)
+        raise RuntimeError("simulated finalizer acknowledgement loss")
+
+    monkeypatch.setattr(ledger, "finalize_ci_run", finalize_then_report_failure)
+
+    receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+
+    assert receipt.status == "failed"
+    assert ledger.ci_receipt_by_id("acme/widgets", 17, receipt.receipt_id) == receipt
+    lifecycle = ledger.latest_ci_run("acme/widgets", 17, HEAD_SHA)
+    assert lifecycle is not None
+    assert lifecycle["status"] == "completed"
+    assert lifecycle["receipt_id"] == receipt.receipt_id
+    ledger.close()
+
+
+def test_grouped_coordinator_preserves_typed_failed_receipt(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    runner, ledger, commands = build_runner(tmp_path, commands=RecordingRunner(fail_at=2))
+    identity = CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA)
+    receipt = runner.run(identity, worktree)
+    job = CIAuditJob(identity=identity, worktree=worktree, failure_lanes=("unit",))
+
+    class ReceiptRunner:
+        def run(self, _identity: CIAuditIdentity, _worktree: Path) -> CIAuditReceipt:
+            return receipt
+
+    outcome = GroupedCICoordinator(lambda: ReceiptRunner(), max_parallel=1).run((job,))[0]
+
+    assert outcome.error is None
+    assert outcome.receipt is not None
+    assert outcome.receipt.status == "failed"
+    assert commands.calls[1][0] == ("python3", "scripts/run_static_lane.py")
+    ledger.close()
+
+
+def test_grouped_coordinator_preserves_runner_failure_reason(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    identity = CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA)
+    job = CIAuditJob(identity=identity, worktree=worktree, failure_lanes=("unit",))
+
+    class FailingRunner:
+        def run(self, _identity: CIAuditIdentity, _worktree: Path) -> CIAuditReceipt:
+            raise CIValidationError("Python interpreter mismatch", command_evidence=())
+
+    outcome = GroupedCICoordinator(lambda: FailingRunner(), max_parallel=1).run((job,))[0]
+
+    assert outcome.receipt is None
+    assert outcome.error == "audit_failed: CIValidationError: Python interpreter mismatch"
 
 
 def test_local_ci_runner_bootstraps_missing_repo_venv_before_ci(tmp_path: Path) -> None:
@@ -315,6 +548,12 @@ def test_local_ci_runner_bootstraps_missing_repo_venv_before_ci(tmp_path: Path) 
     receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
 
     assert receipt.status == "passed"
+    assert receipt.commands[0].argv == (
+        "python3",
+        "scripts/bootstrap_agent_workspace.py",
+        "--venv",
+        "link",
+    )
     assert commands.calls[0][0] == (
         "python3",
         "scripts/bootstrap_agent_workspace.py",
@@ -379,7 +618,7 @@ pytest_args = []
 
 
 @pytest.mark.parametrize("failure", ["dirty_start", "wrong_head", "head_race", "actions_race"])
-def test_local_ci_runner_fails_closed_without_a_receipt_on_invalid_or_raced_state(
+def test_local_ci_runner_records_failed_receipt_on_invalid_or_raced_state(
     tmp_path: Path, failure: str
 ) -> None:
     worktree = tmp_path / "worktree"
@@ -396,14 +635,25 @@ def test_local_ci_runner_fails_closed_without_a_receipt_on_invalid_or_raced_stat
         github.checks[1] = CheckState(actions_enabled=True, all_green=True, check_count=1)
     runner, ledger, _commands = build_runner(tmp_path, github=github, inspector=inspector)
 
-    with pytest.raises(CIValidationError):
-        runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+    receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
 
+    assert receipt.status == "failed"
+    if failure == "actions_race":
+        assert receipt.commands
+        assert all(command.returncode == 0 for command in receipt.commands)
+    else:
+        assert receipt.commands == ()
+    assert receipt.failure_reason
+    assert ledger.latest_ci_receipt_for_head(
+        "acme/widgets",
+        17,
+        HEAD_SHA,
+    ) == receipt
     assert ledger.latest_passing_ci_receipt(
         "acme/widgets",
         17,
         HEAD_SHA,
-        manifest_digest="0" * 64,
+        manifest_digest=receipt.manifest_digest,
         not_before=NOW - timedelta(days=1),
     ) is None
     ledger.close()
@@ -458,3 +708,174 @@ def test_missing_ci_executable_is_classified_environment_blocked(tmp_path: Path)
     assert receipt.status == "failed"
     assert receipt.commands[0].classification == "environment-blocked"
     ledger.close()
+
+
+def test_repo_pinned_python_mismatch_is_environment_blocked(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    (worktree / ".python-version").write_text("3.13\n", encoding="utf-8")
+    executable = worktree / ".venv/bin/python"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    runner, ledger, commands = build_runner(tmp_path)
+    runner._python_argv = (".venv/bin/python",)
+
+    receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+
+    assert receipt.status == "failed"
+    assert "Python interpreter mismatch" in (receipt.failure_reason or "")
+    assert receipt.commands[0].classification == "environment-blocked"
+    assert commands.calls[0][0] == (
+        str(executable),
+        "-c",
+        "import sys; print('.'.join(map(str, sys.version_info[:3])))",
+    )
+    ledger.close()
+
+
+def test_ci_receipt_round_trip_rejects_coerced_or_dropped_evidence(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    runner, ledger, _commands = build_runner(tmp_path)
+    receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+
+    payload = receipt.to_payload()
+    assert CIAuditReceipt.from_payload(payload) == receipt
+
+    payload["actions_state"]["all_green"] = "true"  # type: ignore[index]
+    with pytest.raises(ValueError, match="actions green"):
+        CIAuditReceipt.from_payload(payload)
+
+    payload = receipt.to_payload()
+    payload["commands"].append("not-a-command")  # type: ignore[union-attr]
+    with pytest.raises(ValueError, match="invalid command"):
+        CIAuditReceipt.from_payload(payload)
+
+    payload = receipt.to_payload()
+    payload["receipt_id"] = "not-a-sha"
+    with pytest.raises(ValueError, match="receipt_id"):
+        CIAuditReceipt.from_payload(payload)
+
+    payload = receipt.to_payload()
+    payload["commands"] = []
+    payload["receipt_id"] = "0" * 64
+    with pytest.raises(ValueError, match="no command evidence"):
+        CIAuditReceipt.from_payload(payload)
+
+    payload = receipt.to_payload()
+    payload["ci_mode"] = "budget-exhausted-local-equivalent"
+    with pytest.raises(ValueError, match="billing-blocked"):
+        CIAuditReceipt.from_payload(payload)
+    ledger.close()
+
+
+@pytest.mark.parametrize("changed,expected", [("agent/worker.py", "passed"), ("installer/windows.ps1", "failed")])
+def test_hermes_native_contract_runs_full_runner_without_lunabot_owner_files(tmp_path, changed, expected):
+    from github_pr_feedback.ci_contract import manifest_path, HERMES_ENV_CHECK
+    from github_pr_feedback.ci_runner import actions_disabled_local_ci_evidence
+    root = tmp_path / "hermes"
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts/run_tests.sh").write_text("exit 0\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text('[project]\nname="hermes-agent"\n', encoding="utf-8")
+    ledger = FeedbackLedger(tmp_path / "ci.sqlite3")
+    commands = RecordingRunner()
+    runner = LocalCIRunner(FakeGitHub(merge_state()), ledger, command_runner=commands,
+                          inspector=FakeInspector(changed=(changed,)), python_argv=("python3",), now=lambda: NOW)
+    receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), root)
+    assert receipt.status == expected
+    assert [call[0] for call in commands.calls] == [
+        ("git", "diff", "--check", f"{BASE_SHA}..{HEAD_SHA}"),
+        ("uv", "lock", "--check"), HERMES_ENV_CHECK, ("bash", "scripts/run_tests.sh")]
+    assert (actions_disabled_local_ci_evidence(receipt, manifest_path(root).read_bytes()) is not None) == (expected == "passed")
+    assert actions_disabled_local_ci_evidence(replace(receipt, commands=receipt.commands[:-1]),
+                                             manifest_path(root).read_bytes()) is None
+    assert actions_disabled_local_ci_evidence(
+        replace(receipt, commands=receipt.commands[:2] + receipt.commands[3:]),
+        manifest_path(root).read_bytes()) is None
+    ledger.close()
+
+
+def test_hermes_native_contract_does_not_claim_uncovered_platform_changes(tmp_path):
+    from github_pr_feedback.ci_contract import hermes_commands, hermes_coverage_gap
+    assert hermes_commands(tmp_path, BASE_SHA, HEAD_SHA, ("installer/windows.ps1",))
+    assert hermes_coverage_gap(("installer/windows.ps1",)) is not None
+    assert hermes_coverage_gap(("agent/worker.py",)) is None
+
+
+def test_hermes_native_ci_uses_shared_workspace_lock_once(tmp_path):
+    import json
+    from github_pr_feedback.ci_contract import hermes_commands
+    packages = ('apps/shared', 'apps/desktop', 'web')
+    (tmp_path / 'package-lock.json').write_text(json.dumps({'packages': {p: {} for p in packages}}), encoding="utf-8")
+    for package in packages:
+        root = tmp_path / package
+        root.mkdir(parents=True)
+        (root / 'package.json').write_text(json.dumps({'scripts': {'test': 'vitest run'}}), encoding="utf-8")
+    commands = hermes_commands(tmp_path, BASE_SHA, HEAD_SHA, ('apps/shared/src/client.ts',))
+    assert [(argv, cwd) for argv, cwd, _ in commands if argv[:2] == ('npm', 'ci')] == [
+        (('npm', 'ci', '--ignore-scripts'), tmp_path)]
+    assert {cwd for argv, cwd, _ in commands if argv == ('npm', 'run', 'test')} == {
+        tmp_path / package for package in packages}
+
+
+@pytest.mark.parametrize("error_code", ["permission_denied", "authentication"])
+def test_required_local_audit_reads_real_checks_without_admin_settings(tmp_path, error_code):
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+
+    class PublicReadGitHub(FakeGitHub):
+        def actions_enabled(self, *args, **kwargs):
+            raise GitHubClientError("settings unavailable", code=error_code)
+        def get_check_state(self, repository, head_sha, *, actions_enabled_hint=None):
+            assert actions_enabled_hint is True
+            return CheckState(True, False, 2)
+
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    commands = RecordingRunner()
+    receipt = LocalCIRunner(PublicReadGitHub(merge_state()), ledger, command_runner=commands,
+                           inspector=FakeInspector(), python_argv=("python3",), now=lambda: NOW,
+                           required_local_ci=True).run(
+        CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+    if error_code == "permission_denied":
+        assert receipt.status == "passed"
+        assert commands.calls
+        assert receipt.actions_state == CheckState(True, False, 2)
+    else:
+        assert receipt.status == "failed"
+        assert not commands.calls
+    ledger.close()
+
+
+@pytest.mark.parametrize("lag_at", [1, 2])
+def test_mergeability_lag_releases_lease_without_a_failed_ci_receipt(tmp_path, lag_at):
+    from github_pr_feedback.github_client import MergeStateStillComputingError
+
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+
+    class LaggingGitHub(FakeGitHub):
+        reads = 0
+
+        def get_merge_state(self, repository, number):
+            self.reads += 1
+            if self.reads == lag_at:
+                raise MergeStateStillComputingError()
+            return merge_state()
+
+    github = LaggingGitHub(merge_state())
+    inspector = FakeInspector()
+    runner, ledger, commands = build_runner(tmp_path, github=github, inspector=inspector)
+    identity = CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA)
+    with pytest.raises(MergeStateStillComputingError):
+        runner.run(identity, worktree)
+    assert ledger.latest_ci_receipt_for_head("acme/widgets", 17, HEAD_SHA) is None
+    run = ledger.latest_ci_run("acme/widgets", 17, HEAD_SHA)
+    assert run["status"] != "running"
+    assert run["receipt_id"] is None
+    github.checks = [CheckState(actions_enabled=False, all_green=True, check_count=0)] * 2
+    inspector.heads = [HEAD_SHA, HEAD_SHA]
+    inspector.clean = [True, True]
+    assert runner.run(identity, worktree).status == "passed"

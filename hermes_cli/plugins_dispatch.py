@@ -45,7 +45,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call", "pre_kanban_complete", "pre_kanban_review"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -167,9 +167,9 @@ class PluginDispatchMixin:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 
         Payloads evolve additively: ``**kwargs`` callbacks get everything, narrow signatures only
-        what they declare. Each callback is isolated. Bounded hooks and ``pre_tool_call`` run under
-        ``plugins.hook_callback_timeout`` (worker abandoned, never joined); ``pre_tool_call`` fails
-        closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
+        what they declare. Each callback is isolated. Bounded hooks and policy hooks run under
+        ``plugins.hook_callback_timeout`` (worker abandoned, never joined). Policy timeouts block;
+        ``pre_kanban_complete`` also blocks on callback exceptions. Observer failures skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
         """
         from hermes_cli.plugins import _resolve_hook_callback_timeout
@@ -187,7 +187,10 @@ class PluginDispatchMixin:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            results.append({"action": "block", "message": (
+                                _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE if hook_name == "pre_tool_call"
+                                else "pre_kanban_complete plugin callback timed out or is still running"
+                            )})
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
@@ -196,6 +199,8 @@ class PluginDispatchMixin:
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+                if hook_name in {"pre_kanban_complete", "pre_kanban_review"}:
+                    results.append({"action": "block", "message": "Kanban completion policy callback failed"})
         return results
 
     def _run_hook_callback_bounded(

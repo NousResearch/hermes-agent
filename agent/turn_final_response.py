@@ -236,7 +236,8 @@ def finish_text_response(
             exc_info=True,
         )
 
-    _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+    _turn_exit_reason = ("kanban_shutdown_paused" if _sg.kanban_shutdown_paused
+                         else f"text_response(finish_reason={finish_reason})")
     if not agent.quiet_mode:
         agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
     return _verdict("break")

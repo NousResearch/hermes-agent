@@ -8,7 +8,16 @@ from dataclasses import dataclass
 from .github_client import Feedback
 
 _DISAGREEMENT = re.compile(
-    r"\b(?:i\s+disagree|do\s+not\s+(?:approve|use|want)|don't\s+(?:apply|use)|reject|not\s+approved|rather\s+use|use\s+.+\s+instead|instead\s+of)\b",
+    r"\b(?:i\s+disagree|do\s+not\s+(?:approve|use|want)|don't\s+(?:apply|use)|not\s+approved|rather\s+use|use\s+.+\s+instead|instead\s+of)\b",
+    re.IGNORECASE,
+)
+_ALTERNATIVE_VERB = (
+    r"(?:allow|apply|exclude|include|preserve|reject|require|retain|use|validate)"
+)
+_UNRESOLVED_ALTERNATIVES = re.compile(
+    rf"(?:\beither\s+(?:consistently\s+)?{_ALTERNATIVE_VERB}\b.{{1,600}}?"
+    rf"\bor\s+(?:consistently\s+)?{_ALTERNATIVE_VERB}\b|"
+    rf"\b{_ALTERNATIVE_VERB}\b.{{1,600}}?,\s+or\s+{_ALTERNATIVE_VERB}\b)",
     re.IGNORECASE,
 )
 _OPERATOR_COMMAND = re.compile(
@@ -25,11 +34,20 @@ class IntentReview:
     command: str | None = None
 
 
-def classify_feedback(feedback: Feedback) -> IntentReview | None:
+def classify_feedback(
+    feedback: Feedback, *, owner_login: str | None = None
+) -> IntentReview | None:
     """Escalate only explicit disagreement/change-of-approach comments."""
 
+    if (
+        owner_login is not None
+        and feedback.reviewer.login.casefold() == owner_login.casefold()
+    ):
+        return None
     body = " ".join(str(feedback.body or "").split())
-    if not body or not _DISAGREEMENT.search(body):
+    if not body or not (
+        _DISAGREEMENT.search(body) or _UNRESOLVED_ALTERNATIVES.search(body)
+    ):
         return None
     return IntentReview(
         comment_id=feedback.feedback_id,
@@ -58,7 +76,7 @@ def pending_intent_comment_ids(
 
     pending: dict[str, None] = {}
     for item in sorted(feedback, key=lambda value: value.created_at):
-        if classify_feedback(item) is not None:
+        if classify_feedback(item, owner_login=owner_login) is not None:
             pending[item.feedback_id] = None
         elif operator_decision(item, owner_login=owner_login) is not None:
             target = _TARGET_COMMENT.search(str(item.body or ""))

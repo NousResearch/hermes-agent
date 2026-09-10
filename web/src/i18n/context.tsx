@@ -51,24 +51,30 @@ const RTL_LOCALES = new Set<Locale>(["ar"]);
 // countries (English ≠ GB, Portuguese ≠ PT, Spanish ≠ ES, Chinese variants ≠
 // any single jurisdiction). Endonyms are unambiguous and avoid the political
 // mismapping that flag pairings inevitably create.
-export const LOCALE_META: Record<Locale, { name: string }> = {
-  en: { name: "English" },
-  zh: { name: "简体中文" },
-  "zh-hant": { name: "繁體中文" },
-  ja: { name: "日本語" },
-  de: { name: "Deutsch" },
-  es: { name: "Español" },
-  fr: { name: "Français" },
-  tr: { name: "Türkçe" },
-  uk: { name: "Українська" },
-  af: { name: "Afrikaans" },
-  ko: { name: "한국어" },
-  it: { name: "Italiano" },
-  ga: { name: "Gaeilge" },
-  pt: { name: "Português" },
-  ru: { name: "Русский" },
-  hu: { name: "Magyar" },
-  ar: { name: "العربية" },
+//
+// `name` is the full endonym shown in the dropdown; `short` is a compact code
+// used for the trigger button so it stays tidy even in a narrow sidebar
+// column. Latin-script locales use their uppercase ISO 639-1 code (EN, FR,
+// DE…); the two Chinese variants keep a single native glyph because both would
+// otherwise collide as "ZH". Keep `short` short — it must not overflow.
+export const LOCALE_META: Record<Locale, { name: string; short: string }> = {
+  en: { name: "English", short: "EN" },
+  zh: { name: "简体中文", short: "简" },
+  "zh-hant": { name: "繁體中文", short: "繁" },
+  ja: { name: "日本語", short: "JA" },
+  de: { name: "Deutsch", short: "DE" },
+  es: { name: "Español", short: "ES" },
+  fr: { name: "Français", short: "FR" },
+  tr: { name: "Türkçe", short: "TR" },
+  uk: { name: "Українська", short: "UK" },
+  af: { name: "Afrikaans", short: "AF" },
+  ko: { name: "한국어", short: "KO" },
+  it: { name: "Italiano", short: "IT" },
+  ga: { name: "Gaeilge", short: "GA" },
+  pt: { name: "Português", short: "PT" },
+  ru: { name: "Русский", short: "RU" },
+  hu: { name: "Magyar", short: "HU" },
+  ar: { name: "العربية", short: "AR" },
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];

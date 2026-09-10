@@ -3093,7 +3093,10 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
             return False
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
-        _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError))
+        # NetworkError covers mid-stream drops (ReadError "[Errno 32] Broken pipe",
+        # WriteError, CloseError) that are neither timeouts nor ConnectErrors; without it
+        # the provider dropping an SSE connection failed the turn instead of retrying.
+        _is_conn_err = isinstance(e, (_httpx.NetworkError, _httpx.RemoteProtocolError, ConnectionError))
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)

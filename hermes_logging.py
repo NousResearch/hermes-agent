@@ -357,6 +357,15 @@ _profile_routing_epoch = 0
 _profile_routing_epoch_lock = threading.Lock()
 
 
+def _profile_home_identity(home: Path) -> tuple[int, int, int] | None:
+    """Return an incarnation key so delete/recreate at one path changes membership."""
+    try:
+        info = home.stat()
+    except OSError:
+        return None
+    return info.st_dev, info.st_ino, info.st_ctime_ns
+
+
 class _ProfileRoutingFileHandler(logging.Handler):
     """Route queued records to the log file for their Hermes home.
 
@@ -374,6 +383,9 @@ class _ProfileRoutingFileHandler(logging.Handler):
         self._hermes_routed_log_path = resolved
         self._default_home = resolved.parent.parent.resolve()
         self._profile_homes = {Path(home).expanduser().resolve() for home in profile_homes}
+        self._profile_home_identities = {
+            home: _profile_home_identity(home) for home in self._profile_homes
+        }
         self._membership_epoch = membership_epoch
         self._filename = resolved.name
         self._max_bytes = getattr(existing, "maxBytes", 0)
@@ -387,8 +399,9 @@ class _ProfileRoutingFileHandler(logging.Handler):
     def has_profile_homes(self, profile_homes: Sequence[Path]) -> bool:
         homes = {Path(home).expanduser().resolve() for home in profile_homes}
         homes.add(self._default_home)
+        identities = {home: _profile_home_identity(home) for home in homes}
         with self._profile_handlers_lock:
-            return homes == self._profile_homes
+            return homes == self._profile_homes and identities == self._profile_home_identities
 
     def update_profile_homes(
         self, profile_homes: Sequence[Path], membership_epoch: int
@@ -396,13 +409,20 @@ class _ProfileRoutingFileHandler(logging.Handler):
         """Replace the allowed routing homes after live profile discovery."""
         homes = {Path(home).expanduser().resolve() for home in profile_homes}
         homes.add(self._default_home)
+        identities = {home: _profile_home_identity(home) for home in homes}
         with self._profile_handlers_lock:
+            changed_homes = {
+                home
+                for home in homes & self._profile_homes
+                if identities[home] != self._profile_home_identities.get(home)
+            }
             self._profile_homes = homes
+            self._profile_home_identities = identities
             self._membership_epoch = membership_epoch
             stale_handlers = [
                 self._profile_handlers.pop(home)
                 for home in list(self._profile_handlers)
-                if home not in homes
+                if home not in homes or home in changed_homes
             ]
             for handler in stale_handlers:
                 _quietly(handler.close)

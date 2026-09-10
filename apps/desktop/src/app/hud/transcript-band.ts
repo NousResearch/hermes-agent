@@ -48,8 +48,11 @@ export function useHudTranscriptBand(rootRef: RefObject<HTMLDivElement | null>):
       // How tall the band actually needs to be — the tight bbox of the message
       // rows only. Measuring to the viewport edge counted the full-window scroll
       // container (min-height: 100%) as transcript and painted a empty slab almost
-      // the size of the HUD.
-      const rows = el?.querySelectorAll<HTMLElement>('[data-slot="aui_thread-content"] > *:not([data-slot])')
+      // the size of the HUD. Turn rows carry `aui_message-group`; the slot-less
+      // branch keeps the "show earlier" button reachable when it renders.
+      const rows = el?.querySelectorAll<HTMLElement>(
+        '[data-slot="aui_thread-content"] > [data-slot="aui_message-group"], [data-slot="aui_thread-content"] > *:not([data-slot])'
+      )
 
       // Zero-height rows are not a transcript. A fresh thread still renders
       // scaffolding inside the content box (clearance, empty state), so

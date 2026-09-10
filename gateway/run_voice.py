@@ -249,6 +249,23 @@ class GatewayVoiceMixin:
         policy = discord.get("voice_fast_lane")
         return dict(policy) if isinstance(policy, dict) else {}
 
+    # Imperative/infinitive verbs that signal an explicit file/code/system operation, as
+    # opposed to idle conversation ("can you hear me?", "what did you just say?").
+    _VOICE_FAST_LANE_WORK_VERB_RE = re.compile(
+        r"\b(?:inspect|fix|run|commit|write|edit|creat\w*|delet\w*|remov\w*|updat\w*|add|"
+        r"execut\w*|test|patch|debug|build|deploy|install|check|investigat\w*|review|"
+        r"refactor|implement|analyz\w*|restart|configur\w*|merge|push|pull|clone|"
+        r"kill|revert)\b", re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _voice_fast_lane_requests_work(text: str) -> bool:
+        """True when transcribed voice text asks for an explicit operation rather than idle
+        conversation. Fast-lane voice turns stay tool-free (private, low-latency chat) right up
+        until the speaker explicitly asks for work, at which point the turn must keep full task
+        capability instead of silently dropping the request."""
+        return bool(GatewayVoiceMixin._VOICE_FAST_LANE_WORK_VERB_RE.search(text or ""))
+
     def _voice_fast_lane_matches(self, adapter, guild_id: int, user_id: int) -> tuple[bool, str]:
         """Only the configured channel and allowlisted speaker get a private transcript."""
         policy = self._voice_fast_lane_config()
@@ -307,7 +324,7 @@ class GatewayVoiceMixin:
             raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
             channel_prompt=channel_prompt)
         fast_lane, voice_channel_id = self._voice_fast_lane_matches(adapter, guild_id, user_id)
-        if fast_lane:
+        if fast_lane and not self._voice_fast_lane_requests_work(transcript):
             # Delivery stays in the bound text channel; only storage identity changes.
             source._voice_fast_lane = True
             source._session_key_lane = f"discord-voice:{voice_channel_id}"

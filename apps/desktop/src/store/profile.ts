@@ -603,7 +603,10 @@ export async function openGatewayAgent(connectionId: string, profile: string): P
     return
   }
 
-  await openGatewayForAgent(connection, normalizeProfileKey(profile), { activationLease: true })
+  await openGatewayForAgent(connection, normalizeProfileKey(profile), {
+    activationLease: true,
+    spawnPriority: 'foreground'
+  })
 }
 
 // Activate a connection-scoped agent's gateway — the (connectionId, profile)

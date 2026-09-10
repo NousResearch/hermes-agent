@@ -81,6 +81,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "reported and continue where the last run left off (scouts, "
             "monitors, incremental digests). First run is unchanged.")
 
+    _flag(cron_create, "--paused", default=False,
+        help="Create disabled in one write; resume to schedule, or explicitly run now.")
+    cron_create.add_argument("--paused-reason", help="Auditable reason; requires --paused.")
+
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")
     cron_edit.add_argument("--schedule", help="New schedule")

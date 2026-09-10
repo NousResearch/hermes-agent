@@ -180,3 +180,98 @@ class TestCustomReasoningWithNumCtx:
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {}
 
+
+class TestCustomReasoningCapabilityOverrideGate:
+    """A ``model_overrides.<provider>.<model>.supports_reasoning: false`` override mutes
+    every reasoning/think wire field, even when the agent has a global reasoning_effort
+    (#t_d56d5c00): custom:ollama-local's qwen3-coder-30b-tools-64k has this override
+    declared in config.yaml, but the profile never saw the provider name to look it up —
+    the client kept sending ``reasoning_effort``/``think`` and Ollama 400'd with
+    ``think value "high" is not supported for this model``.
+    """
+
+    def test_declared_incapable_model_gets_no_reasoning_fields(self, custom_profile, monkeypatch):
+        import agent.models_dev as models_dev
+
+        monkeypatch.setattr(
+            models_dev, "explicit_supports_reasoning_override",
+            lambda provider, model: False if (provider, model) == ("custom:ollama-local", "qwen3-coder-30b-tools-64k") else None,
+        )
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="qwen3-coder-30b-tools-64k",
+            base_url="http://localhost:11434/v1",
+            provider="custom:ollama-local",
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_declared_incapable_model_ignores_disable_path_too(self, custom_profile, monkeypatch):
+        """Even the disable path (effort=none) must not emit think=False for a model the
+        user has explicitly told us takes no reasoning parameter at all."""
+        import agent.models_dev as models_dev
+
+        monkeypatch.setattr(
+            models_dev, "explicit_supports_reasoning_override",
+            lambda provider, model: False,
+        )
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="qwen3-coder-30b-tools-64k",
+            base_url="http://localhost:11434/v1",
+            provider="custom:ollama-local",
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_no_override_keeps_existing_behavior(self, custom_profile, monkeypatch):
+        """A model with no explicit override (the common case) is unaffected — the
+        pre-existing wire-shape contract still applies."""
+        import agent.models_dev as models_dev
+
+        monkeypatch.setattr(models_dev, "explicit_supports_reasoning_override", lambda provider, model: None)
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="glm-5.2",
+            provider="custom:some-other-endpoint",
+        )
+        assert tl == {"reasoning_effort": "high"}
+        assert eb == {}
+
+    def test_override_true_keeps_existing_behavior(self, custom_profile, monkeypatch):
+        """An explicit ``supports_reasoning: true`` override must not suppress the
+        reasoning wire fields — only an explicit ``false`` gates."""
+        import agent.models_dev as models_dev
+
+        monkeypatch.setattr(models_dev, "explicit_supports_reasoning_override", lambda provider, model: True)
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="glm-5.2",
+            provider="custom:some-endpoint",
+        )
+        assert tl == {"reasoning_effort": "high"}
+
+    def test_missing_provider_or_model_does_not_gate(self, custom_profile):
+        """No provider/model passed through (defensive) → never suppress; the override
+        lookup itself is skipped, not treated as a positive match."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}, model=None, provider=None,
+        )
+        assert tl == {"reasoning_effort": "high"}
+
+    def test_lookup_failure_fails_open_to_existing_behavior(self, custom_profile, monkeypatch):
+        """If the override lookup itself raises, never let that regress into silently
+        dropping reasoning params for a model that never asked to be muted."""
+        import agent.models_dev as models_dev
+
+        def _boom(provider, model):
+            raise RuntimeError("config read failed")
+
+        monkeypatch.setattr(models_dev, "explicit_supports_reasoning_override", _boom)
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="glm-5.2",
+            provider="custom:some-endpoint",
+        )
+        assert tl == {"reasoning_effort": "high"}
+

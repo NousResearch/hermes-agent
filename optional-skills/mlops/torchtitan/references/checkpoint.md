@@ -153,7 +153,7 @@ load_step = 500  # Resume from step 500
 
 ## Interoperability with TorchTune
 
-Checkpoints saved with `last_save_model_only = true` can be loaded directly into [torchtune](https://github.com/pytorch/torchtune) for fine-tuning.
+Checkpoints saved with `last_save_model_only = true` can be loaded directly into [torchtune](https://github.com/meta-pytorch/torchtune) for fine-tuning.
 
 ## Full Configuration Example
 

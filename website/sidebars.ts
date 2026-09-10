@@ -624,6 +624,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/web-development/web-development-har-derived-api-client',
                     'user-guide/skills/optional/web-development/web-development-page-agent',
                     'user-guide/skills/optional/web-development/web-development-publish-site',
+                    'user-guide/skills/optional/web-development/web-development-scrollcraft',
                   ],
                 },
                 {

@@ -274,6 +274,7 @@ hermes skills uninstall <skill-name>
 | [**har-derived-api-client**](/docs/user-guide/skills/optional/web-development/web-development-har-derived-api-client) | Record a site's XHR into a HAR, derive an HTTP client. |
 | [**page-agent**](/docs/user-guide/skills/optional/web-development/web-development-page-agent) | Embed an in-page natural-language GUI copilot in web apps. |
 | [**publish-site**](/docs/user-guide/skills/optional/web-development/web-development-publish-site) | Versioned site deploys to GitHub/Cloudflare/Netlify Pages. |
+| [**scrollcraft**](/docs/user-guide/skills/optional/web-development/web-development-scrollcraft) | Premium scroll-driven landing pages; scroll = timeline. |
 
 ## yuanbao
 

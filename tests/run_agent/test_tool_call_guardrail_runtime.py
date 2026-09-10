@@ -242,7 +242,14 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert executed == [("web_search", allowed_args, "c-allow")]
     assert [m["tool_call_id"] for m in messages] == ["c-block", "c-allow"]
     assert "repeated_exact_failure_block" in messages[0]["content"]
-    assert json.loads(messages[1]["content"]) == {"ok": "allowed"}
+    allowed_content = messages[1]["content"]
+    prefix = '<untrusted_tool_result source="web_search">\n'
+    suffix = "\n</untrusted_tool_result>"
+    assert allowed_content.startswith(prefix)
+    assert allowed_content.endswith(suffix)
+    wrapped_body = allowed_content[len(prefix) : -len(suffix)]
+    payload = wrapped_body.split("\n\n", 1)[1]
+    assert json.loads(payload) == {"ok": "allowed"}
     assert starts == [("c-allow", "web_search", allowed_args)]
     started_events = [event for event in progress_events if event[0] == "tool.started"]
     completed_events = [event for event in progress_events if event[0] == "tool.completed"]

@@ -432,10 +432,10 @@ def make_tool_result_message(
     return message
 
 
-# Tools whose results carry attacker-controllable content; outputs under 32 chars skip wrapping.
+# Tools whose results carry attacker-controllable content; all text is wrapped.
 _UNTRUSTED_TOOL_NAMES = frozenset({"web_extract", "web_search"})
 _UNTRUSTED_TOOL_PREFIXES = ("browser_", "mcp_")
-_UNTRUSTED_WRAP_MIN_CHARS = 32
+_UNTRUSTED_WRAP_MIN_CHARS = 0
 
 # Case-insensitive so a differently-cased tag can't forge or prematurely close the boundary.
 _DELIMITER_TOKEN_RE = re.compile(r"untrusted_tool_result", re.IGNORECASE)

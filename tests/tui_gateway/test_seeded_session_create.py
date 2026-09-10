@@ -36,12 +36,15 @@ def test_parentless_seed_survives_a_restart_and_hides_its_runbook(monkeypatch, t
         sids.append(result["session_id"])
         key = result["stored_session_id"]
         assert [m["role"] for m in result["messages"]] == ["assistant", "user"]
+        assert result["message_count"] == 2  # counts what is on the wire, as session.resume does
 
         assert db.get_session(key)["title"] == "Welcome to Hermes"
         rows = db.get_messages_as_conversation(key)
         assert [r["content"] for r in rows] == ["Private setup runbook", "Welcome to Hermes", "Second question"]
         assert rows[0]["display_kind"] == "hidden"
         assert rows[2].get("display_kind") is None
+        listed = server.handle_request({"id": "list", "method": "session.list", "params": {}})["result"]["sessions"]
+        assert next(s for s in listed if s["id"] == key)["preview"].startswith("Second question")  # the hidden row is not the preview
 
         server._sessions.pop(sids.pop())  # the gateway restarts; only state.db remains
         resumed = server.handle_request({"id": "resume", "method": "session.resume", "params": {"session_id": key, "cols": 96}})

@@ -172,6 +172,9 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
             params['task'] = asdict(params['task'])
         result = owner_request(self.home, 'hosted-producer', {
             **self.binding, 'operation': operation, 'params': params})
+        if operation in {'create', 'resume', 'resolve_exact'} and result is not None:
+            from gateway.session_contract import SessionRef
+            self.ref = SessionRef(str(self.home), result['session_id'])
         if operation == 'submit' and callback is not None:
             with self._lock:
                 self.callbacks[result['admission_id']] = callback

@@ -21,6 +21,7 @@ def test_group_management_on_ordinary_authenticated_socket(tmp_path):
     (home / 'profiles' / 'helper').mkdir(parents=True)
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False},
+        'hosted_rooms': {'profiles': {'helper': str(home / 'profiles' / 'helper')}},
         'model': {'provider': 'custom', 'default': 'no-inference',
                   'base_url': 'http://127.0.0.1:1/v1'},
         'auxiliary': {'title_generation': {'enabled': False}},

@@ -338,6 +338,13 @@ class SessionAuthority:
                 if first is not None and live.source.platform == Platform.LOCAL:
                     from gateway.session_local_recovery import restore_local_session
                     restore_local_session(self, ref.session_id)
+                    if first['request_id'].startswith('hosted:'):
+                        from gateway.session_hosted_transport import check_remote_hosted_admission
+                        if not await asyncio.to_thread(check_remote_hosted_admission, self, ref, first):
+                            service = getattr(self, 'hosted_room_service', None)
+                            if service is None:
+                                raise RuntimeStoreError('permission_denied')
+                            await asyncio.to_thread(service.check_admission, ref, first)
                     if 'local_automation_v1' in first['payload']:
                         from gateway.session_automation import check_local_automation
                         check_local_automation(self, ref, first)

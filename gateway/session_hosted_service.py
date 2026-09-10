@@ -4,13 +4,14 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from gateway.session_contract import Principal
+from gateway.session_hosted_controls import HostedControls
 from hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
 
 _OWNER = 'gateway.hosted.owner.v1:'
 
 
-class CanonicalHostedRoomService(HostedRoomService):
+class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
@@ -21,9 +22,50 @@ class CanonicalHostedRoomService(HostedRoomService):
         # intentionally use the runtime's receipt-capable (non-legacy) recovery path.
         return self
 
-    def local_profiles(self):
+    def profile_homes(self):
+        from gateway.run import _load_gateway_config
+        from gateway.hosted_rooms_common import IDENTIFIER_RE
         home = Path(self.authority.profile_id)
-        return (home.name if home.parent.name == 'profiles' else 'default',)
+        own = home.name if home.parent.name == 'profiles' else 'default'
+        configured = _load_gateway_config().get('hosted_rooms', {}).get('profiles', {})
+        result = {own: home}
+        for name, value in configured.items():
+            target = Path(value)
+            if not IDENTIFIER_RE.fullmatch(name) or not target.is_absolute() or target != target.resolve():
+                raise RuntimeStoreError('invalid_params')
+            if name != own:
+                result[name] = target
+        return result
+
+    def local_profiles(self):
+        return tuple(self.profile_homes())
+
+    def attest(self, selector, operation, params):
+        from dataclasses import asdict
+        from gateway.hosted_room_driver import list_tasks
+        if set(selector) != {'room_id', 'member_id', 'profile'}:
+            raise RuntimeStoreError('invalid_params')
+        room_id, member, profile = (selector[k] for k in ('room_id', 'member_id', 'profile'))
+        owner = self._owner(room_id)
+        self._owned_authority(room_id)
+        room = self._room(room_id)
+        if not any(m['member_id'] == member and m['profile'] == profile
+                   and m.get('target', {}).get('kind', 'local') == 'local' for m in room['members']):
+            raise RuntimeStoreError('permission_denied')
+        if profile not in self.profile_homes():
+            raise RuntimeStoreError('permission_denied')
+        if operation in {'submit', 'execute'}:
+            matches = [t for t in list_tasks(self.db_path, room_id=room_id)
+                       if asdict(t['identity']) == params.get('task')
+                       and t['execution_generation'] == params.get('execution_generation')
+                       and t['status'] == 'running'
+                       and t['payload'].get('target_member_id', t['payload']['target_profile']) == member
+                       and t['payload']['target_profile'] == profile
+                       and t['payload']['prompt'] == params.get('prompt')]
+            if len(matches) != 1:
+                raise RuntimeStoreError('permission_denied')
+        return {'owner': owner}
+
 
     def bindings(self):
         with self.authority.db._read_ctx() as conn:
@@ -74,6 +116,15 @@ class CanonicalHostedRoomService(HostedRoomService):
         owner = self._owner(binding.room_id)
         key = binding.room_id, member, profile, owner
         if key not in self.member_rpcs:
+            home = self.profile_homes().get(profile)
+            if home is None:
+                raise RuntimeStoreError('permission_denied')
+            if home != Path(self.authority.profile_id):
+                from gateway.session_hosted_transport import HostedRoomOwnerRPC
+                self.member_rpcs[key] = HostedRoomOwnerRPC(home=home,
+                    source_home=self.authority.profile_id, room_id=binding.room_id,
+                    member_id=member, profile=profile)
+                return self.member_rpcs[key]
             def authorize(operation, identity, generation):
                 self.authorize_room(owner, binding.room_id)
                 room = self._room(binding.room_id)
@@ -140,6 +191,9 @@ async def ensure_hosted_service(runner):
         loop = asyncio.get_running_loop()
         service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
         authority.hosted_room_service = service
+    from gateway.session_hosted_transport import install_hosted_transport
+    install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
+                             attest=service.attest)
     await asyncio.to_thread(service.start)
     return service
 

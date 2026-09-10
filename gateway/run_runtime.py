@@ -38,8 +38,6 @@ async def start_gateway_runtime_api(runner):
     from gateway.run_api import start_gateway_api
     runner.session_api = await start_gateway_api(runner)
     runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
-    from gateway.session_local_recovery import recover_local_sessions
-    recover_local_sessions(runner.session_authority, schedule=True)
     from gateway.session_bot import recover_bot_deliveries
     await recover_bot_deliveries(runner.session_authority)
 
@@ -53,6 +51,10 @@ async def recover_gateway_native_sessions(runner):
     authority = getattr(runner, 'session_authority', None)
     if authority is None:
         return {}
+    from gateway.session_hosted_service import ensure_hosted_service
+    await ensure_hosted_service(runner)
+    from gateway.session_local_recovery import recover_local_sessions
+    recover_local_sessions(authority, schedule=True)
     pending = {row['target_session_id'] for row in authority.db._read_all(
         "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
     bindings = [(entry.session_id, entry.origin, runner._adapter_for_source(entry.origin))
@@ -97,6 +99,8 @@ async def drain_gateway_runtime(runner):
     descriptor = getattr(runner, 'session_runtime_descriptor', None)
     if descriptor is None:
         return
+    from gateway.session_hosted_service import stop_hosted_service
+    await stop_hosted_service(runner)
     runner._draining = True
     descriptor.update(state='draining', capabilities=[])
     # Withdraw the public ingress callback without disconnecting egress needed

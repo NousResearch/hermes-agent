@@ -522,6 +522,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _control_server = await _start_gateway_start_control_socket(runner)
         if _control_server is None:
             raise RuntimeError("gateway session bootstrap control listener unavailable")
+        runner.session_control_server = _control_server
         from gateway.run_runtime import start_gateway_runtime_api
         await start_gateway_runtime_api(runner)
 

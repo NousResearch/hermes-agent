@@ -678,6 +678,9 @@ class GatewayStartupMixin:
         return service
 
     async def _ensure_hosted_room_worker(self):
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.session_hosted_service import ensure_hosted_service
+            return await ensure_hosted_service(self)
         return await asyncio.to_thread(self._start_hosted_room_worker_sync)
 
     async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:
@@ -688,6 +691,9 @@ class GatewayStartupMixin:
 
     async def _stop_hosted_room_worker(self, timeout: float = 5.0) -> bool:
         """Pause room execution durably without interrupting accepted turns."""
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.session_hosted_service import stop_hosted_service
+            return await stop_hosted_service(self, timeout=timeout)
         from tui_gateway import methods_groups
         return await asyncio.to_thread(methods_groups.stop_hosted_room_service, timeout=timeout)
 

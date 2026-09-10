@@ -813,6 +813,12 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    # Earliest epoch-seconds this task may be dispatched. Set by the defer-on-429
+    # path when an unattended worker's primary is rate-limited until a known reset:
+    # the card returns to ``ready`` but the dispatcher skips it until the clock
+    # passes, instead of respawning a worker that will 429 again immediately.
+    # NULL (the common case) = dispatchable now.
+    ("not_before", "not_before INTEGER"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

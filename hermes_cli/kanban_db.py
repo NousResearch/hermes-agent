@@ -941,7 +941,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Earliest epoch-seconds at which this task may be dispatched. Written by
+    -- the defer-on-429 path: when an unattended worker's PRIMARY model is
+    -- rate-limited until a known reset, the card goes back to ``ready`` with
+    -- ``not_before`` set, so the dispatcher skips it until the reset elapses
+    -- rather than respawning a worker that will 429 again on its first call.
+    -- NULL (the common case) means dispatchable now.
+    not_before           INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2901,6 +2908,73 @@ def edit_completed_task_result(
             run_id=run_id,
         )
     return True
+
+
+def defer_task(
+    conn: sqlite3.Connection, task_id: str, *, not_before: float, reason: Optional[str] = None,
+    expected_run_id: Optional[int] = None, metadata: Optional[dict] = None,
+) -> bool:
+    """Re-queue a ``running`` task for a LATER dispatch (defer-on-429).
+
+    This is deliberately NOT ``block_task``. A deferral is not a blocker:
+
+    * It needs no human. ``blocked`` would put a card on Joey's desk that resolves
+      itself when a quota bucket rolls over.
+    * It must not consume the consecutive-failure budget. The worker did nothing
+      wrong — the provider was capped — so ``_record_task_failure`` would trip the
+      circuit breaker after two capped days and give up on healthy work.
+    * It must not count toward unblock-loop detection. A weekly-capped model would
+      otherwise escalate a perfectly fine card to ``triage``.
+
+    So the card goes back to its source lane (``ready``/``review``) with
+    ``not_before`` set; ``_lane_rows`` skips it until the clock passes. The run is
+    closed with outcome ``deferred`` so attempt history shows what happened.
+
+    Returns True when the task transitioned.
+    """
+    when = int(float(not_before))
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        retry_status = (
+            _retry_status_for_run(conn, task_id, row["current_run_id"])
+            if row["status"] == "running" else "ready"
+        )
+        sql = (
+            "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, not_before = ? "
+            "WHERE id = ? AND status IN ('running', 'ready', 'review')"
+        )
+        params: tuple = (retry_status, when, task_id)
+        if expected_run_id is not None:
+            sql += " AND current_run_id = ?"
+            params = (*params, int(expected_run_id))
+        if conn.execute(sql, params).rowcount != 1:
+            return False
+        run_id = _end_or_synthesize_run(
+            conn, task_id, outcome="deferred", status=retry_status, summary=reason,
+            metadata=metadata, synthesize=bool(reason),
+        )
+        _append_event(
+            conn, task_id, "deferred",
+            {"not_before": when, "reason": reason, "retry_status": retry_status},
+            run_id=run_id,
+        )
+    return True
+
+
+def clear_task_deferral(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Drop a ``not_before`` gate so the task is immediately dispatchable again
+    (operator override / an unblock that should not wait out a stale reset)."""
+    with write_txn(conn):
+        changed = conn.execute(
+            "UPDATE tasks SET not_before = NULL WHERE id = ? AND not_before IS NOT NULL",
+            (task_id,),
+        ).rowcount
+    return changed == 1
 
 
 def block_task(

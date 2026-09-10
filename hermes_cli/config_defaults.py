@@ -22,6 +22,21 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    # Fallback-chain policy knobs (the CHAIN itself lives in fallback_providers above).
+    "fallback": {
+        # What an UNATTENDED run (cron fire, kanban worker) does when its PRIMARY
+        # returns a rate-limit-class error carrying a reset timestamp.
+        #   "walk"  (default) — current behaviour: immediately try the next rung.
+        #   "defer"           — park the run until the reset and re-schedule it,
+        #                       instead of spending the chain (down to a paid floor)
+        #                       on work nobody is waiting for.
+        # Interactive sessions ALWAYS walk: a human is waiting, and a degraded answer
+        # now beats no answer. A run with no usable reset timestamp always walks too —
+        # parking with no known resume time is worse than a cheaper rung.
+        # Per-run escape hatch: set HERMES_UNATTENDED_LATENCY_CRITICAL=1 for unattended
+        # work whose whole value is freshness (a monitor), which forces "walk".
+        "unattended_on_rate_limit": "walk",
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on

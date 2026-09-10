@@ -144,6 +144,33 @@ class MemoryProvider(ABC):
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
         """PARENT-side observation of a completed delegation (the subagent has no provider session)."""
 
+    def journey_cards(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return durable memory entries for the learning-journey graph.
+
+        The journey surfaces (``hermes journey``, the TUI ``/journey`` overlay
+        and the desktop Star Map) render what the agent has learned over time.
+        By default that graph only sees built-in memory (``MEMORY.md`` /
+        ``USER.md``); implementing this hook lets an external provider's
+        durable facts appear alongside them as first-class memory nodes.
+
+        Each card is a dict with:
+
+        - ``body`` (str, required): the fact/entry text.
+        - ``title`` (str, optional): short label; defaults to the body's
+          first line.
+        - ``timestamp`` (optional): unix seconds, ISO-8601 string, or a
+          ``datetime`` — when the entry was learned. ``None`` is allowed.
+        - ``session_id`` (str, optional): the provider-side session this
+          entry was derived from, when known.
+
+        Contract: MUST be callable without ``initialize()`` (journey views run
+        outside any chat session); MUST be best-effort and never raise (any
+        failure → ``[]``); SHOULD be fast and cap work at ``limit``. Provider
+        cards are read-only in the journey editors; the provider's own tools
+        manage them. Default returns an empty list.
+        """
+        return []
+
     def get_config_schema(self) -> List[Dict[str, Any]]:
         """Setup fields for ``hermes memory setup`` ([] if none): ``key``, ``description``,
         optional ``secret`` (goes to .env), ``required``, ``default``, ``choices``, ``type``

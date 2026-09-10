@@ -2,7 +2,8 @@
 
 Node ids (from ``agent.learning_graph``): skills → the skill name; memories →
 ``memory:<source>:<index>`` (``source`` = ``memory`` for MEMORY.md / ``profile``
-for USER.md; ``index`` = position in the combined card list, MEMORY.md first).
+for USER.md, or the provider name for read-only provider cards; ``index`` =
+position in the combined card list, MEMORY.md first).
 Shared by CLI ``hermes journey``, the TUI ``/journey`` overlay and the desktop.
 Deleting a skill *archives* it (``hermes curator restore`` recovers it);
 deleting a memory rewrites its file.
@@ -21,14 +22,21 @@ def parse_node_kind(node_id: str) -> str:
 
 
 def _parse_memory_id(node_id: str) -> tuple[str, int]:
-    """``memory:<source>:<index>`` → (source, global_index)."""
+    """``memory:<source>:<index>`` → (source, global_index). Cards from an external
+    memory provider (any source other than the two files) are read-only here."""
     parts = node_id.split(":", 2)
     try:
-        if len(parts) != 3 or parts[0] != "memory" or parts[1] not in _MEMORY_FILES:
+        if len(parts) != 3 or parts[0] != "memory":
             raise ValueError
-        return parts[1], int(parts[2])
+        source, index = parts[1], int(parts[2])
     except ValueError as exc:
         raise ValueError(f"bad memory node id: {node_id!r}") from exc
+    if source not in _MEMORY_FILES:
+        raise ValueError(
+            f"memory cards from provider {source!r} are read-only here; "
+            "manage them with the provider's own tools"
+        )
+    return source, index
 
 
 def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:

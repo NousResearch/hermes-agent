@@ -6,11 +6,11 @@ import {
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
+import { seedDefaultCwd } from '@/app/session/seed-default-cwd'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
@@ -63,14 +63,11 @@ import {
 import {
   $activeSessionId,
   $connection,
-  $currentCwd,
   $selectedStoredSessionId,
   $sessions,
   ensureDefaultWorkspaceCwd,
   forgetSessionOwnerHintsForConnection,
   setConnection,
-  setCurrentBranch,
-  setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
 import {
@@ -560,23 +557,6 @@ export function useGatewayBoot({
       }
 
       return true
-    }
-
-    // Seed the working dir from the backend default on a fresh view (nothing
-    // open yet). Shared by boot + soft switch.
-    async function seedDefaultCwd(shouldPublish: () => boolean = () => true) {
-      await ensureDefaultWorkspaceCwd(shouldPublish)
-
-      if (!shouldPublish()) {
-        return
-      }
-
-      const remoteDefault = await desktopDefaultCwd().catch(() => null)
-
-      if (shouldPublish() && remoteDefault?.cwd && !$activeSessionId.get() && !$currentCwd.get()) {
-        setCurrentCwd(remoteDefault.cwd)
-        setCurrentBranch(remoteDefault.branch || '')
-      }
     }
 
     // Soft gateway-mode apply: main tore down the primary without reloading.

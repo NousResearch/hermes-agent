@@ -14,6 +14,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEff
 import { useLocation, useNavigate } from 'react-router'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { draftNeedsReseed, seedDefaultCwd } from '@/app/session/seed-default-cwd'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -551,6 +552,34 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     void refreshActiveProfile()
     resetProjectTreeState()
   }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
+
+  // A remote profile switch can leave the fresh draft with no workspace: the
+  // draft is created before the swapped descriptor is published, so it read
+  // the OUTGOING profile's remembered cwd (see draftNeedsReseed). Once the
+  // descriptor for the new scope lands, reseed a detached, un-targeted draft
+  // the same way boot does. Keyed on the published descriptor rather than
+  // $activeGatewayProfile because the remembered-cwd lookup reads
+  // $connection.profile.
+  const publishedConnection = useStore($connection)
+  const draftSeedScope = `${publishedConnection?.connectionId ?? ''}\0${publishedConnection?.profile ?? ''}\0${publishedConnection?.baseUrl ?? ''}`
+  const lastDraftSeedScopeRef = useRef(draftSeedScope)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    if (draftSeedScope === lastDraftSeedScopeRef.current) {
+      return
+    }
+
+    lastDraftSeedScopeRef.current = draftSeedScope
+
+    if (!draftNeedsReseed(publishedConnection)) {
+      return
+    }
+
+    const stillCurrent = () => lastDraftSeedScopeRef.current === draftSeedScope
+
+    seedDefaultCwd(stillCurrent).catch(err => console.warn('Failed to reseed the workspace cwd after a profile switch', err))
+  }, [draftSeedScope, publishedConnection])
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that

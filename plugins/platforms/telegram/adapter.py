@@ -149,7 +149,8 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
-    SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
+    SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env,
+    tcp_keepalive_socket_options, telegram_tls_kwargs)
 from utils import env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -2756,15 +2757,16 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 logger.info("[%s] Auto-discovered Telegram fallback IPs: %s", self.name, ", ".join(fallback_ips))
         proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips])
+        tls_kwargs = telegram_tls_kwargs(self.config.extra.get("tls_classic_key_exchange", False))
 
         def _pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
-            return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs=general_httpx),
-                    HTTPXRequest(**request_kwargs, **extra, httpx_kwargs=updates_httpx))
+            return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={**tls_kwargs, **general_httpx}),
+                    HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={**tls_kwargs, **updates_httpx}))
 
         if fallback_ips and not proxy_url and not disable_fallback:
             logger.info("[%s] Telegram fallback IPs active: %s", self.name, ", ".join(fallback_ips))
             # Separate request/update pools reduce contention during polling reconnect + bootstrap calls.
-            _transport_kwargs: dict = {"socket_options": tcp_keepalive_socket_options()}
+            _transport_kwargs: dict = {"socket_options": tcp_keepalive_socket_options(), **tls_kwargs}
             # Keep request/update pools separate to reduce contention during polling reconnect + bot API
             # bootstrap/delete_webhook calls. httpx ignores the client-level `limits` kwarg when a custom
             # `transport` is supplied (#58790). Unlike the proxy/direct branches (which inject limits at the

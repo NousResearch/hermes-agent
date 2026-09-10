@@ -50,6 +50,18 @@ SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 _UNSET = object()
 
 
+def telegram_tls_kwargs(classic_key_exchange=False) -> dict:
+    """Opt out of PQ key shares only for Telegram on incompatible network paths."""
+    if str(classic_key_exchange).lower() not in {"true", "1", "yes", "on"}:
+        return {}
+    # Keep httpx's CA selection (including SSL_CERT_FILE/SSL_CERT_DIR), hostname
+    # verification and TLS versions. OpenSSL 3.5's larger hybrid ClientHello can
+    # be reset mid-handshake on paths where a classic X25519 hello succeeds.
+    context = httpx.create_ssl_context()
+    context.set_ecdh_curve("X25519")
+    return {"verify": context}
+
+
 def _resolve_proxy_url(target_hosts=None) -> str | None:
     from gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)

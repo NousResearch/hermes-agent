@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli.browser_runtime import chromium_executable
 from hermes_constants import get_hermes_home
 
 from plugins.google_meet import process_manager as pm
@@ -105,9 +106,9 @@ def _cmd_setup() -> int:
         try:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
-                exe = p.chromium.executable_path
+                exe = chromium_executable() or p.chromium.executable_path
             chromium_ok = bool(exe and Path(exe).exists())
-            chromium_msg = f"ok ({exe})" if chromium_ok else "not installed — run: python -m playwright install chromium"
+            chromium_msg = f"ok ({exe})" if chromium_ok else "not installed — run: python -m playwright install chromium --no-shell"
         except Exception as e:
             chromium_msg = f"probe failed: {e}"
     print(f"  chromium       : {chromium_msg}")
@@ -153,9 +154,9 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
     except Exception as e:
         print(f"  pip install failed: {e}")
         return 1
-    print("\n[2/3] python -m playwright install chromium")
+    print("\n[2/3] python -m playwright install chromium --no-shell")
     try:
-        if subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False,
+        if subprocess.run([sys.executable, "-m", "playwright", "install", "chromium", "--no-shell"], check=False,
                           stdin=subprocess.DEVNULL).returncode != 0:
             print("  playwright install failed (may already be installed)")
     except Exception as e:
@@ -201,7 +202,7 @@ def _cmd_auth() -> int:
         from playwright.sync_api import sync_playwright
     except ImportError:
         print("playwright is not installed. run:\n"
-              "  pip install playwright && python -m playwright install chromium")
+              "  pip install playwright && python -m playwright install chromium --no-shell")
         return 1
     path = _auth_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -209,7 +210,9 @@ def _cmd_auth() -> int:
           f"saving storage state to: {path}")
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=False)
+            browser = pw.chromium.launch(
+                channel="chromium", executable_path=chromium_executable(), headless=False,
+            )
             context = browser.new_context()
             context.new_page().goto("https://accounts.google.com/", wait_until="domcontentloaded")
             with contextlib.suppress(EOFError):

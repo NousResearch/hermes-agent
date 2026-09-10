@@ -24,7 +24,7 @@ from tools import browser_tool_real_profile as _real_profile
 from tools import browser_tool_snapshot as _snapshot
 
 _DOCKER_PULL = "docker pull ghcr.io/nousresearch/hermes-agent:latest"
-_CHROMIUM_INSTALL = "npx agent-browser install --with-deps (or: npx playwright install --with-deps chromium)"
+_CHROMIUM_INSTALL = "hermes pm install chromium (system libraries: npx playwright install-deps chromium)"
 _CHROMIUM_MISSING_DOCKER_HINT = ("Chromium browser is missing. You're running in Docker — pull the latest image "
                                  f"to get the bundled Chromium: {_DOCKER_PULL}")
 _CHROMIUM_MISSING_HINT = f"Chromium browser is missing. Install it with: {_CHROMIUM_INSTALL}"
@@ -83,7 +83,7 @@ def _format_browser_timeout_error(
     if "sandbox" in f"{stderr}\n{stdout}".lower():
         parts.append("Chromium sandbox launch failed. Set AGENT_BROWSER_ARGS="
                      "'--no-sandbox,--disable-dev-shm-usage' in your environment, "
-                     "or run: npx agent-browser install --with-deps")
+                     "or run: npx playwright install-deps chromium")
     elif command == "open" and _cloud._is_local_mode():
         if _install._running_in_docker():
             parts.append("The browser daemon may still be starting or Chromium may be "
@@ -123,6 +123,11 @@ def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     daemon-side idle self-termination (agent-browser 0.24+) mirroring the Python janitor
     unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly."""
     env = _bt._build_browser_env()
+    from hermes_cli.browser_runtime import chromium_executable
+
+    executable = chromium_executable()
+    if executable:
+        env["AGENT_BROWSER_EXECUTABLE_PATH"] = executable
     env["PATH"] = _install._merge_browser_path(env.get("PATH", ""))
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:

@@ -7,7 +7,8 @@ from pathlib import Path
 
 from pm.cli import _install_names, _run_live
 from pm.ensure import _store, _facts, _lockfile, uv as pm_uv
-from pm.registry import get_package
+from pm.lock import Facts
+from pm.registry import get_package, walk
 from pm.store import current_target
 
 def _bundle_package_names() -> list[str]:
@@ -25,7 +26,6 @@ def _arch_guard(store_dir: Path) -> list[str]:
     """Every staged binary must be built for this machine's target — a
     payload staged with a mismatched interpreter or PATH tool ships an
     artifact that cannot run. Reads facts, probes each entry binary."""
-    from pm.lock import Facts
     from pm.package import machine_matches_binary
 
     facts = Facts(store_dir / "facts.json")
@@ -97,10 +97,11 @@ def _stage_native(args) -> int:
 
     os.environ["HERMES_RUNTIME_DIR"] = str(store_dir)
 
-    names = _bundle_package_names()
-    failed = _install_names(
-        [n for n in names if get_package(n).missing_reason(current_target()) is None]
-    )
+    names = [
+        n for n in _bundle_package_names()
+        if get_package(n).missing_reason(current_target()) is None
+    ]
+    failed = _install_names(names)
 
     # Prune the staged store BEFORE the venv sync and packaging: drop the
     # fetch-<sha> download-cache archives (needed only at install time — dead
@@ -110,9 +111,12 @@ def _stage_native(args) -> int:
     if failed:
         return 1
     # Only this build's store is ours to prune; machine-wide partials are not.
-    store = _store()
-    keep = _facts().entries_in_use()
-    for entry in store.root.iterdir():
+    # Cached facts may still name packages removed from the current selection.
+    # Retain the dependency closure before using facts as the deletion roots.
+    facts = Facts(store_dir / "facts.json", strict=True)
+    facts.retain({package.name for package in walk(names)})
+    keep = facts.entries_in_use()
+    for entry in store_dir.iterdir():
         if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep:
             shutil.rmtree(entry)
 

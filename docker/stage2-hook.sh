@@ -638,7 +638,7 @@ if [ -d "$INSTALL_DIR/skills" ]; then
 fi
 
 # --- Point agent-browser at the pinned Chromium binary ---
-# The image's Dockerfile pm-provisions the pinned Chromium pair into
+# The image's Dockerfile pm-provisions pinned full Chromium into
 # $HERMES_RUNTIME_DIR (/opt/hermes/tools) at BUILD time and bakes the
 # resolved browser binary path into /etc/hermes/agent-browser-executable-path
 # (the layout differs per arch — chrome-linux64/chrome on amd64,

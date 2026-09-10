@@ -56,7 +56,7 @@ FROM debian:13.4
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# The pm-pinned Chromium pair lives in the managed tool store at
+# The pm-pinned full Chromium lives in the managed tool store at
 # /opt/hermes/tools — outside the /opt/data volume mount, so the
 # build-time install survives the volume overlay at runtime. pm's
 # chromium package fact exports the same value (PLAYWRIGHT_BROWSERS_PATH
@@ -183,14 +183,15 @@ WORKDIR /opt/hermes
 # drifted to 0.11.6 while pm/lock.json pinned uv 0.12.3. That is exactly
 # the two-authorities failure the pm design exists to end. The image is now
 # a pin consumer: the stdlib-only pm provisioner reads pm/lock.json and
-# stages the pinned uv + the pinned Chromium pair (sha256-verified at
+# stages the pinned uv + full Chromium (sha256-verified at
 # download — the same code path pm.sh/pm.ps1 and the desktop payload use)
 # into the image's own runtime dir, a self-contained store baked under
 # /opt/hermes, outside the /opt/data volume so it survives the overlay.
 # The pinned uv is linked onto PATH so the `uv sync` / `uv pip install`
 # build steps below run the lockfile's uv, not a second download.
 #
-# The Chromium pair is staged here rather than by `npx playwright install`,
+# Full Chromium supports both headed and headless sessions. It is staged
+# here rather than by `npx playwright install`,
 # which fetched whatever revision the npm-resolved playwright wanted,
 # unverified, and recorded no fact. The resolved browser binary path is
 # baked to /etc/hermes/agent-browser-executable-path for stage2-hook.sh:
@@ -207,7 +208,7 @@ COPY hermes_constants.py hermes_constants.py
 # PM imports the shared stdlib runtime path and locking owners before deps exist.
 COPY hermes_cli/__init__.py hermes_cli/runtime_paths.py hermes_cli/runtime_state.py hermes_cli/
 RUN set -eu; \
-    python3 -m pm.cli install uv chromium chromium-headless-shell; \
+    python3 -m pm.cli install uv chromium; \
     ln -sf /opt/hermes/tools/uv-*/uv /usr/local/bin/uv; \
     python3 -c 'from pathlib import Path; from pm.lock import Facts; from pm.registry import get_package; from pm.store import current_target; root = Path("/opt/hermes/tools"); fact = Facts(root / "facts.json").get("python"); binary = get_package("python").binary(root / fact["entry"], current_target()); Path("/usr/local/bin/python3").symlink_to(binary)'; \
     uv --version; \

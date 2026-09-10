@@ -6,7 +6,7 @@
 // treats Versions/A/Foo as a bundle and dies with "code object is not
 // signed at all" (or "bundle format is ambiguous" on the Foo.framework/Foo
 // symlink). Sign the enclosing .app with --deep. Loose Mach-O outside
-// any .app (headless-shell + its dylibs) is signed as a file.
+// any .app (such as a loose dylib) is signed as a file.
 //
 // signIgnore still keeps osx-sign off the chromium trees.
 
@@ -37,7 +37,7 @@ export function chromiumRoots(payload) {
   if (!fs.existsSync(tools)) return []
   return fs
     .readdirSync(tools, { withFileTypes: true })
-    .filter(ent => ent.isDirectory() && /^chromium(_headless_shell)?-\d+/.test(ent.name))
+    .filter(ent => ent.isDirectory() && /^chromium-\d+/.test(ent.name))
     .map(ent => path.join(tools, ent.name))
 }
 

@@ -17,7 +17,8 @@ from tools import browser_tool_cloud as bt_cloud
 
 
 @pytest.fixture(autouse=True)
-def _reset_chromium_cache():
+def _reset_chromium_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
     bt._cached_chromium_installed = None
     yield
     bt._cached_chromium_installed = None
@@ -38,6 +39,12 @@ class TestChromiumSearchRoots:
 
 
 class TestChromiumInstalled:
+    def test_shell_only_cache_does_not_satisfy_full_browser(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt_install, "_chromium_search_roots", lambda: [str(tmp_path)])
+        (tmp_path / "chromium_headless_shell-1234").mkdir()
+        assert bt_install._chromium_installed() is False
+
     def test_system_chromium_on_path_alone_is_not_enough(self, monkeypatch, tmp_path):
         """Pinned-store-only (gap plan D3): a system Chromium in PATH does
         NOT satisfy the check — only AGENT_BROWSER_EXECUTABLE_PATH or the

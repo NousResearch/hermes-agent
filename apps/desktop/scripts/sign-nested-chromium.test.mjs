@@ -39,14 +39,14 @@ test('isMachO accepts a 64-bit Mach-O magic and rejects text', () => {
   }
 })
 
-test('chromiumRoots only names chromium store entries', () => {
+test('chromiumRoots only names full Chromium store entries', () => {
   const payload = tempRoot()
   try {
     fs.mkdirSync(path.join(payload, 'tools', 'chromium-1208'), { recursive: true })
     fs.mkdirSync(path.join(payload, 'tools', 'chromium_headless_shell-1208'), { recursive: true })
     fs.mkdirSync(path.join(payload, 'tools', 'uv-0.12.3-darwin-arm64'), { recursive: true })
     const roots = chromiumRoots(payload).map(p => path.basename(p)).sort()
-    assert.deepEqual(roots, ['chromium-1208', 'chromium_headless_shell-1208'])
+    assert.deepEqual(roots, ['chromium-1208'])
   } finally {
     fs.rmSync(payload, { recursive: true, force: true })
   }
@@ -58,7 +58,7 @@ test('listTopLevelApps finds .app dirs and listLooseMachO skips them', () => {
     const app = path.join(root, 'Google Chrome for Testing.app')
     fs.mkdirSync(path.join(app, 'Contents', 'MacOS'), { recursive: true })
     fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'Chrome'), machoBuf())
-    const loose = path.join(root, 'chrome-headless-shell')
+    const loose = path.join(root, 'libEGL.dylib')
     fs.writeFileSync(loose, machoBuf())
     assert.deepEqual(listTopLevelApps(root), [app])
     assert.deepEqual(listLooseMachO(root), [loose])
@@ -118,9 +118,7 @@ test('signNestedChromium --deep signs the .app and file-signs loose Mach-O', () 
     const app = path.join(payload, 'tools', 'chromium-1208', 'Google Chrome for Testing.app')
     fs.mkdirSync(path.join(app, 'Contents', 'MacOS'), { recursive: true })
     fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'Chrome'), machoBuf())
-    const looseDir = path.join(payload, 'tools', 'chromium_headless_shell-1208')
-    fs.mkdirSync(looseDir, { recursive: true })
-    const loose = path.join(looseDir, 'chrome-headless-shell')
+    const loose = path.join(payload, 'tools', 'chromium-1208', 'libEGL.dylib')
     fs.writeFileSync(loose, machoBuf())
     const calls = []
     const r = signNestedChromium(payload, {

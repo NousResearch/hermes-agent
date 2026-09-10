@@ -266,6 +266,14 @@ class Facts:
             fact["resolved_lock"] = str(resolved_lock.resolve())
         self._merge_and_write(name, fact)
 
+    def retain(self, names: set[str]) -> None:
+        """Drop unselected package facts from an exclusively owned staged store."""
+        packages = _read(self.path, strict=True)["packages"]
+        retained = {name: fact for name, fact in packages.items() if name in names}
+        if retained != packages:
+            _write(self.path, {"schema": SCHEMA, "packages": retained})
+        self._packages = retained
+
     def entries_in_use(self) -> set[str]:
         return {f["entry"] for f in self._packages.values() if "entry" in f}
 

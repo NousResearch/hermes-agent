@@ -667,7 +667,7 @@ def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):
     from pm.lock import Lockfile
 
     lock = Lockfile(tmp_path / "lock.json")
-    for name in ("uv", "python", "ripgrep", "chromium", "chromium-headless-shell", "node", "npm"):
+    for name in ("uv", "python", "ripgrep", "chromium", "node", "npm"):
         lock.set_pin(name, "1", {"any": {"url": "x", "sha256": "0" * 64}})
     lock.save()
     monkeypatch.setattr("scripts.bundles.native._lockfile", lambda: lock)
@@ -675,7 +675,6 @@ def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):
     # Browsers now ship in every payload (win32-arm64 runs the x64 build
     # under emulation); nothing is excluded from the bundle.
     assert "chromium" in names
-    assert "chromium-headless-shell" in names
     assert "python" in names
     assert "ripgrep" in names
     # node/npm are shipped runtime tools (TUI, plugins), not install

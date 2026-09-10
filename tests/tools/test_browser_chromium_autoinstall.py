@@ -1,18 +1,13 @@
-"""Tests for gated Chromium-binary auto-install on local cold start."""
-
-import shutil
-from types import SimpleNamespace
-
+"""Local cold starts provision Chromium through the pinned package manager."""
 import pytest
 
-import importlib
-
-import tools.browser_tool as bt
+from pm.package import InstallError
+from tools import browser_tool as bt
 from tools import browser_tool_install as bt_install
 
 
 @pytest.fixture(autouse=True)
-def _reset_state():
+def reset_state():
     bt._chromium_autoinstall_attempted = False
     bt._cached_chromium_installed = None
     yield
@@ -20,94 +15,41 @@ def _reset_state():
     bt._cached_chromium_installed = None
 
 
-def _no_subprocess(monkeypatch):
+def test_install_uses_pm_once_and_preserves_failure(monkeypatch):
+    monkeypatch.setattr(bt_install, "_running_in_docker", lambda: False)
+    monkeypatch.setattr("pm.lazy_installs_allowed", lambda: True)
+    installed = False
     calls = []
-    monkeypatch.setattr(bt.subprocess, "run", lambda *a, **k: calls.append((a, k)))
-    return calls
+
+    def ensure(name):
+        nonlocal installed
+        calls.append(name)
+        installed = True
+
+    monkeypatch.setattr("pm.ensure", ensure)
+    monkeypatch.setattr(bt_install, "_chromium_installed", lambda: installed)
+    assert bt_install._maybe_autoinstall_chromium()
+    assert bt_install._maybe_autoinstall_chromium()
+    assert calls == ["chromium"]
+
+    bt._chromium_autoinstall_attempted = False
+    installed = False
+
+    def fail(name):
+        raise InstallError(name, "download failed")
+
+    monkeypatch.setattr("pm.ensure", fail)
+    assert not bt_install._maybe_autoinstall_chromium()
 
 
-class TestGating:
-    def test_disabled_lazy_installs_skips(self, monkeypatch):
-        monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: False)
-        monkeypatch.setattr("pm.lazy_installs_allowed", lambda: False)
-        calls = _no_subprocess(monkeypatch)
-        assert bt_install._maybe_autoinstall_chromium() is False
-        assert calls == []
+@pytest.mark.parametrize(("docker", "allowed"), [(True, True), (False, False)])
+def test_install_policy_never_provisions(monkeypatch, docker, allowed):
+    monkeypatch.setattr(bt_install, "_running_in_docker", lambda: docker)
+    monkeypatch.setattr("pm.lazy_installs_allowed", lambda: allowed)
 
-    def test_docker_skips(self, monkeypatch):
-        monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: True)
-        calls = _no_subprocess(monkeypatch)
-        assert bt_install._maybe_autoinstall_chromium() is False
-        assert calls == []
+    def forbidden(*args, **kwargs):
+        pytest.fail("blocked auto-install reached provisioning")
 
-
-class TestInstall:
-    def test_success_installs_binary_only_and_rechecks(self, monkeypatch):
-        monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: False)
-        monkeypatch.setattr("pm.lazy_installs_allowed", lambda: True)
-        monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda: "/x/agent-browser")
-        monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
-        monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: True)
-
-        captured = {}
-
-        def fake_run(cmd, **kw):
-            captured["cmd"] = cmd
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(bt.subprocess, "run", fake_run)
-
-        assert bt_install._maybe_autoinstall_chromium() is True
-        assert captured["cmd"] == ["/x/agent-browser", "install"]
-        assert "--with-deps" not in captured["cmd"]
-
-    def test_npx_form_is_binary_only(self, monkeypatch):
-        monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: False)
-        monkeypatch.setattr("pm.lazy_installs_allowed", lambda: True)
-        monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda: "npx agent-browser")
-        monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
-        monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: True)
-        monkeypatch.setattr(shutil, "which", lambda _, path=None: "/usr/bin/npx")
-        monkeypatch.setattr("tools.browser_tool_install.node_tool_runnable", lambda p: True)
-
-        captured = {}
-        monkeypatch.setattr(
-            bt.subprocess, "run",
-            lambda cmd, **kw: captured.update(cmd=cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
-
-        assert bt_install._maybe_autoinstall_chromium() is True
-        assert captured["cmd"] == [
-            "/usr/bin/npx", "--ignore-scripts", "-y", bt.AGENT_BROWSER_NPX_SPEC, "install",
-        ]
-        assert "--with-deps" not in captured["cmd"]
-
-    def test_nonzero_exit_returns_false(self, monkeypatch):
-        monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: False)
-        monkeypatch.setattr("pm.lazy_installs_allowed", lambda: True)
-        monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda: "/x/agent-browser")
-        monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
-        monkeypatch.setattr(
-            bt.subprocess, "run",
-            lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
-        )
-        assert bt_install._maybe_autoinstall_chromium() is False
-
-
-class TestOneShot:
-    def test_second_call_does_not_reinstall(self, monkeypatch):
-        monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: False)
-        monkeypatch.setattr("pm.lazy_installs_allowed", lambda: True)
-        monkeypatch.setattr("tools.browser_tool_install._find_agent_browser", lambda: "/x/agent-browser")
-        monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
-        monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: True)
-
-        runs = []
-        monkeypatch.setattr(
-            bt.subprocess, "run",
-            lambda *a, **k: runs.append(1) or SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
-
-        assert bt_install._maybe_autoinstall_chromium() is True
-        assert bt_install._maybe_autoinstall_chromium() is True
-        assert len(runs) == 1
+    monkeypatch.setattr("pm.ensure", forbidden)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", forbidden)
+    assert not bt_install._maybe_autoinstall_chromium()

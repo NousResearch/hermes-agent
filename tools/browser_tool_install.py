@@ -55,7 +55,7 @@ def _merge_browser_path(existing_path: str = "") -> str:
 
 
 def _browser_install_hint() -> str:
-    return "npm install -g agent-browser && agent-browser install" + ("" if _is_termux_environment() else " --with-deps")
+    return "npm install -g agent-browser && agent-browser install" if _is_termux_environment() else "hermes pm install agent-browser (system libraries: npx playwright install-deps chromium)"
 
 
 def _is_npx_agent_browser_sentinel(browser_cmd: str) -> bool:
@@ -203,7 +203,7 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
 
 
 def _chromium_search_roots() -> List[str]:
-    """Chromium / headless-shell scan roots in agent-browser/Playwright probe order: ``PLAYWRIGHT_BROWSERS_PATH``, then the per-OS default cache."""
+    """Full Chromium scan roots: ``PLAYWRIGHT_BROWSERS_PATH``, then the per-OS default cache."""
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
     home = os.path.expanduser("~")
     roots: List[str] = [env_path] if env_path and env_path != "0" else []
@@ -217,15 +217,15 @@ def _chromium_search_roots() -> List[str]:
 
 
 def _has_chromium_build(root: str) -> bool:
-    """True when ``root`` holds a Playwright ``chromium-*`` / ``chromium_headless_shell-*`` dir (agent-browser accepts either)."""
+    """True when ``root`` holds a full Playwright ``chromium-*`` build."""
     try:
-        return any(e.startswith(("chromium-", "chromium_headless_shell-")) for e in os.listdir(root))
+        return any(e.startswith("chromium-") for e in os.listdir(root))
     except OSError:
         return False
 
 
 def _chromium_installed() -> bool:
-    """True when a usable Chromium (or headless-shell) build is on disk; cached.
+    """True when a full Chromium build is on disk; cached.
 
     Checks ``AGENT_BROWSER_EXECUTABLE_PATH``, then the provisioned Playwright cache.
     Without a binary the CLI hangs on first use until the command timeout fires, so the tool must not be advertised.
@@ -233,7 +233,9 @@ def _chromium_installed() -> bool:
     _bt = _origin()
     if _bt._cached_chromium_installed is not None:
         return _bt._cached_chromium_installed
-    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    from hermes_cli.browser_runtime import chromium_executable
+
+    ab_path = chromium_executable()
     _bt._cached_chromium_installed = bool(
         (ab_path and (os.path.isfile(ab_path) or shutil.which(ab_path)))
         or any(root and os.path.isdir(root) and _has_chromium_build(root) for root in _chromium_search_roots())
@@ -242,10 +244,9 @@ def _chromium_installed() -> bool:
 
 
 def _maybe_autoinstall_chromium() -> bool:
-    """Best-effort, gated download of the Chromium *binary* on local cold start.
+    """Install only PM's pinned full Chromium, never the upstream browser pair.
 
-    Binary only (``agent-browser install``), never ``--with-deps`` — that shells ``apt`` and needs root. Gated by
-    ``security.allow_lazy_installs``, skipped in Docker (Chromium ships in the image), attempted once per process.
+    Docker supplies the binary. Other installs require lazy-install consent.
     """
     _bt = _origin()
     if _bt._chromium_autoinstall_attempted:
@@ -253,27 +254,14 @@ def _maybe_autoinstall_chromium() -> bool:
     _bt._chromium_autoinstall_attempted = True
     if _running_in_docker():
         return False
-    from pm import lazy_installs_allowed
+    from pm import InstallError, ensure, lazy_installs_allowed
     if not lazy_installs_allowed():
         return False
+    _bt.logger.info("browser: installing PM's pinned Chromium")
     try:
-        browser_cmd = _find_agent_browser()
-    except FileNotFoundError:
-        return False
-    install_cmd = [browser_cmd, "install"]
-    if _is_npx_agent_browser_sentinel(browser_cmd):
-        install_cmd = [_resolve_npx_bin() or "npx", "--ignore-scripts", "-y", _bt.AGENT_BROWSER_NPX_SPEC, "install"]
-
-    _bt.logger.info("browser: Chromium missing — auto-installing the browser binary (one-time ~170MB; disable via security.allow_lazy_installs)")
-    try:
-        proc = subprocess.run(install_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
-                              env=_bt._build_browser_env(), stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError) as e:
-        _bt.logger.warning("browser: Chromium auto-install failed to start: %s", e)
-        return False
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip()[-300:]
-        _bt.logger.warning("browser: Chromium auto-install exited %s: %s", proc.returncode, tail)
+        ensure("chromium")
+    except (InstallError, OSError) as exc:
+        _bt.logger.warning("browser: Chromium auto-install failed: %s", exc)
         return False
     _bt._cached_chromium_installed = None
     return _chromium_installed()

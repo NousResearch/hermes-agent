@@ -364,7 +364,6 @@ def _check_chromium() -> None:
     Lazy import: browser_tool is ~150KB; an import failure is a separate bug surfaced elsewhere. Camofox, a
     CDP override, a cloud provider, or Lightpanda all bypass the local Chromium requirement (no warning).
     """
-    from hermes_cli.doctor import PROJECT_ROOT
     try:
         from tools.browser_tool import _is_camofox_mode
         from tools.browser_tool_cloud import _get_cloud_provider
@@ -377,8 +376,7 @@ def _check_chromium() -> None:
         return
     if not check_bool(_chromium_installed(), ("Playwright Chromium", "(browser engine)"),
                       ("Playwright Chromium not installed", "(browser_* tools will be hidden from the agent)")):
-        with_deps = "" if sys.platform == "win32" else "--with-deps "
-        check_info(f"Install with: cd {PROJECT_ROOT} && npx playwright install {with_deps}chromium")
+        check_info("Install with: hermes pm install chromium")
 
 
 def _check_lightpanda() -> None:

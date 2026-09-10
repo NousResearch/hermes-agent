@@ -1,7 +1,8 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
+import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 
 import { PluginsTab } from './plugins-tab'
@@ -191,9 +192,30 @@ describe('PluginsTab catalog UX', () => {
     $agentPluginsStatus.set('ready')
     closePluginInstallRequest()
     requestGateway.mockClear()
+    setPaneHeightOverride('capabilities-plugin-catalog', undefined)
   })
 
   afterEach(cleanup)
+
+  it('grows the catalog when its top-edge sash is dragged up, and resets on double-click', () => {
+    // jsdom has no layout: give the Capabilities column a real height so the
+    // "never crush the lists above" clamp has something to clamp against.
+    const clientHeight = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(900)
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 1000 })
+    render(<PluginsTab profile={null} />)
+    const sash = screen.getByTestId('plugin-catalog-sash')
+
+    fireEvent.pointerDown(sash, { button: 0, clientY: 600 })
+    fireEvent.pointerMove(window, { clientY: 400 })
+    fireEvent.pointerUp(window)
+
+    // Default 380px + 200px of upward drag (clamped only by window/column size).
+    expect($paneHeightOverride('capabilities-plugin-catalog').get()).toBe(580)
+
+    fireEvent.doubleClick(sash)
+    expect($paneHeightOverride('capabilities-plugin-catalog').get()).toBeUndefined()
+    clientHeight.mockRestore()
+  })
 
   it('shows an Update chip when the catalog pin moved past the installed SHA', () => {
     $agentPlugins.set([

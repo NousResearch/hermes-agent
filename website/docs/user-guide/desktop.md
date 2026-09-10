@@ -460,10 +460,15 @@ Hermes, in two sections on one page:
   configuring (the backend `plugins.manage` RPC takes a `profile` parameter).
   Repo-bundled built-ins (platform adapters, provider plugins) are not listed:
   they ship enabled and are configured from their own surfaces.
-- **Desktop plugins** — extensions loaded into this app, the same for every
-  profile. Toggles apply live; the desktop half of a bundled agent+desktop
-  package shows an **agent half missing here** chip when the selected
-  profile's backend does not have its agent half, with a one-click repair.
+- **Desktop plugins** — extensions loaded into this app. They are not tied to
+  a profile: one install under `~/.hermes/desktop-plugins/` serves every
+  profile, gateway, or remote machine the window connects to, which is why the
+  section sits outside the profile selector. Toggles apply live; the desktop
+  half of a bundled agent+desktop package shows an **agent half missing here**
+  chip when the selected profile's backend lacks its agent half, with a
+  one-click repair. Optional extras such as the
+  [Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
+  install from their own repos via **Install from Git**.
 
 Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
 picker installs reviewed entries at their pinned commit into the selected

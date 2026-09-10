@@ -74,8 +74,8 @@ repo.
 ## Quick start — your first plugin
 
 Create `$HERMES_HOME/desktop-plugins/hello/plugin.js` (that's `~/.hermes/...`
-by default, or `~/.hermes/profiles/<name>/...` under a named profile). The folder
-name must equal the plugin `id`.
+by default). Desktop plugins are app-level — one root for every profile, gateway,
+or remote machine the window connects to. The folder name must equal the plugin `id`.
 
 ```javascript
 // ~/.hermes/desktop-plugins/hello/plugin.js
@@ -380,8 +380,9 @@ host.onEvent('gateway.ready', () => {
 
 Both doors persist per profile, so a plugin-driven switch sticks exactly like a
 manual pick. To tint the *active* theme rather than replace it, use
-`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the bundled `accent`
-plugin is the worked example.
+`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the standalone
+[Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
+plugin is the worked example (it is also a complete, installable disk plugin).
 
 ### Composer extensions
 

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, type ReactNode, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
@@ -40,9 +40,16 @@ import { DesktopPluginsSection, pluginElementId, PluginListRow } from './desktop
 const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
 const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
 
+// Catalog viewport: persisted through the shared pane store, dragged from the
+// section's TOP edge ("pull the catalog up"), clamped so neither the catalog
+// nor the plugin lists above can vanish. Same contract as EmbeddedHubPicker.
 const CATALOG_PANE_ID = 'capabilities-plugin-catalog'
 const CATALOG_DEFAULT_PX = 380
+const CATALOG_MIN_PX = 120
+const CATALOG_MAX_VH = 0.75
 const CATALOG_COLLAPSED_PX = 4
+// Room the sash must always leave for the lists above the catalog.
+const CATALOG_LIST_RESERVED_PX = 176
 
 interface PluginPickMessage {
   installCmd?: string
@@ -144,7 +151,15 @@ function AgentPluginListRow({
  *  sits with management: the live catalog picker underneath, plus a manual
  *  "Install from Git" for anything not in the catalog. Settings no longer
  *  carries a second, partial copy of this. */
-export const PluginsTab = memo(function PluginsTab({ profile }: { profile: ProfileScope }) {
+export const PluginsTab = memo(function PluginsTab({
+  profile,
+  scopeSelector
+}: {
+  profile: ProfileScope
+  /** The Capabilities profile selector, rendered INSIDE the agent section so
+   *  the app-level desktop section below it is visibly outside its scope. */
+  scopeSelector?: ReactNode
+}) {
   const { t } = useI18n()
   const p = t.skills.plugins
   const { requestGateway } = useGatewayRequest()
@@ -177,9 +192,43 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
   const height = heightOverride ?? CATALOG_DEFAULT_PX
   const open = height > CATALOG_COLLAPSED_PX
   const [pickerMounted, setPickerMounted] = useState(open)
+  const [dragging, setDragging] = useState(false)
+  const sectionRef = useRef<HTMLElement>(null)
 
   if (open && !pickerMounted) {
     setPickerMounted(true)
+  }
+
+  // Top-edge sash: dragging UP grows the catalog (shrinking the lists above,
+  // the flex-1 sibling); double-click resets. The cross-origin iframe gets
+  // pointer-events disabled for the duration or it swallows the pointermoves.
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return
+    }
+
+    event.preventDefault()
+    const startY = event.clientY
+    const startHeight = height
+    const column = sectionRef.current?.parentElement
+    const columnMax = column ? column.clientHeight - CATALOG_LIST_RESERVED_PX : Number.POSITIVE_INFINITY
+    const max = Math.max(CATALOG_MIN_PX, Math.round(Math.min(window.innerHeight * CATALOG_MAX_VH, columnMax)))
+    setDragging(true)
+
+    const onMove = (move: globalThis.PointerEvent) => {
+      setPaneHeightOverride(
+        CATALOG_PANE_ID,
+        Math.round(Math.min(max, Math.max(CATALOG_MIN_PX, startHeight + (startY - move.clientY))))
+      )
+    }
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      setDragging(false)
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
   }
 
   useEffect(() => {
@@ -228,7 +277,11 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-32 flex-1 overflow-y-auto">
-        <section>
+        {/* The profile-scoped block is a visible container: the selector is
+            its header, so everything OUTSIDE the frame (desktop plugins) is
+            read as not-per-profile without a paragraph of explanation. */}
+        <section className="mx-3 mt-3 rounded-lg border border-(--ui-stroke-secondary)">
+          {scopeSelector && <div className="border-b border-(--ui-stroke-tertiary)">{scopeSelector}</div>}
           <div className="flex items-center justify-between gap-3 px-3 pt-3 pb-1">
             <div className="min-w-0">
               <div className="text-[0.62rem] font-medium tracking-wide uppercase text-(--ui-text-quaternary)">
@@ -297,12 +350,31 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
           )}
         </section>
 
-        <div className="mt-2 mb-3 border-t border-(--ui-stroke-tertiary)">
+        {/* App-level: a heavier rule than the row dividers marks the end of
+            the profile-scoped block above. */}
+        <div className="mt-4 mb-3">
           <DesktopPluginsSection profile={scope} />
         </div>
       </div>
 
-      <section className={cn('relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)')}>
+      <section
+        className="relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)"
+        ref={sectionRef}
+      >
+        {/* Top-edge drag sash — pull the catalog up/down. */}
+        <div
+          className="group/catsash absolute inset-x-0 top-0 z-10 h-1 -translate-y-1/2 cursor-row-resize"
+          data-testid="plugin-catalog-sash"
+          onDoubleClick={() => setPaneHeightOverride(CATALOG_PANE_ID, undefined)}
+          onPointerDown={startDrag}
+        >
+          <div
+            className={cn(
+              'absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors',
+              dragging ? 'bg-(--ui-stroke-secondary)' : 'group-hover/catsash:bg-(--ui-stroke-secondary)'
+            )}
+          />
+        </div>
         <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
           <span className="text-[0.62rem] font-medium tracking-wide uppercase text-(--ui-text-quaternary)">
             {p.catalogTitle}
@@ -333,6 +405,7 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
                   background: 'transparent',
                   border: 'none',
                   height: '133.34%',
+                  pointerEvents: dragging ? 'none' : 'auto',
                   transform: 'scale(0.75)',
                   transformOrigin: 'top left',
                   width: '133.34%'

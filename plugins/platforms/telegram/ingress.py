@@ -7,6 +7,7 @@ it never reads or writes the base adapter's busy/FIFO queue.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import time
 from dataclasses import dataclass, field
@@ -87,8 +88,32 @@ class TelegramIngress:
             buffer = getattr(a, buffer_name, {})
             tasks = getattr(a, tasks_name, {})
             for key, value in list(buffer.items()):
-                events = value if isinstance(value, list) else [value]
+                combined = value if isinstance(value, list) else [value]
+                events = [part for event in combined for part in self.parts(event)]
                 yield buffer, tasks, key, events
+
+    @staticmethod
+    def parts(event):
+        return getattr(event, "_telegram_ingress_parts", None) or [event]
+
+    @staticmethod
+    def snapshot(event):
+        result = copy.copy(event)
+        result.media_urls = list(event.media_urls)
+        result.media_types = list(event.media_types)
+        result._telegram_ingress_parts = None
+        return result
+
+    def record_merge(self, existing, incoming):
+        # Preserve physical items before legacy buffers concatenate captions and
+        # attachments. Downloads may finish in the opposite Telegram-ID order.
+        existing._telegram_ingress_parts = [
+            self.snapshot(item) for event in (existing, incoming) for item in self.parts(event)
+        ]
+        existing._telegram_forwarded = any(
+            item.forward_origin or getattr(item, "_telegram_forwarded", False)
+            for item in self.parts(existing)
+        )
 
     @staticmethod
     def inline_forward(event):
@@ -173,8 +198,8 @@ class TelegramIngress:
         def order(event):
             mid = event.message_id or event.source.message_id
             return int(mid) if str(mid or "").isdigit() else 0
-        events = sorted(events, key=order)
-        result = events[0]
+        events = sorted([part for event in events for part in TelegramIngress.parts(event)], key=order)
+        result = TelegramIngress.snapshot(events[0])
         TelegramIngress.inline_forward(result)
         # Copy lists: callers/tests may retain the individual physical event.
         result.media_urls = list(result.media_urls)

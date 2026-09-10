@@ -59,6 +59,7 @@ async def test_final_base_seam_rechecks_epoch_after_topic_recovery(adapter):
     bot = Bot("123:test")
     event = adapter._build_message_event(make_update(bot, 1, text="stale").message, MessageType.TEXT)
     key = adapter._text_batch_key(event)
+    adapter._ingress_coordinator().stamp(event)
     entered, release = threading.Event(), threading.Event()
     def recover(e):
         entered.set()

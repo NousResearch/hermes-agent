@@ -48,10 +48,12 @@ $script:UvPinVersion = "0.12.3"
 $script:UvPinFiles = @{
     "win32-x64" = @{
         Url    = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-pc-windows-msvc.zip"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
         Sha256 = "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
     }
     "win32-arm64" = @{
         Url    = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-pc-windows-msvc.zip"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
         Sha256 = "4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
     }
 }
@@ -60,10 +62,12 @@ $script:GitPinVersion = "2.53.0+3"
 $script:GitPinFiles = @{
     "win32-x64" = @{
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-64-bit.tar.bz2"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/1661f02e85a7901ad7920e2a358ee3772ed9066b00d8590bf2d9046ef10aa8b2"
         Sha256 = "1661f02e85a7901ad7920e2a358ee3772ed9066b00d8590bf2d9046ef10aa8b2"
     }
     "win32-arm64" = @{
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-arm64.tar.bz2"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/4015f05a68bd2bcf3cc6c426e8d44b65d670fbb879225bb7b7c347cfc3a2758a"
         Sha256 = "4015f05a68bd2bcf3cc6c426e8d44b65d670fbb879225bb7b7c347cfc3a2758a"
     }
 }
@@ -336,6 +340,43 @@ function Get-WindowsArch {
     return 'x64'
 }
 
+# Mirror bytes must match the same pin; corruption is never a cache miss.
+function Invoke-VerifiedDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Sha256,
+        [Parameter(Mandatory = $true)][string]$OutFile,
+        [string]$MirrorUrl = ""
+    )
+    $urls = @($Url)
+    if ($MirrorUrl -and $MirrorUrl -ne $Url) { $urls += $MirrorUrl }
+    $httpFailure = ""
+    foreach ($candidate in $urls) {
+        try {
+            Invoke-WebRequest -Uri $candidate -OutFile $OutFile -UseBasicParsing
+        } catch {
+            $errorType = $_.Exception.GetType().FullName
+            if ($_.Exception -is [System.Net.WebException]) {
+                if ($_.Exception.Status -in @('TrustFailure', 'SecureChannelFailure')) { throw }
+            } elseif ($errorType -ne 'Microsoft.PowerShell.Commands.HttpResponseException') {
+                throw
+            }
+            $httpFailure = $_.Exception.Message
+            continue
+        }
+        $digest = (Get-FileHash -Path $OutFile -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($digest -eq $Sha256.ToLowerInvariant()) { return }
+        Remove-Item -Path $OutFile -Force -ErrorAction SilentlyContinue
+        # Wrong bytes = tampering or a corrupt mirror, not a routing problem.
+        Fail "download digest mismatch for $candidate (expected $Sha256, got $digest)"
+    }
+    $tried = $urls -join " or "
+    if ($httpFailure) {
+        Fail "failed to download from $tried : $httpFailure"
+    }
+    Fail "failed to download from $tried"
+}
+
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
 # the EXACT artifact pm itself uses into the same store slot
 # (<store>\uv-<version>-<target>\), sha256-verified, so pm adopts the same
@@ -356,13 +397,7 @@ function Get-Uv {
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
         $zipPath = Join-Path $tmpDir "uv.zip"
-        Invoke-WebRequest -Uri $pin.Url -OutFile $zipPath -UseBasicParsing
-        # Digest check BEFORE extraction — a mismatched archive is deleted,
-        # never unpacked.
-        $digest = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($digest -ne $pin.Sha256.ToLowerInvariant()) {
-            Fail "uv digest mismatch (expected $($pin.Sha256), got $digest)"
-        }
+        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $zipPath
         $extractDir = Join-Path $tmpDir "unpacked"
         Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
         # The zip carries uv.exe (+ uvx.exe) at the root or under one
@@ -397,12 +432,7 @@ function Get-PinnedGit {
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
         $tarPath = Join-Path $tmpDir "git.tar.bz2"
-        Invoke-WebRequest -Uri $pin.Url -OutFile $tarPath -UseBasicParsing
-        # Digest check BEFORE extraction — the archive IS code.
-        $digest = (Get-FileHash -Path $tarPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($digest -ne $pin.Sha256.ToLowerInvariant()) {
-            Fail "git digest mismatch (expected $($pin.Sha256), got $digest)"
-        }
+        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $tarPath
         $extractDir = Join-Path $tmpDir "unpacked"
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
         # The pinned artifact is a git-for-windows tar.bz2 (the same one pm

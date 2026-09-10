@@ -13,6 +13,7 @@
 # Packages with no artifact for this system are simply absent.
 let
   lock = builtins.fromJSON (builtins.readFile ../pm/lock.json);
+  mirror = builtins.fromJSON (builtins.readFile ../pm/artifact-mirror.json);
 
   target =
     let
@@ -39,7 +40,7 @@ let
       version = pin.version;
 
       srcs = map (artifact: fetchurl {
-        url = artifact.url;
+        urls = [ artifact.url "${mirror.origin}/${mirror.prefix}${artifact.sha256}" ];
         sha256 = artifact.sha256;
       }) artifacts;
 

@@ -4,6 +4,9 @@ inputs:
   toolchain:
     description: python (Python and uv), node (Node and npm), or all.
     default: python
+  archive-inputs:
+    description: Use protected R2 credentials to preserve and retrieve the selected toolchain before installation.
+    default: 'false'
   extras:
     description: 'JSON extras: omit for tools; [] installs core; dev selects an isolated test environment plus the test dependency group.'
     default: ''
@@ -89,6 +92,17 @@ runs:
       with:
         path: ${{ steps.prepare.outputs.store }}
         key: setup-pm-tools-v1-${{ steps.prepare.outputs.target }}-${{ inputs.toolchain }}-${{ hashFiles('pm/lock.json') }}-${{ inputs.cache-suffix }}
+
+    - name: Preserve and retrieve the pinned toolchain
+      if: inputs.archive-inputs == 'true'
+      shell: bash
+      env:
+        _PM_ACTION: ${{ github.action_path }}
+        _PM_BOOTSTRAP: ${{ steps.prepare.outputs.bootstrap-python }}
+        _PM_TOOLCHAIN: ${{ inputs.toolchain }}
+      run: |
+        "$_PM_BOOTSTRAP" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" archive-inputs \
+          --toolchain "$_PM_TOOLCHAIN" --home "$HERMES_HOME"
 
     - name: Install and verify tools through PM
       id: install

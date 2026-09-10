@@ -53,6 +53,7 @@ jobs:
             tests/test_termux_python_linkage.py tests/test_termux_retag_wheel.py \
             tests/test_termux_build_wheels.py \
             tests/test_termux_wheelhouse_cache.py tests/test_termux_runtime_libs.py \
+            tests/scripts/test_archive_inputs.py \
             tests/test_termux_launchers.py tests/test_pm_bionic.py \
             tests/pm/test_stage_only.py tests/pm/test_deb_safety.py tests/test_stage_apt_repo.py \
             tests/test_run_tests_shell.py
@@ -82,8 +83,15 @@ jobs:
 
   native-runtime:
     name: Verify bionic runtime tools
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
     runs-on: ubuntu-24.04-arm
+    environment: release-signing
     timeout-minutes: 45
+    env:
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -93,7 +101,10 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-pm
         with:
+          archive-inputs: true
           cache-python: false
+      - name: Preserve and retrieve pinned inputs
+        run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
       - name: Stage the pinned bionic runtimes
         run: |
           bash scripts/termux/build_cpython.sh termux-build/payload

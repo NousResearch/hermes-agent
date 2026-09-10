@@ -673,7 +673,7 @@ plugins = ["**/plugin.yaml", "**/plugin.yml"]
 # pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
 # Without it a sealed wheel installs the pm package but has no pins to
 # realize — the pm store would be empty.
-pm = ["lock.json"]
+pm = ["lock.json", "artifact-mirror.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

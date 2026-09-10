@@ -91,6 +91,40 @@ Cross-target staging verifies the published entry before deleting its archives.
 Failed or paused installs keep downloads for retry. Cleanup leaves unrelated
 archives and resumable partials alone. A later repair may download again.
 
+## Pinned binary inputs
+
+`python -m scripts.ci.archive_inputs` preserves every HTTPS artifact in
+`pm/lock.json`, across all targets, plus the Termux runtime-library and license
+pins. `pm/artifact-mirror.json` owns the public mirror location. Object keys
+are `upstream/sha256/HASH`, independent of filenames and release tags.
+
+CI requests R2 first. Only 404 permits an upstream download. It verifies the
+existing SHA256 before an immutable `If-None-Match: *` upload, then downloads
+and verifies the stored object. Corrupt bytes, denied access, and failed
+uploads stop the build. Concurrent writers may reuse identical bytes but
+cannot replace an existing object.
+
+The all-target workflow runs on pin changes on main, manual dispatch, and as
+an admitted release prerequisite. It uses runner Python before the pinned
+toolchain is available. Protected build jobs opt into the same R2-first step
+through `setup-pm`'s `archive-inputs` input. Target payload steps seed the
+actual PM store's disposable fetch entries with `--target` and `--store`;
+Termux also passes `--payload` for runtime libraries. Cache hits do not skip
+preservation. Untrusted PR jobs receive no publication credentials.
+
+Installed PM clients, bootstrap installers, and Nix pin consumers use the
+primary URL followed by the public mirror if the download is unavailable.
+The pinned hash remains binding; no credentials or uploads are needed by
+clients. PM keeps per-source resume state and reports attempted URLs.
+For Termux files already removed upstream, the CI publisher can recover the
+exact bytes from the community Internet Archive after an upstream 404/410.
+It never repins to the latest package.
+
+The archive must have no expiration lifecycle rule. Release pruning does
+not cover its prefix. This covers PM binary pins and Termux runtime inputs,
+not unpinned apt packages, OCI images, language-package registries, or native
+Electron/SDK archives independently downloaded by their build tools.
+
 ## Verification boundary
 
 Tests execute shared snapshot/manifest helpers on real git fixtures, stage

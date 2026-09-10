@@ -2,13 +2,12 @@
 
 import hashlib
 import threading
-import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from pm import network
-from pm.downloader import Download, DownloadError, DownloadPaused, HashError, Source
+from pm.downloader import Download, DownloadPaused, DownloadTransportError, HashError, Source
 from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 
 
@@ -40,12 +39,13 @@ def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, mon
     if failure == "disk":
         dest.mkdir()
         (dest / "occupied").write_bytes(b"keep")
-    expected_error = {"hash": HashError, "disk": OSError}.get(failure)
-    if expected_error is None:
-        expected_error = DownloadError if failure == "403" and phase == "probe" else urllib.error.HTTPError
+    expected_error = {"hash": HashError, "disk": OSError}.get(failure, DownloadTransportError)
 
-    with pytest.raises(expected_error):
+    with pytest.raises(expected_error) as error:
         dl.run()
+    if failure.isdigit():
+        assert error.value.status == int(failure)
+        assert url(dl_server, "/tool") in str(error.value)
     if failure == "disk":
         assert (dest / "occupied").read_bytes() == b"keep"
         assert not requests and not waits

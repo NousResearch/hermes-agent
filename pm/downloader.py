@@ -105,11 +105,25 @@ class DownloadPaused(DownloadError):
     """pause() was called mid-download; partials were left intact."""
 
 
+class DownloadTransportError(DownloadError):
+    """An exhausted network request, with its original status and URL."""
+
+    def __init__(self, url: str, cause: Exception):
+        self.url = url
+        self.status = cause.code if isinstance(cause, urllib.error.HTTPError) else None
+        self.fallback_allowed = (
+            self.status in (401, 403, 404, 410) or is_transient(cause)
+        )
+        reason = f"{cause}; the host refused access" if self.status in (401, 403) else str(cause)
+        super().__init__(f"download failed from {url}: {reason}")
+
+
 @dataclass(frozen=True)
 class Source:
     url: str
     dest: Path
     sha256: str = ""  # "" = no integrity check (model catalog policy)
+    fallbacks: tuple[str, ...] = ()
 
 
 _Ranges = list[tuple[int, int]]
@@ -197,7 +211,7 @@ class Download:
         partials_dir: Optional[Path] = None,
         pause_event: Optional[threading.Event] = None,
     ):
-        self.sources = [Source(s.url, Path(s.dest), s.sha256) for s in sources]
+        self.sources = [Source(s.url, Path(s.dest), s.sha256, tuple(s.fallbacks)) for s in sources]
         self.resume = resume
         self.connections = max(1, int(connections))
         if partials_dir:
@@ -220,9 +234,11 @@ class Download:
         self._check_pause()
         self.partials_dir.mkdir(parents=True, exist_ok=True)
         for source in self.sources:
-            if not (source.url.startswith("https://")
-                    or source.url.startswith(_LOOPBACK)):
-                raise ValueError(f"refusing non-https url: {source.url}")
+            if source.fallbacks and not re.fullmatch(r"[a-f0-9]{64}", source.sha256):
+                raise ValueError("mirror fallback requires a full lowercase SHA256")
+            for url in (source.url, *source.fallbacks):
+                if not (url.startswith("https://") or url.startswith(_LOOPBACK)):
+                    raise ValueError(f"refusing non-https url: {url}")
 
         # Probe the whole plan before reporting a denominator. A missing
         # Content-Length keeps the bar indeterminate until that file ends.
@@ -231,28 +247,36 @@ class Download:
         totals: dict[str, int] = {}
         unknown: set[str] = set()
         coverage: dict[str, _Ranges] = {}
+        selected: list[Source] = []
+        failures: dict[str, list[DownloadTransportError]] = {}
         for source in self.sources:
             self._check_pause()
             key = str(source.dest)
-            cached = _existing_dest_ok(source)
-            if cached:
+            failures[key] = []
+            if _existing_dest_ok(source):
                 remote = _Remote(source.dest.stat().st_size, False)
                 covered = [(0, remote.total)]
             else:
-                remote = self._probe(source.url)
+                source, remote = self._try_sources(source, lambda candidate: self._probe(candidate.url), failures[key])
                 covered = []
                 with partial_lock(self.partials_dir, self._key(source.url), wait=False) as acquired:
                     if acquired and remote.ranged:
                         covered = self._partial_ranges(source, remote)
                 if not remote.total:
                     unknown.add(key)
+            selected.append(source)
             totals[key] = remote.total
             coverage[key] = covered
 
         progress_lock = threading.Lock()
 
-        def report(key: str, written: _Ranges) -> None:
+        def report(key: str, written: _Ranges, total: int, *, complete: bool = False) -> None:
             with progress_lock:
+                totals[key] = total
+                if total or complete:
+                    unknown.discard(key)
+                else:
+                    unknown.add(key)
                 # The last key identifies the source reporting this tick.
                 coverage.pop(key, None)
                 coverage[key] = list(written)
@@ -260,47 +284,66 @@ class Download:
                     done = sum(b - a for rows in coverage.values() for a, b in rows)
                     progress(done, 0 if unknown else sum(totals.values()), dict(coverage))
 
-        for source in self.sources:
-            with partial_lock(self.partials_dir, self._key(source.url), cancelled=self._paused.is_set) as acquired:
-                if not acquired:
-                    raise DownloadPaused(source.url)
-                self._check_pause()
-                key = str(source.dest)
-                if _existing_dest_ok(source):
-                    size = source.dest.stat().st_size
-                else:
-                    # Recheck identity after waiting for another process's partial.
-                    remote = self._probe(source.url)
-                    totals[key] = remote.total
-                    if remote.total:
-                        unknown.discard(key)
-                    else:
-                        unknown.add(key)
-                    report(key, self._partial_ranges(source, remote) if remote.ranged else [])
+        for source in selected:
+            key = str(source.dest)
 
-                    def tick(written: _Ranges) -> None:
-                        report(key, written)
+            def tick(written: _Ranges, total: int) -> None:
+                report(key, written, total)
 
-                    def fetch() -> int:
-                        self._check_pause()
-                        if remote.total and remote.ranged and (source.sha256 or remote.etag):
-                            return self._fetch_ranged(source, remote, tick)
-                        return self._fetch_single(source, remote, tick)
-
-                    configured_connections = self.connections
-                    try:
-                        size = retry_network(fetch, wait=self._wait_retry)
-                    except http.client.IncompleteRead as exc:
-                        raise DownloadError(f"download incomplete: {exc}") from exc
-                    finally:
-                        self.connections = configured_connections
-                    partial_key = self._key(source.url)
-                    self._finalize(source, self.partials_dir / f"{partial_key}.part",
-                                   self.partials_dir / f"{partial_key}.ranges")
-                totals[key] = size
-                unknown.discard(key)
-                report(key, [(0, size)])
+            _, size = self._try_sources(source, lambda candidate: self._transfer(candidate, tick), failures[key])
+            report(key, [(0, size)], size, complete=True)
         return [source.dest for source in self.sources]
+
+    def _try_sources(self, source: Source, operation, failures: list[DownloadTransportError]):
+        urls = tuple(dict.fromkeys((source.url, *source.fallbacks)))
+        for index, url in enumerate(urls):
+            self._check_pause()
+            candidate = Source(url, source.dest, source.sha256, urls[index + 1:])
+            try:
+                return candidate, operation(candidate)
+            except DownloadTransportError as exc:
+                failures.append(exc)
+                if not exc.fallback_allowed or index == len(urls) - 1:
+                    if len(failures) == 1:
+                        raise
+                    raise DownloadError("\n".join(str(error) for error in failures)) from exc
+                logging.getLogger(__name__).warning("%s; trying pinned mirror %s", exc, urls[index + 1])
+
+    def _transfer(self, source: Source, tick) -> int:
+        from pm.download_state import partial_lock
+
+        with partial_lock(self.partials_dir, self._key(source.url), cancelled=self._paused.is_set) as acquired:
+            if not acquired:
+                raise DownloadPaused(source.url)
+            self._check_pause()
+            if _existing_dest_ok(source):
+                return source.dest.stat().st_size
+            # Recheck identity after waiting for another process's partial.
+            remote = self._probe(source.url)
+            tick(self._partial_ranges(source, remote) if remote.ranged else [], remote.total)
+
+            def report(written: _Ranges) -> None:
+                tick(written, remote.total)
+
+            def fetch() -> int:
+                self._check_pause()
+                if remote.total and remote.ranged and (source.sha256 or remote.etag):
+                    return self._fetch_ranged(source, remote, report)
+                return self._fetch_single(source, remote, report)
+
+            configured_connections = self.connections
+            try:
+                size = retry_network(fetch, wait=self._wait_retry)
+            except (OSError, http.client.HTTPException) as exc:
+                if isinstance(exc, urllib.error.URLError) or is_transient(exc):
+                    raise DownloadTransportError(source.url, exc) from exc
+                raise
+            finally:
+                self.connections = configured_connections
+            partial_key = self._key(source.url)
+            self._finalize(source, self.partials_dir / f"{partial_key}.part",
+                           self.partials_dir / f"{partial_key}.ranges")
+            return size
 
     # ── internals ─────────────────────────────────────────────
 
@@ -331,10 +374,8 @@ class Download:
                 return _Remote(int(response.headers.get("Content-Length") or 0), False, etag)
         try:
             return retry_network(request, wait=self._wait_retry)
-        except urllib.error.HTTPError as exc:
-            if exc.code in (401, 403):
-                raise DownloadError("the host refused the download; check source access and URL") from exc
-            raise
+        except (OSError, http.client.HTTPException) as exc:
+            raise DownloadTransportError(url, exc) from exc
         except DownloadError:
             raise
         except ValueError:

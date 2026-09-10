@@ -114,5 +114,18 @@ def test_wheel_ships_pm_package_and_lock_json(tmp_path):
     with zipfile.ZipFile(artifacts[0]) as wheel:
         shipped = set(wheel.namelist())
 
-    missing = sorted({"pm/__init__.py", "pm/lock.json"} - shipped)
+    missing = sorted({"pm/__init__.py", "pm/lock.json", "pm/artifact-mirror.json"} - shipped)
     assert not missing, f"wheel omits pm package files: {missing}"
+
+    installed = tmp_path / "installed"
+    with zipfile.ZipFile(artifacts[0]) as wheel:
+        wheel.extractall(installed)
+    check = subprocess.run(
+        [sys.executable, "-I", "-S", "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); "
+         "from pm.artifact_mirror import mirror_url; print(mirror_url('0' * 64))", str(installed)],
+        cwd=tmp_path, text=True, capture_output=True, timeout=30,
+    )
+    assert check.returncode == 0, check.stderr
+    from pm.artifact_mirror import mirror_url
+    assert check.stdout.strip() == mirror_url("0" * 64)

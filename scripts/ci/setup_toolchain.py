@@ -97,6 +97,16 @@ def python3_alias(python: Path) -> None:
             shutil.copy2(python, alias)
 
 
+def archive_inputs(args) -> None:
+    from pm.paths import repo_root
+    from pm.store import Store
+    from scripts.ci.archive_inputs import Archive, pinned_inputs, stage_inputs
+    from scripts.releases import r2
+
+    pins = pinned_inputs(repo_root(), target=current_target(), packages=set(packages(args.toolchain)))
+    stage_inputs(pins, archive=Archive(*r2.credentials()), store=Store(args.home.resolve() / "tools"))
+
+
 def install(args) -> None:
     import subprocess
 
@@ -203,7 +213,7 @@ def dependencies(args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    phases = {"prepare": prepare, "install": install, "dependencies": dependencies}
+    phases = {"prepare": prepare, "archive-inputs": archive_inputs, "install": install, "dependencies": dependencies}
     parser.add_argument("phase", choices=list(phases))
     parser.add_argument("--toolchain", choices=["python", "node", "all"], default="python")
     parser.add_argument("--home", type=Path, required=True)

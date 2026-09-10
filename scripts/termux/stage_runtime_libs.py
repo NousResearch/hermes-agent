@@ -38,7 +38,8 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from pm.downloader import Download, Source  # noqa: E402
+from pm.downloader import Download  # noqa: E402
+from pm.artifact_mirror import pinned_source  # noqa: E402
 from pm.package import DebPackage  # noqa: E402
 
 PREFIX_REL = DebPackage.prefix_rel
@@ -104,12 +105,22 @@ def _cache_valid(out: Path, manifest_path: Path, table: dict) -> bool:
     return True
 
 
-def _ensure_extracted(work: Path, name: str, row: dict) -> Path:
+def _work_dir(payload: Path) -> Path:
+    return payload / ".work" / "runtime-libs"
+
+
+def download_path(payload: Path, name: str) -> Path:
+    """The verified input consumed by this stager and the CI archive preflight."""
+    return _work_dir(payload) / "dl" / f"{name}.deb"
+
+
+def _ensure_extracted(payload: Path, name: str, row: dict) -> Path:
     """Extract fresh bytes from a digest-verified archive on every cache miss."""
+    work = _work_dir(payload)
     extract = work / "extract" / name
-    scratch = work / "dl"
+    archive = download_path(payload, name)
+    scratch = archive.parent
     scratch.mkdir(parents=True, exist_ok=True)
-    archive = scratch / f"{name}.deb"
     archive_ok = False
     if archive.exists():
         try:
@@ -118,7 +129,7 @@ def _ensure_extracted(work: Path, name: str, row: dict) -> Path:
             archive_ok = False
     if not archive_ok:
         try:
-            Download([Source(row["url"], archive, row["sha256"])],
+            Download([pinned_source(row["url"], archive, row["sha256"])],
                      partials_dir=scratch).run()
         except Exception as exc:
             raise StageError(f"{name} {row['version']}: download failed from {row['url']}: {exc}") from exc
@@ -138,7 +149,6 @@ def stage(payload: Path, table: dict, licenses: dict | None = None) -> Path:
     payload = Path(payload).resolve()
     payload.mkdir(parents=True, exist_ok=True)
     out = payload / "runtime-libs" / "lib"
-    work = payload / ".work" / "runtime-libs"
     manifest_path = payload / "runtime-libs" / MANIFEST_NAME
 
     identity = {"libs": table, "licenses": licenses}
@@ -154,7 +164,7 @@ def stage(payload: Path, table: dict, licenses: dict | None = None) -> Path:
 
     merged = 0
     for name, row in table.items():
-        extract = _ensure_extracted(work, name, row)
+        extract = _ensure_extracted(payload, name, row)
         lib_dir = extract / PREFIX_REL / "lib"
         sos = sorted(lib_dir.glob("*.so*"))
         if not sos:
@@ -185,7 +195,7 @@ def stage(payload: Path, table: dict, licenses: dict | None = None) -> Path:
         raise StageError("no shared objects staged")
 
     if licenses:
-        extract = _ensure_extracted(work, "termux-licenses", licenses)
+        extract = _ensure_extracted(payload, "termux-licenses", licenses)
         shutil.copytree(
             extract / PREFIX_REL / "share/LICENSES", payload / "runtime-libs/share/LICENSES",
             dirs_exist_ok=True, symlinks=True,

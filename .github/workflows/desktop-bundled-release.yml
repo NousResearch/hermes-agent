@@ -241,10 +241,19 @@ jobs:
 
   # ── Windows builders (REAL) ───────────────────────────────────────────────
   # Windows assembly and publication depend on these native Windows legs.
+  archive-inputs:
+    name: Archive every pinned input
+    if: inputs.release-phase == '' || inputs.release-phase == 'candidate'
+    needs: [validate]
+    uses: ./.github/workflows/archive-inputs.yml
+    with:
+      sha: ${{ needs.validate.outputs.sha }}
+    secrets: inherit
+
   build-win32:
     name: bundled ${{ matrix.target.label }}
     if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-    needs: validate
+    needs: [validate, archive-inputs]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
     timeout-minutes: 900
@@ -305,6 +314,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
+          archive-inputs: true
           # The payload tools cache does not include uv's built wheels.
           cache-python: true
 
@@ -364,6 +374,10 @@ jobs:
           key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
           restore-keys: |
             pm-store-v2-${{ matrix.target.label }}-
+
+      - name: Retrieve pinned payload inputs from R2
+        shell: bash
+        run: python -m scripts.ci.archive_inputs --target '${{ matrix.target.label }}' --store apps/desktop/build/agent-payload/tools
 
       - name: Resolve electron's default download cache path
         shell: bash
@@ -539,7 +553,7 @@ jobs:
   build-darwin:
     name: bundled ${{ matrix.target.label }}
     if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-    needs: validate
+    needs: [validate, archive-inputs]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
     timeout-minutes: 360
@@ -586,6 +600,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
+          archive-inputs: true
           # The payload tools cache does not include uv's built wheels.
           cache-python: true
 
@@ -616,6 +631,10 @@ jobs:
           key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
           restore-keys: |
             pm-store-v2-${{ matrix.target.label }}-
+
+      - name: Retrieve pinned payload inputs from R2
+        shell: bash
+        run: python -m scripts.ci.archive_inputs --target '${{ matrix.target.label }}' --store apps/desktop/build/agent-payload/tools
 
       - name: Resolve electron's default download cache path
         shell: bash
@@ -874,6 +893,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
+          archive-inputs: true
           cache-python: false
 
       - name: Install the locked Windows bundle tooling
@@ -1040,6 +1060,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
+          archive-inputs: true
           cache-python: false
 
       - name: Install the locked Windows bundle tooling
@@ -1225,7 +1246,7 @@ jobs:
 
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
-    needs: [validate]
+    needs: [validate, archive-inputs]
     if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
     runs-on: ubuntu-24.04-arm
     environment: release-signing
@@ -1255,6 +1276,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: python
+          archive-inputs: true
           cache-python: false
 
       - name: Derive the channel from the tag
@@ -1298,6 +1320,10 @@ jobs:
           key: termux-payload-${{ hashFiles('pm/lock.json', 'scripts/termux/build_cpython.sh', 'scripts/termux/build_node.sh', 'scripts/termux/build_uv.sh', 'scripts/termux/runtime_libs.json', 'scripts/termux/stage_runtime_libs.py') }}
           restore-keys: |
             termux-payload-
+
+      - name: Preserve and retrieve pinned inputs
+        shell: bash
+        run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
 
       - name: Build CPython into the payload
         shell: bash

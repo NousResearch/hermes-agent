@@ -27,6 +27,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PINS_PATH = REPO_ROOT / "pm" / "lock.json"
 
+# Standalone installers cannot read the shared mirror layout before checkout.
+sys.path.insert(0, str(REPO_ROOT))
+from pm.artifact_mirror import mirror_url  # noqa: E402
+
 BEGIN_MARK = "# --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---"
 END_MARK = "# --- END GENERATED: bootstrap pins ---"
 
@@ -88,6 +92,7 @@ def _sh_fragment(uv: dict) -> str:
         lines += [
             f"        {target})",
             f'            UV_PIN_URL="{entry["url"]}"',
+            f'            UV_PIN_MIRROR="{mirror_url(entry["sha256"])}"',
             f'            UV_PIN_SHA256="{entry["sha256"]}"',
             "            ;;",
         ]
@@ -117,6 +122,7 @@ def _ps1_fragment(uv: dict, git: dict) -> str:
         lines += [
             f'    "{target}" = @{{',
             f'        Url    = "{entry["url"]}"',
+            f'        MirrorUrl = "{mirror_url(entry["sha256"])}"',
             f'        Sha256 = "{entry["sha256"]}"',
             "    }",
         ]
@@ -131,6 +137,7 @@ def _ps1_fragment(uv: dict, git: dict) -> str:
         lines += [
             f'    "{target}" = @{{',
             f'        Url    = "{entry["url"]}"',
+            f'        MirrorUrl = "{mirror_url(entry["sha256"])}"',
             f'        Sha256 = "{entry["sha256"]}"',
             "    }",
         ]

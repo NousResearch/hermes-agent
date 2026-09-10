@@ -284,7 +284,8 @@ class Store:
         Completed archives enter the cache even if a later source pauses.
         The downloader owns partial bytes outside this disposable scratch.
         """
-        from pm.downloader import Download, DownloadPaused, Source
+        from pm.downloader import Download, DownloadPaused
+        from pm.artifact_mirror import pinned_source
 
         sources = []
         for artifact in artifacts:
@@ -300,7 +301,7 @@ class Store:
                 if entry.exists():
                     shutil.rmtree(entry)
                 destination = scratch / entry_name / url.rsplit("/", 1)[-1]
-            sources.append(Source(url, destination, digest))
+            sources.append(pinned_source(url, destination, digest))
 
         urls = {str(source.dest): source.url for source in sources}
 

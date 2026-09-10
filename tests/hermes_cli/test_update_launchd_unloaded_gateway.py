@@ -153,6 +153,8 @@ class TestServicePidSweepExclusion:
         monkeypatch.setattr(gateway_mod, "is_macos", lambda: True)
         monkeypatch.setattr(gateway_mod, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(gateway_mod, "_launchd_domain", lambda: "gui/501")
+        # Complete the simulated macOS boundary on hosts without POSIX getuid.
+        monkeypatch.setattr(gateway_mod.os, "getuid", lambda: 501, raising=False)
 
         def fake_run(argv, **kwargs):
             if argv[:2] == ["launchctl", "list"]:

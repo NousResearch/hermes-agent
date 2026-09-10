@@ -144,6 +144,27 @@ class MCPServerRunMixin:
                      "rebuilding transport.", self.name, revival_reason)
         return False
 
+    def _park_log(self, key: str, msg: str, *args: object) -> None:
+        """Log a park-entry WARNING once per park episode and transition type (#105190).
+
+        A parked server that stays dead wakes every ``_PARKED_RETRY_INTERVAL``, re-enters the
+        park-entry ladder, and without a latch re-logs the SAME warning forever (4,615 identical
+        lines in 3 weeks on the reporting host). An episode runs from the first park until a
+        revival proves the session healthy — the window ``_was_parked`` already tracks (set in
+        ``_park``, cleared in ``_mark_session_proven``, which also clears the key set). ``key``
+        names the transition (site + failure class): an identical repeat drops to DEBUG with the
+        message text unchanged so the retry cadence stays diagnosable, while a DIFFERENT
+        transition mid-episode (e.g. transient blips giving way to a permanent 401 with
+        re-authenticate guidance) is new signal and still warns. The key set is bounded by the
+        fixed park-site vocabulary — a flapper alternating two failure shapes warns at most twice
+        per episode, never per cycle.
+        """
+        if self._was_parked and key in self._park_warned_keys:
+            logger.debug(msg, *args)
+        else:
+            logger.warning(msg, *args)
+            self._park_warned_keys.add(key)
+
     async def _prepare_run(self, config: dict) -> bool:
         """Bind config, build sampling/elicitation handlers, validate HTTP. False when the server
         must not start (bad remote URL / non-MCP endpoint: fail fast with ``_error`` set and
@@ -253,7 +274,8 @@ class MCPServerRunMixin:
         else:
             self._reconnect_retries += 1
             if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
-                logger.warning(
+                self._park_log(
+                    "rapid_drop",
                     "MCP server '%s': %d consecutive reconnects without a healthy session (rapid-drop budget "
                     "exhausted), parking; will self-probe every %ds until it recovers (state: degraded → parked)",
                     self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL)
@@ -314,7 +336,8 @@ class MCPServerRunMixin:
             return await self._on_permanent_error(root, budget)
         self._reconnect_retries += 1
         if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
-            logger.warning(
+            self._park_log(
+                "reconnect_ladder",
                 "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe every %ds "
                 "until it recovers (state: degraded → parked): %s: %s",
                 self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
@@ -333,12 +356,14 @@ class MCPServerRunMixin:
             detail = (f"authentication, parking until credentials change; re-authenticate with "
                       f"`hermes mcp login {self.name}`" if _errors._is_auth_error(root)
                       else "connection with a permanent error, parking without retries")
-            logger.warning("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
+            self._park_log(f"initial:{'auth' if _errors._is_auth_error(root) else 'permanent'}",
+                           "MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
                            self.name, detail, type(root).__name__, root)
             return await self._park_initial_failure(exc, "after permanent initial failure", budget)
         budget.initial_retries += 1
         if budget.initial_retries > _core._MAX_INITIAL_CONNECT_RETRIES:
-            logger.warning(
+            self._park_log(
+                "initial_ladder",
                 "MCP server '%s' failed initial connection after %d attempts, parking until a reconnect is "
                 "requested (state: connecting → parked): %s: %s",
                 self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__, root)
@@ -366,7 +391,8 @@ class MCPServerRunMixin:
             await asyncio.sleep(_jittered(1.0))
             return not self._shutdown_event.is_set()
         # Deterministic failure on a working server: park now.
-        logger.warning(
+        self._park_log(
+            "permanent_error",
             "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
             "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
         return await self._park_and_rearm("from parked state (permanent error)", budget)

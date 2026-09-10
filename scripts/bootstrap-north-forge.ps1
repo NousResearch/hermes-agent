@@ -20,7 +20,10 @@
   AFTER THIS: run  north-forge.cmd  (repo root) - it sets HERMES_HOME and starts `hermes`.
 
   EXIT 0 = venv ready.  1 = failed.
-  REQUIRES  Python 3.11+ on PATH (or uv, which fetches its own). PowerShell 5.1+.
+  REQUIRES  A drive-native toolchain shipped as a sibling of the checkout
+    (<parent>\<leaf>-toolchain\uv\uv.exe + \python\python.exe - DECISION-2026-09-09-001,
+    prepared once by the admin per docs\BUILDING-A-DRIVE.md), OR Python 3.11+ / uv
+    on PATH for admin/dev use. PowerShell 5.1+.
 
   PowerShell 5.1 note (Codex audit, Fix 1): `$ErrorActionPreference = 'Stop'` plus a
   directly-invoked native process is a trap - a process that merely writes to stderr
@@ -175,6 +178,7 @@ function Invoke-NfBootstrap {
     # sync (that stays on the normal launch-time path), nothing.
     . (Join-Path $PSScriptRoot 'lib\nf-readiness.ps1')
     . (Join-Path $PSScriptRoot 'lib\nf-venv-state.ps1')
+    . (Join-Path $PSScriptRoot 'lib\nf-toolchain.ps1')
 
     $venvCanon = Get-NfCanonicalDir $VenvDir
     $vs        = Get-NfVenvState -VenvDir $VenvDir       # Absent | EmptyDirectory | OwnedNorthForgeVenv | RecognizablePythonVenv | UnknownDirectory | UnsafePath
@@ -272,7 +276,33 @@ function Invoke-NfBootstrap {
         Remove-Item -LiteralPath $VenvDir -Recurse -Force
     }
 
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    # --- resolve the toolchain: bundled drive-native FIRST, host PATH second ---
+    # DECISION-2026-09-09-001. A provisioned North Forge drive carries its own
+    # uv.exe + python-build-standalone CPython in <parent>\<leaf>-toolchain\, so a
+    # recipient needs nothing on PATH and no network. Host uv/python are an
+    # admin/dev fallback ONLY, and the fallback is logged distinctly so it is
+    # never silently confused with the bundled path. Neither the toolchain folder
+    # nor this resolution is part of R1: it is an INPUT to venv creation, not a
+    # venv - nf-venv-state.ps1 / nf-readiness.ps1 never look at it.
+    $tc = Get-NfBundledToolchain -RepoRoot $RepoRoot
+
+    $uvExe = $null; $uvFrom = $null
+    if     ($tc.UvExe) { $uvExe = $tc.UvExe; $uvFrom = 'bundled' }
+    elseif ($u = Get-Command uv -ErrorAction SilentlyContinue) { $uvExe = $u.Source; $uvFrom = 'host' }
+
+    $basePy = $null; $pyFrom = $null
+    if     ($tc.PyExe) { $basePy = $tc.PyExe; $pyFrom = 'bundled' }
+    elseif ($sp = Get-Command python -ErrorAction SilentlyContinue) { $basePy = $sp.Source; $pyFrom = 'host' }
+
+    $uvLbl = if ($uvFrom) { $uvFrom } else { 'none' }
+    $pyLbl = if ($pyFrom) { $pyFrom } else { 'none' }
+    Write-Host "[bootstrap] toolchain uv=$uvLbl python=$pyLbl bundled_root=$($tc.Root)"
+    if ($tc.Present) {
+        Write-Host "  toolchain: bundled drive toolchain  ($($tc.Root))" -ForegroundColor Green
+    } elseif ($uvFrom -eq 'host' -or $pyFrom -eq 'host') {
+        Write-Host "  toolchain: using host toolchain (admin/dev)  uv=$uvLbl python=$pyLbl" -ForegroundColor Yellow
+        Write-Host "[bootstrap] using host toolchain (admin/dev) - no bundled drive toolchain at $($tc.Root)"
+    }
 
     # --- keep uv's cache on the venv's volume --------------------------
     # uv installs by HARDLINKING packages from its cache into the venv. When the cache
@@ -283,7 +313,7 @@ function Invoke-NfBootstrap {
     # test. Pin the cache to a sibling of the venv so the two always share a volume.
     # An operator who has already set UV_CACHE_DIR keeps their choice. (The caller's
     # finally{} restores UV_CACHE_DIR to its pre-run value regardless.)
-    if ($uv -and -not $env:UV_CACHE_DIR) {
+    if ($uvExe -and -not $env:UV_CACHE_DIR) {
         $env:UV_CACHE_DIR = Join-Path $parent '.uv-cache'
         Write-Host "  cache: $env:UV_CACHE_DIR   (same volume as the venv -> hardlink, not copy)"
     }
@@ -293,14 +323,23 @@ function Invoke-NfBootstrap {
     # re-checked ownership proof, with no work in between). By here $VenvDir is
     # either absent, an empty dir we may populate in place, or gone. NO deletion
     # happens in this block.
+    # Resolution order:
+    #   1. bundled uv + bundled interpreter -> pin uv to the exact bundled
+    #      python.exe (fully offline, no PATH, no uv-managed download);
+    #   2. uv present (bundled OR host) but no bundled interpreter -> let uv
+    #      resolve/fetch a 3.11 itself  (unchanged from before this change);
+    #   3. no uv at all -> host python -m venv  (unchanged);
+    #   4. nothing -> the existing "nothing available" error, verbatim.
     if (-not (Test-Path -LiteralPath $pyExe)) {
         Write-Host "creating venv..."
-        if ($uv) {
-            Invoke-Native { & uv venv $VenvDir --python 3.11 }
+        if ($tc.PyExe -and $uvExe) {
+            Invoke-Native { & $uvExe venv $VenvDir --python $tc.PyExe }
+        } elseif ($uvExe) {
+            Invoke-Native { & $uvExe venv $VenvDir --python 3.11 }
+        } elseif ($basePy) {
+            Invoke-Native { & $basePy -m venv $VenvDir }
         } else {
-            $sysPy = Get-Command python -ErrorAction SilentlyContinue
-            if (-not $sysPy) { Write-Error "No 'uv' and no 'python' on PATH. Install Python 3.11+ or uv, then re-run."; $script:__nfExit = 1; return }
-            Invoke-Native { & $sysPy.Source -m venv $VenvDir }
+            Write-Error "No 'uv' and no 'python' on PATH. Install Python 3.11+ or uv, then re-run."; $script:__nfExit = 1; return
         }
         if ($LASTEXITCODE -ne 0) { Write-Error "venv creation failed (exit $LASTEXITCODE)."; $script:__nfExit = 1; return }
         if (-not (Test-Path -LiteralPath $pyExe)) { Write-Error "venv creation failed - '$pyExe' not found."; $script:__nfExit = 1; return }
@@ -308,8 +347,8 @@ function Invoke-NfBootstrap {
 
     # --- editable install ---------------------------------------------
     Write-Host "installing North Forge (editable) into the venv - this can take a minute..."
-    if ($uv) {
-        Invoke-Native { & uv pip install --python $pyExe -e $RepoRoot }
+    if ($uvExe) {
+        Invoke-Native { & $uvExe pip install --python $pyExe -e $RepoRoot }
     } else {
         Invoke-Native { & $pyExe -m pip install --upgrade pip }
         Invoke-Native { & $pyExe -m pip install -e $RepoRoot }

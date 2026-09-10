@@ -252,7 +252,7 @@ def _r1_fake_repo(root: Path) -> Path:
     (repo / "hermes_cli" / "__init__.py").write_text(
         "def main():\n    print('nf-fake hermes'); return 0\n", encoding="utf-8"
     )
-    for name in ("nf-readiness.ps1", "nf-venv-state.ps1"):
+    for name in ("nf-readiness.ps1", "nf-venv-state.ps1", "nf-toolchain.ps1"):
         shutil.copy(LIB_DIR / name, repo / "scripts" / "lib" / name)
     shutil.copy(BOOTSTRAP_PS1, repo / "scripts" / "bootstrap-north-forge.ps1")
     shutil.copy(REPO_ROOT / "scripts" / "nf-preflight.ps1", repo / "scripts" / "nf-preflight.ps1")
@@ -499,3 +499,133 @@ def test_force_does_not_override_unknown_directory(tmp_path):
     assert _diag(combined).get("action") == "refuse"
     assert _venv_fingerprint(venv) == venv_before, "a -Force run deleted an UnknownDirectory"
     assert _data_fingerprint(data) == before
+
+
+# ==========================================================================
+# DECISION-2026-09-09-001 - drive-native bundled toolchain
+# ==========================================================================
+#
+# A provisioned drive carries <parent>\<leaf>-toolchain\{uv\uv.exe, python\python.exe}
+# (uv + a python-build-standalone CPython, prepared once by the admin, never
+# git-tracked). bootstrap must:
+#   * use it silently when present - zero PATH dependency, zero network, no prompt;
+#   * fall back to uv/python on PATH otherwise, LOGGED as "using host toolchain
+#     (admin/dev)" so the two are never confused;
+#   * with neither, emit today's exact existing error, unchanged.
+# The toolchain folder is an INPUT to venv creation - never classified, deleted,
+# or treated as ownership evidence by R1 (nothing here touches nf-venv-state.ps1
+# or nf-readiness.ps1).
+
+_HAVE_UV = shutil.which("uv") is not None
+
+
+def _min_env_no_toolchain() -> dict:
+    """minimal_windows_subprocess_env() (System32 + PowerShell only - NO python,
+    NO uv) plus the vars uv needs for its own cache/home, so a bundled-toolchain
+    build can run fully offline off a warm uv cache."""
+    from tests._windows_env import minimal_windows_subprocess_env
+
+    env = minimal_windows_subprocess_env()
+    for key in ("LOCALAPPDATA", "APPDATA", "USERPROFILE", "UV_CACHE_DIR"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    return env
+
+
+def _stage_bundled_toolchain(parent: Path, leaf: str) -> Path:
+    r"""Build ``<parent>\<leaf>-toolchain\`` : a real uv.exe copied in, and
+    ``python\`` as a junction onto this host's standalone CPython base (its layout
+    - python.exe at the root - is exactly the python-build-standalone shape the
+    real bundled interpreter has)."""
+    tc = parent / f"{leaf}-toolchain"
+    (tc / "uv").mkdir(parents=True)
+    shutil.copy(shutil.which("uv"), tc / "uv" / "uv.exe")
+    r = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(tc / "python"), sys.base_prefix],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, f"mklink /J failed: {r.stdout}\n{r.stderr}"
+    assert (tc / "python" / "python.exe").exists(), "staged bundled interpreter missing python.exe"
+    return tc
+
+
+@_STATE_WINDOWS_ONLY
+@pytest.mark.skipif(not _HAVE_PWSH, reason="powershell not on PATH")
+@pytest.mark.skipif(not _HAVE_UV, reason="no uv on this host to stage as the bundled toolchain")
+def test_bundled_toolchain_builds_venv_with_zero_path_dependency(tmp_path):
+    repo = _r1_fake_repo(tmp_path)                      # tmp_path/north-forge-agent
+    _stage_bundled_toolchain(tmp_path, repo.name)       # tmp_path/north-forge-agent-toolchain
+    venv = tmp_path / "north-forge-agent-venv"
+    data = tmp_path / "north-forge-agent-data"
+
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-File", str(repo / "scripts" / "bootstrap-north-forge.ps1"),
+         "-RepoRoot", str(repo), "-VenvDir", str(venv), "-DataDir", str(data)],
+        capture_output=True, text=True, timeout=420, env=_min_env_no_toolchain(),
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "[bootstrap] toolchain uv=bundled python=bundled" in out, out
+    assert "bundled drive toolchain" in out, out
+    assert "using host toolchain (admin/dev)" not in out, out
+    assert (venv / "Scripts" / "python.exe").exists(), out   # venv built, no python/uv on PATH
+    assert _diag(out).get("action") == "create"
+
+
+@_STATE_WINDOWS_ONLY
+@pytest.mark.skipif(not _HAVE_PWSH, reason="powershell not on PATH")
+def test_no_bundled_toolchain_falls_back_to_host_path_logged_distinctly(tmp_path):
+    repo = _r1_fake_repo(tmp_path)
+    venv = tmp_path / "north-forge-agent-venv"
+    data = tmp_path / "north-forge-agent-data"
+
+    r = _run_bootstrap_repair(repo, venv, data, force=False)   # _toolchain_env(): python + uv ON PATH
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "using host toolchain (admin/dev)" in out, out
+    assert "toolchain: bundled drive toolchain" not in out, out
+    assert "python=bundled" not in out and "uv=bundled" not in out, out
+    assert "[bootstrap] toolchain uv=host" in out, out
+    assert (venv / "Scripts" / "python.exe").exists(), out
+
+
+@_STATE_WINDOWS_ONLY
+@pytest.mark.skipif(not _HAVE_PWSH, reason="powershell not on PATH")
+def test_no_toolchain_anywhere_gives_the_exact_existing_error(tmp_path):
+    from tests._windows_env import minimal_windows_subprocess_env
+
+    repo = _r1_fake_repo(tmp_path)
+    venv = tmp_path / "north-forge-agent-venv"
+    data = tmp_path / "north-forge-agent-data"
+
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-File", str(repo / "scripts" / "bootstrap-north-forge.ps1"),
+         "-RepoRoot", str(repo), "-VenvDir", str(venv), "-DataDir", str(data)],
+        capture_output=True, text=True, timeout=120,
+        env=minimal_windows_subprocess_env(),   # NO python, NO uv, nothing extra
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, out
+    assert "No 'uv' and no 'python' on PATH. Install Python 3.11+ or uv, then re-run." in out, out
+    assert not (venv / "Scripts" / "python.exe").exists()
+
+
+def test_toolchain_resolver_source_is_read_only_and_not_ownership_evidence() -> None:
+    """Source-level, portable: nf-toolchain.ps1 never writes/deletes/downloads,
+    and bootstrap dot-sources it and prefers the bundled path before any PATH
+    lookup - without touching the R1 ownership/readiness decision."""
+    tc = (LIB_DIR / "nf-toolchain.ps1").read_text(encoding="utf-8")
+    for banned in ("Remove-Item", "New-Item", "Set-Content", "Out-File",
+                   "Invoke-WebRequest", "Start-BitsTransfer", "curl", "exit "):
+        assert banned not in tc, f"nf-toolchain.ps1 must be read-only; found {banned!r}"
+
+    src = _source()
+    assert r"lib\nf-toolchain.ps1" in src, "bootstrap must dot-source the toolchain resolver"
+    i_tc = src.index("Get-NfBundledToolchain -RepoRoot")
+    i_uv = src.index("Get-Command uv -ErrorAction SilentlyContinue")
+    assert i_tc < i_uv, "the bundled toolchain must be resolved BEFORE any PATH lookup"
+    assert "using host toolchain (admin/dev)" in src, "PATH fallback must be logged distinctly"
+    # R1 decision is upstream and untouched: the state table still precedes this.
+    assert src.index("action=$action reason=$reason") < i_tc

@@ -1,0 +1,56 @@
+THIRD-PARTY NOTICES — North Forge bundled drive toolchain
+=========================================================
+
+This file MUST be copied into the bundled toolchain folder on every drive
+(<parent>\<leaf>-toolchain\THIRD-PARTY-NOTICES.txt) per DECISION-2026-09-09-001
+and docs/BUILDING-A-DRIVE.md. The toolchain folder ships three third-party
+components. All are permissively licensed and redistributable, including bundled
+inside a product, royalty-free. None are copyleft; there is no source-offer or
+share-alike obligation.
+
+Keep each component's own bundled licence file intact inside the toolchain
+folder as well (uv ships LICENSE files in its archive; the python-build-standalone
+CPython tree ships a LICENSE.txt at its root). This file is a pointer/summary,
+not a replacement for those.
+
+--------------------------------------------------------------------------------
+1. CPython  (the python\ interpreter)
+--------------------------------------------------------------------------------
+   Upstream : https://www.python.org/
+   Licence  : PSF License Agreement (Python Software Foundation License, v2) —
+              a permissive, BSD-style licence.
+   Notice   : Copyright (c) 2001-<current year> Python Software Foundation;
+              All Rights Reserved.
+   Terms    : Redistribution and use, with or without modification, are
+              permitted. The PSF License Agreement text and the above copyright
+              notice must be retained with the distribution. The interpreter's
+              own LICENSE.txt (at the root of the python\ folder) contains the
+              full agreement plus the permissive licences of components bundled
+              into CPython (bzip2, libffi, OpenSSL, SQLite, zlib, etc.); shipping
+              that file unmodified satisfies all of them.
+   No PSF endorsement of North Forge is claimed or implied.
+
+--------------------------------------------------------------------------------
+2. python-build-standalone  (the build of CPython used in python\)
+--------------------------------------------------------------------------------
+   Upstream : https://github.com/astral-sh/python-build-standalone
+   Licence  : The redistributed interpreter is CPython under the PSF License
+              (see #1). The python-build-standalone project's own build scripts
+              and packaging are under a short permissive licence (BSD/MIT-style);
+              its LICENSE / PYTHON.LICENSE files are included in the distribution
+              archive — retain them in the python\ folder.
+
+--------------------------------------------------------------------------------
+3. uv  (uv\uv.exe)
+--------------------------------------------------------------------------------
+   Upstream : https://github.com/astral-sh/uv
+   Licence  : Dual-licensed Apache License 2.0 OR MIT License, at your option.
+   Terms    : Permissive. Retain the copyright and licence notice. uv's release
+              archive contains LICENSE-APACHE and LICENSE-MIT — keep them in the
+              uv\ folder alongside uv.exe.
+
+--------------------------------------------------------------------------------
+North Forge itself
+--------------------------------------------------------------------------------
+North Forge is a downstream of NousResearch/hermes-agent; see the repository's
+LICENSE and BRANDING.md. Nothing in this toolchain folder is North Forge code.

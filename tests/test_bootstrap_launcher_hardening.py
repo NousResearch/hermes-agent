@@ -389,7 +389,7 @@ def _r1_direct_repo(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (repo / "hermes_cli" / "__init__.py").write_text("def main():\n    return 0\n", encoding="utf-8")
-    for name in ("nf-readiness.ps1", "nf-venv-state.ps1"):
+    for name in ("nf-readiness.ps1", "nf-venv-state.ps1", "nf-toolchain.ps1"):
         (repo / "scripts" / "lib" / name).write_bytes((REPO_ROOT / "scripts" / "lib" / name).read_bytes())
     (repo / "scripts" / "bootstrap-north-forge.ps1").write_bytes(BOOTSTRAP.read_bytes())
     (repo / "scripts" / "make-drive-root-shortcut.ps1").write_text("param([string]$RepoRoot)\n", encoding="utf-8")

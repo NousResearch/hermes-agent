@@ -327,60 +327,47 @@ _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google
 
 
 def _anthropic_is_subscription(api_key: Optional[str] = None) -> bool:
-    """Return True when Anthropic access is an OAuth subscription seat.
+    """True when the Anthropic credential in use is an OAuth subscription seat.
 
     Claude Max / Claude Code / Pro seats authenticate with an OAuth token
-    (``sk-ant-oat…``, a JWT, or a ``cc-`` Claude Code token) and carry NO
-    per-token invoice: usage is included in the subscription and metered
-    against rolling quota windows instead. A Console API key
-    (``sk-ant-api…``) is the opposite: every token is billed.
+    (``sk-ant-oat…``, a JWT, or a ``cc-`` token) and carry no per-token
+    invoice: usage is metered against rolling quota windows. A Console API
+    key (``sk-ant-api…``) bills every token. Pricing both alike is wrong in
+    both directions, so the route mirrors ``openai-codex`` and decides from
+    the credential.
 
-    Pricing them identically is wrong in both directions, so decide from
-    the credential actually in use, mirroring the ``openai-codex`` route
-    which is already ``subscription_included``.
-
-    Detection is POSITIVE-ONLY and fails closed: we return True solely when
-    an OAuth token is positively identified. An API key, an empty pool, or
-    any error keeps the metered path, because under-reporting real spend to
-    a metered user is far worse than the ``unknown``/estimated status this
-    replaces.
+    ``api_key`` is the credential the caller actually sent (the turn loop
+    threads ``agent.api_key``, which follows pool rotation and refresh), so
+    it always wins. Without it — callers that price after the fact
+    (auxiliary accounting, insights) — the persisted pool is the only
+    evidence, and it cannot tell which seat served a given request. That
+    fallback is therefore positive-only and fails closed: True only when
+    EVERY usable pool credential is OAuth. A mixed OAuth + API-key pool, an
+    empty pool, an unreadable store or an unexpected payload all keep the
+    metered path, because under-reporting real spend is worse than the
+    ``unknown``/estimated status this replaces.
     """
+    from agent.anthropic_credentials import _is_oauth_token
+
+    if api_key:
+        return isinstance(api_key, str) and _is_oauth_token(api_key)
+    from hermes_cli.auth import read_credential_pool
+
     try:
-        from agent.anthropic_adapter import _is_oauth_token
-
-        if api_key:
-            # An explicit key wins: it is the credential the caller used.
-            return bool(_is_oauth_token(api_key))
-
-        # No key threaded through (the common case: the token lives in the
-        # credential pool, not the environment). Consult the pool, honouring
-        # priority order so the seat actually used decides.
-        from hermes_cli.auth import read_credential_pool
-
-        pool = read_credential_pool("anthropic")
-        entries = pool if isinstance(pool, list) else (pool or {}).get("anthropic")
-        if not isinstance(entries, list):
-            return False
-
-        def _field(entry: Any, name: str, default: Any) -> Any:
-            return entry.get(name, default) if isinstance(entry, dict) else getattr(entry, name, default)
-
-        def _priority(entry: Any) -> int:
-            try:
-                return int(_field(entry, "priority", 0))
-            except (TypeError, ValueError):
-                return 0
-
-        for entry in sorted(entries, key=_priority):
-            token = _field(entry, "access_token", "") or _field(entry, "api_key", "") or ""
-            if not token:
-                continue
-            # First credential bearing a usable token decides the route.
-            return bool(_is_oauth_token(token))
+        entries = read_credential_pool("anthropic")
+    except Exception:
+        # _load_auth_store re-raises an unreadable auth.json on purpose; a cost
+        # estimate must not take the turn down with it.
+        logger.debug("anthropic subscription detection: pool unreadable, staying metered", exc_info=True)
         return False
-    except Exception:  # pragma: no cover - defensive: never break pricing
-        logger.debug("anthropic subscription detection failed", exc_info=True)
+    if not isinstance(entries, list):
         return False
+    kinds = {
+        _is_oauth_token(token)
+        for token in (entry.get("access_token") for entry in entries if isinstance(entry, dict))
+        if isinstance(token, str) and token
+    }
+    return kinds == {True}
 
 
 def resolve_billing_route(

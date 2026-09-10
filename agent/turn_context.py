@@ -21,6 +21,7 @@ from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
+from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
@@ -883,6 +884,22 @@ def _bind_interrupt_scope(agent: Any, ra) -> None:
     agent._interrupt_thread_signal_pending = False
 
 
+def _memory_query_text(original_user_message: Any) -> str:
+    """The semantic text of a turn's user content for memory queries.
+
+    A multimodal (list) turn carries its text in content parts, so keying the
+    query off ``isinstance(str)`` alone collapses it to ``""`` — ``on_turn_start``
+    sees an empty turn and ``is_trivial_prompt("")`` skips ``prefetch_all``
+    entirely, so memory recall never even runs on an image+text turn. That is the
+    execution-side twin of the delivery gap this PR (#71998) closes: the sidecar
+    can now carry recall on a multimodal turn, but only if prefetch produced any.
+    Flatten str/list to text; an image-only turn still yields ``""`` and is
+    correctly treated as trivial (no semantic text to query on)."""
+    if isinstance(original_user_message, (str, list)):
+        return flatten_message_text(original_user_message)
+    return ""
+
+
 def _memory_turn_start_and_prefetch(
     agent: Any, original_user_message: Any, turn_author: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -891,7 +908,7 @@ def _memory_turn_start_and_prefetch(
     Returns the prefetch text (``""`` when nothing was injected)."""
     if not agent._memory_manager:
         return ""
-    _query = original_user_message if isinstance(original_user_message, str) else ""
+    _query = _memory_query_text(original_user_message)
     # The author rides along so a provider can attribute THIS turn, not whoever opened the session.
     _author = turn_author if isinstance(turn_author, dict) else {}
     with suppress(Exception):

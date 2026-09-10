@@ -31,6 +31,7 @@ import pytest
 
 from agent.memory_manager import build_memory_context_block
 from agent.turn_context import (
+    _memory_query_text,
     build_turn_context,
     compose_multimodal_context_part,
     compose_user_api_content,
@@ -76,6 +77,47 @@ class TestComposeMultimodalContextPart:
         sidecar = compose_user_api_content("hello", "likes tea", "CTX")
         part = compose_multimodal_context_part("likes tea", "CTX")
         assert sidecar == "hello\n\n" + part
+
+
+class TestMemoryQueryText:
+    """#71998 execution side: the memory query must flatten multimodal (list)
+    content to its text, or prefetch/on_turn_start never run on an image+text
+    turn and the delivery sidecar has nothing to carry."""
+
+    def test_str_passthrough(self):
+        assert _memory_query_text("what is my address") == "what is my address"
+
+    def test_text_plus_image_list_yields_text(self):
+        content = [
+            {"type": "text", "text": "what is in this photo of my house"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+        assert _memory_query_text(content) == "what is in this photo of my house"
+
+    def test_image_only_list_yields_empty(self):
+        content = [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+        assert _memory_query_text(content) == ""
+
+    def test_non_text_types_yield_empty(self):
+        assert _memory_query_text(None) == ""
+        assert _memory_query_text(12345) == ""
+
+    def test_drives_trivial_prompt_gate_correctly(self):
+        from agent.memory_provider import is_trivial_prompt
+
+        text_plus_image = [
+            {"type": "text", "text": "remind me what my dog's name is"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+        image_only = [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+        # A text+image turn is NOT trivial once flattened, so prefetch runs...
+        assert is_trivial_prompt(_memory_query_text(text_plus_image)) is False
+        # ...while an image-only turn stays trivial (no semantic text to query).
+        assert is_trivial_prompt(_memory_query_text(image_only)) is True
 
 
 # ---------------------------------------------------------------------------

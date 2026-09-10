@@ -120,6 +120,13 @@ DEFAULT_CONFIG = {
         # turn), "cold" (first turn of a session only).
         "service_tier": "",
         "fast_auto_seconds": 60,
+        # Self-hosted endpoints trusted to forward fast-mode params (service_tier / speed)
+        # to the first-party API unchanged. Fast mode is otherwise refused on any custom
+        # base_url, because a proxy that drops or rejects the field bills for a tier that
+        # was never delivered. Entries are exact "provider:hostname" pairs; subdomains do
+        # not inherit trust. Only list an endpoint you have verified passes the param
+        # through, e.g. ["llm-proxy:proxy.example.com"].
+        "fast_mode_trusted_endpoints": [],
         # System-prompt guidance telling the model to call tools instead of describing actions.
         # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name
         # substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).

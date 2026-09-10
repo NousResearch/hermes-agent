@@ -58,6 +58,19 @@ def _select(description: str, *options: str, **extra: Any) -> Dict[str, Any]:
     return {"type": "select", "description": description, "options": list(options), **extra}
 
 
+# Built-in web backends, mirrored from ``tools/web_tools.py`` (_LEGACY_WEB_BACKENDS for search; the
+# extract-capable subset the runtime names in its "search-only" error). Leading "" = fall back to the
+# shared ``web.backend`` / auto-detect. Kept as module constants so the static override and the
+# per-request current-value preservation in _schema_with_dynamic_provider_options share one source of
+# truth. Web backends are plugin-extensible, so these are suggestions, not an exhaustive gate — a
+# configured name outside the list is preserved.
+_WEB_SEARCH_BACKEND_OPTIONS = [
+    "", "firecrawl", "searxng", "brave-free", "ddgs", "tavily", "exa", "parallel", "perplexity", "xai",
+    "keenable",
+]
+_WEB_EXTRACT_BACKEND_OPTIONS = ["", "firecrawl", "tavily", "exa", "parallel"]
+
+
 # Manual overrides for fields that need select options or custom types.
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "timezone": _select(
@@ -82,6 +95,18 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     "terminal.vercel_runtime": _select("Vercel Sandbox runtime", "node24", "node22", "python3.13"),
     "terminal.modal_mode": _select("Modal sandbox mode", "sandbox", "function"),
+    "web.backend": _select(
+        "Shared web search + extract backend (blank = auto-detect from credentials)",
+        *_WEB_SEARCH_BACKEND_OPTIONS,
+    ),
+    "web.search_backend": _select(
+        "Per-capability override for web_search (blank = fall back to web.backend)",
+        *_WEB_SEARCH_BACKEND_OPTIONS,
+    ),
+    "web.extract_backend": _select(
+        "Per-capability override for web_extract (blank = fall back to web.backend)",
+        *_WEB_EXTRACT_BACKEND_OPTIONS,
+    ),
     "proxy.enabled": {
         "type": "boolean",
         "description": (
@@ -330,6 +355,63 @@ def _schema_select_options(key: str) -> Optional[List[str]]:
     return options if isinstance(options, list) else None
 
 
+def _registry_web_backend_names(capability: str) -> List[str]:
+    """Names of registered web providers that support *capability*.
+
+    ``capability`` is ``"search"``, ``"extract"``, or ``"any"`` (supports at least one). Reads
+    ``agent.web_search_registry.list_providers()`` — the same registry the ``web_search``/
+    ``web_extract`` tools resolve against — so an installed provider (built-in or plugin) is
+    enumerated per capability. Returns ``[]`` on any import/registry failure so the built-in base
+    list stays the floor; a single misbehaving provider is skipped, not fatal.
+    """
+    try:
+        from agent.web_search_registry import list_providers
+
+        providers = list_providers()
+    except Exception:  # pragma: no cover - registry must never break the schema
+        return []
+
+    names: List[str] = []
+    for provider in providers:
+        try:
+            if capability == "search" and not provider.supports_search():
+                continue
+            if capability == "extract" and not provider.supports_extract():
+                continue
+            if capability == "any" and not (provider.supports_search() or provider.supports_extract()):
+                continue
+            name = str(provider.name).strip()
+        except Exception:  # noqa: BLE001 - skip a provider that raises on introspection
+            continue
+        if name:
+            names.append(name)
+    return names
+
+
+def _web_backend_schema_options(base: List[str], configured: Any, capability: str) -> List[str]:
+    """Options for a web-backend select: built-ins + every installed registry provider that
+    supports *capability*, plus a configured-but-undiscoverable fallback.
+
+    The dashboard renders the select as a closed gate, so an installed provider that isn't in the
+    static ``base`` list (a plugin-registered backend, or a built-in not enumerated in ``base``) has
+    to be added here or it can't be chosen. We therefore enumerate the registry per capability rather
+    than only preserving whatever is already configured. A configured value that is neither built-in
+    nor currently registered is still appended so switching away from it never drops it from the
+    dropdown. ``base`` is always the floor; order is base → newly-discovered registry names →
+    configured fallback.
+    """
+    options = list(base)
+    seen = set(options)
+    for name in _registry_web_backend_names(capability):
+        if name not in seen:
+            options.append(name)
+            seen.add(name)
+    current = str(configured or "").strip()
+    if current and current not in seen:
+        options.append(current)
+    return options
+
+
 def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
     """CONFIG_SCHEMA with per-request discovery-driven ``*.provider`` options merged.
 
@@ -367,6 +449,16 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
             plugin_names = []
         if plugin_names:
             merge("terminal.backend", [*tb_options, *plugin_names])
+
+    # Web backends are plugin-extensible, and the dashboard renders a select as a closed gate.
+    # Enumerate installed registry providers per capability and preserve a configured value outside
+    # the built-in list so a plugin/custom backend never silently vanishes from the dropdown (mirrors
+    # the tts/stt/memory current-value preservation above).
+    web = cfg.get("web")
+    web = web if isinstance(web, dict) else {}
+    merge("web.backend", _web_backend_schema_options(_WEB_SEARCH_BACKEND_OPTIONS, web.get("backend"), "any"))
+    merge("web.search_backend", _web_backend_schema_options(_WEB_SEARCH_BACKEND_OPTIONS, web.get("search_backend"), "search"))
+    merge("web.extract_backend", _web_backend_schema_options(_WEB_EXTRACT_BACKEND_OPTIONS, web.get("extract_backend"), "extract"))
 
     return {**CONFIG_SCHEMA, **overlay} if overlay else CONFIG_SCHEMA
 

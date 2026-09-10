@@ -607,6 +607,36 @@ class TestTrigramConfigControl:
         finally:
             reopened.close()
 
+    def test_cjk_initialization_is_independent_of_disabled_trigram(
+        self, tmp_path, monkeypatch
+    ):
+        db_path = tmp_path / "state.db"
+        self._set_search_env(monkeypatch, trigram=False, cjk=True)
+        ensure_calls = []
+        original_ensure_cjk = hermes_state.SessionDB._ensure_fts_cjk_schema
+
+        def ensure_cjk_spy(session_db, cursor):
+            ensure_calls.append(True)
+            return original_ensure_cjk(session_db, cursor)
+
+        monkeypatch.setattr(
+            hermes_state.SessionDB, "_ensure_fts_cjk_schema", ensure_cjk_spy
+        )
+        db = SessionDB(db_path=db_path)
+        try:
+            assert len(ensure_calls) == 1
+            assert db._trigram_available is False
+            assert (
+                db._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name = ?",
+                    ("messages_fts_trigram",),
+                ).fetchone()
+                is None
+            )
+        finally:
+            db.close()
+
 
 class TestMessageStorage:
     def test_append_and_get_messages(self, db):

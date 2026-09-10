@@ -1556,9 +1556,10 @@ class SessionSchemaMixin:
                             ),
                         ),
                     )
-                if self._fts_enabled and trigram_config_enabled:
-                    # CJK-bigram index (cjk_unicode61). Strictly additive to
-                    # the surfaces above and gated on the loadable tokenizer:
+                if self._fts_enabled:
+                    # CJK-bigram index (cjk_unicode61) is independent of the
+                    # optional trigram index and remains controlled by its own
+                    # tokenizer availability/configuration.
                     self._ensure_fts_cjk_schema(cursor)
 
             # Replace any pre-existing broad AFTER UPDATE triggers with

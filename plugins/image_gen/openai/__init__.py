@@ -50,10 +50,10 @@ def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
     if lower.startswith(("http://", "https://")):
         import requests
 
-        resp = requests.get(ref, timeout=60)
-        resp.raise_for_status()
-        name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
-        return resp.content, name
+        with requests.get(ref, timeout=60) as resp:
+            resp.raise_for_status()
+            name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
+            return resp.content, name
     if lower.startswith("data:"):
         import base64
 

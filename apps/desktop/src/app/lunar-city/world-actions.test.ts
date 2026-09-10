@@ -10,7 +10,10 @@ function context() {
       patchTask: vi.fn().mockResolvedValue({}),
       reclaimTask: vi.fn().mockResolvedValue({}),
       reassignTask: vi.fn().mockResolvedValue({})
-    }
+    },
+    respondApproval: vi.fn().mockResolvedValue({ ok: true }),
+    sendDialogue: vi.fn().mockResolvedValue({ id: 'reply' }),
+    sendVoice: vi.fn().mockResolvedValue({ id: 'voice' })
   }
 }
 
@@ -64,5 +67,31 @@ describe('world action runner', () => {
 
     expect(doors.kanban.createTask).toHaveBeenCalledWith({ assignee: 'worker-a', title: 'New work' })
     expect(doors.kanban.reassignTask).toHaveBeenCalledWith('task-7', 'worker-b')
+  })
+
+  it('routes in-world dialogue, voice, and approvals through Hermes doors', async () => {
+    const doors = context()
+    const runner = createWorldActionRunner(doors)
+
+    await runner.run({ kind: 'dialogue_send', message: 'status?', sessionId: 'session-a', targetProfile: 'review' })
+    await runner.run({ kind: 'voice_send', sessionId: 'session-a', transcript: 'approve it' })
+    await runner.run({ actionId: 'approval-a', approved: true, kind: 'approval_response', sessionId: 'session-a' })
+
+    expect(doors.sendDialogue).toHaveBeenCalledWith({
+      message: 'status?',
+      sessionId: 'session-a',
+      targetProfile: 'review'
+    })
+    expect(doors.sendVoice).toHaveBeenCalledWith({
+      audioId: undefined,
+      sessionId: 'session-a',
+      targetProfile: undefined,
+      transcript: 'approve it'
+    })
+    expect(doors.respondApproval).toHaveBeenCalledWith({
+      actionId: 'approval-a',
+      approved: true,
+      sessionId: 'session-a'
+    })
   })
 })

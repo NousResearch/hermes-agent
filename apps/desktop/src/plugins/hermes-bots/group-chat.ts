@@ -1405,6 +1405,16 @@ function groupChatEntryId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }
 
+let lastGroupChatEntryAt = 0
+
+function groupChatEntryAt(): number {
+  const now = Date.now()
+  const at = now > lastGroupChatEntryAt ? now : lastGroupChatEntryAt + 1
+  lastGroupChatEntryAt = at
+
+  return at
+}
+
 /** The agent loop's "(empty)" terminal sentinel (empty_response_exhausted) is
  *  a FAILURE marker, never bot text. Mirror gateway/run.py's user-friendly
  *  substitution so the room log never shows the raw sentinel. */
@@ -1429,7 +1439,7 @@ export function appendGroupChatEntry(
 ): GroupMessage {
   const entry: GroupMessage = {
     id: groupChatEntryId(),
-    at: Date.now(),
+    at: groupChatEntryAt(),
     from,
     text: normalizeGroupChatText(text),
     thread: thread || 'legacy'

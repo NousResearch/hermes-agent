@@ -70,6 +70,29 @@ describe('main.ts wiring for SSH-isolated keep-alive WS (#106935)', () => {
     expect(body).toMatch(/sshIsolatedKeepalives\.stop\(\s*scope/)
   })
 
+  it('stopPoolBackend tears down the matching SSH lifecycle (idle-reaper / LRU)', () => {
+    const fnStart = mainSource.indexOf('async function stopPoolBackend(')
+    expect(fnStart).toBeGreaterThan(-1)
+
+    const nextFn = mainSource.indexOf('\nasync function teardownPoolBackendAndWait(', fnStart + 1)
+    const body = mainSource.slice(fnStart, nextFn === -1 ? fnStart + 400 : nextFn)
+
+    expect(body).toMatch(/sshBootstrapCoordinator\.cancelAndWait\(\s*profile/)
+    expect(body).toMatch(/teardownSshConnection\(\s*profile/)
+  })
+
+  it('idle reaper retires descriptors only through stopPoolBackend', () => {
+    const fnStart = mainSource.indexOf('function startPoolIdleReaper(')
+    expect(fnStart).toBeGreaterThan(-1)
+
+    const nextFn = mainSource.indexOf('\nfunction releaseLocalBackendSlot(', fnStart + 1)
+    const body = mainSource.slice(fnStart, nextFn === -1 ? fnStart + 800 : nextFn)
+
+    expect(body).toContain('stopPoolBackend(profile)')
+    expect(body).not.toMatch(/backendPool\.delete/)
+    expect(body).not.toMatch(/sshConnections\.delete/)
+  })
+
   it('imports the keep-alive registry from the electron helper (not inline in main)', () => {
     expect(mainSource).toMatch(/createSshIsolatedKeepaliveRegistry/)
     expect(mainSource).toMatch(/from '\.\/ssh-isolated-keepalive'/)

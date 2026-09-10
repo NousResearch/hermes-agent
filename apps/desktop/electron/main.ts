@@ -12744,6 +12744,11 @@ async function stopPoolBackend(profile: string) {
   const entry = backendPool.get(profile)
   await poolStopper.stop(profile)
   releaseLocalBackendSlot(entry)
+  // Remote / SSH-isolated pool entries keep `process: null`. Evicting the
+  // descriptor alone leaves sshConnections + the keep-alive WS armed, so
+  // idle-reaper / LRU retirement would pin the tunnel indefinitely (#106935).
+  await sshBootstrapCoordinator.cancelAndWait(profile)
+  await teardownSshConnection(profile)
 }
 
 async function teardownPoolBackendAndWait(profile) {

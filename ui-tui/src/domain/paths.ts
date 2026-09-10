@@ -45,13 +45,29 @@ export const fmtProjectCwdBranch = (cwd: string, branch: null | string, projectN
 
 /**
  * Compose the terminal titlebar string:
- *   `<marker> <session name> · <model> · <cwd>`
+ *   `<marker> <session name> · <model> · <cwd> · Hermes <state>`
  *
  * The session name and cwd are each omitted when empty, and a long session
  * name is truncated. The marker is always glued to the first present segment
  * with a plain space (not a ` · ` separator). When no model is known yet the
  * caller should fall back to a plain brand string instead of calling this.
+ *
+ * The trailing `Hermes <state>` segment is for agent-aware terminals (Orca,
+ * and any host that classifies agent panes by OSC title). Those hosts key on
+ * the word `hermes` to recognise the pane and on plain English state words
+ * (`working` / `waiting` / `ready`) to pick a status glyph — they do not
+ * read our `⏳ ⚠ ✓` markers. Human-first segments stay in front so a narrow
+ * tab bar still shows marker + session name; the machine-readable tail is
+ * what gets clipped first.
  */
+
+/** Human marker → the status word agent-aware terminals understand. */
+export const AGENT_STATE_WORDS: Readonly<Record<string, string>> = {
+  '⏳': 'working',
+  '⚠': 'waiting',
+  '✓': 'ready'
+}
+
 export const composeTabTitle = (
   marker: string,
   sessionName: string,
@@ -61,8 +77,10 @@ export const composeTabTitle = (
 ): string => {
   const name = sessionName.trim()
   const shortName = name.length > maxName ? `${name.slice(0, maxName - 1)}…` : name
+  const stateWord = AGENT_STATE_WORDS[marker]
+  const agentTail = stateWord ? `Hermes ${stateWord}` : ''
 
-  const segments = [shortName, model, cwd].filter(Boolean)
+  const segments = [shortName, model, cwd, agentTail].filter(Boolean)
 
   return segments.length ? `${marker} ${segments.join(' · ')}` : marker
 }

@@ -4297,7 +4297,7 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 def _is_connected(config) -> bool:
     """Feishu counts as connected once app_id is configured."""
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("app_id"))
+    return bool(extra.get("app_id") or os.getenv("FEISHU_APP_ID"))
 
 
 def _build_adapter(config):

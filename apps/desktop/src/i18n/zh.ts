@@ -698,6 +698,11 @@ export const zh: Translations = {
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
       vibeHeartsTitle: '心情爱心',
       vibeHeartsDesc: '当你说谢谢、爱你、good bot 或发送爱心时飘出的爱心。与上方的消息回应是两回事。',
+      linkOpenTitle: '打开链接',
+      linkOpenDesc:
+        '单击网页链接时的默认打开方式。应用内使用预览面板；外部使用系统浏览器。⌘/Ctrl 点击和中键点击始终在外部打开。',
+      linkOpenInApp: '应用内',
+      linkOpenExternal: '外部',
       embedsTitle: '内嵌预览',
       embedsDesc:
         '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',

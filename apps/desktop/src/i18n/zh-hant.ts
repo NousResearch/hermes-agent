@@ -526,6 +526,11 @@ export const zhHant = defineLocale({
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
       vibeHeartsTitle: '心情愛心',
       vibeHeartsDesc: '當你說謝謝、愛你、good bot 或送出愛心時飄出的愛心。與上方的訊息回應是兩回事。',
+      linkOpenTitle: '開啟連結',
+      linkOpenDesc:
+        '單擊網頁連結時的預設開啟方式。應用程式內使用預覽面板；外部使用系統瀏覽器。⌘/Ctrl 點擊與中鍵點擊一律在外部開啟。',
+      linkOpenInApp: '應用程式內',
+      linkOpenExternal: '外部',
       embedsTitle: '內嵌預覽',
       embedsDesc:
         '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',

@@ -200,6 +200,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.linkOpenDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.linkOpen}`,
+      keywords: ['open links', 'external browser', 'in-app preview'],
+      label: appearance.linkOpenTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.linkOpen, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.embedsDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.embeds}`,

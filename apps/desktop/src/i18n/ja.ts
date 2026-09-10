@@ -544,6 +544,11 @@ export const ja = defineLocale({
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
         'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',
+      linkOpenTitle: 'リンクの開き方',
+      linkOpenDesc:
+        'ウェブリンクを普通にクリックしたときの開き先。アプリ内はプレビューペイン、外部はシステムのブラウザです。⌘/Ctrl クリックと中クリックは常に外部で開きます。',
+      linkOpenInApp: 'アプリ内',
+      linkOpenExternal: '外部',
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',

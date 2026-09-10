@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { $linkOpenMode } from '@/store/link-open-mode'
 
 import { resolveBrandIcon } from './brand-icon'
 import { cn } from './utils'
@@ -244,6 +245,16 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
   }
 
   if (options.native || hudForcesNativeLinks() || !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')) {
+    openExternalLink(target)
+
+    return
+  }
+
+  // Appearance → Open Links. After the native/HUD/non-http escapes so those
+  // keep today's always-external behavior; only a plain http(s) click consults
+  // the preference. The store is a single atom — cheap enough to import here
+  // without dragging the preview/layout graph this module otherwise avoids.
+  if ($linkOpenMode.get() === 'external') {
     openExternalLink(target)
 
     return

@@ -13,7 +13,11 @@ import {
   type TimelineSourceMessage
 } from './timeline-data'
 
-const MIN_ENTRIES = 4
+// Two prompts is the first point at which "jump between my turns" means
+// anything — and the rail has to be present BEFORE a chat is long enough to
+// need it, or nobody ever learns it exists. At 4 the first sighting came deep
+// into a conversation the user was already lost in.
+const MIN_ENTRIES = 2
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 const HOVER_CLOSE_MS = 140
 
@@ -408,8 +412,10 @@ const TimelineTicks: FC<{
       >
         <span
           className={cn(
-            'block h-px w-3 transition-opacity duration-100 ease-out',
-            index === activeIndex ? 'bg-(--theme-primary)' : 'dither text-(--ui-text-quaternary) opacity-70'
+            'block h-0.5 rounded-full transition-[opacity,width] duration-100 ease-out',
+            index === activeIndex
+              ? 'w-4 bg-(--theme-primary)'
+              : 'w-3 bg-(--ui-text-tertiary) opacity-80 group-hover/timeline:opacity-100'
           )}
           ref={listRef(tickRefs, index)}
         />

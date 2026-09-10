@@ -196,7 +196,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     tour: 'right-pane-toggle'
   }
 
-  // App actions stay visible beside the left sidebar toggle.
+  // Static system tools — always pinned to the screen's right edge so the
+  // left titlebar stays free for tabs (#107351).
   const systemTools: TitlebarTool[] = [
     {
       actionId: 'nav.settings',
@@ -285,7 +286,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     )
   }
 
-  const visibleLeftTools = [sidebarTool, ...systemTools, ...leftTools, ...tools].filter(tool => !tool.hidden)
+  const visibleLeftTools = [sidebarTool, ...leftTools].filter(tool => !tool.hidden)
+  const visibleSystemTools = systemTools.filter(tool => !tool.hidden)
+  const visiblePaneTools = tools.filter(tool => !tool.hidden)
 
   return (
     <>
@@ -293,16 +296,35 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {visibleLeftTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
-        {titlebarSlots}
+        <Slot area="titleBar.left" />
+        <Slot area="titleBar.center" />
       </div>
+
+      {visiblePaneTools.length > 0 && (
+        <div
+          aria-label={t.shell.appControls}
+          className={cn(
+            titlebarToolClusterClass,
+            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
+          )}
+        >
+          {visiblePaneTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+        </div>
+      )}
 
       <div
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
         data-titlebar-cluster="right"
       >
+        {visibleSystemTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+        ))}
         <TitlebarToolButton navigate={navigate} tool={flipTool} />
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
+        <Slot area="titleBar.right" />
       </div>
     </>
   )

@@ -1200,12 +1200,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
-  // App controls live on the left; flip and the right toggle share the right.
-  const titlebarToolsWidth = titlebarToolsWidthCss(2)
+  // Right cluster: settings, layout, HUD, flip, right-sidebar toggle.
+  const SYSTEM_TOOL_COUNT = 5
+  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
+  const systemToolsWidth = titlebarToolsWidthCss(SYSTEM_TOOL_COUNT)
+  const titlebarToolsWidth =
+    paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
 
-  const leftToolsWidth = titlebarToolsWidthCss(
-    4 + [...leftTitlebarTools, ...rightTitlebarTools].filter(tool => !tool.hidden).length
-  )
+  const leftToolsWidth = titlebarToolsWidthCss(1 + leftTitlebarTools.filter(tool => !tool.hidden).length)
 
   return (
     <ContribWiringContext.Provider value={api}>
@@ -1218,7 +1220,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             '--titlebar-controls-width': leftToolsWidth,
             '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
             '--titlebar-tools-right': titlebarToolsRight,
-            '--titlebar-tools-width': titlebarToolsWidth
+            '--titlebar-tools-width': titlebarToolsWidth,
+            '--shell-preview-toolbar-gap': systemToolsWidth
           } as CSSProperties
         }
       >

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -130,5 +130,23 @@ describe('TitlebarControls fixed clusters', () => {
 
       expect(pluginChrome()).toBeNull()
     })
+  })
+})
+
+describe('titlebar app-action cluster', () => {
+  it('keeps settings, layout, and HUD on the right so the left titlebar stays free for tabs', () => {
+    renderControls('/')
+
+    const left = screen.getByLabelText('Window controls')
+    const right = screen.getByLabelText('App controls')
+
+    expect(within(right).getByLabelText('Open settings')).toBeTruthy()
+    expect(within(right).getByLabelText('Layout editor')).toBeTruthy()
+    expect(within(right).getByLabelText('HUD mode')).toBeTruthy()
+
+    expect(within(left).queryByLabelText('Open settings')).toBeNull()
+    expect(within(left).queryByLabelText('Layout editor')).toBeNull()
+    expect(within(left).queryByLabelText('HUD mode')).toBeNull()
+    expect(within(left).getByLabelText(/Hide sidebar|Show sidebar/)).toBeTruthy()
   })
 })

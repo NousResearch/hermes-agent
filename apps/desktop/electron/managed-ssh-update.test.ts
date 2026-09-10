@@ -283,12 +283,17 @@ test('POSIX managed launcher is detached, correlation-scoped, and never publishe
 test('POSIX managed launcher executes the updater command and atomically publishes its status', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
 
+  // `/bin/true` exists on Linux but not on macOS (its `true` lives at
+  // `/usr/bin/true`), so a hard-coded `/bin/true` stub makes the generated
+  // launcher exit with rc=127 under `/bin/sh` on macOS. Pick per platform.
+  const trueBin = process.platform === 'darwin' ? '/usr/bin/true' : '/bin/true'
+
   try {
     const command = buildPosixManagedUpdateLaunch(
       {
         ssh: { exec: async () => '' },
         platform: 'Linux',
-        hermesPath: '/bin/true',
+        hermesPath: trueBin,
         hermesHome: home
       },
       CORRELATION

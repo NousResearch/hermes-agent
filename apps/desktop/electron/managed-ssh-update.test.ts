@@ -284,11 +284,14 @@ test('POSIX managed launcher executes the updater command and atomically publish
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
 
   try {
+    // A launcher stub that exits 0. `/bin/true` is a Linux path; macOS keeps
+    // `true` at /usr/bin/true, and a missing stub yields rc=127 (issue #96975).
+    const truePath = process.platform === 'darwin' ? '/usr/bin/true' : '/bin/true'
     const command = buildPosixManagedUpdateLaunch(
       {
         ssh: { exec: async () => '' },
         platform: 'Linux',
-        hermesPath: '/bin/true',
+        hermesPath: truePath,
         hermesHome: home
       },
       CORRELATION

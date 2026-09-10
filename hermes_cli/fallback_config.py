@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 
 def _normalized_base_url(value: Any) -> str:
@@ -74,11 +74,27 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     return chain
 
 
+class FallbackResolution(NamedTuple):
+    """Non-secret result of a successful fallback-chain walk.
+
+    ``configured_provider`` is the literal ``provider`` key from the matched config entry — not
+    ``runtime.get("provider")``, which reflects the resolved runtime *category* (e.g. an Ollama
+    entry resolves through the OpenAI-compatible path and would read back as ``"openrouter"``).
+    Callers that log or display which fallback fired must use ``configured_provider`` to keep the
+    message consistent with what the operator actually configured (#32790). ``runtime`` itself may
+    still carry credentials (api_key, etc.) — never log it wholesale.
+    """
+
+    runtime: dict[str, Any]
+    model: str | None
+    configured_provider: str | None
+
+
 def resolve_first_available_fallback(
     config: dict[str, Any] | None, *, logger: Any = None,
-) -> tuple[dict[str, Any], str | None] | None:
-    """Walk the configured fallback chain and return ``(runtime, model)`` for the first entry
-    that resolves; ``None`` when no chain is configured or every entry fails to resolve.
+) -> FallbackResolution | None:
+    """Walk the configured fallback chain and return a :class:`FallbackResolution` for the first
+    entry that resolves; ``None`` when no chain is configured or every entry fails to resolve.
 
     Shared by every startup credential-fallback caller (gateway, oneshot) so there is exactly one
     fallback-chain-walking implementation: it reuses :func:`get_fallback_chain`,
@@ -97,5 +113,5 @@ def resolve_first_available_fallback(
             if logger is not None:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
             continue
-        return runtime, entry.get("model")
+        return FallbackResolution(runtime, entry.get("model"), entry.get("provider"))
     return None

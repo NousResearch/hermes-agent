@@ -2378,14 +2378,14 @@ def _try_resolve_fallback_provider() -> dict | None:
         resolved = resolve_first_available_fallback(cfg, logger=logger)
         if resolved is None:
             return None
-        runtime, fb_model = resolved
         # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
         logger.info(
             # Log the literal `provider` key from config, not the resolved runtime category — an
             # Ollama fallback resolves through the OpenAI-compatible path and would otherwise be
             # logged as "openrouter", contradicting the operator's config (#32790).
-            "Fallback provider resolved: %s model=%s", runtime.get("provider"), fb_model)
-        return {**_runtime_agent_kwargs(runtime), "model": fb_model}
+            "Fallback provider resolved: %s model=%s",
+            resolved.configured_provider or resolved.runtime.get("provider"), resolved.model)
+        return {**_runtime_agent_kwargs(resolved.runtime), "model": resolved.model}
     except Exception:
         pass
     return None

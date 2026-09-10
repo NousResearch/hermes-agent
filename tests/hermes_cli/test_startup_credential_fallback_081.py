@@ -48,9 +48,10 @@ class TestCodexToCopilotFallback:
         )
         result = resolve_first_available_fallback(cfg)
         assert result is not None
-        runtime, model = result
+        runtime, model, configured_provider = result
         assert runtime["provider"] == "copilot"
         assert model == "gpt-5.6-sol"
+        assert configured_provider == "copilot"
         # First entry in the configured chain wins; second is never needed.
         assert calls == ["copilot"]
 
@@ -75,7 +76,7 @@ class TestAnthropicToCopilotFallback:
         )
         result = resolve_first_available_fallback(cfg)
         assert result is not None
-        runtime, model = result
+        runtime, model, configured_provider = result
         assert runtime["provider"] == "copilot"
         assert model == "claude-sonnet-5"
 

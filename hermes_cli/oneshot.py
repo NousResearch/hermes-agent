@@ -436,8 +436,7 @@ def _resolve_oneshot_runtime(choice: _ModelChoice) -> tuple[dict, str]:
         resolved = resolve_first_available_fallback(load_config(), logger=logging.getLogger(__name__))
         if resolved is None:
             raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
-        fb_runtime, fb_model = resolved
-        return fb_runtime, (fb_model or choice.model)
+        return resolved.runtime, (resolved.model or choice.model)
 
 
 def _run_agent(

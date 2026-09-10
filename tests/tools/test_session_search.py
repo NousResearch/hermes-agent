@@ -94,6 +94,7 @@ class TestSchema:
             "current_session_id",
             "session_id",
             "around_message_id",
+            "user_id",
             "window",
             "sort",
             "profile",

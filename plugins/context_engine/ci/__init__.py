@@ -93,6 +93,7 @@ class ContextIntelligenceEngine(BoundedContextEngine):
             "supplement_max_ratio",
             "_memory_store_loader",
             "_session_search_fn",
+            "user_id",
         })
         ci = {k: kwargs.pop(k) for k in list(ci_keys) if k in kwargs}
         super().__init__(**kwargs)
@@ -115,6 +116,7 @@ class ContextIntelligenceEngine(BoundedContextEngine):
         # Test/config seams: left None they resolve the real implementations lazily.
         self._memory_store_loader = ci.get("_memory_store_loader")
         self._session_search_fn = ci.get("_session_search_fn")
+        self.user_id = ci.get("user_id")
         self._ci_injection_count = 0
 
     @property
@@ -366,6 +368,7 @@ class ContextIntelligenceEngine(BoundedContextEngine):
                 limit=self.history_retrieval_limit,
                 detail="adaptive",
                 current_session_id=self._session_id,
+                user_id=self.user_id,
             )
         except Exception as exc:
             logger.warning("ci: session_search failed, skipping T4: %s", exc)

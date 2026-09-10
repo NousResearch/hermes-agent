@@ -57,6 +57,62 @@ def _snapshot(conn, task_id: str) -> tuple:
     )
 
 
+def test_triage_is_truthful_repeatable_and_zero_mutation(kanban_home, monkeypatch):
+    dispatch_calls = []
+
+    def unexpected_dispatch(*args, **kwargs):
+        dispatch_calls.append((args, kwargs))
+        raise AssertionError("triage recovery must not enter the dispatcher")
+
+    monkeypatch.setattr(recover.kbd, "dispatch_once", unexpected_dispatch)
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="needs triage", assignee="a", triage=True)
+        before = (
+            tuple(conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()),
+            tuple(tuple(row) for row in conn.execute(
+                "SELECT * FROM task_runs WHERE task_id=? ORDER BY id", (task_id,)
+            ).fetchall()),
+            tuple(tuple(row) for row in conn.execute(
+                "SELECT * FROM task_events WHERE task_id=? ORDER BY id", (task_id,)
+            ).fetchall()),
+        )
+
+    first = recover.run_recover_slash(task_id)
+    second = recover.run_recover_slash(task_id)
+
+    assert first == second
+    assert first["task_status"] == "triage"
+    assert first["recovery_state"] == "waiting"
+    assert first["eligible"] is False
+    assert first["action"] == "wait"
+    assert first["mutation_performed"] is False
+    assert first["dispatch_status"] == "not_eligible"
+    assert first["run_id"] is None
+    assert first["retry_info"] is None
+    assert first["next_action"] is None
+    assert "triage" in first["message"].lower()
+    assert "/recover does not act" in first["message"].lower()
+    assert "healthy" not in first["message"].lower()
+    assert dispatch_calls == []
+
+    with kbc.connect() as conn:
+        after = (
+            tuple(conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()),
+            tuple(tuple(row) for row in conn.execute(
+                "SELECT * FROM task_runs WHERE task_id=? ORDER BY id", (task_id,)
+            ).fetchall()),
+            tuple(tuple(row) for row in conn.execute(
+                "SELECT * FROM task_events WHERE task_id=? ORDER BY id", (task_id,)
+            ).fetchall()),
+        )
+        assert after == before
+        assert conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id=?", (task_id,)).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? "
+            "AND kind IN ('recovered', 'unblocked', 'routing_selected')", (task_id,)
+        ).fetchone()[0] == 0
+
+
 def test_waiting_and_healthy_states_are_read_only(kanban_home):
     with kbc.connect() as conn:
         waiting = kb.create_task(conn, title="waiting", assignee="a")

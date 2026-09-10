@@ -16,6 +16,7 @@ describe('preprocessMarkdown', () => {
 
     expect(output).not.toContain('```')
     expect(output).toContain("Here's your scene:")
+    // Bare localhost URLs (with or without trailing slash) are still stripped.
     expect(output).not.toContain('http://localhost:8812/')
     expect(output).toContain('- **Multicolored cube**')
   })
@@ -33,6 +34,7 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown(input)
 
     expect(output).not.toContain('```')
+    // Bare localhost URLs (with or without trailing slash) are still stripped.
     expect(output).not.toContain('http://localhost:8812/')
     expect(output).toContain('- **Scroll wheel** - zoom')
   })
@@ -45,7 +47,26 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('Server is back.')
     expect(output).not.toContain('```')
+    // Bare localhost URLs (no path after port) are still stripped.
     expect(output).not.toContain('http://localhost:8812/')
+  })
+
+  it('preserves localhost URLs with paths in fenced blocks', () => {
+    const fence = '```'
+    const input = ['Open this:', '', fence, 'http://localhost:8080/piwo', fence].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('Open this:')
+    expect(output).not.toContain('```')
+    expect(output).toContain('http://localhost:8080/piwo')
+  })
+
+  it('preserves localhost URLs with paths in prose', () => {
+    const output = preprocessMarkdown('Use this URL:\nhttp://localhost:8080/piwo')
+
+    expect(output).toContain('Use this URL:')
+    expect(output).toContain('http://localhost:8080/piwo')
   })
 
   it('demotes prose sentence masquerading as fence info', () => {

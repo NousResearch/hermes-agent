@@ -463,9 +463,16 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     return fields, extras
 
 
-def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
+def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs,
+                   local_dirs: Optional[list] = None):
     """Unique on-disk skill for *name*: collision refusal, project-tier precedence, quarantine
-    gate, not-found listing. ``(error_json, skill_dir, skill_md)``; skill_md set iff no error."""
+    gate, not-found listing. ``(error_json, skill_dir, skill_md)``; skill_md set iff no error.
+    ``local_dirs`` (project dirs + the active skills dir) tags an ambiguous match's ``source`` as
+    "local"/"external" and detects the case where two roots collide on the identical relative
+    path — there "pass the full path" is impossible advice, since that path is what collides.
+    Known gap: two DIFFERENT project-tier dirs (nested project skill scopes) colliding on the
+    same relative path both tag as "local" — source can't split those apart, same as before
+    this parameter existed; only the local/external split is covered."""
     if not all_dirs:
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
@@ -475,14 +482,31 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         # ambiguity WITHIN the project tier still refuses.
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
     if len(candidates) > 1:
-        paths = [str(smd) for _, smd in candidates]
-        logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
+        local_dirs = local_dirs or []
+
+        def _rel(smd: Path) -> str:
+            for d in all_dirs:
+                if _under_any(smd, [d]):
+                    with suppress(Exception):
+                        return str(smd.relative_to(d))
+            return str(smd)
+
+        matches = [{"path": str(smd), "source": "local" if _under_any(smd, local_dirs) else "external"}
+                   for _, smd in candidates]
+        logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates),
+                        "; ".join(m["path"] for m in matches))
+        if len({_rel(smd) for _, smd in candidates}) == 1 and len({m["source"] for m in matches}) > 1:
+            # Every candidate resolves to the same relative path in a different root — no
+            # alternate path string could ever disambiguate them, only picking a root can.
+            hint = ('Pass source="local" or source="external" to pick a root, or rename one of '
+                    "the colliding skills so each name is unique.")
+        else:
+            hint = ("Pass the full relative path instead of the bare name (e.g., 'category/skill-name'), "
+                    "or rename one of the colliding skills so each name is unique.")
         return _fail(
             f"Ambiguous skill name '{name}': {len(candidates)} skills match across your local skills dir "
-            "and external_dirs. Refusing to guess — load one explicitly by its categorized path.",
-            matches=paths,
-            hint="Pass the full relative path instead of the bare name (e.g., 'category/skill-name'), "
-            "or rename one of the colliding skills so each name is unique."), None, None
+            "and external_dirs. Refusing to guess — load one explicitly.",
+            matches=matches, hint=hint), None, None
     skill_dir, skill_md = candidates[0] if candidates else (None, None)
     # Quarantine gate: a project-tier skill with a dangerous scan verdict must not
     # load even by explicit name (same chokepoint the index and skills_list use).
@@ -517,18 +541,24 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str:
+    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True,
+    source: str = None) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
-    slash/preload callers render the message themselves."""
+    slash/preload callers render the message themselves. ``source`` ("local"/"external")
+    disambiguates a name that collides across roots — see the "Ambiguous skill name" error."""
     try:
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
         if lookup_error := _skill_lookup_path_error(name):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
+        if source is not None and source not in ("local", "external"):
+            return _fail(f"Invalid source '{source}': must be \"local\" or \"external\".")
         local_category_name: str | None = None
         if ":" in name:  # plugin registry; bare names use the flat-tree scan below
+            # A resolvable plugin:skill answers here and returns immediately — source
+            # only affects the flat-tree fall-through below, so it's a no-op for a hit.
             served, local_category_name = _resolve_plugin_skill(name, file_path, task_id, preprocess)
             if served is not None:
                 return served
@@ -537,8 +567,19 @@ def skill_view(
         if local_category_name and (lookup_error := _skill_lookup_path_error(local_category_name)):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         project_dirs, all_dirs, active_skills_dir = _skill_search_dirs()
+        local_dirs = project_dirs + ([active_skills_dir] if active_skills_dir.exists() else [])
+        if source == "local":
+            all_dirs = [d for d in all_dirs if d in local_dirs]
+            if not all_dirs:
+                return _fail("No local skills directory is configured.")
+        elif source == "external":
+            all_dirs = [d for d in all_dirs if d not in local_dirs]
+            if not all_dirs:
+                return _fail(
+                    'No skills.external_dirs are configured — there is nothing to search '
+                    'with source="external".')
         error, skill_dir, skill_md = _locate_skill(
-            name, local_category_name, project_dirs, all_dirs)
+            name, local_category_name, project_dirs, all_dirs, local_dirs)
         if error is not None:
             return error
         try:  # read once — reused for platform check and main content
@@ -626,6 +667,11 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "source": {
+                "type": "string",
+                "enum": ["local", "external"],
+                "description": "OPTIONAL: only needed after an \"Ambiguous skill name\" error whose matches span both a local and an external root. 'local' resolves against your local skills dir (and any project skills); 'external' resolves against skills.external_dirs.",
+            },
         },
         "required": ["name"],
     },
@@ -643,13 +689,14 @@ def _skill_view_with_bump(args, **kw):
     session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
-    if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
+    source = args.get("source")
+    if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"), source)) is not None:
         return stub
-    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
+    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id, source=source)
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            _record_skill_view(task_id, name, args.get("file_path"), parsed)
+            _record_skill_view(task_id, name, args.get("file_path"), parsed, source)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

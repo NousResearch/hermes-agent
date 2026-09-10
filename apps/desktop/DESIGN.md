@@ -245,6 +245,9 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
   from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
+- Composer status groups start collapsed except todos. Progress updates and queue
+  pause/resume preserve the user's disclosure choice. Error banners meet the
+  stack's top edge without a blank padding strip.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
@@ -314,6 +317,9 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
+  Dimming still distinguishes session panes; sidebar navigation must not desaturate
+  the chat or transfer its active highlight to a hidden primary tab.
 - Register global shortcuts through the shared layer, not ad-hoc listeners.
 - One cancel gesture does one thing: cancel the active interaction, or close the
   topmost dismissable surface — never both, never the control underneath.

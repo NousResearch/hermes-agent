@@ -71,7 +71,6 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
             spinner="braille"
           />
         }
-        defaultCollapsed={false}
         icon={<Codicon className="text-(--ui-purple)" name="agent" size="0.8rem" />}
         label={t.statusStack.subagents(live.length)}
       >

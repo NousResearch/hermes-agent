@@ -55,9 +55,11 @@ describe('useBackgroundSync profile-scoped session refresh', () => {
   it('coalesces change ticks while the live status request is pending', async () => {
     $changeEventsAvailable.set(true)
     let release!: (value: { sessions: [] }) => void
+
     const pending = new Promise<{ sessions: [] }>(resolve => {
       release = resolve
     })
+
     const request = vi.fn(() => pending)
     render('default', 'local', async () => undefined, request)
     await act(async () => undefined)

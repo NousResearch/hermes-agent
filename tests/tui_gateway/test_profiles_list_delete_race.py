@@ -114,14 +114,18 @@ def test_credential_mirror_rewrite_cannot_recreate_profile_deleted_before_commit
     assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
 
 
-def test_zeroed_db_quarantine_cannot_recreate_profile_deleted_after_precheck(
+@pytest.mark.parametrize(
+    "contents", [b"\0" * 64, b"not a SQLite database"], ids=["zeroed", "non-sqlite"]
+)
+def test_invalid_db_quarantine_cannot_recreate_profile_deleted_after_precheck(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
+    contents: bytes,
 ) -> None:
     profile_dir = home / "profiles" / "worker"
     profile_dir.mkdir(parents=True)
     db_path = profile_dir / "state.db"
-    db_path.write_bytes(b"\0" * 64)
+    db_path.write_bytes(contents)
     real_header_check = hermes_state.has_invalid_sqlite_header_preopen
     deleted = False
 
@@ -135,7 +139,9 @@ def test_zeroed_db_quarantine_cannot_recreate_profile_deleted_after_precheck(
             return True
         return real_header_check(path, *args, **kwargs)
 
-    monkeypatch.setattr(hermes_state, "has_invalid_sqlite_header_preopen", delete_during_header_check)
+    monkeypatch.setattr(
+        hermes_state, "has_invalid_sqlite_header_preopen", delete_during_header_check
+    )
 
     with pytest.raises(FileNotFoundError, match="missing or being deleted"):
         SessionDB(db_path=db_path)

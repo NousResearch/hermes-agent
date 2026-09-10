@@ -31,7 +31,7 @@ def _job(**overrides):
         "state": "scheduled",
         "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
         "deliver": "local",
-        "model": None,
+        "model": "test-model",
         "provider": None,
         "provider_snapshot": "openrouter",
         "base_url": None,
@@ -44,18 +44,16 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
     """Run one run_one_job tick whose agent raises ``error`` (the failure
     path that composes the per-run failure ping). Mirrors the preflight alert-once
     harness so the incident gating is exercised through the real scheduler."""
-    fake_db = MagicMock()
 
-    def fake_deliver(jb, content, adapters=None, loop=None, **kwargs):
+    def fake_deliver(execution_id, jb, content, **kwargs):
         deliveries.append(content)
-        return None
+        return {"status": "pending"}
 
     with cron_jobs.use_cron_store(tmp_path), \
          patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state_registry.acquire", return_value=fake_db), \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                return_value={
@@ -64,12 +62,13 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
                    "provider": "openrouter",
                    "api_mode": "chat_completions",
                }), \
-         patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
+         patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
          patch("run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
         mock_agent.run_conversation.side_effect = RuntimeError(error)
         mock_agent_cls.return_value = mock_agent
         sched.run_one_job(dict(job))
+        assert mock_agent.run_conversation.called
     return mock_agent_cls.called
 
 
@@ -222,7 +221,7 @@ def test_missing_db_no_crash(monkeypatch, tmp_path):
 # ── Scheduler gating ───────────────────────────────────────────────────────
 
 
-def test_unacked_failure_still_alerts(monkeypatch, tmp_path):
+def test_unacked_failure_still_alerts(monkeypatch, tmp_path, cron_owner):
     inc = _point_db(monkeypatch, tmp_path)
     deliveries = []
     job = _job()
@@ -237,7 +236,7 @@ def test_unacked_failure_still_alerts(monkeypatch, tmp_path):
     assert rows[0]["state"] == "detected"
 
 
-def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path):
+def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path, cron_owner):
     inc = _point_db(monkeypatch, tmp_path)
     deliveries = []
     job = _job()

@@ -223,6 +223,14 @@ run under another profile's sandbox policy. Kanban,
 profile-scoped skills/memory/SOUL, and model routing all behave per-profile
 exactly as they do with separate gateways.
 
+Outbound identity is per profile too. A turn running for profile `P` that calls
+the `send_message` tool (send, react, media) posts through `P`'s own bot;
+so do the "Gateway shutting down/restarted" and `/update` notices for `P`'s
+sessions, `/loop` wakeups set from `P`'s chats, and the Discord
+unauthorized-slash operator alert of `P`'s Discord bot (to `P`'s home
+channel). If `P` has no connected bot for that platform the send fails with a
+clear error — it never falls back to the default profile's bot.
+
 ### Serving selected profiles
 
 By default, `gateway.multiplex_profiles: true` serves every valid named profile

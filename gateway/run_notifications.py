@@ -421,6 +421,19 @@ class GatewayNotificationsMixin:
             prompt=_hermes_home / ".update_prompt.json", response=_hermes_home / ".update_response",
         )
 
+    @staticmethod
+    def _marker_profile(data: dict) -> Optional[str]:
+        """Owning profile of a persisted restart/update marker: explicit ``profile``, else the
+        ``agent:<profile>:`` lane of its ``session_key`` (markers written before ``profile`` was
+        persisted); ``None`` = default profile."""
+        profile = str(data.get("profile") or "").strip()
+        if profile:
+            return profile
+        parts = str(data.get("session_key") or "").split(":")
+        if len(parts) >= 5 and parts[0] == "agent" and parts[1] not in ("main", ""):
+            return parts[1]
+        return None
+
     def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
         """Resolve adapter/chat/session for update watcher messages from the pending marker."""
         for path in (paths.claimed, paths.pending):
@@ -434,7 +447,9 @@ class GatewayNotificationsMixin:
                 if not (platform_str and chat_id):
                     continue  # BASE: an incomplete marker falls through to the next path, not "unresolved"
                 platform = Platform(platform_str)
-                adapter = self.adapters.get(platform)
+                # The requester's OWN profile bot (marker ``profile``, else the ``agent:<profile>:`` key
+                # lane); a bare self.adapters lookup is the default bot under multiplex.
+                adapter = self._authorization_adapter(platform, self._marker_profile(pending))
                 if not adapter:
                     return None
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
@@ -627,7 +642,7 @@ class GatewayNotificationsMixin:
             exit_code = self._update_exit_code(paths)
             output = paths.output.read_bytes().decode("utf-8", errors="replace") if paths.output.exists() else ""
             platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
+            adapter = self._authorization_adapter(platform, self._marker_profile(pending))
             if chat_id and not adapter:
                 # Target platform not reconnected yet (common right after the update's restart): keep the
                 # markers for a later retry instead of silently losing the notification.
@@ -671,7 +686,10 @@ class GatewayNotificationsMixin:
             if not platform_str or not chat_id:
                 return None
             platform = Platform(platform_str)
-            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            # Relay-aware transport over the REQUESTER'S profile adapter map; ``self.adapters`` is the
+            # default profile's, so a secondary's "restarted" notice would leave through the wrong bot.
+            transport = resolve_delivery_transport(
+                platform, self.config, self._adapters_for_profile(self._marker_profile(data)))
             if transport is None:
                 logger.debug("Restart notification skipped: no live transport for %s", platform_str)
                 return None

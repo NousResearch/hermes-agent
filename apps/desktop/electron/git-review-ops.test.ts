@@ -4,9 +4,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { afterEach, test } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
+import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewCreatePr, reviewList } from './git-review-ops'
+
+// `runGh` shells to the `gh` CLI via execFile. Mock it so reviewCreatePr's gh
+// invocation is controllable (real `gh` may be absent or slow in CI) while the
+// repo setup below still uses the real execFileSync.
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<{ execFile: unknown; execFileSync: unknown }>()
+
+  return { ...actual, execFile: vi.fn() }
+})
 
 const tempDirs: string[] = []
 
@@ -116,4 +125,45 @@ test('reviewList caps the file payload returned to the renderer', async () => {
   const result = await reviewList(dir, 'uncommitted', null, 'git')
 
   assert.equal(result.files.length, REVIEW_FILE_CAP)
+})
+
+const mockExecFile = vi.mocked(await import('node:child_process')).execFile
+
+type ExecFileCallback = (error: Error | null, stdout?: string, stderr?: string) => void
+
+// `execFile` has overloaded declarations returning ChildProcess; the mock
+// implementation only needs to drive its callback, so view it as a plain
+// callable and set the implementation through the Mock typing.
+function failGh(stderr: string): void {
+  ;(
+    mockExecFile as unknown as {
+      mockImplementation: (
+        impl: (file: string, args: string[], options: object, callback: ExecFileCallback) => void
+      ) => unknown
+    }
+  ).mockImplementation((_bin: string, _args: string[], _opts: object, callback: ExecFileCallback) => {
+    const error = new Error('command failed')
+
+    if (stderr) {
+      ;(error as Error & { stderr?: string }).stderr = stderr
+    }
+
+    callback(error, '', stderr)
+  })
+}
+
+test('reviewCreatePr surfaces gh stderr when pr create fails', async () => {
+  const dir = makeRepo()
+
+  failGh('no commits between main and feature')
+
+  await assert.rejects(reviewCreatePr(dir, 'git', 'gh'), /no commits between main and feature/)
+})
+
+test('reviewCreatePr falls back to the generic message when gh reports no stderr', async () => {
+  const dir = makeRepo()
+
+  failGh('')
+
+  await assert.rejects(reviewCreatePr(dir, 'git', 'gh'), /is gh installed and authenticated\?/)
 })

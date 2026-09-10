@@ -373,3 +373,39 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     record.assert_not_called()
 
 
+def test_exhaustion_preserves_successful_terminal_kanban_action(monkeypatch):
+    """A worker that already kanban_block'd must not get a synthetic timed_out."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-blocked")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "7")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    monkeypatch.setattr("hermes_cli.kanban_db.goal_run_status", lambda *_a, **_k: "blocked")
+    agent = _LimitAgent()
+
+    _finalize(agent, final_response=None, exit_reason="unknown")
+
+    record.assert_not_called()
+
+
+def test_exhaustion_records_when_no_terminal_action(monkeypatch):
+    """Genuine exhaustion (run still open) still records timed_out."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-open")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "8")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    monkeypatch.setattr("hermes_cli.kanban_db.goal_run_status", lambda *_a, **_k: "running")
+    agent = _LimitAgent()
+
+    _finalize(agent, final_response=None, exit_reason="unknown")
+
+    record.assert_called_once()
+    assert record.call_args.kwargs["outcome"] == "timed_out"
+    assert "Iteration budget exhausted" in record.call_args.kwargs["error"]
+
+

@@ -31,12 +31,42 @@ _SESSION_TOKEN_KEYS = (
 )
 _SESSION_COST_KEYS = ("estimated_cost_usd", "cost_status", "cost_source")
 
+# Lifecycle statuses that mean the worker already closed this run. Reuses
+# ``goal_run_status`` (same mapping as the goal loop / PR 98193) so exhaustion
+# finalization cannot append a synthetic timed_out/gave_up over a successful
+# kanban_block / kanban_complete / review handoff.
+_KANBAN_TERMINAL_GOAL_STATUSES = frozenset({
+    "done", "blocked", "review", "changes_requested", "superseded",
+})
+
 
 def _assistant_row_missing_visible_text(msg: dict) -> bool:
     """True when an assistant row has no visible text (blank final or tool-only)."""
     if not isinstance(msg, dict) or msg.get("role") != "assistant":
         return False
     return not flatten_message_text(msg.get("content")).strip()
+
+
+def _kanban_run_id_from_env() -> Optional[int]:
+    raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _kanban_goal_run_is_terminal(kb: Any, conn: Any, kanban_task: str) -> bool:
+    """True when this worker run already performed a terminal lifecycle action.
+
+    Uses ``goal_run_status`` so a ``kind=dependency`` block that later promoted
+    the card back to ``ready`` still counts as terminal for the original run.
+    That is the same contract as remediation PR 98193; this path only skips the
+    iteration-budget recorder instead of rewriting the goal-loop synthetic block.
+    """
+    status = kb.goal_run_status(conn, kanban_task, _kanban_run_id_from_env())
+    return status in _KANBAN_TERMINAL_GOAL_STATUSES
 
 
 def _record_kanban_budget_exhausted(
@@ -51,6 +81,10 @@ def _record_kanban_budget_exhausted(
     This is a bounded fallback (#87096): the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``)
     guarantees idempotence — if another path already closed the run this is a no-op — so it is safe to call
     from multiple exit paths.
+
+    If the worker already called ``kanban_complete`` / ``kanban_block`` /
+    ``kanban_request_review``, skip recording so a synthetic ``timed_out`` /
+    ``gave_up`` event cannot replace that handoff.
     """
     try:
         from hermes_cli import kanban_db as _kb
@@ -58,6 +92,16 @@ def _record_kanban_budget_exhausted(
         from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
         try:
+            try:
+                already_terminal = _kanban_goal_run_is_terminal(_kb, _conn, kanban_task)
+            except Exception:
+                already_terminal = False
+            if already_terminal:
+                logger.info(
+                    "skip budget-exhausted failure for task %s; run already terminal",
+                    kanban_task,
+                )
+                return
             _kbd._record_task_failure(
                 _conn,
                 kanban_task,

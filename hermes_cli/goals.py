@@ -1565,6 +1565,18 @@ KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "blocks completion, call kanban_block with the reason instead."
 )
 
+# Last reserved goal-loop turns: landing-only. Do not auto-complete or invent a blocker.
+KANBAN_GOAL_LANDING_RESERVE_TURNS = 2
+KANBAN_GOAL_LANDING_TEMPLATE = (
+    "[Landing checkpoint — turn budget nearly exhausted]\n"
+    "Turns used: {used}/{maximum}. Stop product work. Remaining turns are "
+    "reserved for a terminal handoff: persist a kanban_comment with verified "
+    "current state, then call kanban_complete only if every acceptance criterion "
+    "is already verified, or kanban_block if you need human input. Do not start "
+    "new implementation. Do not invent a blocker. Do not stop without calling "
+    "one of them."
+)
+
 
 # Worker-driven terminal task statuses → loop outcome. The card's own acceptance criteria are the
 # goal; the worker already has the full task body, so these outcomes stop the loop cleanly.
@@ -1592,8 +1604,10 @@ def run_kanban_goal_loop(
 
     Each iteration: stop if the worker already terminated the task (``kanban_complete`` /
     ``kanban_block`` / review hand-off); otherwise judge the latest response against ``goal_text``
-    (the card's title + body) and feed a continuation or finalize nudge. A WAIT verdict is treated
-    as CONTINUE (workers finish via kanban tools, not by parking).
+    (the card's title + body) and feed a continuation, a landing-only checkpoint on the last
+    reserved turns, or a finalize nudge. A WAIT verdict is treated as CONTINUE (workers finish
+    via kanban tools, not by parking). Landing does not auto-complete or invent a blocker;
+    genuine turn-budget exhaustion still calls ``block_fn``.
     """
 
     def _log(msg: str) -> None:
@@ -1661,6 +1675,14 @@ def run_kanban_goal_loop(
                 return _result("blocked_budget", "judged done, never finalized")
             prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
             nudged_to_finalize = True
+        elif turns_used >= max(1, max_turns - KANBAN_GOAL_LANDING_RESERVE_TURNS):
+            # Deterministic pre-exhaustion landing: reserve comment + block/complete.
+            # Do not auto-complete and do not invent a blocker here.
+            prompt = KANBAN_GOAL_LANDING_TEMPLATE.format(used=turns_used, maximum=max_turns)
+            _log(
+                f"kanban goal loop: landing checkpoint for {task_id} "
+                f"at {turns_used}/{max_turns}"
+            )
         else:
             prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
 
@@ -1688,6 +1710,7 @@ __all__ = [
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
     "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
+    "KANBAN_GOAL_LANDING_TEMPLATE", "KANBAN_GOAL_LANDING_RESERVE_TURNS",
     "DEFAULT_MAX_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
     "run_kanban_goal_loop",
 ]

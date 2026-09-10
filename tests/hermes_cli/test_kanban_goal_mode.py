@@ -129,6 +129,54 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
+def test_loop_injects_landing_checkpoint_then_exhausts_without_inventing_blocker(monkeypatch):
+    """Near the turn cap, continue-verdicts get a landing-only prompt.
+
+    block_fn fires only on genuine exhaustion, never at the checkpoint itself,
+    and the landing prompt must not auto-complete the product task.
+    """
+    _patch_judge(monkeypatch, ["continue"] * 10)
+    turns = []
+    blocks = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t_land",
+        goal_text="do the thing",
+        run_turn=lambda p: turns.append(p) or "still working",
+        task_status_fn=lambda: "running",
+        block_fn=lambda r: blocks.append(r),
+        max_turns=4,
+        first_response="started",
+    )
+    assert res["outcome"] == "blocked_budget"
+    assert res["reason"] == "turn budget exhausted"
+    assert len(blocks) == 1
+    assert "exhausted" in blocks[0]
+    assert "invent" not in blocks[0].lower()
+    assert turns, "should spend reserved turns after the landing notice"
+    assert "Landing checkpoint" not in turns[0]
+    assert any("Landing checkpoint" in p for p in turns[1:])
+    assert all("Do not invent a blocker" in p for p in turns if "Landing checkpoint" in p)
+    assert all("only if every acceptance criterion" in p for p in turns if "Landing checkpoint" in p)
+
+
+def test_loop_skips_landing_when_worker_already_terminal(monkeypatch):
+    _patch_judge(monkeypatch, ["continue"] * 10)
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t_done",
+        goal_text="do the thing",
+        run_turn=lambda p: turns.append(p) or "x",
+        task_status_fn=lambda: "blocked",
+        block_fn=lambda r: pytest.fail("should not block over a worker terminal action"),
+        max_turns=4,
+        first_response="blocked already",
+    )
+    assert res["outcome"] == "blocked_by_worker"
+    assert turns == []
+
+
 
 
 

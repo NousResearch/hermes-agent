@@ -361,16 +361,20 @@ def _run_local_turn(argv: list[str], dm_file: str) -> int:
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
     compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
 
-    def _turn():
+    def _turn(*, resuming: bool = False):
+        # The retry re-runs the SAME session with the SAME query file, and the failed attempt
+        # already persisted the user row. Tell the retried process so it adopts that row instead
+        # of appending a second copy (agent.turn_context.RESUME_UNANSWERED_TURN_ENV).
+        env = {**os.environ, "HERMES_RESUME_UNANSWERED_TURN": "1"} if resuming else None
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=env)
 
     proc = _turn()
     if proc.returncode != 0:
-        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action
+        from tools.bot_failure_reasons import RETRY_NONE, retry_action, transport_failure_reason
 
-        if retry_action(classify_agent_error((proc.stderr or proc.stdout or "").strip()[-500:])) != RETRY_NONE:
-            proc = _turn()
+        if retry_action(transport_failure_reason(proc)) != RETRY_NONE:
+            proc = _turn(resuming=True)
     stderr_text = proc.stderr or ""
     reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
                    for line in stderr_text.splitlines()

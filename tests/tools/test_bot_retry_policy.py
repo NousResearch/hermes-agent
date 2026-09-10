@@ -215,3 +215,150 @@ def test_run_delivery_no_retry_for_missing_config(monkeypatch, tmp_path):
     )
     assert rc == 1
     assert len(calls) == 1
+
+
+# ── the stream a failed turn actually writes to ──────────────────────────────
+#
+# The CLI splits a failed turn across BOTH streams: provider prose on stdout,
+# session bookkeeping (plus the typed refusal marker) on stderr. Every test
+# above hands the error text to stderr and leaves stdout empty, which no real
+# run ever does — so `stderr or stdout` looked correct while classifying only
+# bookkeeping in production. These pin the real layout.
+
+# Verbatim shape of a real failed delivery: stderr carries only bookkeeping.
+REAL_STDERR = (
+    'Session 20260908_050239_c0dd40 found but has no messages. Starting fresh.\n'
+    '\nsession_id: 20260908_050239_c0dd40\n'
+)
+REAL_STDOUT_500 = 'API call failed after 3 retries: HTTP 500: server error: upstream overloaded\n'
+REAL_STDOUT_OVERFLOW = "This model's maximum context length is 200000 tokens\n"
+
+
+@pytest.mark.parametrize(
+    "stdout,expected",
+    [
+        (REAL_STDOUT_500, bfr.PROVIDER_SERVER_ERROR),
+        (REAL_STDOUT_OVERFLOW, bfr.CONTEXT_OVERFLOW),
+        ('API call failed after 3 retries: Error code: 429 - rate limit exceeded\n', bfr.PROVIDER_RATE_LIMIT),
+    ],
+)
+def test_failure_reason_reads_stdout_when_stderr_is_only_bookkeeping(stdout, expected):
+    """The provider prose is on stdout; stderr's session lines must not mask it."""
+    assert bfr.transport_failure_reason(_Proc(1, stdout=stdout, stderr=REAL_STDERR)) == expected
+
+
+def test_failure_reason_still_reads_a_typed_refusal_on_stderr():
+    """format_refusal_stderr deliberately rides stderr — that contract is unchanged."""
+    proc = _Proc(1, stdout='', stderr='No LLM provider configured\n')
+    assert bfr.transport_failure_reason(proc) == bfr.MISSING_CONFIG
+
+
+def test_failure_reason_is_unknown_when_neither_stream_says_anything():
+    assert bfr.transport_failure_reason(_Proc(1, stdout='', stderr=REAL_STDERR)) == 'unknown'
+
+
+def test_run_delivery_retries_a_transient_failure_reported_on_stdout(monkeypatch, tmp_path):
+    """The regression: a real 500 (prose on stdout, bookkeeping on stderr) must retry.
+
+    Before the fix this ran the turn exactly once — the documented policy retry
+    (#93091 item 5) never fired for any real provider failure.
+    """
+    from tools import bot_mode_dm
+
+    dm = tmp_path / "dm.txt"
+    dm.write_text("hello")
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if len(calls) == 1:
+            return _Proc(1, stdout=REAL_STDOUT_500, stderr=REAL_STDERR)
+        return _Proc(0, stdout="the reply text", stderr=REAL_STDERR)
+
+    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    rc = bot_mode_dm._run_delivery(["hermes", "-p", "ops", "chat"], str(dm), stdin_file=False)
+
+    assert rc == 0
+    assert len(calls) == 2, "a transient failure reported on stdout must be retried"
+    assert calls[0] == calls[1], "the retry re-runs the SAME session/argv"
+
+
+def test_run_delivery_still_refuses_to_retry_auth_reported_on_stdout(monkeypatch, tmp_path):
+    """Reading stdout must not turn a permanent class into a retry."""
+    from tools import bot_mode_dm
+
+    dm = tmp_path / "dm.txt"
+    dm.write_text("hello")
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return _Proc(1, stdout="API call failed: authentication_error\n", stderr=REAL_STDERR)
+
+    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    bot_mode_dm._run_delivery(["hermes", "-p", "ops", "chat"], str(dm), stdin_file=False)
+    assert len(calls) == 1
+
+
+def test_the_retry_tells_the_reruns_process_to_adopt_the_persisted_row(monkeypatch, tmp_path):
+    """The first attempt already persisted the user row, so the retried process must be told to
+    adopt it (agent.turn_context.RESUME_UNANSWERED_TURN_ENV) instead of appending a second copy.
+    The FIRST attempt must not carry the flag — nothing has been persisted for it yet."""
+    from tools import bot_mode_dm
+
+    dm = tmp_path / "dm.txt"
+    dm.write_text("hello")
+    envs = []
+
+    def _fake_run(argv, **kwargs):
+        envs.append((kwargs.get("env") or {}).get("HERMES_RESUME_UNANSWERED_TURN"))
+        if len(envs) == 1:
+            return _Proc(1, stdout=REAL_STDOUT_500, stderr=REAL_STDERR)
+        return _Proc(0, stdout="the reply text", stderr=REAL_STDERR)
+
+    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    bot_mode_dm._run_delivery(["hermes", "-p", "ops", "chat"], str(dm), stdin_file=False)
+
+    assert envs == [None, "1"], f"first attempt clean, retry opts in; got {envs}"
+
+
+# ── the relay handler has the SAME retry gate ────────────────────────────────
+#
+# ``bot_relay.deliver`` (cross-connection DMs) classified with its own
+# ``(stderr or stdout)`` helper, so its policy re-run was dead in production for exactly
+# the same reason, and the typed ``reason`` it hands back to the sender was always
+# 'unknown'. Both now go through ``transport_failure_reason``.
+
+
+def test_the_relay_deliver_retries_a_failure_reported_on_stdout(home, monkeypatch):
+    """Before: the relay never re-ran a transient failure, because stderr's session banner
+    always won the classification."""
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(((kwargs.get("env") or {}).get("HERMES_RESUME_UNANSWERED_TURN")))
+        if not _is_hermes_cli(list(argv)):
+            return _Proc(0)
+        if len(calls) == 1:
+            return _Proc(1, stdout=REAL_STDOUT_500, stderr=REAL_STDERR)
+        return _Proc(0, stdout="recovered reply", stderr=REAL_STDERR)
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    out = _deliver({"profile": "ops", "message": "ping"})
+
+    assert out["result"]["reply"] == "recovered reply"
+    assert calls == [None, "1"], f"first attempt clean, re-run opts in; got {calls}"
+
+
+def test_the_relay_deliver_reports_a_typed_reason_not_unknown(home, monkeypatch):
+    """A permanent failure whose prose is on stdout must still reach the sender typed."""
+    def _fake_run(argv, **kwargs):
+        if not _is_hermes_cli(list(argv)):
+            return _Proc(0)
+        return _Proc(1, stdout="API call failed: authentication_error\n", stderr=REAL_STDERR)
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    out = _deliver({"profile": "ops", "message": "ping"})
+
+    assert "error" in out
+    assert out["error"]["data"]["reason"] == bfr.PROVIDER_AUTH_OR_ACCESS

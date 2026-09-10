@@ -192,6 +192,13 @@
     "appId": "com.nousresearch.hermes",
     "productName": "Hermes",
     "executableName": "Hermes",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "NousResearch",
+        "repo": "hermes-agent"
+      }
+    ],
     "protocols": [
       {
         "name": "Hermes Protocol",

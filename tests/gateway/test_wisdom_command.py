@@ -425,6 +425,40 @@ def test_discovery_actions_match_current_org_installation(tmp_path, version, sta
         assert not any(button["text"]["text"] in {"Install", "Review update"} for button in buttons)
 
 
+@pytest.mark.parametrize("command", ["browse", "versions skill-1", "show skill-1"])
+@pytest.mark.parametrize("status", ["pass", "pending", "unavailable", "blocked"])
+def test_public_discovery_checks_preserve_state_without_private_findings(command, status):
+    from hermes_wisdom.review_presentation import review_check_line
+    from plugins.platforms.slack.wisdom_blocks import render_wisdom_blocks
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    service = _Service()
+    checks = {
+        key: {"status": status, "summary": "PRIVATE_SUMMARY",
+              "checks": [{"label": "PRIVATE_CHECK", "details": ["PRIVATE_DETAIL"]}]}
+        for key in ("security_check", "professionalism_check")
+    }
+    rows = service.search_skills()
+    rows[0].update(checks)
+    detail = service.resolve_skill("skill-1")
+    detail["latest_version_detail"]["version"].update(checks)
+    for version in detail["versions"]:
+        version.update(checks)
+    service.search_skills = lambda query="": rows
+    service.resolve_skill = lambda *args, **kwargs: detail
+    context = _context(is_group=True)
+    view = WisdomCommandController().execute(command, service, context)
+    bind_view_callbacks(view, context)
+    for rendered in (
+        view.to_text(), TelegramAdapter._wisdom_command_html(view),
+        str(render_wisdom_blocks(view)),
+    ):
+        assert review_check_line("Security check", status) in rendered
+        assert "PRIVATE_" not in rendered
+        assert "Pass" not in rendered
+    assert not any(call[0].endswith("_apply") for call in service.calls)
+
+
 def test_group_browse_and_page_navigation_do_not_read_device_state():
     service = _Service()
     service.store.installations = Mock(side_effect=AssertionError("private device read"))

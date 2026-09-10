@@ -28,7 +28,7 @@ def prepared_security_check(
             "status": "blocked" if count else "pass",
             "finding_count": count,
             "details": ["Credential-shaped content detected; remove it before sharing."]
-            if count else ["No known local matches detected."],
+            if count else ["No issues detected by this local check."],
         })
     guard = scan.get("guard") or {}
     guard_status = (
@@ -66,7 +66,7 @@ def prepared_security_check(
             "Local security checks found content that must be removed before sharing."
             if blocked else "Local security scanning could not complete. Try preparation again."
             if unavailable else "Local security checks have findings to review."
-            if advisory else "Local security checks found no known matches."
+            if advisory else "No issues detected by local security checks."
         ) + (" Required Gateway checks run after you authorize upload and before publication."
              if include_gateway_pending else ""),
         "checks": rows,

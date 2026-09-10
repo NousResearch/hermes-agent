@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 SHARE_HEADER = "Hermes Collective Wisdom"
 SHARE_WHY_HEADER = "Why we ask"
-SHARE_SAFE_YES = "Checks complete: no known matches detected."
+SHARE_SAFE_YES = "Checks complete: no issues detected."
 SHARE_SAFE_NO = "Checks found issues. Review the details before sharing."
 SHARE_SAFE_UNAVAILABLE = "Checks unavailable. Review is required before sharing."
 SHARE_QUESTION = "Would you like to share it?"
@@ -178,7 +178,7 @@ def render_share(
             lines.append(f"✓ {check}")
         else:
             lines.append(f"➖ Unavailable: {check.removeprefix('No ')}")
-    lines.append("No known matches detected is not a security certification.")
+    lines.append("These checks are not a security certification.")
     lines += ["", SHARE_QUESTION]
     notice = RenderedNotice(
         kind="share",

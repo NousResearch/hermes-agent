@@ -38,6 +38,9 @@ def review_check_line(label: str, status: object) -> str:
 def review_summary_text(summary: str) -> str:
     if summary.strip() == "No known matches detected.":
         return "No issues detected"
+    local_summary = "Local security checks found no known matches."
+    if summary.startswith(local_summary):
+        summary = "No issues detected by local security checks." + summary[len(local_summary):]
     return summary[:512]
 
 
@@ -46,9 +49,11 @@ def aggregate_review_text(
     professionalism: dict[str, Any] | None,
 ) -> str:
     return (
-        f"Security: {review_status_text((security or {}).get('status'))} · "
-        "Professionalism: "
-        f"{review_status_text((professionalism or {}).get('status'))}"
+        review_check_line("Security check", (security or {}).get("status"))
+        + " · "
+        + professionalism_review_text(
+            {"status": (professionalism or {}).get("status")}, include_checks=False,
+        )
     )
 
 
@@ -57,7 +62,6 @@ def review_card_text(facts: dict[str, Any], expanded: bool = False) -> str:
     if expanded:
         return full_review_text(
             facts.get("security_check"), facts.get("professionalism_check"),
-            status_first=True,
         )
     security = facts.get("security_check") or {}
     local = security.get("source") == "local_preflight"
@@ -68,7 +72,7 @@ def review_card_text(facts: dict[str, Any], expanded: bool = False) -> str:
     if security.get("summary"):
         lines.append(review_summary_text(str(security["summary"])))
     lines.append(professionalism_review_text(
-        facts.get("professionalism_check"), status_first=True, include_checks=False,
+        facts.get("professionalism_check"), include_checks=False,
     ))
     return "\n".join(lines)
 
@@ -76,8 +80,6 @@ def review_card_text(facts: dict[str, Any], expanded: bool = False) -> str:
 def full_review_text(
     security: dict[str, Any] | None,
     professionalism: dict[str, Any] | None,
-    *,
-    status_first: bool = False,
 ) -> str:
     """Render both checklists with labels, statuses, counts, and bounded detail."""
 
@@ -86,23 +88,22 @@ def full_review_text(
             "Security check",
             security,
             labels={},
-            note="No known matches detected is not a security certification.",
-            status_first=status_first,
+            note="These checks are not a security certification.",
         ),
-        professionalism_review_text(professionalism, status_first=status_first),
+        professionalism_review_text(professionalism),
     ]
     return "\n\n".join(sections)
 
 
 def professionalism_review_text(
-    check: dict[str, Any] | None, *, status_first: bool = False,
+    check: dict[str, Any] | None, *,
     include_checks: bool = True,
 ) -> str:
     if (check or {}).get("status") in {"pass", "advisory"}:
         return review_text(check, include_checks=include_checks)
     return _checklist_text(
         "Professionalism check (agent-assessed, advisory)", check,
-        labels=CHECK_LABELS, status_first=status_first, include_checks=include_checks,
+        labels=CHECK_LABELS, include_checks=include_checks,
     )
 
 
@@ -112,12 +113,10 @@ def _checklist_text(
     *,
     labels: dict[str, str],
     note: str | None = None,
-    status_first: bool = False,
     include_checks: bool = True,
 ) -> str:
     value = check or {}
-    lines = [review_check_line(title, value.get("status")) if status_first
-             else f"{title}: {review_status_text(value.get('status'))}"]
+    lines = [review_check_line(title, value.get("status"))]
     summary = value.get("summary")
     if isinstance(summary, str) and summary.strip():
         lines.append(review_summary_text(summary))
@@ -130,10 +129,7 @@ def _checklist_text(
             label = str(row.get("label") or labels.get(key) or key.replace("_", " ").title())
             count = int(row.get("finding_count") or 0)
             suffix = f" ({count} finding{'s' if count != 1 else ''})" if count else ""
-            lines.append(
-                (review_check_line(label, row.get("status")) if status_first
-                 else f"{label}: {review_status_text(row.get('status'))}") + suffix
-            )
+            lines.append(review_check_line(label, row.get("status")) + suffix)
             for detail in row.get("details") or []:
                 lines.append(f"  {str(detail)[:256]}")
     if note:

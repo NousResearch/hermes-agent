@@ -353,7 +353,7 @@ def test_share_template_exact_strings():
         "You used this skill 9 times in the last 7 days. It has helped with weekly release "
         "announcements. I think it could help the platform team because every team ships weekly."
     ) in notice.lines
-    assert "Checks complete: no known matches detected." in notice.lines
+    assert "Checks complete: no issues detected." in notice.lines
     for check in (
         "No profanity or abusive language",
         "No hate or harassment",

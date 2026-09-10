@@ -11,10 +11,13 @@ import pytest
 def test_clean_summary_copy_preserves_findings_and_safety_disclaimer():
     assert review_summary_text("No known matches detected.") == "No issues detected"
     assert review_summary_text("Review the policy finding.") == "Review the policy finding."
-    for expanded in (False, True):
-        text = full_review_text({"status": "pass", "summary": "No known matches detected."}, None, status_first=expanded)
-        assert "No issues detected" in text
-        assert "No known matches detected is not a security certification." in text
+    text = full_review_text({"status": "pass", "summary": "No known matches detected."}, None)
+    assert "No issues detected" in text
+    assert "These checks are not a security certification." in text
+    gateway_note = " Required Gateway checks run after you authorize upload and before publication."
+    assert review_summary_text("Local security checks found no known matches." + gateway_note) == (
+        "No issues detected by local security checks." + gateway_note
+    )
 
 
 @pytest.mark.parametrize("status,expected", [
@@ -34,7 +37,7 @@ def test_expanded_card_rows_keep_summary_and_findings_without_pass_labels():
         "checks": [{"label": "Private keys", "status": "pass"},
                    {"label": "Organization policy", "status": "advisory",
                     "finding_count": 1, "details": ["Policy match details"]}],
-    }, {"status": "pass"}, status_first=True)
+    }, {"status": "pass"})
     assert "✅ Private keys" in text
     assert "⚠️ Organization policy: Advisory (1 finding)" in text
     assert "Review a policy match." in text
@@ -89,15 +92,15 @@ def test_full_review_text_renders_each_check_as_its_own_labeled_row():
     )
 
     assert rendered.splitlines() == [
-        "Security check: ⚠️ Advisory",
+        "⚠️ Security check: Advisory",
         "One review item needs attention.",
-        "Private keys: ✅ Pass",
-        "Organization policy: ⚠️ Advisory (1 finding)",
+        "✅ Private keys",
+        "⚠️ Organization policy: Advisory (1 finding)",
         "  Review a bounded policy match.",
-        "No known matches detected is not a security certification.",
+        "These checks are not a security certification.",
         "",
-        "Professionalism check (agent-assessed, advisory): ❌ Blocked",
-        "Profanity or abusive language: ❌ Blocked (1 finding)",
+        "❌ Professionalism check (agent-assessed, advisory): Blocked",
+        "❌ Profanity or abusive language: Blocked (1 finding)",
         "  Potential abusive language.",
     ]
 
@@ -108,9 +111,23 @@ def test_public_review_projection_remains_aggregate_only():
         {"status": "unavailable", "checks": [{"label": "Hate or harassment"}]},
     )
 
-    assert rendered == "Security: ✅ Pass · Professionalism: ➖ Unavailable"
+    assert rendered == "✅ Security check · ➖ Professionalism check (agent-assessed, advisory): Unavailable"
     assert "Private keys" not in rendered
     assert "Hate or harassment" not in rendered
+
+
+@pytest.mark.parametrize("status", ["pass", "advisory", "blocked", "pending", "running", "retry", "unavailable", "future-status"])
+def test_browse_and_version_summaries_preserve_nonpass_state_without_private_findings(status):
+    security = {"status": status, "checks": [{"label": "Private keys", "details": ["PRIVATE_DETAIL"]}]}
+    rendered = aggregate_review_text(security, {
+        "status": status, "summary": "PRIVATE_SUMMARY", "checks": security["checks"],
+    })
+    assert rendered.startswith(review_check_line("Security check", status))
+    assert "PRIVATE_DETAIL" not in rendered and "Private keys" not in rendered
+    assert "PRIVATE_SUMMARY" not in rendered
+    assert "Pass" not in rendered
+    if status != "pass":
+        assert not rendered.startswith("✅")
 
 
 @pytest.mark.parametrize("status", ["pass", "advisory"])

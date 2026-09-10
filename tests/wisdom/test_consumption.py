@@ -652,9 +652,9 @@ def test_feed_cursor_is_durable_deduplicated_and_telegram_uses_home_target(
             "heading": "✅ Updated on this device",
             "detail": (
                 "managed-skill · v2\n"
-                "Security check: ➖ Unavailable\n"
-                "No known matches detected is not a security certification.\n\n"
-                "Professionalism check (agent-assessed, advisory): ➖ Unavailable"
+                "➖ Security check: Unavailable\n"
+                "These checks are not a security certification.\n\n"
+                "➖ Professionalism check (agent-assessed, advisory): Unavailable"
             ),
         }
     ]
@@ -710,9 +710,9 @@ def test_telegram_update_available_offers_verified_update_action(
             "heading": "⬆️ Update available",
             "detail": (
                 "managed-skill · v2\n"
-                "Security check: ➖ Unavailable\n"
-                "No known matches detected is not a security certification.\n\n"
-                "Professionalism check (agent-assessed, advisory): ➖ Unavailable"
+                "➖ Security check: Unavailable\n"
+                "These checks are not a security certification.\n\n"
+                "➖ Professionalism check (agent-assessed, advisory): Unavailable"
             ),
         }
     ]
@@ -878,9 +878,9 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
             "detail": (
                 "Team Incident Runbook · v3\n"
                 "Coordinate incident response with a repeatable team workflow.\n"
-                "Security check: ➖ Unavailable\n"
-                "No known matches detected is not a security certification.\n\n"
-                "Professionalism check (agent-assessed, advisory): ➖ Unavailable"
+                "➖ Security check: Unavailable\n"
+                "These checks are not a security certification.\n\n"
+                "➖ Professionalism check (agent-assessed, advisory): Unavailable"
             ),
         }
     ]

@@ -36,11 +36,11 @@ def test_local_guard_failure_is_not_a_pass():
 def test_local_checklist_does_not_claim_gateway_checks_have_run():
     result = prepared_security_check([], "Safe", {"guard": {"allowed": True}})
     text = full_review_text(result, {"status": "pass"})
-    assert "Private keys: ✅ Pass" in text
-    assert "Organization policy: ⏳ Pending" in text
-    assert "Personal information: ⏳ Pending" in text
+    assert "✅ Private keys" in text
+    assert "⏳ Organization policy: Pending" in text
+    assert "⏳ Personal information: Pending" in text
     assert "Required Gateway check after you authorize upload; before publication." in text
-    assert "no known matches" in text
+    assert "No issues detected by local security checks." in text
 
 
 @pytest.mark.parametrize("allowed", [True, False])

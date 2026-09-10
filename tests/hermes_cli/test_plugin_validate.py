@@ -33,6 +33,16 @@ BASE_MANIFEST = {
 }
 
 
+def test_requires_hermes_spec_is_validated(tmp_path):
+    manifest = dict(BASE_MANIFEST, requires_hermes=">=0.21")
+    d = _make_plugin(tmp_path, manifest=manifest)
+
+    report = validate_plugin_dir(d)
+
+    assert report.ok, report.failures
+    assert ("requires_hermes", True, "spec '>=0.21' parses") in report.checks
+
+
 class TestCapabilityProbe:
     def test_undeclared_tool_registration_fails_with_diff(self, tmp_path):
         init = (

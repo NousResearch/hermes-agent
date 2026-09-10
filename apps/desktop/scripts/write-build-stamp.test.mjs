@@ -26,7 +26,8 @@ test('fromLocalGit returns null when git rev-parse fails', () => {
 
 test('fromLocalGit reads HEAD + branch + dirty status', () => {
   const calls = []
-  const execFn = (cmd) => {
+  const execFn = (argv) => {
+    const cmd = argv.join(' ')
     calls.push(cmd)
     if (cmd === 'git rev-parse HEAD') return 'b'.repeat(40)
     if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'main'
@@ -63,7 +64,8 @@ test('resolveStamp prefers CI over local git over fallback', () => {
 
   const local = resolveStamp({
     env: {},
-    execFn: (cmd) => {
+    execFn: (argv) => {
+      const cmd = argv.join(' ')
       if (cmd === 'git rev-parse HEAD') return 'd'.repeat(40)
       if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'main'
       if (cmd === 'git status --porcelain -uno') return ''
@@ -160,5 +162,19 @@ test('buildStampPayload keeps schemaVersion + provenance in the staged shape', (
   assert.equal(payload.commit, baseStamp.commit)
   assert.equal(payload.source, 'ci')
   assert.equal(payload.tag, null)
+})
+
+test('commit builds retain exact provenance without entering an update channel', () => {
+  for (const platform of ['win32', 'darwin']) {
+    const env = { HERMES_DESKTOP_VARIANT: 'bundled', HERMES_BUILD_COMMIT: baseStamp.commit }
+    const payload = buildStampPayload(baseStamp, env, platform, { runtime })
+    assert.equal(payload.commit, baseStamp.commit)
+    assert.equal(payload.source, 'commit-build')
+    assert.equal(payload.branch, null)
+    assert.equal(payload.tag, null)
+    assert.equal(payload.updateMechanism, 'external')
+    assert.throws(() => buildStampPayload(baseStamp, { ...env, HERMES_BUILD_COMMIT: 'a'.repeat(40) }, platform, { runtime }), /commit/i)
+    assert.throws(() => buildStampPayload(baseStamp, { ...env, HERMES_PAYLOAD_TAG: 'v1.2.3' }, platform, { runtime }), /tag/i)
+  }
 })
 

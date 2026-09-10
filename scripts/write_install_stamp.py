@@ -149,7 +149,7 @@ def build_stamp(
 ) -> dict:
     """Build a stamp dict from explicit args, filling gaps from git/env.
 
-    Args override detection — an explicit ``commit`` is used directly.
+    Args override detection except for commit-build checkout verification.
     ``source`` identifies where the stamp came from (``ci``, ``local``,
     ``docker``, ``nix``, ``fallback``). ``update_mechanism`` is required:
     every stamp names who applies the next update (see UPDATE_MECHANISMS).
@@ -172,7 +172,18 @@ def build_stamp(
     if base_version is None:
         base_version = _base_version
 
-    # Commit: explicit > CI env > git
+    commit_build = os.environ.get("HERMES_BUILD_COMMIT")
+    if commit_build:
+        from scripts.releases.commit_build import require_commit
+
+        require_commit(commit_build)
+        if os.environ.get("HERMES_PAYLOAD_TAG"):
+            raise ValueError("Commit builds cannot also select a release tag")
+        if _resolve_commit_from_git() != commit_build or commit not in (None, commit_build):
+            raise ValueError("Commit build identity does not match the checkout HEAD")
+        commit, source, update_mechanism = commit_build, "commit-build", "external"
+
+    # A dispatch SHA describes workflow code, not an admitted build checkout.
     if commit is None:
         commit = _resolve_commit_from_env()
         source = "ci" if commit else source
@@ -184,9 +195,11 @@ def build_stamp(
         source = "fallback"
 
     # Branch: explicit > CI env > git
-    if branch is None:
+    if commit_build:
+        branch = None
+    elif branch is None:
         branch = _resolve_branch_from_env()
-    if branch is None:
+    if branch is None and not commit_build:
         branch = _resolve_branch_from_git()
 
     # Dirty: explicit > git
@@ -221,8 +234,7 @@ def build_stamp(
     #               different MSIX packaging identity. Stamps as 'bundled'
     #               so the bundled shape logic (shared userData, steward-
     #               owned updates, no in-app updater) holds for it too.
-    # bundled, light and store all pin a release tag: electron-updater keys on
-    # it, so a tagless artifact of either kind cannot update itself.
+    # Release artifacts pin a tag. Commit builds never enter an update channel.
     variant = os.environ.get("HERMES_DESKTOP_VARIANT", "").strip()
     if variant not in ("", "bootstrap", "bundled", "light", "store"):
         raise SystemExit(
@@ -231,13 +243,9 @@ def build_stamp(
         )
     payload = "bundled" if variant == "store" else (variant or "bootstrap")
     tag = os.environ.get("HERMES_PAYLOAD_TAG") or None
-    # Stable (vX.Y.Z) and canary (vX.Y.<any patch>-canary.<YYYYMMDDHHMMSS>,
-    # or the legacy date-only shape) tags are both release-feed keys; anything
-    # else cannot update itself and refuses. The canary shape is validated by
-    # hermes_cli.update_channel — the single authority — so it accepts the
-    # patch+1 form scripts/release.py's canary_tag_for_date produces.
+
     _stable_tag = re.compile(r"^v(0|[1-9]\d{0,2})\.\d+\.\d+$")
-    if payload != "bootstrap" and not (
+    if payload != "bootstrap" and not commit_build and not (
         tag and (_stable_tag.match(tag) or update_channel.is_canary_tag(tag))
     ):
         raise SystemExit(

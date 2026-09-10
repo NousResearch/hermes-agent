@@ -2199,7 +2199,7 @@ def _default_branch(gh_repo: str | None) -> str | None:
     """The repo's default branch, resolved via gh. None on any failure."""
     cmd = ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
     if gh_repo:
-        cmd += ["--repo", gh_repo]
+        cmd += [gh_repo]
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
@@ -2235,13 +2235,17 @@ def resolve_push_remote(requested: str | None) -> str:
 
 
 def remote_github_repo(remote: str) -> str | None:
-    """The 'owner/repo' behind a remote's push URL, for gh --repo.
-    None when the URL is not a recognizable GitHub URL."""
+    """Read the GitHub repository that receives the remote's pushes."""
     result = git_result("remote", "get-url", "--push", remote)
     if result.returncode != 0:
         return None
     url = result.stdout.strip()
-    match = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
+    match = re.fullmatch(
+        r"(?:https?://(?:[^/@\s]+@)?github\.com/|"
+        r"ssh://(?:[^/@\s]+@)?github\.com(?::\d+)?/|"
+        r"git://github\.com/|[^/@:\s]+@github\.com:)"
+        r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?", url,
+    )
     return match.group(1) if match else None
 
 
@@ -2889,6 +2893,9 @@ def main():
                         help="Tag + publish today's canary prerelease "
                              "(v<stable.minor+1>.0-canary.<YYYYMMDDHHMMSS>); no-op when "
                              "HEAD has no new commits since the last canary")
+    parser.add_argument("--build-commit", type=str, metavar="REV",
+                        help="Preview an exact-commit build into releases/commit/<sha>/ on R2. "
+                             "Add --publish to dispatch without a tag or release.")
     parser.add_argument("--prune-canaries", action="store_true",
                         help="Delete canary releases+tags older than 14 days")
     parser.add_argument("--publish", action="store_true",
@@ -2909,6 +2916,18 @@ def main():
 
     if args.canary and args.bump:
         parser.error("--canary and --bump are mutually exclusive")
+    if args.build_commit is not None:
+        conflicting = [name for name, supplied in (
+            ("--bump", args.bump), ("--canary", args.canary),
+            ("--prune-canaries", args.prune_canaries), ("--first-release", args.first_release),
+            ("--date", args.date), ("--output", args.output), ("--no-changelog", args.no_changelog),
+        ) if supplied]
+        if conflicting:
+            parser.error("--build-commit cannot be combined with " + ", ".join(conflicting))
+        from scripts.releases.commit_build import cmd_build_commit
+
+        cmd_build_commit(args)
+        return
     if args.canary:
         cmd_canary(args)
         return

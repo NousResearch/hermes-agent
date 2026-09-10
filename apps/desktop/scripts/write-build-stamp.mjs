@@ -8,7 +8,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "fs"
 import { resolve, join, relative } from "path"
-import { execSync } from "child_process"
+import { execFileSync } from "child_process"
 
 import { isMain } from "./utils.mjs"
 
@@ -23,9 +23,9 @@ const REPO_ROOT = resolve(DESKTOP_ROOT, "..", "..")
 const OUT_DIR = join(DESKTOP_ROOT, "build")
 const OUT_FILE = join(OUT_DIR, "install-stamp.json")
 
-function tryExec(cmd, opts) {
+function tryExec(argv, opts) {
   try {
-    return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], ...opts }).trim()
+    return execFileSync(argv[0], argv.slice(1), { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, ...opts }).trim()
   } catch {
     return null
   }
@@ -44,16 +44,16 @@ export function fromCI(env = process.env) {
 }
 
 export function fromLocalGit(repoRoot = REPO_ROOT, execFn = tryExec) {
-  const sha = execFn("git rev-parse HEAD", { cwd: repoRoot })
+  const sha = execFn(["git", "rev-parse", "HEAD"], { cwd: repoRoot })
   if (!sha) return null
-  const branch = execFn("git rev-parse --abbrev-ref HEAD", { cwd: repoRoot })
+  const branch = execFn(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: repoRoot })
   // `git status --porcelain -uno` is empty iff tracked files match HEAD.
   // We exclude untracked files (-uno) intentionally: a developer who's
   // checked out an installer scratch dir alongside the repo shouldn't
   // poison every local build with a [DIRTY] stamp.  We DO care about
   // tracked-but-modified files because those mean the .exe content
   // differs from the commit being pinned.
-  const status = execFn("git status --porcelain -uno", { cwd: repoRoot })
+  const status = execFn(["git", "status", "--porcelain", "-uno"], { cwd: repoRoot })
   const dirty = status !== null && status.length > 0
   return {
     commit: sha,
@@ -87,6 +87,16 @@ export function resolveStamp({
   execFn = tryExec,
   fallbackBranch = FALLBACK_BRANCH
 } = {}) {
+  if (env.HERMES_BUILD_COMMIT) {
+    if (!/^[a-f0-9]{40}$/.test(env.HERMES_BUILD_COMMIT) || env.HERMES_PAYLOAD_TAG) {
+      throw new Error('Commit builds require an exact full SHA without a release tag')
+    }
+    const local = fromLocalGit(repoRoot, execFn)
+    if (!local || local.commit !== env.HERMES_BUILD_COMMIT) {
+      throw new Error('Commit build identity does not match the checkout HEAD')
+    }
+    return { ...local, branch: null, source: 'commit-build' }
+  }
   return fromCI(env) || fromLocalGit(repoRoot, execFn) || fromFallback(fallbackBranch)
 }
 
@@ -152,13 +162,20 @@ function main() {
  */
 export function buildStampPayload(stamp, env = process.env, platform = process.platform, payload = null) {
   const variant = (env.HERMES_DESKTOP_VARIANT || "").trim()
+  const commitBuild = env.HERMES_BUILD_COMMIT || null
+  if (commitBuild && (!/^[a-f0-9]{40}$/.test(commitBuild) || commitBuild !== stamp.commit)) {
+    throw new Error('Commit build identity does not match the stamp commit')
+  }
+  if (commitBuild && env.HERMES_PAYLOAD_TAG) {
+    throw new Error('Commit builds cannot also set a release tag')
+  }
   const base = {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
-    branch: stamp.branch,
+    branch: commitBuild ? null : stamp.branch,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
-    source: stamp.source,
+    source: commitBuild ? 'commit-build' : stamp.source,
     commitDate: stamp.commitDate ?? null,
     baseVersion: stamp.baseVersion ?? null,
     displayVersion: stamp.displayVersion ?? null,
@@ -181,7 +198,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
     ...base,
     payload: variant === "store" ? "bundled" : variant || "bootstrap",
     distribution: "desktop-app",
-    updateMechanism,
+    updateMechanism: commitBuild ? 'external' : updateMechanism,
     tag: env.HERMES_PAYLOAD_TAG || null,
     ...(bundled ? { runtime: payload.runtime } : {})
   }

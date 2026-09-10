@@ -2,6 +2,7 @@
 
 import importlib.util
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -79,18 +80,23 @@ def test_no_remotes_is_rejected(monkeypatch):
         release.resolve_push_remote(None)
 
 
-def test_github_repo_parsed_from_ssh_and_https_urls(monkeypatch):
+def test_github_repo_parsed_from_ssh_and_https_urls(tmp_path, monkeypatch):
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    monkeypatch.setattr(release, 'REPO_ROOT', tmp_path)
     urls = {
         "fork": "git@github.com:ethernet8023/hermes-agent.git",
         "origin": "https://github.com/NousResearch/hermes-agent",
         "gitlab": "git@gitlab.com:someone/elsewhere.git",
     }
-    monkeypatch.setattr(
-        release,
-        "git_result",
-        lambda *args, **_kw: _FakeResult(urls[args[-1]]),
-    )
+    for name, url in urls.items():
+        subprocess.run(['git', 'config', f'remote.{name}.url', url], cwd=tmp_path, check=True)
 
     assert release.remote_github_repo("fork") == "ethernet8023/hermes-agent"
     assert release.remote_github_repo("origin") == "NousResearch/hermes-agent"
     assert release.remote_github_repo("gitlab") is None
+    subprocess.run(['git', 'config', 'url.https://github.com/fork/.pushInsteadOf',
+                    'https://github.com/NousResearch/'], cwd=tmp_path, check=True)
+    assert release.remote_github_repo('origin') == 'fork/hermes-agent'
+    subprocess.run(['git', 'config', 'remote.origin.pushurl', 'ssh://git@github.com:22/other/repo.git'],
+                   cwd=tmp_path, check=True)
+    assert release.remote_github_repo('origin') == 'other/repo'

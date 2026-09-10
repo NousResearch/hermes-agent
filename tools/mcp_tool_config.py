@@ -54,7 +54,15 @@ def _write_stderr_log_header(server_name: str) -> None:
 
 
 # Env vars safe to pass to stdio subprocesses (no secrets).
-_SAFE_ENV_KEYS = frozenset({"PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR"})
+# Proxy keys are forwarded independently in both common cases so stdio MCP
+# children inherit the parent process's outbound proxy (http/https/no_proxy
+# and ALL_PROXY, matching other Hermes proxy consumers). Unset keys stay
+# absent; do not glob on "PROXY" — that would leak custom secret-named vars.
+_SAFE_ENV_KEYS = frozenset({
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+})
 
 # Windows process/location vars needed by launcher-style tools (e.g. Docker Desktop's MCP plugin discovery).
 _SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
@@ -93,8 +101,10 @@ _CONTEXT_VAR_RESOLVERS = {
 
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
-    keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
-    precisely so subprocesses can consume them), plus the server config's own ``env``."""
+    keys (including parent ``http_proxy``/``https_proxy``/``no_proxy``/``ALL_PROXY`` in both
+    common cases, when set), ``XDG_*``, vars injected by an external secret source (users
+    configured that backend precisely so subprocesses can consume them), plus the server
+    config's own ``env`` (which still overrides the parent for the same key)."""
     from agent.secret_scope import get_secret
     from hermes_cli.env_loader import secret_source_names
     env = {

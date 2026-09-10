@@ -8,6 +8,8 @@ command, so picker and typed arguments can never diverge.
 """
 
 import asyncio
+import types
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -108,6 +110,88 @@ class TestReasoningChoicePicker:
         override = runner._session_reasoning_overrides.get(session_key)
         assert override == {"enabled": True, "effort": "ultra"}
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/reasoning --global", "/reasoning —global"])
+    async def test_reasoning_picker_global_flag_persists_effort(
+        self, tmp_path, monkeypatch, command
+    ):
+        """A flag-only global invocation opens the picker and persists its choice."""
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        event = _make_event(command)
+        session_key = runner._session_key_for_source(event.source)
+        runner._session_reasoning_overrides[session_key] = {
+            "enabled": True,
+            "effort": "low",
+        }
+
+        result = await runner._handle_reasoning_command(event)
+
+        assert result is None
+        on_choice = adapter.calls[0]["on_choice_selected"]
+        reply = await on_choice(event.source.chat_id, "ultra")
+
+        assert "ultra" in reply
+        saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert saved["agent"]["reasoning_effort"] == "ultra"
+        assert session_key not in runner._session_reasoning_overrides
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/reasoning --global", "/reasoning —global"])
+    async def test_multiplex_global_picker_persists_only_named_profile(
+        self, tmp_path, monkeypatch, command
+    ):
+        """A delayed picker tap must retain its originating profile scope."""
+        from agent.secret_scope import set_multiplex_active
+
+        default_home = tmp_path / "default"
+        named_home = tmp_path / "profiles" / "named"
+        default_home.mkdir(parents=True)
+        named_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        default_cfg = {"marker": "default"}
+        named_cfg = {"marker": "named"}
+        (default_home / "config.yaml").write_text(
+            yaml.safe_dump(default_cfg), encoding="utf-8"
+        )
+        (named_home / "config.yaml").write_text(
+            yaml.safe_dump(named_cfg), encoding="utf-8"
+        )
+
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        runner.config = types.SimpleNamespace(multiplex_profiles=True)
+        runner._resolve_profile_home_for_source = lambda source: named_home
+        monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+        event = _make_event(command)
+        event.source.profile = "named"
+        session_key = runner._session_key_for_source(event.source)
+        runner._session_reasoning_overrides[session_key] = {
+            "enabled": True,
+            "effort": "low",
+        }
+
+        set_multiplex_active(True)
+        try:
+            with gateway_run._profile_runtime_scope(named_home):
+                result = await runner._handle_reasoning_command(event)
+            assert result is None
+            on_choice = adapter.calls[0]["on_choice_selected"]
+            reply = await on_choice(event.source.chat_id, "ultra")
+        finally:
+            set_multiplex_active(False)
+
+        assert "ultra" in reply
+        assert yaml.safe_load(
+            (default_home / "config.yaml").read_text(encoding="utf-8")
+        ) == default_cfg
+        saved = yaml.safe_load((named_home / "config.yaml").read_text(encoding="utf-8"))
+        assert saved["marker"] == "named"
+        assert saved["agent"]["reasoning_effort"] == "ultra"
+        assert session_key not in runner._session_reasoning_overrides
+
 
 class TestFastChoicePicker:
     def _patch_fast_support(self, monkeypatch, tmp_path):
@@ -144,5 +228,3 @@ class TestFastChoicePicker:
         assert runner._service_tier == "priority"
         assert runner._session_service_tier_overrides
         assert not (tmp_path / "config.yaml").exists()
-
-

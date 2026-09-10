@@ -663,6 +663,9 @@ class GatewayModelCommandsMixin:
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
+        profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_home = self._resolve_profile_home_for_source(event.source)
         # Normalize (Telegram DM topic recovery) so the override key matches the next turn's.
         # See #30479.
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
@@ -676,7 +679,7 @@ class GatewayModelCommandsMixin:
             source=event.source, session_key=session_key, model=_session_model,
         )
         platform_key = _platform_config_key(event.source.platform)
-        if raw_args:  # typed path — same applier the picker uses
+        if args:  # typed path — same applier the picker uses
             return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
         rc = self._reasoning_config
         if rc is None:
@@ -690,7 +693,17 @@ class GatewayModelCommandsMixin:
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return self._apply_reasoning_selection(session_key, platform_key, value)
+            def _apply() -> str:
+                return self._apply_reasoning_selection(
+                    session_key, platform_key, value, persist_global=persist_global,
+                )
+
+            if profile_home is None:
+                return _apply()
+            # Picker taps arrive after the command's profile scope has exited.
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                return _apply()
 
         picker_sent = await self._try_send_choice_picker(
             event,

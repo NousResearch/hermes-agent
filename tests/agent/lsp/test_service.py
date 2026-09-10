@@ -274,9 +274,34 @@ def test_reaper_survives_sweep_error(mock_pyright):
         svc.shutdown()
 
 
+def test_idle_reaper_clears_timeout_circuit_state(mock_pyright):
+    """Reaping a client also removes cooldown, half-open, and skipped-baseline state."""
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        idle_timeout=30.0,
+    )
+    try:
+        svc.get_diagnostics_sync(str(f), delta=False)
+        svc._degrade_diagnostics(str(f))
+        abs_path = str(f.resolve())
+        with svc._state_lock:
+            circuit_key = next(iter(svc._diagnostics_degraded_until))
+            svc._diagnostics_probe_inflight.add(circuit_key)
+            svc._skipped_delta_baselines.add(abs_path)
+            for client_key in svc._last_used:
+                svc._last_used[client_key] = 0.0
 
+        svc._loop.run(svc._reap_idle_once(), timeout=5.0)
 
-
-
-
-
+        assert svc._clients == {}
+        assert svc._diagnostics_degraded_until == {}
+        assert svc._diagnostics_probe_inflight == set()
+        assert svc._skipped_delta_baselines == set()
+    finally:
+        svc.shutdown()

@@ -28,6 +28,7 @@ PRs #9850, #9934, #7536):
 import asyncio
 import time
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -45,7 +46,9 @@ from gateway.run import (
     _should_clear_resume_pending_after_turn,
     build_resume_recovery_note,
 )
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.turn_context import TurnContext
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
     make_restart_source,
@@ -374,6 +377,75 @@ class TestResumePendingSystemNote:
 
         assert "Address the user's NEW message" in message
         assert persisted is None
+
+    def test_captionless_native_media_persists_clean_multimodal_content(self, tmp_path):
+        """The model receives recovery guidance, but the durable native-image row does not."""
+        from agent.session_persistence import durable_user_row_content
+
+        image = tmp_path / "recovery.png"
+        image.write_bytes(bytes.fromhex(
+            "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+            "01f15c4890000000a49444154789c6360000002000100ffff0300000600"
+            "0557bfabd40000000049454e44ae426082"
+        ))
+        entry = SimpleNamespace(
+            resume_pending=True,
+            resume_reason="restart_timeout",
+            last_resume_marked_at=datetime.now(),
+        )
+
+        class Runner:
+            session_store = SimpleNamespace(_entries={"session-key": entry})
+
+            @staticmethod
+            def _adapter_for_source(source):
+                return SimpleNamespace(interactive_resume=True)
+
+            @staticmethod
+            def _consume_pending_native_image_paths(session_key):
+                assert session_key == "session-key"
+                return [str(image)]
+
+        ctx = TurnContext(
+            source=_make_source(),
+            session_key="session-key",
+            session_id="session-id",
+            message="",
+            history=[{"role": "assistant", "content": "working", "timestamp": time.time()}],
+        )
+        turn = TurnRunner(Runner(), ctx)  # type: ignore[arg-type]
+        persist_msg, persist_ts, native_persist_text = turn._prepare_turn_message([])
+        assert isinstance(ctx.message, str)
+        assert "[System note:" in ctx.message
+        assert persist_msg is None
+        assert persist_ts is None
+        assert native_persist_text == ""
+
+        captured = {}
+
+        class Agent:
+            def run_conversation(self, message, **kwargs):
+                captured["api_message"] = message
+                captured["persist_message"] = kwargs.get("persist_user_message")
+                captured["turn_author"] = kwargs.get("turn_author")
+                self._persist_user_message_override = captured["persist_message"]
+                captured["durable_message"], _ = durable_user_row_content(
+                    self, {"role": "user"}, message, None
+                )
+                return {"final_response": "ok", "messages": []}
+
+        turn._run_conversation_with_approval(
+            Agent(), [], None, persist_msg, persist_ts, native_persist_text
+        )
+
+        api_message = captured["api_message"]
+        persist_message = captured["persist_message"]
+        assert captured["turn_author"] == {"id": "u1", "name": None, "is_bot": False}
+        assert "[System note:" in api_message[0]["text"]
+        assert "[System note:" not in persist_message[0]["text"]
+        assert "What do you see in this image?" in persist_message[0]["text"]
+        assert api_message[1:] == persist_message[1:]
+        assert captured["durable_message"] == persist_message
 
 
     def test_resume_pending_fires_without_tool_tail(self):

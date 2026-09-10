@@ -6204,8 +6204,6 @@
               "recommendation_to_review",
               "recommendation_to_publish",
               "publish_to_install",
-              "install_setup_completed",
-              "install_verified",
               "recommendation_dismissed",
               "notifications_muted",
               "skill_unpublished",
@@ -6216,14 +6214,20 @@
             ]
           },
           "skill_id": {
-            "type": "string"
-          },
-          "skill_key": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
           },
           "properties": {
             "type": "object",
-            "additionalProperties": {}
+            "properties": {
+              "seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 31536000
+              }
+            },
+            "additionalProperties": false
           }
         },
         "required": [
@@ -13000,7 +13004,8 @@
     },
     "/v1/sync/wisdom/agent-led/analytics": {
       "post": {
-        "summary": "Record a typed funnel analytics event.",
+        "summary": "Record a bounded client-reported analytics event.",
+        "description": "Accepts event names, an optional published same-organization skill ID, and an optional bounded seconds value. Local skill keys, free-form properties, filenames, and rationale are rejected without persistence. Generic events are client-reported, not verified execution; client_* and setup/verification outcomes require the receipt-bound operation-outcome endpoint.",
         "tags": [
           "wisdom",
           "wisdom-agent-led"
@@ -13031,7 +13036,7 @@
             }
           },
           "400": {
-            "description": "Unknown name or oversized properties.",
+            "description": "Invalid analytics fields or a receipt-bound outcome is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13052,6 +13057,16 @@
           },
           "403": {
             "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Skill is not published in the authenticated organization.",
             "content": {
               "application/json": {
                 "schema": {

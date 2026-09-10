@@ -30,8 +30,8 @@ class ContractPin:
 
 
 CONTRACT_PIN = ContractPin(
-    gateway_commit="8a888d68129c20ff6ae40f4ca7bb4a28d72de5a5",
-    openapi_sha256="f04a2b260ecc669a35c8845461df632202efee8e42ac561ae17104ef28db0075",
+    gateway_commit="9ab95ef6114268e6f2ef356051be914761f1f969",
+    openapi_sha256="cc3b835d8d67fcb84f2d2204e1ddc53d45c9ad4e46005151b796b357a4a377fc",
     manifest_schema_sha256="64d0010eada1d79fa16309e9fd715faf77b6186360ea0b095182b2bdaeec5714",
     canonical_vectors_sha256="eff9b596d1bd9c46eda287b7231b11c35e5c0ae3b193e645d5b0a421b7570974",
     requirements_pr="NousResearch/gateway-gateway#215",

@@ -87,6 +87,10 @@ class MessageEvent:
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
 
+    # Original platform message IDs aligned with media_urls after a pending merge.
+    # Empty on a fresh event; missing IDs stay None rather than being synthesized.
+    media_source_message_ids: List[Optional[str]] = field(default_factory=list)
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")

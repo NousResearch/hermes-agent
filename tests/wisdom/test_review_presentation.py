@@ -115,7 +115,7 @@ def test_public_review_projection_remains_aggregate_only():
 
 @pytest.mark.parametrize("status", ["pass", "advisory"])
 def test_native_and_fixed_professionalism_copy_agree(status):
-    from hermes_wisdom.mediation_view import _review_summary
+    from hermes_wisdom.review_presentation import review_card_text
     from hermes_wisdom.professionalism import review_text
 
     review = {
@@ -127,7 +127,7 @@ def test_native_and_fixed_professionalism_copy_agree(status):
         ],
     }
     for expanded in (False, True):
-        native = _review_summary({
+        native = review_card_text({
             "security_check": {"status": "pass"},
             "professionalism_check": review,
         }, expanded)

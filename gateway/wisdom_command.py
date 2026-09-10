@@ -22,9 +22,11 @@ from hermes_wisdom.client import (
     WisdomValidationError,
 )
 from hermes_wisdom.package import PackagePolicyError
+from hermes_wisdom.consent import public_plan
 from hermes_wisdom.review_presentation import (
     aggregate_review_text,
     full_review_text,
+    review_card_text,
 )
 from hermes_wisdom.service import WisdomService, portal_base_url
 
@@ -566,6 +568,16 @@ class WisdomCommandController:
                 context,
                 _navigation_history=value.navigation_history,
             )
+        if operation == "plan_checks":
+            view = self._plan_view(
+                args["plan"], kind=args["kind"], checks_expanded=args["expanded"],
+            )
+            # Expanding the same receipt is not forward navigation or a new plan.
+            if value.navigation_history:
+                self._attach_navigation(
+                    view, value.navigation_history[-1], value.navigation_history[:-1],
+                )
+            return view
 
         # Navigation remains reusable for ten minutes. Mutation controls are
         # consumed only after the authoritative operation succeeds, so a
@@ -641,7 +653,7 @@ class WisdomCommandController:
             )
             return complete(
                 self._attach_navigation(
-                    self._plan_view(plan, kind="install"),
+                    self._plan_view(self._reviewed_plan(service, plan), kind="install"),
                     _NavigationTarget("install_plan", dict(args)),
                     value.navigation_history,
                 )
@@ -673,7 +685,7 @@ class WisdomCommandController:
                 )
             return complete(
                 self._attach_navigation(
-                    self._plan_view(plan, kind="update"),
+                    self._plan_view(self._reviewed_plan(service, plan), kind="update"),
                     _NavigationTarget("update_plan", dict(args)),
                     value.navigation_history,
                 )
@@ -1484,7 +1496,25 @@ class WisdomCommandController:
             ],
         )
 
-    def _plan_view(self, plan: dict[str, Any], *, kind: str) -> WisdomView:
+    @staticmethod
+    def _reviewed_plan(service: WisdomService, plan: dict[str, Any]) -> dict[str, Any]:
+        detail = service.version_detail(
+            str(plan["skill_id"]), int(plan["version"]), include_compatibility=False,
+        )["version"]
+        if detail.get("version") != plan["version"] or (
+            plan.get("content_hash") and detail.get("content_hash") != plan["content_hash"]
+        ):
+            raise WisdomConflict("The package changed while loading its checks.")
+        # Opaque callbacks retain the receipt, never staging paths or raw files.
+        return {
+            **public_plan(plan), "receipt": plan["receipt"],
+            "security_check": detail.get("security_check"),
+            "professionalism_check": detail.get("professionalism_check"),
+        }
+
+    def _plan_view(
+        self, plan: dict[str, Any], *, kind: str, checks_expanded: bool = False,
+    ) -> WisdomView:
         compatibility = plan.get("compatibility") or {}
         outcome = str(compatibility.get("outcome") or "unknown")
         blocked = (
@@ -1493,8 +1523,9 @@ class WisdomCommandController:
             or bool(plan.get("modified"))
             or bool(plan.get("sensitive_expansion"))
         )
+        security_ready = (plan.get("security_check") or {}).get("status") in {"pass", "advisory"}
         actions: list[WisdomAction] = []
-        if not blocked:
+        if not blocked and security_ready:
             actions.append(
                 WisdomAction(
                     "Confirm install" if kind == "install" else "Confirm update",
@@ -1503,12 +1534,19 @@ class WisdomCommandController:
                     primary=True,
                 )
             )
+        actions.append(WisdomAction(
+            "Hide checks" if checks_expanded else "Show checks", "plan_checks",
+            {"plan": plan, "kind": kind, "expanded": not checks_expanded},
+        ))
         return WisdomView(
             f"Confirm {kind}",
-            f"{plan.get('slug') or plan.get('skill_id')} · v{plan.get('version')}\nCompatibility: {outcome}",
+            f"{plan.get('slug') or plan.get('skill_id')} · v{plan.get('version')}\nCompatibility: {outcome}"
+            + "\n\n" + review_card_text(plan, checks_expanded),
             actions=actions,
             notice="Open Collective in Hermes for the full compatibility review."
             if blocked
+            else "Security review has not cleared this package. Reopen the skill to check its current review."
+            if not security_ready
             else "No files change until you confirm.",
         )
 
@@ -1592,7 +1630,7 @@ class WisdomCommandController:
             raise WisdomNotFound("managed skill not found")
         plan = service.update_plan(str(matches[0]["skill_id"]))
         return (
-            self._plan_view(plan, kind="update")
+            self._plan_view(self._reviewed_plan(service, plan), kind="update")
             if plan.get("receipt")
             else WisdomView("Skill is current")
         )

@@ -52,6 +52,27 @@ def aggregate_review_text(
     )
 
 
+def review_card_text(facts: dict[str, Any], expanded: bool = False) -> str:
+    """Keep native cards compact while making both full checklists accessible."""
+    if expanded:
+        return full_review_text(
+            facts.get("security_check"), facts.get("professionalism_check"),
+            status_first=True,
+        )
+    security = facts.get("security_check") or {}
+    local = security.get("source") == "local_preflight"
+    lines = [review_check_line(
+        "Security check (local preflight)" if local else "Security check",
+        security.get("local_status") if local else security.get("status"),
+    )]
+    if security.get("summary"):
+        lines.append(review_summary_text(str(security["summary"])))
+    lines.append(professionalism_review_text(
+        facts.get("professionalism_check"), status_first=True, include_checks=False,
+    ))
+    return "\n".join(lines)
+
+
 def full_review_text(
     security: dict[str, Any] | None,
     professionalism: dict[str, Any] | None,

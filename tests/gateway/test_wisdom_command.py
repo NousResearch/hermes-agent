@@ -184,6 +184,16 @@ class _Service:
         self.calls.append(("install_apply", receipt, accept_partial))
         return {"skill_id": "skill-1", "version": 2}
 
+    def version_detail(self, reference, version, *, include_compatibility=True):
+        return {"version": {
+            "version": version,
+            "security_check": {
+                "status": "pass", "summary": "No known matches detected.",
+                "checks": [{"key": "private_keys", "label": "Private keys", "status": "pass"}],
+            },
+            "professionalism_check": {"status": "unavailable"},
+        }}
+
     def review(self, draft_id, *, acknowledge, portal=False):
         self.calls.append(("review", draft_id, acknowledge, portal))
         return {
@@ -783,8 +793,87 @@ def test_blocked_install_plan_never_offers_quick_application():
         modes.actions[0].callback_data.removeprefix("wi:cmd:"), service, context
     )
 
-    assert plan.actions == []
+    assert not any(action.operation == "install_apply" for action in plan.actions)
     assert "full compatibility review" in str(plan.notice)
+
+
+@pytest.mark.parametrize("route", ["install", "update", "update_callback"])
+def test_plan_checks_preserve_exact_approval_and_navigation(route):
+    from plugins.platforms.slack.wisdom_blocks import render_wisdom_blocks
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    service = _Service()
+    service.version_detail = Mock(wraps=service.version_detail)
+    controller, context = WisdomCommandController(), _context()
+    kind = "install" if route == "install" else "update"
+    if route == "update":
+        view = controller.execute("update skill-1", service, context)
+    else:
+        entry = controller.execute("install skill-1@v2" if kind == "install" else "installed", service, context)
+        bind_view_callbacks(entry, context)
+        action = entry.actions[0] if kind == "install" else entry.items[0].actions[0]
+        view = controller.execute_token(action.callback_data.removeprefix("wi:cmd:"), service, context)
+
+    service.version_detail.assert_called_once_with("skill-1", 2, include_compatibility=False)
+    assert "✅ Security check" in view.summary
+    assert "No issues detected" in view.summary
+    assert "Unavailable" in view.summary  # Advisory absence is not a security pass.
+    assert "Private keys" not in view.summary
+    original_history = view._navigation_history
+    bind_view_callbacks(view, context)
+    original_receipt = next(a.arguments["receipt"] for a in view.actions if a.operation == f"{kind}_apply")
+    for expanded in (True, False):
+        toggle = next(a for a in view.actions if a.operation == "plan_checks")
+        assert toggle.label == ("Show checks" if expanded else "Hide checks")
+        token = toggle.callback_data.removeprefix("wi:cmd:")
+        with pytest.raises(PermissionError):
+            controller.execute_token(token, service, _context(user_id="other"))
+        view = controller.execute_token(token, service, context)
+        assert ("Private keys" in view.summary) is expanded
+        assert "✅ Pass" not in view.summary
+        assert view._navigation_history == original_history
+        bind_view_callbacks(view, context)
+        apply = next(a for a in view.actions if a.operation == f"{kind}_apply")
+        assert apply.arguments == {"receipt": original_receipt}
+        assert apply.callback_data in TelegramAdapter._wisdom_command_html(view)
+        assert apply.callback_data in str(render_wisdom_blocks(view))
+    assert service.version_detail.call_count == 1
+    assert len([c for c in service.calls if c[0] == f"{kind}_plan"]) == 1
+    assert not any(c[0].endswith("_apply") for c in service.calls)
+    if view.navigation_actions:
+        back = controller.execute_token(view.navigation_actions[0].callback_data.removeprefix("wi:cmd:"), service, context)
+        assert back.title == entry.title
+    controller.execute_token(apply.callback_data.removeprefix("wi:cmd:"), service, context)
+    assert service.calls[-1][0:2] == (f"{kind}_apply", original_receipt)
+
+
+@pytest.mark.parametrize("failure", ["blocked", "pending", "unavailable", "hash_changed", "offline"])
+def test_plan_confirmation_never_hides_failed_or_unverified_security(failure):
+    service = _Service()
+    original_plan = service.install_plan
+    service.install_plan = lambda *args, **kwargs: {**original_plan(*args, **kwargs), "content_hash": "sha256:planned"}
+    metadata = service.version_detail("skill-1", 2)["version"]
+    metadata["content_hash"] = "sha256:changed" if failure == "hash_changed" else "sha256:planned"
+    metadata["security_check"]["status"] = failure if failure in {"blocked", "pending", "unavailable"} else "pass"
+    service.version_detail = Mock(return_value={"version": metadata})
+    controller, context = WisdomCommandController(), _context()
+    modes = bind_view_callbacks(controller.execute("install skill-1@v2", service, context), context)
+    token = modes.actions[0].callback_data.removeprefix("wi:cmd:")
+    if failure == "offline":
+        service.version_detail.side_effect = TimeoutError("temporary")
+        with pytest.raises(TimeoutError):
+            controller.execute_token(token, service, context)
+        service.version_detail.side_effect = None
+        assert controller.execute_token(token, service, context).title == "Confirm install"
+    elif failure == "hash_changed":
+        with pytest.raises(command_module.WisdomConflict):
+            controller.execute_token(token, service, context)
+    else:
+        view = controller.execute_token(token, service, context)
+        assert failure.title() in view.summary
+        assert not any(a.operation == "install_apply" for a in view.actions)
+        assert "security review" in view.notice.lower()
+    assert not any(c[0] == "install_apply" for c in service.calls)
 
 
 def test_update_all_only_presents_eligible_updates():

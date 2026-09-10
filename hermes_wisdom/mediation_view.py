@@ -4,37 +4,9 @@ from __future__ import annotations
 
 from gateway.wisdom_command import WisdomAction, WisdomItem, WisdomView, _NavigationTarget
 from .consent import ConsentActor, WisdomConsent
-from .review_presentation import (
-    full_review_text,
-    professionalism_review_text,
-    review_check_line,
-    review_summary_text,
-)
+from .review_presentation import review_card_text
 
 _SETUP_COMMAND_LABEL = "Proposed command (local terminal)"
-
-
-def _review_summary(facts: dict, expanded: bool) -> str:
-    if expanded:
-        return full_review_text(
-            facts.get("security_check"), facts.get("professionalism_check"),
-            status_first=True,
-        )
-    lines = []
-    for key, label in (
-        ("security_check", "Security check"),
-        ("professionalism_check", "Professionalism (advisory)"),
-    ):
-        check = facts.get(key) or {}
-        if key == "professionalism_check":
-            lines.append(professionalism_review_text(check, status_first=True, include_checks=False))
-            continue
-        local = check.get("source") == "local_preflight"
-        status = check.get("local_status") if local else check.get("status")
-        lines.append(review_check_line(f"{label} (local preflight)" if local else label, status))
-        if check.get("summary"):
-            lines.append(review_summary_text(str(check["summary"])))
-    return "\n".join(lines)
 
 
 def _checks_action(identity: str, expanded: bool) -> WisdomAction:
@@ -155,7 +127,7 @@ def advice_view(
                     "\nAdditional permissions or requirements need separate approval."
                 )
             sharing = interaction["operation"] == "share"
-            detail += "\n\n" + _review_summary(facts, checks_expanded)
+            detail += "\n\n" + review_card_text(facts, checks_expanded)
             if not sharing:
                 detail += (
                     "\nNothing changes until you review and confirm."
@@ -395,7 +367,7 @@ def interaction_view(
                 detail = "Assessment before this operation:\n" + (
                     advice.get("explanation") or "No saved assessment is available."
                 )
-                detail += "\n\n" + _review_summary(result["facts"], checks_expanded)
+                detail += "\n\n" + review_card_text(result["facts"], checks_expanded)
                 actions.append(_checks_action(result["id"], checks_expanded))
         if outcome.get("portal_url"):
             actions.append(WisdomAction("View in Portal", url=outcome["portal_url"]))
@@ -494,7 +466,7 @@ def interaction_view(
         detail += "\nPackage files: " + ", ".join(facts["file_names"])
     actions = []
     if facts.get("security_check") or facts.get("professionalism_check"):
-        detail += "\n\n" + _review_summary(facts, checks_expanded)
+        detail += "\n\n" + review_card_text(facts, checks_expanded)
         actions.append(_checks_action(result["id"], checks_expanded))
     if (
         result["operation"] == "share"

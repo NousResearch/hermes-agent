@@ -168,6 +168,7 @@ function filenameExtToken(path: string | undefined): string {
 const SHIKI_LANGUAGE_BY_EXTENSION: Record<string, string> = {
   astro: 'astro',
   bash: 'bash',
+  bib: 'bibtex',
   c: 'c',
   cc: 'cpp',
   cjs: 'javascript',
@@ -223,8 +224,10 @@ const SHIKI_LANGUAGE_BY_EXTENSION: Record<string, string> = {
   scss: 'scss',
   sh: 'bash',
   sql: 'sql',
+  sty: 'latex',
   svelte: 'svelte',
   swift: 'swift',
+  tex: 'latex',
   tf: 'terraform',
   toml: 'toml',
   ts: 'typescript',

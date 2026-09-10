@@ -1540,7 +1540,7 @@ class TestOpenRouterCatalogDiskCache:
         payload = {"data": [{"id": "a/one", "supported_parameters": ["tools"],
                              "pricing": {"prompt": "0", "completion": "0"}}]}
 
-        def fake_index(url, timeout, opener):
+        def fake_index(url, timeout, opener, **kwargs):
             calls.append(url)
             return payload["data"], {m["id"]: m for m in payload["data"]}
 

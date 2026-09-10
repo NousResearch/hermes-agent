@@ -53,10 +53,8 @@ def apply_openrouter_picker_policy(rows: list[dict], *, max_models: int | None =
     if not matching:
         return
     free_only = openrouter_free_only()
-    if not free_only:
-        return
     matching = [row for row in matching if not (
-        row.get("catalog_authoritative") and row.get("free_only") is True)]
+        row.get("catalog_authoritative") and row.get("free_only") is free_only)]
     if not matching:
         return
     from hermes_cli.models import fetch_openrouter_models

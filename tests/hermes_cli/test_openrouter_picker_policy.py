@@ -1,6 +1,7 @@
 """Fixed catalog fixtures exercise profile policy through real picker assembly."""
 
 from types import SimpleNamespace
+from pathlib import Path
 import json
 import os
 import subprocess
@@ -41,7 +42,7 @@ def profile(tmp_path, monkeypatch):
     monkeypatch.setattr(models, "_seed_reasoning_caps", lambda *_a: None)
     monkeypatch.setattr("hermes_cli.model_catalog.get_curated_openrouter_models", lambda: CURATED)
     monkeypatch.setattr(models, "_fetch_live_catalog_index",
-                        lambda *_a: (LIVE, {row["id"]: row for row in LIVE}))
+                        lambda *_a, **_kw: (LIVE, {row["id"]: row for row in LIVE}))
     monkeypatch.setattr(config, "load_config", config.load_config_readonly)
     try:
         yield tmp_path
@@ -95,7 +96,7 @@ def test_policy_default_and_toggling_leave_raw_slug_resolution_unrestricted(prof
 
 def test_one_live_response_populates_separate_raw_and_free_choices(profile, monkeypatch):
     calls = []
-    def fetch(*_args):
+    def fetch(*_args, **_kwargs):
         calls.append(True)
         return LIVE, {row["id"]: row for row in LIVE}
     monkeypatch.setattr(models, "_fetch_live_catalog_index", fetch)
@@ -107,7 +108,7 @@ def test_one_live_response_populates_separate_raw_and_free_choices(profile, monk
 
 def test_unavailable_catalog_uses_exact_offline_annotations(profile, monkeypatch):
     _policy(profile, "true")
-    monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a: None)
+    monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a, **_kw: None)
     assert [mid for mid, _ in openrouter_picker_models()] == ["vendor/tag:free", "vendor/label"]
     assert [mid for mid, _ in models.fetch_openrouter_models()] == [mid for mid, _ in CURATED]
 
@@ -115,9 +116,9 @@ def test_unavailable_catalog_uses_exact_offline_annotations(profile, monkeypatch
 def test_authoritative_empty_replaces_warm_cache_and_survives_outage(profile, monkeypatch):
     _policy(profile, "true")
     assert openrouter_picker_models()
-    monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a: ([], {}))
+    monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a, **_kw: ([], {}))
     assert openrouter_picker_models(force_refresh=True) == []
-    monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a: None)
+    monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a, **_kw: None)
     assert openrouter_picker_models(force_refresh=True) == []
     assert openrouter_picker_models() == []
 
@@ -126,9 +127,9 @@ def test_no_eligible_live_rows_never_use_free_suffix_or_stale_generic_cache(prof
     _policy(profile, "true")
     paid = LIVE[:1] + LIVE[2:3] + LIVE[4:]
     monkeypatch.setattr(models, "_fetch_live_catalog_index",
-                        lambda *_a: (paid, {row["id"]: row for row in paid}))
+                        lambda *_a, **_kw: (paid, {row["id"]: row for row in paid}))
     assert openrouter_picker_models() == []
-    monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a: ([], {}))
+    monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a, **_kw: ([], {}))
     monkeypatch.setattr(models, "_load_provider_models_cache",
                         lambda: {"openrouter": {"models": ["vendor/paid"]}})
     rows = [_row()]
@@ -144,9 +145,32 @@ def test_catalog_json_preserves_tiny_positive_numeric_prices(profile, monkeypatc
     # Exercise real HTTP JSON decoding, not an already rounded Python price fixture.
     monkeypatch.setattr(models, "_urlopen_model_catalog_request", lambda *_a, **_kw: BytesIO(payload))
     raw, index = _fetch_live_catalog_index("https://catalog.invalid/models", 1,
-                                          models._urlopen_model_catalog_request)
+                                          models._urlopen_model_catalog_request, parse_float=str)
     assert index["vendor/zero"]["pricing"]["prompt"] == "1e-9999"
     assert explicitly_zero_priced(index["vendor/zero"]["pricing"]) is False
+
+
+def test_shared_catalog_float_types_and_real_openrouter_reasoning_seed(profile, monkeypatch):
+    from io import BytesIO
+    from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
+
+    payload = (b'{"data":[{"id":"vendor/zero","metadata_number":0.5,'
+               b'"pricing":{"prompt":1e-9999,"completion":0},'
+               b'"supported_parameters":["tools","reasoning"],'
+               b'"reasoning":{"mandatory":true,"supported_efforts":["low","high"]}}]}')
+    opener = lambda *_a, **_kw: BytesIO(payload)
+    _, index = _fetch_live_catalog_index("https://catalog.invalid/models", 1, opener)
+    # Other consumers, including AI Gateway, retain ordinary JSON numeric types.
+    assert type(index["vendor/zero"]["metadata_number"]) is float
+    monkeypatch.setattr(models, "_urlopen_model_catalog_request", opener)
+    monkeypatch.setattr(models, "_fetch_live_catalog_index", _fetch_live_catalog_index)
+    monkeypatch.setattr(models, "_seed_reasoning_caps", _seed_reasoning_caps)
+    monkeypatch.setattr(models, "_openrouter_reasoning_caps_cache", None)
+    assert models.fetch_openrouter_models(free_only=True) == []
+    expected = {"supports_reasoning": True, "supported_efforts": ["low", "high"], "mandatory": True}
+    assert models._openrouter_reasoning_caps_cache["vendor/zero"] == expected
+    stored = json.loads((profile / "cache" / "reasoning_caps.json").read_text())
+    assert stored[models._OPENROUTER_CATALOG_URL]["caps"]["vendor/zero"] == expected
 
 
 @pytest.mark.parametrize("body", [b'{}', b'[]', b'{"data":null}', b'{"data":{}}'])
@@ -165,7 +189,7 @@ def test_cache_is_scoped_to_profile_and_policy(profile, tmp_path, monkeypatch):
     _policy(second, "true")
     token = set_hermes_home_override(second)
     try:
-        monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a: ([], {}))
+        monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a, **_kw: ([], {}))
         assert openrouter_picker_models() == []
     finally:
         reset_hermes_home_override(token)
@@ -176,10 +200,11 @@ def _cold_catalog(profile, *, live_rows=None, force_refresh=False):
     """Read the real profile disk cache from a fresh interpreter with synthetic transport."""
     probe = r'''
 import json, sys
+sys.path.insert(0, sys.argv[2])
 from hermes_cli import models, model_catalog
 settings = json.loads(sys.argv[1])
 calls = []
-def fetch(*args):
+def fetch(*args, **kwargs):
     calls.append(True)
     rows = settings["live_rows"]
     return None if rows is None else (rows, {row["id"]: row for row in rows})
@@ -193,13 +218,21 @@ print(json.dumps({
     "calls": len(calls),
 }))
 '''
+    user = profile / "isolated-home"
+    temp = user / "temp"
+    temp.mkdir(parents=True, exist_ok=True)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+           "HOME": str(user), "HERMES_HOME": str(profile), "USERPROFILE": str(user),
+           "LOCALAPPDATA": str(user / "AppData/Local"), "APPDATA": str(user / "AppData/Roaming"),
+           "TEMP": str(temp), "TMP": str(temp), "TMPDIR": str(temp)}
+    if "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     result = subprocess.run(
         [sys.executable, "-I", "-B", "-c", probe, json.dumps({
             "live_rows": live_rows, "curated": CURATED, "force_refresh": force_refresh,
-        })],
+        }), str(Path(models.__file__).resolve().parent.parent)],
         cwd=profile,
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-             "HOME": str(profile / "isolated-home"), "HERMES_HOME": str(profile)},
+        env=env,
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr
@@ -231,7 +264,7 @@ def test_empty_free_disk_cache_survives_cold_process_and_refresh_outage(
     profile, monkeypatch, live_rows, force_refresh,
 ):
     monkeypatch.setattr(models, "_fetch_live_catalog_index",
-                        lambda *_a: (live_rows, {row["id"]: row for row in live_rows}))
+                        lambda *_a, **_kw: (live_rows, {row["id"]: row for row in live_rows}))
     assert models.fetch_openrouter_models(free_only=True) == []
     raw = models.fetch_openrouter_models()
 
@@ -259,6 +292,54 @@ def _isolate_provider_sources(monkeypatch):
     monkeypatch.setattr(inventory, "_moa_provider_row", lambda *_a: None)
 
 
+@pytest.mark.parametrize("configured_policy", [None, "false"])
+def test_default_picker_populates_openrouter_when_provider_cache_is_empty(
+    profile, monkeypatch, configured_policy,
+):
+    if configured_policy is not None:
+        _policy(profile, configured_policy)
+    build_builtin = model_switch_providers._lap_builtin_rows
+    _isolate_provider_sources(monkeypatch)
+    monkeypatch.setattr(model_switch_providers, "_lap_builtin_rows", build_builtin)
+    monkeypatch.setattr(model_switch_providers, "_iter_builtin_candidates", lambda *_a: [
+        ("openrouter", "openrouter", SimpleNamespace(name="OpenRouter"), ()),
+    ])
+    monkeypatch.setattr(model_switch_providers, "_any_env", lambda *_a: True)
+    monkeypatch.setattr("agent.models_dev.get_provider_info", lambda *_a: None)
+    monkeypatch.setattr(models, "cached_provider_model_ids", lambda *_a: [])
+
+    rows = model_switch_providers.list_picker_providers(current_provider="openrouter")
+    assert len(rows) == 1
+    assert rows[0]["slug"] == "openrouter"
+    assert rows[0]["models"] == [mid for mid, _ in CURATED]
+    assert rows[0]["catalog_authoritative"] is True
+    assert rows[0]["free_only"] is False
+
+
+@pytest.mark.parametrize("initial_policy", [False, True])
+def test_finalized_rows_follow_changed_policy_and_skip_matching_policy(
+    profile, monkeypatch, initial_policy,
+):
+    from hermes_cli.models_openrouter_policy import apply_openrouter_picker_policy
+
+    fetch = models.fetch_openrouter_models
+    calls = []
+    def record_fetch(**kwargs):
+        calls.append(kwargs["free_only"])
+        return fetch(**kwargs)
+    monkeypatch.setattr(models, "fetch_openrouter_models", record_fetch)
+    rows = [_row()]
+    for policy in (initial_policy, not initial_policy):
+        _policy(profile, str(policy).lower())
+        apply_openrouter_picker_policy(rows)
+        expected = ["vendor/zero", "vendor/label"] if policy else [mid for mid, _ in CURATED]
+        assert rows[0]["models"] == expected
+        assert rows[0]["catalog_authoritative"] is True
+        assert rows[0]["free_only"] is policy
+        apply_openrouter_picker_policy(rows)
+    assert calls == [initial_policy, not initial_policy]
+
+
 def test_shared_gateway_cli_inventory_and_options_keep_active_paid_model(profile, monkeypatch):
     _policy(profile, "true")
     _isolate_provider_sources(monkeypatch)
@@ -279,14 +360,20 @@ def test_shared_gateway_cli_inventory_and_options_keep_active_paid_model(profile
     assert payload["provider"] == options["provider"] == "openrouter"
 
 
-def test_inventory_filters_late_unconfigured_current_row(profile, monkeypatch):
-    _policy(profile, "true")
+@pytest.mark.parametrize("free_only", [False, True])
+def test_inventory_filters_late_unconfigured_current_row(profile, monkeypatch, free_only):
+    _policy(profile, str(free_only).lower())
     _isolate_provider_sources(monkeypatch)
-    monkeypatch.setattr(model_switch_providers, "_lap_builtin_rows", lambda *_a: None)
+    proxy = {"slug": "custom:proxy", "is_user_defined": True, "is_current": False,
+             "models": ["vendor/zero"], "total_models": 1}
+    monkeypatch.setattr(model_switch_providers, "_lap_builtin_rows", lambda b, *_a: b.results.append(proxy))
     monkeypatch.setattr(inventory, "_append_unconfigured_rows", lambda *_a, **_kw: [_row()])
     ctx = inventory.ConfigContext("openrouter", "vendor/paid", "", {}, [])
     payload = inventory.build_models_payload(ctx, include_unconfigured=True)
-    assert payload["providers"][0]["models"] == ["vendor/zero", "vendor/label"]
+    row = next(row for row in payload["providers"] if row["slug"] == "openrouter")
+    expected = ["vendor/label"] if free_only else [mid for mid, _ in CURATED if mid != "vendor/zero"]
+    assert row["models"] == expected
+    assert proxy["models"] == ["vendor/zero"]
     assert payload["model"] == "vendor/paid"
 
 

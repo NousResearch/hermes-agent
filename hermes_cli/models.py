@@ -504,14 +504,14 @@ def clamp_reasoning_effort_to_supported(
     return _clamp_effort(effort, supported_efforts)
 
 
-def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tuple[list, dict[str, dict[str, Any]]]]:
+def _fetch_live_catalog_index(
+    url: str, timeout: float, opener, *, parse_float=float,
+) -> Optional[tuple[list, dict[str, dict[str, Any]]]]:
     """GET an OpenAI-style ``/models`` listing → ``(raw data array, {id: item})``, or None when the
     endpoint is unreachable or the payload has no ``data`` list."""
     try:
-        # Keep decimal catalog prices exact: a positive JSON number like 1e-9999 must not
-        # underflow to a free price before the policy inspects it.
         payload = _get_json(url, timeout=timeout, headers={"Accept": "application/json"},
-                            opener=opener, parse_float=str)
+                            opener=opener, parse_float=parse_float)
     except Exception:
         return None
     live_items = payload.get("data") if isinstance(payload, dict) else None
@@ -554,7 +554,9 @@ def fetch_openrouter_models(
     except Exception:
         remote = None
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
-    live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
+    # Preserve tiny nonzero OpenRouter prices without changing other catalogs' numeric types.
+    live = _fetch_live_catalog_index(
+        _OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request, parse_float=str)
     if live is None:
         if cached is not None:
             return list(cached)

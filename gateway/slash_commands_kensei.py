@@ -16,6 +16,7 @@ All other fork slash handlers are covered by upstream's decomposed mixins
 
 from __future__ import annotations
 
+import asyncio  # KENSEI: async_session_store awaits in slash handlers
 from typing import Union
 
 class GatewayKenseiSlashMixin:

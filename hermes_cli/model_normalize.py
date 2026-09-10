@@ -105,12 +105,13 @@ _DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
 
 def _normalize_for_deepseek(model_name: str) -> str:
     """Map a model input to a DeepSeek-accepted id: canonicals and ``deepseek-v<digit>…`` pass
-    through (dated variants and future V-series work without a release); retired aliases and
-    everything else become ``deepseek-flash``."""
+    through (dated variants and future V-series work without a release); retired aliases and other
+    ``deepseek-*`` spellings become ``deepseek-flash``. Names outside the family pass through
+    untouched so the validator can reject them instead of silently running Flash."""
     bare = _strip_vendor_prefix(model_name).lower()
     if bare in _DEEPSEEK_CANONICAL_MODELS or _DEEPSEEK_V_SERIES_RE.match(bare):
         return bare
-    return "deepseek-flash"
+    return "deepseek-flash" if bare.startswith("deepseek") else bare
 
 
 def _strip_vendor_prefix(model_name: str) -> str:

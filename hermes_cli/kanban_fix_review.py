@@ -251,6 +251,11 @@ def run_fix_review_slash(text: str) -> dict[str, Any]:
                 **{**base, "task_status": current.status if current else None}, **route_fields,
                 dispatch_status="routing_failed", message=f"correction dispatch failed: {exc}",
             )
+        if dispatch.paused:
+            return _result(
+                **{**base, "task_status": task.status},
+                dispatch_status="paused", message="correction dispatch paused by ESTOP",
+            )
         after = kb.get_task(conn, task_id)
         status = "started" if dispatch.spawned else ("already_active" if dispatch.skipped_locked else "not_dispatched")
         return _result(

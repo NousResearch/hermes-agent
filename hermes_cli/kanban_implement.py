@@ -260,6 +260,12 @@ def run_implement_slash(text: str) -> dict[str, Any]:
                 human_gate_required=human_gate_required, independence_valid=route.independence_valid,
                 dispatch_status="routing_failed", message=f"implementation dispatch failed: {exc}",
             )
+        if dispatch.paused:
+            return _result(
+                task_id=task_id, board=board, task_status=task.status,
+                dispatch_status="paused",
+                message="implementation dispatch paused by ESTOP",
+            )
         task_after = kb.get_task(conn, task_id)
         status = "started" if dispatch.spawned else "not_dispatched"
         if dispatch.skipped_locked:

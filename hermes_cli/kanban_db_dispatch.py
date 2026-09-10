@@ -25,6 +25,8 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from agent import estop
+
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
@@ -139,6 +141,10 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    paused: bool = False
+    """True when ESTOP prevented this tick from starting or mutating work."""
+    pause_reason: Optional[str] = None
+    """Authoritative ESTOP reason, when available."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1263,7 +1269,7 @@ def recovery_requirement_for_task(
     requeued = conn.execute(
         "SELECT 1 FROM task_events "
         "WHERE task_id = ? AND id > ? "
-        "AND kind IN ('status', 'promoted', 'unblocked', 'requeued', 'recovered') "
+        "AND kind IN ('status', 'promoted', 'promoted_manual', 'unblocked', 'requeued', 'recovered') "
         "LIMIT 1",
         (task_id, failure_event_id),
     ).fetchone()
@@ -1500,6 +1506,10 @@ def dispatch_once(
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
     """
+    if dispatch_paused():
+        state = estop.get_state() or {}
+        return DispatchResult(paused=True, pause_reason=state.get("reason"))
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,
@@ -1537,6 +1547,11 @@ def dispatch_once(
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
     return result
+
+
+def dispatch_paused() -> bool:
+    """Return whether the authoritative ESTOP blocks a new Kanban dispatch."""
+    return estop.check_paused("kanban", _kb._log)
 
 
 def _call_spawn_fn(

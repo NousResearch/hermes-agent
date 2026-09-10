@@ -200,6 +200,47 @@ def test_requeued_failure_is_not_permanently_recovery_required(kanban_home):
         assert kbd.recovery_requirement_for_task(conn, task_id) is None
 
 
+def test_manual_force_promotion_clears_prior_failure_recovery(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="manually recovered", assignee="a")
+        kb.claim_task(conn, task_id, claimer="test:manual-promote")
+        run_id = kb.get_task(conn, task_id).current_run_id
+        now = int(__import__("time").time())
+        conn.execute(
+            "UPDATE task_runs SET status='gave_up', outcome='gave_up', ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='blocked', current_run_id=NULL, last_failure_error=? WHERE id=?",
+            ("old failure", task_id),
+        )
+        conn.commit()
+        ok, error = kb.promote_task(conn, task_id, actor="operator", force=True)
+        assert (ok, error) == (True, None)
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? AND kind='promoted_manual'", (task_id,)
+        ).fetchone() is not None
+        assert kbd.recovery_requirement_for_task(conn, task_id) is None
+
+
+def test_historical_status_cannot_clear_newer_failure(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="new failure", assignee="a")
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, "status", {"status": "ready"})
+        kb.claim_task(conn, task_id, claimer="test:new-failure")
+        run_id = kb.get_task(conn, task_id).current_run_id
+        now = int(__import__("time").time())
+        conn.execute(
+            "UPDATE task_runs SET status='crashed', outcome='crashed', ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute("UPDATE tasks SET status='ready', current_run_id=NULL WHERE id=?", (task_id,))
+        conn.commit()
+        assert kbd.recovery_requirement_for_task(conn, task_id) == "crashed"
+
+
 def test_changes_requested_delegates_to_fix_review(monkeypatch, task):
     seen = []
     _wire(monkeypatch, task, lambda _text: {"command": "implement", "dispatch_status": "started", "task_id": task.id})

@@ -242,6 +242,8 @@ def run_review_slash(text: str) -> dict[str, Any]:
         if route is None:
             return _result(**base, dispatch_status="routing_failed", message="authoritative implementation provenance is required for independent review")
         if task.status == "ready":
+            if kbd.dispatch_paused():
+                return _result(**base, dispatch_status="paused", message="review dispatch paused by ESTOP")
             ok, reason = kb.request_review(
                 conn, task.id, summary="canonical /review handoff", reviewer=route["reviewer_profile"], with_reason=True,
             )
@@ -279,6 +281,8 @@ def run_review_slash(text: str) -> dict[str, Any]:
                            review_status=current.status if current and current.status == "review" else None,
                            **route, human_gate_required=human_gate_required, dispatch_status="routing_failed",
                            message=f"review dispatch failed: {exc}")
+        if dispatch.paused:
+            return _result(**base, dispatch_status="paused", message="review dispatch paused by ESTOP")
         after = kb.get_task(conn, task_id)
         status = "started" if dispatch.spawned else ("already_active" if dispatch.skipped_locked else "not_dispatched")
         return _result(task_id=task_id, board=board, task_status=after.status if after else None,

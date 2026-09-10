@@ -1488,3 +1488,64 @@ class TestFlushPendingSync:
         consumer.finish()
         await task
 
+
+
+
+
+class TestOnDeltaSurrogateSanitize:
+    """Stream deltas are surrogate-sanitized at the consumer entry point.
+
+    Regression for the streaming half of the lone-surrogate bug: with
+    streaming enabled, raw deltas used to reach the consumer unchanged and
+    Telegram's strict UTF-16 length/edit paths raised UnicodeEncodeError
+    before the final-response boundary sanitizer ever ran.
+    """
+
+    def _consumer(self):
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        config = StreamConsumerConfig(cursor=" ▉")
+        return GatewayStreamConsumer(adapter, "chat_123", config)
+
+    def test_lone_surrogate_delta_is_sanitized_before_queueing(self):
+        consumer = self._consumer()
+        consumer.on_delta("half emoji \ud83d and more")
+        queued = consumer._queue.get_nowait()
+        assert "\ud83d" not in queued
+        # The Telegram-facing content is UTF-16 encodable.
+        queued.encode("utf-16-le")
+        assert "half emoji" in queued and "and more" in queued
+
+    def test_clean_delta_passes_through_unchanged(self):
+        consumer = self._consumer()
+        consumer.on_delta("plain text 🚀 with a real emoji")
+        assert consumer._queue.get_nowait() == "plain text 🚀 with a real emoji"
+
+    @pytest.mark.asyncio
+    async def test_streamed_surrogate_reaches_the_adapter_encodable(self):
+        """End to end through run(): every payload the adapter receives on the
+        streaming edit path survives the strict UTF-16 encode Telegram does."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" \u2589")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("half emoji \ud83d and more")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta(" plus a tail \udc00 here")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        sent = [call.kwargs["content"] for call in adapter.send.call_args_list]
+        edited = [call.kwargs["content"] for call in adapter.edit_message.call_args_list]
+        assert sent, "nothing reached the adapter"
+        assert edited, "the streaming edit path was never taken"
+        for text in sent + edited:
+            text.encode("utf-16-le")  # raises UnicodeEncodeError on a lone surrogate
+            assert "\ud83d" not in text and "\udc00" not in text

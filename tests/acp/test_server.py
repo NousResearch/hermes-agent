@@ -58,10 +58,13 @@ def agent(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+async def test_new_session_exposes_modes_and_config_options(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    assert resp.config_options is not None
+    option_ids = [opt.id for opt in resp.config_options]
+    assert "mode" in option_ids
+    assert "model" in option_ids
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
@@ -72,7 +75,24 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
 
 
 @pytest.mark.asyncio
-async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
+async def test_set_config_option_model_switches_session_model(agent):
+    resp = await agent.new_session(cwd="/tmp")
+    with patch.object(agent, "_switch_model", return_value=(None, "openrouter", "deepseek/deepseek-chat")) as switch_mock:
+        update = await agent.set_config_option(
+            "model",
+            resp.session_id,
+            "openrouter:deepseek/deepseek-chat",
+        )
+        assert isinstance(update, SetSessionConfigOptionResponse)
+        switch_mock.assert_called_once_with(
+            agent.session_manager.get_session(resp.session_id),
+            "openrouter:deepseek/deepseek-chat",
+            keep_endpoint=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_persists_edit_approval_policy_and_reflects_mode(agent):
     resp = await agent.new_session(cwd="/tmp")
     update = await agent.set_config_option(
         "edit_approval_policy",
@@ -82,7 +102,8 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
+    mode_opt = next(opt for opt in update.config_options if opt.id == "mode")
+    assert mode_opt.current_value == "accept_edits"
     assert getattr(state, "mode", None) == "accept_edits"
 
 
@@ -390,7 +411,8 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result["configOptions"] == []
+        assert isinstance(config_result["configOptions"], list)
+        assert len(config_result["configOptions"]) >= 1
 
 
 

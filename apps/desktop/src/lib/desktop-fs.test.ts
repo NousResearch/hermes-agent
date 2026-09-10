@@ -13,7 +13,8 @@ import {
   readDesktopFileDataUrlLocalFirst,
   readDesktopFileText,
   selectDesktopPaths,
-  setDesktopFsRemotePicker
+  setDesktopFsRemotePicker,
+  writeDesktopFileText
 } from './desktop-fs'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
@@ -33,6 +34,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path.startsWith('/api/fs/read-data-url?')) {
     return { dataUrl: 'data:text/plain;base64,cmVtb3Rl' }
+  }
+
+  if (path === '/api/fs/write-text') {
+    return { ok: true }
   }
 
   if (path.startsWith('/api/fs/git-root?')) {
@@ -275,6 +280,41 @@ describe('desktop filesystem facade', () => {
 
     expect(otherOwner).not.toBe(first)
     expect(desktopFsCacheKey()).not.toBe(first)
+  })
+
+  // The preview editor's write path. Local saves go through the hardened
+  // Electron bridge; remote saves POST the same content to the backend with
+  // the ACTIVE PROFILE attached, so a remote edit can never land on the wrong
+  // backend. A bridge without writeTextFile refuses rather than pretending.
+  it('writes text through the Electron bridge in local mode', async () => {
+    $connection.set({ mode: 'local', profile: 'team-local' } as never)
+    const writeTextFile = vi.fn(async () => ({ path: '/local/notes.md' }))
+
+    vi.stubGlobal('window', { hermesDesktop: { ...window.hermesDesktop, writeTextFile } })
+
+    await expect(writeDesktopFileText('/local/notes.md', 'body')).resolves.toEqual({ path: '/local/notes.md' })
+    expect(writeTextFile).toHaveBeenCalledWith('/local/notes.md', 'body')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('POSTs remote writes to /api/fs/write-text with the active profile', async () => {
+    $connection.set({ mode: 'remote', profile: 'srv-2' } as never)
+
+    await expect(writeDesktopFileText('/remote/notes.md', 'body')).resolves.toEqual({ path: '/remote/notes.md' })
+
+    expect(api).toHaveBeenCalledWith({
+      body: { content: 'body', path: '/remote/notes.md' },
+      method: 'POST',
+      path: '/api/fs/write-text',
+      profile: 'srv-2'
+    })
+  })
+
+  it('refuses local writes when the running Electron build lacks writeTextFile', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(writeDesktopFileText('/local/notes.md', 'body')).rejects.toThrow('Saving is not available')
+    expect(api).not.toHaveBeenCalled()
   })
 
   it('routes file diffs through backend git in remote mode', async () => {

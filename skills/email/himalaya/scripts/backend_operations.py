@@ -96,20 +96,28 @@ def verify_target(listing_path, name, account, backend, directory, cwd, executab
     if not directory.is_absolute():
         raise ValueError('Use an absolute evidence directory')
     directory.mkdir(mode=0o700)
-    run_recorded([executable, '--version'], cwd, directory/'version')
-    invocation, result, stdout = load_capture(directory/'version')
-    version = stdout.decode('utf-8').strip()
-    if result['status'] != 'completed' or result['returncode'] != 0 or not supported_version(version):
-        raise ValueError('Unsupported or failed CLI version check')
-    runtime = {'executable': invocation['argv'][0], 'cwd': invocation['cwd'],
-               'cli_version': version, 'config': config}
-    args = target_get_argv(runtime, account, backend, selected['id'])
-    run_recorded(args, runtime['cwd'], directory/'get')
-    evidence = target_from_capture(runtime, account, backend, selected, directory/'get')
-    evidence['listing_source'] = {'path': str(Path(listing_path).resolve()), 'sha256': digest(listing_bytes)}
-    evidence['sha256'] = json_digest({k: v for k, v in evidence.items() if k != 'sha256'})
-    save_new(directory/'target.json', evidence)
-    return directory/'target.json'
+    save_new(directory/'request.json', {'executable': executable, 'cwd': str(cwd),
+                                      'account': account, 'backend': backend, 'name': name})
+    try:
+        run_recorded([executable, '--version'], cwd, directory/'version')
+        invocation, result, stdout = load_capture(directory/'version')
+        version = stdout.decode('utf-8').strip()
+        if result['status'] != 'completed' or result['returncode'] != 0 or not supported_version(version):
+            raise ValueError('Unsupported or failed CLI version check')
+        runtime = {'executable': invocation['argv'][0], 'cwd': invocation['cwd'],
+                   'cli_version': version, 'config': config}
+        args = target_get_argv(runtime, account, backend, selected['id'])
+        run_recorded(args, runtime['cwd'], directory/'get')
+        evidence = target_from_capture(runtime, account, backend, selected, directory/'get')
+        evidence['listing_source'] = {'path': str(Path(listing_path).resolve()), 'sha256': digest(listing_bytes)}
+        evidence['sha256'] = json_digest({k: v for k, v in evidence.items() if k != 'sha256'})
+        save_new(directory/'target.json', evidence)
+        return directory/'target.json'
+    except Exception as exc:
+        save_new(directory/'failure.json', {'error_type': type(exc).__name__,
+                                           'note': 'Preserve this directory; use a new attempt directory'})
+        raise
+
 
 
 def graph_move_argv(runtime, account, source_id, destination_id):
@@ -146,6 +154,12 @@ def validate_graph_plan(plan, record, check_files=False):
     if not _selected_list_evidence_matches(snapshot, metadata, record['account']):
         raise ValueError('Source needs fresh scanner metadata evidence')
     if check_files:
+        if plan.get('action') == 'cleanup':
+            try:
+                from .review_support import validate_binding
+            except ImportError:
+                from review_support import validate_binding
+            validate_binding(plan.get('review'), record['account'], 'msgraph', plan['source_id'])
         raw = Path(source['path']).read_bytes()
         if digest(raw) != source.get('sha256'):
             raise ValueError('Source preflight file changed')

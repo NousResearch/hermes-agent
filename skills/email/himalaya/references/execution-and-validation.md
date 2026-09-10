@@ -4,7 +4,7 @@ Read for long scans, automation, troubleshooting, stop handling, installation ve
 
 ## Verify the loaded pack
 
-After installing or replacing the pack in the target host, start a fresh skill load if the host caches instructions. Inspect the actual loaded `SKILL.md` and linked references. For this pack, the body marker and `metadata.version` must both be **2.3.0**. An archive filename, a previous assistant's claim, or `himalaya --version` does not identify the loaded skill revision.
+After installing or replacing the pack in the target host, start a fresh skill load if the host caches instructions. Inspect the actual loaded `SKILL.md` and linked references. For this pack, the body marker and `metadata.version` must both be **2.4.0**. An archive filename, a previous assistant's claim, or `himalaya --version` does not identify the loaded skill revision.
 
 Record a short task note: loaded pack path/version; CLI version and enabled features; chosen account/backend; exact help inspected. Report a mismatch rather than claiming the new revision is active. Do not automatically install, upgrade or change account configuration to make the versions match. The external executable and the skill pack have independent versions.
 
@@ -54,8 +54,19 @@ python3 scripts/scan_support.py windows --start 2024-02-01 --end 2024-03-01 --ti
 
 For Graph/Windows behavior, use [msgraph-workflows.md](msgraph-workflows.md); for removal gates and move/rescue journals, use [cleanup-review.md](cleanup-review.md). The full suite also exercises process argument preservation, bounded timeouts, Graph date partitioning, MIME decoding, protected content, unknown outcomes, exclusive locks and journal reconciliation.
 
-Pack 2.3.0 includes **84 offline tests**, including CLI-shaped omitted-category records, verified Graph/Gmail targets, extra-character destination errors, captured actual arguments/status, new-plan validation, legacy history, and blocked retries. Tests for process recording execute local Python subprocesses; Graph/Gmail backend responses are synthetic. Run discovery from the directory containing both SKILL.md and tests; a wrong working directory is not evidence that tests are missing. The tests folder is bundled for validation, not needed to execute the skill's mailbox commands. Distribute it with releases; exclude generated `__pycache__`/`.pyc` files. A `cpython-314` cache tag is normal on Python 3.14.x.
+Pack 2.4.0 includes **121 offline tests**, including CLI-shaped omitted-category records, verified Graph/Gmail targets, extra-character destination errors, captured actual arguments/status, new-plan validation, legacy history, and blocked retries. Tests for process recording execute local Python subprocesses; Graph/Gmail backend responses are synthetic. Run discovery from the directory containing both SKILL.md and tests; a wrong working directory is not evidence that tests are missing. The tests folder is bundled for validation, not needed to execute the skill's mailbox commands. Distribute it with releases; exclude generated `__pycache__`/`.pyc` files. A `cpython-314` cache tag is normal on Python 3.14.x.
 
 Fixtures are synthetic Himalaya-shaped pages. Tests cover cursor exhaustion, duplicate IDs, empty/short pages with tokens, page limits, errors, schema drift, repeated cursors, stop during a request, scope-preserving argv, leap years, year rollover and half-open date filtering. Helpers make no mailbox calls and do not classify or send messages.
 
 When updating versions, recheck release source/local help for the changed command schemas and behavior. Validate frontmatter and relative links; ensure every previous capability family is retained unless an explicit migration removes it. Do not reuse an earlier test count as evidence for the current revision. Live backend claims require a separately authorized integration environment and recorded results.
+
+
+## Pack 2.4.0 diagnostic discipline
+
+Preserve the exact failed capture and allocate a new attempt directory. Initialization failures retain request/failure records where possible. A directory existing later does not prove its original contents survived. Do not manufacture prior evidence or report a recreated capture as original.
+
+Use schema-aware ID extraction and assert set relationships; dictionary keys are not wrapper records. Generate stage counts from current validated records. Keep an explicit authoritative decision revision; historical ID lists are not executable after superseding review. A hash proves byte consistency, not freshness, authenticity or semantic understanding.
+
+Shared-read decoding lives in `review_support.py`; it respects designated body and attachment indices, preserves plain text, and exposes all selected text/HTML alternatives as complete chunks. Encoding warnings or unsupported shapes block removal. For chunk display, check both begin/end markers and the declared character count; tool-output truncation requires continuation, not a completed-review claim.
+
+Tests are shipped with synthetic data and are useful for maintainers/acceptance checks. Normal skill activation does not run them or require loading their source. The suite validates mechanical safeguards; separately test an agent on mixed-purpose mail and protected content beyond the first excerpt. No live email or diagnostic bundle belongs in a public fixture.

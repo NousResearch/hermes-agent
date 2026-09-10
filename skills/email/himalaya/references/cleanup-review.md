@@ -103,3 +103,8 @@ Himalaya does not provide a browser or preference-form validator. When a require
 ## Companion cleanup skill
 
 If `email-bulk-cleanup` is present, have it route transport-specific tasks to this pack's Graph reference, run the candidate gate, emit the canonical journal events, and derive reports from those events. It should not teach unsupported shared Graph search or offset arithmetic. These are integration requirements for its maintainer: that separate skill was not supplied or modified in this revision. This pack's safeguards are usable independently and do not assume the companion exists.
+
+
+## Shared full-body evidence in pack 2.4.0
+
+Read [review-workflow.md](review-workflow.md) for the common evidence contract before cleanup removal on any backend. The Graph gate still validates Graph protections; a passing historical `body_reviewed` boolean alone does not satisfy the new planner/executor. `graph_move.py plan` requires `--review` and `--assessment` for cleanup, and validates them again before execution. The Gmail adapter uses the same proof with Gmail labels. Successful decoding, keyword hits, or a sample from a sender do not establish full per-message review.

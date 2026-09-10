@@ -12,7 +12,8 @@ from backend_operations import (target_get_argv, target_from_capture, validate_t
                                 graph_move_argv, validate_graph_plan)
 from cleanup_records import append_event, replay, decision_gate
 from graph_scan import collect, Scope, timestamp
-from graph_move import prepare_plan, execute_plan
+from graph_move import prepare_plan, execute_plan, cancel_plan
+from support24 import review_fixture
 
 
 def write_capture(directory, argv, cwd, payload, code=0, before_launch=lambda *_: None):
@@ -110,6 +111,7 @@ class VerifiedTargetPlanTests(unittest.TestCase):
         self.preflight = self.root/'preflight.json'
         save_new(self.preflight, scan)
         self.journal = self.root/'journal.json'
+        self.review_path, self.assessment_path = review_fixture(self.root, self.msg, 'msgraph')
         self.assessment = dict(content_kinds=['promotion'], fraud_status='not_suspected', body_reviewed=True,
                                protection_fields_verified=True, content_only_removable=True,
                                remove_authorized=True, reason='Synthetic reviewed sale')
@@ -120,7 +122,8 @@ class VerifiedTargetPlanTests(unittest.TestCase):
                                        metadata_evidence=scan['metadata_evidence'][self.msg['id']]))
 
     def plan(self):
-        return prepare_plan(self.journal, 'record', self.target_path, self.preflight, 'op', True)
+        return prepare_plan(self.journal, 'record', self.target_path, self.preflight, 'op', True,
+                            review_path=self.review_path, assessment_path=self.assessment_path)
 
     def test_plan_loads_ids_from_verified_records(self):
         plan = self.plan()
@@ -129,6 +132,17 @@ class VerifiedTargetPlanTests(unittest.TestCase):
         records, ops = replay(json.loads(self.journal.read_bytes()))
         self.assertEqual(ops['op']['plan_schema'], 2)
         self.assertEqual(validate_graph_plan(plan, records['record'], True), plan['argv'])
+
+    def test_cancel_unsubmitted_graph_plan_retains_history(self):
+        self.plan()
+        cancel_plan(self.journal, 'op', 'New review required')
+        records, ops = replay(json.loads(self.journal.read_bytes()))
+        self.assertEqual(ops['op']['state'], 'cancelled')
+        self.assertIsNone(records['record']['pending_operation'])
+
+    def test_missing_review_blocks_new_graph_plan(self):
+        with self.assertRaises(ValueError):
+            prepare_plan(self.journal, 'record', self.target_path, self.preflight, 'op', True)
 
     def test_extra_character_in_plan_id_or_argv_is_rejected(self):
         plan = self.plan()

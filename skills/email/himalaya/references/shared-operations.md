@@ -21,11 +21,16 @@ An absent Graph category vector has a narrowly scoped interpretation in [msgraph
 | --- | --- |
 | `operation_support.py` | Backend-neutral exact record selection, hashing, and one-attempt process recording. It does not classify mail, grant authorization or interpret provider outcomes. |
 | `backend_operations.py` | Verified target retrieval for **Graph folders and Gmail labels**, with separate command/response adapters, pinned to CLI 2.1.0. |
+| `review_support.py` | Backend-neutral shared-read JSON decoding, complete chunks and review evidence binding. |
+| `gmail_scan.py` / `gmail_cleanup.py` | Gmail durable cursor scans and individual verified label changes. |
+| `task_support.py` | Atomic local state, unique captures and live-process locking. |
 | `graph_move.py` | Graph-specific verified plan preparation and explicit single-attempt execution, integrated with the Graph journal. |
 | `cleanup_records.py` | **Graph-specific** content/protection gate and move/rescue journal; retains the filename for compatibility. Explicit non-Graph backend inputs are rejected. |
 | `graph_scan.py` / `scan_support.py` | Separate Graph date-partition and Gmail cursor/date helpers. |
 
-There is no bundled Gmail cleanup decision adapter or journal-integrated Gmail mutation executor yet. Use the shared safeguards and [gmail-workflows.md](gmail-workflows.md) for authorized Gmail work; do not pass Gmail messages to the Graph cleanup gate or claim equivalent end-to-end coverage. The shared process recorder is usable by any backend orchestrator, but that caller remains responsible for provider-specific authorization, planning and reconciliation. Other backends retain their documented CLI workflows; no unsupported adapter is guessed.
+Gmail cleanup now has a separate adapter in `gmail_cleanup.py`; it uses the same review proof, target verifier and process recorder as Graph. Use [review-workflow.md](review-workflow.md) before either cleanup planner. Other backends retain documented CLI workflows with the same evidence requirements; do not claim an integrated mutation adapter exists for them.
+
+`task_support.py` supplies atomic state replacement, unique attempt names and an OS lock held by the coordinating process. The lock file persists; do not unlink it. A standalone helper that records its PID and exits cannot establish ownership of a continuing cleanup. Keep the task's stopped state separately and resume only under existing applicable user instructions. All cooperating Gmail cleanup callers must share one account journal/lock; the lock cannot coordinate unrelated clients or human mailbox activity.
 
 ## Preserve target identity from selection to execution
 
@@ -62,12 +67,13 @@ Once existing authorization covers this concrete move and the journal decision i
 ```bash
 python3 scripts/graph_move.py plan --journal "$JOURNAL_JSON" --record "$RECORD_ID" \
   --target "$TARGET_JSON" --preflight "$PREFLIGHT_SCAN_JSON" \
-  --operation "$NEW_OPERATION_ID" --authorized
+  --operation "$NEW_OPERATION_ID" --authorized \
+  --review "$REVIEW_JSON" --assessment "$ASSESSMENT_JSON"
 ```
 
 `RECORD_ID` and `NEW_OPERATION_ID` are local logical identifiers, not provider IDs. For an authorized rescue use `--action rescue` after correcting the decision. If approval is still needed, present the candidate, target and verification plan first; do not assert authorization merely to create a plan. Reuse existing authorization when it already covers the concrete operation.
 
-The planner supplies source/destination IDs and argv programmatically. New plans require schema 2, matching successful target evidence, matching source snapshot and captured preflight files. Editing either the destination or the planned argv by one character is rejected. The exact plan is retained in the journal for review.
+The planner supplies source/destination IDs and argv programmatically. New cleanup plans require the shared review proof in addition to schema 2, matching successful target evidence, matching source snapshot and captured preflight files. Editing either the destination or the planned argv by one character is rejected. The exact plan is retained in the journal for review.
 
 Execute that already authorized operation once:
 
@@ -81,7 +87,7 @@ python3 scripts/graph_move.py execute --journal "$JOURNAL_JSON" \
 
 ## Existing journals
 
-Historical schema-1 plans and their outcomes remain replayable and can be reconciled. New legacy plans or new submissions of an old plan are rejected. Do not rewrite history or add synthetic target evidence to old events. Resolve any pending old operation first, then create a new schema-2 plan with fresh evidence and existing applicable authorization. A new plan format is not itself a reason to repeat an already completed move.
+Historical schema-1 and schema-2 plans/outcomes remain replayable. Cleanup execution now requires the shared review binding; a historical plan without it is not newly executable. Preserve history and reconcile/cancel an unsubmitted proposal as appropriate before a newly reviewed plan; never edit a historical plan to add proof. Rescue retains its existing authorization and correction checks. New legacy plans or new submissions of an old plan are rejected. Do not rewrite history or add synthetic target evidence to old events. Resolve any pending old operation first, then create a new schema-2 plan with fresh evidence and existing applicable authorization. A new plan format is not itself a reason to repeat an already completed move.
 
 ## Focused diagnostics and public reports
 

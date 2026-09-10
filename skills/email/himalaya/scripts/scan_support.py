@@ -33,9 +33,11 @@ class ScanScope:
             raise ValueError("query must be a string")
 
 
-def list_argv(scope, token=None):
+def list_argv(scope, token=None, executable="himalaya"):
     """Construct only native read-only listing; pass to subprocess with shell=False."""
-    argv = ["himalaya"]
+    if not isinstance(executable, str) or not executable or '\x00' in executable:
+        raise ValueError("Executable must be a nonempty path or name")
+    argv = [executable]
     if scope.config is not None:
         argv += ["--config", scope.config]
     argv += ["--account", scope.account, "--json", "gmail", "messages", "list"]

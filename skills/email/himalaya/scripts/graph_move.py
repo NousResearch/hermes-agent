@@ -12,18 +12,21 @@ try:
     from .backend_operations import validate_target, validate_graph_plan, graph_move_argv
     from .operation_support import digest, now, run_recorded, load_capture
     from .graph_scan import snapshot_hash
+    from .review_support import bind, load_review
 except ImportError:
     from cleanup_records import append_event, replay, locked
     from backend_operations import validate_target, validate_graph_plan, graph_move_argv
     from operation_support import digest, now, run_recorded, load_capture
     from graph_scan import snapshot_hash
+    from review_support import bind, load_review
 
 
 def read_events(journal):
     return json.loads(Path(journal).read_text(encoding='utf-8'))
 
 
-def prepare_plan(journal, record_id, target_path, preflight_path, operation_id, authorized, action='cleanup'):
+def prepare_plan(journal, record_id, target_path, preflight_path, operation_id, authorized, action='cleanup',
+                 review_path=None, assessment_path=None):
     records, _ = replay(read_events(journal))
     record = records[record_id]
     target = json.loads(Path(target_path).read_bytes())
@@ -44,6 +47,13 @@ def prepare_plan(journal, record_id, target_path, preflight_path, operation_id, 
             'source_evidence': source, 'source_snapshot_sha256': snapshot_hash(record['message']),
             'membership_evidence': str(Path(preflight_path).resolve()), 'runtime': target['runtime']}
     plan['argv'] = graph_move_argv(plan['runtime'], record['account'], plan['source_id'], destination)
+    if action == 'cleanup':
+        if review_path is None or assessment_path is None:
+            raise ValueError('Cleanup planning requires complete shared review evidence')
+        plan['review'] = bind(review_path, assessment_path, record['account'], 'msgraph', plan['source_id'])
+        reviewed_metadata = json.loads(Path(load_review(review_path)['metadata_path']).read_bytes())
+        if reviewed_metadata != record['message']:
+            raise ValueError('Review metadata differs from registered Graph snapshot')
     validate_graph_plan(plan, record, check_files=True)
     append_event(journal, plan)
     return plan
@@ -84,6 +94,17 @@ def execute_plan(journal, operation_id, directory, timeout=30, stopped=lambda: F
         return result
 
 
+def cancel_plan(journal, operation_id, reason):
+    journal = Path(journal)
+    with locked(journal.with_name(journal.name+'.execute.lock')):
+        _, operations = replay(read_events(journal))
+        operation = operations[operation_id]
+        if operation['state'] != 'planned' or not reason:
+            raise ValueError('Only unsubmitted plans can be cancelled with a reason')
+        append_event(journal, {'event_id': operation_id+'-cancelled', 'record_id': operation['record_id'],
+                              'at': now(), 'type': 'cancelled', 'operation_id': operation_id, 'reason': reason})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -95,18 +116,27 @@ def main():
     plan.add_argument('--operation', required=True)
     plan.add_argument('--authorized', action='store_true', help='Use only when authorization already covers this move')
     plan.add_argument('--action', choices=['cleanup', 'rescue'], default='cleanup')
+    plan.add_argument('--review', type=Path, help='Required for cleanup; shared review_support output')
+    plan.add_argument('--assessment', type=Path, help='Required for cleanup; completed chunk assessments')
     execute = sub.add_parser('execute', help='MUTATING: launch one already authorized plan')
     execute.add_argument('--journal', required=True, type=Path)
     execute.add_argument('--operation', required=True)
     execute.add_argument('--directory', required=True, type=Path)
     execute.add_argument('--timeout', type=float, default=30)
     execute.add_argument('--stop-file', type=Path)
+    cancel = sub.add_parser('cancel', help='Local only: cancel an unsubmitted plan')
+    cancel.add_argument('--journal', required=True, type=Path)
+    cancel.add_argument('--operation', required=True)
+    cancel.add_argument('--reason', required=True)
     args = parser.parse_args()
     if args.command == 'plan':
         result = prepare_plan(args.journal, args.record, args.target, args.preflight,
-                              args.operation, args.authorized, args.action)
+                              args.operation, args.authorized, args.action, args.review, args.assessment)
         print(json.dumps({'operation_id': result['operation_id'], 'state': 'planned',
                           'note': 'Exact argv and target evidence are retained privately in the journal'}))
+    elif args.command == 'cancel':
+        cancel_plan(args.journal, args.operation, args.reason)
+        print(json.dumps({'operation_id': args.operation, 'state': 'cancelled'}))
     else:
         if args.stop_file and not args.stop_file.is_absolute():
             parser.error('Stop file must use an absolute native path')

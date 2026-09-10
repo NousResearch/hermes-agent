@@ -139,12 +139,17 @@ def replay(events):
                                   destination_folder=destination, plan_schema=event.get('plan_schema', 1),
                                   plan=copy.deepcopy(event))
             record['pending_operation'] = op
-        elif kind in ('submitted', 'unknown', 'failed', 'confirmed'):
+        elif kind in ('submitted', 'unknown', 'failed', 'confirmed', 'cancelled'):
             op = event.get('operation_id')
             if op not in operations or operations[op]['record_id'] != rid or record['pending_operation'] != op:
                 raise ValueError('No matching pending operation')
             operation = operations[op]
-            if kind == 'submitted':
+            if kind == 'cancelled':
+                if operation['state'] != 'planned' or not event.get('reason'):
+                    raise ValueError('Only unsubmitted plans can be cancelled with a reason')
+                operation['state'] = 'cancelled'
+                record['pending_operation'] = None
+            elif kind == 'submitted':
                 if operation['state'] != 'planned':
                     raise ValueError('Do not submit an operation twice')
                 if operation['plan_schema'] == 2:

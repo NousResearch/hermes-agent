@@ -104,7 +104,19 @@ For each selected ID, record body-read success/failure and classification status
 
 Use [shared-operations.md](shared-operations.md) for the common verified-ID and execution-evidence workflow. `backend_operations.py --backend gmail` selects a label from saved native labels JSON, verifies it with native `gmail labels get`, and retains the exact record/argv/output using the same recorder as Graph. This common layer never turns Gmail labels into Graph folders.
 
-Gmail mailbox organization uses labels: an inbox-cleanup action generally adds the authorized recovery label and removes INBOX, preserving unrelated labels and read state. Verify actual `label-ids` and the chosen policy before and after any authorized change; do not substitute Graph parentFolderId, Graph categories or changed-ID assumptions. Native `gmail messages modify` has repeated `--add-label` and `--remove-label` options; inspect installed help and construct argv from verified IDs. The Graph `cleanup_records.py` gate/journal and `graph_move.py` executor do **not** implement Gmail cleanup. A Gmail orchestrator may use the shared target verifier/recorder but must implement and validate its own decision, planning and outcome semantics.
+Gmail mailbox organization uses labels: an inbox-cleanup action generally adds the authorized recovery label and removes INBOX, preserving unrelated labels and read state. Verify actual `label-ids` and the chosen policy before and after any authorized change; do not substitute Graph parentFolderId, Graph categories or changed-ID assumptions. Native `gmail messages modify` has repeated `--add-label` and `--remove-label` options; inspect installed help and construct argv from verified IDs. The Graph `cleanup_records.py` gate/journal remains Graph-specific. Use `gmail_cleanup.py` for Gmail planning, single-attempt label modification and fresh metadata reconciliation. Both adapters require the shared evidence in [review-workflow.md](review-workflow.md). The Gmail adapter intentionally supports ordinary Inbox promotion cleanup with protected/unknown labels rejected; other authorized operations use their existing documented commands and appropriate review.
+
+For large scans use `gmail_scan.py` with an absolute checkpoint, capture directory, cwd and real stop-file path. Reinvoke with the identical scope/runtime to continue after a budget/error. It persists accepted pages, follows `next_page`, preserves cursor history, deduplicates even within a page, checks cancellation, and never reuses capture names. A completed checkpoint describes that observed scan; use a new checkpoint for new arrivals. Never clear a stop file as an implicit resume.
+
+```bash
+python3 scripts/gmail_scan.py --account work --label INBOX \
+  --page-size 100 --budget 100 --checkpoint "$SCAN_JSON" \
+  --captures "$CAPTURES" --cwd "$NATIVE_WORK_DIRECTORY" --stop-file "$STOP_FILE"
+```
+
+Pass `--executable` with the actual native filename (including `.exe` where applicable) and `--config` when needed. Page budget is configurable, not a 5,000-message mailbox limit. This script does not fetch or classify every listed message. Use the get/body commands and the plan/execute/reconcile sequence in the review workflow for selected candidates.
+
+Gmail read state is presence of **UNREAD** in `label-ids`. Verification compares the entire expected label set: add the recovery label, remove only INBOX, preserve all other labels including UNREAD. Aggregate unread counts may change because of deliveries or other clients; they are supporting diagnostics, not a per-message invariant.
 
 ## Store a requested draft
 

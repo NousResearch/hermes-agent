@@ -245,6 +245,8 @@ display:
                              #             link mouseenter, etc.)
 ```
 
+On **Windows Terminal / ConPTY**, DEC mouse sequences never reach the TUI, so AlternateScreen + mouse tracking swallows the wheel and native text selection. `hermes --tui` therefore defaults to **inline mode** (primary buffer) on native Windows ConPTY — the same fallback Termux uses — so the host terminal's wheel and copy/select work. Opt out with `HERMES_TUI_INLINE=0` (then `/mouse off` if you still want native selection). Git Bash/MSYS outside Windows Terminal keeps the AlternateScreen default.
+
 Runtime toggles:
 
 - `/details [hidden|collapsed|expanded|cycle]` — set the global mode

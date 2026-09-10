@@ -1,6 +1,7 @@
 import type { MouseTrackingMode } from '@hermes/ink'
 
 import { isTermuxTuiMode } from '../lib/termux.js'
+import { isWindowsConptyTuiMode } from '../lib/windows-conpty.js'
 
 const truthy = (v?: string) => /^(?:1|true|yes|on)$/i.test((v ?? '').trim())
 const falsy = (v?: string) => /^(?:0|false|no|off)$/i.test((v ?? '').trim())
@@ -24,6 +25,7 @@ const parseToggle = (v?: string): boolean | null => {
 }
 
 export const TERMUX_TUI_MODE = isTermuxTuiMode()
+export const WINDOWS_CONPTY_TUI_MODE = isWindowsConptyTuiMode()
 
 export const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 export const STARTUP_QUERY = (process.env.HERMES_TUI_QUERY ?? '').trim()
@@ -40,12 +42,14 @@ export const STARTUP_IMAGE = (process.env.HERMES_TUI_IMAGE ?? '').trim()
 //   kill-switch and the Termux default.
 // - HERMES_TUI_DISABLE_MOUSE=1 forces mouse off — the legacy kill switch.
 // - On Termux the default is mouse off so touch selection isn't intercepted
-//   by terminal mouse protocols. Desktop defaults to 'all' to preserve prior
-//   behavior.
+//   by terminal mouse protocols. Native Windows ConPTY does the same: DEC
+//   mouse sequences never arrive, so tracking only blocks native selection.
+//   Other desktops default to 'all' to preserve prior behavior.
 const mouseTrackingOverride = parseToggle(process.env.HERMES_TUI_MOUSE_TRACKING)
 const mouseTrackingDisabledLegacy = truthy(process.env.HERMES_TUI_DISABLE_MOUSE)
 
-const resolvedBootMouseEnabled = mouseTrackingOverride ?? (TERMUX_TUI_MODE ? false : !mouseTrackingDisabledLegacy)
+const resolvedBootMouseEnabled =
+  mouseTrackingOverride ?? (TERMUX_TUI_MODE || WINDOWS_CONPTY_TUI_MODE ? false : !mouseTrackingDisabledLegacy)
 
 export const MOUSE_TRACKING: MouseTrackingMode = resolvedBootMouseEnabled ? 'all' : 'off'
 
@@ -67,8 +71,11 @@ const inlineOverride = parseToggle(process.env.HERMES_TUI_INLINE)
 //
 // On Termux we default this on: users often background/foreground the app,
 // and primary-buffer rendering makes long-thread review and copy/paste much
-// less fragile. Override explicitly with HERMES_TUI_INLINE=0/1.
-export const INLINE_MODE = inlineOverride ?? TERMUX_TUI_MODE
+// less fragile. Native Windows ConPTY (Windows Terminal, conhost) never
+// delivers DEC mouse sequences, so AlternateScreen + mouse tracking swallows
+// wheel and native selection (#86571). Override explicitly with
+// HERMES_TUI_INLINE=0/1.
+export const INLINE_MODE = inlineOverride ?? (TERMUX_TUI_MODE || WINDOWS_CONPTY_TUI_MODE)
 
 // Live FPS counter overlay, fed by ink's onFrame (real render rate, not a
 // synthetic timer).

@@ -984,6 +984,9 @@ DEFAULT_CONFIG = {
         # the OAuth path. Empty or malformed (no http(s):// + host, or quote/angle/whitespace chars)
         # = reconstruct from headers.
         "public_url": "",
+        # Require a valid dashboard session for /api/status. Disabled by default because Nous
+        # Portal uses that endpoint as its unauthenticated liveness probe. /api/health stays public.
+        "require_auth_for_status": False,
     },
 
     "privacy": {

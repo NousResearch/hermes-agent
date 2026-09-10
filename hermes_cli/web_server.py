@@ -373,7 +373,7 @@ app.add_middleware(
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot
 # drift (/api/status once 401'd under the OAuth gate, breaking the portal probe).
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS as _PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.public_paths import is_public_api_path as _is_public_api_path
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -633,7 +633,12 @@ async def auth_middleware(request: Request, call_next):
         not getattr(request.state, "token_authenticated", False)
         and not getattr(request.app.state, "auth_required", False)
         and path.startswith("/api/")
-        and path not in _PUBLIC_API_PATHS
+        and not _is_public_api_path(
+            path,
+            status_auth_required=bool(
+                getattr(request.app.state, "status_auth_required", False)
+            ),
+        )
         and not path.startswith("/api/mcp/oauth/callback/")
         and not _has_valid_session_token(request)
         and not _has_valid_query_token(request, path)
@@ -1075,6 +1080,10 @@ def _configure_auth_gate(
     # reverse-proxy deployments; resolved once so middleware never reloads
     # config. A non-loopback public hostname engages the gate even on a loopback
     # backend, else the SPA's local session token becomes remotely reachable.
+    dashboard_cfg = load_config().get("dashboard") or {}
+    app.state.status_auth_required = bool(
+        dashboard_cfg.get("require_auth_for_status", False)
+    )
     app.state.trusted_public_hosts = _dashboard_public_hosts()
     # auth_required drives middleware, SPA-token injection, WS auth, the
     # startup refusal, the gate-on banner and uvicorn proxy_headers.

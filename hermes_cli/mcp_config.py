@@ -346,6 +346,24 @@ def _oauth_tokens_present(name: str) -> bool:
         return True  # permissive: don't block a real success
 
 
+def _token_path_hint(name: str) -> str:
+    """Best-effort human-readable path to the cached OAuth token for ``name``.
+
+    Used in error messages so the user can see for themselves that auth
+    succeeded. Falls back to the conventional location if the storage class
+    can't be interrogated — this is display text, never a control decision.
+    """
+    try:
+        from tools.mcp_oauth import HermesTokenStorage
+
+        path = getattr(HermesTokenStorage(name), "token_path", None)
+        if path:
+            return str(path)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("Could not resolve token path for '%s': %s", name, exc)
+    return f"~/.hermes/mcp-tokens/{name}.json"
+
+
 def _unwrap_exception_group(exc: BaseException) -> Exception:
     """Extract the root cause from anyio ``ExceptionGroup`` wrappers so e.g. "401 Unauthorized" surfaces."""
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
@@ -702,6 +720,30 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
         except Exception:
             humanized = None
+        # Distinguish "OAuth never completed" from "OAuth succeeded, then the
+        # MCP session failed". Every exception here used to be reported as
+        # "Authentication failed", which sent users re-running the browser
+        # flow over and over against a server that had already issued a
+        # perfectly good token. Observed with GitLab: the OAuth round-trip
+        # completed and cached a valid token, then POST /api/v4/mcp returned
+        # an application-level 404 (MCP disabled for the namespace), which the
+        # MCP SDK surfaces as the generic "Session terminated". The token on
+        # disk is the evidence that auth is not the failing stage.
+        if _oauth_tokens_present(name):
+            _error(f"Connected, but the MCP session failed: {humanized or exc}")
+            print()
+            _info(
+                "Authorization SUCCEEDED — a token is cached at "
+                f"{_token_path_hint(name)}. Re-running `hermes mcp login "
+                f"{name}` will not help; the failure is after auth."
+            )
+            _info(
+                "Common causes: the server requires a plan/feature/permission "
+                "your account lacks, the endpoint is disabled for your "
+                "org/namespace, or the URL is wrong. Check the vendor's MCP "
+                "docs for prerequisites, then `hermes mcp test " + name + "`."
+            )
+            return False
         _error(f"Authentication failed: {humanized or exc}")
         return False
 

@@ -322,6 +322,78 @@ def _dashboard_spawn_executable() -> str:
     return sys.executable
 
 
+def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
+    """Return the named-profile selector that :func:`_profile_cli_args` puts in front of an action.
+
+    Deliberately inspects only the leading selector: values after the real subcommand may
+    legitimately contain ``-p`` / ``--profile`` for a nested process (``mcp add --args ...``).
+    """
+    if len(subcommand) >= 2 and subcommand[0] in {"-p", "--profile"}:
+        return str(subcommand[1]).strip() or None
+    if subcommand and str(subcommand[0]).startswith("--profile="):
+        return str(subcommand[0]).split("=", 1)[1].strip() or None
+    return None
+
+
+def _profile_action_environment(
+    subcommand: List[str], env_overrides: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Environment for a detached ``hermes <subcommand>`` action.
+
+    The dashboard loads its own profile's ``.env`` into process-global ``os.environ``. Copying
+    that mapping verbatim into ``hermes -p <other> ...`` lets the named child see the dashboard
+    profile's platform credentials and ports *before* its own dotenv loads (``load_hermes_dotenv``
+    does not override keys already present): a supposedly A2A-only profile then claims the default
+    Discord token and binds the default API/BlueBubbles ports.
+
+    Named-profile actions therefore start from Hermes' standard scrubbed subprocess env, then drop
+    the profile-managed keys plus every key declared by the dashboard/default profile dotenv files
+    and their hydrated secret sources, and pin ``HERMES_HOME`` to the target profile. The child's
+    normal startup then loads that profile's own ``.env``. Actions without a profile selector keep
+    the historical environment exactly.
+    """
+    profile = _named_profile_from_action(subcommand)
+    if profile is None:
+        action_env = dict(os.environ)
+    else:
+        from hermes_cli.env_loader import (
+            _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
+        )
+        from hermes_cli.web_server_profiles import _resolve_profile_dir
+        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
+        from tools.environments.local import build_subprocess_env
+
+        target_home = _resolve_profile_dir(profile)
+        action_env = build_subprocess_env(base=os.environ, scrub_secrets=True)
+
+        profile_keys = set(_PROFILE_MANAGED_ENV_KEYS)
+        try:
+            source_homes = {str(get_default_hermes_root()), str(get_hermes_home())}
+        except Exception:
+            source_homes = set()
+        for source_home in source_homes:
+            profile_keys.update(_env_keys_defined_in_dotenv(Path(source_home) / ".env"))
+            # Secret managers contribute locally named credentials that never appear in .env;
+            # the dashboard already hydrated its own sources, so their key names are a boundary too.
+            profile_keys.update(get_secret_source_values(source_home).keys())
+        for key in profile_keys:
+            action_env.pop(key, None)
+
+        # Pin the child before import-time startup runs; the explicit -p flag stays authoritative
+        # and resolves to the same validated directory.
+        action_env["HERMES_HOME"] = str(target_home)
+        apply_subprocess_home_env(action_env)
+
+    action_env["HERMES_NONINTERACTIVE"] = "1"
+    # The dashboard runs inside the gateway process, so os.environ carries _HERMES_GATEWAY=1;
+    # inheriting it trips the child's in-process restart-loop guard (exit 1). Drop it, like
+    # the gateway's own restart watcher does (gateway/run.py, #52470).
+    action_env.pop("_HERMES_GATEWAY", None)
+    if env_overrides:
+        action_env.update(env_overrides)
+    return action_env
+
+
 def _spawn_hermes_action(
     subcommand: List[str], name: str, *, env_overrides: Optional[Dict[str, str]] = None
 ) -> subprocess.Popen:
@@ -332,16 +404,13 @@ def _spawn_hermes_action(
     log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
 
     cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
-    # The dashboard runs inside the gateway process, so os.environ carries _HERMES_GATEWAY=1;
-    # inheriting it trips the child's in-process restart-loop guard (exit 1). Drop it, like
-    # the gateway's own restart watcher does.
-    # The gateway's own restart watcher already drops it (gateway/run.py); mirror that here (#52470).
-    action_env = {**os.environ, "HERMES_NONINTERACTIVE": "1"}
-    action_env.pop("_HERMES_GATEWAY", None)
+    # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
+    # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
+    action_env = _profile_action_environment(subcommand, env_overrides)
     detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
     proc = subprocess.Popen(
         cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env={**action_env, **(env_overrides or {})}, **detach,
+        env=action_env, **detach,
     )
     log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
     _ACTION_RESULTS.pop(name, None)

@@ -1724,8 +1724,15 @@ class SlackAdapter(BasePlatformAdapter):
             client = self._get_client(parent_chat_id)
             if client is None:
                 return None
-            seed_text = f":thread: Hermes handoff — *{(name or 'session').strip()[:80]}*"
-            result = await client.chat_postMessage(channel=parent_chat_id, text=seed_text)
+            from html import escape
+            title = " ".join((name or "Conversation").split())[:150] or "Conversation"
+            # Titles are content, not Slack markup: never turn a quoted mention
+            # or link into a notification or an action in the channel.
+            result = await client.chat_postMessage(
+                channel=parent_chat_id, text=escape(title, quote=False),
+                mrkdwn=False, parse="none",
+                blocks=[{"type": "header", "text": {"type": "plain_text", "text": title}}],
+            )
             ts = _slack_response_payload(result).get("ts")
             return str(ts) if ts else None
         except Exception as exc:

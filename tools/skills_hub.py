@@ -268,11 +268,12 @@ class TapsManager(_JsonStateFile):
         if not cache_dir.exists():
             return
         sanitized = repo.replace("/", "_").replace(" ", "_")
-        for cache_file in cache_dir.glob(f"{sanitized}*.json"):
-            try:
-                cache_file.unlink(missing_ok=True)
-            except OSError:
-                pass
+        for pattern in (f"{sanitized}.json", f"{sanitized}_*.json"):
+            for cache_file in cache_dir.glob(pattern):
+                try:
+                    cache_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""

@@ -780,6 +780,28 @@ class TestTapsManager:
             assert mgr.remove("owner/repo") is True
             assert not (cache_dir / "owner_repo_skills_.json").exists()
 
+    def test_clear_tap_cache_preserves_prefix_sharing_sibling_taps(self, tmp_path):
+        cache_dir = tmp_path / "index-cache"
+        cache_dir.mkdir(parents=True)
+        # Sibling tap sharing the same prefix (e.g. repo vs repo-extra)
+        base_cache = cache_dir / "callacat_hermes-capabilities_skills_.json"
+        sibling_cache = cache_dir / "callacat_hermes-capabilities-extra_skills_.json"
+        base_cache.write_text("{}", encoding="utf-8")
+        sibling_cache.write_text("{}", encoding="utf-8")
+
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        with patch("tools.skills_hub._index_cache_dir", return_value=cache_dir):
+            mgr.add("callacat/hermes-capabilities")
+            # Base cache was unlinked, but sibling tap cache was preserved
+            assert not base_cache.exists()
+            assert sibling_cache.exists()
+
+            # Refreshing base tap also preserves sibling cache
+            base_cache.write_text("{}", encoding="utf-8")
+            assert mgr.refresh("callacat/hermes-capabilities") is True
+            assert not base_cache.exists()
+            assert sibling_cache.exists()
+
 # ---------------------------------------------------------------------------
 # LobeHubSource._convert_to_skill_md
 # ---------------------------------------------------------------------------

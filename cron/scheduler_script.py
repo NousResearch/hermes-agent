@@ -473,11 +473,17 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace"}
         # The process env is the LAUNCH profile's. For a job owned by a routed profile, drop that
-        # profile's .env residue from the base first (no-op for the launch profile's own jobs);
-        # the sanitizer then overlays the names the owning profile declares in
-        # terminal.env_passthrough from its own secret scope (#114209). The factory snapshots the
-        # process env itself — no raw copy at the spawn site (test_subprocess_env_guard).
-        env = build_subprocess_env(strip_launch_profile=True)
+        # profile's .env residue from the base first (no-op for the launch profile's own jobs), then
+        # overlay the installed scope BEFORE sanitizing, so the routed profile's own .env + vault
+        # values pass the same scrub / passthrough rules as any other (#114209 declared names
+        # included); the parent process is never mutated.
+        from agent.secret_scope import current_secret_scope
+        from tools.environments.local import strip_launch_profile_env
+        base = strip_launch_profile_env(dict(os.environ))
+        scope = current_secret_scope()
+        if scope:
+            base.update(scope)
+        env = build_subprocess_env(base=base)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

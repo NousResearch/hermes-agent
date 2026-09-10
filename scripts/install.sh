@@ -972,6 +972,33 @@ npm_supports_npmrc() {
     return 0
 }
 
+# Inspect npm output for a TLS-trust failure and, if found, print actionable
+# remediation. npm/Node surface corporate MITM proxies and missing root CAs as
+# "unable to get local issuer certificate" / "self-signed certificate in
+# certificate chain" / UNABLE_TO_VERIFY_LEAF_SIGNATURE, which reads as a
+# generic install failure and gets reported as one (issue #38016). install.ps1
+# already routes its npm stages through Show-NpmCertHint; this is the POSIX
+# half, which was never written. Returns 0 when a cert error was detected.
+npm_cert_hint() {
+    local log_file="$1"
+    [ -s "$log_file" ] || return 1
+    grep -qiE 'unable to get local issuer certificate|self[- ]signed certificate|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN|CERT_HAS_EXPIRED' \
+        "$log_file" || return 1
+    log_warn "This looks like a TLS certificate-trust failure, not a network or permissions problem."
+    log_info "  A corporate proxy or antivirus is likely intercepting HTTPS and presenting a"
+    log_info "  certificate Node.js doesn't trust. Node ignores SSL_CERT_FILE and CURL_CA_BUNDLE,"
+    log_info "  so pointing curl at the CA is not enough — Node needs telling separately."
+    log_info "  If the CA is already in your OS trust store (usual on a managed machine):"
+    log_info "    export NODE_OPTIONS=--use-system-ca"
+    log_info "  Otherwise point Node at the certificate directly:"
+    log_info "    1. Get your organization's root CA as a .pem/.crt from your IT team."
+    log_info "    2. export NODE_EXTRA_CA_CERTS=/path/to/corp-ca.pem"
+    log_info "  Then re-run the installer in that shell (add it to your shell profile to persist)."
+    log_info "  Quick (less secure) alternative — disable TLS verification just for the install:"
+    log_info "    npm config set strict-ssl false   (re-enable afterwards: npm config set strict-ssl true)"
+    return 0
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
@@ -2670,19 +2697,24 @@ install_node_deps() {
         # A failed npm install used to still print "✓ Node.js dependencies
         # installed", hiding the degradation from the user (#77003). Now it
         # fails the install outright instead of burying the warning (#85297).
-        # Capture npm output so failures are diagnosable (#87340).
+        # Capture npm output so failures are diagnosable (#87340). NOT --silent:
+        # that suppresses npm's own error reporting, so the capture above it
+        # recorded an empty log and printed a bare "npm output:" with nothing
+        # behind it. Output is only ever shown on failure, so the verbosity
+        # costs nothing on the happy path.
         # Scoped to the workspaces a CLI install needs so apps/desktop's
         # node-pty is never built here — see node_deps_workspace_args().
         node_deps_workspace_args "$INSTALL_DIR"
         local npm_log
         npm_log="$(mktemp)"
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install "${NODE_DEPS_WORKSPACE_ARGS[@]}" --silent \
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install "${NODE_DEPS_WORKSPACE_ARGS[@]}" \
                 >"$npm_log" 2>&1; then
             log_error "npm install failed or timed out; Node.js dependencies were not installed"
             if [ -s "$npm_log" ]; then
                 log_error "npm output:"
                 cat "$npm_log" >&2
             fi
+            npm_cert_hint "$npm_log" || true
             rm -f "$npm_log"
             restore_dirty_lockfiles "$INSTALL_DIR"
             return 1
@@ -2789,16 +2821,18 @@ install_node_deps() {
         # Time-boxed: a stalled registry fetch would otherwise hang here (#39219).
         # Report success only on actual success, same as node-deps above
         # (#77003) — and fail the install outright (#85297).
-        # Capture npm output so failures are diagnosable (#87340).
+        # Capture npm output so failures are diagnosable (#87340). NOT --silent
+        # — see the node-deps site above.
         local tui_npm_log
         tui_npm_log="$(mktemp)"
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent \
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install \
                 >"$tui_npm_log" 2>&1; then
             log_error "TUI npm install failed or timed out; TUI dependencies were not installed"
             if [ -s "$tui_npm_log" ]; then
                 log_error "npm output:"
                 cat "$tui_npm_log" >&2
             fi
+            npm_cert_hint "$tui_npm_log" || true
             rm -f "$tui_npm_log"
             restore_dirty_lockfiles "$INSTALL_DIR"
             return 1

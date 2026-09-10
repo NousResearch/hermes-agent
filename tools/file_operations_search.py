@@ -719,19 +719,40 @@ class SearchMixin:
             elif line:
                 raw_files.append(line)
         bounded_sigpipe = result.exit_code == 141 and len(raw_files) >= fetch_limit
-        if result.exit_code not in {0, 124} and not bounded_sigpipe:
+        # GNU find exits 1 when it cannot descend into SOME directory (EACCES on a
+        # root-owned /tmp sibling) even after printing every readable match. With a
+        # usable payload that is a partial success, not a failure — mirrors the
+        # rg path ({0, 1, 124}) and _parse_search_output's payload-first rule.
+        partial_traversal = (
+            result.exit_code == 1 and bool(raw_files) and order != "modified"
+        )
+        if (
+            result.exit_code not in {0, 124}
+            and not bounded_sigpipe
+            and not partial_traversal
+        ):
             if order == "modified":
                 return SearchResult(error=(
                     "Exact modification-time order requires GNU find with "
                     "-printf support; install ripgrep 14+ or use order='discovery'."))
             return SearchResult(error="File search failed while running bounded find traversal.")
+        warning = (
+            (
+                "Some directories could not be traversed (permission denied); "
+                "results may be incomplete."
+            )
+            if partial_traversal
+            else None
+        )
 
         from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
         if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
             raw_files = [_msys_to_windows_path(file_path) for file_path in raw_files]
         return SearchResult(
             files=raw_files[offset:offset + limit], total_count=len(raw_files),
-            truncated=len(raw_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
+            truncated=len(raw_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason,
+            warning=warning,
+        )
 
     def _search_files_rg(self, pattern: str, path: str | List[str], limit: int, offset: int,
                          order: str = "discovery", rg_executable: Optional[str] = None) -> SearchResult:

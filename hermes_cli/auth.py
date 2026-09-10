@@ -345,6 +345,25 @@ def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Option
     return val
 
 
+def _model_level_key_env(provider_id: str) -> str:
+    """``model.key_env`` when config.yaml's main model targets *provider_id*, else ``""``.
+
+    The Desktop settings UI saves registry-provider keys as a credential pointer
+    (``model.key_env`` → ``$HERMES_HOME/.env``) instead of the registry's canonical env var,
+    so credential resolution must consult it (#106336).
+    """
+    try:
+        from hermes_cli.config import load_config
+        model_cfg = (load_config() or {}).get("model")
+    except Exception:
+        return ""
+    if not isinstance(model_cfg, dict):
+        return ""
+    if str(model_cfg.get("provider") or "").strip().lower() != provider_id:
+        return ""
+    return str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
+
+
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
@@ -364,6 +383,17 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
     # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation in .env isn't shadowed by
     # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).
     from hermes_cli.config import get_env_value_prefer_dotenv
+
+    # Desktop-saved credential pointer: the settings UI persists registry-provider keys as
+    # model.key_env → $HERMES_HOME/.env (e.g. HERMES_CUSTOM_LMSTUDIO_API_KEY) while keeping
+    # model.provider on the registry id, so the pointer must be honored here or the UI-saved
+    # key is silently ignored and lmstudio falls through to its no-auth placeholder (#106336).
+    key_env = _model_level_key_env(provider_id)
+    if key_env:
+        val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(key_env), key_env)
+        if val:
+            return val, key_env
+
     for env_var in pconfig.api_key_env_vars:
         val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(env_var), env_var)
         if val:
@@ -924,13 +954,18 @@ def _entry_ids(entries: Iterable[Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def write_credential_pool(
-    provider_id: str, entries: List[Dict[str, Any]], *, removed_ids: Optional[Iterable[str]] = None,
+    provider_id: str, entries: List[Dict[str, Any]], *,
+    removed_ids: Optional[Iterable[str]] = None,
+    status_cleared_ids: Optional[Iterable[str]] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
     Final disk-boundary sanitizer for borrowed credentials (callers may pass raw dicts). Entries on
     disk but missing from *entries* (added concurrently) are merged back unless in *removed_ids*,
-    so a rotation/exhaustion rewrite never drops a concurrent credential."""
+    so a rotation/exhaustion rewrite never drops a concurrent credential. Entries in
+    *status_cleared_ids* were cleared deliberately (``hermes auth reset``) and skip the
+    recency merge, which would otherwise read their cleared ``last_status_at`` (None ->
+    epoch 0) as a stale snapshot and copy a still-binding cooldown back."""
     removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -942,8 +977,11 @@ def write_credential_pool(
         existing_list = existing_list if isinstance(existing_list, list) else []
         existing_by_id = _entry_ids(existing_list)
         new_ids = set(_entry_ids(sanitized))
+        status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         merged: List[Dict[str, Any]] = [
-            _merge_disk_cooldown_state(e, existing_by_id.get(e.get("id")), provider_id)
+            _merge_disk_cooldown_state(
+                e, None if e.get("id") in status_cleared else existing_by_id.get(e.get("id")), provider_id,
+            )
             if isinstance(e, dict) else e
             for e in sanitized]
         for disk_entry in existing_list:

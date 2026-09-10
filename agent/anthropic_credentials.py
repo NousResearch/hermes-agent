@@ -1,8 +1,9 @@
 """Anthropic credential sources, OAuth flows, and token resolution.
 
 ``resolve_anthropic_token()`` order: ``ANTHROPIC_TOKEN`` / ``CLAUDE_CODE_OAUTH_TOKEN``,
-``ANTHROPIC_API_KEY``, ``~/.claude/.credentials.json`` / macOS Keychain, then the
-``auth.json`` credential pool. ``~/.hermes/.anthropic_oauth.json`` (Hermes PKCE) and
+``ANTHROPIC_API_KEY``, Hermes-owned OAuth grants in the ``auth.json`` credential
+pool, then ``~/.claude/.credentials.json`` / macOS Keychain as a borrowed fallback.
+``~/.hermes/.anthropic_oauth.json`` (Hermes PKCE) and
 the Claude Code file are *singletons*: ``credential_pool._seed_from_singletons()``
 re-reads them on every ``load_pool()``, so a failed write here is a failed refresh
 (``CredentialPersistError``), not a cache miss.
@@ -424,7 +425,7 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
-def _resolve_anthropic_pool_token() -> Optional[str]:
+def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[str]:
     """First available Anthropic OAuth token from credential_pool, read-only: enumerates with ``clear_expired=False,
     refresh=False`` (never ``select()``) so diagnostic call sites (account_usage, ``hermes models``) never mutate
     auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
@@ -435,6 +436,8 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None
     for entry in entries:
+        if skip_borrowed and entry.source == "claude_code":
+            continue
         # access_token may be an explicit null on a persisted entry; None.strip() would crash the resolver.
         token = (getattr(entry, "access_token", None) or "").strip()
         if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH or not token:
@@ -461,7 +464,8 @@ def resolve_anthropic_token() -> Optional[str]:
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
         return api_key
-    return _resolve_claude_code_token_from_credentials(_read_creds()) or _resolve_anthropic_pool_token()
+    # The pool's claude_code row mirrors the same externally owned refresh grant.
+    return _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds())
 
 
 def run_oauth_setup_token() -> Optional[str]:

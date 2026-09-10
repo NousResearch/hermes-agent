@@ -295,7 +295,7 @@ class GatewayAgentCacheMixin:
             return False
 
     def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
-        """THE single conversation-boundary funnel (/new, /resume, auto-reset, expiry finalization,
+        """THE single conversation-boundary funnel (/new, /resume, suspension replacement,
         compression-exhausted reset). New conversation-scoped dicts go in _CONVERSATION_SCOPED_STATE
         so every boundary picks them up. Turn-scoped state (_running_agents/_ts, slot leases, turn-
         lease tokens) is owned by _release_running_agent_state and NOT cleared. Idle agent-cache
@@ -612,36 +612,17 @@ class GatewayAgentCacheMixin:
             with suppress(Exception):
                 target(*args)
 
-    def _finalizable_unexpired_session_entry(self, key: str):
-        """Session-store entry for ``key`` when the expiry watcher will still finalize it; None when
-        missing, not finalizable (``mode == "none"``) or already expired (the watcher handles those)."""
-        _store = getattr(self, "session_store", None)
-        if _store is None:
-            return None
-        try:
-            _store._ensure_loaded()
-            entry = _store._entries.get(key)
-        except Exception:
-            return None
-        ok = entry is not None and _store.is_session_finalizable(entry) and not _store._is_session_expired(entry)
-        return entry if ok else None
-
     def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
-        """Fire on_session_end extraction before soft-evicting a live agent: the expiry watcher only
-        finalizes what it finds in ``_agent_cache``, so an LRU soft-evict first would hide the
-        transcript from memory providers. Commit via ``commit_memory_session`` (no teardown), only for
-        finalizable, not-yet-expired sessions. Best-effort."""
+        """Commit the live transcript to memory providers before resource-only eviction."""
         # No external memory provider (``_memory_manager`` None) — nothing to commit.
         if agent is None or not hasattr(agent, "commit_memory_session") or getattr(agent, "_memory_manager", None) is None:
             return
         try:
-            if self._finalizable_unexpired_session_entry(key) is None:
-                return
             messages = getattr(agent, "_session_messages", None)
             agent.commit_memory_session(messages if isinstance(messages, list) else None)
             logger.debug(
                 "Committed on_session_end extraction before soft-evicting "
-                "finalizable session=%s (cache pressure, pre-expiry)", key,
+                "session=%s (resource eviction)", key,
             )
         except Exception as _e:
             logger.debug("Pre-evict memory commit failed for %s: %s", key, _e)
@@ -711,10 +692,9 @@ class GatewayAgentCacheMixin:
         from the persisted session next turn). Never touched: agents mid-turn, the most recently
         used sessions, and transcripts not yet on disk.
 
-        A gateway serving many chats therefore holds every warm transcript indefinitely: agents that took a
-        turn within the TTL are never idle-swept, and the sweep additionally defers finalizable sessions
-        until they expire. RSS climbs until the cgroup throttles and SIGTERM can no longer flush inside
-        systemd's stop timeout (#80764).
+        A gateway serving many chats can hold every warm transcript for the TTL window.
+        Pressure eviction bounds that heap before the cgroup throttles and SIGTERM can
+        no longer flush inside systemd's stop timeout (#80764).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.agent_cache_pressure import (
@@ -846,17 +826,10 @@ class GatewayAgentCacheMixin:
                 last_activity = getattr(agent, "_last_activity_ts", None)
                 if last_activity is None or (now - last_activity) <= idle_ttl:
                     continue
-                # Not yet expired in the store (daily-reset fires hours after the last message): keep
-                # the agent so the expiry watcher can call on_session_end() with the live transcript.
-                # Only defer when the watcher will EVER finalize it — for mode == "none" deferring pins
-                # the agent for the gateway's lifetime (the leak this sweep relieves); those soft-evict
-                # WITHOUT on_session_end, correctly.
-                if self._finalizable_unexpired_session_entry(key) is not None:
-                    continue
                 to_evict.append((key, agent))
             for key, _ in to_evict:
                 _cache.pop(key, None)
         for key, agent in to_evict:
             logger.info("Agent cache idle-TTL evict: session=%s (idle=%.0fs)", key, now - getattr(agent, "_last_activity_ts", now))
-            self._spawn_release_thread(self._release_evicted_agent_soft, (agent,), f"agent-cache-idle-{key[:24]}", inline_fallback=False)
+            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-idle-{key[:24]}", inline_fallback=False)
         return len(to_evict)

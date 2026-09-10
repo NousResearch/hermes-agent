@@ -180,46 +180,48 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
 }) => {
   const { t } = useI18n()
   const runEnabled = useContext(ChatRunCommandContext)
-  const trimmed = (code ?? '').replace(/^\n+/, '').trimEnd()
+  // Preserve the parser payload for display/copy; normalize only the command sent to the terminal.
+  const content = code ?? ''
+  const command = content.replace(/^\n+/, '').trimEnd()
 
   // Streaming may hand us empty/incomplete fences — render nothing rather
   // than a transient empty card.
-  if (!trimmed.trim()) {
+  if (!content.trim()) {
     return null
   }
 
-  if (isLikelyProseCodeBlock(language, trimmed)) {
-    return <div className="aui-prose-fence whitespace-pre-wrap wrap-anywhere text-foreground">{trimmed}</div>
+  if (isLikelyProseCodeBlock(language, content)) {
+    return <div className="aui-prose-fence whitespace-pre-wrap wrap-anywhere text-foreground">{content}</div>
   }
 
-  const plain = defer || exceedsHighlightBudget(trimmed)
+  const plain = defer || exceedsHighlightBudget(content)
   const runnable =
     runEnabled &&
     !defer &&
     hasEmbeddedTerminalBridge() &&
     isRunnableShellLanguage(language) &&
-    isRunnableChatTerminalCommandText(trimmed)
+    isRunnableChatTerminalCommandText(command)
 
   return (
     <CodeCard data-streaming={defer ? 'true' : undefined}>
       <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1">
-        {runnable && <RunButton command={trimmed} label={t.common.run} />}
+        {runnable && <RunButton command={command} label={t.common.run} />}
         <CopyButton
           appearance="inline"
           className="h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
           iconClassName="size-2.5"
           label={t.assistant.tool.copyCode}
           showLabel={false}
-          text={trimmed}
+          text={content}
         />
       </div>
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>
           <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
             {plain ? (
-              <PlainCode code={trimmed} />
+              <PlainCode code={content} />
             ) : (
-              <LazyShiki code={trimmed} colorReplacements={SHIKI_COLOR_REPLACEMENTS} language={language || 'text'} />
+              <LazyShiki code={content} colorReplacements={SHIKI_COLOR_REPLACEMENTS} language={language || 'text'} />
             )}
           </Pre>
         </ExpandableBlock>

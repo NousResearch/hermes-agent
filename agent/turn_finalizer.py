@@ -550,7 +550,12 @@ def finalize_turn(
         "provider": agent.provider,
         "base_url": agent.base_url,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_TOKEN_KEYS},
-        "last_prompt_tokens": getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0,
+        # Gateway SessionEntry persists an API reading, never the preflight display seed.
+        "last_prompt_tokens": (
+            getattr(agent.context_compressor, "last_real_prompt_tokens", agent.context_compressor.last_prompt_tokens)
+            if getattr(agent.context_compressor, "last_prompt_tokens", 0) > 0
+            else getattr(agent.context_compressor, "last_prompt_tokens", 0)
+        ) or 0,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_COST_KEYS},
         # Requested service tier, for billing audits (`hermes -z --usage-file`).
         "service_tier": (

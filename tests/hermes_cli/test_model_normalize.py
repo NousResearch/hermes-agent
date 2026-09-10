@@ -110,11 +110,26 @@ class TestDeepseekVSeriesPassThrough:
         result = normalize_model_for_provider("deepseek-v4-pro", "deepseek")
         assert result == "deepseek-v4-pro"
 
+    def test_deepseek_provider_preserves_versionless_flash_id(self):
+        """``deepseek-flash`` must reach DeepSeek's API unchanged.
+
+        DeepSeek's 2026-09 Flash refresh dropped the ``v<N>`` marker from the
+        public id: ``GET /v1/models`` reports ``deepseek-flash`` and the API
+        accepts it directly (verified live — it answers 200, and the older
+        ``deepseek-v4-flash`` is aliased onto it).  Folding it onto
+        ``deepseek-v4-flash`` meant the id users picked never reached the wire
+        and the config stored a different model than the picker advertised.
+        """
+        assert (
+            normalize_model_for_provider("deepseek-flash", "deepseek")
+            == "deepseek-flash"
+        )
+
 
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
 class TestDeepseekCanonicalAndReasonerMapping:
-    """Retired aliases and fuzzy names rewrite to deepseek-v4-flash.
+    """Retired aliases and fuzzy names rewrite to deepseek-flash.
 
     DeepSeek cut off ``deepseek-chat`` / ``deepseek-reasoner`` on
     2026-07-24; sending them on the wire returns HTTP 400.
@@ -124,7 +139,7 @@ class TestDeepseekCanonicalAndReasonerMapping:
     def test_provider_path_rewrites_reasoner(self):
         assert (
             normalize_model_for_provider("deepseek-reasoner", "deepseek")
-            == "deepseek-v4-flash"
+            == "deepseek-flash"
         )
 
     @pytest.mark.parametrize("model", [
@@ -134,8 +149,8 @@ class TestDeepseekCanonicalAndReasonerMapping:
         "deepseek-reasoning-preview",
         "deepseek-cot-experimental",
     ])
-    def test_reasoner_keywords_map_to_v4_flash(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
+    def test_reasoner_keywords_map_to_flash(self, model):
+        assert _normalize_for_deepseek(model) == "deepseek-flash"
 
 
 # ── Regression: issue #78796 ───────────────────────────────────────────

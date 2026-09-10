@@ -84,6 +84,17 @@ class TestKnownPrefixes:
         text = "fw-tooshort fw_tooshort fpk_tooshort"
         assert redact_sensitive_text(text) == text
 
+    def test_linear_api_key(self):
+        """Linear personal API key. Follow-up invited in #4541."""
+        token = "lin_api_" + "AbCdEfGhIjKlMnOpQrSt"
+        result = redact_sensitive_text(f"leaked {token} in output")
+        assert token not in result
+        assert "..." in result
+
+    def test_short_linear_like_word_unchanged(self):
+        text = "lin_api_tooshort"
+        assert redact_sensitive_text(text) == text
+
 
 
 

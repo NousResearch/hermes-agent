@@ -8,7 +8,9 @@ The first four tests are adapted from PR #50261 by @yu-xin-c (autonomous
 skill history), reshaped for the all-actor JSONL ledger design.
 """
 
+import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -249,6 +251,46 @@ def test_blob_dedupe_same_content_one_blob(ledger_env):
     assert len(hashes) == 1  # same content → same hash
     blobs = list(skill_ledger.blobs_dir().iterdir())
     assert len(blobs) == 1  # → one blob on disk
+
+
+def test_snapshot_paths_skips_transient_dirs(ledger_env):
+    """Transient local artifacts (venv, node_modules, caches, .git) never reach
+    the manifest or the blob store — sweeping them in grows the blob dir
+    unboundedly on real installs (#107539)."""
+    from tools import skill_ledger
+
+    d = ledger_env["skills"] / "has-venv"
+    d.mkdir()
+    for rel, body in (("SKILL.md", "# skill"), ("scripts/run.py", "print('hi')"),
+                      ("node_modules/pkg/index.js", "junk"), ("venv/bin/python", "junk"),
+                      ("__pycache__/run.cpython-311.pyc", "junk"), (".git/config", "junk")):
+        p = d / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+
+    manifest = skill_ledger.snapshot_paths(d)
+    rel = {str(Path(i["path"]).relative_to(d)) for i in manifest}
+    assert rel == {"SKILL.md", os.path.join("scripts", "run.py")}
+
+    # None of the transient content was stored as a blob either.
+    junk_sha = hashlib.sha256(b"junk").hexdigest()
+    assert junk_sha not in {p.name for p in skill_ledger.blobs_dir().iterdir()}
+
+
+def test_snapshot_paths_keeps_file_named_like_transient_dir(ledger_env):
+    """The filter drops files *inside* transient dirs; a plain file whose own
+    name collides with one (e.g. a ``venv`` bootstrap script) is skill content."""
+    from tools import skill_ledger
+
+    d = ledger_env["skills"] / "edge"
+    d.mkdir()
+    (d / "SKILL.md").write_text("# skill", encoding="utf-8")
+    (d / "venv").write_text("#!/bin/sh\n", encoding="utf-8")  # a FILE, not a dir
+
+    manifest = skill_ledger.snapshot_paths(d)
+    rel = {str(Path(i["path"]).relative_to(d)) for i in manifest}
+    assert "venv" in rel
+    assert "SKILL.md" in rel
 
 
 def test_rollback_fails_closed_when_safety_capture_fails(ledger_env, monkeypatch):

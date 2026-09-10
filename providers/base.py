@@ -110,6 +110,10 @@ class ProviderProfile:
     )
     # empty = use main model
 
+    # The endpoint requires reasoning_content on replayed assistant tool calls.
+    # Shared replay and context-budget policies both consult this declaration.
+    requires_reasoning_echo: bool = False
+
     # ── Hooks (override in subclass for complex providers) ───
 
     def resolve_aux_model(self, *, vision: bool = False) -> str:

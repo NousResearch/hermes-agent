@@ -507,6 +507,11 @@ class GatewayModelCommandsMixin:
         )
         ctx.read_config()
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+        # Proxy-mode sidecars (Matrix E2EE container, etc.) have no providers catalog.
+        # Local switch_model would raise Unknown provider; the host honors model+provider
+        # on the proxied /v1/chat/completions body instead.
+        if self._get_proxy_url():
+            return await self._handle_proxied_model_command(ctx, request)
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
@@ -516,6 +521,68 @@ class GatewayModelCommandsMixin:
         if guard_fired:
             return guard_reply
         return await self._commit_model_switch(result, ctx, source=source)
+
+    async def _handle_proxied_model_command(self, ctx: _ModelSwitchContext, request) -> str:
+        """``/model`` on a GATEWAY_PROXY_URL sidecar: store a session override, don't resolve locally.
+
+        The sidecar config has no ``providers:`` catalog (Matrix E2EE split). ``switch_model``
+        would raise ``Unknown provider``. The next proxied turn sends model+provider on the
+        host ``/v1/chat/completions`` body (see ``_proxy_request_model_fields``).
+        """
+        from hermes_cli.model_switch import format_model_for_display
+
+        if not request.target and not request.explicit_provider:
+            current = ctx.current_model or "host default"
+            provider = ctx.current_provider or "hermes-agent"
+            return (
+                f"Current model: `{current}` ({provider})\n\n"
+                "This gateway is in proxy mode — the model catalog lives on the host agent. "
+                "Typed switches are forwarded on the next turn.\n\n"
+                "Switch: `/model <name> --provider <slug>`\n"
+                "Example: `/model cf-turbo-q8-dual --provider ollama`"
+            )
+        if not request.target:
+            return "❌ Proxy mode requires a model name: `/model <name> --provider <slug>`"
+        if not request.explicit_provider:
+            return (
+                "❌ Proxy mode requires `--provider <slug>` "
+                "(this sidecar has no local provider catalog)."
+            )
+        override = {
+            "model": request.target,
+            "provider": request.explicit_provider,
+            "api_key": "",
+            "base_url": "",
+            "api_mode": "",
+            "request_overrides": {},
+            "capabilities": {},
+        }
+        if not hasattr(self, "_session_model_overrides") or self._session_model_overrides is None:
+            self._session_model_overrides = {}
+        self._session_model_overrides[ctx.session_key] = override
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        self._pending_model_notes[ctx.session_key] = (
+            f"[Note: model was just switched from {format_model_for_display(ctx.current_model)} to "
+            f"{format_model_for_display(request.target)} via {request.explicit_provider}. "
+            f"{'This override applies to the next turn only. ' if ctx.one_turn else ''}"
+            f"Adjust your self-identification accordingly.]"
+        )
+        if ctx.one_turn:
+            if not hasattr(self, "_pending_one_turn_model_restores"):
+                self._pending_one_turn_model_restores = {}
+            self._pending_one_turn_model_restores[ctx.session_key] = (
+                ctx.restore_snapshot or {"had_override": False, "override": None}
+            )
+        lines = [
+            t("gateway.model.switched", model=format_model_for_display(request.target)),
+            t("gateway.model.provider_label", provider=request.explicit_provider),
+        ]
+        if ctx.one_turn:
+            lines.append("    (next turn only — restores after one response)")
+        else:
+            lines.append(t("gateway.model.session_only_hint"))
+        return "\n".join(lines)
 
     # -------------------------------------------------- /codex-runtime, /personality
 

@@ -218,9 +218,47 @@ class TestRunAgentViaProxy:
 
         # Verify streaming is requested
         assert session.captured_json["stream"] is True
+        assert session.captured_json["model"] == "hermes-agent"
+        assert "provider" not in session.captured_json
 
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_forwards_session_model_override(self, monkeypatch):
+        """A sidecar /model override must ride the proxy body as model+provider.
+
+        Host api_server ignores a bare model unless direct_model_requests is on;
+        provider is always honored. See Matrix E2EE sidecar split.
+        """
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.setenv("GATEWAY_PROXY_KEY", "test-key-123")
+        runner = _make_runner()
+        runner._session_model_overrides["matrix:room"] = {
+            "model": "cf-turbo-q8-dual",
+            "provider": "ollama",
+        }
+        source = _make_source()
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="session-abc",
+                        session_key="matrix:room",
+                    )
+
+        assert session.captured_json["model"] == "cf-turbo-q8-dual"
+        assert session.captured_json["provider"] == "ollama"
 
 
     @pytest.mark.asyncio

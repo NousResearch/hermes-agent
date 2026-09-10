@@ -1,0 +1,60 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: x402engine
+description: Discover and buy pay-per-call AI, data, code, media, and web APIs with USDC.
+source: https://github.com/agentc22/x402engine-mcp
+
+transport:
+  type: stdio
+  command: "npx"
+  # Exact pin. x402engine-mcp 1.1.0 adds local wallet signing and a hard
+  # per-request spend cap; the catalog never auto-updates this version.
+  args:
+    - "-y"
+    - "x402engine-mcp@1.1.0"
+  version: "1.1.0"
+  env:
+    X402_BASE_URL: "https://x402-gateway-production.up.railway.app"
+    X402_PAYMENT_NETWORK: "auto"
+    X402_MAX_PAYMENT_USD: "1.00"
+    # Keep references in config.yaml; Hermes resolves them from its secret
+    # scope only when constructing the MCP subprocess environment.
+    X402_EVM_PRIVATE_KEY: "${X402_EVM_PRIVATE_KEY}"
+    X402_SOLANA_PRIVATE_KEY: "${X402_SOLANA_PRIVATE_KEY}"
+
+auth:
+  type: api_key
+  env:
+    - name: X402_EVM_PRIVATE_KEY
+      prompt: "Dedicated Base payer private key (optional; press Enter to skip)"
+      required: false
+      secret: true
+    - name: X402_SOLANA_PRIVATE_KEY
+      prompt: "Dedicated Solana payer private key (optional; press Enter to skip)"
+      required: false
+      secret: true
+
+# Discovery and health are free. Paid tools stay off until the user reviews
+# their descriptions and prices in the configure checklist.
+tools:
+  default_enabled:
+    - discover_services
+    - service_health
+
+post_install: |
+  Discovery and health are enabled without a wallet. To buy API calls:
+
+    1. Fund a dedicated low-balance wallet with USDC on Base or Solana.
+    2. Set its private key in ~/.hermes/.env as X402_EVM_PRIVATE_KEY or
+       X402_SOLANA_PRIVATE_KEY. Never use a primary wallet.
+    3. Review and enable paid tools with:
+         hermes mcp configure x402engine
+
+  Automatic payment accepts only canonical USDC on Base and Solana and
+  rejects any single payment above X402_MAX_PAYMENT_USD (default $1.00).
+  Change X402_PAYMENT_NETWORK or X402_MAX_PAYMENT_USD in the x402engine
+  server env block in ~/.hermes/config.yaml when you need a tighter policy.
+
+  Start a new Hermes session after changing MCP configuration.

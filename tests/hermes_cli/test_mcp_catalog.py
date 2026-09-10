@@ -897,3 +897,32 @@ class TestShippedCatalog:
                     )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
+
+    def test_x402engine_wallet_secrets_are_forwarded_by_reference(self, monkeypatch):
+        """Wallet values reach the child env without entering saved config."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        evm_secret = "0xnot-a-real-private-key"
+        solana_secret = "not-a-real-solana-private-key"
+        monkeypatch.setenv("X402_EVM_PRIVATE_KEY", evm_secret)
+        monkeypatch.setenv("X402_SOLANA_PRIVATE_KEY", solana_secret)
+
+        from hermes_cli.mcp_catalog import (
+            _build_server_config,
+            _catalog_root,
+            _parse_manifest,
+        )
+        from tools.mcp_tool import _build_safe_env, _interpolate_env_vars
+
+        entry = _parse_manifest(_catalog_root() / "x402engine" / "manifest.yaml")
+        saved_config = _build_server_config(entry, None)
+        saved_env = saved_config["env"]
+
+        assert saved_env["X402_EVM_PRIVATE_KEY"] == "${X402_EVM_PRIVATE_KEY}"
+        assert saved_env["X402_SOLANA_PRIVATE_KEY"] == "${X402_SOLANA_PRIVATE_KEY}"
+        assert evm_secret not in repr(saved_config)
+        assert solana_secret not in repr(saved_config)
+
+        runtime_config = _interpolate_env_vars(saved_config)
+        child_env = _build_safe_env(runtime_config["env"])
+        assert child_env["X402_EVM_PRIVATE_KEY"] == evm_secret
+        assert child_env["X402_SOLANA_PRIVATE_KEY"] == solana_secret

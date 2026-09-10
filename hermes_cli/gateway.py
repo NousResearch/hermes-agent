@@ -6148,7 +6148,10 @@ def _cmd_restart(args):
         except (subprocess.CalledProcessError, *swallow):
             pass
 
-    if supports_systemd_services():
+    # Linger only explains a FAILED systemd unit restart. Without an installed unit the
+    # detached run below is the restart; bailing here left `hermes gateway restart` a
+    # silent exit-0 no-op on any Linux login session (Desktop read it as success).
+    if kind == "systemd" and supports_systemd_services():
         linger_ok, _detail = get_systemd_linger_status()
         if linger_ok is not True:
             import getpass

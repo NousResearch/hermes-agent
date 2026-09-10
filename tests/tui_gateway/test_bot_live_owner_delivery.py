@@ -8,6 +8,7 @@ from tui_gateway.turn_marker import record_turn_start, read_turn_marker
 
 
 def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
+    import contextlib
     import contextvars
     import logging
     import time
@@ -34,6 +35,8 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "_finish_turn": noop, "_clear_inflight_turn": noop,
         "_retire_turn_marker": lambda *args: retired.append(args),
         "_emit_settled_session_info": noop,
+        "_routing_provenance_db": lambda _session: contextlib.nullcontext(None),
+        "_reopen_routed_session_row": noop,
     })
     def terminal(outcome):
         mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],

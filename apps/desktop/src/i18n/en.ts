@@ -439,12 +439,12 @@ export const en: Translations = {
       archivedChats: 'Archived Chats',
       about: 'About',
       billing: 'Billing',
-      notifications: 'Notifications',
-      plugins: 'Plugins'
+      notifications: 'Notifications'
     },
     plugins: {
       title: 'Desktop plugins',
-      blurb: 'Bundled or dropped into the desktop-plugins folder. Disable to unload live.',
+      blurb:
+        'Extend this app — bundled or dropped into the desktop-plugins folder. Same for every profile; toggles apply live.',
       count: n => `${n} installed`,
       openFolder: 'Open plugins folder',
       rescan: 'Rescan',
@@ -457,12 +457,6 @@ export const en: Translations = {
       agentHalfMissing: 'agent half missing here',
       agentHalfMissingTip:
         'This is the desktop half of a bundled plugin, but its agent half is not installed on the currently connected backend/profile. Install it from Capabilities → Plugins.',
-      agent: {
-        title: 'Agent plugins',
-        movedToCapabilities:
-          'Agent plugins are managed per profile in Capabilities — installed list, toggles, and the plugin catalog live there.',
-        openCapabilities: 'Open Capabilities → Plugins'
-      },
       installModal: {
         installFromGit: 'Install from Git',
         reviewRepository: 'Review repository',
@@ -1510,7 +1504,10 @@ export const en: Translations = {
     skillArchivedMessage: 'Restorable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
-      empty: 'No agent plugins installed for this profile',
+      agentTitle: 'Agent plugins',
+      agentBlurb:
+        'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
+      empty: 'No agent plugins installed for this profile.',
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
       loadFailed: 'Could not load agent plugins',
       toggleFailed: (name: string) => `Could not toggle ${name}`,
@@ -1746,7 +1743,7 @@ export const en: Translations = {
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
-      skills: { title: 'Capabilities', detail: 'Skills, tools, and MCP servers' },
+      skills: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
@@ -1912,6 +1909,40 @@ export const en: Translations = {
     failedRevoke: name => `Failed to revoke ${name}`,
     pairingLockedOut: 'Too many failed approvals — this platform is locked out. Try again later.',
     waitingSince: minutes => (minutes < 1 ? 'just now' : `${minutes}m ago`),
+    restartNeeded: 'Saved. Restart the messaging gateway so the new settings take effect.',
+    restartNow: 'Restart now',
+    restarting: 'Restarting…',
+    restartFailedManual: 'Gateway restart failed — restart it manually and check the gateway logs.',
+    telegramQr: {
+      title: 'Choose how to connect your Telegram bot',
+      subtitle: 'Both options connect a bot you control and save its credentials only to this Hermes installation.',
+      quickSetup: 'Quick setup',
+      recommended: 'Recommended',
+      quickHelp:
+        'Scan a QR code and confirm in Telegram. Hermes creates the bot and detects your Telegram user ID automatically.',
+      createWithQr: 'Create with QR',
+      starting: 'Starting…',
+      replaceWarning:
+        'Telegram credentials are already configured. A new QR setup or bot token will replace the current bot when you save.',
+      scanHint: 'Scan with the Telegram app on your phone, or open the link on this computer.',
+      waiting: 'Waiting for Telegram…',
+      expiresIn: remaining => `Expires in ${remaining}`,
+      expired: 'Expired',
+      openTelegram: 'Open Telegram',
+      ready: 'Bot created',
+      allowedUsers: 'Allowed users',
+      ownerDetected: 'Owner detected',
+      addAtLeastOne: 'Add at least one Telegram user ID.',
+      userIdPlaceholder: 'Telegram user ID',
+      add: 'Add',
+      numericOnly: 'Allowed Telegram user IDs must be numeric.',
+      saveAndRestart: 'Save and restart',
+      applying: 'Saving…',
+      pairingExpired: 'Telegram pairing expired. Start a new QR setup to try again.',
+      stillWaiting: detail => `Still waiting for Telegram. Retrying after: ${detail}`,
+      savedRestarting: 'Telegram saved; gateway restarting…',
+      savedRestartFailed: detail => `Telegram saved; gateway restart failed${detail}`
+    },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Bot token',
@@ -3489,7 +3520,7 @@ export const en: Translations = {
     newSessionTab: 'New session tab',
     newTab: 'New tab',
     pluginDisabled: pluginId => `Plugin "${pluginId}" disabled`,
-    pluginDisabledBody: 'Re-enable it in Settings → Plugins to bring the pane back.',
+    pluginDisabledBody: 'Re-enable it in Capabilities → Plugins to bring the pane back.',
     missingPane: paneId => `missing pane: ${paneId}`,
     editTitle: 'Layouts',
     editHint: 'Pick a layout, or drag panes between zones.',

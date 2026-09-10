@@ -425,8 +425,7 @@ export const zh: Translations = {
       archivedChats: '已归档对话',
       about: '关于',
       billing: '账单',
-      notifications: '通知',
-      plugins: '插件'
+      notifications: '通知'
     },
     plugins: {
       title: '桌面插件',
@@ -444,11 +443,6 @@ export const zh: Translations = {
       agentHalfMissing: '此处缺少 agent 部分',
       agentHalfMissingTip:
         '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
-      agent: {
-        title: 'Agent 插件',
-        movedToCapabilities: 'Agent 插件按配置在「能力」页管理 — 已安装列表、开关和插件目录都在那里。',
-        openCapabilities: '打开 能力 → 插件'
-      },
       installModal: {
         installFromGit: '从 Git 安装',
         reviewRepository: '检查仓库',
@@ -1681,7 +1675,9 @@ export const zh: Translations = {
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
     plugins: {
-      empty: '此配置尚未安装任何 agent 插件',
+      agentTitle: 'Agent 插件',
+      agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
+      empty: '此配置尚未安装任何 agent 插件。',
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
       loadFailed: '无法加载 agent 插件',
       toggleFailed: (name: string) => `无法切换 ${name}`,
@@ -2080,6 +2076,38 @@ export const zh: Translations = {
     failedRevoke: name => `撤销 ${name} 失败`,
     pairingLockedOut: '批准失败次数过多，该平台已被暂时锁定，请稍后再试。',
     waitingSince: minutes => (minutes < 1 ? '刚刚' : `${minutes} 分钟前`),
+    restartNeeded: '已保存。请重启消息网关以应用新设置。',
+    restartNow: '立即重启',
+    restarting: '正在重启…',
+    restartFailedManual: '网关重启失败 — 请手动重启并检查网关日志。',
+    telegramQr: {
+      title: '选择连接 Telegram 机器人的方式',
+      subtitle: '两种方式都会连接一个由你控制的机器人，凭据仅保存在此 Hermes 安装中。',
+      quickSetup: '快速设置',
+      recommended: '推荐',
+      quickHelp: '扫描二维码并在 Telegram 中确认。Hermes 会自动创建机器人并识别你的 Telegram 用户 ID。',
+      createWithQr: '通过二维码创建',
+      starting: '正在启动…',
+      replaceWarning: 'Telegram 凭据已配置。保存后，新的二维码设置或机器人令牌将替换当前机器人。',
+      scanHint: '用手机上的 Telegram 应用扫描，或在这台电脑上打开链接。',
+      waiting: '等待 Telegram 确认…',
+      expiresIn: remaining => `${remaining} 后过期`,
+      expired: '已过期',
+      openTelegram: '打开 Telegram',
+      ready: '机器人已创建',
+      allowedUsers: '允许的用户',
+      ownerDetected: '已识别所有者',
+      addAtLeastOne: '请至少添加一个 Telegram 用户 ID。',
+      userIdPlaceholder: 'Telegram 用户 ID',
+      add: '添加',
+      numericOnly: '允许的 Telegram 用户 ID 必须是数字。',
+      saveAndRestart: '保存并重启',
+      applying: '正在保存…',
+      pairingExpired: 'Telegram 配对已过期。请重新开始二维码设置。',
+      stillWaiting: detail => `仍在等待 Telegram。出错后重试：${detail}`,
+      savedRestarting: 'Telegram 已保存；网关正在重启…',
+      savedRestartFailed: detail => `Telegram 已保存；网关重启失败${detail}`
+    },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Bot 令牌',
@@ -3631,7 +3659,7 @@ export const zh: Translations = {
     newSessionTab: '新建会话标签',
     newTab: '新建标签页',
     pluginDisabled: pluginId => `插件“${pluginId}”已禁用`,
-    pluginDisabledBody: '在 设置 → 插件 中重新启用即可恢复面板。',
+    pluginDisabledBody: '在 技能与工具 → 插件 中重新启用即可恢复面板。',
     missingPane: paneId => `缺少面板：${paneId}`,
     editTitle: '布局',
     editHint: '选择一个布局，或在区域之间拖动面板。',

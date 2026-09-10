@@ -7,7 +7,10 @@ covered by a separate live test gated on `codex --version`.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+import yaml
 
 from hermes_cli.runtime_provider import (
     _VALID_API_MODES,
@@ -87,6 +90,84 @@ class TestMaybeApplyCodexAppServerRuntime:
         assert got == "anthropic_messages", (
             f"provider={provider!r} should not be rerouted to codex_app_server"
         )
+
+
+@pytest.mark.parametrize(
+    "provider,credential_source",
+    [
+        ("openai-api", "explicit"),
+        ("openai-codex", "explicit"),
+        ("openai-codex", "singleton"),
+        ("openai-api", "environment"),
+        ("openai-api", "pool"),
+        ("openai-codex", "pool"),
+    ],
+)
+@pytest.mark.parametrize(
+    "setting,expected_mode",
+    [("auto", "codex_responses"), ("codex_app_server", "codex_app_server")],
+)
+def test_saved_runtime_applies_to_every_credential_source(
+    tmp_path, monkeypatch, provider, credential_source, setting, expected_mode
+):
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"provider": provider, "default": "gpt-test", "openai_runtime": setting},
+    }), encoding="utf-8")
+    base_url = (
+        "https://api.openai.com/v1" if provider == "openai-api"
+        else "https://chatgpt.com/backend-api/codex"
+    )
+    api_key = "test-only-api-key"
+    entry = SimpleNamespace(access_token=api_key, base_url=base_url, source="test-pool")
+    pool = SimpleNamespace(provider=provider, has_credentials=lambda: True, select=lambda: entry)
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: pool if credential_source == "pool" else None)
+    kwargs = {}
+    if credential_source == "explicit":
+        kwargs["explicit_api_key"] = api_key
+    elif credential_source == "environment":
+        monkeypatch.setenv("OPENAI_API_KEY", api_key)
+    elif credential_source == "singleton":
+        monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", lambda: {
+            "api_key": api_key, "base_url": base_url,
+            "source": "hermes-auth-store", "last_refresh": None,
+        })
+
+    resolved = rp.resolve_runtime_provider(requested=provider, **kwargs)
+
+    assert resolved["provider"] == provider
+    assert resolved["api_mode"] == expected_mode
+    assert resolved["base_url"] == base_url
+    assert resolved["api_key"] == api_key
+
+
+@pytest.mark.parametrize(
+    "provider,base_url,expected_mode",
+    [
+        ("anthropic", "https://api.anthropic.com", "anthropic_messages"),
+        ("custom", "https://api.openai.com/v1", "codex_responses"),
+    ],
+)
+def test_saved_runtime_does_not_reroute_other_providers(
+    tmp_path, monkeypatch, provider, base_url, expected_mode
+):
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"provider": provider, "default": "test-model", "openai_runtime": "codex_app_server"},
+    }), encoding="utf-8")
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: None)
+
+    resolved = rp.resolve_runtime_provider(
+        requested=provider, explicit_api_key="test-only-api-key", explicit_base_url=base_url,
+    )
+
+    assert resolved["provider"] == provider
+    assert resolved["api_mode"] == expected_mode
+    assert resolved["base_url"] == base_url
 
 
 class TestCodexAppServerModule:

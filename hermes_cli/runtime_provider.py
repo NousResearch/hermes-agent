@@ -96,7 +96,7 @@ _HOST_MANDATED_API_MODES = {
 }
 
 # codex_app_server is opt-in: hand the whole turn to a `codex app-server` subprocess (Codex's own
-# tool runtime), gated on `model.openai_runtime == "codex_app_server"` AND provider in {openai, openai-codex}.
+# tool runtime), gated on `model.openai_runtime == "codex_app_server"` and an OpenAI/Codex provider.
 _VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}
 
 
@@ -226,9 +226,9 @@ def _api_key_provider_api_mode(provider: str, model_cfg: Dict[str, Any], api_key
 
 
 def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model_cfg: Optional[Dict[str, Any]]) -> str:
-    """Opt-in rewrite to "codex_app_server" via ``model.openai_runtime``; only ``openai`` /
-    ``openai-codex`` are eligible. No-op when unset, "auto", or empty."""
-    if model_cfg and provider in {"openai", "openai-codex"} and str(model_cfg.get("openai_runtime") or "").strip().lower() == "codex_app_server":
+    """Opt-in rewrite to "codex_app_server" for OpenAI API/Codex providers.
+    No-op when ``model.openai_runtime`` is unset, "auto", or empty."""
+    if model_cfg and provider in {"openai", "openai-api", "openai-codex"} and str(model_cfg.get("openai_runtime") or "").strip().lower() == "codex_app_server":
         return "codex_app_server"
     return api_mode
 
@@ -240,8 +240,10 @@ _NO_ANTHROPIC_CREDENTIALS_MSG = ("No Anthropic credentials found. Set ANTHROPIC_
                                  "run 'claude setup-token', or authenticate with 'claude /login'.")
 
 
-def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra: Any) -> Dict[str, Any]:
+def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, *,
+             model_cfg: Optional[Dict[str, Any]] = None, **extra: Any) -> Dict[str, Any]:
     """Build a resolved-runtime dict; ``extra`` carries source/requested_provider/provider-specific keys."""
+    api_mode = _maybe_apply_codex_app_server_runtime(provider=provider, api_mode=api_mode, model_cfg=model_cfg)
     return {"provider": provider, "api_mode": api_mode, "base_url": base_url, "api_key": api_key, **extra}
 
 
@@ -463,8 +465,7 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
     api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
                                                   _pool_entry_base_url(entry).rstrip("/"))
     base_url = _finalize_base_url(provider, api_mode, base_url)
-    api_mode = _maybe_apply_codex_app_server_runtime(provider=provider, api_mode=api_mode, model_cfg=model_cfg)
-    return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
+    return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), model_cfg=model_cfg, source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
 
 
@@ -541,7 +542,7 @@ def _creds_fallback(api_key, explicit_base_url, base_url, expiry, expiry_key, re
 def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
     api_key, base_url, last_refresh = _creds_fallback(api_key, explicit_base_url, explicit_base_url or DEFAULT_CODEX_BASE_URL,
                                                       None, "last_refresh", resolve_codex_runtime_credentials)
-    return _runtime("openai-codex", "codex_responses", base_url, api_key, source="explicit", last_refresh=last_refresh,
+    return _runtime("openai-codex", "codex_responses", base_url, api_key, model_cfg=model_cfg, source="explicit", last_refresh=last_refresh,
                     requested_provider=requested_provider)
 
 
@@ -584,7 +585,7 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
     api_mode = _api_key_provider_api_mode(provider, model_cfg, api_key, base_url, target_model or model_cfg.get("default", ""),
                                           opencode_by_model=False)
     api_key = _actual_local_key(provider, api_key, base_url)
-    return _runtime(provider, api_mode, base_url.rstrip("/"), api_key, source="explicit", requested_provider=requested_provider)
+    return _runtime(provider, api_mode, base_url.rstrip("/"), api_key, model_cfg=model_cfg, source="explicit", requested_provider=requested_provider)
 
 
 # Providers with a dedicated explicit-credential builder; everything else goes through the
@@ -655,7 +656,7 @@ def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model
         return None
     api_mode = spec.api_mode(_effective_model(model_cfg, target_model)) if callable(spec.api_mode) else spec.api_mode
     return _runtime(provider, api_mode, (creds.get("base_url") or "").rstrip("/") or spec.default_base_url,
-                    creds.get("api_key", ""), source=creds.get("source", spec.default_source),
+                    creds.get("api_key", ""), model_cfg=model_cfg, source=creds.get("source", spec.default_source),
                     **{spec.expiry_key: creds.get(spec.expiry_key)}, requested_provider=requested_provider)
 
 
@@ -718,7 +719,7 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
                                           target_model or model_cfg.get("default", ""), opencode_by_model=True)
     base_url = _finalize_base_url(provider, api_mode, base_url)
     api_key = _actual_local_key(provider, creds.get("api_key", ""), base_url)
-    return _runtime(provider, api_mode, base_url, api_key, source=creds.get("source", "env"), requested_provider=requested_provider)
+    return _runtime(provider, api_mode, base_url, api_key, model_cfg=model_cfg, source=creds.get("source", "env"), requested_provider=requested_provider)
 
 
 # ── the resolution ladder ──────────────────────────────────────────────────────────────────

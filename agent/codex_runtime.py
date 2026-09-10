@@ -5,6 +5,7 @@ AIAgent first: ``run_codex_app_server_turn`` drives one ``codex app-server`` sub
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -379,9 +380,45 @@ def _consume_user_interrupt(agent, active: bool = True) -> tuple[bool, Any]:
     return interrupted, message
 
 
-def _ensure_codex_session(agent) -> None:
-    """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook)."""
+def _codex_session_meta_key(session_id: str) -> str:
+    return f"codex_session:{session_id}"
+
+
+def invalidate_codex_session(agent) -> None:
+    """A turn in another runtime makes its Hermes transcript authoritative again."""
     if getattr(agent, "_codex_session", None) is not None:
+        _close_codex_session(agent)
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if db is not None and session_id:
+        key = _codex_session_meta_key(session_id)
+        if db.get_meta(key):
+            db.set_meta(key, "")
+
+
+def _codex_history_items(agent, messages: List[Dict[str, Any]]) -> list[dict]:
+    """Import plaintext history without replaying another runtime's encrypted state."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from agent.turn_context import build_api_messages
+
+    wire_messages, _ = build_api_messages(
+        agent, messages, current_turn_user_idx=-1, ext_prefetch_cache="", plugin_user_context="",
+        moa_config=None, active_system_prompt="",
+    )
+    items = _chat_messages_to_responses_input(wire_messages, replay_encrypted_reasoning=False)
+    for item in items:
+        if item.get("role") in {"user", "assistant"}:
+            item["type"] = "message"
+            if isinstance(item.get("content"), str):
+                part_type = "output_text" if item["role"] == "assistant" else "input_text"
+                item["content"] = [{"type": part_type, "text": item["content"]}]
+    return items
+
+
+def _ensure_codex_session(agent, *, instructions: str | None = None, history=None, history_end=None) -> None:
+    """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook)."""
+    session = getattr(agent, "_codex_session", None)
+    if session is not None and getattr(session, "_instructions", None) == instructions:
         return
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
@@ -403,11 +440,35 @@ def _ensure_codex_session(agent) -> None:
     # _emit_interim_assistant_message). Without this, Discord/Telegram users see no live tool-progress or
     # interim commentary while codex_app_server is running — only the final answer (#33200). Supersedes the
     # narrower item/started-only bridge from #38835.
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    meta_key = _codex_session_meta_key(session_id) if session_id else None
+    fingerprint = hashlib.sha256((instructions or "").encode("utf-8")).hexdigest()
+    if session is not None:
+        thread_id = session.ensure_started()
+        refresh_instructions = True
+        # A loaded thread ignores resume overrides. Cold resume updates the canonical
+        # instructions used after native compaction; injection updates retained history.
+        _close_codex_session(agent)
+    else:
+        state = json.loads(db.get_meta(meta_key) or "{}") if db is not None and session_id else {}
+        thread_id = state.get("thread_id")
+        refresh_instructions = bool(thread_id and state.get("instructions_hash") != fingerprint)
+    history_items = None
+    if not thread_id and history:
+        history_end = len(history) - 1 if history_end is None else history_end
+        history_items = _codex_history_items(agent, history[:history_end])
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
+        model=agent.model, instructions=instructions, thread_id=thread_id,
+        history=history_items, refresh_instructions=refresh_instructions,
     )
+    # Persist the link before the first tool can run. A failed write must stop the turn.
+    thread_id = agent._codex_session.ensure_started()
+    if db is not None and session_id:
+        db.set_meta(meta_key, json.dumps({"thread_id": thread_id, "instructions_hash": fingerprint}))
 
 
 def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> None:
@@ -468,7 +529,9 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
 
 
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: List[Dict[str, Any]],
-                              effective_task_id: str, should_review_memory: bool = False) -> Dict[str, Any]:
+                              effective_task_id: str, should_review_memory: bool = False,
+                              api_messages: List[Dict[str, Any]] | None = None,
+                              instructions: str | None = None, current_turn_user_idx: int | None = None) -> Dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
     Returns the chat_completions result shape. The user message is ALREADY in ``messages`` — never append it again."""
     # Defense in depth for compression.checkpoint_required: agent init refuses the combination, but
@@ -477,9 +540,22 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
-    _ensure_codex_session(agent)
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        from agent.fast_mode import BOUNDED_MODES, effective_request_overrides
+
+        wire_messages = api_messages if api_messages is not None else messages
+        _ensure_codex_session(agent, instructions=instructions, history=messages, history_end=current_turn_user_idx)
+        if getattr(agent, "_interrupt_requested", False):
+            agent._codex_session.request_interrupt()
+        reasoning = getattr(agent, "reasoning_config", None) or {}
+        service_tier = getattr(agent, "service_tier", None)
+        if service_tier in BOUNDED_MODES:
+            service_tier = effective_request_overrides(agent).get("service_tier")
+        turn = agent._codex_session.run_turn(
+            user_input=wire_messages[-1].get("content", user_message) if wire_messages else user_message,
+            model=agent.model, effort="none" if reasoning.get("enabled") is False else reasoning.get("effort"),
+            service_tier=service_tier or "default",
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)

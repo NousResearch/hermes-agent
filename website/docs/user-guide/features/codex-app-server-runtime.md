@@ -5,7 +5,7 @@ sidebar_label: Codex App-Server Runtime
 
 # Codex App-Server Runtime
 
-Hermes can optionally hand `openai/*` and `openai-codex/*` turns to the [Codex CLI app-server](https://github.com/openai/codex) instead of running its own tool loop. When enabled, terminal commands, file edits, sandboxing, and MCP tool calls all execute inside Codex's runtime — Hermes becomes the shell around it (sessions DB, slash commands, gateway, memory and skill review).
+Hermes can optionally hand OpenAI API (`openai-api`, legacy `openai`) and Codex (`openai-codex`) turns to the [Codex CLI app-server](https://github.com/openai/codex) instead of running its own tool loop. When enabled, terminal commands, file edits, sandboxing, and MCP tool calls all execute inside Codex's runtime — Hermes becomes the shell around it (sessions DB, slash commands, gateway, memory and skill review).
 
 This is **opt-in only**. Default Hermes behavior is unchanged unless you flip the flag. Hermes never auto-routes you onto this runtime.
 
@@ -196,6 +196,28 @@ You can also set it manually in `~/.hermes/config.yaml`:
 model:
   openai_runtime: codex_app_server   # default is "auto" (= Hermes runtime)
 ```
+
+## Model settings and session context
+
+Hermes sends its selected model, reasoning effort, and service tier on each turn.
+Disabling reasoning sends `none`; the selected model must support that value.
+Unsupported settings return Codex's error. Codex's configuration continues to own
+authentication, sandboxing, and approval policy.
+For `/fast auto` and `/fast cold`, Hermes evaluates the window when the native turn
+starts; the selected tier applies to that whole Codex turn.
+
+Each saved Hermes session keeps a link to its native Codex conversation. Resuming
+the Hermes session after a restart restores that conversation; `/new` starts a
+separate one. Existing Hermes history is imported once when no native link exists.
+After a turn in the default runtime, returning to Codex imports the updated Hermes
+history, including the intervening turn. Unavailable native history stops the turn
+before model execution.
+
+Hermes system instructions and per-turn memory and plugin context reach Codex.
+Unchanged turns reuse the subprocess and send only the new input. Changing or
+clearing Hermes instructions restarts the subprocess, resumes the same native
+conversation, and appends one replacement instruction block. This extra startup
+also updates the instructions Codex restores after compaction.
 
 ## Self-improvement loop (memory + skill nudges)
 

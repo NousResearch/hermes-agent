@@ -155,6 +155,9 @@ class CodexAppServerSession:
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        model: Optional[str] = None, instructions: Optional[str] = None,
+        thread_id: Optional[str] = None, history: Optional[list[dict]] = None,
+        refresh_instructions: bool = False,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
@@ -166,6 +169,11 @@ class CodexAppServerSession:
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
+        self._model = model
+        self._instructions = instructions
+        self._resume_thread_id = thread_id
+        self._history = history
+        self._refresh_instructions = refresh_instructions
 
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
@@ -186,16 +194,39 @@ class CodexAppServerSession:
         self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
-        result = self._client.request("thread/start", {"cwd": self._cwd}, timeout=15)
+        params: dict[str, Any] = {"cwd": self._cwd}
+        if self._model:
+            params["model"] = self._model
+        if self._instructions is not None:
+            params["developerInstructions"] = (
+                "These Hermes instructions replace all earlier Hermes instructions, "
+                "including any that are no longer listed:\n\n" + self._instructions
+            )
+        method = "thread/start"
+        if self._resume_thread_id:
+            method = "thread/resume"
+            params.update(threadId=self._resume_thread_id, excludeTurns=True)
+        result = self._client.request(method, params, timeout=15)
         # Different codex versions serialize the id under thread.id / sessionId / threadId.
         thread_obj = result.get("thread") or {}
         thread_id = thread_obj.get("id") or thread_obj.get("sessionId") or result.get("sessionId") or result.get("threadId")
         if not thread_id:
             raise CodexAppServerError(
-                code=-32603, message=f"codex thread/start returned no thread id (payload keys: {sorted(result.keys())})",
+                code=-32603, message=f"codex {method} returned no thread id (payload keys: {sorted(result.keys())})",
             )
+        if self._resume_thread_id and thread_id != self._resume_thread_id:
+            raise CodexAppServerError(code=-32603, message="codex resumed a different thread")
+        if not self._resume_thread_id and self._history:
+            self._client.request("thread/inject_items", {"threadId": thread_id, "items": self._history}, timeout=15)
+        if self._refresh_instructions and self._instructions is not None:
+            self._client.request("thread/inject_items", {"threadId": thread_id, "items": [{
+                "type": "message", "role": "developer",
+                "content": [{"type": "input_text", "text": params["developerInstructions"]}],
+            }]}, timeout=15)
         self._thread_id = thread_id
-        logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
+        self._resume_thread_id = thread_id
+        self._history = None
+        logger.info("codex app-server thread ready: id=%s sandbox=%s cwd=%s", thread_id[:8], result.get("sandbox"), self._cwd)
         return thread_id
 
     def close(self) -> None:
@@ -326,6 +357,8 @@ class CodexAppServerSession:
     def run_turn(
         self, user_input: Any, *, turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25, post_tool_quiet_timeout: float = 90.0,
+        model: Optional[str] = None, effort: Optional[str] = None,
+        service_tier: Optional[str] = None,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, bridging approvals and projecting items.
 
@@ -344,11 +377,14 @@ class CodexAppServerSession:
                 result.interrupted = True
             else:
                 result.submitted_user_text = _coerce_turn_input_text(user_input)
-                ts = self._request_for(
-                    result, "turn/start",
-                    {"threadId": self._thread_id, "input": [{"type": "text", "text": result.submitted_user_text}]},
-                    "turn/start",
-                )
+                params: dict[str, Any] = {"threadId": self._thread_id, "input": [{"type": "text", "text": result.submitted_user_text}]}
+                for key, value in (("model", model), ("effort", effort)):
+                    if value is not None:
+                        params[key] = value
+                if service_tier is not None:
+                    # Codex 0.125 uses fast/flex/null; null explicitly clears a previous override.
+                    params["serviceTier"] = {"default": None, "priority": "fast"}.get(service_tier, service_tier)
+                ts = self._request_for(result, "turn/start", params, "turn/start")
                 if ts is not None:
                     self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout, post_tool_quiet_timeout)
         self._interrupt_event.clear()
@@ -575,7 +611,7 @@ class CodexAppServerSession:
     _SERVER_REQUEST_HANDLERS: dict[str, Callable[..., dict]] = {
         "item/commandExecution/requestApproval": lambda self, p: {"decision": self._decide_exec_approval(p)},
         "item/fileChange/requestApproval": lambda self, p: {"decision": self._decide_apply_patch_approval(p)},
-        "item/permissions/requestApproval": lambda self, p: {"decision": "decline"},
+        "item/permissions/requestApproval": lambda self, p: {"permissions": {}, "scope": "turn"},
         "mcpServer/elicitation/request": _respond_elicitation,
     }
 

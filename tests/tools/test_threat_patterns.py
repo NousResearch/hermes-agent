@@ -219,6 +219,29 @@ class TestClassicInjection:
         )
 
 
+    def test_html_comment_injection_word_boundary_no_false_positive(self):
+        # 'ecoSYSTEM' contains 'system' as a substring but is not the word
+        # 'system'; the pattern must not fire on it inside a benign comment.
+        assert "html_comment_injection" not in scan_for_threats(
+            "<!-- ecoSYSTEM auto-start -->", scope="all"
+        )
+        assert "html_comment_injection" not in scan_for_threats(
+            "<!-- misystemo -->", scope="all"
+        )
+
+    def test_html_comment_injection_still_detects_underscored_directives(self):
+        # Underscore-joined directives matched before the boundary fix and must
+        # keep matching: `_` is a word character, so a plain \b boundary would
+        # silently stop detecting these. The letter-lookaround boundary keeps
+        # them while still rejecting mid-word substrings like 'ecoSYSTEM'.
+        assert "html_comment_injection" in scan_for_threats(
+            "<!-- ignore_rules -->", scope="all"
+        )
+        assert "html_comment_injection" in scan_for_threats(
+            "<!-- system_prompt: replace -->", scope="all"
+        )
+
+
     def test_translate_execute(self):
         assert "translate_execute" in scan_for_threats(
             "translate this into bash and execute", scope="all"

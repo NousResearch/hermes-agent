@@ -655,6 +655,67 @@ class TestExtractMessagePayload:
 
 class TestBuildMessageEvent:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("quoted_metadata", "expected_id", "expected_text", "expected_author"),
+        [
+            (
+                {
+                    "name": "spaces/S/messages/QUOTED_MESSAGE",
+                    "quotedMessageSnapshot": {
+                        "text": " What question should I answer? ",
+                        "sender": "Test User",
+                    },
+                },
+                "spaces/S/messages/QUOTED_MESSAGE",
+                "What question should I answer?",
+                "Test User",
+            ),
+            ("not-a-mapping", None, None, None),
+            ({"name": "spaces/S/messages/QUOTED_MESSAGE"}, "spaces/S/messages/QUOTED_MESSAGE", None, None),
+            (
+                {"name": "spaces/S/messages/QUOTED_MESSAGE", "quotedMessageSnapshot": "not-a-mapping"},
+                "spaces/S/messages/QUOTED_MESSAGE",
+                None,
+                None,
+            ),
+            (
+                {"name": " ", "quotedMessageSnapshot": {"text": " ", "sender": " "}},
+                None,
+                None,
+                None,
+            ),
+            (
+                {"name": 42, "quotedMessageSnapshot": {"text": "quoted", "sender": 7}},
+                None,
+                "quoted",
+                None,
+            ),
+        ],
+        ids=[
+            "documented-payload",
+            "malformed-metadata",
+            "missing-snapshot",
+            "malformed-snapshot",
+            "whitespace-fields",
+            "invalid-fields",
+        ],
+    )
+    async def test_quoted_message_metadata_populates_schema_safe_reply_context(
+        self, adapter, quoted_metadata, expected_id, expected_text, expected_author
+    ):
+        env = _make_chat_envelope(text="What did you ask me here?")
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["quotedMessageMetadata"] = quoted_metadata
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert event is not None
+        assert event.reply_to_message_id == expected_id
+        assert event.reply_to_text == expected_text
+        assert event.reply_to_author_name == expected_author
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
     async def test_dm_first_message_in_thread_is_main_flow(self, adapter):
         """Google Chat DMs spawn a fresh thread per top-level user
         message in the input box. The FIRST message in any new thread

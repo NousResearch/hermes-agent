@@ -40,7 +40,7 @@ describe('groupEntriesByRecency', () => {
     ]
 
     const full = group(entries)
-    const dividers = full.flatMap((row, index) => row.kind === 'divider' ? [index] : [])
+    const dividers = full.flatMap((row, index) => (row.kind === 'divider' ? [index] : []))
     const limited = groupEntriesByRecency(entries, NOW, MONDAY, 2)
 
     expect(limited).toEqual(full.slice(0, dividers[1]))

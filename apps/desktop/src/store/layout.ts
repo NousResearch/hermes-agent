@@ -395,7 +395,14 @@ export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
  *  offering. Broader than `$sidebarFiltersActive`, which only knows about what
  *  hides rows, not about how they're grouped, sorted or labelled. */
 export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
-  [$sidebarGrouping, $sidebarOrdering, $sidebarRowMeta, $sidebarCardRows, $sidebarShowAllSessions, $sidebarFiltersActive],
+  [
+    $sidebarGrouping,
+    $sidebarOrdering,
+    $sidebarRowMeta,
+    $sidebarCardRows,
+    $sidebarShowAllSessions,
+    $sidebarFiltersActive
+  ],
   (grouping, ordering, rowMeta, cardRows, showAllSessions, filtersActive) =>
     grouping !== SIDEBAR_DEFAULT_GROUPING ||
     ordering !== SIDEBAR_DEFAULT_ORDERING ||

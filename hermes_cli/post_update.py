@@ -557,29 +557,12 @@ def run_steps(steps: Iterable) -> dict:
 
 
 def resync_and_reexec(args) -> int | None:
-    """Phase 1 of the update-phase: own the venv sync, then hand off.
+    """Sync dependencies before a fresh-process handoff.
 
-    Runs in whatever interpreter called us — usually the venv python the
-    tree swap just invalidated — so it touches as little as possible:
-    ``venv_sync`` (stdlib-only at import by contract) decides from the
-    lockfile digest whether the venv is stale, syncs it via pm when it
-    is, and then this process REPLACES ITSELF with a fresh interpreter
-    that has never mapped a pre-sync module.
-
-    Returns None to mean "you are already the fresh process — run phase
-    2", or an exit code to propagate.
-
-    The boundary is double-guarded:
-
-    * the ``--resumed-after-sync`` argv flag is the loop-proofing — the
-      exec'd child must not sync again even if another writer moves the
-      stamp between exec and check, because a flag in argv cannot race;
-    * the venv_sync stamp is the idempotence — a re-run of the whole
-      update sees a fresh stamp and skips the sync entirely.
-
-    POSIX uses ``os.execv``: same pid, so an update-lock marker's owner
-    stays literally correct. Windows has no true exec — spawn + wait +
-    propagate, and the child passes any lock by process ancestry.
+    ``venv_sync`` uses PM's recorded inputs and selected environment for
+    this checkout. The resumed flag prevents a second sync after handoff.
+    Return None to continue in this process, or an exit code to propagate.
+    POSIX replaces the process. Windows waits for a child and returns its code.
     """
     if args.resumed_after_sync:
         return None

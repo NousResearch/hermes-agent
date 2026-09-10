@@ -464,13 +464,32 @@ def env_for(*names: str, base_env: Optional[dict] = None) -> dict[str, str]:
 
 
 def _runtime_state_matches(fact: dict, stamp: str) -> bool:
-    if fact.get("stamp") != stamp:
+    if not isinstance(fact, dict) or fact.get("stamp") != stamp:
         return False
-    environment = fact.get("environment")
-    if environment is None:
-        return True  # shipped/pre-generation state
-    from pathlib import Path
-    return isinstance(environment, str) and (Path(environment) / "pyvenv.cfg").is_file()
+    from hermes_cli.runtime_paths import selected_venv
+
+    try:
+        environment = selected_venv(paths.repo_root())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    recorded = fact.get("environment")
+    if recorded is not None and (not isinstance(recorded, str) or Path(recorded).resolve() != environment):
+        return False
+    return (environment / "pyvenv.cfg").is_file()
+
+
+def venv_is_current() -> bool:
+    """Use the recorded PM inputs and the boot-time environment selection."""
+    fact = Facts(paths.runtime_facts_path(), strict=True).get("venv")
+    if fact is None:
+        fact = Facts(paths.facts_path(), strict=True).get("venv")
+    if fact is None:
+        return False
+    if (not isinstance(fact, dict) or not isinstance(fact.get("stamp"), str) or not fact["stamp"]
+            or not isinstance(fact.get("extras"), list)
+            or any(not isinstance(extra, str) for extra in fact["extras"])):
+        raise ValueError("invalid recorded dependency state")
+    return _runtime_state_matches(fact, get_package("venv").expected_stamp(fact["extras"]))
 
 
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, before_publish=None, repair: bool = False) -> None:
@@ -669,11 +688,12 @@ def check() -> list[str]:
         venv = get_package("venv")
     except KeyError:
         venv = None
-    fact = Facts(paths.runtime_facts_path()).get("venv") or facts.get("venv")
-    if venv is not None and fact is not None:
-        expected = venv.expected_stamp(fact.get("extras", []))
-        if not _runtime_state_matches(fact, expected):
-            problems.append("venv: out of sync with uv.lock")
+    if venv is not None and (paths.runtime_facts_path().is_file() or facts.get("venv") is not None):
+        try:
+            if not venv_is_current():
+                problems.append("venv: out of sync with uv.lock")
+        except (OSError, RuntimeError, ValueError) as exc:
+            problems.append(f"venv: {exc}")
     return problems
 
 

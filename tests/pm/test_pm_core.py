@@ -604,10 +604,19 @@ class FakeVenv(StatePackage):
 
     def apply(self, extras):
         self.applied.append(list(extras))
+        from hermes_cli.runtime_paths import install_state_dir
+
+        environment = install_state_dir(paths.repo_root()) / "environments" / str(len(self.applied)) / "venv"
+        environment.mkdir(parents=True)
+        (environment / "pyvenv.cfg").write_text("home = test\n", encoding="utf-8")
+        return {"environment": environment}
 
 
 @pytest.fixture
-def venv_env(pm_env):
+def venv_env(pm_env, tmp_path, monkeypatch):
+    project = tmp_path / "venv-project"
+    project.mkdir()
+    monkeypatch.setattr(paths, "repo_root", lambda: project)
     fake = FakeVenv()
     registry._packages["venv"] = fake
     return pm_env, fake

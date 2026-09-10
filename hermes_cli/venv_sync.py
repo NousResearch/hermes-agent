@@ -21,13 +21,12 @@ One of the two separately-invocable, stdlib-only-at-import halves of
 Stdlib-only at import is a hard contract: this runs on freshly-cloned
 trees where the venv does not exist yet, and after tree swaps where the
 venv is not trustworthy — exactly the moments a third-party import
-would explode. ``pm`` is itself stdlib-only first-party code, and it is
-imported lazily, only once a sync is actually due.
+would explode. ``pm`` is first-party code and is imported at sync time,
+not when this module is imported.
 
-Why the sync is not just "run uv every time": ``uv sync`` on an
-already-current venv still costs ~1-2s of resolver work, and the boot
-path calls this through ``post_update``. The lockfile digest recorded in
-``<runtime dir>/cache/venv-sync.json`` makes currency a file read.
+PM decides whether this checkout needs a sync from its recorded inputs
+and selected environment. A foreign bootstrap root retains its separate
+lockfile-digest stamp until execution moves into that checkout.
 
 Invocation:
 
@@ -87,13 +86,7 @@ def _stamp_path(project_root: Path) -> Path:
 
 
 def _lock_digest(project_root: Path) -> str | None:
-    """Content hash of what a sync would consume.
-
-    pyproject.toml is part of the key: an extras edit without a lock
-    bump must re-sync (same reasoning as pm's venv expected_stamp keying
-    on uv.lock — pyproject rides along here because this module cannot
-    assume pm's ledger exists yet).
-    """
+    """Hash the manifest and lock inputs for a foreign-root bootstrap."""
     h = hashlib.sha256()
     found = False
     for name in ("uv.lock", "pyproject.toml"):
@@ -179,31 +172,8 @@ def write_stamp(project_root: Path, digest: str) -> None:
     os.replace(tmp, path)
 
 
-def _pm_sync(root: Path) -> dict:
-    """Bring ``root``'s venv current. pm's ledger when root IS this tree,
-    a direct pinned-uv drive when it is a foreign clone.
-
-    Returns ``{"ok": bool, "detail": str | None}``.
-    """
-    try:
-        from pm import paths as pm_paths
-
-        own_tree = Path(pm_paths.repo_root()).resolve() == root.resolve()
-    except Exception:
-        own_tree = False
-
-    if own_tree:
-        # pm owns the extras ledger; explicit=True because reaching a
-        # stale-venv verdict here IS the deliberate remedy (installer /
-        # post-update path), the same trust `hermes update` carries.
-        try:
-            from pm import sync_venv
-
-            sync_venv(explicit=True)
-        except Exception as exc:
-            return {"ok": False, "detail": str(exc)}
-        return {"ok": True, "detail": None}
-
+def _sync_foreign(root: Path) -> dict:
+    """Bootstrap a foreign checkout with PM's pinned uv and environment."""
     uv, env = _managed_uv()
     if uv is None:
         return {
@@ -225,17 +195,27 @@ def _pm_sync(root: Path) -> dict:
 
 
 def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
-    """Bring the venv up to the tree. Returns a state dict, never raises.
-
-    States: ``sealed`` (nothing to sync, by design), ``current`` (stamp
-    matches the lockfile digest), ``synced`` (the sync ran and the stamp
-    moved), ``failed`` (the sync did not converge — detail says why),
-    ``would-sync`` (check mode found staleness and stopped).
-    """
+    """Report or sync dependencies. A malformed install stamp is a build error."""
     root = Path(project_root) if project_root else _project_root()
 
     if _is_sealed(root):
         return {"state": "sealed", "ok": True}
+
+    try:
+        from pm import paths as pm_paths
+
+        if Path(pm_paths.repo_root()).resolve() == root.resolve():
+            from pm import sync_venv
+            from pm.ensure import venv_is_current
+
+            if venv_is_current():
+                return {"state": "current", "ok": True}
+            if check:
+                return {"state": "would-sync", "ok": True}
+            sync_venv(explicit=True)
+            return {"state": "synced", "ok": True}
+    except Exception as exc:
+        return {"state": "failed", "ok": False, "detail": str(exc)}
 
     digest = _lock_digest(root)
     if digest is None:
@@ -251,7 +231,7 @@ def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
     if check:
         return {"state": "would-sync", "ok": True}
 
-    result = _pm_sync(root)
+    result = _sync_foreign(root)
     if not result["ok"]:
         # No stamp write: the next run must try again, not skip.
         return {"state": "failed", "ok": False, "detail": result["detail"]}

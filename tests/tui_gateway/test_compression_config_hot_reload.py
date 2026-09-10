@@ -282,3 +282,59 @@ def test_removing_codex_native_threshold_restores_default(monkeypatch):
     session["agent"].codex_responses_compact_threshold = 120_000
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
     assert session["agent"].codex_responses_compact_threshold == 200_000
+
+
+def test_live_tool_result_projection_keys_apply_on_next_turn(monkeypatch):
+    """The projection policy is read per request, so a live edit must land on the compressor
+    without rebuilding the agent (same contract as the proactive-prune keys)."""
+    session, compressor = _neutral_session()
+    _sync_with_cfg(
+        monkeypatch,
+        session,
+        {"compression": {
+            "tool_result_projection": "off",
+            "tool_result_projection_min_tokens": 48_000,
+            "tool_result_projection_min_result_chars": 12_000,
+            "tool_result_projection_min_reclaim_tokens": 6_000,
+            "tool_result_projection_tail_ratio": 0.05,
+            "tool_result_projection_tail_min_tokens": 8_000,
+            "tool_result_projection_tail_max_tokens": 16_000,
+            "tool_result_projection_tail_messages": 4,
+            "tool_result_projection_tail_max_messages": 40,
+        }},
+    )
+
+    assert compressor.tool_result_projection == "off"
+    assert compressor.tool_result_projection_min_tokens == 48_000
+    assert compressor.tool_result_projection_min_result_chars == 12_000
+    assert compressor.tool_result_projection_min_reclaim_tokens == 6_000
+    assert compressor.tool_result_projection_tail_ratio == 0.05
+    assert compressor.tool_result_projection_tail_min_tokens == 8_000
+    assert compressor.tool_result_projection_tail_max_tokens == 16_000
+    assert compressor.tool_result_projection_tail_messages == 4
+    assert compressor.tool_result_projection_tail_max_messages == 40
+
+
+def test_removing_tool_result_projection_keys_restores_defaults(monkeypatch):
+    session, compressor = _neutral_session(
+        tool_result_projection="off",
+        tool_result_projection_min_tokens=48_000,
+        tool_result_projection_min_result_chars=12_000,
+        tool_result_projection_min_reclaim_tokens=6_000,
+        tool_result_projection_tail_ratio=0.05,
+        tool_result_projection_tail_min_tokens=8_000,
+        tool_result_projection_tail_max_tokens=16_000,
+        tool_result_projection_tail_messages=4,
+        tool_result_projection_tail_max_messages=40,
+    )
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+
+    assert compressor.tool_result_projection == "auto"
+    assert compressor.tool_result_projection_min_tokens == 0
+    assert compressor.tool_result_projection_min_result_chars == 4000
+    assert compressor.tool_result_projection_min_reclaim_tokens == 8192
+    assert compressor.tool_result_projection_tail_ratio == 0.025
+    assert compressor.tool_result_projection_tail_min_tokens == 12000
+    assert compressor.tool_result_projection_tail_max_tokens == 32000
+    assert compressor.tool_result_projection_tail_messages == 8
+    assert compressor.tool_result_projection_tail_max_messages == 60

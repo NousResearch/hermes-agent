@@ -189,6 +189,26 @@ def extract_persisted_path(content: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def store_spillover_content(content: str, tool_use_id: str) -> str | None:
+    """Write *content* to the canonical spillover store under the tool call's deterministic
+    filename; returns the host path, or None when the write failed.
+
+    Used by the wire-only tool-result projection (``agent/tool_result_projection.py``), which
+    must persist a result BEFORE it is replaced by a stub in the outbound request. Idempotent:
+    an existing file for the same call id is reused as-is, so a projection re-applied across
+    turns cannot hand a later request different bytes than the stub it already sent.
+    """
+    try:
+        spill_dir = get_spillover_dir()
+        path = spill_dir / _safe_result_filename(tool_use_id)
+        if path.exists():
+            return str(path)
+        return _write_to_spillover(content, path.name)
+    except Exception as exc:  # OSError, or a malformed id the filename builder rejects
+        logger.warning("Spillover store failed for %s: %s", tool_use_id, exc)
+        return None
+
+
 def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, env=None,
                               config: BudgetConfig = DEFAULT_BUDGET,
                               threshold: int | float | None = None) -> str:

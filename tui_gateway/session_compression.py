@@ -64,6 +64,13 @@ _COMPRESSION_INT_KEYS = (
     ("proactive_prune_tokens", 0, 0),
     ("proactive_prune_min_result_chars", 8000, 0),
     ("proactive_prune_min_reclaim_tokens", 4096, 0),
+    ("tool_result_projection_min_tokens", 0, 0),
+    ("tool_result_projection_min_result_chars", 4000, 0),
+    ("tool_result_projection_min_reclaim_tokens", 8192, 0),
+    ("tool_result_projection_tail_min_tokens", 12000, 0),
+    ("tool_result_projection_tail_max_tokens", 32000, 0),
+    ("tool_result_projection_tail_messages", 8, 0),
+    ("tool_result_projection_tail_max_messages", 60, 0),
     ("protect_last_n", 20, 0),
     ("min_tail_user_messages", 1, 1),
 )
@@ -104,6 +111,10 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
     mode = str(compression.get("tail_mode", default_tail) or default_tail).strip().lower()
     cc.tail_mode = mode if mode in ("legacy", "lean") else default_tail
+    # tool_result_projection: absence restores the ctor default ("auto"); "off" is the kill switch.
+    default_projection = str(_compressor_ctor_default("tool_result_projection", "auto"))
+    projection_mode = str(compression.get("tool_result_projection", default_projection) or default_projection).strip().lower()
+    cc.tool_result_projection = projection_mode or default_projection
     for key, fallback, min_value in _COMPRESSION_INT_KEYS:
         default = int(_compressor_ctor_default(key, fallback))
         raw = compression.get(key, default)
@@ -112,6 +123,12 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     with contextlib.suppress(TypeError, ValueError):
         ratio_raw = compression.get("target_ratio", _compressor_ctor_default("summary_target_ratio", 0.20))
         cc.summary_target_ratio = max(0.10, min(float(ratio_raw), 0.80))
+    with contextlib.suppress(TypeError, ValueError):
+        tail_ratio_raw = compression.get(
+            "tool_result_projection_tail_ratio",
+            _compressor_ctor_default("tool_result_projection_tail_ratio", 0.025),
+        )
+        cc.tool_result_projection_tail_ratio = max(0.0, min(float(tail_ratio_raw), 1.0))
     # Absent or invalid shape (agent_init treats both as empty): stale overrides must stop steering.
     raw_thresholds = compression.get("model_thresholds")
     cc.model_thresholds = {

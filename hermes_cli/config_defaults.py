@@ -563,6 +563,35 @@ DEFAULT_CONFIG = {
         # A prune only commits when it reclaims at least this many tokens, then waits for a
         # trigger-sized runway to regrow before rearming. 0 = no minimum-savings gate.
         "proactive_prune_min_reclaim_tokens": 4096,
+        # tool_result_projection: wire-only counterpart of the prune above. Old, large tool
+        # results are replaced by a stub (tool, args, sha256, bytes, spillover path) in the
+        # request only — the canonical transcript, session resume and the UI keep every byte,
+        # and the full result is persisted to cache/spillover BEFORE the stub replaces it.
+        # This is what reclaims space on large windows, where the ratio threshold rarely fires
+        # and old tool output is otherwise re-sent every turn. "off" disables it.
+        "tool_result_projection": "auto",
+        # Stale tool payload (tokens) required before a pass is considered. 0 = derive from the
+        # route's caching: 16K without prompt caching, 32K with it (a cached route pays for
+        # each pass with a cache break), capped at a quarter of the window. Profitability is
+        # decided separately: a pass declines unless it reclaims at least the region it
+        # invalidates. The budget is charged against rows that became stale since the last
+        # pass, so the frontier advancing on its own cannot authorize a break per request.
+        "tool_result_projection_min_tokens": 0,
+        # Only tool results larger than this (chars) are eligible; floor 200 so a stub is always
+        # smaller than what it replaces. Errors, multimodal results and results declaring
+        # projection_safe: false are never projected.
+        "tool_result_projection_min_result_chars": 4000,
+        # A pass commits only when it reclaims at least this many tokens (0 = no floor).
+        "tool_result_projection_min_reclaim_tokens": 8192,
+        # The newest messages keep their full results. The protected verbatim tail follows the
+        # same shape as the "lean" compaction tail: tail_ratio of the window, clamped between
+        # the min and max below, and bounded in message count so a session of tiny messages
+        # cannot swallow the whole history into the tail.
+        "tool_result_projection_tail_ratio": 0.025,
+        "tool_result_projection_tail_min_tokens": 12000,
+        "tool_result_projection_tail_max_tokens": 32000,
+        "tool_result_projection_tail_messages": 8,
+        "tool_result_projection_tail_max_messages": 60,
         # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
         # rolling summary, amortizing compression cost. Off by default because every pass rewrites
         # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized

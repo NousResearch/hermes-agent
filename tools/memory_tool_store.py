@@ -1,7 +1,7 @@
 """MemoryStore — bounded, file-backed curated memory (MEMORY.md / USER.md).
 Entries are joined by ``ENTRY_DELIMITER``; budgets are in chars (model-independent).
-Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) stays
-in ``tools.memory_tool`` and is read lazily."""
+Module state that tests monkeypatch (``get_memory_dir``, the eviction-archive
+helpers, ``fcntl``/``msvcrt``) stays in ``tools.memory_tool`` and is read lazily."""
 
 import logging
 import time
@@ -187,12 +187,48 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message, current_entries=self._entries_for(target), usage=self._usage(target)))
 
+    def _archive_evicted(self, target: str, evicted: List[Tuple[str, str]]
+                         ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
+        """Archive *evicted* ``(action, entry)`` pairs to the shared ARCHIVE.jsonl
+        BEFORE the caller's file rewrite, so remove/replace/apply_batch can never
+        destroy distilled content irreversibly (#76883). A single edit (one pair)
+        and a whole batch (many pairs, evaluated once at the commit point) go
+        through this SAME call, so an abort-mode failure can never leave part of
+        one call's records archived while the rest are refused.
+
+        Returns ``(records, status, error)``:
+          records -- archive record dicts (``[]`` when nothing was evicted, the
+                     store is gated off — USER.md by default — or the write failed).
+          status  -- ``None`` (nothing to archive, or archived cleanly), ``"degraded"``
+                     (write failed, mutation proceeds per the default
+                     ``memory.archive_on_failure: "warn"``), or ``"abort"`` (write
+                     failed and ``archive_on_failure: "abort"`` — the caller must
+                     refuse the mutation and leave the file untouched).
+          error   -- the underlying write error when *status* is not ``None``.
+        """
+        from tools import memory_tool as _mt
+        if not evicted or not _mt._should_archive_target(target):
+            return [], None, None
+        records, error = _mt.archive_entries(target, evicted)
+        if error is None:
+            return [{"file": _mt.ARCHIVE_FILENAME, **record} for record in records], None, None
+        if _mt._archive_abort_on_failure():
+            return [], "abort", error
+        logger.warning("Memory archive write failed (degraded): %s", error)
+        return [], "degraded", error
+
     def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
-        """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
-        or an error dict, then persist and return the success response. The reload aborts
-        on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
-        file) and, unless *skip_drift*, on external drift (flushing would discard
-        un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
+        """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``,
+        ``(new_entries, message, evicted)``, or an error dict, then persist and return the
+        success response. ``evicted`` (optional 3rd element) is a list of ``(action, entry)``
+        pairs for content the mutation is about to overwrite/drop; when present it is archived
+        to ARCHIVE.jsonl BEFORE the file rewrite (#76883) — an archive failure under
+        ``memory.archive_on_failure: "abort"`` refuses the whole mutation and leaves the file
+        untouched, so content is never lost unarchived.
+
+        The reload aborts on an existing-but-unreadable file (even append-only ``add``
+        rewrites the whole file) and, unless *skip_drift*, on external drift (flushing would
+        discard un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
         a failed second read used to count as "no drift"."""
         path = self._path_for(target)
         with self._file_lock(path):
@@ -206,10 +242,22 @@ class MemoryStore:
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
                 return result
-            self._set_entries(target, result[0])
+            new_entries, message, *rest = result
+            evicted: List[Tuple[str, str]] = rest[0] if rest else []
+            archived, archive_status, archive_error = self._archive_evicted(target, evicted)
+            if archive_status == "abort":
+                return self._failure_with_entries(target, (
+                    f"Archive write failed ({archive_error}) and memory.archive_on_failure=abort "
+                    "-- the write was refused so no content was lost unarchived. Nothing changed; retry."))
+            self._set_entries(target, new_entries)
             path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_file(path, result[0])
-            return self._success_response(target, result[1])
+            self._write_file(path, new_entries)
+            response = self._success_response(target, message)
+            if archived:
+                response["archived"] = archived
+            elif archive_status == "degraded":
+                response["archive_status"] = "degraded"
+            return response
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -251,7 +299,10 @@ class MemoryStore:
         return self._edit(target, old_text.strip(), None)
 
     def _edit(self, target: str, old_text: str, new_content: Optional[str]) -> Dict[str, Any]:
-        """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*."""
+        """Locked replace (``new_content`` set) or remove (None) of the entry matching
+        *old_text*. The evicted entry is archived to ARCHIVE.jsonl by ``_mutate`` before
+        the rewrite (#76883) -- MEMORY.md by default, USER.md only when
+        ``memory.archive_user`` is set."""
         def _apply(entries, limit):
             idx, ambiguous = _find_unique_match(entries, old_text)
             if ambiguous:
@@ -261,21 +312,27 @@ class MemoryStore:
                 return self._consolidation_failure(_error(
                     f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
                     f"of the entry you want to {'replace' if new_content else 'remove'}.", current_entries=entries))
+            evicted_entry = entries[idx]
+            evicted = [("removed" if new_content is None else "superseded", evicted_entry)]
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
             if new_content is None:
-                return replaced, "Entry removed."
+                return replaced, "Entry removed.", evicted
             new_total = len(ENTRY_DELIMITER.join(replaced))
             if new_total > limit:
                 return self._failure_with_entries(target, (
                     f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))
-            return replaced, "Entry replaced."
+            return replaced, "Entry replaced.", evicted
         return self._mutate(target, _apply)
 
     @staticmethod
-    def _apply_batch_op(working: List[str], act: str, content: str, old_text: str, pos: str) -> Optional[str]:
-        """Apply one batch op to *working* in place; return an error message or None."""
+    def _apply_batch_op(working: List[str], act: str, content: str, old_text: str, pos: str,
+                        evicted: List[Tuple[str, str]]) -> Optional[str]:
+        """Apply one batch op to *working* in place, appending any evicted
+        ``(action, entry)`` pair to *evicted* so the caller can archive the whole
+        batch as one atomic write at the commit point (#76883). Return an error
+        message or None."""
         if act == "add":
             if not content:
                 return f"{pos}: content is required."
@@ -293,13 +350,17 @@ class MemoryStore:
             return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific."
         if idx is None:
             return f"{pos}: no entry matched '{old_text}'."
+        evicted.append(("superseded" if act == "replace" else "removed", working[idx]))
         working[idx:idx + 1] = [content] if act == "replace" else []
         return None
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
-        an over-limit result writes NOTHING and returns the first failure plus live state."""
+        an over-limit result writes NOTHING and returns the first failure plus live state.
+        Every entry a replace/remove op evicts is archived to ARCHIVE.jsonl as ONE atomic
+        write at the commit point (#76883) -- a failed batch never touches the archive
+        either."""
         if not operations:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]
@@ -311,10 +372,12 @@ class MemoryStore:
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
+            evicted: List[Tuple[str, str]] = []  # (action, entry) -- archived as ONE batch on commit
             for i, op in enumerate(ops):
                 act = op.get("action")
                 msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
-                                           (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
+                                           (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})",
+                                           evicted)
                 if msg:
                     return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
             if entries and not working:
@@ -334,7 +397,7 @@ class MemoryStore:
                     f"After applying all {len(operations)} operations, memory would be at "
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                     f"entries in the same batch (see current_entries below), then retry."))
-            return working, f"Applied {len(operations)} operation(s)."
+            return working, f"Applied {len(operations)} operation(s).", evicted
         return self._mutate(target, _apply)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:

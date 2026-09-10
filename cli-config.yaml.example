@@ -909,6 +909,13 @@ memory:
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)
 
+  # Reversible mutations: remove/replace/apply_batch (and `/journey delete|edit`
+  # on memory nodes) archive the evicted entry to
+  # ~/.hermes/memories/ARCHIVE.jsonl before the file rewrite, so consolidation
+  # can never destroy distilled content irreversibly.
+  archive_user: false        # true = also archive USER.md evictions (default: MEMORY.md only)
+  archive_on_failure: warn   # warn (default, mutation proceeds) | abort (mutation refused)
+
 # =============================================================================
 # Session Continuity (Messaging Platforms)
 # =============================================================================

@@ -849,3 +849,236 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+# =========================================================================
+# Reversible mutations — eviction archive (ARCHIVE.jsonl, #76883)
+#
+# remove/replace/apply_batch archive the evicted entry to ARCHIVE.jsonl
+# BEFORE the main file rewrite, so consolidation can never destroy distilled
+# content irreversibly. See tools/memory_tool.py's archive_entries()/
+# archive_entry() and MemoryStore._archive_evicted()/_mutate().
+# =========================================================================
+
+def _read_archive(tmp_path):
+    """ARCHIVE.jsonl records written under the store fixture's memory dir
+    (`store` monkeypatches tools.memory_tool.get_memory_dir to tmp_path)."""
+    path = tmp_path / "ARCHIVE.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+class TestMemoryArchive:
+    def test_remove_archives_evicted_entry(self, store, tmp_path):
+        store.add("memory", "Retired fact about the old stack")
+        result = store.remove("memory", "Retired fact")
+
+        assert result["success"] is True
+        records = _read_archive(tmp_path)
+        assert len(records) == 1
+        assert records[0]["store"] == "memory"
+        assert records[0]["action"] == "removed"
+        assert records[0]["entry"] == "Retired fact about the old stack"
+        assert result["archived"][0]["id"] == records[0]["id"]
+        assert result["archived"][0]["action"] == "removed"
+
+    def test_replace_archives_superseded_entry(self, store, tmp_path):
+        store.add("memory", "Python 3.11 project")
+        result = store.replace("memory", "3.11", "Python 3.12 project")
+
+        assert result["success"] is True
+        records = _read_archive(tmp_path)
+        assert len(records) == 1
+        assert records[0]["action"] == "superseded"
+        assert records[0]["entry"] == "Python 3.11 project"
+        assert result["archived"][0]["action"] == "superseded"
+        # The replacement itself still landed.
+        assert "Python 3.12 project" in store.memory_entries
+
+    def test_user_target_not_archived_by_default(self, store, tmp_path):
+        """Privacy default: USER.md evictions are NOT archived unless opted in (#77154 review)."""
+        store.add("user", "Name: Alice")
+        result = store.remove("user", "Name: Alice")
+
+        assert result["success"] is True
+        assert "archived" not in result
+        assert _read_archive(tmp_path) == []
+
+    def test_user_target_archived_when_configured(self, store, tmp_path):
+        # Config is read through the sanctioned loader (hermes_cli.config), which
+        # resolves the sandboxed per-test HERMES_HOME (a DIFFERENT dir than
+        # tmp_path here) — write the opt-in there.
+        from hermes_constants import get_hermes_home
+        (get_hermes_home() / "config.yaml").write_text("memory:\n  archive_user: true\n", encoding="utf-8")
+
+        store.add("user", "Name: Alice")
+        result = store.remove("user", "Name: Alice")
+
+        assert result["success"] is True
+        records = _read_archive(tmp_path)
+        assert len(records) == 1
+        assert records[0]["store"] == "user"
+        assert result["archived"][0]["store"] == "user"
+
+    def test_apply_batch_archives_evicted_entries_on_commit(self, store, tmp_path):
+        store.add("memory", "Entry one")
+        store.add("memory", "Entry two")
+
+        result = store.apply_batch("memory", [
+            {"action": "replace", "old_text": "Entry one", "content": "Entry one v2"},
+            {"action": "remove", "old_text": "Entry two"},
+        ])
+
+        assert result["success"] is True
+        records = _read_archive(tmp_path)
+        assert [r["action"] for r in records] == ["superseded", "removed"]
+        assert len(result["archived"]) == 2
+
+    def test_failed_batch_never_archives(self, store, tmp_path):
+        """A malformed/unmatched op refuses the WHOLE batch (all-or-nothing) —
+        the archive must stay untouched too, same as the memory file (#76883
+        review: 'a failed batch never touches the archive')."""
+        store.add("memory", "Keep me")
+
+        result = store.apply_batch("memory", [
+            {"action": "remove", "old_text": "Keep me"},
+            {"action": "replace", "old_text": "no such entry", "content": "x"},
+        ])
+
+        assert result["success"] is False
+        assert _read_archive(tmp_path) == []
+        assert "Keep me" in store.memory_entries
+
+    def test_archive_write_failure_degrades_by_default(self, store, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.archive_entries", lambda *a, **k: ([], "disk full"))
+        store.add("memory", "Doomed entry")
+
+        result = store.remove("memory", "Doomed entry")
+
+        assert result["success"] is True
+        assert result["archive_status"] == "degraded"
+        assert "archived" not in result
+        assert "Doomed entry" not in store.memory_entries  # the removal itself still landed
+        assert _read_archive(tmp_path) == []
+
+    def test_archive_write_failure_aborts_when_configured(self, store, tmp_path, monkeypatch):
+        from hermes_constants import get_hermes_home
+        (get_hermes_home() / "config.yaml").write_text("memory:\n  archive_on_failure: abort\n", encoding="utf-8")
+        monkeypatch.setattr("tools.memory_tool.archive_entries", lambda *a, **k: ([], "disk full"))
+        store.add("memory", "Precious entry")
+
+        result = store.remove("memory", "Precious entry")
+
+        assert result["success"] is False
+        assert "abort" in result["error"]
+        assert "Precious entry" in store.memory_entries  # refused -- file untouched
+
+    def test_batch_abort_never_leaves_partial_archive(self, store, tmp_path, monkeypatch):
+        """Abort-mode archive handling is caller-visible atomic FOR THE WHOLE
+        BATCH: a two-entry batch's archive write fails once and is refused —
+        no partial records from earlier evictions in the SAME call survive a
+        later one's failure, because the whole batch is written as one call
+        to archive_entries(), not per-op (#77154 review)."""
+        from hermes_constants import get_hermes_home
+        (get_hermes_home() / "config.yaml").write_text("memory:\n  archive_on_failure: abort\n", encoding="utf-8")
+        monkeypatch.setattr("tools.memory_tool.archive_entries", lambda *a, **k: ([], "disk full"))
+        store.add("memory", "Entry one")
+        store.add("memory", "Entry two")
+
+        result = store.apply_batch("memory", [
+            {"action": "remove", "old_text": "Entry one"},
+            {"action": "replace", "old_text": "Entry two", "content": "Entry two v2"},
+        ])
+
+        assert result["success"] is False
+        assert "abort" in result["error"]
+        assert _read_archive(tmp_path) == []
+        assert "Entry one" in store.memory_entries
+        assert "Entry two" in store.memory_entries
+
+    def test_batch_archive_failure_degrades_atomically(self, store, tmp_path, monkeypatch):
+        """Default warn mode: a failed archive write for a two-entry batch
+        leaves NO records behind (the single combined write never partially
+        lands), the mutation still proceeds, and the result says degraded."""
+        monkeypatch.setattr("tools.memory_tool.archive_entries", lambda *a, **k: ([], "disk full"))
+        store.add("memory", "Entry one")
+        store.add("memory", "Entry two")
+        store.add("memory", "Entry to keep")
+
+        result = store.apply_batch("memory", [
+            {"action": "remove", "old_text": "Entry one"},
+            {"action": "remove", "old_text": "Entry two"},
+        ])
+
+        assert result["success"] is True
+        assert result["archive_status"] == "degraded"
+        assert _read_archive(tmp_path) == []
+        assert store.memory_entries == ["Entry to keep"]
+
+    def test_archive_append_rolls_back_on_write_failure(self, tmp_path, monkeypatch):
+        """`_archive_append_lines` itself: when the underlying write fails, the
+        file is rolled back to its pre-call length rather than keeping a
+        truncated/partial line -- the primitive the batch-atomicity guarantee
+        above is built on. `tell()`/`truncate()` delegate to a REAL file
+        handle on the REAL path; only `write()` is faked to simulate a
+        mid-write disk failure, so the rollback under test runs for real."""
+        from tools import memory_tool as mt
+        monkeypatch.setattr(mt, "get_memory_dir", lambda: tmp_path)
+        archive_path = tmp_path / "ARCHIVE.jsonl"
+        archive_path.write_text('{"id": "existing"}\n', encoding="utf-8")
+        real_open = open
+
+        class _FailingWriteFile:
+            def __init__(self, real_file):
+                self._real = real_file
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return self._real.__exit__(*exc_info)
+
+            def tell(self):
+                return self._real.tell()
+
+            def truncate(self, *args):
+                return self._real.truncate(*args)
+
+            def write(self, data):
+                raise OSError("disk full mid-write")
+
+        def _fake_open(file, mode="r", *args, **kwargs):
+            if Path(file) == archive_path and mode == "a":
+                return _FailingWriteFile(real_open(file, mode, *args, **kwargs))
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+
+        with pytest.raises(OSError):
+            mt._archive_append_lines(['{"id": "new"}\n'])
+
+        # Rolled back to exactly the pre-call content -- no partial line appended.
+        assert archive_path.read_text(encoding="utf-8") == '{"id": "existing"}\n'
+
+
+class TestLearningMutationsArchiveIntegration:
+    """MemoryStore._path_for()/_read_file() are the same primitives
+    agent/learning_mutations.py uses to locate journey memory nodes, so a
+    round trip through the real on-disk files here exercises the same
+    ARCHIVE.jsonl path `/journey delete`|`edit` use (full coverage lives in
+    tests/agent/test_learning_mutations.py)."""
+
+    def test_remove_then_archive_round_trips_through_real_files(self, store, tmp_path):
+        store.add("memory", "alpha note")
+        store.add("memory", "beta note")
+        result = store.remove("memory", "alpha note")
+        assert result["success"] is True
+
+        # The memory file round-trips through the same MemoryStore parser
+        # learning_mutations.py's _locate_memory() uses.
+        path = store._path_for("memory")
+        assert MemoryStore._read_file(path) == ["beta note"]
+
+        records = _read_archive(tmp_path)
+        assert records[0]["entry"] == "alpha note"

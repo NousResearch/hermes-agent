@@ -29,23 +29,38 @@ import type {
 } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
 import { getUiState } from './uiStore.js'
+import { useDraftAttachments } from './useDraftAttachments.js'
 
 const TOKEN_MAX_COUNT = 32
 const TOKEN_MAX_TOTAL_BYTES = 4 * 1024 * 1024
 
 const trimTokens = (tokens: ComposerToken[]): ComposerToken[] => {
   let total = 0
+  let pasteCount = 0
+  let pastesFull = false
   const out: ComposerToken[] = []
 
   for (let i = tokens.length - 1; i >= 0; i--) {
     const token = tokens[i]!
+
+    // Admission bounds images separately. Evicting metadata here would leave
+    // an acknowledged image label in the draft without its payload.
+    if (token.kind === 'image') {
+      out.unshift(token)
+
+      continue
+    }
+
     const size = token.text?.length ?? 0
 
-    if (out.length >= TOKEN_MAX_COUNT || total + size > TOKEN_MAX_TOTAL_BYTES) {
-      break
+    if (pastesFull || pasteCount >= TOKEN_MAX_COUNT || total + size > TOKEN_MAX_TOTAL_BYTES) {
+      pastesFull = true
+
+      continue
     }
 
     total += size
+    pasteCount += 1
     out.unshift(token)
   }
 
@@ -115,7 +130,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   const inputRef = useRef('')
   const tokensRef = useRef<ComposerToken[]>([])
 
-  const setInput = useCallback<StateSetter<string>>(next => {
+  const editInput = useCallback<StateSetter<string>>(next => {
     inputRef.current = typeof next === 'function' ? next(inputRef.current) : next
     setInputState(inputRef.current)
   }, [])
@@ -124,6 +139,16 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     tokensRef.current = typeof next === 'function' ? next(tokensRef.current) : next
     setTokens(tokensRef.current)
   }, [])
+
+  const draft = useDraftAttachments(gw, tokensRef, setComposerTokens)
+
+  const setInput = useCallback<StateSetter<string>>(next => {
+    draft.invalidate()
+    const current = draft.input.current?.snapshot().value ?? inputRef.current
+    const value = typeof next === 'function' ? next(current) : next
+    draft.input.current?.replace(value)
+    editInput(value)
+  }, [draft.input, draft.invalidate, editInput])
 
   const isBlocked = useStore($isBlocked)
   const { querier } = useStdin() as { querier: Parameters<typeof readOsc52Clipboard>[0] }
@@ -168,7 +193,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       }
 
       for (const token of gone) {
-        if (token.kind === 'image') {
+        if (token.kind === 'image' && token.source !== 'draft') {
           void gw.request('image.detach', { path: token.path, session_id: getUiState().sid }).catch(() => {})
         }
       }
@@ -185,7 +210,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
    */
   const attachImageToken = useCallback(
     (attached: ImageAttachResponse & { path?: string }, value: string, cursor: number): ComposerPasteResult => {
-      const index = nextImageIndex(tokensRef.current)
+      const index = nextImageIndex(tokensRef.current, value)
       const label = imageToken(index)
 
       setComposerTokens(prev => trimTokens([...prev, { index, kind: 'image', label, path: attached.path ?? '' }]))
@@ -428,6 +453,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       dequeue,
       enqueue,
       handleTextPaste,
+      editInput,
+      setNativeInput: draft.setNativeInput,
+      invalidateDraft: draft.invalidate,
       openEditor,
       prependQueue: prependQ,
       pushHistory,
@@ -442,6 +470,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       syncTokens
     }),
     [
+      draft.setNativeInput,
+      draft.invalidate,
+      editInput,
       attachClipboardImage,
       attachImagePath,
       clearIn,

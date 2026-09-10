@@ -50,6 +50,20 @@ describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', ()
     patchUiState({ sid: 'sess-1' })
   })
 
+  it('never retargets an admitted image prompt after the detect-drop await changes session', async () => {
+    const { gw, resolveDrop } = makeDeferredGateway()
+    const deps = makeDeps(gw)
+    submitPrompt('caption', deps, true, 'caption [[ Image 1 ]]', {
+      draftImages: [{ index: 1, kind: 'image', label: '[[ Image 1 ]]', path: '/staged/a.png', source: 'draft' }]
+    })
+    patchUiState({ sid: 'replacement-session' })
+    resolveDrop({ matched: false })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(gw.request).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    expect(deps.enqueue).not.toHaveBeenCalled()
+  })
+
   it('flips busy=true SYNCHRONOUSLY, before input.detect_drop resolves', () => {
     const { gw, resolveDrop } = makeDeferredGateway()
 

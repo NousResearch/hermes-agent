@@ -167,11 +167,12 @@ def parse_context_references(message: str) -> list[ContextReference]:
 
 def preprocess_context_references(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
-    allowed_root: str | Path | None = None,
+    allowed_root: str | Path | None = None, allowed_paths: set[str] | None = None,
 ) -> ContextReferenceResult:
     """Sync wrapper; safe both without a loop (CLI) and inside a running loop (gateway)."""
     coro = preprocess_context_references_async(
-        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher, allowed_root=allowed_root
+        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher,
+        allowed_root=allowed_root, allowed_paths=allowed_paths
     )
     try:
         asyncio.get_running_loop()
@@ -184,7 +185,7 @@ def preprocess_context_references(
 
 async def preprocess_context_references_async(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
-    allowed_root: str | Path | None = None,
+    allowed_root: str | Path | None = None, allowed_paths: set[str] | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
@@ -192,6 +193,9 @@ async def preprocess_context_references_async(
     cwd_path = Path(cwd).expanduser().resolve()
     # Default root = cwd so @ references cannot escape the workspace unless a caller widens it.
     allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
+    # Grants are canonical exact paths recorded at attach time, NOT roots. Do not
+    # resolve them again: a replaced symlink must not retarget an existing grant.
+    granted_paths = frozenset(Path(p) for p in (allowed_paths or ()))
     # Expand concurrently (each ref is independent; several @url: refs would otherwise
     # serialize web_extract round-trips). gather preserves order, so warnings/blocks
     # are assembled in ref order; the token-budget check runs once afterwards.
@@ -199,7 +203,7 @@ async def preprocess_context_references_async(
     soft_limit = max(1, int(context_length * 0.25))
     tasks = (
         _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
-                          max_inline_tokens=hard_limit)
+                          max_inline_tokens=hard_limit, allowed_paths=granted_paths)
         for ref in refs
     )
     expanded = await asyncio.gather(*tasks)
@@ -240,11 +244,12 @@ _GIT_REFERENCE_ARGS: dict[str, Callable[[ContextReference], list[str]]] = {
 
 async def _expand_reference(
     ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None,
-    max_inline_tokens: int | None = None,
+    max_inline_tokens: int | None = None, allowed_paths: frozenset[Path] = frozenset(),
 ) -> Expansion:
     try:
         if ref.kind in ("file", "folder"):
-            return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens)
+            return _expand_path_reference(ref, cwd, allowed_root=allowed_root,
+                                          max_inline_tokens=max_inline_tokens, allowed_paths=allowed_paths)
         if ref.kind in _GIT_REFERENCE_ARGS:
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)
             return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args))
@@ -267,10 +272,12 @@ async def _expand_reference(
 
 
 def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None,
-                           max_inline_tokens: int | None = None) -> Expansion:
+                           max_inline_tokens: int | None = None,
+                           allowed_paths: frozenset[Path] = frozenset()) -> Expansion:
     """``@file:`` / ``@folder:``: resolve, allow-check, then inline text / binary stub / listing."""
     is_folder = ref.kind == "folder"
-    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
+    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root,
+                         allowed_paths=allowed_paths if not is_folder else frozenset())
     _ensure_reference_path_allowed(path)
     if not path.exists():
         return f"{ref.raw}: {ref.kind} not found", None
@@ -339,9 +346,10 @@ def _is_under(path: Path, root: Path) -> bool:
     return True
 
 
-def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
+def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None,
+                  allowed_paths: frozenset[Path] = frozenset()) -> Path:
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
-    if allowed_root is not None and not _is_under(resolved, allowed_root):
+    if allowed_root is not None and not _is_under(resolved, allowed_root) and resolved not in allowed_paths:
         raise ValueError("path is outside the allowed workspace")
     return resolved
 

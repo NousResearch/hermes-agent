@@ -14,6 +14,8 @@ _registry = HandlerRegistry()
 
 
 _ATTACH_BYTES_MAX_BYTES = 25 * 1024 * 1024
+_FILE_ATTACH_MAX_BYTES = 100 * 1024 * 1024
+_FILE_ATTACH_CHUNK_BYTES = 1024 * 1024
 _PDF_ATTACH_MAX_BYTES = 50 * 1024 * 1024
 _PDF_ATTACH_MAX_PAGES = 25
 
@@ -69,6 +71,55 @@ def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
     if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
         return ".webp"
     return next((ext for sig, ext in _IMAGE_MAGIC if head.startswith(sig)), ".png")
+
+
+def _file_attachment_image(path: Path) -> dict | None:
+    """Promote only bounded, decodable rasters, not filenames, MIME hints or magic alone."""
+    import stat
+    from io import BytesIO
+    from tools.vision_tools_image_prep import _validate_raster_image_decodable
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= _ATTACH_BYTES_MAX_BYTES:
+            return None
+        head = source.read(16)
+        ext = next((ext for sig, ext in _IMAGE_MAGIC if head.startswith(sig)), "")
+        if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+            ext = ".webp"
+        mime = {".png": "image/png", ".jpg": "image/jpeg", ".gif": "image/gif",
+                ".bmp": "image/bmp", ".webp": "image/webp"}.get(ext)
+        if not mime:
+            return None
+        data = head + source.read(_ATTACH_BYTES_MAX_BYTES + 1 - len(head))
+    if len(data) > _ATTACH_BYTES_MAX_BYTES:
+        return None
+    # Validate the same bounded bytes, never reopen a potentially replaced path.
+    # The vision decoder also caps animated frame count and aggregate pixels.
+    # Pillow accepts streams as well as the decoder's annotated Path input.
+    if _validate_raster_image_decodable(BytesIO(data)) is not None:  # type: ignore[arg-type]
+        return None
+    return {"name": path.name, "mime_type": mime}
+
+
+def _validate_draft_image_paths(session: dict, paths) -> list[str]:
+    """Only exact successful file.attach grants can join this deliberate prompt."""
+    if not isinstance(paths, list) or len(paths) > 32 or any(not isinstance(p, str) for p in paths):
+        raise ValueError("draft_image_paths must be a list of at most 32 staged image paths")
+    if not paths:
+        return []
+    with session["history_lock"]:
+        grants = set(session.get("file_attachment_paths", ()))
+    root = _session_home_dir(session, "attachments").resolve()
+    validated = []
+    for raw in dict.fromkeys(paths):
+        path = Path(raw)
+        if raw not in grants or not path.is_absolute() or path.resolve() != path or not path.is_relative_to(root):
+            raise ValueError("Draft image is not attached to this session")
+        if _file_attachment_image(path) is None:
+            raise ValueError("Draft image is unsupported or too large")
+        validated.append(raw)
+    return validated
 
 
 def _allowed_image_extensions() -> frozenset[str]:
@@ -136,9 +187,9 @@ def _sanitize_attachment_name(name: str) -> str:
 def _stage_session_file_attachment(
     session: dict, *, raw_path: str, data_url: str, name: str) -> tuple[Path, bool]:
     """Make a desktop file attachment available to the gateway agent: ``(stored_path, uploaded)``.
-    Inside the workspace -> as-is; gateway-visible but outside -> copied into ``attachments/``
-    (bind-mounted into container backends so ``@file:`` resolves in the sandbox); not on the
-    gateway -> ``data_url`` bytes decoded into ``attachments/``."""
+    Non-image workspace files stay as-is; images and gateway-visible outside files are
+    copied into ``attachments/`` (bind-mounted into container backends); otherwise
+    ``data_url`` bytes are decoded there."""
     workspace = Path(_session_cwd(session)).resolve()
     resolved = None
     if raw_path:
@@ -155,15 +206,28 @@ def _stage_session_file_attachment(
                 found = _resolve_attachment_path(path_token)
                 resolved = Path(found).resolve() if found is not None else None
     if resolved is not None:
+        # Copying/renaming must not launder a denied credential path into an allowed grant.
+        from agent.context_references import _ensure_reference_path_allowed
+        _ensure_reference_path_allowed(resolved)
+        # Attach RPCs precede turn scope binding. Keep the gateway/global denies,
+        # and apply the destination profile's same canonical guard before copying.
+        home_token = set_hermes_home_override(_session_home(session))
         try:
-            resolved.relative_to(workspace)
+            _ensure_reference_path_allowed(resolved)
+        finally:
+            reset_hermes_home_override(home_token)
+        if resolved.is_relative_to(workspace) and _file_attachment_image(resolved) is None:
             return resolved, False
-        except ValueError:
-            payload = resolved.read_bytes()
-            filename = resolved.name
+        if resolved.stat().st_size > _FILE_ATTACH_MAX_BYTES:
+            raise ValueError("File is too large")
+        payload = None
+        filename = resolved.name
     else:
         if not data_url:
             raise ValueError("file not found on gateway and no data_url provided")
+        # Refuse before regex/decoding can duplicate an unbounded JSON payload.
+        if len(data_url) > ((_FILE_ATTACH_MAX_BYTES + 2) // 3) * 4 + 1024:
+            raise ValueError("File is too large")
         # Any media type (unlike the image-specific decoder); bare base64 also accepted.
         import binascii as _binascii
         import re as _re
@@ -172,18 +236,42 @@ def _stage_session_file_attachment(
                 data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.I)
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
+        if len(payload) > _FILE_ATTACH_MAX_BYTES:
+            raise ValueError("File is too large")
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
     root = _session_home_dir(session, "attachments")
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
     filename = _sanitize_attachment_name(filename)
     target = root / filename
-    if target.exists():
-        stem = Path(filename).stem or "attachment"
-        suffix = Path(filename).suffix
-        counter = 2
-        while (target := root / f"{stem}-{counter}{suffix}").exists():
-            counter += 1
-    target.write_bytes(payload)
+    # Reserve exclusively, not exists()+write (two sockets can attach the same name).
+    while True:
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            import uuid
+            target = root / f"{Path(filename).stem}-{uuid.uuid4().hex}{Path(filename).suffix}"
+    try:
+        with os.fdopen(fd, "wb") as out:
+            if payload is not None:
+                out.write(payload)
+            else:
+                import stat
+                # Nonblocking prevents a replaced FIFO from hanging the RPC reader.
+                source_fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+                                    | getattr(os, "O_NOFOLLOW", 0))
+                with os.fdopen(source_fd, "rb") as source:
+                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                        raise ValueError("Only regular files can be attached")
+                    total = 0
+                    while chunk := source.read(_FILE_ATTACH_CHUNK_BYTES):
+                        total += len(chunk)
+                        if total > _FILE_ATTACH_MAX_BYTES:
+                            raise ValueError("File is too large")
+                        out.write(chunk)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
     return target.resolve(), True
 
 

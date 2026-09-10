@@ -125,7 +125,8 @@ def _ac_inflight_original(session: dict) -> str:
     return str(turn.get("user") or "").strip() if isinstance(turn, dict) else ""
 
 
-def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None) -> None:
+def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
+                    draft_image_paths: list[str] | None = None) -> None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing ones stay separate envelopes so attachment
     chronology survives. ``transport`` is pinned so the drained turn streams to its sender."""
@@ -134,14 +135,17 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     # original after a correction settles.
     # See #84417.
     _drop_queued_duplicates_of_inflight_user(session)
-    text_only = not image_paths and isinstance(text, str)
+    text_only = not image_paths and not draft_image_paths and isinstance(text, str)
     # Never queue a text-only self-copy of the live prompt: draining it would restart it.
     if text_only and text.strip() == _ac_inflight_original(session) != "":
         return
-    queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {})}
+    queued = {"text": text, "transport": transport,
+              **({"image_paths": image_paths} if image_paths or draft_image_paths else {}),
+              **({"draft_image_paths": list(draft_image_paths)} if draft_image_paths else {})}
     existing = session.get("queued_prompt")
     if (existing and text_only and isinstance(existing.get("text"), str)
-            and not existing.get("image_paths") and not session.get("queued_prompts")):
+            and not existing.get("image_paths") and not existing.get("draft_image_paths")
+            and not session.get("queued_prompts")):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
     elif existing:
@@ -162,7 +166,7 @@ def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict |
     if not isinstance(entry, dict):
         return None
     text = entry.get("text")
-    if not original or entry.get("image_paths") or not isinstance(text, str):
+    if not original or entry.get("image_paths") or entry.get("draft_image_paths") or not isinstance(text, str):
         return entry
     # A lossless text-merge may have glued the live original onto a later follow-up: keep the remainder.
     rest = next((text[len(original + sep):] for sep in ("\n\n", "\n") if text.startswith(original + sep)), text).strip()
@@ -233,7 +237,8 @@ def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: 
     return _ok(rid, {"status": status})
 
 
-def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False) -> dict | None:
+def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
+                        draft_image_paths: list[str] | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
@@ -246,7 +251,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         image_paths = list(session.get("attached_images", []))
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
-    plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
+    has_images = bool(image_paths or draft_image_paths)
+    plain_text = _coerce_message_text(text).strip() if not has_images and _is_text_only_busy_payload(text) else ""
     # Text-only corrections steer/redirect in place when supported; media payloads and older agents fall through to
     # the proven interrupt + queue path.
     if plain_text and agent is not None:
@@ -264,7 +270,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        _enqueue_prompt(session, text, transport, image_paths=image_paths)
+        _enqueue_prompt(session, text, transport, image_paths=image_paths, draft_image_paths=draft_image_paths)
         session["last_active"] = time.time()
     # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
     # ``steer`` must NEVER escalate to a hard interrupt: it would kill the live turn AND drop ``AIAgent._pending_steer``
@@ -273,18 +279,23 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # ``AIAgent._pending_steer``) and fall-through queue envelopes (payload not steerable, ``steer()``
     # rejected/raised). A hard interrupt here kills the live turn AND ``AIAgent.interrupt()`` drops the
     # pending steer buffer — silently destroying the earlier messages of the burst. See #86134.
-    if mode == "interrupt" and not image_paths:
+    if mode == "interrupt" and not has_images:
         _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 
 
-def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
+def _drain_queued_prompt(rid, sid: str, session: dict, *, expected_generation: int | None = None) -> bool:
     """Fire a queued next-turn prompt if one is waiting and the session is idle. True when dispatched: the caller
     skips lower-priority follow-ups this cycle (the user's message wins)."""
     with session["history_lock"]:
         if session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
             return False
         queue_generation = int(session.get("_queued_prompt_generation", 0))
+        # A failed dispatch's continuation must not adopt a newer generation during
+        # the unlocked handoff. Validate it atomically with claiming the next envelope.
+        if expected_generation is not None and (
+                queue_generation != expected_generation or session.get("_turn_cancel_requested")):
+            return False
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
         queued_transport = queued.get("transport")
@@ -305,12 +316,14 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["running"] = False
             return True
     kwargs: dict = {"queued_prompt_generation": queue_generation}
-    if queued.get("image_paths"):
+    if "image_paths" in queued:
         kwargs["image_paths"] = queued["image_paths"]
+    if queued.get("draft_image_paths"):
+        kwargs["draft_image_paths"] = queued["draft_image_paths"]
     dispatch_failed = False
     try:
         if not use_compute_host:
-            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs)
+            dispatch_failed = _run_prompt_submit(rid, sid, session, queued["text"], **kwargs) is False
         elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False
@@ -323,9 +336,10 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         dispatch_failed = True
     if dispatch_failed:
         with session["history_lock"]:
-            drain_next = bool(session.get("queued_prompt")) and not session.get("_turn_cancel_requested")
+            drain_next = (bool(session.get("queued_prompt")) and not session.get("_turn_cancel_requested")
+                          and int(session.get("_queued_prompt_generation", 0)) == queue_generation)
         if drain_next:
-            _drain_queued_prompt(rid, sid, session)
+            _drain_queued_prompt(rid, sid, session, expected_generation=queue_generation)
     return True
 
 

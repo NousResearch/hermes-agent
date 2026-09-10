@@ -2,6 +2,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTypes.js'
 import type { Msg } from '../types.js'
 
+import type { ComposerToken } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -11,11 +12,17 @@ export const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_
 
 export interface SubmitPromptDeps {
   appendMessage: (msg: Msg) => void
-  enqueue: (text: string) => void
+  enqueue: (text: string, display?: string, draftImages?: Extract<ComposerToken, { kind: 'image' }>[]) => void
   expand: (text: string) => string
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
   sys: (text: string) => void
+}
+
+export interface SubmitPromptOptions {
+  destination?: { sessionId: string; profileName: string }
+  draftImages?: Extract<ComposerToken, { kind: 'image' }>[]
+  skipDetectDrop?: boolean
 }
 
 // Optimistically flip the session to busy the INSTANT a prompt is accepted for
@@ -50,38 +57,42 @@ export function submitPrompt(
   deps: SubmitPromptDeps,
   showUserMessage = true,
   displayOverride?: string,
-  opts: { skipDetectDrop?: boolean } = {}
+  opts: SubmitPromptOptions = {}
 ): void {
-  const sid = getUiState().sid
+  const sid = opts.destination?.sessionId ?? getUiState().sid
+  const profileName = opts.destination?.profileName ?? getUiState().info?.profile_name ?? ''
+  const isCurrent = () => getUiState().sid === sid && (getUiState().info?.profile_name ?? '') === profileName
 
   if (!sid) {
     return deps.sys('session not ready yet')
   }
 
   // Close the async-busy gap up front, before the detect_drop round-trip.
-  markSubmitting()
+  if (isCurrent()) {markSubmitting()}
 
   const startSubmit = (displayText: string, submitText: string, show = true) => {
-    const liveSid = getUiState().sid
+    if (!isCurrent() && !opts.destination) {return}
 
-    if (!liveSid) {
-      return deps.sys('session not ready yet')
+    // An interpolated submission still belongs to its original session. Send
+    // there even after navigation, but never paint/reset the newly visible UI.
+    if (isCurrent()) {
+      turnController.clearStatusTimer()
+      deps.setLastUserMsg(text)
+
+      if (show) {deps.appendMessage({ role: 'user', text: displayOverride || displayText })}
+      patchUiState({ busy: true, status: 'running…' })
+      turnController.bufRef = ''
+      turnController.interrupted = false
     }
-
-    turnController.clearStatusTimer()
-    deps.setLastUserMsg(text)
-
-    if (show) {
-      deps.appendMessage({ role: 'user', text: displayOverride || displayText })
-    }
-
-    patchUiState({ busy: true, status: 'running…' })
-    turnController.bufRef = ''
-    turnController.interrupted = false
 
     deps.gw
-      .request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText })
+      .request<PromptSubmitResponse>('prompt.submit', {
+        session_id: sid, text: submitText,
+        ...(opts.draftImages?.length ? { draft_image_paths: opts.draftImages.map(image => image.path) } : {})
+      })
       .then(r => {
+        if (!isCurrent()) {return}
+
         // The gateway consumed a typed voice stop phrase server-side (voice
         // chat ended, no turn started) — release the busy latch; the
         // voice.transcript {stop_phrase} event handles the mode flags + notice.
@@ -90,12 +101,14 @@ export function submitPrompt(
         }
       })
       .catch((e: Error) => {
+        if (!isCurrent()) {return}
+
         // Defensive: prompt.submit no longer rejects a mid-turn send with
         // "session busy" (the gateway queues it and returns success), but keep
         // the re-queue path as a safety net for any future/legacy gateway that
         // still errors, so a message is never silently dropped.
         if (isSessionBusyError(e)) {
-          deps.enqueue(submitText)
+          deps.enqueue(submitText, displayOverride || displayText, opts.draftImages)
           patchUiState({ busy: true, status: 'queued for next turn' })
 
           return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)

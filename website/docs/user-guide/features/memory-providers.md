@@ -421,8 +421,10 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | Component | Providers |
 |-----------|-----------|
 | LLM | openai, ollama |
-| Embedder | openai, ollama |
+| Embedder | openai, ollama, mittwald |
 | Vector Store | qdrant (local/server), pgvector |
+
+`mittwald` embeds with `Qwen3-Embedding-8B` (4096 dimensions) on [mittwald AI Hosting](../../integrations/providers.md#mittwald-ai-hosting) using `MITTWALD_LLM_API_KEY`. It rides mem0's OpenAI-compatible embedder, so no extra mem0 dependency is needed.
 
 **Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|selfhosted|oss>` or edit `mem0.json` directly.
 

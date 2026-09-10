@@ -95,6 +95,9 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `DEEPSEEK_BASE_URL` | Custom DeepSeek API base URL |
 | `DEEPINFRA_API_KEY` | DeepInfra API key ([deepinfra.com](https://deepinfra.com/dash/api_keys)) |
 | `DEEPINFRA_BASE_URL` | DeepInfra base URL override |
+| `MITTWALD_LLM_API_KEY` | mittwald AI Hosting API key — chat, STT, TTS and embeddings; created per project in mStudio under AI-Hosting ([docs](https://developer.mittwald.de/docs/v2/platform/aihosting/access-and-usage/access/)) |
+| `MITTWALD_AI_API_KEY` | Alternative name for the mittwald AI Hosting key (checked after `MITTWALD_LLM_API_KEY`) |
+| `MITTWALD_BASE_URL` | mittwald base URL override (default: `https://llm.aihosting.mittwald.de/v1`) |
 | `NOVITA_API_KEY` | NovitaAI API key — AI-native cloud for Model API, Agent Sandbox, and GPU Cloud ([novita.ai/settings/key-management](https://novita.ai/settings/key-management)) |
 | `NOVITA_BASE_URL` | Override NovitaAI base URL (default: `https://api.novita.ai/openai/v1`) |
 | `RAMP_ROUTER_API_KEY` | Ramp Router API key ([app.router.com/keys](https://app.router.com/keys)); alias `ROUTER_API_KEY` also accepted |
@@ -182,6 +185,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `GROQ_BASE_URL` | Override the Groq OpenAI-compatible STT endpoint |
 | `STT_OPENAI_MODEL` | Override the OpenAI STT model (default: `whisper-1`) |
 | `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
+| `STT_MITTWALD_MODEL` | Override the mittwald STT model (default: `whisper-large-v3-turbo`) |
+| `MITTWALD_STT_BASE_URL` | Override the mittwald STT endpoint only (otherwise `MITTWALD_BASE_URL` applies) |
 | `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |

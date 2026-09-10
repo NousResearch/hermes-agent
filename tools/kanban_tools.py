@@ -313,7 +313,11 @@ _TASK_FIELDS = tuple(
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
     "created_at started_at completed_at current_run_id model_override provider_override".split())
-_RUN_FIELDS = tuple("id profile status outcome summary error metadata started_at ended_at".split())
+_RUN_FIELDS = tuple(
+    "id profile status outcome summary error metadata started_at ended_at session_id "
+    "input_tokens output_tokens cache_read_tokens cache_write_tokens reasoning_tokens "
+    "api_call_count turns estimated_cost_usd actual_cost_usd model provider usage_recorded_at".split()
+)
 _COMMENT_FIELDS = ("author", "body", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
 _ATTACHMENT_FIELDS = tuple(
@@ -495,6 +499,8 @@ def _handle_show(args: dict, **kw) -> str:
     """Full task state: row, parents, children, comments, runs, last 50 events."""
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
+        from hermes_cli.kanban_usage import task_usage
+
         task = _existing_task(kb, conn, tid)
         return json.dumps({
             "task": _fields(task, _TASK_FIELDS),
@@ -504,6 +510,7 @@ def _handle_show(args: dict, **kw) -> str:
             # Capped; full log via CLI.
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
+            "usage": task_usage(conn, tid),
             # Same string build_worker_context hands the dispatcher at spawn time.
             "worker_context": kb.build_worker_context(conn, tid)})
 
@@ -565,7 +572,8 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid),
+                usage=kw.get("session_usage"))
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -620,7 +628,10 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+        ok = kb.block_task(
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid),
+            usage=kw.get("session_usage"),
+        )
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         return _ok_landed(kb, conn, tid, "blocked", block_kind=kind)
 

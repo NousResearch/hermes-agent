@@ -196,6 +196,40 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
         return False
 
 
+_KANBAN_USAGE_TERMINALS = frozenset({"kanban_complete", "kanban_block"})
+
+
+def _kanban_session_usage(agent, tool_name: str) -> dict | None:
+    """Exact numeric/route usage for a worker's terminal lifecycle call."""
+    if tool_name not in _KANBAN_USAGE_TERMINALS or not os.environ.get("HERMES_KANBAN_TASK"):
+        return None
+    session_id = str(getattr(agent, "session_id", "") or "").strip()
+    session = None
+    db = getattr(agent, "_session_db", None)
+    if db is not None and session_id:
+        try:
+            # get_session drains this SessionDB's queued token deltas first.
+            session = db.get_session(session_id)
+        except Exception as exc:
+            logger.debug("Could not read exact Kanban worker session usage: %s", exc)
+    session = session if isinstance(session, dict) else {}
+    return {
+        "session_id": session_id or None,
+        "input_tokens": getattr(agent, "session_input_tokens", 0),
+        "output_tokens": getattr(agent, "session_output_tokens", 0),
+        "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0),
+        "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0),
+        "reasoning_tokens": getattr(agent, "session_reasoning_tokens", 0),
+        "api_call_count": getattr(agent, "session_api_calls", 0),
+        "turns": getattr(agent, "_user_turn_count", 0),
+        "estimated_cost_usd": getattr(agent, "session_estimated_cost_usd", 0.0),
+        "actual_cost_usd": session.get("actual_cost_usd"),
+        "model": getattr(agent, "model", None) or session.get("model"),
+        "provider": getattr(agent, "provider", None) or session.get("billing_provider"),
+        "usage_recorded_at": int(time.time()),
+    }
+
+
 def _image_generate_parallel_limit() -> int:
     """Configured image-generation parallelism cap (conservative: backend bursts hit rate limits)."""
     try:
@@ -1547,6 +1581,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 tool_request_middleware_trace=list(middleware_trace),
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                session_usage=_kanban_session_usage(agent, function_name),
             )
 
     return _SequentialDispatch(

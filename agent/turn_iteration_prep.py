@@ -134,7 +134,9 @@ def prepare_iteration(
     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
-        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+        _inject_steer_after_newest_tool_result(
+            agent, messages, _pre_api_steer, current_turn_user_idx=current_turn_user_idx
+        )
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
@@ -229,10 +231,19 @@ def _previous_tool_round(messages: Any) -> list:
     return []
 
 
-def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
-    for _si in range(len(messages) - 1, -1, -1):
+def _inject_steer_after_newest_tool_result(
+    agent: Any, messages: Any, steer_text: str, *, current_turn_user_idx: Any = None
+) -> None:
+    """Append a steer after the newest tool result in the active turn.
+
+    A steer can arrive while the CLI is still preprocessing an image, before the
+    agent's first API call. In that window the transcript only contains tool
+    results from earlier turns; targeting one would place the steer before the
+    current user message and make it historical context. Requeue until this turn
+    produces a tool result instead.
+    """
+    _lower_bound = current_turn_user_idx if isinstance(current_turn_user_idx, int) else -1
+    for _si in range(len(messages) - 1, _lower_bound, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
             from agent.prompt_builder import steer_user_row

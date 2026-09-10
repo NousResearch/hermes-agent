@@ -55,7 +55,7 @@ def homes(monkeypatch, tmp_path):
     homes = {name: tmp_path / name for name in ("a", "b")}
     for home in homes.values():
         home.mkdir()
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _DB)
+    monkeypatch.setattr("hermes_state_registry.acquire", _DB)
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_profile_home", lambda p: homes.get(p) if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))

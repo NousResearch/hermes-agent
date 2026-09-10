@@ -61,7 +61,7 @@ def _slack_adapter(extra):
 
 
 def _mark_slack_chat(a, chat_id="chan-1"):
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import SessionSource
 
     src = SessionSource(
@@ -128,7 +128,7 @@ class TestSendStampsUnfurl:
     async def test_non_slack_chat_never_stamped(self):
         a = _slack_adapter({"slack": {"unfurl_links": False}})
         # A chat mapped to discord, not slack, must not carry the hint.
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from gateway.session import SessionSource
 
         src = SessionSource(

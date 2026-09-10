@@ -303,6 +303,21 @@ class TestDefaultContextLengths:
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
+    @pytest.mark.parametrize("model, provider, base_url", [
+        ("muse-spark-1.3-contributor-free", "opencode-free", "https://opencode.ai/zen/v1"),
+        ("muse-spark-1.3-contributor", "opencode-go", "https://opencode.ai/zen/go/v1"),
+        ("muse-spark-1.3", "meta-ai", "https://api.meta.ai/v1"),
+        ("meta/muse-spark-1.3", "commandcode", "https://api.commandcode.ai/provider/v1"),
+    ])
+    def test_muse_spark_resolves_1m_without_network(self, model, provider, base_url):
+        """Muse Spark is 1,048,576 on every host even when models.dev and the
+        live /models probe are unavailable (fresh HERMES_HOME, offline)."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_context_length(model, provider=provider, base_url=base_url) == 1_048_576
+
     def test_empty_model_uses_fallback_context(self):
         assert get_model_context_length("") == DEFAULT_FALLBACK_CONTEXT
         assert get_model_context_length(None) == DEFAULT_FALLBACK_CONTEXT  # type: ignore[arg-type]
@@ -343,6 +358,8 @@ class TestDefaultContextLengths:
             "deepseek-v4-flash": 1_000_000,
             "deepseek-chat": 1_000_000,
             "deepseek-reasoner": 1_000_000,
+            # Version-less canonical Flash id (2026-09 Flash refresh).
+            "deepseek-flash": 1_000_000,
         }
         for key, value in expected_keys.items():
             assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing"
@@ -364,6 +381,8 @@ class TestDefaultContextLengths:
                 ("deepseek/deepseek-v4-flash", 1_000_000),
                 ("deepseek-chat", 1_000_000),
                 ("deepseek-reasoner", 1_000_000),
+                ("deepseek-flash", 1_000_000),
+                ("deepseek/deepseek-flash", 1_000_000),
             ]
             for model_id, expected_ctx in cases:
                 actual = get_model_context_length(model_id)
@@ -1073,13 +1092,14 @@ class TestGetModelContextLength:
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
-        # GLM-5-TEE matches the "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        # GLM-5-TEE resolves through DEFAULT_CONTEXT_LENGTHS (longest matching GLM key), not the generic default.
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
-        assert result == 202752  # "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        assert result == _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "zai-org/glm-5-tee")[1]
 
 
 
@@ -1247,7 +1267,7 @@ class TestStripProviderPrefix:
 
     def test_registered_profile_name_and_alias_are_stripped(self, monkeypatch):
         import providers
-        from providers import ProviderProfile
+        from providers.base import ProviderProfile
 
         monkeypatch.setattr(providers, "_REGISTRY", {})
         monkeypatch.setattr(providers, "_ALIASES", {})
@@ -1629,6 +1649,18 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
+
+
+class TestMuseSparkStaleCacheGuard:
+    """Muse Spark (1M window per OpenRouter live metadata) had no catalog
+    entry, so older builds persisted the 256K default fallback. The cache
+    guard must flag that stale value and keep correct/probed values."""
+
+    def test_stale_muse_spark_detected_by_generic_guard(self):
+        from agent.model_metadata import _stale_pre_catalog_cache_entry
+        for slug in ("muse-spark-1.3", "meta/muse-spark-1.3-contributor", "muse-spark-1.2-contributor"):
+            assert _stale_pre_catalog_cache_entry(slug, 256_000), slug
+            assert not _stale_pre_catalog_cache_entry(slug, 1_048_576), slug
 
 
 class TestGrok46StaleCacheGuard:

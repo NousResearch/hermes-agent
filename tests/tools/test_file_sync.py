@@ -20,7 +20,7 @@ def tmp_files(tmp_path):
     files = {}
     for name in ("cred_a.json", "cred_b.json", "skill_main.py"):
         p = tmp_path / name
-        p.write_text(f"content of {name}")
+        p.write_text(f"content of {name}", encoding="utf-8")
         files[name] = str(p)
     return files
 
@@ -70,7 +70,7 @@ class TestMtimeSkip:
 
         # Add a new file
         new_file = tmp_path / "new_skill.py"
-        new_file.write_text("new content")
+        new_file.write_text("new content", encoding="utf-8")
         tmp_files["new_skill.py"] = str(new_file)
         # Recreate manager with updated file list
         mgr._get_files_fn = _make_get_files(tmp_files)
@@ -185,7 +185,7 @@ class TestRateLimiting:
         upload.reset_mock()
 
         new_file = tmp_path / "env_forced.txt"
-        new_file.write_text("env forced")
+        new_file.write_text("env forced", encoding="utf-8")
         tmp_files["env_forced.txt"] = str(new_file)
         mgr._get_files_fn = _make_get_files(tmp_files)
 
@@ -247,7 +247,7 @@ class TestEdgeCases:
     def test_file_disappears_between_list_and_upload(self, tmp_path):
         """File listed by get_files but deleted before _file_mtime_key reads it."""
         f = tmp_path / "ephemeral.txt"
-        f.write_text("here now")
+        f.write_text("here now", encoding="utf-8")
 
         upload = MagicMock()
         mgr = FileSyncManager(
@@ -280,8 +280,8 @@ class TestConcurrency:
                 for path in sorted(tmp_path.glob("*.png"))
             ]
 
-        def upload(host_path, _remote_path):
-            if host_path == str(new_file):
+        def upload(_host_path, remote_path):
+            if remote_path == f"/root/.hermes/cache/images/{new_file.name}":
                 upload_started.set()
                 sync_back_transport_started.wait(timeout=1.0)
                 release_upload.set()

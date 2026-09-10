@@ -560,3 +560,51 @@ def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
     assert "offline" in out.get("error", "")
     # fail-fast means no envelope was queued
     assert bot_relay.claim_pending_envelopes(home) == []
+
+
+def test_remote_roster_drops_an_agent_that_went_private():
+    """Enforced on the CONSUMING side too: a peer on an older build advertises every managed
+    profile unconditionally, and must not be able to put a private agent back into our roster."""
+    from tools.bot_relay import _normalize_roster_row
+
+    public = {"profile": "researcher", "handle": "researcher", "connection_id": "mini"}
+    assert _normalize_roster_row(public) is not None
+
+    for value in (True, 1, "true", "yes", "on", "1"):
+        row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
+        assert _normalize_roster_row(row) is None, f"private={value!r} should be dropped"
+
+
+def test_remote_roster_keeps_an_agent_whose_private_flag_is_falsey():
+    """Fail OPEN: an unrecognised value must not silently hide a working teammate."""
+    from tools.bot_relay import _normalize_roster_row
+
+    for value in (False, 0, "false", "no", "0", "", None, "maybe"):
+        row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
+        assert _normalize_roster_row(row) is not None, f"private={value!r} should stay visible"
+
+
+def test_remote_roster_row_carries_the_circle():
+    from tools.bot_relay import _normalize_roster_row
+
+    row = _normalize_roster_row({"profile": "lucky", "handle": "lucky", "connection_id": "mini", "circle": " hobby "})
+    assert row is not None and row["circle"] == "hobby"
+
+
+def test_remote_roster_row_circle_defaults_to_shared_and_ignores_garbage():
+    """Non-string or absent -> the shared circle "", never an accidental isolation."""
+    from tools.bot_relay import _normalize_roster_row
+
+    base = {"profile": "lucky", "handle": "lucky", "connection_id": "mini"}
+    assert _normalize_roster_row(base)["circle"] == ""
+    for garbage in (42, True, None, ["work"], {"a": 1}):
+        assert _normalize_roster_row({**base, "circle": garbage})["circle"] == ""
+    assert len(_normalize_roster_row({**base, "circle": "x" * 200})["circle"]) == 64
+
+
+def test_remote_roster_row_circle_is_lower_cased():
+    """Same normalisation as _circle_of, so a peer's `Work` matches our `work`."""
+    from tools.bot_relay import _normalize_roster_row
+
+    base = {"profile": "lucky", "handle": "lucky", "connection_id": "mini"}
+    assert _normalize_roster_row({**base, "circle": "  Work "})["circle"] == "work"

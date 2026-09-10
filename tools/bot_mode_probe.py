@@ -99,6 +99,83 @@ def _bots_meta(data: dict | None) -> dict | None:
     return bots if isinstance(bots, dict) else None
 
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _boolish(value: object) -> bool:
+    """Permissive truth for a hand-edited YAML flag; anything unrecognised is False.
+
+    YAML hands back three shapes for what a human types as "on": ``true``/``yes`` become a
+    bool, ``1`` an int, and a quoted ``"true"`` a string. Accept all three, and fail OPEN on
+    anything else — a typo must never quietly remove an agent from the mesh.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return value is True or value == 1
+
+
+def _force_private(root: Path) -> bool:
+    """``bots.force_private`` from the SHARED root config — the install-wide override.
+
+    Read from ``<root>/config.yaml`` rather than the active profile's, because a per-profile
+    key cannot outrank its own profile: the point of this switch is to take every agent out of
+    the mesh at once regardless of what each one asked for.
+    """
+    cfg = _read_yaml_dict(root / "config.yaml", "force_private") or {}
+    bots = cfg.get("bots")
+    return _boolish(bots.get("force_private")) if isinstance(bots, dict) else False
+
+
+def _is_private(profile_dir: Path) -> bool:
+    """True when this agent is OUT of the teammate mesh: not advertised to other agents and
+    not addressable by them.
+
+    Private is about agent-to-agent visibility only. The agent keeps running, keeps its own
+    tools, and stays fully reachable by the human on Discord/desktop — it simply stops being a
+    teammate other agents can see or message. The install-wide ``bots.force_private`` outranks
+    this per-agent choice; ``_visible_roster`` applies it once for the whole roster.
+    """
+    meta = _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) or {}
+    return _boolish(meta.get("private"))
+
+
+_CIRCLE_MAX = 64
+
+
+def _circle_of(profile_dir: Path) -> str:
+    """The agent's ``ui_meta.hermes-bots.circle``, or "" for the shared default circle.
+
+    A circle is WHO an agent shares the mesh with: agents see and can message only agents
+    in the same circle, locally and across the relay. Unset means the shared circle — exactly
+    today's behaviour. Only a non-empty string counts; anything else fails OPEN to the shared
+    circle, because a typo must never quietly cut an agent off from its teammates.
+    """
+    meta = _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) or {}
+    value = meta.get("circle")
+    # Case-insensitive: "Work" and "work" are one circle, so a stray capital cannot isolate an agent.
+    return value.strip().lower()[:_CIRCLE_MAX] if isinstance(value, str) else ""
+
+
+def _visible_roster(root: Path, *, viewer: Path) -> list[tuple[str, Path]]:
+    """``_roster`` minus agents that left the mesh, minus agents in a circle other than
+    ``viewer``'s.
+
+    ``viewer`` is REQUIRED on purpose: an unfiltered variant would be one forgotten argument
+    away from silent cross-circle visibility, and both call sites already hold the reader.
+
+    Deliberately NOT folded into ``_roster``: that one also feeds ``_any_managed``, and
+    filtering there would make an all-private install look unmanaged and switch Bot Mode off
+    for everyone — including the human's own access.
+    """
+    # Install-wide kill switch: nobody is a teammate, so answer it once for the whole roster
+    # rather than re-reading the root config once per row.
+    if _force_private(root):
+        return []
+    mine = _circle_of(viewer)
+    return [(name, d) for name, d in _roster(root)
+            if not _is_private(d) and _circle_of(d) == mine]
+
+
 def _is_bot_managed(profile_dir: Path) -> bool:
     return _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) is not None
 
@@ -156,9 +233,13 @@ def _remote_roster(root: Path) -> list[dict]:
     return _swallow(_read, [])
 
 
-def _remote_paragraph(root: Path) -> str:
-    """Addendum for agents on OTHER connected machines; only when the relay roster is non-empty."""
+def _remote_paragraph(root: Path, viewer: Path | None = None) -> str:
+    """Addendum for agents on OTHER connected machines; only when the relay roster is non-empty.
+    With ``viewer``, only rows in the viewer's circle — the relay row carries ``circle`` for this."""
     roster = _remote_roster(root)
+    if viewer is not None:
+        mine = _circle_of(viewer)
+        roster = [row for row in roster if str(row.get("circle") or "") == mine]
     if not roster:
         return ""
     from tools.bot_relay import remote_target_forms
@@ -196,7 +277,8 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d))
+                    for name, d in _visible_roster(root, viewer=home) if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (
@@ -223,7 +305,7 @@ def _build_section(home: Path) -> str:
         f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
-        + _remote_paragraph(root)
+        + _remote_paragraph(root, home)
         + _peer_paragraph(root)
     )
 

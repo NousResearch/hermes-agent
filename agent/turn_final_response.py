@@ -308,11 +308,12 @@ def finish_text_response(
     # phrase, no-op) is invisible to the empty-response guard yet
     # still ends the session with no deliverable. Track a streak of
     # consecutive degenerate continuations; once it reaches the
-    # threshold (agent.degenerate_continuation_threshold, default 3,
-    # 0 disables), roll to the next fallback provider WITH a compacted
-    # handoff (never replay the poisoned history) and continue the
-    # same task on the new model. Bounded by the chain length; the
-    # fallback walker already refuses to re-select the same backend.
+    # threshold (agent.degenerate_continuation_threshold, default 3;
+    # 0 disables the feature: no detection, no logging, no roll), roll
+    # to the next fallback provider WITH a compacted handoff (never
+    # replay the poisoned history) and continue the same task on the
+    # new model. Bounded by the chain length; the fallback walker
+    # already refuses to re-select the same backend.
     _threshold = getattr(agent, "_degenerate_continuation_threshold", 3)
     if not getattr(agent, "_degenerate_streak", None):
         agent._degenerate_streak = 0
@@ -323,20 +324,24 @@ def finish_text_response(
             if isinstance(_c, str) and _c.strip():
                 _prior_assistant_text = _c
                 break
-    if _is_degenerate_continuation(agent, final_response, _prior_assistant_text):
+    if _threshold > 0 and _is_degenerate_continuation(
+        agent, final_response, _prior_assistant_text
+    ):
         agent._degenerate_streak += 1
+        # Display caps at the threshold: past it the streak keeps climbing only
+        # while there is no fallback to roll to, and "4/3, 5/3…" reads as a bug.
+        _shown = min(agent._degenerate_streak, _threshold)
         logger.warning(
             "Degenerate continuation detected (%d/%d, model=%s provider=%s): %r",
-            agent._degenerate_streak, _threshold, agent.model, agent.provider,
+            _shown, _threshold, agent.model, agent.provider,
             final_response[:120],
         )
         agent._buffer_status(
             f"⚠️ Model returned a no-progress continuation "
-            f"({agent._degenerate_streak}/{_threshold}) — watching for stall"
+            f"({_shown}/{_threshold}) — watching for stall"
         )
         if (
-            _threshold > 0
-            and agent._degenerate_streak >= _threshold
+            agent._degenerate_streak >= _threshold
             and agent._has_pending_fallback()
         ):
             agent._buffer_status(

@@ -53,20 +53,57 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
+// Vendors write their own names in casing a model id does not carry, and
+// title-casing the id overrides it: `glm-5.2` reads as "Glm 5.2" rather than
+// "GLM 5.2". Restore the vendor's casing after title-casing rather than before,
+// so the rule is one pass over a normalized string.
+const VENDOR_CASING: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bDeepseek\b/g, 'DeepSeek'],
+  [/\bGlm\b/g, 'GLM'],
+  [/\bMinimax\b/g, 'MiniMax'],
+  [/\bOpenai\b/g, 'OpenAI'],
+  [/\bErnie\b/g, 'ERNIE'],
+  [/\bMimo\b/g, 'MiMo'],
+  [/\bBge\b/g, 'BGE'],
+  [/\bVl\b/g, 'VL'],
+  [/\bIt\b/g, 'IT'],
+  [/\bFp8\b/g, 'FP8'],
+  [/\bAi\b/g, 'AI']
+]
+
+// Parameter counts and active-parameter counts: vendors write 8B, 235B, A22B,
+// never 8b. Matched after title-casing, so the token looks like "8b" or "A3b".
+const PARAMETER_COUNT = /\b(a?)(\d+(?:\.\d+)?)b\b/gi
+
+const applyVendorCasing = (text: string): string => {
+  let cased = text.replace(
+    PARAMETER_COUNT,
+    (_match, prefix: string, size: string) => `${prefix.toUpperCase()}${size}B`
+  )
+
+  for (const [pattern, replacement] of VENDOR_CASING) {
+    cased = cased.replace(pattern, replacement)
+  }
+
+  return cased
+}
+
 function prettifyBase(base: string): string {
   if (/^claude-/i.test(base)) {
-    return titleCase(base.replace(/^claude-/i, '').replace(/-/g, ' '))
+    return applyVendorCasing(titleCase(base.replace(/^claude-/i, '').replace(/-/g, ' ')))
   }
 
   if (/^gpt-/i.test(base)) {
     return base.replace(/^gpt-/i, 'GPT-')
   }
 
+  // Title-case this branch too. Without it `gemini-2.5-pro` renders as
+  // "Gemini 2.5 pro", the only branch that left its words lowercase.
   if (/^gemini-/i.test(base)) {
-    return base.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' ')
+    return applyVendorCasing(titleCase(base.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' ')))
   }
 
-  return titleCase(base.replace(/-/g, ' '))
+  return applyVendorCasing(titleCase(base.replace(/-/g, ' ')))
 }
 
 /** Split a model id into a clean display name plus an optional grayed variant

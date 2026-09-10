@@ -14,11 +14,13 @@ import * as jsxRuntime from 'react/jsx-runtime'
 import * as sdk from './index'
 
 const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
+  get __HERMES_PLUGIN_SDK__() { return sdk },
+  get __HERMES_REACT__() { return React },
+  get __HERMES_REACT_JSX__() { return jsxRuntime },
+  get __HERMES_REACT_JSX_DEV__() { return jsxDevRuntime }
 } as const
+
+export const pluginSdkGlobalsForTest = GLOBALS
 
 export function installPluginSdk(): void {
   Object.assign(globalThis, GLOBALS)

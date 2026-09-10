@@ -1,4 +1,4 @@
-"""Regression tests for the v41 custom-endpoint credential migration."""
+"""Regression tests for the v43 custom-endpoint credential migration."""
 
 import yaml
 

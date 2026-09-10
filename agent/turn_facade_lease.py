@@ -243,8 +243,8 @@ def _refresh_admitted_history(agent, db, session_id: str, task_context, admissio
 
     An unchanged revision keeps the caller's history object and the ordinary prompt-cache path: the
     completed prefix and its ``api_content`` bytes are untouched, only a new external suffix is
-    appended and alternation-repaired for replay. The marker advances only after a successful load,
-    so a failed read propagates (releasing the lease) and the next attempt retries it.
+    appended and alternation-repaired for replay. The marker advances only after a successful strict
+    target load; exact-segment fallback leaves it unchanged. Read failures propagate and release the lease.
     """
     watermark = _durable_external_watermark(db, session_id)
     changed = watermark is not None and watermark.revision > 0 and (
@@ -255,8 +255,22 @@ def _refresh_admitted_history(agent, db, session_id: str, task_context, admissio
         return
     if waited:
         agent._emit_status("Session is free; loading the latest transcript...")
+    refresh_complete = True
     if changed:
-        latest_session_id = db.get_passive_history_tip(session_id)
+        from hermes_state_passive_history import PassiveHistoryTargetError
+
+        try:
+            latest_session_id = db.get_passive_history_tip(session_id)
+        except PassiveHistoryTargetError:
+            # A live agent may retain an automatic end stamp or a sibling continuation may
+            # make the strict ingress target ambiguous. Its own writable segment is still safe;
+            # a missing/compression-closed segment is not (flush could adopt a guessed sibling).
+            current = db.get_session(session_id)
+            if current is None or current.get("end_reason") == "compression":
+                raise
+            logger.warning("Passive history tip refused; loading current session %s only", session_id)
+            latest_session_id = session_id
+            refresh_complete = False
     else:
         # The holder may have compressed/rotated the session while we waited.
         latest_session_id = db.resolve_resume_session_id(session_id)
@@ -266,7 +280,7 @@ def _refresh_admitted_history(agent, db, session_id: str, task_context, admissio
     admission.conversation_history = db.get_messages_as_conversation(
         agent.session_id, repair_alternation=True, include_row_ids=True
     )
-    if watermark is not None:
+    if watermark is not None and refresh_complete:
         setattr(agent, _PASSIVE_WATERMARK_ATTR, (watermark.conversation_id, watermark.revision))
 
 

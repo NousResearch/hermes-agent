@@ -521,7 +521,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
-    from agent.context_compressor import split_user_originated_turn
+    from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
 
     repairs = 0
     merged: List[Dict] = []
@@ -530,6 +530,9 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
         if (
             prev is not None and prev.get("role") == "user"
             and isinstance(msg, dict) and msg.get("role") == "user"
+            # Durable rows must remain immutable: merging would hide an unwritten prompt
+            # behind the old marker, or rewrite cached bytes after a turn-start flush.
+            and not prev.get(_DB_PERSISTED_MARKER) and not msg.get(_DB_PERSISTED_MARKER)
             # A summary carrier followed by a new user row is a deliberate durable shape after
             # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
             and split_user_originated_turn(prev)[0] is None
@@ -557,13 +560,14 @@ def _project_passive_assistant_continuations(messages: List[Dict]) -> Tuple[List
     A singleton external reply can follow a cached assistant payload. Merging the two
     invalidates that payload's api_content. Present only the later transcript as attributed
     context at the next admission instead; raw storage keeps its original assistant role.
-    Existing user-sequence repair can join this context to the next unanswered user input.
+    Provider adapters can coalesce adjacent user context on copies without changing durable rows.
     """
     projected: List[Dict] = []
     repairs = 0
     for msg in messages:
-        if (projected and projected[-1].get("role") == "assistant"
-                and msg.get("role") == "assistant"
+        prev = projected[-1] if projected and isinstance(projected[-1], dict) else None
+        if (prev is not None and prev.get("role") == "assistant"
+                and isinstance(msg, dict) and msg.get("role") == "assistant"
                 and msg.get("display_kind") == "passive_conversation"
                 and not msg.get("tool_calls")):
             msg = dict(msg)

@@ -1,22 +1,23 @@
 """An already-created idle agent sees externally saved history on its next turn.
 
 These run against a real ``state.db`` with a second independent writer standing in for the
-passive-ingress caller. Only ``agent.conversation_loop.run_conversation`` is replaced (by a
-recorder), so admission, lease handling, tip resolution and transcript loading are the real
-code paths. Fail-fast sentinels sit on the provider, tool-dispatch and approval seams to prove
-that saving history starts zero execution.
+passive-ingress caller. Admission tests replace the conversation loop with a recorder;
+persistence tests run the real loop with a mocked provider. Lease handling, tip resolution,
+transcript loading and SQLite writes are real. Fail-fast sentinels on provider, tool-dispatch
+and approval seams prove that saving history starts zero execution.
 """
 
 from __future__ import annotations
 
 import sqlite3
 from copy import deepcopy
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from hermes_state import SessionDB
-from hermes_state_passive_history import PassiveHistoryBusyError
+from hermes_state_passive_history import PassiveHistoryBusyError, PassiveHistoryTargetError
 from run_agent import AIAgent
 
 OLD_USER = {"role": "user", "content": "what is on my calendar"}
@@ -169,25 +170,26 @@ def test_changed_compression_tip_is_adopted_before_the_turn(
 
     assert agent.session_id == "conv-2"
     assert turns[0]["session_id"] == "conv-2"
-    # Replay sees the summary carrier and the new suffix exactly once. The continuation's carrier is
-    # itself a user row, so the host's existing adjacent-role repair combines them for the provider;
-    # neither text is dropped and the canonical raw rows stay separate on disk.
+    # Replay retains both durable user rows; adapters can coalesce copies for the provider.
     replayed = turns[0]["history"]
-    assert [m["role"] for m in replayed] == ["user"]
+    assert [m["role"] for m in replayed] == ["user", "user"]
     assert replayed[0]["content"].count("summary carried forward") == 1
-    assert replayed[0]["content"].count(SPOKEN["content"]) == 1
+    assert replayed[1]["content"].count(SPOKEN["content"]) == 1
     assert [m["content"] for m in host.get_messages("conv-2")] == [
         "summary carried forward", SPOKEN["content"]]
     # The marker is stored per conversation, not as a bare number.
     assert agent._passive_history_watermark == ("conv", receipt.revision)
 
 
+@pytest.mark.parametrize("refused_tip", [False, True])
 def test_reload_failure_releases_the_lease_and_the_next_turn_retries(
-    conversation, zero_execution, monkeypatch
+    conversation, zero_execution, monkeypatch, refused_tip
 ):
     host, ingress = conversation
     seed = _seed(host)
     receipt = ingress.append_passive_messages("conv", messages=[dict(SPOKEN)], **IDENTITY)
+    if refused_tip:
+        host.end_session("conv", "ws_disconnect")
     agent = _agent_with_db(host, session_id="conv")
     turns = _recorder(monkeypatch, [])
 
@@ -216,7 +218,120 @@ def test_reload_failure_releases_the_lease_and_the_next_turn_retries(
 
     assert len(turns) == 1
     assert [m["content"] for m in turns[0]["history"]].count(SPOKEN["content"]) == 1
-    assert agent._passive_history_watermark == ("conv", receipt.revision)
+    if refused_tip:
+        assert not hasattr(agent, "_passive_history_watermark")
+    else:
+        assert agent._passive_history_watermark == ("conv", receipt.revision)
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_strict_tip_refusal_keeps_the_exact_current_segment(
+    conversation, zero_execution, monkeypatch, ambiguous
+):
+    host, ingress = conversation
+    session_id = "conv"
+    if ambiguous:
+        host.end_session("conv", "compression")
+        session_id = "current-child"
+        host.create_session(session_id, source="test", parent_session_id="conv")
+        host.append_messages_batch(session_id, [dict(OLD_USER), dict(OLD_ASSISTANT)])
+    seed = _seed(host, session_id)
+    receipt = ingress.append_passive_messages(session_id, messages=[dict(SPOKEN)], **IDENTITY)
+    if ambiguous:
+        host.create_session("sibling", source="test", parent_session_id="conv")
+        host.append_message("sibling", "user", "must never enter this turn")
+    else:
+        host.end_session(session_id, "ws_disconnect")
+    with pytest.raises(PassiveHistoryTargetError):
+        host.get_passive_history_tip(session_id)
+    agent = _agent_with_db(host, session_id=session_id)
+    turns = _recorder(monkeypatch, [])
+
+    for _ in range(2):
+        result = AIAgent.run_conversation(agent, "continue", conversation_history=seed)
+        assert result["final_response"] == "ok"
+        assert agent.session_id == turns[-1]["session_id"] == session_id
+        assert [m["content"] for m in turns[-1]["history"]] == [
+            OLD_USER["content"], OLD_ASSISTANT["content"], SPOKEN["content"]]
+        assert not hasattr(agent, "_passive_history_watermark")
+    assert host.get_passive_history_watermark(session_id).revision == receipt.revision
+    with host._read_ctx() as conn:
+        assert conn.execute("SELECT 1 FROM session_turn_leases").fetchone() is None
+
+
+@pytest.mark.parametrize("role", ["user", "assistant"])
+@pytest.mark.parametrize("delayed_flush", [False, True])
+def test_typed_prompt_after_passive_history_is_durable(conversation, monkeypatch, role, delayed_flush):
+    """Run the real loop and SQLite flush; only the provider and tool catalog are mocked."""
+    from tests.run_agent.test_run_agent import _mock_response
+
+    host, ingress = conversation
+    seed = _seed(host)
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
+            model="test-model", provider="openrouter",
+            quiet_mode=True, skip_context_files=True, skip_memory=True,
+            session_id="conv", session_db=host,
+        )
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="typed answer", finish_reason="stop")
+    agent._cached_system_prompt = "existing cached system prompt"
+    agent._use_prompt_caching = False
+    agent.tool_delay = 0
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    external = {"role": role, "content": "external transcript"}
+    ingress.append_passive_messages("conv", messages=[external], **IDENTITY)
+    original = deepcopy(host.get_messages("conv"))
+    real_append = host.append_messages_batch
+    failed_writes = []
+
+    def append_after_transient_failure(*args, **kwargs):
+        if delayed_flush and not failed_writes:
+            failed_writes.append(True)
+            raise sqlite3.OperationalError("database is locked")
+        return real_append(*args, **kwargs)
+
+    monkeypatch.setattr(host, "append_messages_batch", append_after_transient_failure)
+
+    with (
+        patch.object(agent, "_cleanup_task_resources"),
+        patch("agent.title_generator.maybe_auto_title"),
+    ):
+        result = agent.run_conversation("typed follow-up", conversation_history=seed)
+
+    assert result["final_response"] == "typed answer"
+    durable = host.get_messages("conv")
+    assert durable[:len(original)] == original
+    assert [(m["role"], m["content"]) for m in durable[len(original):]] == [
+        ("user", "typed follow-up"), ("assistant", "typed answer")]
+    assert result["messages"][-2]["content"] == "typed follow-up"
+
+
+def test_strict_tip_refusal_does_not_reopen_a_compression_parent(conversation, monkeypatch):
+    host, ingress = conversation
+    ingress.append_passive_messages("conv", messages=[dict(SPOKEN)], **IDENTITY)
+    seed = _seed(host)
+    host.end_session("conv", "compression")
+    for child in ("child-a", "child-b"):
+        host.create_session(child, source="test", parent_session_id="conv")
+    agent = _agent_with_db(host, session_id="conv")
+    turns = _recorder(monkeypatch, [])
+
+    with pytest.raises(PassiveHistoryTargetError):
+        AIAgent.run_conversation(agent, "continue", conversation_history=seed)
+
+    assert turns == []
+    assert agent.session_id == "conv"
+    assert not hasattr(agent, "_passive_history_watermark")
+    with host._read_ctx() as conn:
+        assert conn.execute("SELECT 1 FROM session_turn_leases").fetchone() is None
 
 
 @pytest.mark.parametrize("marker", ["_branched_from", "_delegate_from", "_reset_from"])

@@ -21,7 +21,7 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
-from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
+from agent.secret_scope import build_profile_secret_scope, is_multiplex_active, reset_secret_scope, reset_secret_scope_env_fallback, set_multiplex_active, set_secret_scope, set_secret_scope_env_fallback  # noqa: F401
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
@@ -871,15 +871,24 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
 def _bind_build_profile_scopes(profile_home: str) -> "_TurnScopes":
     """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. Fail-open per
     scope (the build must not die on a scope helper); the terminal installer itself fails closed (malformed
-    policy → refusal scope) so _make_agent's terminal probing / cwd hints resolve the routed profile."""
+    policy → refusal scope) so _make_agent's terminal probing / cwd hints resolve the routed profile.
+
+    An empty ``profile_home`` (default/launch session) binds the LAUNCH home's own scope, EXEMPT from
+    fail-closed (env-injected creds survive a .env miss). Without this a default build under an active
+    multiplexer — flipped on process-wide by a named-profile turn — would read a profile credential
+    (ANTHROPIC_TOKEN, ...) with no scope and raise UnscopedSecretError. Mirrors _prepare_turn_input's
+    unconditional default branch (F2)."""
     scopes = _TurnScopes()
-    scopes.home = set_hermes_home_override(profile_home)
+    home = profile_home or str(get_hermes_home())
+    scopes.home = set_hermes_home_override(home)
     with contextlib.suppress(Exception):
-        scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        scopes.secret = set_secret_scope(build_profile_secret_scope(Path(home)))
+    if not profile_home:
+        scopes.env_fallback = set_secret_scope_env_fallback(True)
     scopes.terminal = None
     with contextlib.suppress(Exception):
         from tools.terminal_scope import install_profile_terminal_scope
-        scopes.terminal = install_profile_terminal_scope(Path(profile_home))
+        scopes.terminal = install_profile_terminal_scope(Path(home))
     return scopes
 
 
@@ -889,6 +898,9 @@ def _release_build_profile_scopes(scopes: "_TurnScopes") -> None:
     if scopes.secret is not None:
         with contextlib.suppress(Exception):
             reset_secret_scope(scopes.secret)
+    if scopes.env_fallback is not None:
+        with contextlib.suppress(Exception):
+            reset_secret_scope_env_fallback(scopes.env_fallback)
     if scopes.terminal is not None:
         with contextlib.suppress(Exception):
             from tools.terminal_scope import reset_terminal_scope
@@ -1031,9 +1043,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
             tokens = _set_session_context(key)
             # Global-remote: bind the session profile's HERMES_HOME and hand the agent that profile's db —
             # DEDICATED and ours until _transfer_db_to_agent in the finally; FAIL CLOSED rather than
-            # binding the launch DB and bleeding rows into the wrong state.db.
+            # binding the launch DB and bleeding rows into the wrong state.db. The scope is bound for
+            # EVERY build (default included, exempt) so _make_agent's credential reads never hit the
+            # unscoped fail-closed path under an active multiplexer; only a named profile opens its own db.
+            scopes = _bind_build_profile_scopes(profile_home or "")
             if profile_home:
-                scopes = _bind_build_profile_scopes(profile_home)
                 session_db = _open_profile_session_db(profile_home)
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started

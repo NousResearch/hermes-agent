@@ -58,6 +58,22 @@ def current_secret_scope() -> Optional[Mapping[str, str]]:
     return _SECRET_SCOPE.get()
 
 
+# EXEMPT flag: when True, the installed scope reads its .env overlay first but
+# STILL falls through to os.environ on a miss even under multiplex. Set True ONLY
+# for the default/launch session so env-injected creds (systemd/op-run) survive;
+# named sibling profiles never set it and stay fully fail-closed.
+_SCOPE_ENV_FALLBACK: ContextVar[bool] = ContextVar("_SCOPE_ENV_FALLBACK", default=False)
+
+
+def set_secret_scope_env_fallback(enabled: bool) -> Token:
+    """Mark the current scope EXEMPT (env fallback on miss); returns a reset token."""
+    return _SCOPE_ENV_FALLBACK.set(bool(enabled))
+
+
+def reset_secret_scope_env_fallback(token: Token) -> None:
+    _SCOPE_ENV_FALLBACK.reset(token)
+
+
 # Genuinely-global env vars: process/deployment settings, NOT profile secrets.
 # They keep reading os.environ even in multiplex mode (routing them through the
 # fail-closed path would wrongly crash). Keep this tight — when in doubt a
@@ -124,7 +140,11 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = scope.get(name)
         if val is not None:
             return val
-        return default if _MULTIPLEX_ACTIVE else _environ_or(name, default)
+        # EXEMPT (default/launch) scope keeps the os.environ fallback even under
+        # multiplex; named profiles fail closed (return default, never a peer's env).
+        if _MULTIPLEX_ACTIVE and not _SCOPE_ENV_FALLBACK.get():
+            return default
+        return _environ_or(name, default)
     if _MULTIPLEX_ACTIVE:
         raise UnscopedSecretError(
             f"get_secret({name!r}) called with no profile secret scope active "

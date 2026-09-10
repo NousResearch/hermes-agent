@@ -14,13 +14,21 @@ export interface SessionCreateOverrides {
   title?: string
 }
 
+export interface SessionSeedMessage {
+  content: string
+  display_kind?: 'hidden'
+  role: 'assistant' | 'user'
+}
+
 export interface SessionCreateOverrideParams {
+  messages?: SessionSeedMessage[]
   reasoning_effort?: string
   title?: string
 }
 
 export function sessionCreateOverrideParams(
-  overrides: SessionCreateOverrides | undefined
+  overrides: SessionCreateOverrides | undefined,
+  seedMessages?: SessionSeedMessage[]
 ): SessionCreateOverrideParams {
   const params: SessionCreateOverrideParams = {}
 
@@ -30,6 +38,10 @@ export function sessionCreateOverrideParams(
 
   if (overrides?.reasoningEffort) {
     params.reasoning_effort = overrides.reasoningEffort
+  }
+
+  if (seedMessages?.length) {
+    params.messages = seedMessages
   }
 
   return params

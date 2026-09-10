@@ -505,13 +505,6 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   const target = normalizeProfileKey(profile)
 
-  // The registry's actually-active route (published by applyActive in the
-  // same synchronous step that selects the socket). Null only when the
-  // registry surface is unavailable — then callers fall back to trusting the
-  // renderer atom, the pre-guard behavior.
-  const registryRouteKey = (): null | string =>
-    typeof activeGatewayProfileKey === 'function' ? normalizeProfileKey(activeGatewayProfileKey()) : null
-
   // Fast path: only when the REGISTRY's active route — the authority that
   // selects the socket in applyActive — already serves the target. The
   // renderer-side $activeGatewayProfile mirror is not proof of the socket:
@@ -530,18 +523,18 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
       return false
     }
 
-    const routeKey = registryRouteKey()
+    const routeKey = normalizeProfileKey(activeGatewayProfileKey())
 
-    if (routeKey === null || routeKey === target) {
+    if (routeKey === target) {
       return true
     }
 
-    const descriptor = typeof $connection?.get === 'function' ? $connection.get() : null
+    const descriptor = $connection.get()
 
     return Boolean(
       descriptor &&
-        (descriptor as { sharedPrimary?: boolean }).sharedPrimary === true &&
-        normalizeProfileKey((descriptor as { profile?: string }).profile) === target
+        descriptor.sharedPrimary === true &&
+        normalizeProfileKey(descriptor.profile) === target
     )
   }
 
@@ -582,18 +575,16 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // active socket while we awaited), applyActive declined and the route
     // serves someone else — publishing `target` anyway is what minted the
     // atom-vs-socket split-brain the fast path above now guards against.
-    // Divergences that still publish `target`:
-    //  - shared-primary (global-remote): the primary socket serves every
-    //    profile and the atom carries the request scope;
-    //  - no registry surface (routeKey null, unit-test mocks): fail open.
+    // Shared-primary (global-remote) still publishes `target`: its socket
+    // serves every profile and the atom carries the request scope.
     // Everything else publishes the route the registry actually landed on,
     // so the atom and the socket agree and the next ensure retries the swap
     // instead of fast-pathing on a stale claim. Still fail-open (no throw):
     // switching must never turn registry churn into dead profile clicks
     // (#89622).
-    const routeKey = registryRouteKey()
-    const sharedPrimary = Boolean(connection && (connection as { sharedPrimary?: boolean }).sharedPrimary === true)
-    const landed = sharedPrimary || routeKey === null || routeKey === target
+    const routeKey = normalizeProfileKey(activeGatewayProfileKey())
+    const sharedPrimary = connection?.sharedPrimary === true
+    const landed = sharedPrimary || routeKey === target
 
     if (!landed) {
       console.warn(`[profile] gateway activation for "${target}" did not land; active route is "${routeKey}"`)

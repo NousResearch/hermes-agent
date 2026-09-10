@@ -62,7 +62,7 @@ const DIRECTIVE_RE = /(?<=^|\s)::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?/
 // `key="value"` pairs; single quotes accepted for model sloppiness.
 const ATTR_RE = /([a-z][\w-]{0,63})=(?:"([^"]*)"|'([^']*)')/gi
 
-function parseAttrs(body: string | undefined): Record<string, string> {
+function parseAttrs(body: string | undefined): ParsedTranscriptDirective['attrs'] {
   const attrs: Record<string, string> = {}
 
   for (const pair of (body ?? '').matchAll(ATTR_RE)) {

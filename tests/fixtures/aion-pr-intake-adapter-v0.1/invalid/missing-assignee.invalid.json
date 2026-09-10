@@ -1,0 +1,8 @@
+{
+  "version": "aion_pr_intake_adapter_v0_1",
+  "github_pr_metadata": {"intake_mirror_only": true, "label_claims_execution": false, "actions_business_flow_dispatch": false},
+  "execution_trigger": {"type": "hermes_kanban_task_assignee_and_dispatcher_pickup", "kanban_task": {"task_id": "t_e1b5ce0d", "assignee": ""}, "dispatcher_pickup": {"picked_up": true, "run_id": "178", "claimed_by": "agent007-gateway"}},
+  "audit": {"verdict_required_before_merge": true, "current_head_verdict": "PASS"},
+  "protected_surfaces": {"runtime_enabled": false, "gateway_mutated": false, "cron_enabled": false, "required_mode_enabled": false, "live_scanner_enabled": false, "source_writeback_enabled": false, "production_access": false, "payment_access": false, "database_access": false, "webhook_access": false, "secret_access": false, "customer_data_access": false, "external_executor_real_run": false},
+  "non_claims": {"full_unattended_ready": false}
+}

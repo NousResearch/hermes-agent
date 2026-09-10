@@ -2222,6 +2222,164 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     assert following.get("role") == "assistant"
 
 
+def test_chat_messages_to_responses_input_reasoning_with_tool_calls_skips_empty_stub():
+    """A reasoning turn that ALSO carries tool calls must not emit an empty assistant message.
+    The function_call items already satisfy the "following item" rule, and translating gateways
+    turn the empty message into an empty text block that Anthropic/Bedrock reject with HTTP 400
+    "text content blocks must be non-empty"."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    messages = [
+        {"role": "user", "content": "run a command"},
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_1", "encrypted_content": "enc_abc", "summary": []},
+            ],
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "name": "terminal", "content": "ok"},
+    ]
+    items = _chat_messages_to_responses_input(messages)
+    kinds = [it.get("type") or f"message:{it.get('role')}" for it in items]
+    assert kinds == ["message:user", "reasoning", "function_call", "function_call_output"], kinds
+
+    # Malformed tool_calls (no function name) produce no function_call item, so the stub is still required.
+    messages[1]["tool_calls"] = [{"id": "call_1", "type": "function", "function": {"arguments": "{}"}}]
+    items = _chat_messages_to_responses_input(messages[:2])
+    kinds = [it.get("type") or f"message:{it.get('role')}" for it in items]
+    assert kinds == ["message:user", "reasoning", "message:assistant"], kinds
+
+
+def _plaintext_reasoning_response():
+    """Shape a third-party Responses gateway returns for a thinking model it cannot seal (Kimi K3 behind
+    Aperture / Vercel AI Gateway, 2026-09-01): reasoning_text content, empty summary, no encrypted_content."""
+    return SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="reasoning", id="rs_1", summary=[],
+                content=[SimpleNamespace(type="reasoning_text", text="think A")],
+            ),
+            SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal", arguments="{}", status="completed",
+            ),
+        ],
+    )
+
+
+def test_normalize_codex_response_captures_plaintext_reasoning_for_other_issuers():
+    """Plaintext reasoning must be displayed (msg.reasoning) AND persisted for replay, mirroring the received
+    shape and stamped with the issuer, or Preserved-Thinking models lose their chain after the first tool call."""
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    msg, finish_reason = _normalize_codex_response(
+        _plaintext_reasoning_response(), issuer_kind="other:https://ai.corp.ts.net/v1"
+    )
+    assert finish_reason == "tool_calls"
+    assert msg.reasoning == "think A"
+    assert msg.codex_reasoning_items == [{
+        "type": "reasoning", "summary": [], "content": [{"type": "reasoning_text", "text": "think A"}],
+        "_issuer_kind": "other:https://ai.corp.ts.net/v1", "id": "rs_1",
+    }]
+
+
+@pytest.mark.parametrize("issuer", ["codex_backend", "xai_responses", "github_responses"])
+def test_normalize_codex_response_plaintext_reasoning_not_captured_for_first_party(issuer):
+    """First-party backends carry continuity in encrypted_content only; their wire stays unchanged. The
+    thinking text still surfaces for display."""
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    msg, finish_reason = _normalize_codex_response(_plaintext_reasoning_response(), issuer_kind=issuer)
+    assert finish_reason == "tool_calls"
+    assert msg.reasoning == "think A"
+    assert msg.codex_reasoning_items is None
+
+
+def _plaintext_history(stamp):
+    item = {
+        "type": "reasoning", "id": "rs_1",
+        "summary": [{"type": "summary_text", "text": "sum"}],
+        "content": [{"type": "reasoning_text", "text": "think A"}],
+    }
+    if stamp:
+        item["_issuer_kind"] = stamp
+    return [
+        {"role": "user", "content": "run a command"},
+        {
+            "role": "assistant", "content": "", "codex_reasoning_items": [item],
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "name": "terminal", "content": "ok"},
+    ]
+
+
+def test_chat_messages_to_responses_input_replays_plaintext_reasoning_for_same_issuer():
+    """Same issuer: the plaintext item replays ahead of the tool call with id/_issuer_kind stripped and no
+    empty assistant stub. Different issuer: the cross-issuer guard drops it."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    issuer = "other:https://ai.corp.ts.net/v1"
+    items = _chat_messages_to_responses_input(_plaintext_history(issuer), current_issuer_kind=issuer)
+    kinds = [it.get("type") or f"message:{it.get('role')}" for it in items]
+    assert kinds == ["message:user", "reasoning", "function_call", "function_call_output"], kinds
+    assert items[1] == {
+        "type": "reasoning", "summary": [{"type": "summary_text", "text": "sum"}],
+        "content": [{"type": "reasoning_text", "text": "think A"}],
+    }
+    other = _chat_messages_to_responses_input(_plaintext_history(issuer), current_issuer_kind="other:https://elsewhere/v1")
+    assert all(it.get("type") != "reasoning" for it in other)
+
+
+@pytest.mark.parametrize("issuer", ["codex_backend", "xai_responses", "github_responses"])
+def test_chat_messages_to_responses_input_never_replays_plaintext_reasoning_to_first_party(issuer):
+    """An unstamped legacy plaintext item passes the cross-issuer guard but must still never reach a
+    first-party issuer, whose contract is encrypted_content."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    items = _chat_messages_to_responses_input(_plaintext_history(stamp=None), current_issuer_kind=issuer)
+    assert all(it.get("type") != "reasoning" for it in items)
+    items = _chat_messages_to_responses_input(_plaintext_history(stamp=None), current_issuer_kind="other")
+    assert items[1]["type"] == "reasoning"
+
+
+def test_extract_responses_reasoning_text_prefers_content_over_summary():
+    """Full content reasoning_text first, then summary; parts may be SDK objects or raw dicts."""
+    from agent.codex_responses_adapter import _extract_responses_reasoning_text
+
+    as_object = SimpleNamespace(
+        type="reasoning",
+        summary=[SimpleNamespace(type="summary_text", text="short")],
+        content=[SimpleNamespace(type="reasoning_text", text="full thought")],
+    )
+    assert _extract_responses_reasoning_text(as_object) == "full thought"
+    as_dict = {"type": "reasoning", "summary": [{"type": "summary_text", "text": "short"}], "content": []}
+    assert _extract_responses_reasoning_text(as_dict) == "short"
+    assert _extract_responses_reasoning_text(SimpleNamespace(type="reasoning", summary=[], content=[])) == ""
+
+
+def test_preflight_codex_input_items_passes_plaintext_reasoning_through():
+    """Preflight forwards plaintext reasoning (summary + content, id dropped, dedup by id) and still drops a
+    reasoning item that has neither a blob nor text."""
+    from agent.codex_responses_adapter import _preflight_codex_input_items
+
+    raw = [{
+        "type": "reasoning", "id": "rs_1",
+        "summary": [{"type": "summary_text", "text": "sum"}],
+        "content": [{"type": "reasoning_text", "text": "think A"}],
+    }]
+    expected = [{
+        "type": "reasoning", "summary": [{"type": "summary_text", "text": "sum"}],
+        "content": [{"type": "reasoning_text", "text": "think A"}],
+    }]
+    assert _preflight_codex_input_items(raw) == expected
+    assert _preflight_codex_input_items(raw + raw) == expected
+    assert _preflight_codex_input_items([{"type": "reasoning", "id": "rs_2", "summary": []}]) == []
+
+
 
 
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):

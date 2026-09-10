@@ -836,6 +836,28 @@ class TestConnectAdapterDetachOnTimeout:
         # cancelled and detached, so the event loop can move on.
         await asyncio.sleep(0)
 
+    @pytest.mark.asyncio
+    async def test_discord_inner_timeout_gets_cleanup_grace(self):
+        """Discord's inner timeout must finish cleanup before the outer detach."""
+        runner = _make_runner()
+        adapter = StubAdapter(succeed=True)
+        cleanup_completed = False
+
+        async def _discord_owned_timeout(**kwargs):
+            nonlocal cleanup_completed
+            # Deliberately outlive the base outer budget. Without Discord's
+            # cleanup grace this coroutine is cancelled before returning.
+            await asyncio.sleep(0.02)
+            cleanup_completed = True
+            return False
+
+        with patch.object(adapter, "connect", side_effect=_discord_owned_timeout):
+            with patch.object(runner, "_platform_connect_timeout_secs", return_value=0.01):
+                result = await runner._connect_adapter_with_timeout(adapter, Platform.DISCORD)
+
+        assert result is False
+        assert cleanup_completed is True
+
 
 class TestReconnectWatcherHandleTracking:
     """Regression: the supervisor's own backoff respawn must keep

@@ -85,6 +85,12 @@ selected PM executable; direct Playwright callers select the `chromium` channel.
 Native staging removes retired package facts and directories from its build
 cache. It does not remove browser files from the user's machine-wide store.
 
+PM retains completed download archives until the package is verified and
+published. Normal installs commit package facts before deleting their archives.
+Cross-target staging verifies the published entry before deleting its archives.
+Failed or paused installs keep downloads for retry. Cleanup leaves unrelated
+archives and resumable partials alone. A later repair may download again.
+
 ## Verification boundary
 
 Tests execute shared snapshot/manifest helpers on real git fixtures, stage

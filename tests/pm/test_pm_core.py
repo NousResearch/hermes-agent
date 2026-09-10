@@ -93,6 +93,8 @@ def served(tmp_path):
 def pm_env(tmp_path, served, monkeypatch):
     docroot, base_url = served
     runtime = tmp_path / "runtime"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
     # Policy is pinned open here; the disabled-path tests pin it closed.
@@ -161,10 +163,11 @@ def test_bad_hash_rejected(pm_env):
 
 
 def test_fetch_is_a_store_entry(pm_env):
-    from pm.ensure import ensure
-
-    _, runtime, docroot, _ = pm_env
-    ensure("faketool", base_env={})
+    lock_path, runtime, _, _ = pm_env
+    artifact = Lockfile(lock_path).artifacts("faketool", current_target())[0]
+    store = Store(runtime)
+    with store.scratch() as scratch:
+        store.fetch(artifact["url"], artifact["sha256"], scratch)
     fetches = [p for p in runtime.iterdir() if p.name.startswith("fetch-")]
     assert len(fetches) == 1
 
@@ -426,12 +429,15 @@ def test_gc_removes_fetch_cache_archives(pm_env):
     from pm.cli import cmd_gc
     from pm.ensure import ensure
 
-    _, runtime, *_ = pm_env
+    lock_path, runtime, *_ = pm_env
     ensure("faketool", base_env={})
-
-    # install() fetched via store.fetch → a fetch-<sha> archive cache dir.
+    # Downloads not consumed by a successful install remain eligible for GC.
+    artifact = Lockfile(lock_path).artifacts("faketool", current_target())[0]
+    store = Store(runtime)
+    with store.scratch() as scratch:
+        store.fetch(artifact["url"], artifact["sha256"], scratch)
     fetches = [p for p in runtime.iterdir() if p.name.startswith("fetch-")]
-    assert fetches, "install should have left fetch-<sha> download-cache dirs"
+    assert fetches
 
     cmd_gc(None)
     assert not [p for p in runtime.iterdir() if p.name.startswith("fetch-")], \

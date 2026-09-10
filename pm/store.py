@@ -261,7 +261,7 @@ def tree_digest(root: Path) -> str:
 
 class Store:
     """One directory of immutable published entries plus a scratch area.
-    Downloads are entries too, keyed by hash, so rebuilds never re-fetch."""
+    Hash-keyed archives survive failed installs. Publication releases them."""
 
     def __init__(self, root: Path):
         self.root = root

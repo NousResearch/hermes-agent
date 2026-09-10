@@ -66,6 +66,8 @@ def _seed_fetch_cache(store: Store, payload: bytes) -> None:
 @pytest.fixture()
 def sandbox(tmp_path, monkeypatch):
     runtime = tmp_path / "runtime"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
     store = Store(runtime)
     package = _FakePackage()

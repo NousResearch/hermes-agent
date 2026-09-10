@@ -191,6 +191,11 @@ class CLIAgentSetupMixin:
         """
         if already_streamed or not isinstance(text, str):
             return
+        # `hermes chat -Q` sets suppress_status_output on the live agent after
+        # construction. Keep its stdout contract without coupling commentary to
+        # tool_progress=off, which is an independent display preference.
+        if getattr(getattr(self, "agent", None), "suppress_status_output", False):
+            return
         from tools.ansi_strip import sanitize_display_text
         visible = sanitize_display_text(text).strip()
         if not visible:

@@ -236,7 +236,11 @@ run under another profile's sandbox policy. The media-delivery credential
 guard (the denylist behind `MEDIA:` attachments — `.env`, `auth.json`,
 `config.yaml`, `state.db`, session transcripts, OAuth token stores) covers every
 profile under `profiles/`, so no profile's turn can attach another profile's
-secrets or chat history to a reply. Kanban,
+secrets or chat history to a reply. Authorization is per profile too:
+`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS` and every platform allowlist
+or allow-all opt-in are read from the owning profile's `.env` — the default
+profile opting into open access never opens a secondary profile's bot, and a
+secondary that opts in only in its own `.env` is honored. Kanban,
 profile-scoped skills/memory/SOUL, and model routing all behave per-profile
 exactly as they do with separate gateways.
 

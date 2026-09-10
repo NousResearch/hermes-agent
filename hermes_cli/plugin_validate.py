@@ -30,6 +30,18 @@ _CONFIG_TYPES = {
 }
 _PROBE_TIMEOUT = 30
 _PROBE_SENTINEL = "HERMES_VALIDATE_JSON:"
+_DESKTOP_IMPORT_RE = re.compile(
+    r"(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(?:['\"])([^'\"]+)(?:['\"])",
+)
+_DESKTOP_ALLOWED_IMPORTS = {
+    "@hermes/plugin-sdk", "react", "react/jsx-runtime", "react/jsx-dev-runtime",
+}
+_DESKTOP_EXPORT_RE = re.compile(r"\bexport\s+default\s*\{(?P<body>.*?)\}\s*;?\s*$", re.S)
+_DESKTOP_ID_RE = re.compile(r"(?:^|,)\s*id\s*:\s*(['\"])([^'\"]+)\1\s*(?:,|$)", re.S)
+_DESKTOP_REGISTER_RE = re.compile(
+    r"(?:^|,)\s*(?:register\s*\([^)]*\)\s*\{|register\s*:\s*(?:function\s*)?\([^)]*\)\s*=>|register\s*:\s*function\s*\([^)]*\))",
+    re.S,
+)
 
 
 @dataclass
@@ -404,7 +416,9 @@ def _check_builtin_collisions(
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
-def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
+def validate_plugin_dir(
+    plugin_dir: Path, expected_id: Optional[str] = None
+) -> ValidationReport:
     """Run every admission check against *plugin_dir* and return the report."""
     report = ValidationReport()
     plugin_dir = Path(plugin_dir)
@@ -426,9 +440,12 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
         portable_file = plugin_dir / "plugin.json"
         if portable_file.is_file():
             return _validate_portable_plugin(report, plugin_dir)
+        desktop_file = plugin_dir / "plugin.js"
+        if desktop_file.is_file():
+            return _validate_desktop_plugin(report, desktop_file, expected_id)
         report.add(
             "manifest", False,
-            "no plugin.yaml (or portable plugin.json) in the plugin directory",
+            "no plugin.yaml, portable plugin.json, or standalone plugin.js in the plugin directory",
         )
         return report
 
@@ -452,6 +469,54 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     _check_requires_env(report, manifest)
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
+    return report
+
+
+def _validate_desktop_plugin(
+    report: ValidationReport, plugin_file: Path, expected_id: Optional[str]
+) -> ValidationReport:
+    """Fail-closed static validation of the Desktop runtime-loader contract."""
+    try:
+        source = plugin_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        report.add("desktop plugin", False, f"plugin.js is not readable UTF-8: {exc}")
+        return report
+
+    if len(source.encode("utf-8")) > 512 * 1024:
+        report.add("desktop plugin", False, "plugin.js exceeds the Desktop loader's 512 KiB limit")
+        return report
+
+    imports = _DESKTOP_IMPORT_RE.findall(source)
+    unsupported = sorted({
+        spec for spec in imports
+        if not (spec in _DESKTOP_ALLOWED_IMPORTS or spec.startswith(("./", "../", "/"))
+                or re.match(r"^[a-z][a-z0-9+.-]*:", spec, re.I))
+    })
+    report.add(
+        "desktop imports", not unsupported,
+        "imports match the Desktop runtime loader" if not unsupported
+        else f"unsupported import(s): {', '.join(unsupported)}",
+    )
+
+    export = _DESKTOP_EXPORT_RE.search(source)
+    if export is None:
+        report.add("desktop export", False, "plugin.js must default-export a HermesPlugin object")
+        return report
+    body = export.group("body")
+    id_match = _DESKTOP_ID_RE.search(body)
+    plugin_id = id_match.group(2) if id_match else ""
+    valid_id = bool(plugin_id) and (expected_id is None or plugin_id == expected_id)
+    detail = "default export has a literal id"
+    if expected_id is not None and plugin_id != expected_id:
+        detail = f"plugin id {plugin_id!r} does not match catalog name {expected_id!r}"
+    elif not plugin_id:
+        detail = "default export must contain a non-empty literal id"
+    report.add("desktop id", valid_id, detail)
+    report.add(
+        "desktop register", bool(_DESKTOP_REGISTER_RE.search(body)),
+        "default export has a register function" if _DESKTOP_REGISTER_RE.search(body)
+        else "default export must contain a register function",
+    )
     return report
 
 

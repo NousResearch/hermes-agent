@@ -112,3 +112,40 @@ class TestCapabilityProbe:
         )
         report = validate_plugin_dir(d)
         assert report.ok, report.failures
+
+
+class TestStandaloneDesktopPlugin:
+    SOURCE = (
+        "import { host } from '@hermes/plugin-sdk'\n"
+        "export default { id: 'desktop-only', register(ctx) { void host; void ctx } }\n"
+    )
+
+    def _write(self, tmp_path: Path, source: str | None = None) -> Path:
+        d = tmp_path / "desktop-only"
+        d.mkdir()
+        (d / "plugin.js").write_text(source or self.SOURCE, encoding="utf-8")
+        return d
+
+    def test_valid_standalone_desktop_plugin_is_accepted(self, tmp_path):
+        report = validate_plugin_dir(self._write(tmp_path), expected_id="desktop-only")
+        assert report.ok, report.failures
+
+    def test_missing_agent_manifest_and_plugin_js_is_rejected(self, tmp_path):
+        assert not validate_plugin_dir(tmp_path).ok
+
+    def test_malformed_desktop_plugin_is_rejected(self, tmp_path):
+        report = validate_plugin_dir(self._write(tmp_path, "export default { id: 'desktop-only' }"))
+        assert not report.ok
+        assert any("register" in failure for failure in report.failures)
+
+    def test_unsupported_desktop_import_is_rejected(self, tmp_path):
+        source = "import fs from 'fs'\nexport default { id: 'desktop-only', register() {} }\n"
+        report = validate_plugin_dir(self._write(tmp_path, source))
+        assert not report.ok
+        assert any("fs" in failure for failure in report.failures)
+
+    def test_agent_manifest_still_wins_for_hybrid_plugin(self, tmp_path):
+        d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST))
+        (d / "plugin.js").write_text("not valid desktop js", encoding="utf-8")
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures

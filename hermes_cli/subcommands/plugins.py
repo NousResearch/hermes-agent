@@ -50,6 +50,10 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_validate = plugins_subparsers.add_parser(
         "validate", help="Validate a plugin directory for catalog admission (CI gate)")
     plugins_validate.add_argument("path", help="Path to the plugin directory")
+    plugins_validate.add_argument(
+        "--expected-id", default=None,
+        help="Expected id for a standalone Desktop plugin",
+    )
     add_json_flag(plugins_validate, "Print machine-readable JSON (for CI)")
 
     plugins_update = plugins_subparsers.add_parser(

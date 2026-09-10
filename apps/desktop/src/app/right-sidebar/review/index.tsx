@@ -154,12 +154,13 @@ export function ReviewPane() {
       {selectedFile && (
         <div className="flex max-h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
-            <span
-              className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
-              title={displayPath(selectedFile.path)}
-            >
-              {displayPath(selectedFile.path)}
-            </span>
+            <Tip label={displayPath(selectedFile.path)}>
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
+              >
+                {displayPath(selectedFile.path)}
+              </span>
+            </Tip>
             <DiffCount added={selectedFile.added} className="text-[0.64rem] leading-4" removed={selectedFile.removed} />
             <Tip label={selectedFile.staged ? c.unstage : c.stage}>
               <Button
@@ -208,12 +209,13 @@ export function ReviewPane() {
           <>
             {revertingAll ? c.revertAllConfirm : c.revertConfirm}
             {!revertingAll && revertTarget?.path && (
-              <span
-                className="mt-2 block truncate font-mono text-[0.7rem] text-(--ui-text-secondary)"
-                title={displayPath(revertTarget.path)}
-              >
-                {displayPath(revertTarget.path)}
-              </span>
+              <Tip label={displayPath(revertTarget.path)}>
+                <span
+                  className="mt-2 block truncate font-mono text-[0.7rem] text-(--ui-text-secondary)"
+                >
+                  {displayPath(revertTarget.path)}
+                </span>
+              </Tip>
             )}
           </>
         }

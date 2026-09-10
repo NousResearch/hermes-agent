@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from 'react'
 
+import { Tip } from '@/components/ui/tooltip'
 import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -76,14 +77,16 @@ export function Favicon({
   }, [url])
 
   return (
-    <span className={cn('inline-grid size-full place-items-center', className)} title={title}>
-      {icon ? (
-        <img alt="" aria-hidden className="size-full object-contain" src={icon} />
-      ) : pending ? (
-        <Loader2 aria-hidden className="h-1/2 w-1/2 animate-spin opacity-60" />
-      ) : (
-        fallback
-      )}
-    </span>
+    <Tip label={title}>
+      <span className={cn('inline-grid size-full place-items-center', className)}>
+        {icon ? (
+          <img alt="" aria-hidden className="size-full object-contain" src={icon} />
+        ) : pending ? (
+          <Loader2 aria-hidden className="h-1/2 w-1/2 animate-spin opacity-60" />
+        ) : (
+          fallback
+        )}
+      </span>
+    </Tip>
   )
 }

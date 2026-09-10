@@ -615,20 +615,22 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                 const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
 
                 return (
-                  <div
-                    className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
+                  <Tip
+                    delayDuration={0}
                     key={entry.day}
-                    title={`${entry.day} · in ${compactNumber(entry.input_tokens)} · out ${compactNumber(entry.output_tokens)}`}
+                    label={`${entry.day} · in ${compactNumber(entry.input_tokens)} · out ${compactNumber(entry.output_tokens)}`}
                   >
-                    <div
-                      className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
-                      style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
-                    />
-                    <div
-                      className="w-full bg-emerald-500/60"
-                      style={{ height: Math.max(outputH, entry.output_tokens > 0 ? 1 : 0) }}
-                    />
-                  </div>
+                    <div className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end">
+                      <div
+                        className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
+                        style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
+                      />
+                      <div
+                        className="w-full bg-emerald-500/60"
+                        style={{ height: Math.max(outputH, entry.output_tokens > 0 ? 1 : 0) }}
+                      />
+                    </div>
+                  </Tip>
                 )
               })}
             </div>

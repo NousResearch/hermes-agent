@@ -478,6 +478,105 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_active_pr_guard_skipped_for_ready_lane_after_changes_requested(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ready-lane rework after ``changes_requested`` must not trip ``active_pr``.
+
+    The implementer opened a PR (URL comment <24h), the reviewer requested
+    changes, and the card is back in ``ready`` assigned to the implementer.
+    That PR link is the *input* to the rework, not a duplicate-PR signal.
+    Without the exemption, ``check_respawn_guard`` returns ``active_pr`` for
+    24h and the implementer never respawns.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    pr_comment = "Opened https://github.com/example/repo/pull/123 for review."
+
+    with kbc.connect() as conn:
+        # CONTROL: ready-lane + PR URL, no changes_requested → still active_pr.
+        control_ready_id = kb.create_task(
+            conn, title="already PRed control", assignee="worker",
+        )
+        kb.add_comment(conn, control_ready_id, author="worker", body=pr_comment)
+
+        # CONTROL: review-lane + fresh PR URL → still skipped (existing B2).
+        control_review_id = kb.create_task(
+            conn, title="review control", assignee="reviewer",
+        )
+        claimed_review = kb.claim_task(conn, control_review_id)
+        assert claimed_review is not None
+        kb.add_comment(conn, control_review_id, author="worker", body=pr_comment)
+        assert kb.request_review(
+            conn, control_review_id, summary="PR ready",
+            expected_run_id=claimed_review.current_run_id,
+        )
+
+        # Lifecycle: implement → PR comment → review → changes_requested → ready.
+        tid = kb.create_task(conn, title="rework after review", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        kb.add_comment(conn, tid, author="worker", body=pr_comment)
+        # Stamp the PR comment in the past so a same-second changes_requested
+        # event is strictly newer (B) if the guard also compares timestamps.
+        _now = int(__import__("time").time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = ? WHERE task_id = ?",
+                (_now - 60, tid),
+            )
+        assert kb.request_review(
+            conn, tid, summary="PR ready for review",
+            reviewer="reviewer",
+            expected_run_id=claimed.current_run_id,
+        )
+        review = kb.claim_review_task(conn, tid)
+        assert review is not None
+        assert kb.request_changes(
+            conn, tid,
+            reason="Please address the review comments.",
+            expected_run_id=review.current_run_id,
+        ) == (True, "worker")
+        rework = kb.get_task(conn, tid)
+        assert rework is not None
+        assert rework.status == "ready"
+        assert rework.assignee == "worker"
+
+        # CONTROL assertions — must pass on pre-fix main and after the fix.
+        assert kbd.check_respawn_guard(conn, control_ready_id) == "active_pr"
+        assert kbd.check_respawn_guard(
+            conn, control_review_id, lane="review",
+        ) is None
+
+        # These assertions fail on pre-fix main (guard returns "active_pr").
+        assert kbd.check_respawn_guard(conn, tid) is None
+        res = kbd.dispatch_once(conn, dry_run=True)
+        spawned_ids = [s[0] for s in res.spawned]
+        guarded = dict(res.respawn_guarded)
+        assert control_review_id in spawned_ids
+        assert control_ready_id not in spawned_ids
+        assert guarded.get(control_ready_id) == "active_pr"
+        assert tid in spawned_ids
+        assert guarded.get(tid) != "active_pr"
+
+        # After changes_requested, a later rate-limited run still defers.
+        _later = int(__import__("time").time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, "
+                "started_at, ended_at) VALUES (?, 'worker', 'rate_limited', "
+                "'rate_limited', ?, ?)",
+                (tid, _later, _later + 5),
+            )
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

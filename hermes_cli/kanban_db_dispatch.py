@@ -1134,8 +1134,10 @@ def check_respawn_guard(
     path never increments ``consecutive_failures``), ``"blocker_auth"``
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
+    a re-queue event arrived after it — a deliberate re-run, including
+    ``changes_requested``) and ``"active_pr"``
+    (PR URL in a recent comment; re-spawning risks a duplicate PR, except
+    implementer rework after ``changes_requested``). The review
     lane skips the last two: they are the *inputs* to a review handoff. Stale /
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
@@ -1196,7 +1198,8 @@ def check_respawn_guard(
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed', "
+            "'changes_requested') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
@@ -1204,13 +1207,27 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    #    Ready-lane rework exception: the latest ended run is the reviewer's
+    #    ``changes_requested`` handoff, so respawning the implementer is the
+    #    point of rework, not a duplicate-PR risk. Other latest outcomes
+    #    (completed / crashed / review_requested / rate_limited / missing)
+    #    keep the existing defer. ``id DESC`` breaks same-second ties with the
+    #    preceding ``review_requested`` run (both close in one wall-clock second).
+    latest_ended = conn.execute(
+        "SELECT outcome FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if latest_ended is None or latest_ended["outcome"] != "changes_requested":
+        pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+        for c in conn.execute(
+            "SELECT body FROM task_comments "
+            "WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall():
+            if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+                return "active_pr"
 
     return None
 

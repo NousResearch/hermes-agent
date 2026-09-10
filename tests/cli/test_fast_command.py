@@ -200,6 +200,130 @@ class TestFastModeRouting(unittest.TestCase):
         assert route["runtime"]["provider"] == "openrouter"
         assert route.get("request_overrides") is None
 
+    def test_turn_route_first_turn_uses_history_not_agent_construction_state(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="primary", api_key="primary-key", base_url="https://api.example/v1",
+            provider="custom", requested_provider="custom", api_mode="chat_completions",
+            acp_command=None, acp_args=[], _credential_pool=None, service_tier=None,
+            session_id="session-1", agent=object(), conversation_history=[],
+        )
+        seen = []
+
+        def fake_apply(route, **context):
+            seen.append(context["is_first_turn"])
+            return SimpleNamespace(changed=False, payload=route, trace=[])
+
+        with patch("hermes_cli.middleware.apply_turn_route_middleware", fake_apply):
+            cli_mod.HermesCLI._resolve_turn_agent_config(stub, "first")
+            # A route change can rebuild the agent without starting a new turn.
+            stub.agent = None
+            stub.conversation_history = [{"role": "user", "content": "first"}]
+            cli_mod.HermesCLI._resolve_turn_agent_config(stub, "later")
+
+        assert seen == [True, False]
+
+    def test_turn_route_resolves_requested_provider_alias(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="primary", api_key="alpha-key", base_url="https://alpha.example/v1",
+            provider="custom", requested_provider="custom:alpha", api_mode="chat_completions",
+            acp_command=None, acp_args=[], _credential_pool=None, service_tier=None,
+            agent=None, session_id="session-1",
+        )
+
+        def fake_apply(route, **_context):
+            return SimpleNamespace(
+                changed=True,
+                payload={**route, "model": "target", "provider": "custom",
+                         "requested_provider": "custom:beta",
+                         "runtime": {**route["runtime"], "requested_provider": "custom:beta", "api_mode": "invalid"}},
+                trace=[],
+            )
+
+        with patch("hermes_cli.middleware.apply_turn_route_middleware", fake_apply), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "custom", "requested_provider": "custom:beta",
+                          "api_key": "beta-key", "base_url": "https://beta.example/v1",
+                          "api_mode": "responses"},
+        ) as resolve:
+            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "route")
+
+        resolve.assert_called_once_with(requested="custom:beta", target_model="target")
+        assert route["runtime"]["api_key"] == "beta-key"
+        assert route["runtime"]["provider"] == "custom"
+        assert route["runtime"]["api_mode"] == "responses"
+        from hermes_cli.cli_agent_setup_mixin import _route_signature
+        assert route["signature"] == _route_signature(route["model"], route["runtime"])
+
+    def test_warm_turn_route_switch_rebuilds_then_reuses_selected_agent(self):
+        cli_mod = _import_cli()
+        shell = cli_mod.HermesCLI(model="alpha", compact=True, max_turns=1)
+        shell.provider = "custom"
+        shell.requested_provider = "custom"
+        shell.api_mode = "chat_completions"
+        shell.base_url = "https://alpha.example/v1"
+        shell.api_key = "alpha-key"
+        shell.acp_command = None
+        shell.acp_args = []
+        shell._credential_pool = None
+        shell.service_tier = None
+        shell._skip_turn_routing = False
+        shell._active_agent_route_signature = None
+        shell.agent = None
+
+        selected = {"model": "alpha"}
+        shell._ensure_runtime_credentials = lambda: True
+        shell.finalize_preloaded_skills = lambda: None
+        shell._install_tool_callbacks = lambda: None
+        shell._ensure_tirith_security = lambda: None
+
+        class CapturingAgent:
+            instances = []
+
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+                self._print_fn = None
+                type(self).instances.append(self)
+
+        def fake_apply(route, **_context):
+            return SimpleNamespace(
+                changed=selected["model"] != route["model"],
+                payload={**route, "model": selected["model"]},
+                trace=[],
+            )
+
+        with (
+            patch.object(cli_mod, "_prepare_deferred_agent_startup", lambda: None),
+            patch(
+                "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+                lambda **_kwargs: None,
+            ),
+            patch("run_agent.AIAgent", CapturingAgent),
+            patch("hermes_cli.middleware.apply_turn_route_middleware", fake_apply),
+        ):
+            def begin_turn():
+                route = shell._resolve_turn_agent_config("route")
+                if route["signature"] != shell._active_agent_route_signature:
+                    shell.agent = None
+                assert shell._init_agent(
+                    model_override=route["model"],
+                    runtime_override=route["runtime"],
+                    request_overrides=route.get("request_overrides"),
+                )
+                return shell.agent
+
+            alpha = begin_turn()
+            selected["model"] = "beta"
+            beta = begin_turn()
+            beta_again = begin_turn()
+            selected["model"] = "alpha"
+            alpha_again = begin_turn()
+
+        assert [agent.model for agent in CapturingAgent.instances] == ["alpha", "beta", "alpha"]
+        assert beta_again is beta
+        assert alpha_again is not alpha
+
 
 class TestAnthropicFastMode(unittest.TestCase):
     """Verify Anthropic Fast Mode model support and override resolution."""

@@ -458,11 +458,21 @@ class PluginDispatchMixin:
     def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
         """Call middleware callbacks for *kind* (each isolated); return non-``None`` results."""
         results: List[Any] = []
+        route_chain = kind == "turn_route" and isinstance(kwargs.get("route"), dict)
+        current_route = copy.deepcopy(kwargs["route"]) if route_chain else None
+        original_route = copy.deepcopy(kwargs.get("original_route")) if route_chain else None
         for cb in self._middleware.get(kind, []):
+            callback_kwargs = kwargs
+            if route_chain:
+                callback_kwargs = dict(kwargs)
+                callback_kwargs["route"] = copy.deepcopy(current_route)
+                callback_kwargs["original_route"] = copy.deepcopy(original_route)
             try:
-                ret = cb(**kwargs)
+                ret = cb(**callback_kwargs)
                 if ret is not None:
                     results.append(ret)
+                    if route_chain and isinstance(ret, dict) and isinstance(ret.get("route"), dict):
+                        current_route = copy.deepcopy(ret["route"])
             except Exception as exc:
                 logger.warning(
                     "Middleware '%s' callback %s raised: %s", kind, getattr(cb, "__name__", repr(cb)), exc)

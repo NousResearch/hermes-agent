@@ -602,6 +602,29 @@ def _browser_status() -> None:
 class CLICommandsMixin:
     """Mixin holding the interactive-CLI slash-command handlers."""
 
+    def _run_plugin_slash_command(self, base_cmd: str, user_args: str) -> None:
+        """Run a discovered plugin slash command with the current CLI session context."""
+        from cli import _RST, _cprint
+        from hermes_cli.plugins import get_plugin_command_handler, invoke_plugin_command, resolve_plugin_command_result
+
+        plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
+        if not plugin_handler:
+            return
+        try:
+            result = resolve_plugin_command_result(
+                invoke_plugin_command(
+                    plugin_handler,
+                    user_args,
+                    session_id=getattr(self, "session_id", None),
+                    session_key=getattr(self, "session_id", None),
+                    platform="cli",
+                )
+            )
+            if result:
+                _cprint(str(result))
+        except Exception as exc:
+            _cprint(f"\033[1;31mPlugin command error: {exc}{_RST}")
+
     # ---- /rollback ------------------------------------------------------------------------
     def _checkpoint_manager(self, disabled_lines):
         """The agent's checkpoint manager, or None after printing why it is unavailable."""
@@ -1917,7 +1940,12 @@ class CLICommandsMixin:
         preview = _ellipsize(prompt, 60)
         _cp(f"  🔄 Background task #{task_num} started: \"{preview}\"", f"  Task ID: {task_id}",
             "  You can continue chatting — results will appear when done.\n")
-        turn_route = self._resolve_turn_agent_config(prompt)
+        previous_skip = getattr(self, "_skip_turn_routing", False)
+        self._skip_turn_routing = True
+        try:
+            turn_route = self._resolve_turn_agent_config(prompt)
+        finally:
+            self._skip_turn_routing = previous_skip
         runtime = turn_route["runtime"]
 
         def produce():
@@ -2013,7 +2041,12 @@ class CLICommandsMixin:
         history_snapshot = list(self.conversation_history or [])
         # Live agent → cache-parity fork (full context, warm cache reads).
         parent_agent = self.agent
-        turn_route = self._resolve_turn_agent_config(question)
+        previous_skip = getattr(self, "_skip_turn_routing", False)
+        self._skip_turn_routing = True
+        try:
+            turn_route = self._resolve_turn_agent_config(question)
+        finally:
+            self._skip_turn_routing = previous_skip
         runtime = turn_route["runtime"]
         main_runtime = {
             "model": turn_route["model"],

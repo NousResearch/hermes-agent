@@ -129,6 +129,110 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_reports_history_derived_first_turn(monkeypatch):
+    runner = _make_runner()
+    seen = []
+
+    def fake_apply(route, **context):
+        seen.append(context["is_first_turn"])
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    runtime_kwargs = {
+        "api_key": "***", "base_url": "https://api.openai.com/v1", "provider": "openai",
+        "api_mode": "chat_completions", "command": None, "args": [], "credential_pool": None,
+    }
+
+    gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "first", "gpt-5.4", runtime_kwargs, source=_make_source(), conversation_history=[], internal=False
+    )
+    gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "later", "gpt-5.4", runtime_kwargs, source=_make_source(),
+        conversation_history=[{"role": "user", "content": "first"}], internal=False,
+    )
+
+    assert seen == [True, False]
+
+
+def test_turn_route_resolves_requested_provider_alias(monkeypatch):
+    runner = _make_runner()
+
+    def fake_apply(route, **_context):
+        return SimpleNamespace(
+            changed=True,
+            payload={**route, "model": "target", "provider": "custom",
+                     "requested_provider": "custom:beta",
+                     "runtime": {**route["runtime"], "requested_provider": "custom:beta", "api_mode": "invalid"}},
+            trace=[],
+        )
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    resolver = MagicMock(return_value={
+        "provider": "custom", "requested_provider": "custom:beta",
+        "api_key": "beta-key", "base_url": "https://beta.example/v1", "api_mode": "responses",
+        "request_overrides": {"extra_body": {"route_owner": "beta"}},
+    })
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs_for_provider", resolver)
+    route = runner._resolve_turn_agent_config(
+        "route", "primary", {
+            "provider": "custom", "requested_provider": "custom:alpha",
+            "api_key": "alpha-key", "base_url": "https://alpha.example/v1",
+            "api_mode": "chat_completions",
+        }, session_id="session-1", session_key="chat-1", source=_make_source(),
+        internal=False,
+    )
+
+    resolver.assert_called_once_with("custom:beta")
+    assert route["runtime"]["provider"] == "custom"
+    assert route["runtime"]["requested_provider"] == "custom:beta"
+    assert route["runtime"]["api_key"] == "beta-key"
+    assert route["runtime"]["api_mode"] == "responses"
+    assert "request_overrides" not in route["runtime"]
+    assert route["request_overrides"] == {"extra_body": {"route_owner": "beta"}}
+
+
+def test_build_fresh_agent_receives_projected_route_overrides(monkeypatch):
+    from gateway.run_turn_runner import TurnRunner
+
+    runner = _make_runner()
+    runner._refresh_fallback_model = lambda: None
+    source = _make_source()
+    ctx = SimpleNamespace(
+        AIAgent=_CapturingAgent,
+        source=source,
+        user_config={},
+        enabled_toolsets=[],
+        disabled_toolsets=[],
+        session_id="session-1",
+        session_key="chat-1",
+    )
+    turn_runner = TurnRunner(runner, ctx)
+    route = {
+        "model": "target",
+        "runtime": {
+            "api_key": "beta-key",
+            "base_url": "https://beta.example/v1",
+            "provider": "custom",
+            "requested_provider": "custom:beta",
+            "api_mode": "responses",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+            "max_tokens": None,
+            "capabilities": {},
+        },
+        "request_overrides": {"extra_body": {"route_owner": "beta"}},
+    }
+
+    monkeypatch.setattr(gateway_run, "_checkpoint_agent_kwargs", lambda _config: {})
+    turn_runner._build_fresh_agent(route, "telegram", "", 3, None, {}, False)
+
+    assert _CapturingAgent.last_init["request_overrides"] == {
+        "extra_body": {"route_owner": "beta"}
+    }
+    assert _CapturingAgent.last_init["requested_provider"] == "custom:beta"
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -173,5 +277,3 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key=session_key) is None
     # A different session still gets the config default.
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
-
-

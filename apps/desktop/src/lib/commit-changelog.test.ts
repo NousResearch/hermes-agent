@@ -74,10 +74,15 @@ describe('buildCommitChangelog', () => {
     expect(groups[0].items).toEqual(['Update sidebar styling'])
   })
 
-  it('falls back to a neutral placeholder when every commit is filtered or empty', () => {
+  it('returns [] when every commit is filtered or empty so callers degrade honestly', () => {
     const groups = buildCommitChangelog([{ summary: 'chore: bump' }, { summary: 'ci: stuff' }])
 
-    expect(groups).toEqual([{ id: 'other', items: ['Improvements and fixes'], label: 'In this update' }])
+    expect(groups).toEqual([])
+  })
+
+  it('returns [] for empty or missing input', () => {
+    expect(buildCommitChangelog([])).toEqual([])
+    expect(buildCommitChangelog(undefined)).toEqual([])
   })
 
   it('dedupes identical subjects and caps the items per group', () => {

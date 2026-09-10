@@ -9,6 +9,7 @@ import { test } from 'vitest'
 import {
   compareApiUrl,
   parseCompareBehindCount,
+  parseCompareCommits,
   resolveBehindCount,
   resolveCommitLogSelection,
   shouldCountCommits
@@ -299,4 +300,57 @@ test('parseCompareBehindCount rejects malformed payloads', () => {
   assert.equal(parseCompareBehindCount({ ahead_by: '61' }), null)
   assert.equal(parseCompareBehindCount({ ahead_by: 1.5 }), null)
   assert.equal(parseCompareBehindCount([]), null)
+})
+
+// --- compare-API commit extraction: release notes for SSH/shallow installs ---
+
+// Mirrors the GitHub compare API's commit shape (subset the parser relies on).
+function apiCommit(sha, message, authorName, isoDate) {
+  return { sha, commit: { message, author: { name: authorName, date: isoDate } }, node_id: `node_${sha}` }
+}
+
+test('parseCompareCommits maps compare rows to update-commit shape, body lines dropped', () => {
+  const rows = parseCompareCommits({
+    commits: [
+      apiCommit(SHA_B, 'feat(desktop): rich release notes\n\nBody that must not leak into the summary.', 'Ada', '2026-08-30T12:00:00Z'),
+      apiCommit(SHA_A, 'fix: dialog placeholder', 'Grace', '2026-08-29T12:00:00Z')
+    ]
+  })
+
+  assert.deepEqual(rows, [
+    { sha: SHA_B, summary: 'feat(desktop): rich release notes', author: 'Ada', at: Date.parse('2026-08-30T12:00:00Z') },
+    { sha: SHA_A, summary: 'fix: dialog placeholder', author: 'Grace', at: Date.parse('2026-08-29T12:00:00Z') }
+  ])
+})
+
+test('parseCompareCommits falls back to node_id when sha is missing', () => {
+  const rows = parseCompareCommits({
+    commits: [{ ...apiCommit('', 'fix: no sha', 'Ada', '2026-08-30T12:00:00Z'), node_id: 'NODE_1' }]
+  })
+
+  assert.equal(rows[0].sha, 'NODE_1')
+  assert.equal(rows[0].summary, 'fix: no sha')
+})
+
+test('parseCompareCommits skips rows with no usable sha/summary/date and survives non-object entries', () => {
+  const rows = parseCompareCommits({
+    commits: [
+      null,
+      42,
+      apiCommit(SHA_A, '', 'Ada', '2026-08-30T12:00:00Z'),
+      apiCommit(SHA_B, 'fix: has sha but no date', 'Grace', ''),
+      apiCommit(SHA_A, 'fix: dated', 'Ada', '2026-08-28T00:00:00Z')
+    ]
+  })
+
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].summary, 'fix: dated')
+})
+
+test('parseCompareCommits rejects malformed payloads', () => {
+  assert.deepEqual(parseCompareCommits(null), [])
+  assert.deepEqual(parseCompareCommits(undefined), [])
+  assert.deepEqual(parseCompareCommits({}), [])
+  assert.deepEqual(parseCompareCommits({ commits: 'nope' }), [])
+  assert.deepEqual(parseCompareCommits([]), [])
 })

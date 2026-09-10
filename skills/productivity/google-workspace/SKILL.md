@@ -62,15 +62,16 @@ Calendar/Drive/Sheets/Docs?"**
   Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
   Load the himalaya skill and follow its setup instructions.
 
-- **Email + Calendar** → Continue with this skill, but use
-  `--services email,calendar` during auth so the consent screen only asks for
-  the scopes they actually need.
+- **Anything beyond email** (Calendar, Drive, Sheets, Docs, Contacts) →
+  Continue with this skill.
 
-- **Calendar/Drive/Sheets/Docs only** → Continue with this skill and use a
-  narrower `--services` set like `calendar,drive,sheets,docs`.
-
-- **Full Workspace access** → Continue with this skill and use the default
-  `all` service set.
+  `setup.py` always requests the same eight scopes, so the consent screen lists
+  Gmail (read/send/modify), Calendar, Drive, Contacts (read-only), Sheets and
+  Docs no matter which of them the user plans to use. Say so before sending the
+  URL, and tell them they may untick individual permissions on Google's screen
+  if they want less: the exchange sets `OAUTHLIB_RELAX_TOKEN_SCOPE`, stores the
+  scopes actually granted, and `--check` reports a partial token as
+  `AUTHENTICATED (partial)` and still exits 0.
 
 **Question 2: "Does your Google account use Advanced Protection (hardware
 security keys required to sign in)? If you're not sure, you probably don't
@@ -117,19 +118,16 @@ explicit (for example `~/Downloads/hermes-google-client-secret.json`), then run
 
 ### Step 3: Get authorization URL
 
-Use the service set chosen in Step 1. Examples:
-
 ```bash
-$GSETUP --auth-url --services email,calendar --format json
-$GSETUP --auth-url --services calendar,drive,sheets,docs --format json
-$GSETUP --auth-url --services all --format json
+$GSETUP --auth-url
 ```
 
-This returns JSON with an `auth_url` field and also saves the exact URL to
-`~/.hermes/google_oauth_last_url.txt`.
+`--auth-url` takes no other arguments. It prints the authorization URL on stdout
+and nothing else — no JSON wrapper, and no copy is written to disk. Capture it
+from the command's output.
 
 Agent rules for this step:
-- Extract the `auth_url` field and send that exact URL to the user as a single line.
+- Send that exact URL to the user as a single line, unmodified.
 - Tell the user that the browser will likely fail on `http://localhost:1` after approval, and that this is expected.
 - Tell them to copy the ENTIRE redirected URL from the browser address bar.
 - If the user gets `Error 403: access_denied`, send them directly to `https://console.cloud.google.com/auth/audience` to add themselves as a test user.
@@ -142,13 +140,17 @@ pending OAuth session locally so `--auth-code` can complete the PKCE exchange
 later, even on headless systems:
 
 ```bash
-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
+$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
 ```
 
-If `--auth-code` fails because the code expired, was already used, or came from
-an older browser tab, it now returns a fresh `fresh_auth_url`. In that case,
-immediately send the new URL to the user and have them retry with the newest
-browser redirect only.
+On success it prints `OK: Authenticated.` and the token path. If the user
+unticked permissions, it also warns which scopes are missing — that is
+informational, not a failure.
+
+If the code expired, was already used, or came from an older browser tab, the
+exchange fails with `ERROR: Token exchange failed`. Recover by re-running
+`$GSETUP --auth-url` for a fresh URL and having the user retry with the newest
+browser redirect only — an authorization code is single-use.
 
 ### Step 5: Verify
 

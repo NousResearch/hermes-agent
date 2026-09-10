@@ -59,7 +59,7 @@ def test_fallback_compression_reports_dropped_message_count():
 
     assert feedback["aborted"] is False
     assert feedback["fallback_used"] is True
-    assert feedback["headline"] == "Compressed with fallback: 12 → 4 messages"
+    assert feedback["headline"] == "Compressed with fallback: 12 → 4 messages (you ran /compress)"
     assert "removed 8 message(s)" in feedback["note"]
     assert "invalid response" in feedback["note"]
 

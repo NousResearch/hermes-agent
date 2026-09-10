@@ -16,6 +16,8 @@ import hashlib
 import importlib
 import logging
 import os
+import re
+import shlex
 import threading
 from typing import Optional
 
@@ -28,7 +30,8 @@ from tools.approval_context import (
     _tirith_fail_open, get_current_session_key,
 )
 from tools.approval_detection import (
-    _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
+    _approval_key_aliases, _check_sudo_stdin_guard, _normalize_command_for_detection,
+    detect_dangerous_command, detect_hardline_command,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -61,6 +64,67 @@ _permanent_approved: set = set()
 # recently denied) entries are evicted.
 _denial_tally: dict[str, int] = {}
 _DENIAL_TALLY_MAX_SESSIONS = 256
+
+# A denial is a runtime constraint for the rest of the current agent turn.
+# Scope it by turn so a rephrased command cannot route around an in-turn denial.
+_denied_intents: dict[tuple[str, str], set[tuple[str, str]]] = {}
+_DENIED_INTENTS_MAX_SCOPES = 256
+
+
+def _denial_scope() -> tuple[str, str] | None:
+    session_key = get_current_session_key("")
+    turn_id = approval_context._approval_turn_id.get()
+    if not session_key or not turn_id:
+        return None
+    return session_key, turn_id
+
+
+def _looks_like_denied_intent_path(token: str) -> bool:
+    unquoted = token.strip("'\"")
+    return bool(unquoted.startswith(("/", "~/", "./", "../"))
+                or re.match(r"^[A-Za-z]:[\\/]", unquoted))
+
+
+def _denied_intent_signatures(pattern_keys: list[str] | tuple[str, ...], command: str):
+    normalized = _normalize_command_for_detection(command)
+    try:
+        tokens = shlex.split(normalized)
+    except ValueError:
+        tokens = normalized.split()
+    intent = " ".join(
+        "<path>" if _looks_like_denied_intent_path(token) else token
+        for token in tokens
+    )
+    digest = hashlib.sha256(intent.encode("utf-8")).hexdigest()
+    return {(key, digest) for key in pattern_keys if key}
+
+
+def _record_denied_intent(pattern_keys: list[str] | tuple[str, ...], command: str) -> None:
+    scope = _denial_scope()
+    signatures = _denied_intent_signatures(pattern_keys, command)
+    if scope is None or not signatures:
+        return
+    with _lock:
+        _denied_intents.setdefault(scope, set()).update(signatures)
+        while len(_denied_intents) > _DENIED_INTENTS_MAX_SCOPES:
+            _denied_intents.pop(next(iter(_denied_intents)))
+
+
+def _denied_intent_matches(pattern_keys: list[str] | tuple[str, ...], command: str) -> bool:
+    scope = _denial_scope()
+    if scope is None:
+        return False
+    with _lock:
+        return bool(_denied_intents.get(scope, set()).intersection(
+            _denied_intent_signatures(pattern_keys, command)))
+
+
+def _clear_denied_intents(scope: tuple[str, str] | None = None) -> None:
+    with _lock:
+        if scope is None:
+            _denied_intents.clear()
+        else:
+            _denied_intents.pop(scope, None)
 
 
 def _get_denial_breaker_threshold() -> int:
@@ -646,6 +710,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     _record_denial(session_key)
     if human_present:
         return None, True
+    _record_denied_intent(pattern_keys, command)
     return {
         # Unattended programmatic platforms (webhook/msgraph_webhook/ api_server): respect unattended_mode
         # config. Resolves instantly — never a pending approval nobody can answer (#37284, #87509).
@@ -672,6 +737,14 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     from agent.redact import redact_sensitive_text
 
     smart_denied = False
+    if _denied_intent_matches(pattern_keys, command):
+        return _denied(
+            "BLOCKED: This dangerous operation was already denied in the current "
+            "turn. Do not retry, rephrase, or use another command to achieve the "
+            "same outcome. Wait for the user's next message.",
+            pattern_key=pattern_key, description=description,
+            outcome="denied_repeat",
+        )
     if smart:
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
                                            session_key, human_present=is_cli or is_gateway or is_ask)
@@ -681,6 +754,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     allow_permanent = permanent_capable and not smart_denied
 
     def deny(template: str, outcome: str, **fmt) -> dict:
+        _record_denied_intent(pattern_keys, command)
         breaker = ""
         if "{breaker}" in template:
             breaker = _denial_breaker_addendum(session_key)

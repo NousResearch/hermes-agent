@@ -56,7 +56,9 @@ def breaker_session(monkeypatch):
 
     session_key = "breaker-test-session"
     token = approval_context.set_current_session_key(session_key)
+    turn_tokens = approval_context.set_current_observability_context(turn_id="breaker-test-turn")
     A._reset_denials(session_key)
+    A._clear_denied_intents()
     with A._lock:
         A._permanent_approved.discard("breaker-test-danger")
         A._permanent_approved.discard("execute_code")
@@ -67,8 +69,10 @@ def breaker_session(monkeypatch):
     try:
         yield session_key
     finally:
+        approval_context.reset_current_observability_context(turn_tokens)
         approval_context.reset_current_session_key(token)
         A._reset_denials(session_key)
+        A._clear_denied_intents()
         with A._lock:
             A._gateway_queues.pop(session_key, None)
             A._gateway_notify_cbs.pop(session_key, None)
@@ -113,6 +117,27 @@ def test_breaker_trips_on_third_consecutive_denial(breaker_session):
     assert BREAKER_MARKER in third["message"]
     assert "3 consecutive commands were blocked" in third["message"]
     assert "STOP attempting variations" in third["message"]
+
+
+def test_denial_blocks_changed_path_for_remainder_of_turn(breaker_session):
+    _register_resolver(breaker_session, "deny")
+
+    first = _denied_terminal("rm -rf /tmp/a")
+    second = _denied_terminal("rm -rf /tmp/b")
+
+    assert first["outcome"] == "denied"
+    assert second["outcome"] == "denied_repeat"
+    assert "already denied in the current turn" in second["message"]
+
+
+def test_unrelated_approval_does_not_clear_denied_intent(breaker_session, monkeypatch):
+    _register_resolver(breaker_session, "deny")
+    assert _denied_terminal("rm -rf /tmp/a")["outcome"] == "denied"
+
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _c, _d: "approve")
+    assert _denied_terminal("benign command")["approved"] is True
+
+    assert _denied_terminal("rm -rf /tmp/a")["outcome"] == "denied_repeat"
 
 
 # ---------------------------------------------------------------------------

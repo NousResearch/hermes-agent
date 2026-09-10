@@ -2505,6 +2505,14 @@ def advance_next_runs(job_ids) -> int:
                 job["id"] not in ids
                 or (is_terminal_job(job) and not _is_recoverable_error_job(job))
                 or job.get("schedule", {}).get("kind") not in {"cron", "interval"}
+                # A manual trigger deliberately reuses next_run_at as its due marker.
+                # Advancing it here would erase manual_run_at before claim_job_for_fire()
+                # can recognize the off-tick fire, causing the next scheduled occurrence
+                # to be consumed instead.
+                or (
+                    job.get("manual_run_at") is not None
+                    and job.get("manual_run_at") == job.get("next_run_at")
+                )
             ):
                 continue
             new_next = compute_next_run(job["schedule"], now)

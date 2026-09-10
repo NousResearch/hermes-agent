@@ -34,6 +34,16 @@ export interface RemoteRevalidationResult {
   rebuilt: boolean
 }
 
+function isProbeTimeout(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+
+  const candidate = error as { code?: string; name?: string; message?: string }
+  const text = `${candidate.name || ''} ${candidate.message || ''}`.toLowerCase()
+  return candidate.code === 'ETIMEDOUT' || text.includes('timed out') || text.includes('timeout')
+}
+
 /**
  * Coalesces revalidation work for one cached connection promise.
  *
@@ -100,9 +110,22 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       return reconnect()
     }
 
-    await probe(connection, '/api/status', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-    })
+    try {
+      await probe(connection, '/api/status', {
+        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      })
+    } catch (error) {
+      // A busy backend is not a dead backend. Give the exact cached route one
+      // liveness-sized retry before retiring it; otherwise a short dispatch
+      // timeout tears down the WebSocket carrying an active agent turn.
+      if (!isProbeTimeout(error)) {
+        throw error
+      }
+
+      await probe(connection, '/api/status', {
+        timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+      })
+    }
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {
       await retire(error)

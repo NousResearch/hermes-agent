@@ -298,6 +298,36 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     expect(retire).toHaveBeenCalledOnce()
     expect(reconnect).toHaveBeenCalledOnce()
   })
+
+  it('retries a timed-out probe before retiring the cached descriptor', async () => {
+    const connection = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const connectionPromise = Promise.resolve(connection)
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+    const probe = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Timed out connecting to Hermes backend after 2500ms'))
+      .mockResolvedValueOnce({ ok: true })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise,
+        currentConnectionPromise: () => connectionPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(connection)
+
+    expect(probe).toHaveBeenNthCalledWith(1, connection, '/api/status', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(probe).toHaveBeenNthCalledWith(2, connection, '/api/status', {
+      timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+    })
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
 })
 
 describe('revalidatePooledRemoteBackends', () => {

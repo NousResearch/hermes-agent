@@ -47,8 +47,15 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible."""
-    if session.get("active_session_lease") is not None:
+    attached = session.get("active_session_lease")
+    if attached is not None and not getattr(attached, "released", False):
         return None
+    if attached is not None:
+        # A reclaimed-then-detached lease lost its race with this submit: the registry
+        # row is gone but the object is still attached. Pop it so this submit claims a
+        # fresh fenced lease below instead of running lease-less. See #104691.
+        if session.get("active_session_lease") is attached:
+            session.pop("active_session_lease", None)
     lease, limit_message = _claim_active_session_slot(
         str(session.get("session_key") or ""), live_session_id=sid,
         surface=_session_source(session), profile_home=session.get("profile_home"))
@@ -86,11 +93,61 @@ def _release_active_session_slot(session: dict | None) -> bool:
     return True
 
 
-def _own_live_lease_ids(*, exclude=None) -> set[str]:
-    """Snapshot leases still backed by this process's live session records."""
+def _lane_is_reclaimable(sid: str, session: dict, now: float) -> bool:
+    """True when ``session`` is a dead lane whose lease no longer proves ownership.
+
+    A resident record vouches for its lease via :func:`_own_live_lease_ids`; when the
+    lane underneath is gone (transport dead, no turn running, no live delegated work,
+    idle past the reclaim floor) the vouch is stale and the orphan-lease sweep may
+    drop the lease instead of deadlocking against it. Fail-closed on anything
+    unprovable: an undecidable lane keeps its lease. See #104691.
+    """
+    try:
+        if session.get("running") or _session_pending_kind(sid):
+            return False
+        if _session_has_active_delegations(sid, session):
+            return False
+        if not _transport_is_dead(session.get("transport")):
+            return False
+        if _LEASE_RECLAIM_IDLE_S > 0:
+            created = session.get("created_at") or 0.0
+            active = session.get("last_active") or 0.0
+            if not created or not active:
+                return False
+            try:
+                active_f = float(active)
+                created_f = float(created)
+            except (TypeError, ValueError):
+                logger.debug("lease-reclaim lane clock unparsable; keeping vouch")
+                return False
+            if now - active_f <= _LEASE_RECLAIM_IDLE_S:
+                return False
+            if now - created_f <= _LEASE_RECLAIM_IDLE_S:
+                return False
+        ready = session.get("agent_ready")
+        if ready is not None and not ready.is_set() and not session.get("lazy"):
+            return False
+        return True
+    except Exception:
+        logger.debug("lease-reclaim lane check failed closed", exc_info=True)
+        return False
+
+
+def _own_live_lease_ids(*, exclude=None, include_dead_lanes: bool = False) -> set[str]:
+    """Snapshot leases still backed by this process's live session records.
+
+    Records whose lane is gone (see :func:`_lane_is_reclaimable`) do not vouch: the
+    orphan-lease sweep treats their leases as unowned instead of deadlocking against
+    a zombie-but-resident record. Pass ``include_dead_lanes=True`` for the old
+    all-records vouch — the finalize-time liveness guards must preserve sibling
+    rows (they settle no receipt and detach nothing), so only the reaper sweep
+    reclaims. See #104691.
+    """
+    now = time.time()
     with _sessions_lock:
-        return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+        return {str(lease.lease_id) for sid, session in _sessions.items()
+                if (lease := session.get("active_session_lease")) is not None and lease is not exclude
+                and (include_dead_lanes or not _lane_is_reclaimable(sid, session, now))}
 
 
 @contextlib.contextmanager
@@ -106,7 +163,10 @@ def _other_runtime_lease_guard(session_id: str, session: dict):
         return
     stack = contextlib.ExitStack()
     active: list = []
-    own_live_lease_ids = _own_live_lease_ids(exclude=lease)
+    # All-records vouch: finalizing A must never delete a dead-lane sibling B's
+    # row — this path settles no receipt and detaches nothing, so B would keep a
+    # rowless attached lease. Only the reaper sweep reclaims (receipt + detach).
+    own_live_lease_ids = _own_live_lease_ids(exclude=lease, include_dead_lanes=True)
 
     def _enter() -> None:
         stack.close()  # drop anything a half-failed previous attempt left behind
@@ -385,25 +445,26 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         if should_interrupt or session.get("_compute_host_active"):
             _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
     else:
-        run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
-    with session["history_lock"]:
+        run_thread_alive = (rt := session.get("_run_thread")) is not None and getattr(rt, "is_alive", lambda: False)()
+    lock = session.get("history_lock")
+    with (lock if lock is not None else contextlib.nullcontext()):
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
     if not use_compute_host:
-        if should_interrupt:
+        if should_interrupt and session.get("agent") is not None:
             from agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(session.get("agent"))
         if not run_thread_alive:
-            with session["history_lock"]:
+            with (lock if lock is not None else contextlib.nullcontext()):
                 if session.get("running"):
                     session["running"] = False
                     _clear_inflight_turn(session)
     _clear_pending(sid)
     with contextlib.suppress(Exception):
         from tools.approval import resolve_gateway_approval
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        resolve_gateway_approval(session.get("session_key") or sid, "deny", resolve_all=True)
     return use_compute_host
 
 

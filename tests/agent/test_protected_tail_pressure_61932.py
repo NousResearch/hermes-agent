@@ -104,6 +104,34 @@ def compressor_128k():
 
 class TestProtectedTailPressure61932:
 
+    def test_pressure_demotion_preserves_pending_tool_call_arguments(self, compressor_128k):
+        """Pre-send tool calls are not history and must not be clipped by pass 4."""
+        pending_args = '{"goal":"' + ("Investigate this exact requirement thoroughly. " * 30) + '"}'
+        msgs = [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Continue"},
+            {"role": "assistant", "content": "Earlier", "tool_calls": [{
+                "id": "completed", "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path":"old.py"}'},
+            }]},
+            {"role": "tool", "tool_call_id": "completed", "content": "x" * 200_000},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "pending", "type": "function",
+                "function": {"name": "delegate_task", "arguments": pending_args},
+            }]},
+        ]
+        for i in range(4):
+            msgs.extend(_unique_tool_pair(100 + i, 200_000))
+
+        out = list(msgs)
+        compressor_128k._pressure_demote_tail(
+            out, prune_boundary=0, protect_tail_tokens=1,
+            call_id_to_tool={}, min_prune_chars=1,
+        )
+
+        pending = next(m for m in out if any(tc.get("id") == "pending" for tc in m.get("tool_calls", [])))
+        assert pending["tool_calls"][0]["function"]["arguments"] == pending_args
+
 
 
     def test_compress_escapes_cannot_compress_further_dead_end(

@@ -2699,6 +2699,21 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return sum(_estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
 
         demoted = pressure_hits = 0
+        completed_call_ids = {
+            msg.get("tool_call_id")
+            for msg in result
+            if msg.get("role") == "tool" and msg.get("tool_call_id")
+        }
+
+        def _has_pending_tool_call(msg: Dict[str, Any]) -> bool:
+            return (
+                msg.get("role") == "assistant"
+                and any(
+                    isinstance(tool_call, dict)
+                    and tool_call.get("id") not in completed_call_ids
+                    for tool_call in (msg.get("tool_calls") or [])
+                )
+            )
 
         def _shrink_at(i: int) -> None:
             # Each helper no-ops on the other role, so both may run unconditionally.
@@ -2706,7 +2721,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
-            if self._truncate_tool_call_args_at(result, i):
+            # An assistant call without a matching result is still pending in the
+            # current turn.  Pass 4 runs pre-send, so clipping it corrupts an
+            # action that has not reached the provider and cannot save replayed
+            # history tokens.
+            if not _has_pending_tool_call(result[i]) and self._truncate_tool_call_args_at(result, i):
                 pressure_hits += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:

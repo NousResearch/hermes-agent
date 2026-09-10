@@ -112,6 +112,7 @@ def _admit_prompt_turn(
         agent = session["agent"]
         with contextlib.suppress(Exception):
             agent.clear_interrupt()
+        session["_turn_cancel_requested"] = False
     return images, agent
 
 
@@ -543,6 +544,15 @@ def _invoke_agent(
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
         "session.title", sid, {"session_id": _k, "title": t})
+    lock = session.get("history_lock")
+    with (lock if lock is not None else contextlib.nullcontext()):
+        if session.get("_turn_cancel_requested") or session.get("_closing"):
+            st.result = {"status": "cancelled", "interrupted": True}
+            return
+        lease = session.get("active_session_lease")
+        if lease is None or getattr(lease, "released", False):
+            st.result = {"status": "refused", "reason": "SESSION_NOT_OWNED"}
+            return
     _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
     try:
         st.result = agent.run_conversation(run_message, **st.run_kwargs)
@@ -783,6 +793,13 @@ def _run_prompt_submit(
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
         goal_followup = None
         try:
+            lock = session.get("history_lock")
+            with (lock if lock is not None else contextlib.nullcontext()):
+                if session.get("_turn_cancel_requested") or session.get("_closing"):
+                    return
+                lease = session.get("active_session_lease")
+                if lease is None or getattr(lease, "released", False):
+                    return
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
@@ -791,20 +808,27 @@ def _run_prompt_submit(
                         "status": "failed", "text": "", "error": "Context injection refused."})
                     st.receipt_committed = True
                 return
+            with (lock if lock is not None else contextlib.nullcontext()):
+                if session.get("_turn_cancel_requested") or session.get("_closing"):
+                    return
+                lease = session.get("active_session_lease")
+                if lease is None or getattr(lease, "released", False):
+                    return
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata)
-            status_note = _absorb_turn_result(
-                sid, session, st, text, display_kind, display_metadata)
-            payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
-            _emit("message.complete", sid, payload)
-            goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
-            if status == "complete":
-                _after_complete_turn(sid, session, st, raw)
-            # Goal judge + loop tick evaluation mutate persisted state AFTER message.complete: publish the
-            # structured control snapshot now so the Desktop card never paints the pre-judge turn count.
-            _publish_session_control_snapshot(sid, session, only_if_present=True)
+            if not isinstance(st.result, dict) or st.result.get("status") not in ("cancelled", "refused"):
+                status_note = _absorb_turn_result(
+                    sid, session, st, text, display_kind, display_metadata)
+                payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+                _emit("message.complete", sid, payload)
+                goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
+                if status == "complete":
+                    _after_complete_turn(sid, session, st, raw)
+                # Goal judge + loop tick evaluation mutate persisted state AFTER message.complete: publish the
+                # structured control snapshot now so the Desktop card never paints the pre-judge turn count.
+                _publish_session_control_snapshot(sid, session, only_if_present=True)
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
@@ -813,7 +837,13 @@ def _run_prompt_submit(
             reset_transport(transport_token)
             # A stale interim closure must not fire during a later turn.
             st.agent.interim_assistant_callback = None
-            with session["history_lock"]:
+            if st.terminal_callback is not None and not st.receipt_attempted:
+                st.receipt_attempted = True
+                with contextlib.suppress(Exception):
+                    st.terminal_callback({"status": "failed", "text": "", "error": "turn aborted or session unowned"})
+                    st.receipt_committed = True
+            lock = session.get("history_lock")
+            with (lock if lock is not None else contextlib.nullcontext()):
                 session["running"] = False
                 session["last_active"] = time.time()
                 if not st.error_retained:
@@ -834,7 +864,7 @@ def _run_prompt_submit(
             # Backstop for turns that never reached a terminal frame.
             if st.receipt_committed:
                 _retire_turn_marker(session, st.marker_key)
-                with session["history_lock"]:
+                with (lock if lock is not None else contextlib.nullcontext()):
                     if session.get("_active_turn_marker_key") == st.marker_key:
                         session.pop("_active_turn_marker_key", None)
                     session.pop("_hosted_room_task", None)
@@ -844,13 +874,21 @@ def _run_prompt_submit(
     run_thread = threading.Thread(target=run, daemon=True)
     with _sessions_lock:
         registered = _sessions.get(sid)
-        can_start = not session.get("_closing") and (registered is None or registered is session)
+        can_start = (
+            not session.get("_closing")
+            and not session.get("_turn_cancel_requested")
+            and (registered is None or registered is session)
+            and (lease := session.get("active_session_lease")) is not None
+            and not getattr(lease, "released", False)
+        )
         if can_start:
             session["_run_thread"] = run_thread
             run_thread.start()
     if not can_start:
-        with session["history_lock"]:
+        lock = session.get("history_lock")
+        with (lock if lock is not None else contextlib.nullcontext()):
             session["running"] = False
+            _clear_inflight_turn(session)
     return can_start
 
 

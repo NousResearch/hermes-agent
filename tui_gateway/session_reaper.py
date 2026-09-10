@@ -222,13 +222,157 @@ def _repair_missing_ws_orphan_reaps() -> None:
 
 
 def _reclaim_orphaned_leases() -> None:
-    """Hand the registry the lease ids we still own so it can drop the rest."""
+    """Hand the registry the lease ids we still own so it can drop the rest.
+
+    Two lock windows, no sustained hold: the vouch snapshot runs under
+    ``_session_resume_lock`` + ``_sessions_lock`` (the established order), then the
+    locks are RELEASED for the multi-home registry I/O (a serial file sweep across
+    profile homes must never stall every submit/reconnect), and re-taken for the
+    detach. Idle ticks (no reclaimable attached lease) skip the sweep entirely, so
+    the common case performs zero registry I/O. Re-entry safety comes from the
+    detach's own re-validation plus immediate re-fencing: a record that turned live
+    between the snapshot and the mutation is detached from its deleted row and
+    re-claims a fresh fenced lease in the same critical section, so a foreign
+    backend stays refused. Residual window: a foreign acquire landing exactly
+    between the sweep's file-lock release and the repair acquire still wins —
+    then the repair refuses to attach and the record stays detached (fail-closed;
+    the next submit re-fences instead of running rowless). No path nests a sweep
+    file lock under either session lock; only the single targeted repair acquire
+    runs with the session locks held (FileLock innermost, the established order).
+    See #104691.
+    """
     try:
-        from hermes_cli.active_sessions import release_orphaned_leases
-        if dropped := release_orphaned_leases(_own_live_lease_ids()):
+        from hermes_cli.active_sessions import release_orphaned_leases_receipt
+        with _session_resume_lock, _sessions_lock:
+            live_lease_ids = _own_live_lease_ids()
+            has_candidate = any(
+                isinstance(session, dict)
+                and (lease := session.get("active_session_lease")) is not None
+                and str(getattr(lease, "lease_id", "")) not in live_lease_ids
+                for session in _sessions.values()
+            )
+            if not has_candidate:
+                return
+        receipt = release_orphaned_leases_receipt(live_lease_ids)
+        with _session_resume_lock, _sessions_lock:
+            if receipt:
+                _detach_reclaimed_leases(receipt)
+        if dropped := sum(len(ids) for ids in receipt.values()):
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)
     except Exception:
         logger.debug("orphaned lease reclaim failed", exc_info=True)
+
+
+def _detach_reclaimed_leases(receipt: dict) -> None:
+    """Pop exactly the lease objects the sweep provably deleted, keyed by state-path.
+
+    The receipt keys are the registry state-paths the sweep itself used, and each
+    lease pins its own ``state_path`` — the two sides are the SAME string from the
+    SAME writer, so no home-spelling divergence can split them. A record is detached
+    only when its lease's pinned state-path reports its ``lease_id`` dropped AND the
+    record still holds that exact object. A record that turned live between the
+    snapshot and the mutation (same-``sid`` reconnect, turn admitted on the old
+    attached lease) is immediately re-fenced in this same critical section: the
+    stale object is detached + released and a fresh fenced lease is claimed and
+    attached, so a foreign backend stays refused. When the repair acquire fails
+    (a foreign row landed first) the record stays detached and fail-closed — the
+    next submit re-fences instead of running rowless. Records in failed/indeterminate
+    homes and grace-preserved rows stay attached and vouched. Caller holds
+    ``_session_resume_lock`` + ``_sessions_lock``. See #104691.
+    """
+    for sid, session in _sessions.items():
+        if not isinstance(session, dict):
+            continue
+        lease = session.get("active_session_lease")
+        if lease is None:
+            continue
+        from hermes_cli.active_sessions import registry_state_key
+        try:
+            state_path = getattr(lease, "state_path", None)
+            if state_path is None:
+                continue
+            dropped_ids = receipt.get(registry_state_key(state_path), set())
+            if str(getattr(lease, "lease_id", "")) not in dropped_ids:
+                continue
+            if session.get("active_session_lease") is not lease:
+                continue
+            del session["active_session_lease"]
+            with contextlib.suppress(Exception):
+                lease.released = True
+            try:
+                if not _lane_is_reclaimable(sid, session, time.time()):
+                    _refence_resurrected_lane(sid, session)
+            except Exception:
+                logger.debug("reclaimed-lease refence failed closed", exc_info=True)
+        except Exception:
+            logger.debug("reclaimed-lease detach failed closed", exc_info=True)
+            continue
+
+
+def _refence_resurrected_lane(sid: str, session: dict) -> None:
+    """Claim a fresh fenced lease for a record that turned live mid-reclaim.
+
+    Caller holds ``_session_resume_lock`` + ``_sessions_lock``; the single
+    targeted acquire nests its registry ``FileLock`` innermost (the established
+    order — never the multi-home sweep). On refusal or error the record stays
+    detached so the next submit re-fences instead of running rowless. If an
+    admitted turn is pending or running, it is cleanly aborted so it cannot
+    execute without an active lease. See #104691.
+    """
+    fresh = None
+    limit_message = None
+    try:
+        # The session's own home spelling — the same value this lease was acquired
+        # with — so alias spellings resolve to the swept file at the OS level; an
+        # unresolvable spelling fails closed below and stays detached. See #104691.
+        fresh, limit_message = _claim_active_session_slot(
+            str(session.get("session_key") or sid), live_session_id=sid,
+            surface=_session_source(session), profile_home=session.get("profile_home"))
+    except Exception as exc:
+        logger.warning("Re-fencing resurrected lane %s failed; staying detached: %s", sid, exc)
+        limit_message = exc
+    if fresh is None:
+        logger.warning(
+            "Re-fencing resurrected lane %s refused (%s); staying detached", sid, limit_message)
+        _abort_refence_failed_turn(sid, session, limit_message)
+        return
+    session["active_session_lease"] = fresh
+
+
+def _abort_refence_failed_turn(sid: str, session: dict, reason: Any = None) -> None:
+    """Abort and refuse an admitted or running turn when re-fencing fails.
+
+    Called under ``_session_resume_lock`` + ``_sessions_lock`` after the reaper sweep
+    detached a stale lease and the repair acquire failed (e.g. a foreign backend won
+    the active session slot). Keeps an already-admitted turn from running rowless
+    concurrently with the new owner. See #104691.
+    """
+    try:
+        _interrupt_fn = globals().get("_interrupt_session_turn")
+        if not callable(_interrupt_fn):
+            from .session_lifecycle import _interrupt_session_turn as _interrupt_fn
+        _interrupt_fn(sid, session)
+    except Exception:
+        logger.debug("Interrupting turn on refence failure failed", exc_info=True)
+    lock = session.get("history_lock")
+    with (lock if lock is not None else contextlib.nullcontext()):
+        session["_turn_cancel_requested"] = True
+        rt = session.get("_run_thread")
+        if rt is None or not getattr(rt, "is_alive", lambda: False)():
+            session["running"] = False
+            with contextlib.suppress(Exception):
+                _clear_fn = globals().get("_clear_inflight_turn")
+                if not callable(_clear_fn):
+                    from .session_history import _clear_inflight_turn as _clear_fn
+                _clear_fn(session)
+    if reason is not None:
+        with contextlib.suppress(Exception):
+            _emit_fn = globals().get("_emit")
+            if not callable(_emit_fn):
+                from .server import _emit as _emit_fn
+            msg = str(reason)
+            reason_code = getattr(reason, "reason", "SESSION_NOT_OWNED")
+            _emit_fn("error", sid, {"message": msg, "reason": reason_code})
 
 
 # Soft LRU cap on in-memory sessions: the TTL reaper only frees sessions idle for hours, so a heavy reconnecting

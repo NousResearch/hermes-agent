@@ -945,6 +945,12 @@ DEFAULT_CONFIG = {
         # completion. Default = agent.turn_liveness.timeout_s. 0 = interrupt at grace.
         # See #100325, #98028.
         "ws_orphan_activity_stale_s": 600.0,
+        # Idle floor (seconds) before a resident dead-lane record stops vouching for its
+        # lease and the orphan-lease sweep may reclaim it. Minutes-scale, not TTL-scale:
+        # the WS-orphan reaper already ends orderly disconnects in seconds. 0 disables
+        # the idle floor (transport death alone reclaims). Env:
+        # HERMES_TUI_LEASE_RECLAIM_IDLE_S (internal override). See #104691.
+        "lease_reclaim_idle_s": 300.0,
         # On gateway boot, close tui/desktop/subagent rows orphaned by a dead gateway (start AND
         # newest message older than HERMES_TUI_SESSION_TTL_S, default 6h) with
         # end_reason='startup_orphan_reap'; otherwise they stay phantom "active" forever.

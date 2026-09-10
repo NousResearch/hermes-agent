@@ -135,9 +135,9 @@ export function runCurator(): Promise<ActionResponse> {
   })
 }
 
-export function restartGateway(): Promise<ActionResponse> {
+export function restartGateway(profile?: null | string): Promise<ActionResponse> {
   return hermesApi<ActionResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/gateway/restart',
     method: 'POST'
   })

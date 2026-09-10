@@ -63,7 +63,7 @@ vi.mock('@/store/system-actions', async () => {
 
   return {
     $gatewayRestarting: atom(false),
-    runGatewayRestart: () => runGatewayRestart(),
+    runGatewayRestart: (profile?: null | string) => runGatewayRestart(profile),
     watchGatewayRestartOutcome: () => watchGatewayRestartOutcome()
   }
 })
@@ -295,6 +295,38 @@ describe('MessagingView restart banner', () => {
     })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
     expect(runGatewayRestart).toHaveBeenCalledTimes(2)
+  })
+
+  it('restarts the gateway for the page\'s own scoped profile, not whichever one is active elsewhere', async () => {
+    // Every other write action on this page (updateMessagingPlatform, approvePairing, ...)
+    // already targets $settingsScopeOverride's profile; the manual restart button used to
+    // call runGatewayRestart() with no argument, silently falling back to the ambient
+    // active profile instead of the one the credential was actually saved to.
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+
+    $settingsScopeOverride.set('worker')
+
+    try {
+      getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+
+      await renderMessaging()
+
+      fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'secret-1' } })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+      })
+
+      await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalled())
+      const restartNow = await screen.findByRole('button', { name: 'Restart now' })
+
+      await act(async () => {
+        fireEvent.click(restartNow)
+      })
+
+      expect(runGatewayRestart).toHaveBeenCalledWith('worker')
+    } finally {
+      $settingsScopeOverride.set(null)
+    }
   })
 })
 

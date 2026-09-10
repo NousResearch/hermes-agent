@@ -1739,6 +1739,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # gets its OWN fresh ``httpx.Client`` whose lifetime is tied to the OpenAI client it is passed to. When
     # the OpenAI client is closed (rebuild, teardown, credential rotation), the paired ``httpx.Client``
     # closes with it, and the next call constructs a fresh one — no stale closed transport can be reused.
+    # Bedrock Mantle: the ``aws-sdk`` placeholder is a sentinel for IAM-chain auth, not a bearer token.
+    # Every rebuild from bare ``{api_key, base_url}`` kwargs (switch_model, fallback restore, credential
+    # rotation, request-scoped clients) must reinstall the SigV4 http_client or Mantle answers 401.
+    if "bedrock-mantle." in str(client_kwargs.get("base_url") or ""):
+        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
+        timeout = client_kwargs.get("timeout")
+        configure_bedrock_openai_client_kwargs(
+            client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
+        )
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""), verify=httpx_verify)
         if keepalive_http is not None:

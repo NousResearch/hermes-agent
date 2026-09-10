@@ -465,7 +465,7 @@ def _persist_session_row_for_submit(rid, session):
 
 
 def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback,
-                           draft_image_paths=None):
+                           draft_image_paths=None, *, turn_author=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -495,7 +495,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback,
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author,
         **({"draft_image_paths": draft_image_paths} if draft_image_paths else {}))
 
 
@@ -550,6 +550,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    from tools.bot_relay import DeliveryAuthor
+
+    # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
+    raw_author = params.get("_turn_author")
+    if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
+        return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
+    turn_author = raw_author.author if raw_author is not None else None
     try:
         draft_image_paths = _validate_draft_image_paths(session, params.get("draft_image_paths", []))
     except (ValueError, OSError) as exc:
@@ -599,6 +606,7 @@ def _(rid, params: dict) -> dict:
             busy_transport = t or session.get("transport")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")),
+            turn_author=turn_author,
             **({"draft_image_paths": draft_image_paths} if draft_image_paths else {}))
         if busy_response is not None:
             return busy_response
@@ -611,6 +619,9 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     if turn_isolation:
+        if turn_author:
+            logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
+                         turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind,
             **({"draft_image_paths": draft_image_paths} if draft_image_paths else {}))
@@ -636,7 +647,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback, draft_image_paths),
+            rid, sid, session, text, display_kind, hosted_terminal_callback,
+            draft_image_paths=draft_image_paths, turn_author=turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
@@ -1100,7 +1112,8 @@ def _(rid, params: dict) -> dict:
 _LATE_RESPOND_KEYS = {
     "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
     "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
-    "sudo.respond": "password", "secret.respond": "value"}
+    "sudo.respond": "password", "secret.respond": "value", "vault.unlock.respond": "password",
+    "vault.save_login.respond": "login", "vault.code.respond": "code"}
 for _name, _key in _LATE_RESPOND_KEYS.items():
     method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
 del _name, _key

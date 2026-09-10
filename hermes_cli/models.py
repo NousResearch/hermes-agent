@@ -930,28 +930,69 @@ def _resolve_provider_prefix(model_name: str) -> Optional[tuple[str, str]]:
 
 def detect_provider_for_model(
     model_name: str, current_provider: str) -> Optional[tuple[str, str]]:
-    """Auto-detect the best provider for a model name: static catalogs (bare provider name → its
-    default; direct catalog match), then the OpenRouter catalog, then a configured ``vendor/`` prefix."""
+    """Auto-detect the best provider for a model name: the current provider's live catalog, static
+    catalogs (bare provider name → its default; direct catalog match), then the OpenRouter catalog,
+    then a configured ``vendor/`` prefix.
+
+    Never hands back a provider the user holds no credentials for: an unauthenticated guess is
+    skipped and the ladder continues (``None`` = stay on the current provider). Exceptions: the user
+    NAMED the provider (``/model nous``), or there is no current provider yet (``auto``) — then the
+    first guess is returned so the credential step fails loudly instead of silently ignoring input."""
+    from hermes_cli.models_detect import (
+        current_provider_catalog_match, current_provider_owns_vendor, provider_has_credentials)
+
     name = (model_name or "").strip()
     if not name:
         return None
 
+    # The current provider's LIVE catalog outranks every static guess: a model it already serves
+    # (Codex early-access ids, Portal-only slugs, Ollama Cloud models absent from _PROVIDER_MODELS)
+    # must never re-route the session to another vendor or to metered OpenRouter.
+    served = current_provider_catalog_match(name, current_provider)
+    if served is not None:
+        return (current_provider, served) if served != name else None
+    # Live catalog unavailable or lagging: the vendor's own id on the vendor's first-party provider
+    # is still a selection — an aggregator relisting it is not grounds to switch.
+    if current_provider_owns_vendor(name, current_provider):
+        return None
+
+    no_selection = (current_provider or "").strip().lower() in {"", "auto"}
+    for candidate in _detection_candidates(name, current_provider):
+        if candidate is None:
+            return None  # the current catalog owns this name
+        if no_selection or candidate[0] == current_provider or provider_has_credentials(candidate[0]):
+            return candidate
+        if _PROVIDER_ALIASES.get(name.lower(), name.lower()) == candidate[0]:
+            return candidate  # explicitly named provider: let the credential step report it
+        logger.debug("Skipping auto-switch of '%s' to %s: no credentials configured", name, candidate[0])
+    # A ``vendor/model`` prefix naming a provider the user DECLARED in ``providers:`` is a selection,
+    # not a guess — hand it back even before its key is wired up.
+    return _resolve_provider_prefix(name)
+
+
+def _detection_candidates(name: str, current_provider: str):
+    """Yield ``(provider, model)`` guesses in ladder order; ``None`` means the current provider's own
+    catalog owns the name (stop, stay)."""
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
-        return static_match
+        yield static_match
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
-        return None
+        yield None
+        return
 
     # OpenRouter catalog (exact slug, then bare model part).
     or_slug = _find_openrouter_slug(name)
     if or_slug:
-        if current_provider != "openrouter" or or_slug != name:
-            return ("openrouter", or_slug)
-        return None  # already on openrouter with matching name
+        if current_provider == "openrouter" and or_slug == name:
+            yield None  # already on openrouter with matching name
+            return
+        yield ("openrouter", or_slug)
 
     # Explicit ``vendor/model`` prefix naming a configured provider — AFTER the OpenRouter lookup so
     # aggregator-native slugs (``deepseek/deepseek-chat``) keep their routing.
-    return _resolve_provider_prefix(name)
+    prefixed = _resolve_provider_prefix(name)
+    if prefixed:
+        yield prefixed
 
 
 def _find_openrouter_slug(model_name: str) -> Optional[str]:

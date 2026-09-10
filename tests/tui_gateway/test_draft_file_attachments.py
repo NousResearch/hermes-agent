@@ -478,6 +478,48 @@ def test_real_submit_turn_reaches_agent_with_only_admitted_draft_images(
     assert path not in str(messages[1][0])
 
 
+def test_authored_draft_turns_keep_sender_and_image_snapshots_through_fifo_drain(
+        session, real_turn_env, monkeypatch):
+    from tools.bot_relay import DeliveryAuthor
+
+    author = {'id': 'bot:scout', 'name': 'scout', 'is_bot': True}
+    paths = [attach(name='shot.png', data_url=base64.b64encode(png_bytes()).decode())['result']['path']
+             for _ in range(2)]
+    seen_authors = []
+    run_conversation = session['agent'].run_conversation
+
+    def authored_run(text, *, turn_author=None, **kwargs):
+        seen_authors.append(turn_author)
+        return run_conversation(text, **kwargs)
+
+    monkeypatch.setattr(session['agent'], 'run_conversation', authored_run)
+    session['running'] = True
+    session['inflight_turn'] = {'user': 'shared request', 'assistant': '', 'streaming': True}
+    assert submit(text='shared request', queued=True, draft_image_paths=[paths[0]],
+                  _turn_author=DeliveryAuthor(author))['result']['status'] == 'queued'
+    assert submit(text='shared request', queued=True,
+                  draft_image_paths=[paths[1]])['result']['status'] == 'queued'
+    envelopes = [session['queued_prompt'], *session.get('queued_prompts', [])]
+    assert [(entry['text'], entry.get('turn_author'), entry['draft_image_paths'], entry['image_paths'])
+            for entry in envelopes] == [
+        ('shared request', author, [paths[0]], []),
+        ('shared request', None, [paths[1]], []),
+    ]
+    # Neither queued envelope may acquire an image pasted after its acceptance.
+    later = server.dispatch({'jsonrpc': '2.0', 'id': 3, 'method': 'image.attach_bytes',
+        'params': {'session_id': 'draft-test', 'data': base64.b64encode(png_bytes()).decode()}})['result']['path']
+    session['running'] = False
+    assert server._drain_queued_prompt(4, 'draft-test', session)
+    assert seen_authors == [author, None]
+    assert len(real_turn_env) == len(paths)
+    for (text, kwargs), path in zip(real_turn_env, paths):
+        assert path in str(text) and path in str(kwargs['persist_user_message'])
+        assert all(other not in str(text) for other in [later, *paths] if other != path)
+    assert session['attached_images'] == [later]
+    assert not session['running'] and not session.get('queued_prompt')
+    assert 'turn_author' not in session
+
+
 @pytest.mark.parametrize('gate', ['continue', 'cancel', 'generation', 'closing'])
 @pytest.mark.parametrize('invalid', ['changed', 'deleted'])
 def test_invalid_queued_image_does_not_strand_following_turn(

@@ -152,6 +152,7 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 - **Resizing** — drag any edge or corner of the bar; the opposite edge stays anchored. Native Wayland exposes the right and bottom edges because the compositor does not allow apps to position top-level windows themselves.
 - **Reset layout** — the discard control on the bar restores the default size and (on X11 / macOS / Windows) position. Use this if a persisted size leaves the HUD unusable.
 - **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is. On native Wayland this is a no-op — the compositor owns placement.
+- **Summon from anywhere** — **⌘/Ctrl+Shift+U** (global hotkey) toggles the floating bar open or closed even when no Hermes window is open (the app can stay hidden in the background); on native Wayland the summon still works — only snapping is the no-op there.
 - **Exiting** — click the exit button on the bar, or press **⌘/Ctrl+Shift+H** again. The app window comes back with your session intact.
 
 #### Linux / Wayland

@@ -229,6 +229,7 @@ import { registerHudIpc } from './hud-ipc'
 import { applyHudElectronOverlay, promoteHudOverlay } from './hud-overlay'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
+import { createHudSummonShortcut } from './hud-summon-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
@@ -14007,7 +14008,18 @@ function applyHudSnapToPointer() {
   })
 }
 
+function toggleHudWindowFromSummon() {
+  if (hudWindow && !hudWindow.isDestroyed()) {
+    closeHudWindow()
+  } else {
+    openHudWindow(null, null)
+  }
+}
+
 const hudSnapShortcut = createHudSnapShortcut(globalShortcut, applyHudSnapToPointer)
+
+// One gesture, both directions: summon the HUD cold, or put it away.
+const hudSummonShortcut = createHudSummonShortcut(globalShortcut, toggleHudWindowFromSummon)
 
 function registerHudSnapShortcut() {
   if (!hudSnapShortcut.register()) {
@@ -18143,6 +18155,12 @@ app.whenReady().then(() => {
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
 
+  // HUD summon chord — fixed default, registered on ready (same authority
+  // split as Quick Entry). A failed registration is logged, never silent.
+  if (!hudSummonShortcut.register()) {
+    rememberLog('[hud] summon shortcut unavailable — CommandOrControl+Shift+U may be owned by another app')
+  }
+
   if (IS_MAC) {
     const reposition = () => wakeIndicatorController.reposition()
 
@@ -18354,6 +18372,8 @@ app.on('before-quit', event => {
   // closeHudWindow(): that also re-shows the main window, which is wrong on the
   // way out (and `hudRestoreMainWindow` may still be armed from entering HUD).
   hudSnapShortcut.dispose()
+  // Idempotent — safe even when the HUD window itself was already destroyed.
+  hudSummonShortcut.dispose()
 
   if (hudWindow && !hudWindow.isDestroyed()) {
     hudWindow.removeAllListeners('closed')

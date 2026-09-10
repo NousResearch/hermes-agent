@@ -15,7 +15,7 @@ from typing import Any, Iterator
 from hermes_constants import get_hermes_home
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def utc_now() -> str:
@@ -371,6 +371,13 @@ class WisdomStore:
                 db.execute(
                     "ALTER TABLE wisdom_organization "
                     "ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0"
+                )
+            feed_columns = {
+                str(row[1]) for row in db.execute("PRAGMA table_info(feed_state)")
+            }
+            if "generation" not in feed_columns:
+                db.execute(
+                    "ALTER TABLE feed_state ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
                 )
             active_org = db.execute(
                 "SELECT verified_org_id FROM installation_identity WHERE singleton=1"
@@ -1536,11 +1543,14 @@ class WisdomStore:
             )
 
     def feed_cursor(self) -> str | None:
+        return self.feed_position()[0]
+
+    def feed_position(self) -> tuple[str | None, int]:
         with self.transaction() as db:
             row = db.execute(
-                "SELECT cursor FROM feed_state WHERE singleton=1"
+                "SELECT cursor,generation FROM feed_state WHERE singleton=1"
             ).fetchone()
-            return str(row[0]) if row and row[0] else None
+            return (str(row[0]) if row and row[0] else None, int(row[1]) if row else 0)
 
     def persist_feed_page(
         self,
@@ -1549,6 +1559,7 @@ class WisdomStore:
         next_cursor: str,
         cadences: dict[str, str],
         now: str,
+        expected_generation: int | None = None,
     ) -> int:
         current = datetime.fromisoformat(now).astimezone(timezone.utc)
 
@@ -1568,6 +1579,17 @@ class WisdomStore:
 
         inserted = 0
         with self.transaction() as db:
+            if expected_generation is not None:
+                row = db.execute(
+                    "SELECT generation FROM feed_state WHERE singleton=1"
+                ).fetchone()
+                if (int(row[0]) if row else 0) != expected_generation:
+                    from .client import WisdomConflict
+
+                    raise WisdomConflict(
+                        "Wisdom account changed while fetching the feed; sign in and retry",
+                        code="account_session_changed",
+                    )
             for event in events:
                 kind = str(event["kind"])
                 cadence = cadences.get(
@@ -1592,7 +1614,8 @@ class WisdomStore:
                 )
                 inserted += max(cursor.rowcount, 0)
             db.execute(
-                "INSERT INTO feed_state VALUES(1,?,?) ON CONFLICT(singleton) "
+                "INSERT INTO feed_state(singleton,cursor,updated_at) VALUES(1,?,?) "
+                "ON CONFLICT(singleton) "
                 "DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at",
                 (next_cursor, now),
             )

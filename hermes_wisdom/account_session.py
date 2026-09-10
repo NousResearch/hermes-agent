@@ -4,7 +4,7 @@ import time
 
 from hermes_constants import get_hermes_home
 
-from .store import WisdomStore
+from .store import WisdomStore, utc_now
 
 
 def sign_out(store: WisdomStore | None = None) -> bool:
@@ -15,6 +15,15 @@ def sign_out(store: WisdomStore | None = None) -> bool:
         store = WisdomStore(root)
     now = time.time()
     with store.transaction() as db:
+        # Keep history and provider receipts, but do not replay cached arrivals
+        # or accept a response fetched under the account session being ended.
+        db.execute("UPDATE feed_event SET cadence='off' WHERE cadence!='off'")
+        db.execute(
+            """INSERT INTO feed_state(singleton,cursor,updated_at,generation)
+            VALUES(1,NULL,?,1) ON CONFLICT(singleton) DO UPDATE SET
+            generation=feed_state.generation+1,updated_at=excluded.updated_at""",
+            (utc_now(),),
+        )
         changed = db.execute(
             """UPDATE installation_identity SET verified_org_id=NULL,verified_at=NULL
             WHERE verified_org_id IS NOT NULL"""

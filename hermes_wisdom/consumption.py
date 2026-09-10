@@ -18,6 +18,7 @@ from agent.skill_utils import extract_skill_editorial_metadata, parse_frontmatte
 from hermes_constants import get_skills_dir
 
 from .client import (
+    WisdomAuthError,
     WisdomClient,
     WisdomConflict,
     WisdomNotFound,
@@ -1178,7 +1179,11 @@ class WisdomConsumption:
         return recovered
 
     def poll_feed(self) -> dict[str, Any]:
-        cursor = self.store.feed_cursor()
+        cursor, generation = self.store.feed_position()
+        if not self.store.active_org_id():
+            raise WisdomAuthError(
+                "Wisdom account is signed out; sign in and re-verify your team"
+            )
         inserted = 0
         pages = 0
         installation_id = self.store.installation_identity()
@@ -1205,7 +1210,11 @@ class WisdomConsumption:
                 )
             now = datetime.now(timezone.utc).isoformat()
             inserted += self.store.persist_feed_page(
-                events, next_cursor=page.next_cursor, cadences=cadences, now=now
+                events,
+                next_cursor=page.next_cursor,
+                cadences=cadences,
+                now=now,
+                expected_generation=generation,
             )
             pages += 1
             cursor = page.next_cursor

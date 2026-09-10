@@ -72,6 +72,9 @@ settlement without sending the card again.
 Wisdom also retires pending advice when credential refresh records that the Nous
 session was revoked. A cached client cannot keep that advice active. Ordinary
 token expiry and temporary connection/server failures do not cancel it.
+Cached feed notices are retired on sign-out without deleting their history or
+delivery receipts. A feed response started before sign-out cannot restore those
+notices or advance the saved cursor, even after you re-verify the same team.
 
 Assessment claims are local to one profile and organization, with three-minute
 leases and three bounded attempts. Idle sessions poll at most once a minute

@@ -1314,6 +1314,7 @@ install_system_packages() {
             [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
             [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
             log_success "Termux build dependencies installed"
+            log_info "Note: cryptography pinned to 48.0.1 on Termux (via constraints-termux.txt) to avoid source-build OOM — see issue #87663"
             return 0
         fi
 

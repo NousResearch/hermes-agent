@@ -540,9 +540,9 @@ def test_repeated_same_role_finalized_turns_both_persist(store):
     assert second.revision > first.revision
     assert [role for role, _content, _kind in _rows(peer, "conv")] == ["user", "user"]
     assert peer.get_session("conv")["message_count"] == 2
-    # Model replay reuses the host's existing repair: both texts survive in one user turn,
-    # and no assistant answer is fabricated for the unanswered first turn.
+    # Durable rows remain separate; provider adapters may coalesce copies without rewriting
+    # persisted content or fabricating an assistant answer for the unanswered first turn.
     replayed = peer.get_messages_as_conversation("conv", repair_alternation=True)
-    assert [m["role"] for m in replayed] == ["user"]
+    assert [m["role"] for m in replayed] == ["user", "user"]
     assert USER["content"] in replayed[0]["content"]
-    assert "actually make it 10am" in replayed[0]["content"]
+    assert "actually make it 10am" in replayed[1]["content"]

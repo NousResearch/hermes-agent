@@ -1,0 +1,85 @@
+# Domain safety profiles for implementation annex generation.
+#
+# Each profile defines:
+#   - domain_key: unique identifier used to select this profile
+#   - label: human-readable label
+#   - annex_title: title for the generated execution annex
+#   - stakeholder_groups: who receives action items
+#   - forbidden_terms: internal evidence-tier labels that must be
+#     mapped to user-facing equivalents
+#   - overcommit_guards: topics that must not be over-promised
+#   - required_sections: sections every annex must contain
+#   - grade3_forward_only: if true, any Grade-3 / third-grade
+#     content must remain forward-looking hypothesis, not operational plan
+#   - evidence_tier_mapping: mapping from internal labels to
+#     user-facing equivalents
+#   - user_facing_forbidden: terms that must never appear in user-facing annex
+
+child_adhd_education:
+  label: "儿童ADHD教育领域"
+  annex_title: "ADHD-I 家庭执行指南"
+  stakeholder_groups:
+    - "家长/主要照护者"
+    - "学校/教师"
+    - "专业评估与医疗"
+  forbidden_terms:
+    - "evidence_supported"
+    - "plausible_inference"
+    - "forward_looking_hypothesis"
+    - "unsupported_or_speculative"
+    - "decision_context_contract_id"
+    - "moderator_variables"
+    - "calibration_verdict"
+    - "disagreement_or_risk_points"
+  user_facing_forbidden:
+    - "收敛"
+    - "外部校准"
+    - "external calibration"
+    - "决策上下文合同"
+    - "decision context contract"
+    - "pipeline"
+    - "artifact"
+    - "convergence"
+    - "calibration"
+    - "scenario_branches"
+    - "certainty_levels"
+    - "uncertainty_boundary"
+    - "semantic_contract_coverage"
+    - "key_drivers"
+    - "mechanism_chain"
+  empty_placeholders:
+    - "无明确"
+    - "未提取"
+    - "TODO"
+    - "placeholder"
+    - "待补充"
+    - "N/A"
+    - "空（本"
+    - "（无"
+  overcommit_guards:
+    - topic: "BPT (家长行为培训)"
+      guard: "BPT 是组成部分，不是单独充分方案；不承诺固定周期或效果"
+    - topic: "CLAS 方法"
+      guard: "CLAS 证据等级较低；不承诺其有效性"
+    - topic: "DRC (每日报告卡)"
+      guard: "DRC 需学校配合；中国高密度班级可行性需验证"
+    - topic: "学校支持"
+      guard: "学校干预需具体协商；不承诺统一方案"
+    - topic: "运动/身体训练"
+      guard: "运动是辅助支持，不是替代性干预；不承诺改善核心ADHD症状"
+  required_sections:
+    - "当前判断"
+    - "未来 2 周启动方案"
+    - "作业流程"
+    - "家长行为支持动作"
+    - "学校沟通策略"
+    - "每周观察表"
+    - "维持、升级、复评信号"
+    - "不要做的事"
+    - "证据边界"
+  grade3_forward_only: true
+  evidence_tier_mapping:
+    evidence_supported: "有证据支持"
+    plausible_inference: "基于合理推断"
+    forward_looking_hypothesis: "前瞻性推断（需持续验证）"
+    unsupported_or_speculative: "尚无充分证据 / 需谨慎对待"

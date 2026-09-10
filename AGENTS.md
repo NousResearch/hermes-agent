@@ -170,6 +170,12 @@ is "inside the Hermes desktop app". The pattern:
 Test: if the capability still makes sense with the client on another machine, it is
 session-scoped. Assert the GUI session gets the tool **with the env var absent**.
 
+## GitHub Copilot Model Routing
+
+For GitHub Copilot model selection, escalation, and cost control, follow
+[`docs/model-routing-policy.md`](docs/model-routing-policy.md). Keep the model table there
+separate from the routing rules so price and availability updates remain localized.
+
 ## Development Environment
 
 ```bash

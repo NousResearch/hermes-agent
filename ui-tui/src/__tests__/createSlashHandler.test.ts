@@ -1191,6 +1191,16 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('/say stop reports auto read-aloud switching off', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ auto_was_on: true, mode: 'once', status: 'stopped', stopped: true }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/say stop')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('stopped. Auto read-aloud OFF.')
+    })
+  })
+
   it('/say always enables auto read-aloud via speak.mode', async () => {
     const rpc = vi.fn(() => Promise.resolve({ ok: true, mode: 'always' }))
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })

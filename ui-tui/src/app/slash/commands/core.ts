@@ -452,7 +452,8 @@ export const coreCommands: SlashCommand[] = [
           .rpc<SpeakStopResponse>('speak.stop', {})
           .then(
             ctx.guarded<SpeakStopResponse>(r => {
-              sys(r.stopped ? 'stopped.' : 'nothing playing.')
+              const main = r.stopped ? 'stopped.' : 'nothing playing.'
+              sys(r.auto_was_on ? `${main} Auto read-aloud OFF.` : main)
             })
           )
           .catch(ctx.guardedErr)

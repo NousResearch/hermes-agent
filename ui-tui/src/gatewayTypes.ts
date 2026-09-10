@@ -435,6 +435,8 @@ export interface SpeakSayResponse {
 }
 
 export interface SpeakStopResponse {
+  auto_was_on?: boolean
+  mode?: string
   status?: string
   stopped?: boolean
 }

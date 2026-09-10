@@ -138,7 +138,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status (CLI-only summary view). |
 | `/paste` | Attach a clipboard image |
 | `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
-| `/say [text\|number\|stop\|always\|once]` | Read aloud with the Apple system voice (macOS, no API key): bare `/say` speaks the last reply, `/say 2` the 2nd-from-last, `/say <text>` literal text, `/say stop` stops, `/say always` speaks every future reply automatically, `/say once` back to on-demand. Also **Ctrl+S** (highlight first). macOS Speak Selection (Option+Esc) can't work inside fullscreen terminal apps, so this replaces it. |
+| `/say [text\|number\|stop\|always\|once]` | Read aloud with the Apple system voice (macOS, no API key): bare `/say` speaks the last reply, `/say 2` the 2nd-from-last, `/say <text>` literal text, `/say stop` stops and turns auto off, `/say always` speaks every future reply automatically, `/say once` back to on-demand. Also **Ctrl+S** (highlight first). macOS Speak Selection (Option+Esc) can't work inside fullscreen terminal apps, so this replaces it. |
 | `/image <path>` | Attach a local image file for your next prompt. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
 | `/update` | Update Hermes Agent to the latest version. |

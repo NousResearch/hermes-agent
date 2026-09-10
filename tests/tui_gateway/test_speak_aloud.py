@@ -155,6 +155,40 @@ def test_speak_mode_rpc_round_trip(tmp_path, monkeypatch):
     server._methods["speak.mode"](14, {"mode": "once"})
 
 
+def test_speak_stop_disarms_always_mode(tmp_path, monkeypatch):
+    from tui_gateway import server
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    m._say_stop_all()
+    server._methods["speak.mode"](15, {"mode": "always"})
+    assert server._methods["speak.status"](16, {})["result"]["mode"] == "always"
+    result = server._methods["speak.stop"](17, {})
+    assert result["result"]["stopped"] is False
+    assert result["result"]["auto_was_on"] is True
+    assert result["result"]["mode"] == "once"
+    assert server._methods["speak.status"](18, {})["result"]["mode"] == "once"
+
+
+@pytest.mark.macos_only
+def test_speak_stop_reports_auto_was_on_while_playing(monkeypatch, tmp_path):
+    from tui_gateway import server
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _FakePopen.instances.clear()
+    monkeypatch.setattr(m.subprocess, "Popen", _FakePopen)
+    status = server._methods["speak.status"]
+    # NOTE: start AND stop both go through the bound table — unbound
+    # `m._say_*` calls touch a different module global once rebound.
+    server._methods["speak.mode"](19, {"mode": "always"})
+    say_res = server._methods["speak.say"](19, {"text": "talking"})
+    assert say_res["result"]["status"] == "speaking"
+    result = server._methods["speak.stop"](20, {})
+    assert result["result"]["stopped"] is True
+    assert result["result"]["auto_was_on"] is True
+    assert result["result"]["mode"] == "once"
+    assert status(21, {})["result"]["speaking"] is False
+
+
 def _say_items(text):
     from tui_gateway import methods_complete_helpers as h
 

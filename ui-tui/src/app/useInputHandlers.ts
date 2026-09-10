@@ -378,7 +378,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         if (status.speaking) {
           gateway.rpc<SpeakStopResponse>('speak.stop', {}).then(r => {
             if (r) {
-              actions.sys(r.stopped ? 'stopped.' : 'nothing playing.')
+              const main = r.stopped ? 'stopped.' : 'nothing playing.'
+              actions.sys(r.auto_was_on ? `${main} Auto read-aloud OFF.` : main)
             }
           })
 

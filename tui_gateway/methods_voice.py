@@ -927,8 +927,15 @@ def _(rid, params: dict) -> dict:
 
 @method("speak.stop")
 def _(rid, params: dict) -> dict:
+    auto_was_on = _say_get_mode() == "always"
     stopped = _say_stop_all()
-    return _ok(rid, {"status": "stopped", "stopped": stopped})
+    # Stopping means silence, period — a lingering `always` would speak the
+    # very next reply. Persisting `once` never fails the stop itself.
+    try:
+        mode, _ = _say_set_mode("once")
+    except Exception:
+        mode = _say_get_mode()
+    return _ok(rid, {"status": "stopped", "stopped": stopped, "auto_was_on": auto_was_on, "mode": mode})
 
 
 _SAY_MODE_FILE = "speak-aloud.mode"

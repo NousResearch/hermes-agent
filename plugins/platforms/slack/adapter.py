@@ -36,10 +36,12 @@ from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome,
+    gateway_trust_env, BasePlatformAdapter,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
-    cache_document_from_bytes_async, cache_video_from_bytes_async)
+    cache_document_from_bytes_async, cache_video_from_bytes_async,
+)
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
@@ -1934,8 +1936,9 @@ class SlackAdapter(BasePlatformAdapter):
                 chunks.extend(self._task_update_chunk(task) for task in tasks)
                 append_payload: Dict[str, Any] = {
                     "channel": chat_id, "ts": stream.stream_ts, "chunks": chunks}
-                if fallback_text:
-                    append_payload["markdown_text"] = fallback_text
+                # chunks-only: Slack rejects markdown_text alongside chunks
+                # (cannot_provide_both_markdown_text_and_chunks, #87743); the gateway owns
+                # the editable-text fallback rail that fallback_text feeds when this call fails.
                 await client.api_call("chat.appendStream", json=append_payload)
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging
@@ -2654,25 +2657,25 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send a batch of images as one message via ``files_upload_v2(file_uploads=...)`` (10 per
         call, Slack cap) instead of N posts; falls back to the base per-image loop on failure."""
         if self._suppressed_ignored(chat_id, "multi-image upload in"):
-            return
+            return SendResult(success=False, error="ignored_channel")
         if not self._app:
-            return
+            return SendResult(success=False, error="Not connected")
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         chat_id = await self._dm_target(chat_id, metadata)
         try:
             from urllib.parse import unquote as _unquote
             from tools.url_safety import create_ssrf_safe_async_client, is_safe_url as _is_safe_url
         except Exception:
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         thread_ts = self._resolve_thread_ts(None, metadata)
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
+        delivered = False
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
@@ -2689,12 +2692,15 @@ class SlackAdapter(BasePlatformAdapter):
                     channel=chat_id, file_uploads=file_uploads, initial_comment=initial_comment,
                     thread_ts=thread_ts)
                 self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
+                delivered = True
             except Exception as e:
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
                     chunk_idx + 1, len(chunks), e, exc_info=True)
-                await super().send_multiple_images(
+                fallback = await super().send_multiple_images(
                     chat_id, chunk, metadata, human_delay=human_delay)
+                delivered = delivered or fallback.success
+        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     @staticmethod
     async def _collect_image_uploads(
@@ -5818,7 +5824,6 @@ class SlackAdapter(BasePlatformAdapter):
         if not session_store:
             return False
         try:
-            source = self._thread_session_source(channel_id, thread_ts, user_id, team_id, chat_type)
             session_key = self._build_thread_session_key(
                 channel_id, thread_ts, user_id, team_id=team_id, chat_type=chat_type)
             if not session_key:
@@ -5827,11 +5832,9 @@ class SlackAdapter(BasePlatformAdapter):
             entry = session_store._entries.get(session_key)
             if entry is None:
                 return False
-            # A key the reset policy (daily/idle/suspended) would roll is NOT active:
-            # treating it as such would suppress the first-turn thread-history reseed.
-            # See #55239.
-            should_reset = getattr(type(session_store), "_should_reset", None)
-            return not (callable(should_reset) and should_reset(session_store, entry, source))
+            # Explicit suspension starts a fresh conversation on the next turn and
+            # must not suppress thread-history reseeding. Elapsed time is not a boundary.
+            return not entry.suspended
         except Exception:
             return False
 

@@ -1,9 +1,4 @@
-"""Profile-owned non-inference room controls and roster discovery.
-
-The legacy local room driver creates TUI agents, so it is not an execution
-capability of this transport. Room metadata still uses the existing durable
-room protocol, on the authority's database rather than the install-wide default.
-"""
+"""Profile-owned room controls over the canonical hosted service."""
 import asyncio
 from pathlib import Path
 
@@ -18,6 +13,10 @@ GROUP_METHODS = {
     'groups.create': 'session:control',
     'groups.rename': 'session:control',
     'groups.disband': 'session:control',
+    'groups.send': 'session:submit',
+    'groups.stop': 'session:control',
+    'groups.retry': 'session:control',
+    'groups.approve': 'session:approve',
 }
 _FIELDS = {
     'groups.capabilities': set(),
@@ -26,7 +25,12 @@ _FIELDS = {
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
-    'groups.disband': {'room_id'},
+    'groups.disband': {'room_id', 'cancel_id'},
+    'groups.send': {'room_id', 'event_id', 'payload'},
+    'groups.stop': {'room_id', 'cancel_id'},
+    'groups.retry': {'room_id', 'task_id'},
+    'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
+                       'choice', 'request_id'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -58,7 +62,9 @@ async def dispatch_group_control(connection, method, params):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
-                return _group(authority, home, method, supplied)
+                return _group(authority, actor, home, method, supplied)
+            except RuntimeStoreError:
+                raise
             except HostedRoomError as exc:
                 raise RuntimeStoreError(getattr(exc, 'reason', None) or 'invalid_params') from exc
             except (ValueError, TypeError) as exc:
@@ -66,13 +72,33 @@ async def dispatch_group_control(connection, method, params):
     return await asyncio.to_thread(invoke)
 
 
-def _group(authority, home, method, params):
+def _group(authority, actor, home, method, params):
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
+    service = getattr(authority, 'hosted_room_service', None)
+    room_authorizer = getattr(service, 'authorize_room', None)
+    if service is not None:
+        if Path(service.db_path).resolve() != Path(db_path).resolve():
+            raise RuntimeStoreError('profile_mismatch')
+        status = service.runtime.status()
+        if not status.get('running') or status.get('stopping'):
+            service = None
+
+    execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.approve'}
+    if service is not None and 'room_id' in params:
+        if room_authorizer is None:
+            raise RuntimeStoreError('permission_denied')
+        room_authorizer(actor.subject, params['room_id'], create=method == 'groups.create')
+    if method in execution_methods:
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        if not params.get('room_id'):
+            raise RuntimeStoreError('invalid_params')
+        return _execution_control(service, method, params)
 
     def capabilities():
-        return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': False,
+        return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
                 'room_link': {'enabled': False, 'reason': 'canonical_driver_required'},
                 'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
@@ -84,6 +110,8 @@ def _group(authority, home, method, params):
         return {'rooms': result, 'next_offset': offset + limit if len(result) == limit else None}
 
     def create():
+        if service is not None:
+            return {'room': service.create_room(**params)}
         from gateway.hosted_room_discussion import validate_roster
         name = home.name if home.parent.name == 'profiles' else 'default'
         profiles = {name}
@@ -98,22 +126,71 @@ def _group(authority, home, method, params):
 
     def disband():
         from gateway.hosted_room_driver import list_tasks
+        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
+        if service is not None and state.get('disbanded_at') is None:
+            service.stop_room(params.get('room_id'),
+                              cancel_id=params.get('cancel_id') or 'room-disbanded',
+                              require_acknowledged=True)
+            service.revoke_room_routes(params.get('room_id'))
         # Metadata control must not destroy an active execution or bypass Stop.
-        if any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
+        if service is None and any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
                for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
             raise RuntimeStoreError('runtime_coordination_required')
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
         return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
                 expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
 
+    def state():
+        room = rooms.room_state(db_path, **params)
+        result = {'room': room}
+        if service is not None and room.get('disbanded_at') is None:
+            result['driver_status'] = service.status(room['room_id'])
+        return result
+
     handlers = {
         'groups.capabilities': capabilities,
         'groups.list': listing,
         'groups.create': create,
-        'groups.state': lambda: {'room': rooms.room_state(db_path, **params)},
+        'groups.state': state,
         'groups.log': lambda: rooms.read_events(db_path, **params),
         'groups.rename': lambda: {'room': rooms.rename_room(db_path, **params)},
         'groups.disband': disband,
+    }
+    return handlers[method]()
+
+
+def _execution_control(service, method, params):
+    def send():
+        from gateway.hosted_rooms import user_event_id
+        event = service.send(room_id=params.get('room_id'),
+                             event_id=user_event_id(params.get('event_id')),
+                             payload=params.get('payload'))
+        return {'event': event, 'client_event_id': params.get('event_id'),
+                'accepted': True, 'driver_started': True}
+
+    def retry():
+        task = service.retry_room_task(params.get('room_id'), task_id=params.get('task_id'))
+        identity = task['identity']
+        receipt = {field: getattr(identity, field) for field in
+                   ('room_id', 'task_id', 'thread_id', 'turn_id')}
+        receipt.update({field: task[field] for field in
+                        ('status', 'execution_generation', 'cancel_generation')})
+        return {'retried': True, 'task': receipt}
+
+    def approve():
+        if (type(params.get('execution_generation')) is not int
+                or params['execution_generation'] < 1
+                or params.get('choice') not in {'once', 'deny'}
+                or not isinstance(params.get('request_id'), str) or not params['request_id']):
+            raise RuntimeStoreError('invalid_params')
+        return {'approved': True, 'result': service.approve_room_task(**params)}
+
+    handlers = {
+        'groups.send': send,
+        'groups.stop': lambda: {'cancelled': service.stop_room(
+            params.get('room_id'), cancel_id=params.get('cancel_id') or 'desktop-stop')},
+        'groups.retry': retry,
+        'groups.approve': approve,
     }
     return handlers[method]()
 

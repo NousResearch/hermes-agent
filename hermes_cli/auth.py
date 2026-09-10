@@ -1160,35 +1160,52 @@ def _pool_entry_is_explicit(entry: Any) -> bool:
     return bool(source) and (source in _EXPLICIT_POOL_SOURCES or source.startswith("manual:"))
 
 
-def pool_credential_labels() -> Dict[str, str]:
-    """Map env var name -> credential-pool label for providers holding an explicit pool entry.
+def explicit_pool_providers() -> Dict[str, Dict[str, Any]]:
+    """Provider id -> its first EXPLICIT credential-pool entry.
 
-    ``hermes auth add`` persists to the pool in ``auth.json`` and never writes ``.env``, so any
-    display that resolves a provider from env vars alone reports "(not set)" for a provider that is
-    in fact authed and serving traffic. Keyed by env var so a display row matches without a
-    hand-maintained display-name -> provider-id table. Ambient borrowed sources (gh_cli /
-    claude_code / qwen-cli) are excluded by ``_pool_entry_is_explicit``, and the pooled secret is
-    never read — only its label — so no key material can reach a caller.
+    The shared primitive behind every "is this provider actually authed?" check. ``hermes auth add``
+    persists to the pool in ``auth.json`` and never writes ``.env``, so anything that judges auth
+    from env vars alone reports a missing key for a provider that is serving traffic. Ambient
+    borrowed sources (gh_cli / claude_code / qwen-cli) are excluded by ``_pool_entry_is_explicit``,
+    so a pool the user never set up cannot green-light a check.
 
-    Consumed by ``hermes status`` (``status_auth._render_api_keys``) and ``hermes config show``
-    (``config.show_config``). Never raises: an unreadable store yields what was collected so far.
+    Consumed by ``hermes doctor`` (``doctor_config.pooled_credential_providers``) and, via
+    :func:`pool_credential_labels`, by ``hermes status`` and ``hermes config show``.
+    Never raises: an unreadable store yields ``{}``.
     """
-    labels: Dict[str, str] = {}
+    found: Dict[str, Dict[str, Any]] = {}
     try:
         pool = read_credential_pool()
         for provider_id, entries in (pool.items() if isinstance(pool, dict) else ()):
-            explicit = [e for e in entries if _pool_entry_is_explicit(e)] if isinstance(entries, list) else []
-            if not explicit:
+            if not isinstance(entries, list):
                 continue
+            entry = next((e for e in entries if _pool_entry_is_explicit(e)), None)
+            if entry is not None:
+                found[provider_id] = entry
+    except Exception as e:
+        logger.debug("Could not read the credential pool: %s", e)
+    return found
+
+
+def pool_credential_labels() -> Dict[str, str]:
+    """Map env var name -> credential-pool label for providers holding an explicit pool entry.
+
+    Keyed by env var so a display row matches without a hand-maintained display-name ->
+    provider-id table. The pooled secret is never read — only its label — so no key material can
+    reach a caller. Never raises; a provider whose config cannot be resolved is skipped.
+    """
+    labels: Dict[str, str] = {}
+    for provider_id, entry in explicit_pool_providers().items():
+        try:
             pconfig = PROVIDER_REGISTRY.get(provider_id)
             if pconfig is None:
                 from hermes_cli.providers import get_provider
                 pconfig = get_provider(provider_id)
-            label = str(explicit[0].get("label") or provider_id).strip() or provider_id
+            label = str(entry.get("label") or provider_id).strip() or provider_id
             for env_var in getattr(pconfig, "api_key_env_vars", ()) or ():
                 labels.setdefault(env_var, label)
-    except Exception as e:
-        logger.debug("Could not read credential pool labels: %s", e)
+        except Exception as e:
+            logger.debug("Could not map pool labels for %s: %s", provider_id, e)
     return labels
 
 

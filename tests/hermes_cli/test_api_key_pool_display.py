@@ -5,7 +5,8 @@ Three displays resolved providers from env vars alone and so rendered "(not set)
 that was authed and serving traffic: ``hermes doctor`` (see tests/hermes_cli/test_doctor.py),
 ``hermes status`` (see tests/hermes_cli/test_status.py), and ``hermes config show`` here.
 
-``pool_credential_labels`` is the shared resolver behind the latter two.
+``auth.explicit_pool_providers`` is the one resolver behind all three; ``pool_credential_labels``
+adds the env-var keying the two display sites need.
 """
 
 import pytest
@@ -30,6 +31,67 @@ def _set_pool(monkeypatch, pool):
         monkeypatch.setattr(auth_mod, "read_credential_pool", boom)
     else:
         monkeypatch.setattr(auth_mod, "read_credential_pool", lambda provider_id=None: pool)
+
+
+class TestExplicitPoolProviders:
+    """The shared primitive: which providers hold a credential the user deliberately added."""
+
+    def test_returns_the_first_explicit_entry_per_provider(self, monkeypatch):
+        from hermes_cli.auth import explicit_pool_providers
+
+        _set_pool(monkeypatch, {"anthropic": [
+            {"source": "claude_code", "label": "Ambient"},
+            {"source": "manual", "label": "First explicit"},
+            {"source": "manual", "label": "Second explicit"}]})
+
+        assert explicit_pool_providers()["anthropic"]["label"] == "First explicit"
+
+    def test_providers_with_only_ambient_entries_are_omitted(self, monkeypatch):
+        from hermes_cli.auth import explicit_pool_providers
+
+        _set_pool(monkeypatch, {
+            "anthropic": [{"source": "claude_code"}], "copilot": [{"source": "gh_cli"}],
+            "zai": [{"source": "device_code"}]})
+
+        assert sorted(explicit_pool_providers()) == ["zai"]
+
+    def test_malformed_provider_slices_are_skipped(self, monkeypatch):
+        from hermes_cli.auth import explicit_pool_providers
+
+        _set_pool(monkeypatch, {"anthropic": "not-a-list", "zai": [{"source": "manual"}]})
+
+        assert sorted(explicit_pool_providers()) == ["zai"]
+
+    def test_unreadable_store_yields_nothing_instead_of_raising(self, monkeypatch):
+        from hermes_cli.auth import explicit_pool_providers
+
+        _set_pool(monkeypatch, OSError("auth.json unreadable"))
+
+        assert explicit_pool_providers() == {}
+
+
+class TestDoctorAndDisplaysShareOneResolver:
+    """doctor, status and config must agree — they now resolve through the same primitive."""
+
+    def test_doctor_sees_what_the_displays_see(self, monkeypatch):
+        from hermes_cli.auth import pool_credential_labels
+        from hermes_cli.doctor_config import pooled_credential_providers
+
+        _set_pool(monkeypatch, {
+            "anthropic": [{"source": "manual", "label": "Agentic"}],
+            "openrouter": [{"source": "claude_code", "label": "Ambient"}]})
+
+        assert pooled_credential_providers() == ["anthropic"]
+        assert pool_credential_labels()["ANTHROPIC_API_KEY"] == "Agentic"
+
+    def test_both_go_quiet_on_an_unreadable_store(self, monkeypatch):
+        from hermes_cli.auth import pool_credential_labels
+        from hermes_cli.doctor_config import pooled_credential_providers
+
+        _set_pool(monkeypatch, OSError("auth.json unreadable"))
+
+        assert pooled_credential_providers() == []
+        assert pool_credential_labels() == {}
 
 
 class TestPoolCredentialLabels:

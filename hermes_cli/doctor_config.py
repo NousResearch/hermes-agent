@@ -22,16 +22,13 @@ def pooled_credential_providers() -> list[str]:
 
     ``hermes auth add`` persists to the pool and never writes ``.env``, so a credential added that
     way is invisible to :func:`_has_provider_env_config` and an env-only check reports a missing API
-    key on an install that is fully authed. Ambient borrowed sources (gh_cli / claude_code / qwen-cli)
-    are excluded by ``_pool_entry_is_explicit``, so this cannot green-light a pool the user never set
-    up. A store that fails to read degrades to "found nothing" rather than failing the check."""
+    key on an install that is fully authed. Resolution (including the exclusion of ambient borrowed
+    sources) lives in ``auth.explicit_pool_providers``; a store that fails to read degrades to
+    "found nothing" rather than failing the check."""
     providers: list[str] = []
     with warn_on_error(""):
-        from hermes_cli.auth import _pool_entry_is_explicit, read_credential_pool
-        pool = read_credential_pool()
-        providers = sorted(
-            pid for pid, entries in (pool.items() if isinstance(pool, dict) else ())
-            if isinstance(entries, list) and any(_pool_entry_is_explicit(e) for e in entries))
+        from hermes_cli.auth import explicit_pool_providers
+        providers = sorted(explicit_pool_providers())
     return providers
 
 

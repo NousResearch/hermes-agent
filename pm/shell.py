@@ -10,7 +10,8 @@ Resolution order:
      structurally guarantees it in a bundle; no hunt.
   2. Provisioned PATH: shutil.which("bash") — the store dirs are on the
      process PATH after pm.activate() ran.
-  3. POSIX fallback table for non-bundle / daemon-launch PATH edge cases
+  3. Conventional Git for Windows under Program Files, even with an empty PATH.
+  4. POSIX fallback table for non-bundle / daemon-launch PATH edge cases
      (/usr/bin/bash, /bin/bash, $SHELL, /bin/sh). A systemd/cron-launched
      gateway may have a minimal PATH and macOS /bin/bash is not on PATH by
      default, so `which` alone is not enough there.
@@ -64,13 +65,13 @@ def bash() -> str | None:
     # Prefer a conventional install when one exists.
     if on_path and "windowsapps" not in on_path.lower():
         return on_path
-    if on_path and os.name == "nt":
+    if os.name == "nt":
         programfiles = os.environ.get("ProgramFiles", r"C:\Program Files")
         for rel in (("Git", "bin", "bash.exe"), ("Git", "usr", "bin", "bash.exe")):
             cand = os.path.join(programfiles, *rel)
             if os.path.isfile(cand):
                 return cand
-        return on_path  # nothing conventional — the packaged one is all there is
+        return on_path
 
     # POSIX fallbacks for minimal-PATH daemon launches / macOS /bin/bash.
     for candidate in (

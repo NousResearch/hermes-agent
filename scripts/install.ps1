@@ -299,10 +299,9 @@ function Initialize-ResolvedPaths {
     if ($script:BoundParams.ContainsKey('InstallDir')) {
         $script:InstallDir = ConvertTo-LongPath $script:InstallDir
     } else {
-        $script:InstallDir = ConvertTo-LongPath $(
-            if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
-        )
+        $script:InstallDir = Join-Path $script:HermesHome 'hermes-agent'
     }
+    $env:HERMES_HOME = $script:HermesHome
     if ($script:NormalizedProfilePaths) {
         Write-PathDiag "resolved install paths: HermesHome=$script:HermesHome InstallDir=$script:InstallDir"
     }
@@ -501,20 +500,25 @@ function Stage-Venv {
 # tool store — all hash-verified against pm/lock.json + uv.lock. install.ps1
 # no longer runs `uv sync` directly; pm is the single install authority
 # (the run_locked_uv_sync contract moved into pm/packages.py::uv_env).
-function Invoke-BootstrapPm {
+function Get-BootstrapPython {
     $uv = Get-Uv
     $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json
     $pyPin = $lock.packages.python
     $pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.14' }
+    & $uv python install --no-bin $pyVersion | Out-Host
+    if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
+    $bootPy = (& $uv python find --managed-python --no-project $pyVersion) -join "`n"
+    if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
+    return $bootPy.Trim()
+}
+
+function Invoke-BootstrapPm {
+    $bootPy = Get-BootstrapPython
     Log "delegating python + venv + tools to pm (hash-verified via uv.lock)"
     Push-Location $InstallDir
     try {
         # Finish bootstrap uv before PM replaces or cleans its store entry.
-        & $uv python install --no-bin $pyVersion
-        if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-        $bootPy = (& $uv python find --managed-python $pyVersion) -join "`n"
-        if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
-        & $bootPy.Trim() -m pm.cli install
+        & $bootPy -m pm.cli install
         if ($LASTEXITCODE) { Fail "pm install failed" }
     } finally {
         Pop-Location
@@ -531,28 +535,25 @@ function Stage-NodeDeps {
 
 function Stage-Path {
     $binDir = Join-Path $HermesHome "bin"
-    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-    # Mint the boot launchers (hermes / hermes-acp) bound to the pm STORE
-    # python with PYTHONPATH=repo;venv-site-packages — never the venv
-    # python (no boot through the venv; pyvenv.cfg is inert dead config).
-    # The venv python below is install-time machinery (the materializer),
-    # not a boot path. On a fresh install the store interpreter does not
-    # exist yet, so a runtime-resolving .cmd delegator is staged;
-    # hermes_cli/_install_repair.py upgrades it to an exe once
-    # `hermes pm install` materializes the store.
-    $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
-    if (-not (Test-Path $venvPython)) { Fail "venv python missing at $venvPython" }
+    $bootPy = Get-BootstrapPython
     Push-Location $InstallDir
-    & $venvPython -c "from hermes_cli._launchers import ensure_install_launchers; import sys; written = ensure_install_launchers(r'$InstallDir', r'$binDir'); print(';'.join(written)); sys.exit(0 if written else 1)"
-    $code = $LASTEXITCODE
-    Pop-Location
+    try {
+        & $bootPy -I -X utf8 hermes_cli/_launchers.py $binDir
+        $code = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
     if ($code) { Fail "launcher staging failed" }
+    Set-LauncherUserPath $binDir
+    Log "hermes command installed at $binDir"
+}
+
+function Set-LauncherUserPath([string]$binDir) {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -notlike "*$binDir*") {
         [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
         Log "added $binDir to your user PATH (new shells pick it up)"
     }
-    Log "hermes command installed at $binDir"
 }
 
 function Stage-Config {

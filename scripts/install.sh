@@ -307,21 +307,24 @@ stage_venv() {
     (cd "$INSTALL_DIR" && "$UV_CMD" venv --allow-existing venv) || fail "uv venv failed"
 }
 
-# uv installs and locates bootstrap Python, then exits before PM starts.
-# PM owns the final interpreter, tool store, and selected dependency generation.
-bootstrap_pm() {
+# Resolve the bootstrap interpreter without assuming a checkout-local venv.
+bootstrap_python() {
     ensure_uv
     local _py
     _py="$(awk '/^    "python": \{/ { in_py = 1 }
         in_py && /^      "version":/ { gsub(/.*: "|"$|",$/, ""); print; exit }' \
         "$INSTALL_DIR/pm/lock.json" | cut -d+ -f1 | cut -d. -f1,2)"
     [ -n "$_py" ] || _py="3.14"
-    log "delegating python + venv + tools to pm (hash-verified via uv.lock)"
-    # Finish bootstrap uv before PM replaces or cleans its store entry.
     "$UV_CMD" python install --no-bin "$_py" || fail "bootstrap Python installation failed"
-    local boot_py
     boot_py="$("$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
     boot_py="${boot_py%$'\r'}"
+}
+
+# uv exits before PM can replace its tool entry.
+bootstrap_pm() {
+    local boot_py
+    bootstrap_python
+    log "delegating python + venv + tools to pm (hash-verified via uv.lock)"
     (cd "$INSTALL_DIR" && "$boot_py" -m pm.cli install) || fail "pm install failed"
 }
 
@@ -337,49 +340,9 @@ stage_node_deps() {
 
 stage_path() {
     local link_dir="$HOME/.local/bin"
-    mkdir -p "$link_dir"
-    rm -f "$link_dir/hermes"
-    # Boot wrapper: exec the pm STORE python with PYTHONPATH=repo:venv-
-    # site-packages (repo first). Never boots through venv/bin/python —
-    # the venv is only a uv sync target and pyvenv.cfg is inert dead
-    # config (pm work item 3). Store root + python entry mirror
-    # pm/paths.py / pm facts.json; resolved at BOOT so the wrapper picks
-    # up `hermes pm install` whenever it materializes the store.
-    cat > "$link_dir/hermes" <<WRAPPER
-#!/usr/bin/env bash
-# Hermes boot wrapper: store python + PYTHONPATH (never the venv python).
-set -u
-repo="\${HERMES_INSTALL_DIR:-$INSTALL_DIR}"
-unset PYTHONHOME
-runtime="\${HERMES_RUNTIME_DIR:-}"
-if [ -z "\$runtime" ] && [ -f "\$repo/install-stamp.json" ]; then
-    runtime="\$(sed -n 's/.*"runtimeDir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "\$repo/install-stamp.json" | head -n 1)"
-fi
-[ -n "\$runtime" ] || runtime="\$HOME/.hermes/tools"
-store_py=""
-if [ -f "\$runtime/facts.json" ]; then
-    entry="\$(sed -n 's/.*"entry"[[:space:]]*:[[:space:]]*"\(python-[^"]*\)".*/\1/p' "\$runtime/facts.json" | head -n 1)"
-    if [ -n "\$entry" ] && [ -x "\$runtime/\$entry/bin/python3" ]; then
-        store_py="\$runtime/\$entry/bin/python3"
-    fi
-fi
-if [ -z "\$store_py" ]; then
-    for d in "\$runtime"/python-*/bin/python3; do
-        [ -x "\$d" ] && store_py="\$d"
-    done
-fi
-if [ -z "\$store_py" ]; then
-    echo "hermes: no pm store interpreter under \$runtime - run 'hermes pm install' first" >&2
-    exit 1
-fi
-site=""
-for d in "\$repo"/venv/lib/python3.*/site-packages "\$repo"/.venv/lib/python3.*/site-packages; do
-    [ -d "\$d" ] && site="\$d"
-done
-export PYTHONPATH="\$repo\${site:+:\$site}"
-exec "\$store_py" "\$repo/hermes" "\$@"
-WRAPPER
-    chmod +x "$link_dir/hermes"
+    local boot_py
+    bootstrap_python
+    (cd "$INSTALL_DIR" && "$boot_py" -I -X utf8 hermes_cli/_launchers.py "$link_dir") || fail "launcher publication failed"
     case ":$PATH:" in
         *":$link_dir:"*) : ;;
         *) log "add $link_dir to your PATH to use the hermes command" ;;

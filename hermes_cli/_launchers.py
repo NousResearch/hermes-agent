@@ -1,39 +1,26 @@
-"""Windows launcher staging: `hermes` / `hermes-acp` launchers that boot the
-pm STORE python with ``PYTHONPATH=<repo>;<venv>/site-packages`` — never
-``venv\\Scripts\\python.exe`` (pm work item 3, "no boot through the venv";
-``pyvenv.cfg`` is inert dead config).
+"""Source-install launchers shared by setup, installers, and Windows repair.
 
-Two consumers:
+Launchers execute store Python in isolated mode. They set the install's
+default home and load hermes_bootstrap before the entry point. Bootstrap
+reads the selected dependency generation at each start.
 
-- ``scripts/install.ps1`` Stage-Path (bootstrap) calls
-  :func:`ensure_install_launchers` through the venv python — install-time
-  use of the venv interpreter is fine; it is the materializer, not a boot
-  path. On a fresh install the pm store interpreter does not exist yet, so
-  a runtime-resolving ``.cmd`` delegator is staged and
-  ``hermes_cli._install_repair.ensure_windows_bin_launchers`` upgrades it
-  to an exe once ``hermes pm install`` lands the store python.
-- ``hermes_cli/_install_repair.py`` calls the same machinery per-name when
-  a launcher is missing or still boots through the venv.
-
-Store paths come from the stdlib-only runtime_paths owner, shared with PM.
-Launchers import hermes_bootstrap before the entry point: the dependency
-selection is read at boot, not frozen when the launcher is minted.
-
-The exe form uses distlib's ScriptMaker with a customized script template
-that inserts the repo root and the venv's site-packages into ``sys.path``
-before importing the entry point — distlib is taken from pip's vendored
-copy when the standalone package is absent (uv-synced venvs carry pip but
-rarely standalone distlib). When distlib is unavailable, a ``.cmd``
-delegator carrying the same PYTHONPATH composition is written instead.
+Windows uses distlib executables or a command-file fallback. POSIX uses
+an executable shell wrapper. The standalone writer requires PM's store
+interpreter before it publishes either command.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shlex
+import sys
 from pathlib import Path
 
-from hermes_constants import project_venv_dir
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from hermes_constants import get_hermes_home, project_venv_dir
 from hermes_cli.runtime_paths import site_packages, store_root
 
 #: Launcher command names — keep in lockstep with scripts/install.ps1
@@ -148,45 +135,26 @@ def mint_launcher(
     python_exe: Path,
     site_packages: Path | None,
 ) -> Path | None:
-    """Write one launcher for *name* into out_dir. Returns the written path
-    or None. Prefers a distlib exe trampoline whose embedded script inserts
-    the repo root and site-packages before importing the entry point; falls
-    back to a .cmd delegator (same interpreter, same PYTHONPATH) when
-    distlib is unavailable."""
+    """Write a native launcher with the shared bootstrap script, or return None."""
     module, func = ENTRY_POINTS[name]
     out_dir = Path(out_dir)
+    script = _launcher_script(name, Path(repo_root), site_packages)
+
+    if not _is_windows():
+        return _mint_shell_launcher(name, out_dir, python_exe, script)
 
     script_maker_cls = _load_script_maker()
     if script_maker_cls is not None:
-        # The template is %-formatted by distlib with (module, import_name,
-        # func); the install-time paths are baked in as literals. The repo
-        # root goes FIRST — its packages win over site-packages (same
-        # ordering as the desktop shim's PYTHONPATH composition).
-        esc = lambda p: str(p).replace("%", "%%")  # noqa: E731
-        site_line = (
-            f"sys.path.append({esc(site_packages)!r})\n" if site_packages else ""
-        )
-
         class _PathedScriptMaker(script_maker_cls):  # type: ignore[misc,valid-type]
-            script_template = (
-                "# -*- coding: utf-8 -*-\n"
-                "import re\n"
-                "import sys\n"
-                f"sys.path.insert(0, {esc(repo_root)!r})\n"
-                f"{site_line}"
-                "import hermes_bootstrap\n"
-                "if __name__ == '__main__':\n"
-                "    from %(module)s import %(import_name)s\n"
-                "    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
-                "    sys.exit(%(func)s())\n"
-            )
+            def _get_script_text(self, entry):
+                return script
 
         maker = _PathedScriptMaker(None, str(out_dir), add_launchers=True)
         maker.executable = str(python_exe)
         maker.variants = {""}
         maker.clobber = True
         try:
-            written = maker.make(f"{name} = {module}:{func}")
+            written = maker.make(f"{name} = {module}:{func}", {"interpreter_args": ["-I"]})
         except Exception:
             written = []
         for path in written:
@@ -194,29 +162,50 @@ def mint_launcher(
                 return Path(path)
         # distlib ran but produced no exe (unexpected) — fall through to cmd.
 
-    site = f";{site_packages}" if site_packages else ""
-    code = f"import sys; import hermes_bootstrap; from {module} import {func}; sys.exit({func}())"
+    # The script is data to Python, not interpolated shell source.
+    import base64
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    code = f"import base64; exec(base64.b64decode('{encoded}'))"
     body = (
         "@echo off\r\n"
         "chcp 65001 >nul\r\n"
-        f'set "PYTHONPATH={repo_root}{site}"\r\n'
-        'set "PYTHONHOME="\r\n'
-        f'"{python_exe}" -c "{code}" %*\r\n'
+        f'"{python_exe}" -I -c "{code}" %*\r\n'
     )
     return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
 
 
+def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> str:
+    module, func = ENTRY_POINTS[name]
+    return (
+        "import os, re, sys\n"
+        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {str(get_hermes_home())!r}\n"
+        "os.environ.pop('PYTHONHOME', None)\n"
+        "os.environ.pop('PYTHONPATH', None)\n"
+        f"sys.path.insert(0, {str(repo_root.resolve())!r})\n"
+        + (f"sys.path.append({str(dependencies)!r})\n" if dependencies else "")
+        + "import hermes_bootstrap\n"
+        f"from {module} import {func}\n"
+        "sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
+        f"sys.exit({func}())\n"
+    )
+
+
+def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str) -> Path | None:
+    command = shlex.join([str(python_exe), "-I", "-c", script])
+
+    def write(staging: Path) -> None:
+        staging.write_text(f'#!/bin/sh\nexec {command} "$@"\n', encoding="utf-8", newline="\n")
+        staging.chmod(0o755)
+
+    return _write_atomic(out_dir / name, write)
+
+
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
-    """Stage/refresh ONE launcher for the install rooted at repo_root,
-    writing what the CURRENT state supports:
+    """Publish one launcher bound to the current store interpreter.
 
-    - store interpreter present → exe (or .cmd if distlib is missing) bound
-      to it, with the repo-first PYTHONPATH baked in;
-    - store interpreter absent → a runtime-resolving .cmd that finds the
-      store python at boot and fails with a clear message until
-      `hermes pm install` materializes it.
-
-    Never raises; returns the written path or None."""
+    Windows repair retains a command-file fallback when the store is absent.
+    The standalone install writer refuses that incomplete state.
+    """
     repo_root = Path(repo_root)
     venv_dir = project_venv_dir(repo_root)
     dependencies = site_packages(venv_dir) if venv_dir else None
@@ -225,6 +214,8 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
         path = mint_launcher(name, repo_root, out_dir, store_python, dependencies)
         if path is not None:
             return path
+    if not _is_windows():
+        return None
     return _write_runtime_cmd(name, repo_root, dependencies, out_dir)
 
 
@@ -282,3 +273,19 @@ def _write_runtime_cmd(
         Path(out_dir) / f"{name}.cmd",
         lambda p: p.write_text(body, encoding="utf-8"),
     )
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Publish source-install launchers.")
+    parser.add_argument("out_dir", type=Path)
+    args = parser.parse_args()
+    repo_root = Path(__file__).resolve().parents[1]
+    if resolve_store_python(repo_root) is None:
+        parser.exit(1, "hermes: store interpreter is missing; finish pm install before publishing launchers\n")
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    written = ensure_install_launchers(repo_root, args.out_dir)
+    if len(written) != len(ENTRY_POINTS):
+        parser.exit(1, "hermes: launcher publication failed\n")
+    print("\n".join(written))

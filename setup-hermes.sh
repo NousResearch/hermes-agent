@@ -155,27 +155,21 @@ else
 fi
 
 # ============================================================================
-# PATH setup — symlink hermes into a user-facing bin dir
+# Publish user-facing launchers
 # ============================================================================
 
 echo -e "${CYAN}→${NC} Setting up hermes command..."
 
-# pm installs the venv; find its python across layouts (posix venv vs win).
-PYBIN=""
-for candidate in "$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/venv/Scripts/python.exe"; do
-    [ -x "$candidate" ] && { PYBIN="$candidate"; break; }
-done
-
-HERMES_BIN=""
-for candidate in "$SCRIPT_DIR/venv/bin/hermes" "$SCRIPT_DIR/venv/Scripts/hermes.exe"; do
-    [ -e "$candidate" ] && { HERMES_BIN="$candidate"; break; }
-done
-
-if [ -n "$HERMES_BIN" ] && [ "$os" != win32 ]; then
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
-    echo -e "${GREEN}✓${NC} Symlinked hermes → ~/.local/bin/hermes"
+# Reuse the bootstrap interpreter only to run the shared launcher writer.
+bin_dir="$HOME/.local/bin"
+if [ "$os" = win32 ]; then
+    bin_dir="$(cygpath -am "${HERMES_HOME:-${LOCALAPPDATA:-$HOME/AppData/Local}/hermes}/bin")"
 fi
+if ! "$boot_py" -I -X utf8 hermes_cli/_launchers.py "$bin_dir"; then
+    echo -e "${RED}✗${NC} launcher publication failed" >&2
+    exit 1
+fi
+echo -e "${GREEN}✓${NC} Published Hermes commands in $bin_dir"
 
 if [ "$os" != win32 ]; then
     # Determine the appropriate shell config file
@@ -224,7 +218,7 @@ mkdir -p "$HERMES_SKILLS_DIR"
 
 echo ""
 echo "Syncing bundled skills to ~/.hermes/skills/ ..."
-if [ -n "$PYBIN" ] && "$PYBIN" "$SCRIPT_DIR/tools/skills_sync.py" 2>/dev/null; then
+if "$boot_py" -m tools.skills_sync 2>/dev/null; then
     echo -e "${GREEN}✓${NC} Skills synced"
 else
     # Fallback: copy if sync script fails (missing deps, etc.)

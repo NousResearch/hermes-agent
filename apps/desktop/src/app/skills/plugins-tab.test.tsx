@@ -1,28 +1,40 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
+import { $agentPlugins, $agentPluginScope, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
+import { $connection } from '@/store/session'
 
 import { PluginsTab } from './plugins-tab'
 
 const requestGateway = vi.fn(async () => ({ plugins: [] }))
 
+const { activeGatewayConnectionId, requestGatewayForAgent } = vi.hoisted(() => ({
+  activeGatewayConnectionId: vi.fn<() => null | string>(() => null),
+  requestGatewayForAgent: vi.fn(async () => ({ marketplaces: [], plugins: [] }))
+}))
+
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
+vi.mock('@/store/gateway', () => ({ activeGatewayConnectionId, requestGatewayForAgent }))
 
 describe('PluginsTab', () => {
   beforeEach(() => {
     $agentPlugins.set([])
+    $agentPluginScope.set('local::default')
     $agentPluginsStatus.set('ready')
     closePluginInstallRequest()
     requestGateway.mockClear()
+    requestGatewayForAgent.mockClear()
+    activeGatewayConnectionId.mockReturnValue(null)
+    $connection.set(null)
   })
 
   afterEach(cleanup)
 
   it('lists the scoped profile agent plugins with toggles', () => {
+    $agentPluginScope.set('local::workbot')
     $agentPlugins.set([
       {
         description: 'A test plugin',
@@ -67,6 +79,57 @@ describe('PluginsTab', () => {
     )
   })
 
+  it('routes an explicitly selected connection to its owning backend', async () => {
+    render(<PluginsTab profile={{ connectionId: 'remote-a', profile: 'workbot' }} />)
+
+    await waitFor(() =>
+      expect(requestGatewayForAgent).toHaveBeenCalledWith(
+        'remote-a',
+        'workbot',
+        'plugins.manage',
+        expect.objectContaining({ action: 'list', profile: 'workbot' })
+      )
+    )
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('invalidates same-profile rows when the ambient backend changes', async () => {
+    $connection.set({ connectionId: 'remote-a', mode: 'remote', profile: 'same' } as never)
+    $agentPluginScope.set('remote-a::same')
+    $agentPlugins.set([
+      {
+        description: '',
+        key: 'from-a',
+        name: 'from-a',
+        source: 'git',
+        status: 'enabled',
+        version: ''
+      }
+    ])
+    render(<PluginsTab profile="same" />)
+    expect(screen.getByText('from-a')).toBeTruthy()
+
+    act(() => $connection.set({ connectionId: 'remote-b', mode: 'remote', profile: 'same' } as never))
+
+    await waitFor(() => expect(screen.queryByText('from-a')).toBeNull())
+    await waitFor(() => expect($agentPluginScope.get()).toBe('remote-b::same'))
+  })
+
+  it('isolates an explicit local profile from the ambient remote backend', async () => {
+    activeGatewayConnectionId.mockReturnValue('remote-a')
+    render(<PluginsTab profile={{ connectionId: 'local', profile: 'same' }} />)
+
+    await waitFor(() =>
+      expect(requestGatewayForAgent).toHaveBeenCalledWith(
+        'local',
+        'same',
+        'plugins.manage',
+        expect.objectContaining({ action: 'list', profile: 'same' })
+      )
+    )
+    expect($agentPluginScope.get()).toBe('local::same')
+  })
+
   it('opens the dual-target install modal from a catalog pick message', async () => {
     render(<PluginsTab profile="workbot" />)
 
@@ -89,10 +152,36 @@ describe('PluginsTab', () => {
 
       expect(request).not.toBeNull()
       expect(request?.catalogName).toBe('weather-plugin')
+      expect(request?.connectionId).toBeNull()
       expect(request?.repo).toBe('https://github.com/example/weather-plugin')
       expect(request?.profile).toBe('workbot')
+      expect(request?.scopeKey).toBe('local::workbot')
       expect(request?.sha).toBe('a'.repeat(40))
     })
+  })
+
+  it('captures the selected backend and cancels confirmation when that scope changes', async () => {
+    const { rerender } = render(<PluginsTab profile={{ connectionId: 'remote-a', profile: 'workbot' }} />)
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: {
+          name: 'weather-plugin',
+          repo: 'https://github.com/example/weather-plugin',
+          type: 'hermes-plugin-pick'
+        },
+        origin: 'https://hermes-agent.nousresearch.com'
+      })
+    )
+
+    await waitFor(() => {
+      expect($pluginInstallRequest.get()?.connectionId).toBe('remote-a')
+      expect($pluginInstallRequest.get()?.scopeKey).toBe('remote-a::workbot')
+    })
+
+    rerender(<PluginsTab profile={{ connectionId: 'remote-b', profile: 'workbot' }} />)
+
+    await waitFor(() => expect($pluginInstallRequest.get()).toBeNull())
   })
 
   it('ignores pick messages from foreign origins', () => {
@@ -188,9 +277,13 @@ describe('PluginsTab', () => {
 describe('PluginsTab catalog UX', () => {
   beforeEach(() => {
     $agentPlugins.set([])
+    $agentPluginScope.set('local::default')
     $agentPluginsStatus.set('ready')
     closePluginInstallRequest()
     requestGateway.mockClear()
+    requestGatewayForAgent.mockClear()
+    activeGatewayConnectionId.mockReturnValue(null)
+    $connection.set(null)
   })
 
   afterEach(cleanup)
@@ -217,7 +310,30 @@ describe('PluginsTab catalog UX', () => {
     expect(screen.getByRole('button', { name: `Update to ${'b'.repeat(8)}` })).toBeTruthy()
   })
 
+  it('shows the private marketplace subtree target on its Update chip', () => {
+    $agentPlugins.set([
+      {
+        current_tree_sha: 'c'.repeat(40),
+        description: '',
+        key: 'demo-private',
+        marketplace_id: 'private-source',
+        marketplace_name: 'Private Market',
+        marketplace_plugin_name: 'demo-private',
+        name: 'demo-private',
+        source: 'git',
+        status: 'enabled',
+        update_available: true,
+        version: '1.0.0'
+      }
+    ])
+
+    render(<PluginsTab profile={null} />)
+
+    expect(screen.getByRole('button', { name: `Update to ${'c'.repeat(8)}` })).toBeTruthy()
+  })
+
   it('re-pins through plugins.manage update when the chip is clicked', async () => {
+    $agentPluginScope.set('local::workbot')
     $agentPlugins.set([
       {
         catalog_name: 'demo-weather',
@@ -242,7 +358,7 @@ describe('PluginsTab catalog UX', () => {
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith(
         'plugins.manage',
-        expect.objectContaining({ action: 'update', name: 'demo-weather', profile: 'workbot' })
+        expect.objectContaining({ action: 'update', key: 'demo-weather', profile: 'workbot' })
       )
     )
   })

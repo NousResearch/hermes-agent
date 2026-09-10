@@ -258,7 +258,7 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
         "hermes_cli.tools_config._prompt_toolset_checklist",
         lambda *args, **kwargs: {"video_gen"},
     )
-    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config, **kwargs: None)
     monkeypatch.setattr(
         "hermes_cli.tools_config._get_enabled_platforms",
         lambda: ["cli"],

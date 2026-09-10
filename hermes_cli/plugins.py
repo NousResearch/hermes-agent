@@ -1203,6 +1203,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
         changes / new bundled backends become visible in long-lived sessions."""
         with self._discovery_lock, _plugin_home_scope(self.home_path):
+            # Recover any crash-interrupted artifact/provenance/config commit
+            # before plugin code can be imported from the replaced directory.
+            from hermes_cli.plugins_cmd import _install_metadata_lock
+
+            with _install_metadata_lock():
+                pass
             if self._discovered and not force:
                 return
             if force:

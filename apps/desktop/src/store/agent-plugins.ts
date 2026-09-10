@@ -34,6 +34,14 @@ export interface AgentPluginRow {
   catalog_sha?: string
   /** Installed SHA differs from the catalog pin — an update is available. */
   update_available?: boolean
+  marketplace_id?: string
+  marketplace_name?: string
+  marketplace_plugin_name?: string
+  marketplace_available?: boolean
+  installed_repo_sha?: string
+  installed_tree_sha?: string
+  current_repo_sha?: string
+  current_tree_sha?: string
 }
 
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
@@ -44,6 +52,7 @@ export type GatewayRequest = <T>(method: string, params?: Record<string, unknown
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
 export const $agentPluginsError = atom<string | null>(null)
+export const $agentPluginScope = atom<string | null>(null)
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
@@ -80,8 +89,21 @@ const withProfile = (params: Record<string, unknown>, profile?: string | null) =
  *  backend); concurrent callers for the SAME profile share one in-flight
  *  request — a different profile starts fresh so a scope switch can't get a
  *  stale list. */
-export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
-  const scope = profile ?? null
+export function loadAgentPlugins(
+  request: GatewayRequest,
+  profile?: string | null,
+  scopeKey = profile ?? 'default'
+): Promise<void> {
+  const scope = scopeKey
+
+  if ($agentPluginScope.get() !== scope) {
+    $agentPlugins.set([])
+    $agentPluginsError.set(null)
+    $agentPluginBusy.set(null)
+    $agentPluginsStatus.set('loading')
+  }
+
+  $agentPluginScope.set(scope)
 
   if (inflight && inflightProfile === scope) {
     return inflight
@@ -98,7 +120,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
     try {
       const result = await request<{ plugins?: AgentPluginRow[] }>(
         'plugins.manage',
-        withProfile({ action: 'list' }, scope)
+        withProfile({ action: 'list' }, profile)
       )
 
       if (generation !== loadGeneration) {
@@ -138,7 +160,8 @@ export async function toggleAgentPlugin(
   key: string,
   enable: boolean,
   failMessage: string,
-  profile?: string | null
+  profile?: string | null,
+  scopeKey = profile ?? 'default'
 ): Promise<boolean> {
   $agentPluginBusy.set(key)
 
@@ -159,21 +182,29 @@ export async function toggleAgentPlugin(
       throw new Error(failMessage)
     }
 
+    if ($agentPluginScope.get() !== scopeKey) {
+      return false
+    }
+
     const refreshed = result.plugin
 
     if (refreshed) {
       $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...refreshed } : row)))
     } else {
-      await loadAgentPlugins(request, profile)
+      await loadAgentPlugins(request, profile, scopeKey)
     }
 
     return true
   } catch (e) {
-    notifyError(e, failMessage)
+    if ($agentPluginScope.get() === scopeKey) {
+      notifyError(e, failMessage)
+    }
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    if ($agentPluginScope.get() === scopeKey) {
+      $agentPluginBusy.set(null)
+    }
   }
 }
 
@@ -194,6 +225,9 @@ export async function installAgentPlugin(
     /** Curated-catalog install: the backend resolves repo + pinned SHA from
      *  its own plugin-catalog and records provenance in the sidecar. */
     catalogName?: string
+    /** Saved Git marketplace install; backend resolves source and pin. */
+    marketplaceId?: string
+    marketplacePluginName?: string
     /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
     profile?: string | null
   }
@@ -213,7 +247,9 @@ export async function installAgentPlugin(
           identifier: opts.identifier,
           force: Boolean(opts.force),
           enable: opts.enable ?? true,
-          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {})
+          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+          ...(opts.marketplaceId ? { marketplace_id: opts.marketplaceId } : {}),
+          ...(opts.marketplacePluginName ? { marketplace_plugin_name: opts.marketplacePluginName } : {})
         },
         opts.profile
       )
@@ -239,30 +275,43 @@ export async function installAgentPlugin(
  *  success. Returns whether the update applied. */
 export async function updateAgentPlugin(
   request: GatewayRequest,
-  name: string,
+  key: string,
   failMessage: string,
-  profile?: string | null
+  profile?: string | null,
+  scopeKey = profile ?? 'default'
 ): Promise<boolean> {
-  $agentPluginBusy.set(name)
+  $agentPluginBusy.set(key)
 
   try {
     const result = await request<{ ok?: boolean; unchanged?: boolean }>(
       'plugins.manage',
-      withProfile({ action: 'update', name }, profile)
+      withProfile({ action: 'update', key }, profile)
     )
 
     if (!result?.ok) {
       throw new Error(failMessage)
     }
 
-    await loadAgentPlugins(request, profile)
+    if ($agentPluginScope.get() !== scopeKey) {
+      return false
+    }
+
+    await loadAgentPlugins(request, profile, scopeKey)
+
+    if ($agentPluginScope.get() !== scopeKey) {
+      return false
+    }
 
     return !result.unchanged
   } catch (e) {
-    notifyError(e, failMessage)
+    if ($agentPluginScope.get() === scopeKey) {
+      notifyError(e, failMessage)
+    }
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    if ($agentPluginScope.get() === scopeKey) {
+      $agentPluginBusy.set(null)
+    }
   }
 }

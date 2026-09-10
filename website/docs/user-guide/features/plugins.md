@@ -369,6 +369,22 @@ hermes plugins disable my-plugin             # remove from allow-list + add to d
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
 ```
 
+### Git marketplaces (Desktop)
+
+The official Hermes catalogue remains available in **Capabilities → Plugins**.
+To add a private or team catalogue, choose **Add marketplace**, paste an HTTPS
+Git repository URL, and confirm. The selected agent host uses its existing Git
+credential helper, so private repositories work without sending credentials to
+the Desktop renderer.
+
+A repository must contain `.claude-plugin/marketplace.json`. This first version
+supports repository-local string sources such as `"source": "./plugins/demo"`.
+Each installable package must also contain a root Hermes `plugin.json`,
+`plugin.yaml`, or `plugin.yml`; Claude-only packages remain visible but disabled
+with an explanation. Installs and updates are resolved by the backend, pinned to
+an exact repository commit, and compare the plugin subtree rather than unrelated
+marketplace commits. Updates are manual through the displayed **Update** button.
+
 ### One-click install links (Desktop)
 
 Hermes Desktop registers the `hermes://` URL scheme, so a website, README, or

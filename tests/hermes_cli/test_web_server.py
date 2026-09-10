@@ -98,7 +98,7 @@ def _install_example_plugin(_isolate_hermes_home):
     if "example" not in _enabled:
         _enabled.append("example")
     _plugins_cfg["enabled"] = _enabled
-    save_config(_cfg)
+    save_config(_cfg, preserve_plugin_state=False)
 
     # Snapshot the existing routes BEFORE mounting so we can:
     #   1. Identify the routes the mount call appends.

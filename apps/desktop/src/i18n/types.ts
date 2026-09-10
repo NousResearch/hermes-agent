@@ -1335,11 +1335,39 @@ export interface Translations {
       catalogHint: string
       alreadyInstalled: (name: string) => string
       catalogProvenance: (sha: string) => string
+      marketplaceProvenance: (source: string, sha: string) => string
       tierOfficial: string
       tierCommunity: string
       updateToPin: (sha: string) => string
       updateFailed: (name: string) => string
       updated: (name: string) => string
+      marketplaces: {
+        title: string
+        official: string
+        hint: string
+        add: string
+        addTitle: string
+        addDescription: string
+        urlLabel: string
+        added: string
+        refresh: string
+        remove: (name: string) => string
+        empty: string
+        install: string
+        installed: string
+        update: string
+        incompatible: string
+        updateFailed: (name: string) => string
+        stale: string
+        unavailable: string
+        sourceUnavailable: string
+        installTitle: (name: string) => string
+        installDescription: (name: string, marketplace: string) => string
+        installing: string
+        installFailed: (name: string) => string
+        installedSuccess: (name: string) => string
+        cancel: string
+      }
     }
     officialCatalog: string
     officialPill: string

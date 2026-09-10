@@ -1329,73 +1329,107 @@ def _(rid, params: dict) -> dict:
 def _plugin_rows() -> list[dict]:
     pc = _tools_mod("hermes_cli.plugins_cmd")
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
+    actions = _tools_mod("tui_gateway.plugin_marketplace_actions")
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
-    pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
+    pins = actions.catalog_pins()
+    official_pins = {
+        name: value["sha"] for (source, name), value in pins.items() if source == "official"
+    }
+    metadata = pc._read_install_metadata()
     out = []
-    for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
+    for name, version, desc, source, directory, key in sorted(pc._discover_all_plugins()):
         status = pc._plugin_status(name, enabled, disabled, key=key)
-        # Bundled backends/platforms/providers run without an explicit enable: report the
-        # truthful default instead of "not enabled" (reads as OFF).
-        if status == "not enabled" and source == "bundled" and pc._bundled_default_on(_dir):
+        if status == "not enabled" and source == "bundled" and pc._bundled_default_on(directory):
             status = "enabled"
-        # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
-        out.append({
+        row = {
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
-            **cat.catalog_row_fields(_dir, pins)})
+            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(directory),
+            **cat.catalog_row_fields(directory, official_pins),
+        }
+        install = metadata.get(directory.name, {}) if directory and key == directory.name else {}
+        marketplace_id = str(install.get("marketplace_id") or "")
+        if marketplace_id:
+            plugin_name = str(install.get("marketplace_plugin_name") or name)
+            pin = pins.get((marketplace_id, plugin_name), {})
+            installed_tree = str(install.get("installed_tree_sha") or "")
+            row.update({
+                "marketplace_id": marketplace_id,
+                "marketplace_name": str(install.get("marketplace_name") or marketplace_id),
+                "marketplace_plugin_name": plugin_name,
+                "marketplace_available": bool(pin),
+                "installed_repo_sha": str(install.get("installed_repo_sha") or ""),
+                "installed_tree_sha": installed_tree,
+                "current_repo_sha": str(pin.get("sha") or ""),
+                "current_tree_sha": str(pin.get("tree_sha") or ""),
+                "update_available": bool(pin.get("tree_sha")) and installed_tree != pin.get("tree_sha"),
+            })
+        out.append(row)
     return out
 
 
 def _plugins_list(rid, params):
     rows = _plugin_rows()
-    user_count = sum(1 for r in rows if r["source"] != "bundled")
+    user_count = sum(1 for row in rows if row["source"] != "bundled")
     return _ok(rid, {"plugins": rows, "user_count": user_count, "bundled_count": len(rows) - user_count})
 
 
 def _plugins_toggle(rid, params):
-    # Prefer the canonical key — bare names are ambiguous across categories.
     ident = (params.get("key") or params.get("name") or "").strip()
     if not ident:
         return _err(rid, 4019, "plugins.toggle requires a 'key' or 'name'")
-    toggle = _tools_mod("hermes_cli.plugins_cmd").dashboard_set_agent_plugin_enabled
-    result = toggle(ident, enabled=bool(params.get("enable")))
+    result = _tools_mod("hermes_cli.plugins_cmd").dashboard_set_agent_plugin_enabled(
+        ident, enabled=bool(params.get("enable"))
+    )
     if not result.get("ok"):
         return _err(rid, 5026, result.get("error") or "toggle failed")
-    row = next((r for r in _plugin_rows() if ident in (r["key"], r["name"])), None)
+    row = next((row for row in _plugin_rows() if ident in (row["key"], row["name"])), None)
     return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": ident, "plugin": row})
 
 
 def _plugins_install(rid, params):
-    # ``catalog_name`` alone installs a curated entry at its pinned SHA (resolved server-side, kill list
-    # enforced, no bypass) — same contract as the dashboard endpoint.
-    ident = (params.get("identifier") or params.get("repo") or "").strip()
-    catalog_name = str(params.get("catalog_name") or "").strip()
-    if not ident and not catalog_name:
-        return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', or 'catalog_name'")
+    actions = _tools_mod("tui_gateway.plugin_marketplace_actions")
+    try:
+        ident, catalog_name, catalog_source = actions.catalog_install_args(params)
+    except actions.MarketplaceRequestError as exc:
+        return _err(rid, exc.code, str(exc))
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
-        ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None)
+        ident,
+        force=bool(params.get("force")),
+        enable=params.get("enable", True),
+        catalog_name=catalog_name or None,
+        catalog_source=catalog_source,
+    )
     return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed")
 
 
 def _plugins_update(rid, params):
-    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI)."""
-    name = (params.get("name") or "").strip()
-    if not name:
-        return _err(rid, 4019, "plugins.update requires a 'name'")
-    pc, cat = _tools_mod("hermes_cli.plugins_cmd"), _tools_mod("hermes_cli.plugins_cmd_catalog")
-    target = pc._plugins_dir() / name
-    sidecar = cat.read_catalog_sidecar(target) if target.is_dir() else None
-    if not sidecar:
-        return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
+    actions = _tools_mod("tui_gateway.plugin_marketplace_actions")
     try:
-        sha, changed = cat.repin_catalog_plugin(target, sidecar)
-    except pc.PluginOperationError as e:
-        return _err(rid, 4021, str(e))
-    return _ok(rid, {"ok": True, "unchanged": not changed, "sha": sha})
+        return _ok(rid, actions.update_plugin(params))
+    except actions.MarketplaceRequestError as exc:
+        return _err(rid, exc.code, str(exc))
 
 
-_PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
-                    "update": _plugins_update}
+def _plugins_marketplace(rid, params):
+    actions = _tools_mod("tui_gateway.plugin_marketplace_actions")
+    try:
+        return _ok(rid, actions.manage_marketplace(params.get("action", "marketplaces"), params))
+    except actions.MarketplaceRequestError as exc:
+        return _err(rid, exc.code, str(exc))
+
+
+_PLUGINS_ACTIONS = {
+    "list": _plugins_list,
+    "toggle": _plugins_toggle,
+    "install": _plugins_install,
+    "update": _plugins_update,
+    **{
+        action: _plugins_marketplace
+        for action in (
+            "marketplaces", "marketplace_add", "marketplace_remove", "marketplace_refresh"
+        )
+    },
+}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)

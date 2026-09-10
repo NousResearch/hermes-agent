@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -169,6 +170,8 @@ def validate_env_var_name_for_write(key: str) -> None:
 # (approval, browser, setup flows) load/save config concurrently during long agent runs.
 # RLock because save_config internally calls read_raw_config.
 _CONFIG_LOCK = threading.RLock()
+_CONFIG_WRITE_PROCESS_LOCK = threading.RLock()
+_CONFIG_WRITE_DEPTH = threading.local()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
@@ -186,6 +189,60 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
 # path -> (mtime_ns, size, raw yaml dict) for read_raw_config() (no defaults merged in).
 _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+
+@contextmanager
+def config_write_lock():
+    """Serialize config read-modify-write transactions across processes."""
+    with _CONFIG_WRITE_PROCESS_LOCK:
+        depth = getattr(_CONFIG_WRITE_DEPTH, "value", 0)
+        if depth:
+            _CONFIG_WRITE_DEPTH.value = depth + 1
+            try:
+                yield
+            finally:
+                _CONFIG_WRITE_DEPTH.value -= 1
+            return
+
+        path = Path(str(get_config_path()) + ".lock")
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
+        from utils import secure_open_file
+
+        fd = secure_open_file(path, path.parent, flags, create_parent=True)
+        with os.fdopen(fd, "a+b") as handle:
+            if os.name == "nt":
+                import errno
+                import msvcrt
+
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"0")
+                    handle.flush()
+                while True:
+                    handle.seek(0)
+                    try:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError as exc:
+                        if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                            raise
+                        time.sleep(0.1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            _CONFIG_WRITE_DEPTH.value = 1
+            try:
+                yield
+            finally:
+                _CONFIG_WRITE_DEPTH.value = 0
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS (managed by setup/provider
 # flows directly). Also the set reload_env() may remove from os.environ.
@@ -1252,12 +1309,21 @@ def warn_deprecated_cwd_env_vars() -> None:
         sys.stderr.write("\n".join(lines) + "\n\n")
 
 
-def _persist_migration(config: Dict[str, Any]) -> None:
+def _persist_migration(
+    config: Dict[str, Any],
+    *,
+    preserve_plugin_state: bool = True,
+    preserve_platform_toolsets: bool = True,
+) -> None:
     """Persist a migrated config under THE migration write invariant: a migration may only
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
     ON, no ``merge_existing``) so the invariant cannot regress one migration at a time."""
-    save_config(config)
+    save_config(
+        config,
+        preserve_plugin_state=preserve_plugin_state,
+        preserve_platform_toolsets=preserve_platform_toolsets,
+    )
 
 
 def _prompt_and_save_env(name: str, info: Dict[str, Any], prompt: str, results: Dict[str, Any]) -> bool:
@@ -1956,10 +2022,47 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     return loaded
 
 
-def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
-    """Fail-closed atomic write for ``config.yaml`` (``require_readable_config_before_write`` first)."""
-    require_readable_config_before_write(config_path)
-    atomic_yaml_write(config_path, data, **kwargs)
+def preserve_plugin_runtime_state(
+    current: dict,
+    new_state: dict,
+    *,
+    preserve_plugin_lists: bool = True,
+    preserve_platform_toolsets: bool = True,
+) -> None:
+    """Copy concurrently mutable plugin state from disk into a stale writer."""
+    if preserve_plugin_lists:
+        current_plugins = current.get("plugins")
+        if isinstance(current_plugins, dict):
+            plugins = new_state.setdefault("plugins", {})
+            if not isinstance(plugins, dict):
+                plugins = {}
+                new_state["plugins"] = plugins
+            for key in ("enabled", "disabled"):
+                if key in current_plugins:
+                    plugins[key] = copy.deepcopy(current_plugins[key])
+    if preserve_platform_toolsets and "platform_toolsets" in current:
+        new_state["platform_toolsets"] = copy.deepcopy(current["platform_toolsets"])
+
+
+def atomic_config_write(
+    config_path: Path,
+    data: Any,
+    *,
+    preserve_plugin_state: bool = True,
+    preserve_platform_toolsets: bool = True,
+    **kwargs: Any,
+) -> None:
+    """Fail-closed config write that preserves concurrent plugin mutations."""
+    with config_write_lock():
+        current = require_readable_config_before_write(config_path)
+        state = copy.deepcopy(data)
+        preserve_plugin_runtime_state(
+            current,
+            state,
+            preserve_plugin_lists=preserve_plugin_state,
+            preserve_platform_toolsets=preserve_platform_toolsets,
+        )
+        atomic_yaml_write(config_path, state, **kwargs)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2280,7 +2383,28 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
 
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    preserve_plugin_state: bool = True,
+    preserve_platform_toolsets: bool = True,
+):
+    """Save config while preserving plugin state changed by concurrent writers."""
+    with config_write_lock():
+        return _save_config_locked(
+            config,
+            strip_defaults=strip_defaults,
+            preserve_keys=preserve_keys,
+            merge_existing=merge_existing,
+            preserve_plugin_state=preserve_plugin_state,
+            preserve_platform_toolsets=preserve_platform_toolsets,
+        )
+
+
+def _save_config_locked(
+    config: Dict[str, Any], *, strip_defaults: bool = True,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    preserve_plugin_state: bool = True,
+    preserve_platform_toolsets: bool = True,
+):
     """Save configuration to ~/.hermes/config.yaml.
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
@@ -2301,6 +2425,12 @@ def save_config(
         _raw_for_paths = read_raw_config()
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
+        preserve_plugin_runtime_state(
+            _raw_for_paths,
+            config,
+            preserve_plugin_lists=preserve_plugin_state,
+            preserve_platform_toolsets=preserve_platform_toolsets,
+        )
 
         current_normalized = _canonicalize_config(config)
         normalized = current_normalized

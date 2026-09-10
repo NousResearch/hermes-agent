@@ -59,17 +59,30 @@ def resolve_catalog_name(identifier: str, console) -> PluginCatalogEntry:
     return entry
 
 
-def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry) -> None:
-    """``.hermes-catalog.json`` inside the install dir — how ``update``/``list``/dashboards know the plugin
-    came from the catalog and at which pin."""
+def write_catalog_sidecar(target: Path, entry: Any, *, strict: bool = False) -> None:
+    """Write catalog provenance inside an install tree."""
     sidecar = {
         "catalog_name": entry.name, "repo": entry.repo, "sha": entry.sha, "tier": entry.tier,
         "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
     try:
-        (target / CATALOG_SIDECAR).write_text(json.dumps(sidecar, indent=2) + "\n", encoding="utf-8")
+        from utils import atomic_write_text
+
+        path = target / CATALOG_SIDECAR
+        if path.is_symlink():
+            if strict:
+                from hermes_cli.plugins_cmd import PluginOperationError
+
+                raise PluginOperationError("Catalog provenance path must not be a symlink.")
+            logger.warning("Refusing symlinked catalog sidecar in %s", target)
+            return
+        atomic_write_text(path, json.dumps(sidecar, indent=2) + "\n", follow_symlinks=False)
     except OSError as exc:
+        if strict:
+            from hermes_cli.plugins_cmd import PluginOperationError
+
+            raise PluginOperationError(f"Could not write catalog provenance: {exc}") from exc
         logger.warning("Failed to write catalog sidecar in %s: %s", target, exc)
 
 
@@ -112,10 +125,14 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     from hermes_cli.plugins_cmd import _install_plugin_core
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
-    target, manifest, installed_name = _install_plugin_core(
-        entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb)
-    write_catalog_sidecar(target, entry)
-    return target, manifest, installed_name
+    return _install_plugin_core(
+        entry.install_identifier,
+        force=force,
+        ref=ref or entry.sha,
+        scan_decision_cb=scan_decision_cb,
+        skip_removed_check=allow_removed,
+        catalog_entry=entry,
+    )
 
 
 def repin_catalog_plugin(target: Path, sidecar: dict) -> tuple[str, bool]:

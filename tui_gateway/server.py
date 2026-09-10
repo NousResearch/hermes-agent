@@ -1187,9 +1187,9 @@ def _save_cfg(cfg: dict):
     path = _active_config_path()
     # Comment-, ordering- and Unicode-preserving write (a plain safe_dump clobbered hand-written configs);
     # fails closed on an unreadable existing config.yaml like atomic_config_write.
-    atomic_roundtrip_yaml_save(path, cfg)
+    saved = atomic_roundtrip_yaml_save(path, cfg)
     with _cfg_lock:
-        _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
+        _cfg_cache, _cfg_path = copy.deepcopy(saved), path
         try:
             _cfg_mtime = path.stat().st_mtime
         except Exception:
@@ -1998,7 +1998,8 @@ def _current_profile_name() -> str:
 # one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
 # v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key.
-DESKTOP_BACKEND_CONTRACT = 6
+# v7 plugins.manage adds profile-scoped Git marketplace source management.
+DESKTOP_BACKEND_CONTRACT = 7
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:

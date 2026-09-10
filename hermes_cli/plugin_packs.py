@@ -314,13 +314,9 @@ def install_pack_plugins(
     from hermes_cli.plugins_cmd import (
         PluginOperationError,
         _declared_capabilities_from_manifest,
-        _get_disabled_set,
-        _get_enabled_set,
         _install_plugin_core,
         _prompt_plugin_env_vars,
         _run_capability_consent,
-        _save_disabled_set,
-        _save_enabled_set,
     )
     results: List[PackInstallResult] = []
 
@@ -336,7 +332,7 @@ def install_pack_plugins(
         console.print(f"[dim]Installing {display} @ {rp.entry.ref[:12]}...[/dim]")
         try:
             target, manifest, installed_name = _install_plugin_core(
-                rp.identifier, force=force, ref=rp.entry.ref)
+                rp.identifier, force=force, ref=rp.entry.ref, enable_on_commit=True)
         except PluginOperationError as exc:
             _fail(display, str(exc))
             continue
@@ -350,13 +346,6 @@ def install_pack_plugins(
             _prompt_plugin_env_vars(manifest, console)
         except Exception:
             logger.debug("requires_env prompt failed for %s", installed_name, exc_info=True)
-
-        enabled = _get_enabled_set()
-        disabled = _get_disabled_set()
-        enabled.add(installed_name)
-        disabled.discard(installed_name)
-        _save_enabled_set(enabled)
-        _save_disabled_set(disabled)
 
         # Per-plugin capability consent — the SAME flow as a single install (#64228). A pack never
         # bulk-grants capabilities.

@@ -61,7 +61,7 @@ async def _persist_model_switch_to_config(result, config_path) -> None:
     dict first. Named providers re-resolve base_url/api_mode, so leftovers are cleared; custom
     providers have no registry entry to re-derive from and need an explicit set-or-clear.
     """
-    from hermes_cli.config import read_user_config_raw, save_config
+    from hermes_cli.config import get_compatible_custom_providers, read_user_config_raw, save_config
 
     cfg = read_user_config_raw(config_path)
     raw_model = cfg.get("model")
@@ -72,10 +72,18 @@ async def _persist_model_switch_to_config(result, config_path) -> None:
     else:
         model_cfg = cfg["model"] = {}
     try:
-        from hermes_cli.route_identity import should_clear_context_pin_async
+        from hermes_cli.route_identity import configured_default_base_url, should_clear_context_pin_async
+        # The pin belongs to the configured default's ROUTE, which a ``providers.<name>`` block owns
+        # while model.base_url stays empty — resolve it before comparing against the switch target.
+        try:
+            _custom_providers = get_compatible_custom_providers(cfg)
+        except Exception:
+            _raw_custom = cfg.get("custom_providers")
+            _custom_providers = _raw_custom if isinstance(_raw_custom, list) else []
         clear_pin = await should_clear_context_pin_async(
             model_cfg.get("default") or model_cfg.get("model"), result.new_model,
-            model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider,
+            configured_default_base_url(cfg, model_cfg, _custom_providers) or None, result.base_url,
+            model_cfg.get("provider"), result.target_provider,
         )
     except Exception:
         clear_pin = True
@@ -302,6 +310,7 @@ class GatewayModelCommandsMixin:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
         from gateway.run import _load_gateway_config
         from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length_async
+        from hermes_cli.route_identity import configured_default_base_url
 
         lines = [
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
@@ -310,9 +319,11 @@ class GatewayModelCommandsMixin:
         # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
         mi = result.model_info
         model_cfg: dict = {}
+        gateway_cfg: dict = {}
         config_ctx = None
         with contextlib.suppress(Exception):  # fail-open on config read errors
-            model_cfg = _load_gateway_config().get("model", {})
+            gateway_cfg = _load_gateway_config()
+            model_cfg = gateway_cfg.get("model", {})
             if isinstance(model_cfg, dict) and model_cfg.get("context_length") is not None:
                 config_ctx = int(model_cfg["context_length"])
         if not isinstance(model_cfg, dict):
@@ -324,7 +335,10 @@ class GatewayModelCommandsMixin:
             custom_providers=ctx.custom_provs, config_context_length=config_ctx,
             configured_model=model_cfg.get("default") or model_cfg.get("model"),
             configured_provider=model_cfg.get("provider"),
-            configured_base_url=model_cfg.get("base_url"),
+            # The pin's route may live in a ``providers.<name>`` block with model.base_url empty; the
+            # comparison needs the resolved URL or it clears the pin for an unchanged route (#107606).
+            configured_base_url=configured_default_base_url(
+                gateway_cfg, model_cfg, ctx.custom_provs if isinstance(ctx.custom_provs, list) else []) or None,
         )
         if ctx_len:
             lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}"))

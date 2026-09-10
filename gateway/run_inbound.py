@@ -1555,11 +1555,18 @@ class GatewayInboundMixin:
             _msg_config_ctx = None
         if _msg_config_ctx is not None:
             try:
-                from hermes_cli.route_identity import should_clear_context_pin_async
+                from hermes_cli.route_identity import (
+                    configured_default_base_url, should_clear_context_pin_async,
+                )
 
                 if await should_clear_context_pin_async(
                     None, None,  # model match already checked above
-                    _msg_model_cfg.get("base_url"), _msg_base_url,
+                    # Resolved owner route: a ``providers.<name>`` block owns the URL while
+                    # model.base_url stays empty, and the runtime reports that entry as ``custom``.
+                    configured_default_base_url(
+                        _msg_cfg if isinstance(_msg_cfg, dict) else {}, _msg_model_cfg,
+                        _msg_custom_providers) or None,
+                    _msg_base_url,
                     _msg_model_cfg.get("provider"), _msg_runtime.get("provider"),
                 ):
                     _msg_config_ctx = None

@@ -139,11 +139,23 @@ def enrich_model_switch_warnings_for_gateway(
             cfg = load_gateway_config()
             model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
             if isinstance(model_cfg, dict) and model_cfg.get("context_length") is not None:
+                from hermes_cli.route_identity import configured_default_base_url
+                try:
+                    _custom = custom_providers
+                    if _custom is None:
+                        from hermes_cli.config import get_compatible_custom_providers
+                        _custom = get_compatible_custom_providers(cfg)
+                except Exception:
+                    _raw_custom = cfg.get("custom_providers")
+                    _custom = _raw_custom if isinstance(_raw_custom, list) else []
                 configured.update(
                     config_context_length=int(model_cfg["context_length"]),
                     configured_model=model_cfg.get("default") or model_cfg.get("model"),
                     configured_provider=model_cfg.get("provider"),
-                    configured_base_url=model_cfg.get("base_url"))
+                    # Resolved route, not the raw value: a ``providers.<name>`` block owns the URL
+                    # while model.base_url stays empty (see hermes_cli.route_identity).
+                    configured_base_url=configured_default_base_url(
+                        cfg, model_cfg, _custom if isinstance(_custom, list) else []) or None)
         except Exception:
             pass
 

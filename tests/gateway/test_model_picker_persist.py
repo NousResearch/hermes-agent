@@ -253,3 +253,57 @@ async def test_multiplex_picker_global_persists_only_named_profile(
     assert written["marker"] == "named"
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_persist_keeps_context_pin_for_providers_block_route(tmp_path, monkeypatch):
+    """A same-route ``/model`` re-selection must not delete ``model.context_length``.
+
+    The pin's owner route is declared by ``providers.<name>`` while ``model.base_url``
+    stays empty, and the runtime reports that entry as the bare ``custom`` class. Comparing
+    the raw empty value dropped the pin and ``_persist_model_switch_to_config`` deleted it
+    from config.yaml for a route that never changed (#107606). ``_context_route_mismatch``
+    is unchanged, so a real switch still clears the pin — that half is asserted by
+    ``test_picker_tap_global_flag_persists`` above (``context_length`` must be absent).
+    """
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    proxy_url = "https://proxy.example.com/v1"
+    pin = 1_048_576
+    cfg_path = _setup_isolated_home(tmp_path, monkeypatch, {"default": "my-model"})
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "my-model",
+                    "provider": "my-proxy",
+                    "base_url": "",
+                    "context_length": pin,
+                },
+                "providers": {"my-proxy": {"base_url": proxy_url, "key_env": "MY_PROXY_KEY"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from gateway.slash_commands_model import _persist_model_switch_to_config
+
+    await _persist_model_switch_to_config(
+        ModelSwitchResult(
+            success=True,
+            new_model="my-model",
+            target_provider="custom",
+            provider_changed=False,
+            api_key="",
+            base_url=proxy_url,
+            api_mode=None,
+            provider_label="Custom",
+            is_global=True,
+        ),
+        cfg_path,
+    )
+
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert written["model"].get("context_length") == pin, (
+        "same-route /model re-selection deleted the configured context pin: %r" % (written["model"],)
+    )

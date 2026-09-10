@@ -96,7 +96,9 @@ def test_profile_discovery_and_group_controls_enforce_actor_scope(tmp_path, monk
             assert row['last_session'] is None
             assert db.get_session('private')['title'] == 'Bot Chat'
             db.set_session_title('private', 'Other Bot Chat')
-            db.create_session('mine', source='gui', user_id='reader', chat_id='local-mine')
+            from gateway.session_identity import authenticated_subject
+            db.create_session('mine', source='gui',
+                              user_id=authenticated_subject({'user_id': 'reader'}), chat_id='local-mine')
             db.set_session_title('mine', 'Bot Chat')
             db.set_session_hidden('mine', True)
             db.append_message('mine', 'user', 'owned preview')

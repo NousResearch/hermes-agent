@@ -41,6 +41,8 @@ async def mutate_session(authority, actor, ref, params):
             if ref.session_id not in authority.sessions:
                 from hermes_state_mutation_binding import authorize_history
                 with authority.db._read_ctx() as conn:
+                    from gateway.session_local_migration import require_history_claim
+                    require_history_claim(authority, conn, actor, ref.session_id)
                     cold_history = authorize_history(conn, actor, ref.session_id)
             if not cold_history:
                 authority.authorize(actor, ref, 'session:control')

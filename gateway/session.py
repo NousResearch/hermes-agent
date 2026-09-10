@@ -1073,7 +1073,7 @@ class SessionStore(
                 return None
             now = _now()
             session_id = _new_session_id(now)
-            if old_entry.origin and old_entry.origin.platform == Platform.LOCAL and old_entry.origin.chat_id.startswith("local-"):
+            if old_entry.origin and old_entry.origin.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import reset_local_session
                 return reset_local_session(self, old_entry, session_id, now, display_name)
             new_entry = self._replace_route_locked(

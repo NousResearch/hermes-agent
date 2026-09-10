@@ -385,7 +385,7 @@ class SessionAuthority:
                 self._publish_pending(ref)
                 live.event_stream.publish(ref.session_id, {
                     'text': response, 'content': response, 'admission_id': admission_id,
-                    'outcome': settled['outcome']})
+                    'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_result(response)
@@ -398,6 +398,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id):
     recover_session_inputs(db, epoch=epoch)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     runner.session_authority = authority
+    from gateway.session_cron import bind_owner
+    bind_owner(authority)
     runner.session_store._local_authority_epoch = epoch
     from gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)

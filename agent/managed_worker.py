@@ -166,6 +166,8 @@ def execute(frame, channel):
     if adopted['owner_epoch'] != scope['epoch']:
         raise RuntimeError('stale_epoch')
     store = RuntimeSessionStore(rpc, scope, outbox_dir(frame['home'], scope['execution_id']))
+    from gateway.session_kanban import bind_worker_context
+    bind_worker_context(frame)
     # Store construction binds the delegation ledger before tool discovery.
     from gateway.session_policy import restore_policy, policy_scope
     policy = restore_policy(frame['policy'])
@@ -195,7 +197,8 @@ def execute(frame, channel):
                 agent.interrupt()
             channel.send('ready', pid=os.getpid())
             history = store.get_messages_as_conversation(scope['session_id'])
-            result = agent.run_conversation(frame['text'], conversation_history=history)
+            from gateway.session_kanban import run_worker_turns
+            result = run_worker_turns(agent, frame, history)
             agent._end_session_on_close = False
             agent.close()
             agent = None

@@ -24,7 +24,7 @@ def managed_policy(authority, ref):
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None:
         return None
-    if policy.ignore_user_config:
+    if policy.ignore_user_config or policy.kanban_json is not None:
         return policy
     if policy.config().get('gateway', {}).get('managed_workers') is not True:
         return None

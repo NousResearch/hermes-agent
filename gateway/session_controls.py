@@ -24,6 +24,9 @@ class AuthorityConnection:
         self.actor = Principal(authenticated_subject(identity),
                                identity.get('profile_id', authority.profile_id),
                                capabilities, uuid.uuid4().hex)
+        from gateway.session_local_migration import bind_native_transport
+        bind_native_transport(authority, self.actor, identity)
+        self.native_owner = identity.get('native_bootstrap') is True
         self.subscriptions = {}
         authority.events[self.actor.transport_id] = transport
 
@@ -38,7 +41,10 @@ class AuthorityConnection:
                     'session.list': self.list_sessions, 'session.info': self.info,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
-                    'bot_relay.reply': self.bot_reply,
+                    'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
+                    'kanban.run': self.kanban_run,
+                    'cron.submit': self.cron_submit, 'cron.status': self.cron_status,
+                    'cron.cancel': self.cron_cancel,
                     'worker.register': self.worker_register, 'worker.adopt': self.worker_adopt,
                     'worker.persist': self.worker_persist,
                     'setup.status': self.setup_status, 'setup.runtime_check': self.setup_runtime_check,
@@ -47,7 +53,13 @@ class AuthorityConnection:
                     'prompt.resolve_unknown': self.resolve_unknown,
                     'session.interrupt': self.interrupt, 'session.events.since': self.events_since,
                     'approval.respond': self.respond, 'clarify.respond': self.respond_clarify}
+        from gateway.session_busy_controls import handlers as busy_handlers
+        handlers.update(busy_handlers(self))
         try:
+            from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
+            if method in GROUP_METHODS or method == 'profiles.list':
+                result = await dispatch_group_control(self, method, params)
+                return {'jsonrpc': '2.0', 'id': rid, 'result': result}
             if method not in handlers:
                 raise RuntimeStoreError('invalid_params')
             result = await handlers[method](ref, params)
@@ -58,6 +70,26 @@ class AuthorityConnection:
         except sqlite3.Error:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}}
+
+    async def a2a_forward(self, ref, params):
+        from gateway.session_a2a import forward
+        return await forward(self, params)
+
+    async def kanban_run(self, ref, params):
+        from gateway.session_kanban import run_task
+        return await run_task(self, params)
+
+    async def cron_submit(self, ref, params):
+        from gateway.session_cron import rpc
+        return await rpc(self, 'submit', params)
+
+    async def cron_status(self, ref, params):
+        from gateway.session_cron import rpc
+        return await rpc(self, 'status', params)
+
+    async def cron_cancel(self, ref, params):
+        from gateway.session_cron import rpc
+        return await rpc(self, 'cancel', params)
 
     async def bot_roster(self, ref, params):
         from gateway.session_bot import relay_operation
@@ -176,6 +208,12 @@ class AuthorityConnection:
         if 'title' in params:
             from gateway.session_local_title import resolve_titled_session
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
+        if 'title' not in params:
+            from gateway.session_local_migration import resolve_local_target
+            row = self.authority.db.get_session(ref.session_id)
+            if row and row['source'] in {'cli', 'tui', 'gui'}:
+                ref = resolve_local_target(self.authority, self.actor,
+                    self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
         if params.get('editor') is not None:
             self.authority.authorize(self.actor, ref, 'session:control')
             from gateway.session_local_mcp import resume_editor_mcp
@@ -258,5 +296,7 @@ class AuthorityConnection:
     async def close(self):
         for subscription in self.subscriptions.values():
             await self.authority.detach(self.actor, subscription)
+        from gateway.session_local_migration import unbind_native_transport
+        unbind_native_transport(self.authority, self.actor)
         self.subscriptions.clear()
         self.authority.events.pop(self.actor.transport_id, None)

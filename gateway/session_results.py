@@ -33,6 +33,14 @@ def finish_result(db, *, epoch, row, response, outcome, result=None):
             return dict(current), result['result'].get('final_response') or ''
     if result is None:
         result = {'result': {'final_response': response or '', 'messages': []}, 'usage': {}}
+    value = result['result']
+    if value.get('interrupted'):
+        outcome = 'interrupted'
+    elif value.get('failed') or value.get('error'):
+        outcome = 'failed'
+    if outcome in ('failed', 'interrupted'):
+        value['failed' if outcome == 'failed' else 'interrupted'] = True
+        value['completed'] = False
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
         generation=row['generation'], outcome=outcome, result=result)
     return settled, response

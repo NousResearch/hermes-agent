@@ -21,6 +21,11 @@ async def admit_message(authority, event):
 
 
 async def execute_admission(authority, ref, row):
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    if policy is not None and policy.source == 'cron':
+        from gateway.session_cron import execute
+        return await execute(authority, ref, row, policy)
     from gateway.session_managed_worker import managed_policy, execute_managed
     policy = managed_policy(authority, ref)
     if policy is not None:

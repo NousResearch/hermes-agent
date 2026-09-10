@@ -1740,10 +1740,28 @@ class TurnRunner:
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
+        if ctx.interactive_timing is not None:
+            ctx.interactive_timing.update_runtime(
+                model=getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+                reasoning=reasoning_config,
+            )
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
-        result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        try:
+            result = self._run_conversation_with_approval(
+                agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        finally:
+            # Fallbacks can mutate the active agent's model/provider during the call. Refresh from
+            # the final runtime even when the turn raises or is cancelled so comparisons are not
+            # attributed only to the failed initial route.
+            final_agent = ctx.agent_holder[0] or agent
+            if ctx.interactive_timing is not None:
+                ctx.interactive_timing.update_runtime(
+                    model=getattr(final_agent, "model", None),
+                    provider=getattr(final_agent, "provider", None),
+                    reasoning=reasoning_config,
+                )
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.

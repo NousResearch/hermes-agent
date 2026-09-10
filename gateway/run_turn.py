@@ -1969,11 +1969,13 @@ class GatewayTurnMixin:
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
+            _interactive_timing = getattr(event, "_interactive_timing", None)
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
+                interactive_timing=_interactive_timing,
                 channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
@@ -1982,6 +1984,12 @@ class GatewayTurnMixin:
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+            # Streaming transports do not expose a central first-send acknowledgement,
+            # so their completed stream is recorded as an honest upper bound.
+            if _interactive_timing is not None:
+                if agent_result.get("already_sent") and agent_result.get("final_response"):
+                    _interactive_timing.mark(
+                        "first_meaningful_response", basis="stream_completion_upper_bound")
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
             # send (bracketed by the adapter against this event) must be ledgered under that
@@ -3820,11 +3828,15 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        interactive_timing: Any = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
         if self._get_proxy_url():
+            if interactive_timing is not None:
+                interactive_timing.update_runtime(
+                    model="remote_unknown", provider="gateway_proxy", reasoning="remote_unknown")
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
@@ -3844,6 +3856,7 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            interactive_timing=interactive_timing,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

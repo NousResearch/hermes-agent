@@ -86,6 +86,9 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # Content-free process-local timing recorder, created at the generic adapter receipt boundary.
+    # Typed as Any to keep this shared event module a leaf with no gateway-runtime imports.
+    _interactive_timing: Any = field(default=None, init=False, repr=False, compare=False)
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

@@ -2916,7 +2916,8 @@ class BasePlatformAdapter(ABC):
         return list(unique), re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
     async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None,
-                           stop_event: asyncio.Event | None = None) -> None:
+                           stop_event: asyncio.Event | None = None,
+                           on_visible: Optional[Callable[[], None]] = None) -> None:
         """Refresh the typing indicator every ``interval`` seconds until cancelled (platform typing
         state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
         setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval
@@ -2930,6 +2931,8 @@ class BasePlatformAdapter(ABC):
                     try:
                         await asyncio.wait_for(self.send_typing(chat_id, metadata=metadata),
                                                timeout=_send_typing_timeout)
+                        if on_visible is not None:
+                            on_visible()
                     except asyncio.TimeoutError:
                         pass  # Slow network — abandon this tick, stay on schedule.
                     except Exception as typing_err:
@@ -3489,6 +3492,8 @@ class BasePlatformAdapter(ABC):
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
+        from gateway.interactive_timing import ensure_interactive_timing
+        timing = ensure_interactive_timing(event, platform=self.platform)
         event._gateway_accepted = False
         if not self._message_handler:
             return
@@ -3510,9 +3515,13 @@ class BasePlatformAdapter(ABC):
             self._heal_stale_session_lock(session_key)
         if session_key in self._active_sessions:
             await self._handle_message_while_active(event, session_key)
+            if event._gateway_accepted:
+                timing.mark("accepted", basis="adapter_busy_queue")
             return
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
+        if event._gateway_accepted:
+            timing.mark("accepted", basis="adapter_session_claim")
 
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
@@ -3797,6 +3806,10 @@ class BasePlatformAdapter(ABC):
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        if getattr(result, "success", False):
+            from gateway.interactive_timing import ensure_interactive_timing
+            ensure_interactive_timing(event, platform=self.platform).mark(
+                "first_meaningful_response", basis="server_send_completed_proxy")
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter
@@ -3819,10 +3832,14 @@ class BasePlatformAdapter(ABC):
         try:
             error_detail = str(e)[:300] if str(e) else "no details available"
             _thread_metadata = _thread_metadata_for_event(event)
-            await self.send(
+            result = await self.send(
                 chat_id=event.source.chat_id,
                 content=(f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
                 "Try again or use /reset to start a fresh session."), metadata=_thread_metadata)
+            if getattr(result, "success", False):
+                from gateway.interactive_timing import ensure_interactive_timing
+                ensure_interactive_timing(event, platform=self.platform).mark(
+                    "first_meaningful_response", basis="error_send_completed_proxy")
         except Exception as notify_err:
             logger.error(
                 "[%s] Failed to send error notification to user: %s", self.name, notify_err, exc_info=True)
@@ -3858,6 +3875,16 @@ class BasePlatformAdapter(ABC):
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
             kwargs["stop_event"] = interrupt_event
+        supports_typing_signal = (
+            getattr(self.send_typing, "__func__", self.send_typing)
+            is not BasePlatformAdapter.send_typing
+        )
+        if supports_typing_signal and self._accepts_kwarg(
+                self._keep_typing, "on_visible", var_kw=False, unknown=True):
+            from gateway.interactive_timing import ensure_interactive_timing
+            timing = ensure_interactive_timing(event, platform=self.platform)
+            kwargs["on_visible"] = lambda: timing.mark(
+                "working_state", basis="typing_handler_completed_proxy")
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
     async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,
@@ -3946,13 +3973,19 @@ class BasePlatformAdapter(ABC):
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
+        from gateway.interactive_timing import ensure_interactive_timing
+        timing = ensure_interactive_timing(event, platform=self.platform)
+        processing_outcome = ProcessingOutcome.FAILURE
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
             if result is not None:
                 delivery_attempted = True
-                delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
+                succeeded = bool(getattr(result, "success", False))
+                delivery_succeeded = delivery_succeeded or succeeded
+                if succeeded:
+                    timing.mark("first_meaningful_response", basis="server_send_completed_proxy")
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
@@ -4003,13 +4036,14 @@ class BasePlatformAdapter(ABC):
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            processing_outcome = ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
             await self._run_processing_hook(
                 "on_processing_complete", event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+                processing_outcome)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
@@ -4022,11 +4056,13 @@ class BasePlatformAdapter(ABC):
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
+            processing_outcome = ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE
             await self._run_processing_hook(
                 "on_processing_complete", event,
-                ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
+                processing_outcome)
             raise
         except BaseException as e:
+            processing_outcome = ProcessingOutcome.FAILURE
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
@@ -4034,6 +4070,8 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            timing.complete(processing_outcome.value)
+            timing.emit_once()
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)

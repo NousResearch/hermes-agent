@@ -53,6 +53,9 @@ class GatewayBusySessionMixin:
         else:
             pending_slot[session_key] = queued_event
         queued_event._gateway_accepted = True
+        timing = getattr(queued_event, "_interactive_timing", None)
+        if timing is not None:
+            timing.mark("accepted", basis="busy_fifo_enqueue")
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]
@@ -896,7 +899,7 @@ class GatewayBusySessionMixin:
             return "Usage: /queue <prompt>"
         adapter = self._adapter_for_source(source)
         if adapter:
-            self._enqueue_fifo(quick_key, MessageEvent(
+            queued_event = MessageEvent(
                 text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
                 source=event.source, raw_message=event.raw_message, message_id=event.message_id,
                 media_urls=list(getattr(event, "media_urls", []) or []),
@@ -908,7 +911,11 @@ class GatewayBusySessionMixin:
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,
-            ), adapter)
+            )
+            timing = getattr(event, "_interactive_timing", None)
+            if timing is not None:
+                queued_event._interactive_timing = timing.fork_deferred_turn()
+            self._enqueue_fifo(quick_key, queued_event, adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
         return "Queued for the next turn." + (f" ({depth} queued)" if depth > 1 else "")
 
@@ -926,11 +933,15 @@ class GatewayBusySessionMixin:
             # Turn-boundary fallback: queue the steer text as its own follow-up turn.
             adapter = self._adapter_for_source(source)
             if adapter:
-                self._enqueue_fifo(quick_key, MessageEvent(
+                queued_event = MessageEvent(
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
                     message_id=event.message_id, channel_prompt=event.channel_prompt,
                     channel_context=event.channel_context,
-                ), adapter)
+                )
+                timing = getattr(event, "_interactive_timing", None)
+                if timing is not None:
+                    queued_event._interactive_timing = timing.fork_deferred_turn()
+                self._enqueue_fifo(quick_key, queued_event, adapter)
             return reply
 
         if running_agent is _AGENT_PENDING_SENTINEL:

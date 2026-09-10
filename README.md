@@ -119,6 +119,8 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+Optional third-party: [Barycenters](https://hermes-agent.nousresearch.com/docs/integrations/barycenters) — admit a tool call in shadow before it runs.
+
 ---
 
 ## Skip the API-key collection — Nous Portal

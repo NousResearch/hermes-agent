@@ -389,6 +389,10 @@ def _unwrap_tool_search_call(
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
             return function_name, function_args, None
+        if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
+            # Both executors retain the wrapper: scope/probe/hooks run per entry
+            # in the batch dispatcher, not against a synthetic registry name.
+            return function_name, function_args, None
         if underlying not in _tool_search_scoped_names(agent):
             return function_name, function_args, (
                 f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."

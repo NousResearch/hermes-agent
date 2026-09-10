@@ -723,7 +723,10 @@ def _classify_400(c: _Ctx) -> Verdict:
     # overflow because "encrypted content … could not be verified" trips it.
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
         "encrypted content for item" in msg and "could not be verified" in msg
-    ) or "could not decrypt the provided encrypted_content" in msg:
+    ) or "could not decrypt the provided encrypted_content" in msg or (
+        # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
+        "conflicting authenticated continuation identities" in msg
+    ):
         return _V_INVALID_ENCRYPTED
     # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
     # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops

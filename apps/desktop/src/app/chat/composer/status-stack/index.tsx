@@ -241,7 +241,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
               />
             ) : undefined
           }
-          defaultCollapsed={group.type !== 'todo' && group.type !== 'goal'}
+          defaultCollapsed={group.type !== 'todo'}
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
           label={groupLabel(group, t.statusStack)}
         >
@@ -313,7 +313,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             composerDockCard('top'),
             // Inset (mx-2) so the stack reads slightly narrower than the composer
             // surface below it — the original look.
-            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5'
+            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent'
           )}
         >
           <div

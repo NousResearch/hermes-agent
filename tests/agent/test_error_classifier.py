@@ -792,6 +792,21 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
+    def test_azure_conflicting_continuation_identities_is_invalid_encrypted_content(self):
+        """Azure Foundry's wording for a rejected encrypted-reasoning replay (#105369); ``code`` is the
+        generic ``invalid_value``, so the message decides."""
+        message = "Conflicting authenticated continuation identities."
+        e = MockAPIError(
+            f"Error code: 400 - {{'error': {{'message': '{message}', 'type': 'invalid_request_error', "
+            "'param': 'input', 'code': 'invalid_value'}}",
+            status_code=400,
+            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": "invalid_value"}},
+        )
+        result = classify_api_error(e, provider="azure-foundry", model="gpt-6-astra")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     # ── Reasoning-mandatory route rejecting a disable ──
 
     def test_reasoning_mandatory_400_is_retryable_not_format_error(self):

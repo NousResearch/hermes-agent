@@ -232,9 +232,10 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
         # Sticky target (set by capture()/focus_app(), used by actions): `_active_pid`, `_active_window_id`, `_last_app`,
-        # `_last_target` (exact identity for capture_after — Linux app names may be generic, e.g. several unrelated Qt
-        # windows all say Qt6Application), `_snapshot_tokens` (element_index -> element_token, attached to actions so
-        # cua-driver reports "stale" instead of silently re-resolving).
+        # `_last_app_selector` (the caller's validated selector — e.g. a bundle ID — whose resolved name may be a
+        # localized display name, #104170), `_last_target` (exact identity for capture_after — Linux app names may be
+        # generic, e.g. several unrelated Qt windows all say Qt6Application), `_snapshot_tokens` (element_index ->
+        # element_token, attached to actions so cua-driver reports "stale" instead of silently re-resolving).
         self._clear_active_target()
         # Public session label (one per Hermes run) sent as `session` on every call: owns the cursor color and
         # gives config/recording state a stable owner across transport restarts. Part of the 0.20 runtime contract.
@@ -302,7 +303,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
 
     def _clear_active_target(self) -> None:
         """Forget a capture/focus target so a failed lookup cannot misroute input."""
-        self._active_pid = self._active_window_id = self._last_app = self._last_target = None
+        self._active_pid = self._active_window_id = self._last_app = self._last_app_selector = self._last_target = None
         # Surface 6 of NousResearch/hermes-agent#47072: per-snapshot `element_index -> element_token` map
         # populated on capture(). Action tools (click/scroll/set_value/...) attach the matching token
         # alongside `element_index` so cua-driver detects "stale" explicitly instead of silently

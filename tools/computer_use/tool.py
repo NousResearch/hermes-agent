@@ -70,7 +70,13 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
     of the other ('Google-chrome' vs 'chrome'). Unknown target -> None (fail open; the verify ladder catches it)."""
     last_app = getattr(backend, "_last_app", None)
     current, wanted = (last_app or "").strip().lower(), requested_app.strip().lower()
-    return None if not current or not wanted or wanted in current or current in wanted else last_app
+    if not current or not wanted or wanted in current or current in wanted:
+        return None
+    # capture()/focus_app() validated the caller's original selector (e.g. a bundle ID) against the same target
+    # that produced the resolved — on macOS possibly localized — name in _last_app, so repeating it is the same
+    # app, not a mismatch (#104170). Exact match only: a selector never covers a different app.
+    selector = (getattr(backend, "_last_app_selector", None) or "").strip().lower()
+    return None if selector and wanted == selector else last_app
 
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).

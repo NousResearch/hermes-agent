@@ -1616,6 +1616,80 @@ class TestFocusAppFilterNoMatch:
         assert backend._active_window_id is None
 
 
+class TestStickyTargetSelector:
+    """capture/focus_app retain the caller's validated app selector alongside the resolved name so
+    the input guard can match a bundle ID against a localized display name (#104170)."""
+
+    _WINDOWS = [
+        {"app_name": "国际象棋", "pid": 200, "window_id": 2,
+         "is_on_screen": True, "title": "Chess", "z_index": 1},
+    ]
+    _APPS = [
+        {"name": "Chess", "bundle_id": "com.apple.Chess", "pid": 200, "running": True},
+    ]
+
+    def _backend(self):
+        return _make_cua_backend_with_windows_and_apps(self._WINDOWS, self._APPS)
+
+    def test_focus_app_stores_validated_selector(self):
+        backend = self._backend()
+
+        res = backend.focus_app("com.apple.Chess")
+
+        assert res.ok is True
+        assert backend._last_app == "国际象棋"
+        assert backend._last_app_selector == "com.apple.Chess"
+
+    def test_capture_stores_validated_selector(self):
+        backend = self._backend()
+
+        with patch("tools.computer_use.cua_backend.sys.platform", "linux"):
+            backend.capture(mode="ax", app="com.apple.Chess")
+
+        assert backend._last_app == "国际象棋"
+        assert backend._last_app_selector == "com.apple.Chess"
+
+    def test_frontmost_capture_stores_no_selector(self):
+        backend = self._backend()
+
+        with patch("tools.computer_use.cua_backend.sys.platform", "linux"):
+            backend.capture(mode="ax")
+
+        assert backend._last_app == "国际象棋"
+        assert backend._last_app_selector == ""
+
+    def test_frontmost_capture_on_reused_backend_drops_stale_selector(self):
+        # Sticky app exists, then an unqualified capture resolves to a *different* frontmost app:
+        # the retained selector would keep vouching for the old app and let input(app=<old
+        # selector>) pass the guard while keystrokes go to the new frontmost target.
+        windows = [
+            {"app_name": "Safari", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "News", "z_index": 5},
+            *self._WINDOWS,
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, self._APPS)
+
+        with patch("tools.computer_use.cua_backend.sys.platform", "linux"):
+            backend.capture(mode="ax", app="com.apple.Chess")
+            assert backend._last_app_selector == "com.apple.Chess"
+            res = backend.capture(mode="ax")
+
+        assert res.app == "Safari"
+        assert backend._last_app_selector == ""
+
+    def test_clear_active_target_forgets_selector(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._last_app = "国际象棋"
+        backend._last_app_selector = "com.apple.Chess"
+
+        backend._clear_active_target()
+
+        assert backend._last_app is None
+        assert backend._last_app_selector is None
+
+
 class TestCaptureAfterExactTarget:
     def test_followup_capture_reuses_exact_window_identity(self):
         from tools.computer_use.backend import ActionResult, CaptureResult

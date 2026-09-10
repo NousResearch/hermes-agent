@@ -205,7 +205,11 @@ def utf16_len(s: str) -> int:
 
     Ported from nearai/ironclaw#2304 which discovered the same discrepancy in Rust's ``chars().count()``.
     """
-    return len(s.encode("utf-16-le")) // 2
+    try:
+        return len(s.encode("utf-16-le")) // 2
+    except LookupError:
+        # Python 3.14 on macOS removed utf-16-le alias; fallback to utf-16
+        return len(s.encode("utf-16")) // 2
 
 
 def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:

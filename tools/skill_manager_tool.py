@@ -541,8 +541,13 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
-    return _attach_org_note({"success": True, "message": f"File '{file_path}' written to skill '{name}'.",
-                             "path": str(target)}, name, skill_dir)
+    result = _attach_org_note({"success": True, "message": f"File '{file_path}' written to skill '{name}'.",
+                               "path": str(target)}, name, skill_dir)
+    # references/ is where per-session hoarding shows up; surface the sprawl finding on the write
+    # that crosses the line so the review fork sees it in the same turn.
+    if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():
+        _attach_lint_findings(result, skill_dir / "SKILL.md")
+    return result
 
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
@@ -790,8 +795,10 @@ SKILL_MANAGE_SCHEMA = {
         "first), write_file/remove_file (supporting files), delete (sole "
         "op only). Existing skills are modified wherever they live. Keep "
         "the description's first 57 chars a self-contained trigger: 'Use "
-        "when <trigger>. <one-line behavior>.' — skill_view() shows "
-        "format conventions."
+        "when <trigger>. <one-line behavior>.' Write lessons, not logs: "
+        "imperative rule + why, no PR numbers/dates/incident narration, one "
+        "rule per lesson, references/ named by topic (extend before adding). "
+        "skill_view() shows format conventions."
     ),
     "parameters": {
         "type": "object",

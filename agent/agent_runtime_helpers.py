@@ -19,7 +19,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, tool_call_id_variants, tool_result_id_variants
 )
-from agent.prompt_builder import format_steer_marker
+from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
@@ -533,6 +533,9 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A summary carrier followed by a new user row is a deliberate durable shape after
             # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
             and split_user_originated_turn(prev)[0] is None
+            # A /steer row that ended the previous run is already persisted; merging the next
+            # prompt into it would rewrite it in place and re-break replay parity.
+            and prev.get("display_kind") != STEER_DISPLAY_KIND
             # Only merge plain-text content; leave multimodal (list) content alone.
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
@@ -746,7 +749,8 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
             )
             return False, has_retried_429
     _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
-    agent._swap_credential(refreshed)
+    if agent._swap_credential(refreshed) is False:
+        return False, has_retried_429
     return True, has_retried_429
 
 
@@ -844,8 +848,7 @@ def recover_with_credential_pool(
             "Credential %s (%s) — rotated to pool entry %s",
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
-        agent._swap_credential(next_entry)
-        return True
+        return agent._swap_credential(next_entry) is not False
     if effective_reason == FailoverReason.upstream_rate_limit:
         # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
         # healthy. Do not rotate/exhaust; let fallback switch models.
@@ -886,7 +889,8 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
     agent.provider = rt["provider"]
     agent.requested_provider = rt.get("requested_provider", agent.provider)
     agent.base_url = rt["base_url"]           # setter updates _base_url_lower
-    agent.api_mode = rt["api_mode"]
+    from hermes_cli.providers import is_actual_route
+    agent.api_mode = "chat_completions" if is_actual_route(agent.provider, agent.base_url) else rt["api_mode"]
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
     agent.api_key = rt["api_key"]
@@ -1121,6 +1125,13 @@ def restore_primary_runtime(agent) -> bool:
         return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
+    primary_model = str((rt or {}).get("model") or "").strip()
+    from agent.fallback_cooldown import _is_entitlement_rejected
+    if primary_model and _is_entitlement_rejected(agent, primary_provider, primary_model):
+        # The primary slug was rejected as unentitled for this account (#106475): restoring
+        # here would announce a recovery that was never verified and re-fail every turn.
+        # Stay on the fallback; the user sees the terminal entitlement error instead.
+        return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 
     def _matches_primary(candidate) -> bool:
@@ -1211,6 +1222,9 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
     parts: List[str] = []
 
     def _add(text) -> None:
+        from agent.message_content import flatten_message_text
+
+        text = flatten_message_text(text, sep="")
         if text and text not in parts:
             parts.append(text)
     _add(getattr(assistant_message, "reasoning", None))
@@ -1678,6 +1692,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(getattr(agent, "provider", ""))
+        if profile is not None:
+            for key, value in profile.build_client_kwargs_extras(
+                base_url=client_kwargs.get("base_url", "")
+            ).items():
+                client_kwargs.setdefault(key, value)
+    except Exception:
+        _ra().logger.debug("Provider client-kwargs hook skipped", exc_info=True)
     # The MoA virtual provider has no OpenAI wire endpoint; the facade *is* the client. Rebuild the
     # facade, never a native client (TypeError; relay re-wire).
     # Rebuilding a native OpenAI client while agent.provider == "moa" (client replacement, stream-retry pool
@@ -1690,7 +1715,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         return build_moa_facade(agent, getattr(agent, "model", None) or "default")
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
-    httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
+    httpx_verify = resolve_httpx_verify(
+        ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg,
+        base_url=str(client_kwargs.get("base_url", "")),
+    )
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
     # Provider-supplied client (registration seam): a provider whose wire protocol is not
@@ -1705,7 +1733,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    if agent.provider == "gemini":
+    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
+    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:
             return client
@@ -1725,6 +1754,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # gets its OWN fresh ``httpx.Client`` whose lifetime is tied to the OpenAI client it is passed to. When
     # the OpenAI client is closed (rebuild, teardown, credential rotation), the paired ``httpx.Client``
     # closes with it, and the next call constructs a fresh one — no stale closed transport can be reused.
+    # Bedrock Mantle: the ``aws-sdk`` placeholder is a sentinel for IAM-chain auth, not a bearer token.
+    # Every rebuild from bare ``{api_key, base_url}`` kwargs (switch_model, fallback restore, credential
+    # rotation, request-scoped clients) must reinstall the SigV4 http_client or Mantle answers 401.
+    if "bedrock-mantle." in str(client_kwargs.get("base_url") or ""):
+        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
+        timeout = client_kwargs.get("timeout")
+        configure_bedrock_openai_client_kwargs(
+            client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
+        )
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""), verify=httpx_verify)
         if keepalive_http is not None:
@@ -1813,7 +1851,7 @@ def _restore_switch_snapshot(agent, snapshot: Dict[str, Any]) -> None:
 
 def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm):
     """Resolve ``(api_mode, base_url, destination_capabilities)`` for the switch target."""
-    from hermes_cli.providers import determine_api_mode
+    from hermes_cli.providers import determine_api_mode, is_actual_route
     from agent.native_compaction import resolve_native_compaction_capabilities
     from hermes_cli.models import opencode_provider_family
     # Pass model so dual-wire providers (Nous Portal anthropic/* -> Messages) resolve correctly.
@@ -1827,6 +1865,11 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     effective_base_url = base_url
     if not effective_base_url and old_norm == new_norm:
         effective_base_url = getattr(agent, "base_url", "")
+    if is_actual_route(new_provider, effective_base_url):
+        api_mode = "chat_completions"
+        if effective_base_url:
+            from hermes_cli.auth import normalize_actual_base_url
+            base_url = normalize_actual_base_url(effective_base_url)
     destination_capabilities = (
         dict(capabilities)
         if isinstance(capabilities, dict)
@@ -3143,9 +3186,25 @@ def _requeue_pending_steer(agent, steer_text: str) -> None:
 
 
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
-    """Append pending /steer text to the last ``role:"tool"`` message of this batch (bounded by
-    ``num_tool_msgs``), marked as user-origin. Modifies existing content only, so role
-    alternation is preserved."""
+    """Persist any pending /steer text as a standalone user message.
+
+    Called at the end of a tool-call batch, before the next API call.
+
+    The steer is emitted as a NEW ``role:"user"`` message appended after the
+    last tool result (marker text included), so:
+
+    - the model still sees the self-describing out-of-band marker (same text,
+      same provenance semantics);
+    - message-role alternation stays legal — ``assistant(tool_calls) → tool →
+      user`` is the documented "user jumped in mid-run" pattern that
+      ``repair_message_sequence`` deliberately keeps;
+    - the appended dict carries no ``_DB_PERSISTED_MARKER`` yet, so the next
+      ``_flush_messages_to_session_db`` writes it to the session store — the
+      steer text finally becomes part of the durable transcript instead of
+      being smeared onto an already-persisted tool row that append-only
+      persistence never rewrites (replayed histories then diverge from the
+      live request bytes and break the provider prompt cache).
+    """
     if num_tool_msgs <= 0 or not messages:
         return
     steer_text = agent._drain_pending_steer()
@@ -3155,22 +3214,14 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
     target = next((messages[j] for j in tail if isinstance(messages[j], dict) and messages[j].get("role") == "tool"), None)
     if target is None:
-        # No tool result in this batch (e.g. all skipped by interrupt).
+        # No tool result in this batch (e.g. all skipped by interrupt);
+        # requeue so the fallback path delivers it as a normal next-turn
+        # user message (which persists like any other user turn).
         _requeue_pending_steer(agent, steer_text)
         return
-    marker = format_steer_marker(steer_text)
-    existing_content = target.get("content", "")
-    if isinstance(existing_content, str):
-        target["content"] = existing_content + marker
-    else:
-        # Anthropic multimodal content blocks: preserve them and append a text block.
-        try:
-            target["content"] = [*(existing_content or []), {"type": "text", "text": marker.lstrip()}]
-        except Exception:
-            # Fall back to string replacement if content shape is unexpected.
-            target["content"] = f"{existing_content}{marker}"
+    messages.append(steer_user_row(steer_text))
     _ra().logger.info(
-        "Delivered /steer to agent after tool batch (%d chars): %s", len(steer_text),
+        "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
 

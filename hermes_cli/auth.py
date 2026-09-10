@@ -128,7 +128,7 @@ def is_actual_local_base_url(base_url: str) -> bool:
 
 def normalize_actual_base_url(base_url: str) -> str:
     """Return Actual's OpenAI-compatible base URL (hosted api.actual.inc or the loopback local server;
-    both expose a /v1 surface for the Responses transport)."""
+    both expose a /v1 surface for the selected OpenAI-compatible transport)."""
     url = str(base_url or "").strip().rstrip("/")
     if not url:
         return DEFAULT_ACTUAL_BASE_URL
@@ -345,6 +345,25 @@ def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Option
     return val
 
 
+def _model_level_key_env(provider_id: str) -> str:
+    """``model.key_env`` when config.yaml's main model targets *provider_id*, else ``""``.
+
+    The Desktop settings UI saves registry-provider keys as a credential pointer
+    (``model.key_env`` → ``$HERMES_HOME/.env``) instead of the registry's canonical env var,
+    so credential resolution must consult it (#106336).
+    """
+    try:
+        from hermes_cli.config import load_config
+        model_cfg = (load_config() or {}).get("model")
+    except Exception:
+        return ""
+    if not isinstance(model_cfg, dict):
+        return ""
+    if str(model_cfg.get("provider") or "").strip().lower() != provider_id:
+        return ""
+    return str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
+
+
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
@@ -364,6 +383,17 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
     # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation in .env isn't shadowed by
     # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).
     from hermes_cli.config import get_env_value_prefer_dotenv
+
+    # Desktop-saved credential pointer: the settings UI persists registry-provider keys as
+    # model.key_env → $HERMES_HOME/.env (e.g. HERMES_CUSTOM_LMSTUDIO_API_KEY) while keeping
+    # model.provider on the registry id, so the pointer must be honored here or the UI-saved
+    # key is silently ignored and lmstudio falls through to its no-auth placeholder (#106336).
+    key_env = _model_level_key_env(provider_id)
+    if key_env:
+        val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(key_env), key_env)
+        if val:
+            return val, key_env
+
     for env_var in pconfig.api_key_env_vars:
         val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(env_var), env_var)
         if val:
@@ -804,12 +834,16 @@ def _persist_provider_state_to_store(
 def _save_provider_state_to_source(
     auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any], source_path: Optional[Path],
 ) -> None:
-    """Persist provider state back to the auth store it was read from."""
+    """Persist provider state back to the auth store it was read from.
+
+    A token refresh rewrites credentials, not the user's choice of provider: ``active_provider`` is
+    left as it is (a Nous free-tier identity refreshed for a connector call must not become the
+    inference provider of an install that has its own key)."""
     if source_path is None or _same_path(source_path, _auth_file_path()):
-        _save_provider_state(auth_store, provider_id, state)
+        _store_provider_state(auth_store, provider_id, state, set_active=False)
         _save_auth_store(auth_store)
     else:
-        _persist_provider_state_to_store(provider_id, state, source_path, set_active=True)
+        _persist_provider_state_to_store(provider_id, state, source_path, set_active=False)
 
 
 def mark_provider_active_if_unset(provider_id: str) -> None:
@@ -924,13 +958,18 @@ def _entry_ids(entries: Iterable[Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def write_credential_pool(
-    provider_id: str, entries: List[Dict[str, Any]], *, removed_ids: Optional[Iterable[str]] = None,
+    provider_id: str, entries: List[Dict[str, Any]], *,
+    removed_ids: Optional[Iterable[str]] = None,
+    status_cleared_ids: Optional[Iterable[str]] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
     Final disk-boundary sanitizer for borrowed credentials (callers may pass raw dicts). Entries on
     disk but missing from *entries* (added concurrently) are merged back unless in *removed_ids*,
-    so a rotation/exhaustion rewrite never drops a concurrent credential."""
+    so a rotation/exhaustion rewrite never drops a concurrent credential. Entries in
+    *status_cleared_ids* were cleared deliberately (``hermes auth reset``) and skip the
+    recency merge, which would otherwise read their cleared ``last_status_at`` (None ->
+    epoch 0) as a stale snapshot and copy a still-binding cooldown back."""
     removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -942,8 +981,11 @@ def write_credential_pool(
         existing_list = existing_list if isinstance(existing_list, list) else []
         existing_by_id = _entry_ids(existing_list)
         new_ids = set(_entry_ids(sanitized))
+        status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         merged: List[Dict[str, Any]] = [
-            _merge_disk_cooldown_state(e, existing_by_id.get(e.get("id")), provider_id)
+            _merge_disk_cooldown_state(
+                e, None if e.get("id") in status_cleared else existing_by_id.get(e.get("id")), provider_id,
+            )
             if isinstance(e, dict) else e
             for e in sanitized]
         for disk_entry in existing_list:
@@ -1329,10 +1371,14 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
         return False
 
 
-def _logged_in_oauth_active_provider() -> Optional[str]:
+def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optional[str]:
     """auth.json ``active_provider`` when it is a registry provider that reports logged in."""
     try:
         _maybe = _load_auth_store().get("active_provider")
+        if _maybe == "nous":
+            from hermes_cli.anon_auth import guest_enabled, has_guest
+            if has_guest() and (skip_free_tier or not guest_enabled()):
+                return None  # the free tier is off (or being discounted), so a guest is not a login
         if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
             return _maybe
     except Exception as e:
@@ -1390,13 +1436,19 @@ def resolve_provider(
     requested: Optional[str] = None,
     *,
     explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None) -> str:
+    explicit_base_url: Optional[str] = None,
+    skip_free_tier: bool = False) -> str:
     """Determine which inference provider to use.
 
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
     "openrouter"; 2. config.yaml ``model.provider``; 3. OPENAI_API_KEY / OPENROUTER_API_KEY ->
     "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
-    7. AWS Bedrock chain; 8. AuthError(no_provider_configured).
+    7. Nous free tier when it is on and its identity exists (never created here);
+    8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
+
+    ``skip_free_tier`` hides rungs 6-for-a-free-tier-identity and 7: the boot bootstrap asks
+    "what would carry inference if the free tier did not exist?" to decide whether a fresh identity
+    may become ``active_provider``.
 
     1. 3. 4. 5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider 7. 8. Error (no
     provider configured) See #29285.
@@ -1426,7 +1478,7 @@ def resolve_provider(
 
     # Determined up front so the env-key tier can warn when an exported key preempts it; the actual
     # OAuth fallback still happens after the env-key tier.
-    _oauth_active = _logged_in_oauth_active_provider()
+    _oauth_active = _logged_in_oauth_active_provider(skip_free_tier=skip_free_tier)
     env_pid = _env_key_auto_detected(_scoped_key_env, _oauth_active)
     if env_pid:
         return env_pid
@@ -1444,8 +1496,21 @@ def resolve_provider(
                 _oauth_active)
         return _oauth_active
 
-    # AWS Bedrock via the boto3 credential chain (IAM roles, SSO, env vars); after API-key providers
-    # so explicit keys always win.
+    # Nous free tier, when it is on and its identity already exists. This rung sits ABOVE the Bedrock
+    # chain on purpose: every rung above this line is explicit user intent (CLI creds, config, env
+    # keys, a sign-in); the boto chain below is implicit host state, and a leftover ~/.aws profile
+    # used to win the first turn of a fresh install (NS-829). The rung never CREATES the identity:
+    # that is the boot bootstrap's job (free_tier_bootstrap), so provider resolution stays free of
+    # network and a fresh install without the bootstrap resolves exactly as upstream does.
+    if not skip_free_tier:
+        try:
+            from hermes_cli.anon_auth import guest_enabled, has_guest
+            if guest_enabled() and has_guest():
+                return "nous"
+        except Exception as exc:
+            logger.debug("free tier check during provider resolution skipped: %s", exc)
+    # AWS Bedrock via the boto3 credential chain (IAM roles, SSO, env vars): implicit host state,
+    # below explicit keys and below the free tier.
     try:
         from agent.bedrock_adapter import has_aws_credentials
         if has_aws_credentials():
@@ -1590,6 +1655,21 @@ def resolve_nous_access_token(
 
         lock_timeout = max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
         with _nous_shared_store_lock(timeout_seconds=lock_timeout):
+            from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+            if is_guest_state(state):
+                # Guest seam: the anon_ credential is the identity; a first use has no access token
+                # yet and an expired one is re-exchanged. No refresh token, no quarantine.
+                access_token = state.get("access_token")
+                if isinstance(access_token, str) and access_token and not _is_expiring(
+                        state.get("expires_at"), refresh_skew_seconds):
+                    return _memo(access_token)
+                with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
+                                  headers={"Accept": "application/json"}, verify=verify) as client:
+                    refresh_guest_state(state, client)
+                persist()
+                _write_shared_nous_state(state)
+                return _memo(state["access_token"])
+
             merged_shared = _merge_shared_nous_oauth_state(state)
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
@@ -1756,6 +1836,14 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
 
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:
+    if pconfig.id == "actual":
+        from hermes_cli.providers import normalize_provider
+
+        model = read_raw_config().get("model")
+        if isinstance(model, dict) and normalize_provider(str(model.get("provider") or "")) == "actual":
+            configured_url = str(model.get("base_url") or "").strip()
+            if configured_url:
+                return configured_url
     return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
 
 
@@ -2054,12 +2142,15 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
 # ── CLI Commands — login / logout ───────────────────────────────────────────────────────────────────
 
 def _update_config_for_provider(
-    provider_id: str, inference_base_url: str, default_model: Optional[str] = None) -> Path:
+    provider_id: str, inference_base_url: str, default_model: Optional[str] = None,
+    *, clear_default: bool = False) -> Path:
     """Update config.yaml and auth.json to reflect the active provider.
 
     *default_model*, when given, is written as ``model.default`` in the same step so the gateway
     (which re-reads config per message) can't pick up the new provider before model selection
-    finishes and send an OpenRouter-style ``vendor/model`` name to a direct API."""
+    finishes and send an OpenRouter-style ``vendor/model`` name to a direct API. *clear_default*
+    removes ``model.default`` in that same write, for a caller that has no model to offer and must
+    not leave the previous provider's model paired with the new host."""
     with _auth_store_lock():  # so auto-resolution picks this provider
         auth_store = _load_auth_store()
         auth_store["active_provider"] = provider_id
@@ -2091,6 +2182,8 @@ def _update_config_for_provider(
         cur_default = model_cfg.get("default", "")
         if not cur_default or "/" in cur_default:
             model_cfg["default"] = default_model
+    elif clear_default:
+        model_cfg.pop("default", None)
     config["model"] = model_cfg
     atomic_yaml_write(config_path, config, sort_keys=False)
     return config_path
@@ -2171,11 +2264,21 @@ def logout_command(args) -> None:
     if not target:
         print("No provider is currently logged in.")
         return
+    if target == "nous":
+        from hermes_cli.anon_auth import FREE_TIER_NOT_SIGNED_IN, is_guest_state
+        if is_guest_state(get_provider_auth_state("nous")):
+            # Free tier is not a login; there is nothing to log out of and nothing is cleared.
+            print(FREE_TIER_NOT_SIGNED_IN)
+            return
     should_reset_config = _should_reset_config_provider_on_logout(target)
     provider_name = get_auth_provider_display_name(target)
     if not (clear_provider_auth(target) or should_reset_config):
         print(f"No auth state found for {provider_name}.")
         return
+    if target == "nous":
+        # A profile logout must not be re-adopted from the cross-profile store on the next boot.
+        from hermes_cli.auth_nous import _clear_shared_nous_state
+        _clear_shared_nous_state("logout")
     if should_reset_config:
         _reset_config_provider()
     print(f"Logged out of {provider_name}.")

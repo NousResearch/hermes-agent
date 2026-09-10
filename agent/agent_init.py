@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.agent_runtime_helpers import _ra
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
@@ -317,6 +317,7 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
     return seconds if seconds > 0 else None  # NaN compares False → None
 
 
+
 def _refuse_checkpoint_required_on_codex_app_server(
     checkpoint_required: bool, api_mode: Optional[str]
 ) -> None:
@@ -371,8 +372,11 @@ _EXPLICIT_API_MODES = {
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
+    from hermes_cli.providers import is_actual_route
     host, url = agent._base_url_hostname, agent._base_url_lower
-    if api_mode in _EXPLICIT_API_MODES:
+    if is_actual_route(agent.provider, base_url):
+        agent.api_mode = "chat_completions"
+    elif api_mode in _EXPLICIT_API_MODES:
         agent.api_mode = api_mode
     elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
@@ -415,6 +419,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
 
 
 def _finalize_routing(agent, api_mode, credential_pool):
+    from hermes_cli.providers import is_actual_route
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
     # Regression from #63048 which placed this check before the URL-based auto-detection block above (fixed
@@ -433,6 +438,17 @@ def _finalize_routing(agent, api_mode, credential_pool):
     with suppress(Exception):
         agent._get_transport()
 
+    # The Nous agent key lives ~1 h. Without the proactive refresher every agent in the process
+    # discovers expiry reactively, on its own next request, all in the same minute: with 200
+    # in-process subagents that was a 401 storm each hour (620 in one run) and the credential
+    # pool benched the provider for all of them. The gateway and web server start this thread
+    # at boot; the CLI process (and everything spawned inside it) never did. Idempotent,
+    # process-wide, daemon.
+    if agent.provider == "nous":
+        with suppress(Exception):
+            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+            start_nous_auth_keepalive()
+
     with suppress(Exception):
         from hermes_cli.model_normalize import (
             _AGGREGATOR_PROVIDERS, normalize_model_for_provider
@@ -440,6 +456,11 @@ def _finalize_routing(agent, api_mode, credential_pool):
 
         if agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
+
+    # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
+    # swap can change the route later, so ``_swap_credential`` applies the same helper again.
+    from hermes_cli.anon_auth import pin_model_for_route
+    agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
 
     # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
     # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
@@ -456,6 +477,7 @@ def _finalize_routing(agent, api_mode, credential_pool):
         # upgrade for Azure (openai.azure.com), even though it looks OpenAI-compatible.
         api_mode is None
         and agent.api_mode == "chat_completions"
+        and not is_actual_route(agent.provider, agent.base_url)
         and agent.provider != "copilot-acp"
         and not _base_lower.startswith(("acp://", "acp+tcp://"))
         and not agent._is_azure_openai_url()
@@ -525,8 +547,9 @@ _CONTROL_STATE: Dict[str, Any] = {
 
 # Per-turn bookkeeping: budgets, activity tracking, rate-limit/credits telemetry.
 _TURN_STATE: Dict[str, Any] = {
-    # Iteration budget: notify the LLM only on exhaustion (one message, one grace call, then
-    # a forced summary) — intermediate pressure warnings made models give up early.
+    # Intermediate pressure warnings made models give up early; ordinary conversations
+    # remain opt-in. Dispatcher workers receive a bounded completion checkpoint.
+    "_iteration_budget_warning_injected": False,
     "_budget_exhausted_injected": False,
     "_budget_grace_call": False,
     "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
@@ -564,6 +587,10 @@ _SESSION_STATE: Dict[str, Any] = {
     # prefix, kept separately only to place an early cache marker.
     "_cached_system_prompt": None,
     "_cached_system_prompt_static": None,
+    # ``(cwd, workspace_block)`` pinned on the first build: the git/workspace snapshot is
+    # probed once per session and replayed on every rebuild, so a moving repo can't push the
+    # prefix-cache divergence point ahead of the volatile band at a compaction boundary.
+    "_frozen_workspace_snapshot": None,
     # Whether close() also closes _session_db. False: a caller-supplied handle is usually the
     # SHARED launch handle; callers handing over a DEDICATED handle set True.
     "_owns_session_db": False,
@@ -578,8 +605,8 @@ _SESSION_STATE: Dict[str, Any] = {
     # False on helper agents (compression / hygiene / review forks) that hand the session to
     # a continuation row that must stay open.
     "_end_session_on_close": True,
-    # True on the background review fork: never persist, so its harness turn can't hijack
-    # the live session.
+    # True on the background review fork: never persist or publish session lifecycle hooks,
+    # so its harness turn can't hijack or appear under the live session.
     "_persist_disabled": False,
 }
 
@@ -823,6 +850,10 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
+        from hermes_cli.providers import is_actual_route, normalize_provider
+        effective_provider = getattr(_routed_client, "_hermes_aux_effective_provider", "")
+        if is_actual_route(effective_provider):
+            agent.provider = normalize_provider(effective_provider)
         return _client_kwargs_from_routed(_routed_client, _provider_timeout)
     # No credentials: try the fallback chain BEFORE failing (an exhausted single-entry pool
     # must not die with a misleading "No LLM provider configured"); only explicitly named
@@ -907,6 +938,11 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
+    from hermes_cli.providers import is_actual_route
+    if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
+        agent.api_mode = "chat_completions"
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
     try:
         from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
         configure_bedrock_openai_client_kwargs(client_kwargs, timeout=_provider_timeout)
@@ -1116,13 +1152,6 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     # ~/.hermes/sessions/ — kept unconditionally for request_dump_*.json debug breadcrumbs.
     agent.logs_dir = get_hermes_home() / "sessions"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
-    # Per-session JSON snapshot is opt-in (sessions.write_json_snapshots); state.db is canonical.
-    agent._session_json_enabled = False
-    with suppress(Exception):
-        from hermes_cli.config import load_config_readonly as _load_sess_cfg
-        _sess_cfg = (_load_sess_cfg().get("sessions") or {})
-        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
-
     _set_defaults(agent, _SESSION_STATE)
 
     # Filesystem checkpoint manager (transparent — not a tool)
@@ -1299,6 +1328,9 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._skill_nudge_interval = int(_agent_cfg.get("skills", {}).get("creation_nudge_interval", 10))
 
     _agent_section = _cfg_dict(_agent_cfg, "agent")
+    agent.budget_warning_ratio = normalize_budget_warning_ratio(
+        _agent_section.get("budget_warning_ratio")
+    )
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
     # of each other (gates in agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
@@ -1669,18 +1701,8 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     except (TypeError, ValueError):
         agent._aux_compression_context_length_config = None
 
-    # model.max_tokens from config when the caller did not pass one.
     _model_cfg = _agent_cfg.get("model", {})
     _model_section = _model_cfg if isinstance(_model_cfg, dict) else {}
-    _config_max_tokens = _model_section.get("max_tokens")
-    if agent.max_tokens is None and _config_max_tokens is not None:
-        agent.max_tokens = _positive_int(_config_max_tokens, reject=(bool,))
-        if agent.max_tokens is None:
-            _warn_invalid_config_int(
-                "model.max_tokens in config.yaml", _config_max_tokens,
-                "must be a positive integer (e.g. 4096)", "provider default",
-            )
-    agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
     _config_context_length = _model_section.get("context_length")
     if _config_context_length is not None:
@@ -1848,6 +1870,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
+            custom_providers=_custom_providers,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -2117,10 +2140,11 @@ def _init_usage_state(agent):
 _USAGE_STATE: Dict[str, Any] = {
     "_user_turn_count": 0,
     "_is_user_initiated_turn": False,  # Copilot x-initiator: first call of a user turn = "user"
-    # Usage anchors (agent/model_metadata.py): last response's exact usage + transcript
+    # Usage anchors (agent/usage_anchor.py): last response's exact usage + transcript
     # snapshot; invalidated on compaction/session switch so stale anchors never suppress compression.
     "_usage_anchor": None,
     "_turn_base_usage_anchor": None,
+    "_request_pressure_anchored": False,  # whether the last pressure figure came from the anchor
     # Cumulative token usage for the session
     "session_prompt_tokens": 0,
     "session_completion_tokens": 0,
@@ -2236,6 +2260,10 @@ def init_agent(
     agent.skip_background_review = bool(skip_background_review)
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Effective base URL for feature detection (prompt caching, reasoning, etc.)
+    from hermes_cli.providers import is_actual_route
+    if is_actual_route(provider, base_url):
+        from hermes_cli.auth import normalize_actual_base_url
+        base_url = normalize_actual_base_url(base_url)
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""

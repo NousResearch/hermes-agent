@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -31,7 +32,7 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # (per-name provider / named BU cloud / Lightpanda). Popped before the subprocess launches — never exported.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 
-# Prepended to the model's code for named sessions on SHARED browsers (local Chrome / CDP override): the
+# Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
 # harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
 # SAME tab. Steering each onto a tab it created prevents clobbering. Runs once per daemon (marker keyed by
 # BU_NAME + daemon pid).
@@ -371,15 +372,49 @@ def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str
     return err
 
 
+def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
+    """Point the harness at Hermes' packaged Chromium, launched through agent-browser for this cache key —
+    the same browser the built-in tools drive. Left alone, the harness discovers the user's INSTALLED
+    Chrome on its default profile, which needs the chrome://inspect toggle + an Allow popup per run and
+    is blocked outright on Chrome >=136; on a headless box it just reports ``chrome-not-running``.
+    ``get cdp-url`` runs through ``_run_browser_command`` (legacy cache, inactivity reaper, atexit, Chromium
+    preflight/auto-install) on EVERY call: it launches the browser cold, follows a relaunch, and refreshes
+    the agent-browser daemon's idle timer, which never sees the harness's direct CDP traffic."""
+    try:
+        from tools.browser_tool_session import _run_browser_command
+        from tools.browser_tool import _get_open_command_timeout
+    except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
+        logger.debug("managed chromium resolution unavailable: %s", e)
+        return None
+    res = _run_browser_command(_backend_cache_key(task_id, session_name), "get", ["cdp-url"],
+                               timeout=_get_open_command_timeout(first_open=True))
+    cdp = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
+    if not cdp:
+        return (f"The local browser could not be started: {(res or {}).get('error') or 'agent-browser returned no CDP endpoint'} "
+                "Run `hermes tools` → Browser Automation to (re)install Chromium, or switch backends.")
+    _set_cdp_env(env, cdp)
+    env[_PRIVATE_BROWSER_SENTINEL] = "1"  # one Chromium per cache key: nothing to share a tab with
+    return None
+
+
+def _resolve_local_engine_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
+    """Local engine (no provider / override): ``browser.engine: lightpanda`` or the packaged Chromium."""
+    err = _resolve_lightpanda_cdp(env, task_id, session_name)
+    if err or _has_cdp_env(env):
+        return err
+    return _resolve_managed_chromium_cdp(env, task_id, session_name)
+
+
 def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
     """Point the harness at the configured backend's CDP endpoint; error string on failure.
 
     Precedence: (1) ``BU_CDP_WS``/``BU_CDP_URL`` already in env (operator override); (2) ``BROWSER_CDP_URL``
     env / ``browser.cdp_url`` (``/browser connect``); (3) a cloud provider via the legacy ``_get_session_info()``
     so browser_exec shares the SAME session machinery (per-task cache, expiry, reaper, atexit);
-    (4) ``browser.engine: lightpanda``; (5) nothing → None: the harness attaches to local Chrome (or BU
-    cloud via BU_AUTOSPAWN for legacy configs). ``session_name`` (BU_NAME) keys the provider cache so
-    each name gets its OWN cloud browser — what makes named sessions concurrent-safe.
+    (4) the local engine — ``browser.engine: lightpanda`` or Hermes' packaged Chromium via agent-browser
+    (never the harness's own discovery of the user's installed Chrome); (5) BU direct-API configs → None:
+    the CLI reaches BU cloud natively (BU_AUTOSPAWN). ``session_name`` (BU_NAME) keys the session cache so
+    each name gets its OWN browser — what makes named sessions concurrent-safe.
     """
     if _has_cdp_env(env):
         return None
@@ -396,7 +431,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
     provider = _quiet(_get_cloud_provider, None, "Cloud provider lookup failed")
     if provider is None:
-        return _resolve_lightpanda_cdp(env, task_id, session_name)
+        return _resolve_local_engine_cdp(env, task_id, session_name)
 
     # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN / auth login) — the
     # legacy provider would create a second, redundant session. The Nous-gateway variant (use_gateway: true)
@@ -450,6 +485,23 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     return err or None
 
 
+def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
+    """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault_fill`` has
+    a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
+    endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
+    cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
+    if not cdp:
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
+        policy, timeout_s = _get_dialog_policy_config()
+        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=_resolve_cdp_override(cdp),
+                                         dialog_policy=policy, dialog_timeout_s=timeout_s)
+    except Exception as exc:
+        logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
+
+
 def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
@@ -465,14 +517,17 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool)
     return _resolve_backend_cdp(env, task_id, session_name=session)
 
 
-def _windows_popen_kwargs() -> dict:
-    """Hide the console the .cmd shim would flash on Windows (as browser_tool does)."""
+def _group_popen_kwargs() -> dict:
+    """Popen kwargs starting the CLI in its own process group (a new session on POSIX) so a
+    timeout can take down every process that inherited the capture pipes, not just the CLI
+    child. Windows also hides the console the .cmd shim would flash (as browser_tool does)."""
     def _flags() -> dict:
         from hermes_cli._subprocess_compat import windows_hide_flags
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        return {"creationflags": windows_hide_flags(), "startupinfo": si}
-    return _quiet(_flags, {}, "Windows hide-flags unavailable") if os.name == "nt" else {}
+        return {"creationflags": windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                "startupinfo": si}
+    return _quiet(_flags, {}, "Windows hide-flags unavailable") if os.name == "nt" else {"start_new_session": True}
 
 
 def _clamp_timeout(timeout_s: Any) -> int:
@@ -480,6 +535,47 @@ def _clamp_timeout(timeout_s: Any) -> int:
         return max(_MIN_TIMEOUT_S, min(int(timeout_s), _MAX_TIMEOUT_S))
     except (TypeError, ValueError):
         return _DEFAULT_TIMEOUT_S
+
+
+# After a whole-group SIGKILL, every pipe holder is dead, so the drain below is normally
+# instant; the deadline only guards against a process outside the group still holding a pipe.
+_POST_KILL_DRAIN_S = 10.0
+
+
+def _kill_cli_process_group(proc) -> None:
+    """SIGKILL the CLI's whole process group (POSIX; ``start_new_session`` made pgid == pid) or,
+    on Windows, its process tree via ``taskkill /T /F`` — the only group-wide kill it offers."""
+    if os.name == "nt":
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                           check=False, creationflags=windows_hide_flags())
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
+
+
+def _run_cli_killing_process_group(cmd, code, env, timeout):
+    """Run the CLI in its own process group and kill the whole group on timeout.
+
+    ``subprocess.run`` only kills the direct child on ``TimeoutExpired``; a grandchild that
+    inherited the stdout/stderr pipes (browser_harness daemon / Chrome helper) is orphaned
+    still holding them, and on Windows ``run()``'s unbounded post-kill ``communicate()`` then
+    blocks on pipe EOF forever — so the tool call, plus its activity heartbeat, wedges (#106244).
+    """
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", env=env, **_group_popen_kwargs(),
+    )
+    try:
+        stdout, stderr = proc.communicate(input=code, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_cli_process_group(proc)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=_POST_KILL_DRAIN_S)
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -508,8 +604,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
+    _attach_vault_supervisor(env, task_id)
 
-    # SHARED browser (local Chrome / CDP override): pin each named session to its own tab (see
+    # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
     if session and not private_browser:
@@ -527,10 +624,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
     try:
-        proc = subprocess.run(
-            cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
-            **_windows_popen_kwargs(),
-        )
+        proc = _run_cli_killing_process_group(cmd, code, env, timeout)
     except subprocess.TimeoutExpired:
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
@@ -606,8 +700,8 @@ _HELPERS_DIGEST = (
     "capture_screenshot() saves and prints a screenshot path, cdp('Domain.method', **kwargs) is raw CDP — "
     "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's role/name/backendDOMNodeId (filter "
     "in Python before printing; it is thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) "
-    "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: stop and "
-    "ask the user; never guess credentials."
+    "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
+    "credentials; see the vault note below if present, otherwise stop and ask the user."
 )
 
 

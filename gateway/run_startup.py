@@ -18,7 +18,8 @@ from contextlib import suppress
 from datetime import datetime
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
@@ -88,6 +89,13 @@ class GatewayStartupMixin:
             await adapter.handle_message(event)
             drained += 1
         return drained
+
+    @staticmethod
+    def _start_free_tier_bootstrap() -> None:
+        """One bootstrap per process. `run_bootstrap` already records its own failure in the boot record
+        and never raises, so this is a plain call; it exists as a method so tests can seam it."""
+        from hermes_cli.free_tier_bootstrap import run_bootstrap
+        run_bootstrap(announce=False)
 
     def _start_startup_warmup(self) -> None:
         """Kick off the boot turn-machinery warm-up so it overlaps the network-bound platform
@@ -258,7 +266,8 @@ class GatewayStartupMixin:
         A session with a recoverable obligation already produced its answer — the turn completed and only
         delivery is owed — so clearing ``resume_pending`` here prevents the resume path from re-running (and
         re-paying for) a turn whose output we hold, regardless of how long the sends ahead of redelivery
-        take (#91969).
+        take (#91969). Flood-refused rows adopted inside their wait come back flagged ``adopted``: their
+        flags are cleared here too, and ``_redeliver_claimed_obligations`` leaves them to the timer.
         """
         try:
             from gateway.delivery_ledger import ledger_enabled, sweep_recoverable
@@ -291,20 +300,77 @@ class GatewayStartupMixin:
         return claimed
 
     @staticmethod
-    async def _release_runtime_claim_quiet(obligation_id, log_fmt: str) -> None:
-        """Release a runtime delivery-ledger claim as ``send_path_degraded``; log-only on failure."""
+    async def _release_runtime_claim_quiet(obligation_id, log_fmt: str, error: str = "send_path_degraded") -> None:
+        """Release an unsent runtime delivery-ledger claim; log-only on failure. ``error`` is what the row
+        goes back to ``failed`` with: the claim's own pre-claim error when the caller knows it, so a
+        flood-refused row keeps its ``flood_control:<seconds>`` and stays on the flood timer's list (the
+        release re-stamps ``updated_at``, so it waits the platform's figure once more); else
+        ``send_path_degraded``."""
         from gateway.delivery_ledger import release_runtime_claim
         try:
-            await asyncio.to_thread(release_runtime_claim, obligation_id, "send_path_degraded")
+            await asyncio.to_thread(release_runtime_claim, obligation_id, error)
         except Exception:
             logger.debug(log_fmt, obligation_id, exc_info=True)
+
+    def _schedule_flood_redelivery(self, platform, *, profile: Optional[str] = None) -> None:
+        """Wake one deadline-driven ledger worker per bot identity, never sleep in a send."""
+        from gateway.delivery_ledger import flood_retry_delay, pending_flood_retries
+        target = platform if isinstance(platform, Platform) else Platform(str(platform))
+        key = (target.value, profile or "default")
+        pending = getattr(self, "_flood_redelivery_tasks", None)
+        if pending is None:
+            pending = self._flood_redelivery_tasks = {}
+            self._flood_redelivery_wakes = {}
+        wakes = self._flood_redelivery_wakes
+        if key in pending:
+            # Remember refusals arriving during a threaded SELECT or a send. An empty stale
+            # snapshot cannot retire this worker until it has observed the wake.
+            wakes[key].set()
+            return None
+        wake = wakes[key] = asyncio.Event()
+
+        async def _redeliver_after_wait():
+            try:
+                while getattr(self, "_running", False):
+                    wake.clear()
+                    waiting = await asyncio.to_thread(pending_flood_retries)
+                    deadlines = [r["not_before"] for r in waiting
+                                 if (r["platform"], r["profile"]) == key]
+                    if not deadlines:
+                        if wake.is_set():
+                            continue
+                        return
+                    delay = flood_retry_delay(min(deadlines) - time.time())
+                    try:
+                        await asyncio.wait_for(wake.wait(), timeout=delay)
+                        continue  # A shorter sibling may now be due first.
+                    except asyncio.TimeoutError:
+                        pass
+                    if getattr(self, "_running", False):
+                        await self._redeliver_failed_obligations_for_platform(target, profile=profile)
+            finally:
+                pending.pop(key, None)
+                wakes.pop(key, None)
+
+        task = asyncio.create_task(_redeliver_after_wait(), name="flood-redelivery:%s:%s" % key)
+        pending[key] = task
+        # The gateway's ordinary shutdown drain must cancel sleeping timers too.
+        background = getattr(self, "_background_tasks", None)
+        if background is not None:
+            self._track_task_in(background, task)
+
+    async def _arm_flood_timers_for_waiting_rows(self) -> None:
+        """Recover adopted, newly refused and unsent released rows without blocking the loop."""
+        from gateway.delivery_ledger import pending_flood_retries
+        for row in await asyncio.to_thread(pending_flood_retries):
+            self._schedule_flood_redelivery(row["platform"], profile=row["profile"])
 
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the
         bounded boot-send task, so a flood-limited send can be abandoned by the restore gate without
         reopening the turn-replay window. Returns the redelivered count."""
-        if not claimed:
-            return 0
+        # No early return on an empty claim: the boot sweep may have ADOPTED flood-refused rows that are
+        # not due yet, and those still need their timer armed below.
         try:
             from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed
         except Exception:
@@ -312,6 +378,10 @@ class GatewayStartupMixin:
             return 0
         redelivered = 0
         for row in claimed:
+            if row.get("adopted"):
+                # Adopted at boot inside its flood wait: its resume flag is cleared with the others, and
+                # the timer armed below sends it once the platform's deadline has passed.
+                continue
             adapter = await self._obligation_adapter(row)
             if adapter is None:
                 continue
@@ -336,6 +406,10 @@ class GatewayStartupMixin:
                     await asyncio.to_thread(
                         mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
                     )
+        # Whatever is still waiting on a flood penalty (adopted at boot, skipped as not yet due, refused
+        # again just now) gets a timer, so no flood-refused reply waits for the next restart.
+        with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
+            await self._arm_flood_timers_for_waiting_rows()
         return redelivered
 
     async def _obligation_adapter(self, row: dict):
@@ -354,7 +428,8 @@ class GatewayStartupMixin:
         # attempt; startup claims keep their state (attempts cap + stale cutoff bound retries).
         if adapter is None and row.get("runtime_recovery"):
             await self._release_runtime_claim_quiet(
-                row["obligation_id"], "failed to release undispatched runtime obligation %s"
+                row["obligation_id"], "failed to release undispatched runtime obligation %s",
+                error=row.get("last_error") or "send_path_degraded",
             )
         return adapter
 
@@ -387,7 +462,8 @@ class GatewayStartupMixin:
         for row in claimed:
             if row["obligation_id"] not in sendable_ids:
                 await self._release_runtime_claim_quiet(
-                    row["obligation_id"], "failed to release runtime delivery claim %s"
+                    row["obligation_id"], "failed to release runtime delivery claim %s",
+                    error=row.get("last_error") or "send_path_degraded",
                 )
         return await self._redeliver_claimed_obligations(sendable)
 
@@ -1136,6 +1212,9 @@ class GatewayStartupMixin:
             )
         self._spawn_supervised(self._hosted_room_worker_watcher, "hosted_room_worker")
         self._start_loop_heartbeat_task()
+        from gateway.run_heartbeat_restore import restore_heartbeat_watches
+        self._start_heartbeat_poller()  # Keep retrying even when the first scan is empty.
+        await restore_heartbeat_watches(self)
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
             logger.info("%s hook(s) loaded", hook_count)
@@ -1199,7 +1278,7 @@ class GatewayStartupMixin:
     # Long-lived supervised watchers spawned at the end of start(), in order; supervised name = method
     # name minus the leading underscore.
     _PRE_RECONNECT_WATCHERS = (
-        "_session_expiry_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
+        "_session_housekeeping_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
         "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
     )
     _POST_RECONNECT_WATCHERS = ("_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher")
@@ -1245,6 +1324,12 @@ class GatewayStartupMixin:
         if self._start_check_access_policy():
             return True
         await self._start_recover_previous_run()
+        # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
+        # demand-time site (provider resolution, /login, the connector token) is a read that needs the
+        # identity to already exist. Blocking here, before any adapter connects, is what keeps a fast
+        # first DM from arriving with nothing to resolve. With the launch gate unset this is a local
+        # inventory and no network.
+        await asyncio.get_running_loop().run_in_executor(None, self._start_free_tier_bootstrap)
         # Serialize startup restore against inbound: adapters receive as soon as they connect, so inbound
         # queues until every synthetic resume turn has finished.
         self._startup_restore_in_progress = True

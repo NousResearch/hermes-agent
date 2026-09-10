@@ -300,6 +300,36 @@ class TestValidateSignature:
         )
         assert adapter._validate_signature(req, body, secret) is True
 
+    @pytest.mark.parametrize(
+        "secret, sign_with, body, received, stale, expected",
+        [
+            ("whsec_" + base64.b64encode(b"0123456789abcdef").decode(), None, b'{"a":1}', b'{"a":1}', False, True),
+            ("raw-signing-secret", None, b'{"a":1}', b'{"a":1}', False, True),
+            ("real-secret", "attacker-secret", b'{"a":1}', b'{"a":1}', False, False),
+            ("real-secret", None, b'{"a":1}', b'{"a":2}', False, False),  # tampered body
+            ("real-secret", None, b'{"a":1}', b'{"a":1}', True, False),  # replayed stale timestamp
+        ],
+    )
+    def test_standard_webhooks_headers_validate_like_svix(self, secret, sign_with, body, received, stale, expected):
+        """#47451/#101837: webhook-id/-timestamp/-signature is the same HMAC scheme as svix-*."""
+        adapter = _make_adapter()
+        timestamp = str(int(time.time()) - (600 if stale else 0))
+        sig = _svix_signature(body, sign_with or secret, "msg_std", timestamp)
+        req = _mock_request(headers={"webhook-id": "msg_std", "webhook-timestamp": timestamp, "webhook-signature": sig})
+        assert adapter._validate_signature(req, received, secret) is expected
+
+    def test_gitlab_secret_token_survives_unsigned_standard_webhooks_metadata(self):
+        """GitLab sends webhook-id/webhook-timestamp on every delivery and webhook-signature only when a
+        signing token is set; a legacy X-Gitlab-Token route must not be hijacked into the HMAC path."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "X-Gitlab-Token": "legacy-token", "webhook-id": "gl_1", "webhook-timestamp": str(int(time.time())),
+        })
+        assert adapter._validate_signature(req, b"{}", "legacy-token") is True
+        req_partial = _mock_request(headers={"webhook-id": "gl_2", "webhook-timestamp": str(int(time.time())),
+                                             "webhook-signature": "v1,AAAA"})
+        assert adapter._validate_signature(req_partial, b"{}", "legacy-token") is False
+
 
 # ===================================================================
 # Prompt rendering

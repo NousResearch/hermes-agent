@@ -5294,27 +5294,62 @@ def test_finalize_session_closes_slash_worker(monkeypatch):
 
 
 def test_close_transport_rebinds_session_to_remaining_viewer(monkeypatch):
-    """Closing a pop-out window's transport must re-bind the session to a
-    still-open window instead of stranding it on the drop sentinel (#83716)."""
+    """Closing a pop-out window's transport must leave the session with the
+    still-open window instead of stranding it on the drop sentinel (#83716).
+
+    The rebind #83716 added is gone; multi-client fan-out subsumes it. Both
+    windows are attached to the slot at once, so the pop-out is a fan-out peer
+    rather than a viewer waiting to be promoted, and closing it detaches that
+    peer while retaining the surviving ordered mailbox. This pins the same
+    guarantee through the mechanism that replaced the rebind: the session is
+    not parked, not reaped, not handed to the orphan reaper, and the surviving
+    window keeps receiving frames.
+    """
     reap_calls = []
     monkeypatch.setattr(server, "_schedule_ws_orphan_reap", lambda sid: reap_calls.append(sid))
 
     class _LiveTransport:
-        def write(self, *a, **k):
+        def __init__(self):
+            self.frames = []
+            self.received = threading.Event()
+
+        def write(self, obj=None, *a, **k):
+            self.frames.append(obj)
+            self.received.set()
             return True
 
     main = _LiveTransport()
     popout = _LiveTransport()
-    session = _session(transport=popout, running=False)
+    session = _session(transport=None, running=False)
+    # Build the state the way production does: every window that resumes goes
+    # through _live_session_payload, which attaches it into the slot and then
+    # stamps it into the viewers registry.
+    server._attach_session_transport(session, main)
+    server._attach_session_transport(session, popout)
     session["viewers"] = {main: 100.0, popout: 200.0}
     server._sessions["multi-sid"] = session
+    assert isinstance(session["transport"], server.FanoutTransport)
 
-    reaped, detached = server._close_sessions_for_transport(popout)
+    try:
+        reaped, detached = server._close_sessions_for_transport(popout)
 
-    assert reaped == 0 and detached == 0
-    assert session["transport"] is main
-    assert "multi-sid" not in reap_calls
-    assert server._ws_session_is_orphaned(session) is False
+        assert reaped == 0 and detached == 0
+        assert server._session_transport_contains(session, main)
+        assert not server._session_transport_contains(session, popout)
+        assert "multi-sid" not in reap_calls
+        assert server._ws_session_is_orphaned(session) is False
+
+        # And it is still a working stream, not just a surviving reference.
+        server._emit("message.delta", "multi-sid", {"text": "still here"})
+        assert main.received.wait(timeout=5)
+        assert [(f.get("params") or {}).get("type") for f in main.frames] == [
+            "message.delta"
+        ]
+        assert popout.frames == []
+    finally:
+        # The fake slot must not outlive the test: _sessions is module state and
+        # later sweeps would walk it.
+        server._sessions.pop("multi-sid", None)
 
 
 def test_close_transport_detaches_when_no_viewers_remain(monkeypatch):
@@ -5340,7 +5375,15 @@ def test_close_transport_detaches_when_no_viewers_remain(monkeypatch):
 
 
 def test_close_transport_skips_dead_remaining_viewers(monkeypatch):
-    """A viewer whose socket is already dead must not win the re-bind."""
+    """A viewer whose socket is already dead must not hold the session open.
+
+    #83716's rebind refused to hand the session to a dead viewer; fan-out
+    membership keeps that filter through _transport_is_live_peer, which is what
+    decides whether anything survives the departing client. Both windows are
+    ATTACHED here, which is the state production builds — a viewer that was
+    never attached leaves the slot single-client and exercises the ordinary park
+    path instead of this one.
+    """
     reap_calls = []
     monkeypatch.setattr(server, "_schedule_ws_orphan_reap", lambda sid: reap_calls.append(sid))
 
@@ -5349,17 +5392,25 @@ def test_close_transport_skips_dead_remaining_viewers(monkeypatch):
             return True
 
     dead = _LiveTransport()
+    popout = _LiveTransport()
+    session = _session(transport=None, running=False)
+    server._attach_session_transport(session, dead)
+    server._attach_session_transport(session, popout)
+    session["viewers"] = {dead: 100.0, popout: 200.0}
+    assert isinstance(session["transport"], server.FanoutTransport)
+    # The socket goes away without a disconnect reaching the gateway; the latch
+    # _transport_is_dead reads is the only trace it leaves behind.
     dead._closed = True
-    owner = _LiveTransport()
-    session = _session(transport=owner, running=False)
-    session["viewers"] = {dead: 100.0, owner: 200.0}
     server._sessions["dead-viewer-sid"] = session
 
-    reaped, detached = server._close_sessions_for_transport(owner)
+    try:
+        reaped, detached = server._close_sessions_for_transport(popout)
 
-    assert detached == 1
-    assert session["transport"] is server._detached_ws_transport
-    assert reap_calls == ["dead-viewer-sid"]
+        assert reaped == 0 and detached == 1
+        assert session["transport"] is server._detached_ws_transport
+        assert reap_calls == ["dead-viewer-sid"]
+    finally:
+        server._sessions.pop("dead-viewer-sid", None)
 
 
 def test_live_session_payload_registers_transport_as_viewer():
@@ -5439,7 +5490,7 @@ def test_resume_rebind_cancels_pending_ws_orphan_reap(monkeypatch):
 
 
 def test_claim_or_reuse_live_winner_cancels_pending_reap(monkeypatch):
-    """A resume that reuses the live winner cancels the winner's pending reap."""
+    """The winner's pending reap is cancelled only once guarded reuse is accepted."""
     cancelled = []
 
     class _Timer:
@@ -5472,6 +5523,17 @@ def test_claim_or_reuse_live_winner_cancels_pending_reap(monkeypatch):
         )
 
         assert live == ("winner-sid", winner)
+        assert "winner-sid" in server._pending_ws_reaps
+        assert cancelled == []
+        assert winner["transport"] is server._detached_ws_transport
+
+        transport = object()
+        monkeypatch.setattr(server, "current_transport", lambda: transport)
+        ctx = server._Resume(1, {"omit_messages": True}, "stored-claim")
+        response = server._resume_reuse_live(ctx, *live)
+
+        assert response["result"]["session_id"] == "winner-sid"
+        assert winner["transport"] is transport
         assert "winner-sid" not in server._pending_ws_reaps
         assert len(cancelled) == 1
     finally:
@@ -7553,6 +7615,9 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
         }
         for index in range(1, 4)
     ]
+    # Consecutive completions share one turn (#104671); a watch_match is a turn
+    # barrier, so it is the in-flight turn behind which batch_2/batch_3 must survive.
+    events[0].update(type="watch_match", pattern="owned-1")
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     for event in events:
         isolated_queue.put(event)
@@ -8909,6 +8974,36 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypatch):
+    """Under ``hermes serve`` the boot bootstrap owns the free-tier identity; ``setup.status`` reports
+    its record (blocking for it while it is in flight) instead of re-probing, so a client's first poll
+    sees the identity that exists rather than racing the mint."""
+    import threading
+    from hermes_cli import free_tier_bootstrap as fb
+    fb.reset_for_tests()
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured",
+                        lambda **_kw: pytest.fail("setup.status must read the record, not re-probe"))
+    release = threading.Event()
+
+    def slow_bootstrap():
+        release.wait(5)
+        with fb._lock:
+            fb._record = fb.SetupRecord(provider_configured=True, inference_provider="nous", free_tier=True,
+                                        has_identity=True, other_providers=False)
+            fb._done.set()
+    with fb._lock:
+        fb._started = True
+    threading.Thread(target=slow_bootstrap, daemon=True).start()
+    try:
+        release.set()
+        resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
+        assert resp["result"]["provider_configured"] is True
+        assert resp["result"]["ready"] is True and resp["result"]["free_tier"] is True
+        assert resp["result"]["inference_provider"] == "nous"
+    finally:
+        fb.reset_for_tests()
+
+
 def test_probe_credentials_emits_exact_empty_key_warning():
     agent = types.SimpleNamespace(api_key="", provider="openrouter")
 
@@ -10251,6 +10346,61 @@ def test_config_set_model_once_requires_live_session(monkeypatch):
     assert "/model --once requires a live session" in resp["error"]["message"]
 
 
+def test_config_set_model_sessionless_rejected(monkeypatch):
+    """Sessionless config.set model must 4001 before _apply_model_switch.
+
+    Missing session_id and a stale session_id miss both take the sessionless
+    branch; unscoped values and legacy --global must be rejected the same way
+    so a Desktop client cannot persist model.default before session.create.
+    """
+    called = {"n": 0}
+
+    def boom(*a, **k):
+        called["n"] += 1
+        raise AssertionError("_apply_model_switch must not run")
+
+    monkeypatch.setattr(server, "_apply_model_switch", boom)
+    for value in ["some-model", "some-model --provider openai-codex --global"]:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {"key": "model", "value": value},
+        })
+        assert resp["error"]["code"] == 4001
+        assert called["n"] == 0
+
+    resp = server.handle_request({
+        "id": "1", "method": "config.set",
+        "params": {"session_id": "missing-sid", "key": "model", "value": "some-model --global"},
+    })
+    assert resp["error"]["code"] == 4001
+    assert called["n"] == 0
+
+
+def test_config_set_model_live_session_still_applies_switch(monkeypatch):
+    """CONTROL: a live session still reaches _apply_model_switch, including --global."""
+    called = {"raw": []}
+
+    def fake_apply(sid, session, raw, **_kwargs):
+        called["raw"].append(raw)
+        return {"value": "some-model", "warning": "", "scope": "global"}
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_apply_model_switch", fake_apply)
+    try:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "some-model --provider openai-codex --global",
+            },
+        })
+        assert "error" not in resp
+        assert called["raw"] == ["some-model --provider openai-codex --global"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch):
     class Agent:
         model = "temp/model"
@@ -10857,7 +11007,7 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
         "history": "live question from state db",
         "prompt": "host system prompt",
         "status": "Tokens: 140",
-        "context": "Context usage: ~80 / 1,000 tokens",
+        "context": "Context usage: 80 / 1,000 tokens",
         "tools": "terminal",
         "help": "/status",
     }
@@ -10875,6 +11025,16 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
             assert expected in resp["result"]["output"]
             assert "stale parent mirror" not in resp["result"]["output"]
             assert "(._.)" not in resp["result"]["output"]
+        mirrored_usage = server._sessions["sid"]["_metadata_mirror"]["usage"]
+        for estimated in (True, False):
+            mirrored_usage["context_estimated"] = estimated
+            mirrored_usage["context_source"] = "local_estimate" if estimated else "provider_usage"
+            response = server.handle_request({
+                "id": "context-provenance", "method": "slash.exec",
+                "params": {"command": "context", "session_id": "sid"},
+            })
+            mark = "~" if estimated else ""
+            assert f"Context usage: {mark}80 / 1,000 tokens ({mark}8.0%)" in response["result"]["output"]
     finally:
         server._sessions.pop("sid", None)
 
@@ -15440,6 +15600,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     """session.branch must copy history into the parent's profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seen: dict = {"msgs": []}
 
     class LaunchDB:
@@ -15878,6 +16039,7 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
 
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (profile_home / ".env").write_text(
         "PROXMOX_TOKEN=mlperf-secret\n", encoding="utf-8"
     )
@@ -15970,6 +16132,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
     """A live branch must copy the complete visible transcript, not the compacted model tail."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seen: dict = {"msgs": []}
 
     display_history = [
@@ -16940,6 +17103,7 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
 
 
 def test_verification_status_returns_recorded_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")  # ledger is inert when the guard is off
     profile_home = tmp_path / "profiles" / "verify"
     profile_home.mkdir(parents=True)
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "verify" else None)
@@ -16980,6 +17144,7 @@ def test_verification_status_returns_recorded_evidence(tmp_path, monkeypatch):
 
 
 def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")  # ledger is inert when the guard is off
     # A cwd with no project facts (outside any code workspace) must report
     # not_applicable. Force the "no facts" precondition rather than relying on
     # tmp_path's ancestors being pristine — a stray marker file in a shared
@@ -20652,7 +20817,7 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
         server._sessions.pop("sid", None)
 
 
-def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):
+def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_path):
     """The trim boundary must not retain the just-pruned history snapshots."""
     observed = {}
     cleanup_order = []
@@ -20691,7 +20856,10 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):
         observed["run_kwargs"] = caller_locals.get("run_kwargs")
 
     session = _session(agent=_Agent())
-    session["profile_home"] = "/tmp/test-profile"
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    session["profile_home"] = str(profile_home)
     session["history"] = [
         {"role": "tool", "tool_call_id": "old", "content": "x" * 20_000}
     ]
@@ -20835,6 +21003,7 @@ def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
         session_key="branch-key",
         parent_session_id="parent-key",
         history=_branch_history(),
+        seeded=True,  # stamped by session.create: this history exists only in memory
     )
     try:
         db.create_session("branch-key", source="tui")

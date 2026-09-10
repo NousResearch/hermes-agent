@@ -6,7 +6,6 @@ import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
-import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { FolderOpen, Monitor, RefreshCw } from '@/lib/icons'
@@ -239,7 +238,7 @@ export function DesktopPluginsSection({ profile }: { profile: null | string }) {
             <Button
               onClick={() => {
                 triggerHaptic('selection')
-                void discoverRuntimePlugins()
+                void import('@/contrib/runtime-loader').then(module => module.discoverRuntimePlugins())
               }}
               size="icon"
               type="button"

@@ -13,33 +13,53 @@ import * as jsxRuntime from 'react/jsx-runtime'
 
 import * as sdk from './index'
 
-const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
-} as const
+// This module is reachable through sdk/index's import graph. Do not capture
+// that graph in a module-scope object: production bundling can evaluate the
+// object before the namespace binding has been initialized.
+function pluginNamespaces() {
+  return {
+    __HERMES_PLUGIN_SDK__: sdk,
+    __HERMES_REACT__: React,
+    __HERMES_REACT_JSX__: jsxRuntime,
+    __HERMES_REACT_JSX_DEV__: jsxDevRuntime
+  }
+}
+
+type PluginGlobalKey = keyof ReturnType<typeof pluginNamespaces>
 
 export function installPluginSdk(): void {
-  Object.assign(globalThis, GLOBALS)
+  Object.assign(globalThis, pluginNamespaces())
+}
+
+export function namespaceExportNames(ns: unknown): string[] {
+  if (ns == null || (typeof ns !== 'object' && typeof ns !== 'function')) {
+    return []
+  }
+
+  return Object.keys(ns).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
 }
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.
  *  Export names come from the namespace itself, so the list can't drift. */
-function shimUrl(globalKey: keyof typeof GLOBALS): string {
-  const names = Object.keys(GLOBALS[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
+function shimUrl(globalKey: PluginGlobalKey): string {
+  const names = namespaceExportNames(pluginNamespaces()[globalKey])
 
   const source =
     `const m = globalThis.${globalKey};\n` +
-    `export default m.default ?? m;\n` +
+    `const ns = m != null && typeof m === 'object' ? m : {};\n` +
+    `export default ns.default ?? ns;\n` +
     // Guard the destructuring: `export const {  } = m` is a syntax error, so
     // only emit it when the namespace actually has named exports.
-    (names.length ? `export const { ${names.join(', ')} } = m;\n` : '')
+    (names.length ? `export const { ${names.join(', ')} } = ns;\n` : '')
 
   return URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
 }
 
 let cached: Record<string, string> | null = null
+
+export function resetSdkImportMapCache(): void {
+  cached = null
+}
 
 /** Specifier -> shim URL map for the runtime loader (longest keys first). */
 export function sdkImportMap(): Record<string, string> {

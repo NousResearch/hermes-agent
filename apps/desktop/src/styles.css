@@ -1015,6 +1015,26 @@
   }
 }
 
+/* The guided-onboarding thread is marked with [data-thread-type='onboarding']
+   — the hook for onboarding-only transcript styling. */
+
+/* Guided chat is a conversation, not a work surface: hide per-message action
+   chrome (branch/copy/read-aloud/regenerate bar, reaction slot) and the turn-
+   duration stamp — regenerate/branch would derail the scripted flow. */
+[data-thread-type='onboarding'] [data-slot='aui_msg-actions'],
+[data-thread-type='onboarding'] [data-slot='aui_msg-reactions'],
+[data-thread-type='onboarding'] [data-slot='aui_turn-duration'] {
+  display: none;
+}
+
+/* Hermes speaks first here: no user bubble sits above the opening assistant
+   turn, so the first painted row would press against the pane chrome. The
+   utility class on the row pulls the top pad 0.5rem ABOVE the titlebar; give
+   the air back, and only in this thread. */
+[data-slot='aui_thread-content'][data-thread-type='onboarding'] {
+  padding-top: calc(var(--titlebar-height) + 1rem);
+}
+
 @keyframes arc-border {
   /* Compositor-only travel. The ::before layer is 300% × 300% of the host
      (mirroring the old `background-size: 300%`), so translating it from
@@ -1497,6 +1517,14 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='aui_assistant-message-content'] .aui-md,
 [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote, table, pre) {
   font-size: inherit;
+}
+
+/* Ask / onboarding pills sit flush with the prose left edge. `.aui-md` is
+   `overflow-hidden` so wide code/tables don't blow the column; that same clip
+   shears the first pill's left cap. Cards opt the surface out; tables/code keep
+   their own overflow. */
+[data-slot='aui_assistant-message-content'] .aui-md:has([data-onboarding-card]) {
+  overflow: visible;
 }
 
 /* Tailwind Typography sets `.prose :where(p) { margin: 1.25em }` (~16px). That

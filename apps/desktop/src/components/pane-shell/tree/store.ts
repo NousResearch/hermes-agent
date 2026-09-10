@@ -213,6 +213,28 @@ function setDismissed(paneId: string, dismissed: boolean) {
   }
 }
 
+/**
+ * Clear dismissal records for panes a NEW layout declares, without touching
+ * the tree or anyone's active tab (`revealTreePane` fronts, which would bury
+ * whatever the user is looking at).
+ *
+ * A dismissal outlives the layout that caused it. Switching to a layout that
+ * wants a previously dismissed pane back would otherwise place it in the tree
+ * and leave it invisible — the layout half-applies.
+ */
+export function undismissTreePanes(paneIds: Iterable<string>): void {
+  const dismissed = $dismissedPanes.get()
+  const next = new Set(dismissed)
+
+  for (const paneId of paneIds) {
+    next.delete(paneId)
+  }
+
+  if (next.size !== dismissed.size) {
+    saveDismissed(next)
+  }
+}
+
 // SPLIT-SHARE MEMORY — a tile pane that leaves the tree (the browser closed,
 // a page tile closed) records the share it held against its seam neighbor, so
 // re-opening it docks at the size the user left it. Without this every
@@ -1272,6 +1294,20 @@ writeKey('hermes.desktop.paneDockHeals.v1', null)
 const enforcedDocksThisBoot = new Set<string>()
 
 /**
+ * Reopen the enforcement window. The ledger protects a user's mid-session
+ * drags, but a wholesale tree replacement has no drags left to protect — and
+ * a pass that ran against a DIFFERENT tree burned the entry for nothing. That
+ * is how the guided onboarding shipped Bots as a tab over the chat: the boot
+ * pass fired while the solo tree had no sessions column to anchor to, so the
+ * assembled layout's pass was skipped as already-done.
+ *
+ * Only call this when replacing the tree wholesale.
+ */
+export function resetEnforcedDocks(): void {
+  enforcedDocksThisBoot.clear()
+}
+
+/**
  * A `panes` contribution whose dock hint carries `enforce: true` is re-homed
  * onto the hint's anchor at every boot's first adoption pass when it isn't
  * already docked there. Unlike the retired one-time heal, nothing
@@ -1347,7 +1383,7 @@ function enforceDockedPanes(
   return next
 }
 
-function adoptContributedPanes(): void {
+export function adoptContributedPanes(): void {
   const tree = $layoutTree.get()
 
   if (!tree) {

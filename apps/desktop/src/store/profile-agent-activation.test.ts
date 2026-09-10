@@ -22,8 +22,38 @@ const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
+// The registry's published route — the ensure fast path and publication
+// verify it now. The real applyActive moves it in the same step that selects
+// the socket; here it derives from the LAST activation call (mockClear in
+// beforeEach resets it to 'default'), so tests that replace the activation
+// implementations still read a route that follows their calls.
+const lastActivatedRoute = (): string => {
+  let route = 'default'
+  let order = -1
+
+  ensureGatewayForProfile.mock.calls.forEach((call, index) => {
+    const invocation = ensureGatewayForProfile.mock.invocationCallOrder[index] ?? -1
+
+    if (invocation > order) {
+      order = invocation
+      route = String(call[0])
+    }
+  })
+  ensureGatewayForAgent.mock.calls.forEach((call, index) => {
+    const invocation = ensureGatewayForAgent.mock.invocationCallOrder[index] ?? -1
+
+    if (invocation > order) {
+      order = invocation
+      route = String(call[1])
+    }
+  })
+
+  return route
+}
+
 vi.mock('@/store/gateway', () => ({
   $gateway,
+  activeGatewayProfileKey: () => lastActivatedRoute(),
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForProfile

@@ -22,6 +22,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { capabilityScoped } from '@/api/client'
+import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
@@ -1260,6 +1261,22 @@ export const host = {
    *  safe to call in render. Feature-detect on older desktops
    *  (`typeof host.paneVisibility === 'function'`). */
   paneVisibility: (paneId: string): ReadableAtom<boolean> => $paneVisible(paneId),
+
+  /** Reveal a contributed pane and its zone from an explicit user action. */
+  revealPane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (!id) {
+      return
+    }
+
+    revealTreePane(id)
+  },
+
+  /** Submit through the active composer; false means no surface claimed it.
+   *  Hidden prompts omit the user bubble. */
+  submitPrompt: (text: string, options: { hidden?: boolean } = {}): boolean =>
+    requestComposerSubmit(text, options.hidden ? { displayKind: 'hidden' } : {}),
 
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.

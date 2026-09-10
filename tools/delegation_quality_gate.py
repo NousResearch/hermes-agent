@@ -338,6 +338,18 @@ def judge_child_result(
             return _rejected(verdict, reason, retries, error=turn_detail)
         if not isinstance(retry_result, dict) or not (retry_result.get("final_response") or "").strip():
             return _rejected(verdict, "correction_turn_empty", retries)
+        if retry_result.get("failed") or retry_result.get("error"):
+            # The correction turn itself failed inside the child's own loop (its "final_response" is often
+            # that loop's error text, per _build_result_entry). _merge_retry_turn only folds text/api_calls/
+            # messages — it carries no failed/error/completed state — so merging this in and looping back to
+            # rejudge (or falling through to a fail-open delivery) would let a failed turn's error text
+            # inherit the ORIGINAL turn's completed=True and be delivered as a successful correction. Reject
+            # now, before any merge, rejudge, or fail-open delivery sees it.
+            _turn_error = retry_result.get("error")
+            return _rejected(
+                verdict, "correction_turn_failed", retries,
+                error=str(_turn_error) if _turn_error else "correction turn reported failed=true",
+            )
         _merge_retry_turn(result, retry_result)
         if retry_result.get("interrupted"):
             # Operator interrupt during the correction turn: the entry reports "interrupted" and the gate never blocks.

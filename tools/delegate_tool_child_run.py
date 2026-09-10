@@ -392,7 +392,7 @@ class _SchemaOutcome:
     retries: int
 
 def _validate_child_output_schema(
-    child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
+    child: Any, result: Dict[str, Any], task_index: int, run: _ChildRun
 ) -> _SchemaOutcome:
     """Validate the final answer against the attached output_schema with ONE bounded retry. Schema-less children (no
     dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
@@ -405,12 +405,16 @@ def _validate_child_output_schema(
     if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
         return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
 
+    # The first attempt is superseded the moment a retry is warranted: discard its buffered relay
+    # text now so a gated child never releases both the rejected attempt's text and the corrected
+    # one — only whatever this retry (or its absence) leaves behind is ever shown.
+    run.discard_withheld_text()
     # Exactly one retry turn, carrying the validation errors verbatim (no
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
     try:
         _retry_result = child.run_conversation(
-            user_message=build_retry_message(_schema_errors), task_id=child_task_id, stream_callback=relay_child_text,
+            user_message=build_retry_message(_schema_errors), task_id=run.child_task_id, stream_callback=run.relay_text,
         )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)

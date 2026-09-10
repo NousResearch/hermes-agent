@@ -334,7 +334,7 @@ def _run_single_child(
         if failure_entry is not None:
             return failure_entry
 
-        schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
+        schema = _validate_child_output_schema(child, result, task_index, run)
         # Opt-in external judge (config frozen on the child at spawn); its bounded correction turns run through
         # the child's own turn envelope and must precede the steer boundary.
         gate = judge_child_result(

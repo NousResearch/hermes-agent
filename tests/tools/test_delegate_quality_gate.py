@@ -140,6 +140,11 @@ class _StubChild:
             return {"final_response": "late", "completed": True, "api_calls": 1, "messages": []}
         if text == "<raise-timeout>":
             raise TimeoutError("provider socket read timed out")
+        if text == "<fail>":
+            # A turn that fails INSIDE the child's own loop (never raises): run_agent folds the
+            # error into final_response (see _build_result_entry's comment on this exact shape).
+            return {"final_response": "internal error: rate limited", "completed": True, "failed": True,
+                    "error": "rate limited", "api_calls": 1, "messages": []}
         if self.streams and callable(stream_callback):
             stream_callback(f"streamed: {text}")
         for path in self.writes:
@@ -411,6 +416,26 @@ class TestStreamedTextWithheld:
         kinds = [e[0] for e in events]
         assert kinds.index("subagent.text") < kinds.index("subagent.complete")
 
+    def test_superseded_schema_retry_text_never_streams_and_corrected_text_does(self, tmp_path):
+        """The output_schema retry in ``_validate_child_output_schema`` runs BEFORE the gate judges anything, on
+        its own turn separate from any gate correction turn. Without discarding the withheld-text buffer at that
+        retry boundary, the first (schema-invalid) attempt's streamed text and the corrected attempt's text both
+        land in the buffer and are released together (#reviewed blocker 1)."""
+        child = _StubChild([f"{CHILD_MARKER} {STREAM_MARKER} not json", '{"city": "Berlin"}'], streams=True)
+        child._delegate_output_schema = {
+            "type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"],
+        }
+        entry, events, live_log, _hook, _memory = self._run_streaming(tmp_path, child, _gate())
+        assert entry["schema_valid"] is True
+        assert entry["quality_gate"]["verdict"] == "pass"
+        assert len(child.calls) == 2  # original turn + the one bounded schema-retry turn
+        text_events = [e for e in events if e[0] == "subagent.text"]
+        assert len(text_events) == 1
+        released = _text(text_events)
+        assert CHILD_MARKER not in released and STREAM_MARKER not in released
+        assert CHILD_MARKER not in live_log and STREAM_MARKER not in live_log
+        assert "Berlin" in released and "Berlin" in live_log
+
     def test_ungated_child_streams_unchanged(self, tmp_path):
         child = _StubChild([f"{STREAM_MARKER} done"], streams=True)
         entry, events, live_log, _hook, _memory = self._run_streaming(tmp_path, child, None)
@@ -488,6 +513,23 @@ class TestCorrectionTurn:
         assert entry["quality_gate"]["retries"] == 1
         assert child._interrupt_requested is False
         assert len(child.calls) == 2
+
+    def test_correction_turn_reporting_failed_true_is_quarantined_not_delivered_as_completed(self):
+        """A correction turn that returns normally (no exception, no timeout) but with ``failed: True`` and its
+        own error text as ``final_response`` must never be merged in and rejudged/delivered: _merge_retry_turn
+        only folds text/api_calls/messages (no failed/error/completed), so without this check the merged
+        result keeps the ORIGINAL turn's completed=True and the failed turn's error text is delivered as if it
+        were a passing corrected answer (#reviewed blocker 2)."""
+        child = _StubChild(["NEEDS-WORK: draft.", "<fail>"], gate=_gate())
+        entry = _run(child)
+        assert len(child.calls) == 2
+        assert entry["quality_gate"]["quarantined"] is True
+        assert entry["quality_gate"]["reason"] == "correction_turn_failed"
+        assert entry["quality_gate"]["retries"] == 1
+        assert entry["status"] == "failed"
+        assert entry["exit_reason"] == "error"
+        assert entry["summary"] is None
+        assert "rate limited" not in _text(entry)  # child-authored error text never reaches the parent
 
     def test_run_correction_turn_reports_child_timeout_error_as_raised(self):
         child = _StubChild(["<raise-timeout>"])

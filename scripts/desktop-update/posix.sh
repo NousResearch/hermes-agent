@@ -318,8 +318,18 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
 # Outcomes mirror decideRelaunchOutcome: relaunch | skew | manual.
 GATE="" GATE_MSG=""
 linux_gate() {
-  local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg
-  case "$RELAUNCH_TARGET" in
+  local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg target="$RELAUNCH_TARGET"
+  # Electron's process.execPath is a realpath; --install-root is often the
+  # symlink form of HERMES_HOME. On Bazzite/Silverblue /home -> /var/home,
+  # so a string prefix match reports a false package-skew and never relaunches.
+  if command -v realpath >/dev/null 2>&1; then
+    unpacked="$(realpath -q "$unpacked" 2>/dev/null || printf '%s' "$unpacked")"
+    target="$(realpath -q "$target" 2>/dev/null || printf '%s' "$target")"
+  else
+    unpacked="$(readlink -f "$unpacked" 2>/dev/null || printf '%s' "$unpacked")"
+    target="$(readlink -f "$target" 2>/dev/null || printf '%s' "$target")"
+  fi
+  case "$target" in
     "$unpacked"/*) ;;
     *) GATE=skew GATE_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update or reinstall it to match."; return ;;
   esac

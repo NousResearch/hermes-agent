@@ -111,6 +111,28 @@ case "$MODE" in
     expect "sibling-prefix dir not fooled"      skew     "$(decide --relaunch-target "$UNPACKED-evil/hermes")"
     expect "no chrome-sandbox (namespace)"      relaunch "$(decide --relaunch-target "$UNPACKED/hermes")"
 
+    # Bazzite/Silverblue: /home -> /var/home. Electron's process.execPath is
+    # the realpath; --install-root is often the symlink path from HERMES_HOME.
+    # String prefix match then reports a false "package skew" and never relaunches.
+    SYMLINK_HOME="$G/home"
+    REAL_HOME="$G/varhome"
+    mkdir -p "$REAL_HOME/hermes-agent/apps/desktop/release/linux-unpacked"
+    ln -s "$REAL_HOME" "$SYMLINK_HOME"
+    touch "$REAL_HOME/hermes-agent/apps/desktop/release/linux-unpacked/hermes"
+    chmod +x "$REAL_HOME/hermes-agent/apps/desktop/release/linux-unpacked/hermes"
+    SYMLINK_UNPACKED="$SYMLINK_HOME/hermes-agent/apps/desktop/release/linux-unpacked"
+    REAL_BIN="$(readlink -f "$REAL_HOME/hermes-agent/apps/desktop/release/linux-unpacked/hermes")"
+    expect "symlink install-root vs realpath exec" relaunch "$(
+      bash "$SCRIPT_DIR/posix.sh" --self-test-gate \
+        --install-root "$SYMLINK_HOME/hermes-agent" \
+        --relaunch-target "$REAL_BIN" | cut -d: -f1
+    )"
+    expect "realpath install-root vs symlink exec" relaunch "$(
+      bash "$SCRIPT_DIR/posix.sh" --self-test-gate \
+        --install-root "$(readlink -f "$SYMLINK_HOME/hermes-agent")" \
+        --relaunch-target "$SYMLINK_UNPACKED/hermes" | cut -d: -f1
+    )"
+
     touch "$UNPACKED/chrome-sandbox"
     expect "sandbox not root/setuid"            manual   "$(decide --relaunch-target "$UNPACKED/hermes")"
     expect "opt-out: --sandbox-fallback"        relaunch "$(decide --relaunch-target "$UNPACKED/hermes" --sandbox-fallback)"

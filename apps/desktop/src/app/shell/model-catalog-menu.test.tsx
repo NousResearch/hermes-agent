@@ -52,6 +52,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  // The backend mock echoes this snapshot; retire fixture jobs before jsdom
+  // disappears so an in-flight app-level poll cannot schedule another tick.
+  $localRuntimeJobs.set([])
   vi.clearAllMocks()
 })
 

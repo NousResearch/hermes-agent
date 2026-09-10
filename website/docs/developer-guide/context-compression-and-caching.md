@@ -216,6 +216,17 @@ Consumers observe the mode rather than diffing session ids:
 
 Set `in_place: false` to restore the legacy rotating path, where each compaction commits a new session id linked to the previous one via `parent_session_id`.
 
+### Auxiliary feasibility and tail retention
+
+A smaller auxiliary compression model can lower the live compression trigger without
+changing the selected tail policy. In `lean` mode the selection budget remains based
+on the **main model's context window**: 2.5%, clamped to 10K–25K tokens. For example,
+a 1M main model with a 512K auxiliary model retains a 25K selection budget even when
+feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
+recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
+These are tail-selection budgets, not strict limits on the entire compacted context:
+protected messages, boundary alignment, summaries, and anchors can add tokens.
+
 ### Per-model threshold overrides
 
 `compression.model_thresholds` lets you trigger compaction at different points

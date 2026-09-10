@@ -41,6 +41,36 @@ it('canonical busy policy is session scoped even with a cached global mode', asy
   } finally { h.unmount(); $connection.set(null) }
 })
 
+it('recovers a transient busy policy read without reconnecting', async () => {
+  vi.useFakeTimers()
+  $gatewayState.set('open')
+  const request = vi.fn().mockRejectedValueOnce(new Error('temporarily unavailable')).mockResolvedValue({ value: 'steer' })
+  const hook = renderHook(() => useBusyInputMode({ sessionId: 'runtime', storedSessionId: null, requestGateway: request }))
+
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(hook.result.current).toBe('steer')
+    expect(request).toHaveBeenCalledTimes(2)
+  } finally { hook.unmount(); vi.useRealTimers() }
+})
+
+it('bounds failed reads and cancels retries when their session leaves', async () => {
+  vi.useFakeTimers()
+  $gatewayState.set('open')
+  const request = vi.fn().mockRejectedValue(new Error('unavailable'))
+  const hook = renderHook(({ sessionId }) => useBusyInputMode({ sessionId, storedSessionId: null, requestGateway: request }), { initialProps: { sessionId: 'first' } })
+
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(request).toHaveBeenCalledTimes(3)
+    hook.rerender({ sessionId: 'second' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    hook.unmount()
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(request).toHaveBeenCalledTimes(4)
+  } finally { hook.unmount(); vi.useRealTimers() }
+})
+
 it('uses only the current owner config and ignores a late response from the previous profile', async () => {
   $gatewayState.set('open')
   let resolveOld!: (value: { value: string }) => void

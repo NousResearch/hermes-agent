@@ -51,19 +51,31 @@ export function useBusyInputMode({
 
     let cancelled = false
     const ownerRoute = connectionId ? { connectionId, profile: ownerProfile, targetProfile } : ownerProfile
-    void requestForSessionProfile<{ value?: unknown }>(ownerRoute, requestGateway, 'config.get', {
-      key: 'busy',
-      session_id: sessionId
-    })
-      .then(result => {
-        if (!cancelled && result && Object.hasOwn(result, 'value')) {
-          setLoaded({ owner, connection, sessionId, mode: normalizeBusyInputMode(result.value) })
-        }
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let attempts = 0
+
+    const load = () => {
+      attempts += 1
+      void requestForSessionProfile<{ value?: unknown }>(ownerRoute, requestGateway, 'config.get', {
+        key: 'busy',
+        session_id: sessionId
       })
-      .catch(() => undefined)
+        .then(result => {
+          if (!cancelled && result && Object.hasOwn(result, 'value')) {
+            setLoaded({ owner, connection, sessionId, mode: normalizeBusyInputMode(result.value) })
+          }
+        })
+        .catch(() => {
+          // A failed read must not strand busy Enter on an otherwise healthy socket.
+          if (!cancelled && attempts < 3) {retryTimer = setTimeout(load, 1000 * attempts)}
+        })
+    }
+
+    load()
 
     return () => {
       cancelled = true
+      clearTimeout(retryTimer)
     }
   }, [
     configured,

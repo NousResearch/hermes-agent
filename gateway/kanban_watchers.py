@@ -37,6 +37,15 @@ _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
 
 
+def _log_ad_tick_result(task: asyncio.Task) -> None:
+    """Surface a failed background auto-decompose tick (per-task outcomes are logged inline)."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("kanban auto-decompose: background tick failed: %s", exc)
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -236,8 +245,10 @@ class GatewayKanbanWatchersMixin:
         Gated by `kanban.dispatch_in_gateway` (default True); when false the
         loop exits and an external `hermes kanban daemon` is expected. Each
         tick runs :func:`kanban_db_dispatch.dispatch_once` in a thread; one tick's
-        failure never stops the next. Shutdown: ``self._running`` is checked
-        between ticks and the in-flight ``to_thread`` returns on its own.
+        failure never stops the next. The auto-decompose pass runs as a single
+        in-flight background task so a slow triage LLM call never delays the
+        spawn step. Shutdown: ``self._running`` is checked between ticks and
+        the in-flight ``to_thread`` returns on its own.
         """
         boot = self._kanban_dispatcher_boot()
         if boot is None:
@@ -255,6 +266,7 @@ class GatewayKanbanWatchersMixin:
         bad_ticks = 0
         last_warn_at = 0
         dispatcher = _KanbanDispatcher(_kb, settings)
+        ad_task: Optional[asyncio.Task] = None
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
@@ -277,9 +289,16 @@ class GatewayKanbanWatchersMixin:
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
-                    # See #49638.
-                    if _ad_enabled:
-                        await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
+                    # See #49638. #106985: the decompose call is a whole-board
+                    # LLM pass, so it runs as a single in-flight background task
+                    # instead of being awaited inline — otherwise one slow or
+                    # stuck triage decompose delays every unrelated ready-task
+                    # spawn on every board sharing this dispatcher.
+                    if _ad_enabled and (ad_task is None or ad_task.done()):
+                        ad_task = asyncio.create_task(
+                            _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
+                        )
+                        ad_task.add_done_callback(_log_ad_tick_result)
                     results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
@@ -296,6 +315,8 @@ class GatewayKanbanWatchersMixin:
                     last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
+                if ad_task is not None and not ad_task.done():
+                    ad_task.cancel()
                 self._release_kanban_dispatcher_lock()
                 raise
             except Exception:
@@ -303,6 +324,8 @@ class GatewayKanbanWatchersMixin:
 
             await self._sleep_between_ticks(interval)
 
+        if ad_task is not None and not ad_task.done():
+            ad_task.cancel()
         self._release_kanban_dispatcher_lock()
 
 

@@ -1085,8 +1085,11 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
         # BEFORE the per-board tick work. Each tick now issues 3 ``to_thread``
         # calls (reaper + ``_tick_once`` + ``_ready_nonempty``) instead of 2,
         # so this counter must reach 6 to allow the same 2 dispatch ticks the
-        # pre-reaper test expected at 4. Connect counts in the assertion below
-        # are unchanged.
+        # pre-reaper test expected at 4.
+        # #106985: the auto-decompose pass moved to a background task, so it
+        # no longer issues a synchronous ``to_thread`` inside the tick (this
+        # yield-free mock never schedules it). 3 calls per tick still holds
+        # and the 6-call budget still covers exactly 2 dispatch ticks.
         calls["to_thread"] += 1
         result = fn(*args, **kwargs)
         if calls["to_thread"] >= 6:
@@ -1112,13 +1115,13 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert not any("tick failed on board" in msg for msg in messages)
     assert not any(record.exc_info for record in caplog.records)
-    # First tick connect (dispatch) + two probes per `_has_ready_work` call
-    # (ready then review, both via _kbc.connect). The second dispatch tick
-    # skips the dispatch connect because the corrupt board fingerprint is
-    # disabled, but the ready/review probes still each connect. PR f55d94a1e
-    # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
-    assert calls["connect"] == 5
+    # First tick connect (dispatch) + ready/review probe. The second dispatch
+    # tick skips the dispatch connect because the corrupt board fingerprint is
+    # disabled, but the ready/review probe still connects. The auto-decompose
+    # pass used to add a connect per tick (its list_triage_ids ran inline);
+    # since #106985 it runs as a background task that this yield-free mock
+    # never schedules, so those two connects drop out: 5 → 3.
+    assert calls["connect"] == 3
 
 
 # ---------------------------------------------------------------------------

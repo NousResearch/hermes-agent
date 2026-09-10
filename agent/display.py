@@ -890,6 +890,7 @@ class KawaiiSpinner:
 # ── Cute tool message (completion line that replaces the spinner) ─────────
 
 _ERROR_SUFFIX_MAX_LEN = 48
+_MAX_STRUCTURED_RESULT_DEPTH = 4
 
 
 def _trim_error(msg: str) -> str:
@@ -902,11 +903,43 @@ def _trim_error(msg: str) -> str:
     return _tail_trunc(msg, _ERROR_SUFFIX_MAX_LEN)
 
 
-def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
-    """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
-    if result is None or file_mutation_result_landed(tool_name, result):
+def _structured_failure_message(result: Any) -> str | None:
+    """Return a failure message from bounded nested MCP result envelopes."""
+    current = result
+    for _ in range(_MAX_STRUCTURED_RESULT_DEPTH):
+        if isinstance(current, str):
+            current = safe_json_loads(current)
+        if not isinstance(current, dict):
+            return None
+        if current.get("ok") is False:
+            return str(
+                current.get("error")
+                or current.get("message")
+                or current.get("status")
+                or "reported ok=false"
+            )
+        err = current.get("error") or current.get("message")
+        if err and (current.get("success") is False or "error" in current):
+            return str(err)
+        if "result" not in current:
+            return None
+        current = current["result"]
+    return None
+
+
+def _detect_tool_failure(tool_name: str, result: Any | None) -> tuple[bool, str]:
+    """Inspect a tool result for signs of failure.
+
+    Returns ``(is_failure, suffix)`` where *suffix* is a short informational
+    tag like ``" [exit 1]"`` for terminal failures, ``" [full]"`` for memory
+    overflow, or a trimmed error message. On success returns ``(False, "")``.
+    """
+    if result is None:
         return False, ""
-    data = safe_json_loads(result)
+    if file_mutation_result_landed(tool_name, result):
+        return False, ""
+
+    data = result if isinstance(result, dict) else safe_json_loads(result)
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
@@ -916,18 +949,26 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         err_msg = data.get("error")
         return True, f" [{_trim_error(str(err_msg))}]" if err_msg else f" [exit {exit_code}]"
 
-    if isinstance(data, dict):
-        failed = data.get("success") is False
-        # Memory: distinguish "store full" from real errors.
-        if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
-            return True, " [full]"
-        err = data.get("error") or data.get("message")
-        if err and (failed or "error" in data):
-            return True, f" [{_trim_error(str(err))}]"
-    # Multimodal results (dicts) are successes; failures arrive as JSON-encoded strings.
-    if isinstance(result, str) and (
-        '"error"' in result[:500].lower() or '"failed"' in result[:500].lower() or result.startswith("Error")
-    ):
+    # Memory: distinguish "store full" from real errors.
+    if tool_name == "memory":
+        if isinstance(data, dict):
+            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
+                return True, " [full]"
+
+    # Structured errors may be wrapped by MCP as {"result": "<json>"} or
+    # {"result": {...}}. Only follow that explicit envelope, with a small
+    # depth cap, so arbitrary nested payload data is not treated as failure.
+    structured_error = _structured_failure_message(result)
+    if structured_error:
+        return True, f" [{_trim_error(structured_error)}]"
+
+    # Generic heuristic for non-terminal tools. Multimodal tool results (dicts
+    # with _multimodal=True) are not strings — treat them as successes since
+    # failures would be JSON-encoded strings.
+    if not isinstance(result, str):
+        return False, ""
+    lower = result[:500].lower()
+    if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"
     return False, ""
 

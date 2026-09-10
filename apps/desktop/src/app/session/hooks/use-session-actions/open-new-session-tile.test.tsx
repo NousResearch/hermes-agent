@@ -13,18 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSession } from '@/hermes'
 import { ensureGatewayProfile } from '@/store/profile'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
-import {
-  requestGateway,
-  requestGatewayForAgent,
-} from '@/store/gateway'
-import {
-  $activeSessionStoredIdRotation,
-  $messages,
-  $sessions,
-  sessionPinId,
-} from '@/store/session'
-import type { SessionInfo } from '@/types/hermes'
-import type { ClientSessionState } from '@/store/session'
+import { requestGatewayForAgent } from '@/store/gateway'
+import type { ClientSessionState } from '@/app/types'
 
 import { useSessionActions } from './index'
 
@@ -48,7 +38,6 @@ vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   openGatewayForAgent: vi.fn(),
   openGatewayForProfile: vi.fn(),
-  requestGateway: vi.fn().mockResolvedValue({ ok: true, stored_session_id: 'stored-1' }),
   requestGatewayForAgent: vi.fn().mockResolvedValue({ ok: true, stored_session_id: 'stored-1' }),
   retainGatewayForAgent: vi.fn().mockResolvedValue(() => undefined),
 }))
@@ -105,9 +94,7 @@ async function mountHarness(): Promise<Handle> {
 
 describe('openNewSessionTile × Bot Mode hidden flag', () => {
   beforeEach(() => {
-    vi.mocked(requestGateway).mockReset()
     vi.mocked(requestGatewayForAgent).mockReset()
-    vi.mocked(requestGateway).mockResolvedValue({ ok: true, stored_session_id: 'stored-1' })
     vi.mocked(requestGatewayForAgent).mockResolvedValue({ ok: true, stored_session_id: 'stored-1' })
     $activeGatewayProfile.set('default')
     $newChatProfile.set('')

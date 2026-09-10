@@ -3,6 +3,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { hermesApi } from '@/api/client'
 import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
@@ -21,12 +22,15 @@ import {
   setComposerAttachmentUploadState,
   updateComposerAttachment
 } from '@/store/composer'
+import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
+import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
 import {
   $busy,
+  $connection,
   $currentCwd,
   $messages,
   $terminalBackend,
@@ -134,14 +138,33 @@ export async function uploadComposerAttachment(
 ): Promise<ComposerAttachment> {
   const { backendCwd, remote, storedSessionId, onSessionRecovered, terminalBackend } = opts
 
-  const requestGateway = captureSubmissionDestination(
-    storedSessionId ?? opts.sessionId,
-    opts.requestGateway
-  ).requestGateway
+  const destination = captureSubmissionDestination(storedSessionId ?? opts.sessionId, opts.requestGateway)
+  const requestGateway = destination.requestGateway
 
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
   const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
+
+  if (attachment.kind === 'image' && serverOwnsComposerQueue(storedSessionId ?? opts.sessionId)) {
+    // Pin HTTP to the same owner before the native byte read yields. Images
+    // are immutable admission payloads, never legacy agent.pending_images.
+    const owner = destination.owner
+    const connectionId = typeof owner === 'object' && owner ? owner.connectionId : $connection.get()?.connectionId
+    const profile = typeof owner === 'object' && owner ? owner.targetProfile || owner.profile : owner || $activeGatewayProfile.get()
+
+    const dataUrl = attachment.previewUrl?.includes(';base64,')
+      ? attachment.previewUrl
+      : await window.hermesDesktop?.readFileDataUrl(path)
+
+    if (!dataUrl) { throw new Error(`Could not read ${label}`) }
+
+    const result = await hermesApi<{ path: string; mime_type: string }>({
+      method: 'POST', path: '/api/chat/image-upload', connectionId: connectionId ?? 'local', profile,
+      body: { data_url: dataUrl, filename: label }
+    })
+
+    return { ...attachment, path: result.path, mime: result.mime_type, attachedSessionId: opts.sessionId, uploadState: undefined }
+  }
 
   // Read bytes/paths ONCE, outside the retry. Only the session-scoped RPC is
   // replayed on recovery — re-reading a multi-MB file to retry a dead session
@@ -419,6 +442,7 @@ export function usePromptActions({
                 attachedSessionId: nextAttachment.attachedSessionId,
                 label: nextAttachment.label,
                 path: nextAttachment.path,
+                mime: nextAttachment.mime,
                 refText: nextAttachment.refText,
                 uploadState: nextAttachment.uploadState
               })

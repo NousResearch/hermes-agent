@@ -79,6 +79,48 @@ afterEach(() => {
 })
 
 describe('submission intent destinations', () => {
+  it('stages canonical images on the captured owner without a legacy image RPC', async () => {
+    const { uploadComposerAttachment } = await import('.')
+    const original = window.hermesDesktop
+    const gate = deferred<string>()
+    const api = vi.fn(async () => ({ path: '/owner/cache/images/exact.png', mime_type: 'image/png' }))
+    window.hermesDesktop = { ...original, readFileDataUrl: () => gate.promise, api } as never
+    $connection.set({ connectionId: 'local', wsUrl: 'ws://localhost/ws?native_dial=1' } as never)
+    $activeGatewayProfile.set('alice')
+    const request = vi.fn() as GatewayRequest
+
+    try {
+      const pending = uploadComposerAttachment({ id: 'img', kind: 'image', label: 'exact.png', path: '/native/exact.png' },
+        { remote: false, sessionId: 'runtime-a', requestGateway: request })
+
+      $activeGatewayProfile.set('bob')
+      gate.resolve('data:image/png;base64,aGVsbG8=')
+      const staged = await pending
+      expect(staged).toMatchObject({ path: '/owner/cache/images/exact.png', mime: 'image/png', attachedSessionId: 'runtime-a' })
+      expect(api).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', path: '/api/chat/image-upload', connectionId: 'local', profile: 'alice', body: { data_url: 'data:image/png;base64,aGVsbG8=', filename: 'exact.png' } }))
+      expect(request).not.toHaveBeenCalled()
+    } finally { window.hermesDesktop = original }
+  })
+
+  it('retains exact canonical image parameters and identity through ambiguous submit and remount', async () => {
+    const { deps, requestGateway } = setup()
+    $connection.set({ connectionId: 'local', wsUrl: 'ws://localhost/ws?native_dial=1' } as never)
+    const image = { id: 'image-retry', kind: 'image' as const, label: 'exact.png', path: '/owner/cache/images/exact.png', mime: 'image/png' }
+    deps.syncAttachmentsForSubmit.mockResolvedValue({ sessionId: 'runtime-a', attachments: [image] } as never)
+    requestGateway.mockRejectedValueOnce(new Error('connection closed'))
+    let hook = renderHook(() => useSubmitPrompt(deps))
+    await act(async () => { expect(await hook.result.current('image retry', { attachments: [image] })).toBe(false) })
+    const first = requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')![1]
+    expect(first?.attachments).toEqual([{ path: image.path, mime: image.mime }])
+    hook.unmount()
+    hook = renderHook(() => useSubmitPrompt(deps))
+    await act(async () => { expect(await hook.result.current('image retry', { attachments: [image] })).toBe(true) })
+    expect(requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')[1][1]).toEqual(first)
+    expect(deps.syncAttachmentsForSubmit).toHaveBeenCalledOnce()
+    expect(window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')).not.toContain('image retry')
+  })
+
+
   it('allows presentation and registry metadata replacement on the same authority', async () => {
     const connection = {
       baseUrl: 'http://localhost:1',

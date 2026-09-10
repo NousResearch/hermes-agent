@@ -252,6 +252,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                 attachedSessionId: next.attachedSessionId,
                 label: next.label,
                 path: next.path,
+                mime: next.mime,
                 refText: next.refText,
                 uploadState: next.uploadState
               })

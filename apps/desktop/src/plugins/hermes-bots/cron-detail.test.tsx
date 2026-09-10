@@ -121,6 +121,29 @@ describe('the facts the row never showed', () => {
       // The run that never happened outranks the delivery of a run that did.
     ).toBe('model timeout')
   })
+
+  it('surfaces an unverified delivery, ranked below an outright delivery failure', () => {
+    // The gateway sends this when a live adapter acked the send with no
+    // message_id/raw_response (Slack/Matrix/Mattermost shape) — accepted as
+    // delivered, but worth a heads-up, mirroring `hermes cron list`'s own
+    // "Delivery UNVERIFIED" line.
+    expect(
+      routineDetailIssue({ ...activeJob, last_delivery_unverified: ['telegram:12345'] })
+    ).toBe('Delivery unverified: adapter acked telegram:12345 without confirmation')
+
+    // An outright delivery failure still outranks a merely-unverified one.
+    expect(
+      routineDetailIssue({
+        ...activeJob,
+        last_delivery_error: 'telegram 401',
+        last_delivery_unverified: ['telegram:12345']
+      })
+    ).toBe('telegram 401')
+
+    // An empty/absent list is not an issue.
+    expect(routineDetailIssue({ ...activeJob, last_delivery_unverified: [] })).toBeNull()
+    expect(routineDetailIssue({ ...activeJob, last_delivery_unverified: null })).toBeNull()
+  })
 })
 
 describe('the row is reachable', () => {

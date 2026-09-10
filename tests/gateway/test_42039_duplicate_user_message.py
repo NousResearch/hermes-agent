@@ -137,7 +137,7 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
     runner._run_agent = AsyncMock(
         return_value={
             "failed": True,
-            "final_response": None,
+            "final_response": "API call failed after 3 retries: 429 Too Many Requests",
             "error": "429 Too Many Requests — rate limit exceeded",
             "messages": [],
             "history_offset": 0,
@@ -145,13 +145,30 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
         }
     )
 
-    await runner._handle_message_with_agent(
+    response = await runner._handle_message_with_agent(
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
     )
+    assert "not processed" in response
+
+    transcript_rows = [
+        call.args[1]
+        for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) >= 2 and call.args[1].get("role") in {"user", "assistant"}
+    ]
+    assert [row["role"] for row in transcript_rows] == ["user", "assistant"]
+    assert "not processed" in transcript_rows[-1]["content"]
+
+    # The next unrelated input remains its own turn instead of alternation repair
+    # merging the failed mutating request into it.
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    replay = [*transcript_rows, {"role": "user", "content": "unrelated question"}]
+    assert repair_message_sequence(None, replay) == 0
+    assert replay[-1]["content"] == "unrelated question"
 
 
 # ── Test 2: agent_failed_early with no _session_db → skip_db not True ─

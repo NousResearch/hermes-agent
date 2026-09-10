@@ -41,7 +41,6 @@ suggest:
   keywords:
     - socialrobot
     - social robot
-    - post-scheduler
   hosts:
     - socialrobot.io
 

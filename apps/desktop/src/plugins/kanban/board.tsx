@@ -92,6 +92,7 @@ import {
   columnLabel,
   errText,
   FIELD_LABEL,
+  isConnectivityError,
   isLockedTarget,
   lockedReason,
   RunClock,
@@ -579,10 +580,10 @@ function NewTaskDialog({
   const [estimate, setEstimate] = useState<null | TaskEstimate>(null)
 
   // Rough effort estimate from the typed title/body (before the task exists),
-  // via the auto-routed auxiliary model. Makes a model call — explicit action.
+  // via the auto-routed auxiliary model. Makes a model call -- explicit action.
   const estMut = useMutation({
     mutationFn: () => estimateNew(title.trim(), bodyText.trim()),
-    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onError: err => host.notify({ kind: 'error', message: isConnectivityError(err) ? k.estimateTimeout : errText(err) }),
     onSuccess: r => {
       if (r.ok) {
         setEstimate(r)

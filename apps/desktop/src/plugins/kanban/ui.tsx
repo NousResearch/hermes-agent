@@ -71,6 +71,17 @@ export function errText(err: unknown): string {
   return raw
 }
 
+/** Detect whether an error is a backend connectivity/timeout error (thrown by
+ *  fetchJson in main.ts when req.setTimeout fires, or when the TCP connection
+ *  itself fails). Used to show a user-friendly message instead of a raw
+ *  "Timed out connecting..." or "fetch failed" string. The name reflects the
+ *  full scope: this matches ECONNREFUSED, ENOTFOUND, and generic fetch failures
+ *  alongside genuine timeouts. */
+export function isConnectivityError(err: unknown): boolean {
+  const raw = err instanceof Error ? err.message : String(err)
+  return /timed out|timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|fetch failed/i.test(raw)
+}
+
 /** Backend timestamps are epoch SECONDS; the canonical formatter takes ms. */
 export const ago = (seconds?: null | number): null | string => (seconds ? relativeTime(seconds * 1000) : null)
 

@@ -1,0 +1,6 @@
+This skill is adapted from h3-storyboard by Ray (phileiny)
+https://github.com/phileiny/h3-storyboard-skill (MIT License)
+
+The Traditional-Chinese skill body under references/ is carried verbatim
+from the upstream repository (commit as of 2026-08-28); the English hub
+SKILL.md and all Hermes-specific adaptations were written for Hermes Agent.

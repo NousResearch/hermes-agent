@@ -88,7 +88,10 @@ export function SearchableSelect({
           <Codicon className="shrink-0 opacity-60" name={open ? 'chevron-up' : 'chevron-down'} size="1rem" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+      <PopoverContent
+        align="start"
+        className="w-max min-w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] p-0"
+      >
         <Command filter={rankSearchOption}>
           <CommandInput autoFocus placeholder={placeholder} />
           <CommandList>

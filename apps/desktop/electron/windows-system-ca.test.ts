@@ -10,6 +10,7 @@ afterEach(() => vi.restoreAllMocks())
 
 test('excludes expired roots and deduplicates real certificates with defaults first', () => {
   vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-01-01T00:00:00Z').getTime())
+
   const tlsApi = fakeTlsApi(
     [expiredRoot, bundledRoot, bundledRoot, 'unparseable-default'],
     [expiredRoot, bundledRoot.replaceAll('\n', '\r\n'), privateRoot, privateRoot, 'unparseable-system']

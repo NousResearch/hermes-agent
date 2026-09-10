@@ -194,6 +194,24 @@ class TestCoalescing:
         assert usage[0]["input_tokens"] == n
         assert usage[0]["api_call_count"] == n
 
+    def test_ac1_queued_cache_discounts_accumulate(self, db):
+        """Separate queued upserts add discounts instead of replacing them."""
+        db.create_session("s-discount", "test")
+        for discount in (0.001, 0.002):
+            db.queue_token_counts(
+                "s-discount", input_tokens=1, model="m", billing_provider="p",
+                cache_discount=discount, api_call_count=1,
+            )
+            # Flush each delta separately so the second write exercises the
+            # session_model_usage ON CONFLICT accumulation branch.
+            assert db.flush_token_counts()
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT cache_discount FROM session_model_usage WHERE session_id = ?",
+                ("s-discount",),
+            ).fetchone()
+        assert row["cache_discount"] == pytest.approx(0.003)
+
     def test_ac3_queued_provider_attribution_persists(self, db):
         """Queued writes retain the upstream provider through coalescing."""
         db.create_session("s-provider-write", "test")

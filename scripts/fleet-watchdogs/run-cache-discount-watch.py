@@ -11,7 +11,9 @@ It reads the session_model_usage rows that the 2026-09-01 provider-threading
 change persists on every call: provider_name (the ACTUAL upstream host, not
 'openrouter'), native_tokens_prompt / native_tokens_cached, cache_discount
 (USD saved) and total_cost (USD billed). Those fields are why the DeepInfra
-11x overspend was invisible: every row used to say only 'openrouter'.
+11x overspend was invisible: every row used to say only 'openrouter'. A cache
+hit is not proof of a discount, so this watchdog reports measured cache share
+and billed prompt cost rather than summing the optional cache_discount field.
 
 `no_agent` cron script: no LLM call, no tokens, $0.
 Silent unless something is wrong (empty stdout = silent tick).
@@ -32,8 +34,6 @@ HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
 WINDOW_HOURS = 24
 MIN_CALLS = 8              # don't judge a provider on a handful of cold starts
 MIN_PROMPT_TOKENS = 200_000
-CACHED_SHARE_FLOOR = 0.40  # "the provider claims it cached a lot"
-SAVING_RATE_FLOOR = 0.05   # ...but discounted less than 5% of gross -> Parasail trap
 SPREAD_RATIO = 3.0         # same model, one host >= 3x another's cost per prompt token
 UNATTRIBUTED_SHARE = 0.50  # over half of fresh traffic missing provider_name
 
@@ -82,11 +82,12 @@ def main():
                 continue
             key = (r["model"], name)
             a = agg.setdefault(key, {"calls": 0, "prompt": 0, "cached": 0,
-                                     "discount": 0.0, "billed": 0.0})
+                                     "billed": 0.0, "discount_observations": 0})
             a["calls"] += calls
             a["prompt"] += r["native_tokens_prompt"] or 0
             a["cached"] += r["native_tokens_cached"] or 0
-            a["discount"] += r["cache_discount"] or 0.0
+            if r["cache_discount"]:
+                a["discount_observations"] += 1
             a["billed"] += r["total_cost"] or 0.0
 
     problems = []
@@ -99,20 +100,29 @@ def main():
             "The provider_name threading may have regressed, or the gateway is "
             "running pre-migration code." % (unattributed_calls, total_calls, WINDOW_HOURS))
 
-    # 2. Cache HIT without cache SAVING (the Parasail trap).
+    # 2. Report measured cache share and billed prompt cost separately from
+    # alarms. Routine reports go to stderr so the cron delivery remains silent
+    # unless an attribution or cost-spread alarm is present. Do not infer a
+    # saving from cached tokens: providers may report hits while charging full
+    # price, and cache_discount is optional provider data.
+    routine_reports = []
     for (model, prov), a in sorted(agg.items()):
         if a["calls"] < MIN_CALLS or a["prompt"] < MIN_PROMPT_TOKENS:
             continue
         cached_share = a["cached"] / a["prompt"] if a["prompt"] else 0.0
-        gross = a["discount"] + a["billed"]
-        saving_rate = a["discount"] / gross if gross > 0 else 0.0
-        if cached_share >= CACHED_SHARE_FLOOR and saving_rate < SAVING_RATE_FLOOR:
-            problems.append(
-                "%s on %s: %.0f%% of prompt tokens marked cached but only %.1f%% "
-                "of gross cost was discounted (%d calls, billed $%.4f, saved $%.4f).\n"
-                "A cache hit is not a cache saving - this host is charging full rate."
-                % (model, prov, cached_share * 100, saving_rate * 100,
-                   a["calls"], a["billed"], a["discount"]))
+        billed_per_million = a["billed"] / a["prompt"] * 1_000_000
+        discount_note = ("provider-reported discount observations: %d"
+                         % a["discount_observations"] if a["discount_observations"]
+                         else "host reports no cache discount field")
+        routine_reports.append(
+            "%s on %s: cache share %.1f%%; billed $%.4f per million prompt tokens "
+            "(%d calls, %d prompt tokens). %s."
+            % (model, prov, cached_share * 100, billed_per_million,
+               a["calls"], a["prompt"], discount_note))
+
+    if routine_reports:
+        print(clean("Cache discount measurements (last %dh)\n\n%s" % (
+            WINDOW_HOURS, "\n\n".join(routine_reports))), file=sys.stderr)
 
     # 3. Same model, wildly different billed cost per prompt token across hosts.
     by_model = {}

@@ -1482,7 +1482,7 @@ class SessionDB(
                    provider_name = COALESCE(excluded.provider_name, provider_name),
                    native_tokens_prompt = native_tokens_prompt + excluded.native_tokens_prompt,
                    native_tokens_cached = native_tokens_cached + excluded.native_tokens_cached,
-                   cache_discount = COALESCE(excluded.cache_discount, cache_discount),
+                   cache_discount = cache_discount + excluded.cache_discount,
                    total_cost = total_cost + excluded.total_cost,
                    last_seen = excluded.last_seen""",
             (

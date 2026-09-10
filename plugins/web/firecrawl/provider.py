@@ -140,6 +140,17 @@ def _firecrawl_backend_help_suffix() -> str:
     return ", or use the Nous Tool Gateway via your subscription (FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN)" if _backend_helpers.managed_nous_tools_enabled() else ""
 
 
+def _managed_web_unavailable_message() -> str:
+    """Actionable error for the explicitly selected managed web route."""
+    guidance = _backend_helpers.nous_tool_gateway_unavailable_message(
+        "managed web search and extraction"
+    )
+    return (
+        "The explicitly selected Nous Tool Gateway for web search and extraction is unavailable. "
+        f"{guidance} Run `hermes tools` to choose a different web provider."
+    )
+
+
 def _get_firecrawl_client() -> Any:
     """Get or create the cached Firecrawl client. Strict selection semantics on the stored ``web`` selection:
     ``"nous"`` → managed Tool Gateway ONLY; any other stored backend → direct Firecrawl ONLY (never a silent
@@ -164,8 +175,11 @@ def _get_firecrawl_client() -> Any:
 
     # (resolved config, log detail, error message) per selection state; the message is built lazily.
     if selected == NOUS_MANAGED_PROVIDER:
-        resolved, log, message = _managed(), "the Nous Subscription web selection is stored but the tool gateway is unavailable.", lambda: selection_error(
-            "web", NOUS_MANAGED_PROVIDER, "the Nous Tool Gateway is not available (not entitled or unreachable)")
+        resolved, log, message = (
+            _managed(),
+            "the Nous Subscription web selection is stored but the tool gateway is unavailable.",
+            _managed_web_unavailable_message,
+        )
     elif selected is not None or selection_exists("web"):
         # Stored vendor selection: direct only (no credentials → explicit selection unlocks keyless cloud mode).
         resolved, log, message = direct_config, "direct Firecrawl selected but FIRECRAWL_API_KEY/FIRECRAWL_API_URL is not set.", lambda: selection_error(

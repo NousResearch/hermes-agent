@@ -10,7 +10,7 @@ Usage:
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
-  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
+  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary] [--timezone America/New_York]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
   python google_api.py contacts list [--max 20]
@@ -30,6 +30,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
+# zoneinfo is imported lazily where needed (Python 3.9+).
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
@@ -461,30 +462,86 @@ def gmail_modify(args):
 # =========================================================================
 
 
+def _normalize_event_time(dt_obj: dict, user_tz: str | None) -> str:
+    """Return a human-readable time string normalized to user_tz.
+
+    dt_obj is e.g. {'dateTime': '2026-07-21T15:00:00+02:00', 'timeZone': 'Europe/Prague'}.
+    If user_tz is given, convert to that zone regardless of the event organizer's zone.
+    Falls back to the raw dateTime string if conversion fails.
+    """
+    if not dt_obj:
+        return ""
+    if "date" in dt_obj and "dateTime" not in dt_obj:
+        # All-day event — return raw date string regardless of user_tz for
+        # backward compatibility (all-day events have no time component to convert).
+        return dt_obj["date"]
+    raw = dt_obj.get("dateTime", "")
+    if not raw:
+        return ""
+    if not user_tz:
+        return raw
+    try:
+        # Parse the ISO 8601 datetime (handles +HH:MM and Z offsets natively in 3.11+)
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            print(f"[calendar] Warning: no timezone offset in '{raw}', returning raw", file=sys.stderr)
+            return raw
+        try:
+            from zoneinfo import ZoneInfo
+            dt_local = dt.astimezone(ZoneInfo(user_tz))
+            return dt_local.strftime("%Y-%m-%d %H:%M %Z")
+        except Exception as exc:
+            print(f"[calendar] Warning: could not convert time '{raw}' to {user_tz}: {exc}", file=sys.stderr)
+            return raw  # fall back to raw string
+    except Exception as exc:
+        print(f"[timezone] parse error: {exc}", file=sys.stderr)
+        return raw
+
+
 def calendar_list(args):
     now = datetime.now(timezone.utc)
     time_min = _datetime_with_timezone(args.start or now.isoformat())
     time_max = _datetime_with_timezone(args.end or (now + timedelta(days=7)).isoformat())
+    # Timezone conversion is strictly opt-in. None means return raw timestamps
+    # (backward-compatible default).
+    user_tz: str | None = getattr(args, "timezone", None) or None
+
+    # Validate timezone BEFORE making any API call so we can fail fast with a
+    # clear error message rather than a confusing remote-side rejection.
+    if user_tz:
+        try:
+            from zoneinfo import ZoneInfo
+            try:
+                ZoneInfo(user_tz)
+            except (ValueError, KeyError) as exc:
+                print(json.dumps({"error": f"Invalid timezone '{user_tz}': {exc}"}))
+                sys.exit(1)
+        except ImportError:
+            print(json.dumps({"error": "Timezone support unavailable (requires Python 3.9+)."}))
+            sys.exit(1)
 
     if _gws_binary():
+        params: dict = {
+            "calendarId": args.calendar,
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "maxResults": args.max,
+            "singleEvents": True,
+            "orderBy": "startTime",
+        }
+        if user_tz:
+            params["timeZone"] = user_tz
         results = _run_gws(
             ["calendar", "events", "list"],
-            params={
-                "calendarId": args.calendar,
-                "timeMin": time_min,
-                "timeMax": time_max,
-                "maxResults": args.max,
-                "singleEvents": True,
-                "orderBy": "startTime",
-            },
+            params=params,
         )
         events = []
         for e in results.get("items", []):
             events.append({
                 "id": e["id"],
                 "summary": e.get("summary", "(no title)"),
-                "start": e.get("start", {}).get("dateTime", e.get("start", {}).get("date", "")),
-                "end": e.get("end", {}).get("dateTime", e.get("end", {}).get("date", "")),
+                "start": _normalize_event_time(e.get("start", {}), user_tz),
+                "end": _normalize_event_time(e.get("end", {}), user_tz),
                 "location": e.get("location", ""),
                 "description": e.get("description", ""),
                 "status": e.get("status", ""),
@@ -494,18 +551,21 @@ def calendar_list(args):
         return
 
     service = build_service("calendar", "v3")
-    results = service.events().list(
+    list_kwargs: dict = dict(
         calendarId=args.calendar, timeMin=time_min, timeMax=time_max,
         maxResults=args.max, singleEvents=True, orderBy="startTime",
-    ).execute()
+    )
+    if user_tz:
+        list_kwargs["timeZone"] = user_tz
+    results = service.events().list(**list_kwargs).execute()
 
     events = []
     for e in results.get("items", []):
         events.append({
             "id": e["id"],
             "summary": e.get("summary", "(no title)"),
-            "start": e.get("start", {}).get("dateTime", e.get("start", {}).get("date", "")),
-            "end": e.get("end", {}).get("dateTime", e.get("end", {}).get("date", "")),
+            "start": _normalize_event_time(e.get("start", {}), user_tz),
+            "end": _normalize_event_time(e.get("end", {}), user_tz),
             "location": e.get("location", ""),
             "description": e.get("description", ""),
             "status": e.get("status", ""),
@@ -1102,6 +1162,13 @@ def main():
     p.add_argument("--end", default="", help="End time (ISO 8601)")
     p.add_argument("--max", type=int, default=25)
     p.add_argument("--calendar", default="primary")
+    p.add_argument(
+        "--timezone",
+        default=None,
+        help="IANA timezone name to display event times in (e.g. America/New_York). "
+             "When omitted, raw timestamps from the API are returned unchanged. "
+             "Invalid zone names are rejected before any API call is made.",
+    )
     p.set_defaults(func=calendar_list)
 
     p = cal_sub.add_parser("create")

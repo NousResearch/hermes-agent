@@ -12608,6 +12608,48 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
             server._sessions.pop("sid", None)
 
 
+def test_append_fallback_marker_dedups_and_persists():
+    """Fallback-chain switches become durable model_switch-kind markers.
+
+    The latest fallback marker stays in the live (re-sent) history while every
+    notice persists to the session DB, so the desktop transcript explains why
+    the model changed. Fallback markers use their own prefix and are never
+    mistaken for (or clobbered by) user-initiated model-switch markers.
+    """
+    from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
+    from tui_gateway.server import _append_fallback_marker, _is_fallback_marker
+
+    class _FakeDB:
+        def __init__(self):
+            self.rows = []
+
+        def append_message(self, **kw):
+            self.rows.append(kw)
+
+    class _FakeAgent:
+        _session_db = _FakeDB()
+
+    session = {"session_key": "sid", "history": [], "agent": _FakeAgent()}
+    notice1 = "⚠️ Model fallback: opus via nous unavailable (connection error); using ox via nous."
+    notice2 = "⚠️ Model fallback: deepseek via nous unavailable (timeout); using ox via nous."
+
+    _append_fallback_marker(session, notice1)
+    assert len(session["history"]) == 1
+    assert session["history"][0]["role"] == "user"
+    assert session["history"][0]["display_kind"] == "model_switch"
+
+    _append_fallback_marker(session, notice2)
+    assert len(session["history"]) == 1, "latest fallback marker replaces the old one"
+    assert "timeout" in session["history"][0]["content"]
+    assert len(session["agent"]._session_db.rows) == 2, "every notice persists to the DB"
+    assert all(r["display_kind"] == "model_switch" for r in session["agent"]._session_db.rows)
+    assert _is_fallback_marker(session["history"][0])
+
+    # A user-initiated switch marker is not a fallback marker (and vice versa).
+    user_switch = {"role": "user", "content": f"{_MODEL_SWITCH_MARKER_PREFIX}x.]"}
+    assert not _is_fallback_marker(user_switch)
+
+
 def test_prompt_submit_merges_on_personality_pivot_marker(monkeypatch):
     """A personality pivot injected mid-turn must merge like a model switch.
 

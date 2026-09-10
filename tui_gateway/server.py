@@ -696,6 +696,16 @@ def _status_update(sid: str, kind: str, text: str | None = None):
         from agent.conversation_compression import is_compaction_progress_status
         if is_compaction_progress_status(body):
             out_kind = "compacting"
+    # Surface fallback-chain switches as durable chat markers, not just a
+    # transient status flash: "why did my model change" should be answerable
+    # from the transcript.
+    if out_kind == "lifecycle" and body.startswith(_FALLBACK_MARKER_PREFIX):
+        try:
+            _session = _sessions.get(sid)
+            if _session is not None:
+                _append_fallback_marker(_session, body)
+        except Exception:
+            logger.debug("failed to append fallback marker", exc_info=True)
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
@@ -1666,6 +1676,76 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
                 db.append_message(session_id=session_key, role="user", content=marker, display_kind="model_switch")
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
+
+
+# Stable leading text of the fallback notice built in
+# ``agent.chat_completion_helpers.try_activate_fallback``. Shared by the
+# detection hook in ``_status_update`` and the marker dedup below.
+_FALLBACK_MARKER_PREFIX = "⚠️ Model fallback:"
+
+
+def _is_fallback_marker(entry: Any) -> bool:
+    """Whether a history entry is a (self-replacing) fallback marker."""
+    content = entry.get("content") if isinstance(entry, dict) else None
+    return isinstance(content, str) and content.startswith(_FALLBACK_MARKER_PREFIX)
+
+
+def _append_fallback_marker(session: dict | None, notice: str) -> None:
+    """Record a durable, user-visible marker when the fallback chain fires.
+
+    Mirrors ``_append_model_switch_marker``: the latest fallback marker is kept
+    in the live (re-sent) history and the row is persisted to the session DB, so
+    the desktop transcript shows why the model changed even after a reload.
+    Fallback markers use their own prefix and never clobber user-initiated
+    ``model_switch`` markers (and vice versa).
+    """
+    if not session:
+        return
+    session_key = str(session.get("session_key") or "").strip()
+    if not session_key:
+        return
+
+    entry = {"role": "user", "content": notice, "display_kind": "model_switch"}
+
+    def _replace_markers() -> None:
+        history = session.setdefault("history", [])
+        # Drop any earlier fallback markers in place before appending the new
+        # one, so N fallbacks leave one marker instead of N stale ones that
+        # would otherwise be re-sent on every later API call.
+        history[:] = [h for h in history if not _is_fallback_marker(h)]
+        history.append(entry)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            _replace_markers()
+    else:
+        _replace_markers()
+
+    try:
+        agent = session.get("agent")
+        db = getattr(agent, "_session_db", None) if agent is not None else None
+        if db is not None:
+            db.append_message(
+                session_id=session_key,
+                role="user",
+                content=notice,
+                display_kind="model_switch",
+            )
+            return
+
+        _ensure_session_db_row(session)
+        with _session_db(session) as scoped_db:
+            if scoped_db is not None:
+                scoped_db.append_message(
+                    session_id=session_key,
+                    role="user",
+                    content=notice,
+                    display_kind="model_switch",
+                )
+    except Exception:
+        logger.debug("failed to persist fallback marker", exc_info=True)
 
 
 def _write_config_key(key_path: str, value):

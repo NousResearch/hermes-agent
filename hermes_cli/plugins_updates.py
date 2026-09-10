@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from packaging.version import InvalidVersion, Version
+
 from hermes_cli.plugins_provenance import (
     Provenance,
     ProvenanceClass,
@@ -32,6 +34,14 @@ from hermes_cli.plugins_provenance import (
 _FETCH_TIMEOUT = 10.0
 _MAX_FEED_BYTES = 1 * 1024 * 1024
 _FULL_GIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
+
+
+def _version_is_newer(latest: str, current: str) -> Optional[bool]:
+    """Invalid versions are unknown, not evidence of an update."""
+    try:
+        return Version(latest) > Version(current)
+    except InvalidVersion:
+        return None
 
 
 @dataclass
@@ -196,7 +206,12 @@ def check_provenanced(
         # version, so `current` reports the installed version, not the
         # recorded revision sha.
         result.current = installed_version
-        result.update_available = result.latest != installed_version
+        result.update_available = _version_is_newer(result.latest, installed_version)
+        if result.update_available is None:
+            result.reason = (
+                f"cannot compare feed version {result.latest!r} with "
+                f"installed version {installed_version!r}"
+            )
         return result
 
     # ── 3. no update_url anywhere + git row → ls-remote ────────────
@@ -308,13 +323,18 @@ def check_pip_plugins(
                 )
             )
             continue
+        update_available = _version_is_newer(latest, current)
         results.append(
             CheckResult(
                 name=ep.name,
                 klass="pip",
                 current=current,
                 latest=latest,
-                update_available=latest != current,
+                update_available=update_available,
+                reason=(
+                    f"cannot compare PyPI version {latest!r} with installed {current!r}"
+                    if update_available is None else ""
+                ),
             )
         )
     return results

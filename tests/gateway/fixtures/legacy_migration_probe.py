@@ -72,7 +72,14 @@ def probe(base, legacy_root, owner_root=None):
                 result = await rpc(ws, 'session.resume', session_id=sid)
                 assert result.get('result', {}).get('session_id') == sid, result
                 assert 'CLI_NEW_INPUT' in json.dumps(result['result']['messages']), result
-                return result
+                compressed = await rpc(ws, 'session.mutate', session_id=sid, request_id='compress-legacy',
+                    expected_revision=result['result']['revision'], expected_generation=result['result']['execution_generation'],
+                    operation='compress', payload={})
+                assert 'result' in compressed, compressed
+                after = await rpc(ws, 'session.resume', session_id=sid)
+                assert after.get('result', {}).get('session_id') == sid, after
+                assert compressed['result']['previous_target_session_id'] == sid, compressed
+                return after
         with daemon(root, home, env, barrier=False) as (_, desc):
             resumed = asyncio.run(restarted(desc))
         mailbox = home / 'runtime/bot_live_delivery'
@@ -82,11 +89,11 @@ def probe(base, legacy_root, owner_root=None):
         assert queued.get('admission_id') and queued['status'] == 'settled', queued
         assert claimed['status'] == 'ambiguous' and foreign['status'] == 'claimed'
         inputs = [str(next((m.get('content') for m in reversed(r['messages']) if m['role'] == 'user'), '')) for r in peer.requests]
-        assert sum('LEGACY_QUEUED_ONCE' in text for text in inputs) == 1, inputs
+        assert sum(text == 'LEGACY_QUEUED_ONCE' for text in inputs) == 1, inputs
         assert not any('LEGACY_CLAIMED_NEVER' in text or 'UNRELATED_NEVER' in text for text in inputs)
         current = query('SELECT * FROM sessions WHERE id=?', (sid,))[0]
         assert current['title'] == old['title'] and current['parent_session_id'] == old['parent_session_id']
-        new = [r for r in peer.requests if 'BOT_NEW_INPUT' in json.dumps(r) or 'CLI_NEW_INPUT' in json.dumps(r)]
+        new = [r for r in peer.requests if next((m.get('content') for m in reversed(r['messages']) if m['role'] == 'user'), '') in {'BOT_NEW_INPUT', 'CLI_NEW_INPUT'}]
         assert new and all('OLD_HISTORY' in json.dumps(r) for r in new)
         return {'historical_id': sid, 'legacy_row': old, 'first_resume': first, 'bot_retry': retry,
                 'restart_resume': resumed, 'requests': peer.requests, 'admissions': query('SELECT * FROM session_admissions')}

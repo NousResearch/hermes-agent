@@ -502,6 +502,8 @@ def _validate_forget_memory_uri(raw_uri: Any, *, user_space: Optional[str] = Non
     if uri.endswith("/") or not uri.endswith(".md"):
         return None, "viking_forget only deletes concrete .md memory files"
     parts = [part for part in uri[len("viking://") :].split("/") if part]
+    if any(unquote(part) in {".", ".."} for part in parts):
+        return None, "viking_forget does not accept dot path segments"
     # ``memories`` index for ``<scope>/[peers/<agent>/]memories/``; under ``user`` the uid is
     # required, since the uid-less shorthands are deprecated upstream.
     offsets = ((1, None), (3, 1)) if parts[:1] == ["~"] else ((2, None), (4, 2)) if parts[:1] == ["user"] else ()

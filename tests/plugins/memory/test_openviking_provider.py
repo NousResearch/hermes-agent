@@ -767,6 +767,23 @@ def test_validate_forget_memory_uri_rejects_non_canonical(uri):
     assert resolved is None and error
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "viking://user/alice/memories/./x.md",
+        "viking://user/alice/memories/../../user/bob/memories/x.md",
+        "viking://user/alice/memories/%2e/x.md",
+        "viking://user/alice/memories/%2e%2e/x.md",
+        "viking://~/memories/../x.md",
+    ],
+)
+def test_validate_forget_memory_uri_rejects_dot_segments(uri):
+    resolved, error = _validate_forget_memory_uri(uri, user_space="alice")
+
+    assert resolved is None
+    assert "dot path segments" in error
+
+
 def test_validate_forget_memory_uri_rejects_other_user_space():
     mine = "viking://user/zayn/memories/preferences/mem_abc123.md"
     theirs = "viking://user/someone-else/memories/preferences/mem_abc123.md"

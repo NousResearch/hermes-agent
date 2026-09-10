@@ -1,0 +1,13 @@
+name: web-octen
+repo: https://github.com/Octen-Team/hermes-octen-plugin
+sha: 3af8a3fe200d93934c823485f66c3375a4508474
+description: Octen web search with query-focused highlights and page extraction.
+maintainer: Octen-Team
+tier: community
+docs_url: https://github.com/Octen-Team/hermes-octen-plugin#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OCTEN_API_KEY

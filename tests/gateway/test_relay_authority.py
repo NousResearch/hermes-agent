@@ -13,7 +13,7 @@ import time
 
 
 def test_authenticated_relay_uses_canonical_admission(tmp_path):
-    env = dict(os.environ, HERMES_HOME=str(tmp_path), PYTHONUNBUFFERED='1')
+    env = dict(os.environ, HOME=str(tmp_path), HERMES_HOME=str(tmp_path), PYTHONUNBUFFERED='1')
     result = subprocess.run([sys.executable, __file__, 'peer'], env=env,
                             capture_output=True, text=True, timeout=100)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -140,9 +140,15 @@ async def probe(peer):
                 second = deepcopy(raw)
                 second.update(message_id='relay-2', text='WS_SHARED')
                 rows = await send(second)
+                # Settlement and an RPC reply do not drain the fanout writer.
+                # Observe this admission's terminal event before taking a snapshot.
+                admission_id = next(r['admission_id'] for r in rows if r['request_id'] == 'relay-2')
+                async with asyncio.timeout(10):
+                    while not any(f.get('params', {}).get('type') == 'message.complete'
+                                  and f['params'].get('admission_id') == admission_id for f in frames):
+                        frames.append(json.loads(await ws.recv()))
                 snapshot = await rpc('session.resume', session_id=sid)
                 assert 'LOCAL_ACK_WS_SHARED' in json.dumps(snapshot), snapshot
-                assert any(f.get('params', {}).get('type') == 'message.complete' for f in frames), frames
                 assert [r['request_id'] for r in rows] == ['relay-1', 'relay-2'], rows
                 assert len(peer.requests) == 2, peer.requests
                 assert authority.agent(SessionRef('default', sid)) is warm_agent

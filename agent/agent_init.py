@@ -1236,6 +1236,10 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
             _st = agent._session_db.get_session_title(agent.session_id)
             if _st:
                 kwargs["session_title"] = _st
+    # Bot Chat gate hint: pending title wins over the DB fallback (first-turn provenance).
+    _hint = getattr(agent, "_session_title_hint", None)
+    if _hint and not kwargs.get("session_title"):
+        kwargs["session_title"] = _hint
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
     # Honcho session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
@@ -1247,6 +1251,13 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
         from hermes_cli.profiles import get_active_profile_name
         kwargs["agent_identity"] = get_active_profile_name()
         kwargs["agent_workspace"] = "hermes"
+    # Logical session workdir (project provenance for memory tags) — resolved from the
+    # runtime cwd layer, never the raw process CWD.
+    try:
+        from agent.runtime_cwd import resolve_agent_cwd
+        kwargs["session_workdir"] = str(resolve_agent_cwd())
+    except Exception:
+        pass
     return kwargs
 
 
@@ -2195,6 +2206,7 @@ _CALLBACK_PARAMS = (
 
 def init_agent(
     agent, base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
+    session_title_hint: str | None = None,
     acp_command: str = None, acp_args: list[str] | None = None, command: str = None,
     args: list[str] | None = None, model: str = "", max_iterations: int = sys.maxsize,
     enabled_toolsets: List[str] = None, disabled_toolsets: List[str] = None,
@@ -2244,6 +2256,8 @@ def init_agent(
     """
     _install_safe_stdio()
 
+    # Bot Chat gate hint (must land BEFORE _init_memory so provider kwargs see it).
+    agent._session_title_hint = str(session_title_hint or "").strip() or None
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:
         setattr(agent, _name, _params[_name])

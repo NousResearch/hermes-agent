@@ -902,6 +902,10 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     stored runtime, or an unroutable provider → this session's picked model/effort/tier, else the default."""
     kw = {"session_db": session_db, "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(current),
           "platform_override": _session_source(current)}
+    # Bot Mode gate hint: thread the pending title into the build so first-turn memory
+    # provenance (bot-group detection) does not depend on the deferred DB title write.
+    if _hint := str(current.get("pending_title") or "").strip():
+        kw["session_title_hint"] = _hint
     if resume_sid := current.get("resume_session_id"):
         kw["session_id"] = resume_sid
     resume_overrides = current.get("resume_runtime_overrides")
@@ -2263,7 +2267,8 @@ def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
-    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None):
+    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
+    session_title_hint: str | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2302,6 +2307,7 @@ def _make_agent(
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        session_title_hint=session_title_hint,
         **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         with _sessions_lock:

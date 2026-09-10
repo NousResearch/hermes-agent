@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 from agent.memory_manager import sanitize_context
 from agent.message_content import flatten_message_text
+from agent.message_sanitization import _sanitize_surrogates
 from agent.redact import redact_sensitive_text
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -304,6 +305,9 @@ class StreamDeliveryMixin:
             scrubber = getattr(self, "_stream_context_scrubber", None)
             text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
             text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
+            # Lone surrogates from byte-level tokenizers must not reach UTF-8 consumers
+            # downstream of the delta callbacks (display, TTS, hooks).
+            text = _sanitize_surrogates(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).
             if not prepended_break and not getattr(self, "_streamed_assistant_text_parts", None):

@@ -2626,6 +2626,10 @@ class _StreamingCall(StreamingWaitMonitor):
         the delta callback for tag extraction (the CLI drops non-reasoning text
         once the stream box is closed)."""
         if self.agent.stream_delta_callback:
+            # This bypasses _fire_stream_delta(), so lone surrogates from
+            # byte-level tokenizers must be scrubbed here too before
+            # reaching UTF-8 consumers.
+            text = _sanitize_surrogates(text)
             self._quiet(lambda: (self.agent.stream_delta_callback(text), self.agent._record_streamed_assistant_text(text)))
 
     def _new_diag(self) -> dict:

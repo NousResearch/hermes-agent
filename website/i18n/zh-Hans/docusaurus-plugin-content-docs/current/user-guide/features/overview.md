@@ -40,7 +40,7 @@ Hermes Agent 包含一套丰富的能力，远超基础聊天范畴。从持久�
 - **[备用提供商](fallback-providers.md)** — 当主模型遇到错误时自动故障转移至备用 LLM 提供商，包括针对视觉和压缩等辅助任务的独立备用机制。
 - **[凭证池](credential-pools.md)** — 在同一提供商的多个密钥之间分发 API 调用。在触发速率限制或发生故障时自动轮换。
 - **[Prompt 缓存](../configuration#prompt-caching)** — 针对原生 Anthropic、OpenRouter 和 Nous Portal 上的 Claude，内置跨会话 1 小时前缀缓存。始终开启，无需配置。
-- **[记忆提供商](memory-providers.md)** — 接入外部记忆后端（Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory），实现跨会话用户建模和超越内置记忆系统的个性化。
+- **[记忆提供商](memory-providers.md)** — 接入外部记忆后端（Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory、Memori、PLUR），实现跨会话用户建模和超越内置记忆系统的个性化。
 - **[API 服务器](api-server.md)** — 将 Hermes 作为兼容 OpenAI 的 HTTP 端点暴露。连接任何支持 OpenAI 格式的前端——Open WebUI、LobeChat、LibreChat 等。
 - **[IDE 集成（ACP）](acp.md)** — 在兼容 ACP 的编辑器（如 VS Code、Zed 和 JetBrains）中使用 Hermes。聊天、工具活动、文件 diff 和终端命令均在编辑器内渲染。
 - **[强化学习训练](rl-training.md)** — 从 Agent 会话中生成轨迹数据，用于强化学习和模型微调。

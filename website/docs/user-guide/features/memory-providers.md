@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memori, PLUR"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memori, plur
 ```
 
 ## How It Works
@@ -671,6 +671,48 @@ hermes memory setup
 
 ---
 
+### PLUR
+
+Persistent memory with a local YAML store and local BM25 + BGE-small hybrid retrieval.
+Engram storage and selection never leave your machine; selected engrams are injected into
+the prompt you are already sending. Optional git-based cross-device sync. PLUR is community-maintained and installed via
+pip; Hermes loads it through the `hermes_agent.memory_providers` entry point alongside the
+bundled providers.
+
+| | |
+|---|---|
+| **Best for** | Agents that need corrections and preferences to persist across sessions |
+| **Requires** | `pip install plur-hermes>=0.19.3` |
+| **Data storage** | Local YAML on disk (`~/.plur/`) |
+| **Cost** | Free / self-hosted |
+
+**Tools (22):** `plur_learn`, `plur_recall`, `plur_inject`, `plur_list`, `plur_forget`,
+`plur_feedback`, `plur_capture`, `plur_timeline`, `plur_status`, `plur_sync`,
+`plur_packs_list`, `plur_packs_install`, `plur_packs_export`, `plur_extract_meta`,
+`plur_meta_submit_analysis`, `plur_meta_engrams`, `plur_validate_meta`, `plur_ingest`,
+`plur_promote`, `plur_similarity_search`, `plur_stores_add`, `plur_stores_list`
+
+**Setup:**
+```bash
+pip install "plur-hermes>=0.19.3"
+hermes config set memory.provider plur
+hermes memory setup
+```
+
+**Config (env vars):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PLUR_PATH` | `~/.plur` | Path to the local engram store |
+| `PLUR_INJECT_MODE` | `fast` | `fast` (BM25-only) or `hybrid` (BM25 + embeddings, ~2s) |
+| `PLUR_INJECTION_FEEDBACK` | `true` | Auto-send relevance feedback after each turn |
+
+**Key features:** Hybrid BM25+embedding search via RRF · ACT-R activation decay · `prefetch()` injects context before LLM calls · `sync_turn()` auto-learns corrections · cross-device sync via git · engram packs (shareable knowledge bundles) · zero Python runtime dependencies
+
+**Support:** [GitHub](https://github.com/plur-ai/plur) · [PyPI](https://pypi.org/project/plur-hermes/)
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -684,6 +726,9 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud/Self-hosted | Free/Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **PLUR** ⁺ | Local (YAML) | Free | 22 | `plur-hermes` | ACT-R activation decay + hybrid BM25/embedding recall + cross-device sync |
+
+⁺ Community-maintained pip package loaded via `hermes_agent.memory_providers` entry point.
 
 ## Profile Isolation
 

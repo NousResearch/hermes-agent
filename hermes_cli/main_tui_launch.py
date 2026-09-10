@@ -724,7 +724,8 @@ def _launch_tui(
     provider: Optional[str] = None, toolsets: object = None, skills: object = None,
     verbose: Optional[bool] = None, quiet: bool = False, query: Optional[str] = None,
     image: Optional[str] = None, worktree: bool = False, checkpoints: bool = False,
-    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False):
+    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False,
+    reasoning: Optional[str] = None):
     """Replace current process with the TUI."""
     from hermes_cli.main import PROJECT_ROOT
     tui_dir = PROJECT_ROOT / "ui-tui"
@@ -773,7 +774,8 @@ def _launch_tui(
         ("HERMES_TUI_PASS_SESSION_ID", "1" if pass_session_id else None),
         ("HERMES_TUI_MAX_TURNS", str(max_turns) if max_turns is not None else None),
         ("HERMES_TUI_TOOL_PROGRESS", "verbose" if verbose else "off" if quiet else None),
-        ("HERMES_ACCEPT_HOOKS", "1" if accept_hooks else None)):
+        ("HERMES_ACCEPT_HOOKS", "1" if accept_hooks else None),
+        ("HERMES_CLI_REASONING", reasoning)):
         if value:
             env[key] = value
     # Generous V8 heap (8GB target; default cap can fatal-OOM on long sessions),

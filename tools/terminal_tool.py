@@ -1081,6 +1081,7 @@ def _run_foreground(
             # internal env.execute() consumers stay unbounded.
             result = env.execute(
                 command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
+                task_id=task_id or "__unscoped__",
                 **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
                                 task_id=task_id, session_key=session_key),
             )

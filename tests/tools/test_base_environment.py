@@ -4,10 +4,13 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import threading
+import time
 from unittest.mock import MagicMock
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _BoundedOutputCollector
+from tools.environments.local import LocalEnvironment
 
 
 class _TestableEnv(BaseEnvironment):
@@ -89,6 +92,31 @@ class TestWrapCommand:
         wrapped = env._wrap_command("ls", "/nonexistent")
 
         assert "exit 126" in wrapped
+
+
+class TestForegroundProcessOwnership:
+    def test_disconnect_cleanup_can_stop_a_running_foreground_command(self, tmp_path):
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+        result = {}
+
+        def run_command():
+            result.update(env.execute("python3 -c 'import time; time.sleep(30)'", timeout=30, task_id="task-a"))
+
+        worker = threading.Thread(target=run_command)
+        worker.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with env._active_processes_lock:
+                if env._active_processes.get("task-a"):
+                    break
+            time.sleep(0.05)
+
+        killed = env.kill_active_processes("task-a")
+        worker.join(timeout=5)
+
+        assert killed == 1
+        assert not worker.is_alive()
+        assert result["returncode"] != 0
 
 
 class TestAtomicSnapshotWrite:

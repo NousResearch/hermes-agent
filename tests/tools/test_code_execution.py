@@ -914,6 +914,288 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         self.assertEqual(len(resp), 1)
         self.assertIn("Unauthorized", resp[0].get("error", ""))
 
+    def test_disconnect_reaps_processes_owned_by_kernel_task(self):
+        """A dead kernel must reap detached terminal work for its task."""
+        from tools.code_execution_rpc import _rpc_server_loop
+
+        srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        class _OneShotListener:
+            def __init__(self, conn):
+                self._conn = conn
+                self._served = False
+
+            def settimeout(self, _t):
+                pass
+
+            def accept(self):
+                if self._served:
+                    raise socket.timeout()
+                self._served = True
+                return self._conn, ("peer", 0)
+
+        listener = _OneShotListener(srv)
+        stop_event = threading.Event()
+        killed = []
+
+        class _Registry:
+            def kill_all(self, task_id, **kwargs):
+                killed.append((task_id, kwargs))
+                return 1
+
+        try:
+            with patch("tools.process_registry.process_registry", _Registry()), \
+                 patch("tools.terminal_tool._resolve_container_task_id", side_effect=lambda value: value):
+                thread = threading.Thread(
+                    target=_rpc_server_loop,
+                    kwargs={
+                        "server_sock": listener,
+                        "task_id": "kernel-task-dead",
+                        "tool_call_log": [],
+                        "tool_call_counter": [0],
+                        "max_tool_calls": 1,
+                        "allowed_tools": frozenset(),
+                        "stop_event": stop_event,
+                        "rpc_token": "secret",
+                    },
+                    daemon=True,
+                )
+                thread.start()
+                cli.close()
+                thread.join(timeout=5)
+        finally:
+            stop_event.set()
+            srv.close()
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(killed, [("kernel-task-dead", {
+            "source": "execute_code.rpc_disconnect",
+            "consume_output": True,
+        })])
+
+    def test_disconnect_reaps_foreground_environment_processes(self):
+        """A disconnected kernel also reaps a foreground terminal command."""
+        from tools.code_execution_rpc import _rpc_server_loop
+
+        srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        class _OneShotListener:
+            def __init__(self, conn):
+                self._conn = conn
+                self._served = False
+
+            def settimeout(self, _t):
+                pass
+
+            def accept(self):
+                if self._served:
+                    raise socket.timeout()
+                self._served = True
+                return self._conn, ("peer", 0)
+
+        listener = _OneShotListener(srv)
+        stop_event = threading.Event()
+        killed = []
+
+        try:
+            with patch("tools.code_execution_rpc._kill_task_environment_processes", return_value=1) as reap:
+                thread = threading.Thread(
+                    target=_rpc_server_loop,
+                    kwargs={
+                        "server_sock": listener,
+                        "task_id": "kernel-task-dead",
+                        "tool_call_log": [],
+                        "tool_call_counter": [0],
+                        "max_tool_calls": 1,
+                        "allowed_tools": frozenset(),
+                        "stop_event": stop_event,
+                        "rpc_token": "secret",
+                    },
+                    daemon=True,
+                )
+                thread.start()
+                cli.close()
+                thread.join(timeout=5)
+                reap.assert_called_once_with("kernel-task-dead")
+        finally:
+            stop_event.set()
+            srv.close()
+
+        self.assertFalse(thread.is_alive())
+
+    def test_disconnect_uses_kernel_task_ids_for_persistent_kernel(self):
+        """Persistent kernels provide the raw cell task IDs to disconnect cleanup."""
+        from tools.code_execution_rpc import _rpc_server_loop
+
+        srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        class _OneShotListener:
+            def __init__(self, conn):
+                self._conn = conn
+                self._served = False
+
+            def settimeout(self, _t):
+                pass
+
+            def accept(self):
+                if self._served:
+                    raise socket.timeout()
+                self._served = True
+                return self._conn, ("peer", 0)
+
+        listener = _OneShotListener(srv)
+        stop_event = threading.Event()
+        reaped = []
+
+        try:
+            with patch("tools.code_execution_rpc._kill_task_environment_processes") as reap:
+                thread = threading.Thread(
+                    target=_rpc_server_loop,
+                    kwargs={
+                        "server_sock": listener,
+                        "task_id": "",
+                        "cleanup_task_ids": lambda: ["cell-a", "cell-b", "cell-a"],
+                        "tool_call_log": [],
+                        "tool_call_counter": [0],
+                        "max_tool_calls": 1,
+                        "allowed_tools": frozenset(),
+                        "stop_event": stop_event,
+                        "rpc_token": "secret",
+                    },
+                    daemon=True,
+                )
+                thread.start()
+                cli.close()
+                thread.join(timeout=5)
+                self.assertEqual([call.args[0] for call in reap.call_args_list], ["cell-a", "cell-b"])
+        finally:
+            stop_event.set()
+            srv.close()
+
+        self.assertFalse(thread.is_alive())
+
+    def test_disconnect_reaps_while_dispatch_is_still_running(self):
+        """The RPC loop must observe EOF before a long terminal call returns."""
+        from tools.code_execution_rpc import _rpc_server_loop
+
+        srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        class _OneShotListener:
+            def __init__(self, conn):
+                self._conn = conn
+                self._served = False
+
+            def settimeout(self, _t):
+                pass
+
+            def accept(self):
+                if self._served:
+                    raise socket.timeout()
+                self._served = True
+                return self._conn, ("peer", 0)
+
+        listener = _OneShotListener(srv)
+        stop_event = threading.Event()
+        dispatch_started = threading.Event()
+        release_dispatch = threading.Event()
+        reaped = []
+
+        def dispatch(_tool_name, _tool_args):
+            dispatch_started.set()
+            assert release_dispatch.wait(timeout=5)
+            return json.dumps({"status": "success"})
+
+        class _Registry:
+            def kill_all(self, task_id, **_kwargs):
+                reaped.append(task_id)
+                release_dispatch.set()
+
+        try:
+            with patch("tools.process_registry.process_registry", _Registry()), \
+                 patch("tools.terminal_tool._resolve_container_task_id", side_effect=lambda value: value):
+                thread = threading.Thread(
+                    target=_rpc_server_loop,
+                    kwargs={
+                        "server_sock": listener,
+                        "task_id": "kernel-task-dead",
+                        "tool_call_log": [],
+                        "tool_call_counter": [0],
+                        "max_tool_calls": 1,
+                        "allowed_tools": frozenset({"terminal"}),
+                        "stop_event": stop_event,
+                        "rpc_token": "secret",
+                        "dispatch": dispatch,
+                    },
+                    daemon=True,
+                )
+                thread.start()
+                cli.sendall((json.dumps({
+                    "tool": "terminal",
+                    "args": {"command": "sleep 30"},
+                    "token": "secret",
+                }) + "\n").encode())
+                assert dispatch_started.wait(timeout=5)
+                cli.close()
+                thread.join(timeout=5)
+        finally:
+            stop_event.set()
+            srv.close()
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(reaped, ["kernel-task-dead"])
+
+    def test_rpc_idle_timeout_does_not_reap_live_kernel_processes(self):
+        """Persistent kernel reconnects must not kill work on a quiet socket."""
+        from tools.code_execution_rpc import _rpc_server_loop
+
+        class _IdleConnection:
+            def settimeout(self, _timeout):
+                pass
+
+            def recv(self, _size):
+                raise socket.timeout()
+
+            def close(self):
+                pass
+
+        class _OneShotListener:
+            def __init__(self):
+                self.served = False
+
+            def settimeout(self, _timeout):
+                pass
+
+            def accept(self):
+                if self.served:
+                    raise socket.timeout()
+                self.served = True
+                return _IdleConnection(), ("peer", 0)
+
+        stop_event = threading.Event()
+        try:
+            with patch("tools.code_execution_rpc._reap_task_processes") as reap:
+                thread = threading.Thread(
+                    target=_rpc_server_loop,
+                    kwargs={
+                        "server_sock": _OneShotListener(),
+                        "task_id": "kernel-task-live",
+                        "tool_call_log": [],
+                        "tool_call_counter": [0],
+                        "max_tool_calls": 1,
+                        "allowed_tools": frozenset(),
+                        "stop_event": stop_event,
+                        "rpc_token": "secret",
+                    },
+                    daemon=True,
+                )
+                thread.start()
+                thread.join(timeout=5)
+                reap.assert_not_called()
+        finally:
+            stop_event.set()
+
+        self.assertFalse(thread.is_alive())
+
 
     def test_generated_module_sends_token(self):
         """The generated hermes_tools module reads HERMES_RPC_TOKEN and sends it."""

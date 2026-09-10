@@ -491,6 +491,7 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
 
     def version_detail(skill, version):
         value = original_version(skill, version).version
+        value["security_check"] = {"status": "pass"}
         return SimpleNamespace(version=value, model_dump=lambda **kwargs: {"version": {**value, "version": version}})
 
     monkeypatch.setattr(service.client, "version", version_detail)

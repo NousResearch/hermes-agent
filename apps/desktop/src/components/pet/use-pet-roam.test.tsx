@@ -25,7 +25,13 @@ function installRaf() {
   return { cancel, request }
 }
 
-function RoamHarness({ isInteracting = () => false }: { isInteracting?: () => boolean }) {
+function RoamHarness({
+  isInteracting = () => false,
+  pauseWhenUnfocused
+}: {
+  isInteracting?: () => boolean
+  pauseWhenUnfocused?: boolean
+}) {
   const ref = useRef<HTMLDivElement | null>(null)
 
   usePetRoam({
@@ -35,6 +41,7 @@ function RoamHarness({ isInteracting = () => false }: { isInteracting?: () => bo
     isInteracting,
     loopMs: 1200,
     overlayOpen: false,
+    pauseWhenUnfocused,
     petH: 64,
     petW: 64
   })
@@ -118,6 +125,23 @@ describe('usePetRoam RAF scheduling', () => {
       window.dispatchEvent(new Event('focus'))
     })
     expect(raf.request).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps roaming while unfocused when pauseWhenUnfocused is false (overlay-safe)', () => {
+    const raf = installRaf()
+
+    render(<RoamHarness pauseWhenUnfocused={false} />)
+    expect(vi.getTimerCount()).toBe(1)
+
+    // A focusable:false overlay never receives focus; blur must not stop the loop.
+    act(() => window.dispatchEvent(new Event('blur')))
+    expect(vi.getTimerCount()).toBe(1)
+
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(vi.getTimerCount()).toBe(1)
+
+    cleanup()
     expect(vi.getTimerCount()).toBe(0)
   })
 })

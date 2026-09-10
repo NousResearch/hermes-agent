@@ -13,7 +13,12 @@ import sqlite3
 
 import pytest
 
-from hermes_state import SessionDB, StateDbCorruptError
+from hermes_state import (
+    DeletedWalGenerationError,
+    SessionDB,
+    StateDbCorruptError,
+    StateDbReplacedError,
+)
 
 
 class _MalformedConn:
@@ -234,3 +239,71 @@ class TestSharedRegistry:
         registry.close_all()
         assert not any("wal_checkpoint" in sql for sql in recorder.recorded)
         assert holder_a._conn is None
+
+
+_QUARANTINE_FLAGS = [
+    ("_db_corrupt", StateDbCorruptError),
+    ("_db_replaced", StateDbReplacedError),
+    ("_db_wal_generation_lost", DeletedWalGenerationError),
+]
+
+
+def _force_flag(db, flag_name):
+    setattr(db, flag_name, True)
+    if flag_name == "_db_corrupt":
+        db._db_corrupt_reason = "forced for test"
+
+
+def _clear_flag(db, flag_name):
+    setattr(db, flag_name, False)
+    if flag_name == "_db_corrupt":
+        db._db_corrupt_reason = ""
+
+
+class TestVacuumAndMaintenanceRespectQuarantine:
+    """vacuum()/optimize_fts() must check the same
+    quarantine flags _execute_write does before touching the connection.
+
+    Without this, `hermes sessions vacuum`/`optimize` and the default-on
+    ``maybe_auto_prune_and_vacuum`` auto-maintenance could run VACUUM /
+    FTS5 'optimize' / an explicit WAL checkpoint directly over a
+    structurally damaged, replaced, or split-WAL-generation file — turning
+    a contained, diagnosable corruption into an amplified, unrecoverable
+    one (the exact class of damage the quarantine exists to prevent).
+    """
+
+    @pytest.mark.parametrize("flag_name,expected_exc", _QUARANTINE_FLAGS)
+    def test_vacuum_refuses_when_quarantined(self, tmp_path, flag_name, expected_exc):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        real_conn = db._conn
+        try:
+            db.create_session(session_id="s1", source="cli", model="test")
+            db.append_message("s1", role="user", content="hello world")
+            recorder = _RecordingConn(real_conn)
+            db._conn = recorder
+            _force_flag(db, flag_name)
+            with pytest.raises(expected_exc):
+                db.vacuum()
+            assert recorder.recorded == []
+        finally:
+            _clear_flag(db, flag_name)
+            db._conn = real_conn
+            db.close()
+
+    @pytest.mark.parametrize("flag_name,expected_exc", _QUARANTINE_FLAGS)
+    def test_optimize_fts_refuses_when_quarantined(self, tmp_path, flag_name, expected_exc):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        real_conn = db._conn
+        try:
+            db.create_session(session_id="s1", source="cli", model="test")
+            db.append_message("s1", role="user", content="hello world")
+            recorder = _RecordingConn(real_conn)
+            db._conn = recorder
+            _force_flag(db, flag_name)
+            with pytest.raises(expected_exc):
+                db.optimize_fts()
+            assert recorder.recorded == []
+        finally:
+            _clear_flag(db, flag_name)
+            db._conn = real_conn
+            db.close()

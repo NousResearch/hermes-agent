@@ -567,9 +567,19 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
     if refuse_symlinked_path "seed" "$HERMES_HOME/auth.json"; then
         :
     else
-        printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
-        chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
-        chmod 600 "$HERMES_HOME/auth.json"
+        # The bootstrap contains bearer tokens. Set the temporary file's mode
+        # before printf serializes any bytes, then rename within HERMES_HOME.
+        auth_tmp="$(mktemp "$HERMES_HOME/.auth.json.bootstrap.XXXXXX")"
+        if ! chmod 600 "$auth_tmp" || \
+                ! printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$auth_tmp"; then
+            rm -f "$auth_tmp"
+            exit 1
+        fi
+        chown hermes:hermes "$auth_tmp" 2>/dev/null || true
+        if ! mv -f "$auth_tmp" "$HERMES_HOME/auth.json"; then
+            rm -f "$auth_tmp"
+            exit 1
+        fi
     fi
 fi
 

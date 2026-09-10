@@ -127,8 +127,10 @@ class HostedRoomAuthorityRPC:
         rows = self._rows()
         if any(row['status'] == 'unknown' for row, _, _ in rows):
             raise RuntimeStoreError('unknown_execution')
+        from gateway.session_hosted_attachments import submission_payload
+        payload = submission_payload(self, params['prompt'], params.get('attachments'))
         receipt = await self.authority.submit(self.principal, Submission(
-            request_id, self.ref, {'text': params['prompt']}, 'queue'))
+            request_id, self.ref, payload, 'queue'))
         self.callbacks[receipt.admission_id] = params['on_terminal']
         if receipt.status in {'queued', 'started'}:
             waiter = self.authority.waiters.get(receipt.admission_id)
@@ -233,9 +235,10 @@ class HostedRoomAuthorityRPC:
     def resume(self, *, profile, session_id, source):
         return self._call('resume', profile=profile, session_id=session_id, source=source)
 
-    def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal):
+    def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal, attachments=None):
         return self._call('submit', profile=profile, session_id=session_id, source=source,
-                          prompt=prompt, task=task, execution_generation=execution_generation, on_terminal=on_terminal)
+                          prompt=prompt, task=task, execution_generation=execution_generation, on_terminal=on_terminal,
+                          attachments=attachments)
 
     def history(self, *, profile, session_id, source):
         return self._call('history', profile=profile, session_id=session_id, source=source)

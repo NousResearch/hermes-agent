@@ -800,6 +800,32 @@ variables are ignored. Cached agents may be released to reclaim resources withou
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
+### Session hygiene: why you should still run `/new`
+
+Because gateway conversations never expire on their own, it is easy to run one
+session for weeks. That works, but it quietly defeats the learning loop and
+inflates costs:
+
+- **Memory only pays off at boundaries.** `MEMORY.md` / `USER.md` are injected
+  at session start, and `session_search` exists to recall what fell out of
+  context. In a never-ending session everything is still *in* context, so the
+  agent has no reason to consult memory — the "self-learning" machinery barely
+  runs. Memory distillation (the save before reset) also only happens when a
+  session actually ends.
+- **Cost grows with history.** Compression keeps a long session functional,
+  but every turn still carries a large (compacted) prefix. A fresh session
+  with distilled memory is almost always cheaper than a month-old thread.
+
+Practical rule: end a session when you finish a task or topic. Run `/new`
+(optionally named, e.g. `/new payments-refactor`) at natural stopping points —
+daily or per-project both work. Before the reset, ask the agent to "remember
+anything worth keeping" if the work surfaced durable preferences or
+procedures; it saves memories and skills from the expiring session
+automatically, but an explicit nudge helps. Restarting the machine or the
+gateway is **not** a boundary — the same session resumes.
+
+See [Memory](features/memory.md) for what gets carried across boundaries.
+
 
 ### Continuity After Crashes and Restarts
 

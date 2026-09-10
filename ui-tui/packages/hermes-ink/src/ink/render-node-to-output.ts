@@ -443,6 +443,7 @@ function renderNodeToOutput(
     prevScreen,
     skipSelfBlit = false,
     inheritedBackgroundColor,
+    freezeScrollFollow = false,
     visibleX1 = 0,
     visibleX2 = output.width,
     visibleY1 = 0,
@@ -458,6 +459,7 @@ function renderNodeToOutput(
     // opaque descendants' narrower rects are safe to blit.
     skipSelfBlit?: boolean
     inheritedBackgroundColor?: Color
+    freezeScrollFollow?: boolean
     visibleX1?: number
     visibleX2?: number
     visibleY1?: number
@@ -896,7 +898,7 @@ function renderNodeToOutput(
           node.pendingScrollDelta = undefined
         }
 
-        const atBottom = sticky || (grew && scrollTopBeforeCompensation >= prevMaxScroll)
+        const atBottom = !freezeScrollFollow && (sticky || (grew && scrollTopBeforeCompensation >= prevMaxScroll))
 
         if (atBottom && (node.pendingScrollDelta ?? 0) >= 0) {
           node.scrollTop = maxScroll
@@ -1194,6 +1196,7 @@ function renderNodeToOutput(
                 edgeTop - contentY,
                 edgeBottom - contentY,
                 boxBackgroundColor,
+                freezeScrollFollow,
                 true,
                 repairX,
                 repairX + repairWidth,
@@ -1347,6 +1350,7 @@ function renderNodeToOutput(
                     offsetY: contentY,
                     prevScreen: undefined,
                     inheritedBackgroundColor: boxBackgroundColor,
+                    freezeScrollFollow,
                     visibleX1: repairChildX,
                     visibleX2: repairChildRight,
                     visibleY1: repairChildTop,
@@ -1407,6 +1411,7 @@ function renderNodeToOutput(
                 shiftedTop - contentY,
                 shiftedBottom - contentY,
                 boxBackgroundColor,
+                freezeScrollFollow,
                 true,
                 repairOverlayX,
                 repairOverlayRight,
@@ -1456,6 +1461,7 @@ function renderNodeToOutput(
               scrollTop,
               scrollTop + innerHeight,
               boxBackgroundColor,
+              freezeScrollFollow,
               false,
               childVisibleX1,
               childVisibleX2,
@@ -1526,6 +1532,7 @@ function renderNodeToOutput(
           // on re-render → /permissions body blanked on Down arrow, #25436).
           ownBackgroundColor || node.style.opaque ? undefined : prevScreen,
           boxBackgroundColor,
+          freezeScrollFollow,
           childVisibleX1,
           childVisibleX2,
           childVisibleY1,
@@ -1550,6 +1557,7 @@ function renderNodeToOutput(
         hasRemovedChild,
         prevScreen,
         inheritedBackgroundColor,
+        freezeScrollFollow,
         activeVisibleX1,
         activeVisibleX2,
         activeVisibleY1,
@@ -1605,6 +1613,7 @@ function renderChildren(
   hasRemovedChild: boolean,
   prevScreen: Screen | undefined,
   inheritedBackgroundColor: Color | undefined,
+  freezeScrollFollow: boolean,
   visibleX1: number,
   visibleX2: number,
   visibleY1: number,
@@ -1627,6 +1636,7 @@ function renderChildren(
       skipSelfBlit:
         seenDirtyClipped && isAbsolute && !childElem.style.opaque && childElem.style.backgroundColor === undefined,
       inheritedBackgroundColor,
+      freezeScrollFollow,
       visibleX1,
       visibleX2,
       visibleY1,
@@ -1777,6 +1787,7 @@ function renderScrolledChildren(
   scrollTopY: number,
   scrollBottomY: number,
   inheritedBackgroundColor: Color | undefined,
+  freezeScrollFollow: boolean,
   // When true (DECSTBM fast path), culled children keep their cache —
   // the blit+shift put stable rows in next.screen so stale cache is
   // never read. Avoids walking O(total_children * subtree_depth) per frame.
@@ -1860,6 +1871,7 @@ function renderScrolledChildren(
       offsetY,
       prevScreen: hasRemovedChild || seenDirtyChild ? undefined : prevScreen,
       inheritedBackgroundColor,
+      freezeScrollFollow,
       visibleX1,
       visibleX2,
       visibleY1: Math.max(visibleY1, offsetY + scrollTopY),

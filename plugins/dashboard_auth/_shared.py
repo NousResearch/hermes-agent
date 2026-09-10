@@ -232,10 +232,13 @@ def verify_jwt(
     Unreachable JWKS → ``ProviderError`` (503); a bearer that is not one of our JWTs
     (opaque peer key, foreign kid) → ``InvalidCodeError`` (None / next provider); folding
     both into 503 broke peer-key bearers. Expiry and not-yet-valid (``iat``/``nbf`` in
-    the future beyond the leeway — a *token* failure, not a transport failure) raise
-    ``InvalidCodeError`` (verify_session maps it to None); any other claim failure raises
-    ``ProviderError`` with the unverified iss/aud appended so operators can spot config
-    drift.
+    the future beyond the leeway) raise ``InvalidCodeError`` (verify_session maps it to
+    None). Every other decode-time rejection (wrong audience/issuer, bad signature, missing
+    claims) raises ``InvalidCodeError`` too: the IdP answered and the token is simply *not
+    ours*, a confirmed denial that must drive re-login (verify_session -> None, refresh ->
+    ``RefreshExpiredError`` via the caller's ``bad_request_exc`` mapping), not the misleading
+    503 "provider unreachable". The unverified iss/aud are appended so operators can still
+    spot config drift.
     """
     import jwt  # lazy — keeps startup fast for the ungated path
 
@@ -261,8 +264,9 @@ def verify_jwt(
         # (which discarded rotated refresh tokens and forced re-login, #47815).
         raise InvalidCodeError(f"{label} not yet valid: {exc}") from exc
     except jwt.InvalidTokenError as exc:
-        # Decoding without verification is safe here: verification already failed and
-        # these values are surfaced for diagnostics only, never trusted.
+        # A claim-level denial, not an outage: the IdP answered (JWKS fetched, token parsed)
+        # but the token isn't ours. Decoding without verification is safe here: verification
+        # already failed and these values are surfaced for diagnostics only, never trusted.
         details = ""
         try:
             unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
@@ -271,7 +275,7 @@ def verify_jwt(
                 f"expected iss={issuer!r} aud={audience!r}]")
         except Exception:
             pass
-        raise ProviderError(f"{label} verification failed: {exc}{details}") from exc
+        raise InvalidCodeError(f"{label} verification failed: {exc}{details}") from exc
 
 
 # ---- Shared provider skeletons ----
@@ -295,7 +299,8 @@ class JwtOAuthProvider(DashboardAuthProvider):
     """Authorization-code + PKCE provider whose session token is a JWT we verify ourselves
     (nous: Portal access token; self-hosted: OIDC ID token). Subclasses set ``_client_id`` and
     implement: ``_jwks_uri() -> str``; ``_claims_for(token) -> claims`` (raises
-    ``InvalidCodeError`` on expiry/foreign token, ``ProviderError`` otherwise);
+    ``InvalidCodeError`` for any verified-not-ours token — expiry, foreign aud/iss, opaque
+    bearer — and ``ProviderError`` only for genuine IDP outages);
     ``_grant(data, *, bad_request_exc, headers=None, previous_refresh_token="") -> Session``;
     ``_refresh_request(refresh_token) -> (form_data, extra_headers)``;
     ``_session(token, refresh_token, claims) -> Session``."""

@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session, listener_client
+from hermes_cli.dashboard_auth import InvalidCodeError, LoginStart, ProviderError, Session, listener_client
 from plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
     JwtOAuthProvider,
@@ -94,7 +94,14 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             idp="Portal", endpoint="Portal token endpoint", token_key="access_token",
             missing_msg="Portal token response missing access_token")
         # Rotating RT the caller MUST persist back to the cookie.
-        return self._session(access_token, refresh_token_from(payload), self._claims_for(access_token))
+        try:
+            claims = self._claims_for(access_token)
+        except InvalidCodeError as exc:
+            # Verify-stage denial inside a grant (expired / foreign token): map to the
+            # caller's bad_request_exc so the refresh scan rejects this provider
+            # (RefreshExpiredError) instead of crashing on an uncaught InvalidCodeError.
+            raise bad_request_exc(str(exc)) from exc
+        return self._session(access_token, refresh_token_from(payload), claims)
 
 
     def _claims_for(self, access_token: str) -> dict[str, Any]:

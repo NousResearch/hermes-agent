@@ -85,16 +85,30 @@ class GatewayBusySessionMixin:
         state = self._peek_session_state(session_key)
         return state.conversation.queued_events if state else None
 
+    @staticmethod
+    def _apply_followup_queue_mutation(adapter: Any, session_key: str, mutation) -> bool:
+        """Use the adapter's review-admission fence when available; minimal test/legacy adapters
+        retain the exact queue behavior without pretending to expose that contract."""
+        apply_mutation = getattr(type(adapter), "apply_followup_queue_mutation", None)
+        if callable(apply_mutation):
+            return bool(apply_mutation(adapter, session_key, mutation))
+        return bool(mutation())
+
     def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
         """Append a /queue event to the FIFO chain for a session."""
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
             return
-        if session_key in pending_slot:
-            self._session_state(session_key).conversation.queued_events.append(queued_event)
-        else:
-            pending_slot[session_key] = queued_event
-        queued_event._gateway_accepted = True
+
+        def _enqueue() -> bool:
+            if session_key in pending_slot:
+                self._session_state(session_key).conversation.queued_events.append(queued_event)
+            else:
+                pending_slot[session_key] = queued_event
+            return True
+
+        if self._apply_followup_queue_mutation(adapter, session_key, _enqueue):
+            queued_event._gateway_accepted = True
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]
@@ -110,7 +124,13 @@ class GatewayBusySessionMixin:
         if pending_event is None:
             return overflow.pop(0)
         if adapter is not None and hasattr(adapter, "_pending_messages"):
-            adapter._pending_messages[session_key] = overflow.pop(0)
+            def _stage_next() -> bool:
+                if not overflow:
+                    return False
+                adapter._pending_messages[session_key] = overflow.pop(0)
+                return True
+
+            self._apply_followup_queue_mutation(adapter, session_key, _stage_next)
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
 
@@ -133,17 +153,33 @@ class GatewayBusySessionMixin:
         See #28503.
         """
         try:
-            overflow = self._overflow_queue(session_key)
-            if not overflow:
+            rescued = []
+            remaining = []
+
+            def _rescue_and_stage() -> bool:
+                overflow = self._overflow_queue(session_key)
+                pending_slot = getattr(adapter, "_pending_messages", None)
+                if not overflow or not isinstance(pending_slot, dict):
+                    return False
+                if pending_slot.get(session_key):
+                    return False  # slot occupied (busy) — promotion owns this
+                rescued.append(overflow.pop(0))
+                # Keep the slot occupied so the drain promotes in order and a mid-chain arrival
+                # routes to overflow instead of jumping the queue.
+                if overflow:
+                    pending_slot[session_key] = overflow.pop(0)
+                    remaining.append(overflow)
+                    return True
+                remaining.append(overflow)
+                return False
+
+            self._apply_followup_queue_mutation(
+                adapter, session_key, _rescue_and_stage
+            )
+            if not rescued:
                 return None
-            pending_slot = getattr(adapter, "_pending_messages", None)
-            if not isinstance(pending_slot, dict) or pending_slot.get(session_key):
-                return None  # slot occupied (busy) or no slot storage — promotion owns this
-            head = overflow.pop(0)
-            # Keep the slot occupied so the drain promotes in order and a mid-chain arrival routes
-            # to overflow instead of jumping the queue (same invariant as _promote_queued_event).
-            if overflow:
-                pending_slot[session_key] = overflow.pop(0)
+            head = rescued[0]
+            overflow = remaining[0]
             logger.warning(
                 "Rescued orphaned FIFO overflow event for idle session "
                 "%s — it was queued during a busy window but the post-turn "
@@ -363,38 +399,47 @@ class GatewayBusySessionMixin:
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
         # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
         pending_slot = getattr(adapter, "_pending_messages", None)
-        # #28503 — Previously this called ``merge_pending_message_event`` with the default
-        # ``merge_text=False``, which silently OVERWROTE the single pending slot when consecutive text
-        # messages arrived in ``busy_input_mode: queue``.
-        existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        same_security_context = existing is not None and (
-            getattr(existing, "internal", False) == getattr(event, "internal", False)
-            and getattr(existing, "allow_gateway_control", True)
-            == getattr(event, "allow_gateway_control", True)
-            and all(
-                (getattr(existing, "metadata", None) or {}).get(key)
-                == (getattr(event, "metadata", None) or {}).get(key)
-                for key in self._SECURITY_METADATA_KEYS
+
+        def _merge_media_head() -> bool:
+            # #28503 — consecutive text events stay distinct FIFO turns; only compatible media
+            # contexts merge into the head slot.
+            existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+            same_security_context = existing is not None and (
+                getattr(existing, "internal", False) == getattr(event, "internal", False)
+                and getattr(existing, "allow_gateway_control", True)
+                == getattr(event, "allow_gateway_control", True)
+                and all(
+                    (getattr(existing, "metadata", None) or {}).get(key)
+                    == (getattr(event, "metadata", None) or {}).get(key)
+                    for key in self._SECURITY_METADATA_KEYS
+                )
             )
-        )
-        # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
-        # head slot. Every other media follow-up — voice, audio, video, document — is an
-        # independent message and takes its own FIFO turn like text does; merging on *any*
-        # ``media_urls`` collapsed three voice notes into one turn (#114363). Telegram albums
-        # (``media_group_id``, photos and videos) are already coalesced by the adapter upstream.
-        merge_types = {
-            getattr(existing, "message_type", None),
-            getattr(event, "message_type", None),
-        }
-        if (
-            same_security_context
-            and MessageType.PHOTO in merge_types
-            and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
-        ):
+            # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
+            # head slot. Every other media follow-up — voice, audio, video, document — is an
+            # independent message and takes its own FIFO turn like text does; merging on *any*
+            # ``media_urls`` collapsed three voice notes into one turn (#114363). Telegram albums
+            # (``media_group_id``, photos and videos) are already coalesced by the adapter upstream.
+            merge_types = {
+                getattr(existing, "message_type", None),
+                getattr(event, "message_type", None),
+            }
+            if not (
+                same_security_context
+                and MessageType.PHOTO in merge_types
+                and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
+            ):
+                return False
             merge_pending_message_event(
-                adapter._pending_messages, session_key, event,
+                adapter._pending_messages,
+                session_key,
+                event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
+            return True
+
+        if self._apply_followup_queue_mutation(
+            adapter, session_key, _merge_media_head
+        ):
             event._gateway_accepted = True
             return
 

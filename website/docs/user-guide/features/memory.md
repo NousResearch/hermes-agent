@@ -377,16 +377,45 @@ summary of older ones) rather than the full transcript — minimizing what it
 writes to the new cache. Capture holds: in testing, memory capture was
 identical and skill capture near-identical to the main-model review.
 
-Leave it at `auto` (or set it to your main model) and nothing changes — the
-review keeps running on the main model with the full warm-cache replay.
+Leave it at `auto` (or set it to your main model) and ordinary reviews keep
+running on the main model with a warm-cache replay. Oversized conversations are
+bounded as described below.
 
 ### Same-model review reasoning
 
 A review using the same model as the parent **always inherits the parent's reasoning effort**. Setting `auxiliary.background_review.reasoning_effort` does not override it, whether the route is `auto` or explicitly selects the parent provider/model.
 
-Reasoning settings, the system prompt, the full conversation snapshot, and tool definitions stay byte-identical to the parent at fork birth so the review can reuse its prompt-cache prefix. Changing only the review's thinking level would break that parity. There is no independent-effort switch for same-model reviews.
+Reasoning settings, the system prompt, the selected conversation replay, and tool definitions stay byte-identical to the parent at fork birth so the review can reuse its prompt-cache prefix where the replay is unchanged. Changing only the review's thinking level would break that parity. There is no independent-effort switch for same-model reviews.
 
 To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; on that route `auxiliary.background_review.reasoning_effort` IS honored (unset = the routed provider's default). A one-time warning is printed when the key is set but the review stays on the main model. These frequency and routing controls do not decouple same-model reasoning.
+
+### Replay and foreground bounds (`max_replay_tokens`)
+
+Automatic review never takes priority over the conversation. If another message
+is already queued for the same gateway session, the review is skipped. A live
+turn also fences or cancels a review before foreground work continues. Manual
+`/refine` remains explicit and is not subject to these automatic-review gates.
+
+Same-model reviews replay an ordinary conversation verbatim for prompt-cache
+reuse. When the rough conversation estimate exceeds the replay ceiling, Hermes
+instead keeps the widest recent suffix that starts on a user message and fits
+the ceiling. If even the newest complete user-led suffix cannot fit, that
+automatic review is skipped rather than issuing an oversized request. Truncating
+the conversation prefix means the bounded review cannot reuse the replay cache
+past the system prefix.
+
+```yaml
+auxiliary:
+  background_review:
+    max_replay_tokens: 120000  # <= 0 means unlimited replay
+```
+
+The setting defaults to `120000` when omitted. An explicit null, a boolean, or
+another nonnumeric value is invalid: Hermes logs a warning and falls back to
+`120000`. Zero and negative numeric values make replay unlimited.
+
+The bound applies only to the conversation replay. The review prompt, system
+prompt, and tool definitions still contribute to the provider request.
 
 ### Disabling automatic reviews (`enabled`)
 
@@ -454,8 +483,8 @@ next prompt needs — for minutes on a large model — and sending a new prompt
 cancels it, discarding the learning. So on the managed local runtime, reviews
 are **deferred by default**: queued at turn end and executed once the machine
 has been quiet for a short settle window. Nothing about the review itself
-changes — same model, same full-transcript replay, same writes — only the
-execution moment moves.
+changes — same model, same selected replay, same writes — only the execution
+moment moves.
 
 ```yaml
 auxiliary:
@@ -470,12 +499,12 @@ auxiliary:
 | `never` | Old behavior everywhere: spawn immediately at turn end, even on the managed local GPU. |
 
 Queued reviews coalesce per session (a newer turn's snapshot replaces the
-older one — the review replays the whole conversation, so nothing is lost),
-a review preempted by a new prompt is re-queued instead of discarded, and a
-review that has waited longer than `defer_max_age_s` runs even if the machine
-never goes idle. Explicit `/refine` always runs immediately. The queue is
-in-memory: reviews still pending when the app exits are dropped, same as an
-in-flight fork would have been.
+older one, so the eventual review sees the freshest eligible replay), a review
+preempted by a new prompt is re-queued instead of discarded, and a review that
+has waited longer than `defer_max_age_s` runs even if the machine never goes
+idle. Explicit `/refine` always runs immediately. The queue is in-memory:
+reviews still pending when the app exits are dropped, same as an in-flight fork
+would have been.
 
 ## Controlling skill writes (`skills.write_approval`)
 

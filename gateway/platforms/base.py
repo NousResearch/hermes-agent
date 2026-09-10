@@ -1576,6 +1576,15 @@ class TextDebounceState:
             self.task.cancel()
 
 
+@dataclass
+class FollowupAdmissionState:
+    """Cross-thread queue/review handshake for one active gateway session."""
+
+    lock: Any = field(default_factory=threading.RLock)
+    epoch: int = 0
+    cancel_review: Optional[Callable[[], None]] = None
+
+
 def _append_text(existing: Optional[str], new: Optional[str]) -> str:
     """``existing\\nnew`` when both non-empty; the non-empty one otherwise."""
     return f"{existing}\n{new}" if existing else new
@@ -1939,6 +1948,7 @@ class BasePlatformAdapter(ABC):
         # runner, never process env (#116895).
         self._human_delay_range_ms: Optional[tuple[int, int]] = None
         self._text_debounce: dict[str, TextDebounceState] = {}
+        self._followup_admission: dict[str, FollowupAdmissionState] = {}
         # handle_message() tasks; shutdown cancels them so a replaced gateway stops working.
         self._background_tasks: set[asyncio.Task] = set()
         # Post-delivery one-shots per session_key: bare callback (legacy) or ``(generation,
@@ -3729,6 +3739,59 @@ class BasePlatformAdapter(ABC):
     def _text_debounce_store(self) -> dict[str, TextDebounceState]:
         return _lazy_attr(self, "_text_debounce", dict)
 
+    def followup_admission_state(self, session_key: str) -> FollowupAdmissionState:
+        """Stable state shared by gateway queue mutation and review request admission."""
+        store = self._followup_admission_store()
+        state = store.get(session_key)
+        if state is None:
+            state = store.setdefault(session_key, FollowupAdmissionState())
+        return state
+
+    def _followup_admission_store(self) -> dict[str, FollowupAdmissionState]:
+        return _lazy_attr(self, "_followup_admission", dict)
+
+    def _existing_followup_admission_state(
+        self, session_key: str
+    ) -> Optional[FollowupAdmissionState]:
+        """Return an existing state without making a read-only probe retain the session."""
+        store = getattr(self, "_followup_admission", None)
+        return store.get(session_key) if isinstance(store, dict) else None
+
+    def register_followup_review_cancel(
+        self, session_key: str, callback: Callable[[], None]
+    ) -> FollowupAdmissionState:
+        """Wire the active turn's non-blocking background-review fence."""
+        state = self.followup_admission_state(session_key)
+        with state.lock:
+            state.cancel_review = callback if callable(callback) else None
+        return state
+
+    @staticmethod
+    def _record_and_fence_followup_locked(state: FollowupAdmissionState) -> None:
+        """Publish queue state and fence its automatic review before releasing admission.
+
+        The caller owns ``state.lock``; the callback may take the review-run lock. This matches
+        ``_BackgroundReviewRun.begin_request``'s admission-lock-then-run-lock order.
+        """
+        state.epoch += 1
+        callback = state.cancel_review
+        if callable(callback):
+            try:
+                callback()
+            except Exception:
+                logger.debug("Background-review follow-up fence failed", exc_info=True)
+
+    def apply_followup_queue_mutation(
+        self, session_key: str, mutation: Callable[[], bool]
+    ) -> bool:
+        """Apply one accepted future-turn mutation and publish/cancel it atomically."""
+        state = self.followup_admission_state(session_key)
+        with state.lock:
+            if not mutation():
+                return False
+            self._record_and_fence_followup_locked(state)
+            return True
+
     def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
         """Return True for normal text eligible for queue-mode debounce."""
         result = (
@@ -3778,26 +3841,34 @@ class BasePlatformAdapter(ABC):
             if state is not None and not self._can_merge_text_debounce_events(state.event, event):
                 existing_pending = self._pending_messages.get(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
+                    admission = self.followup_admission_state(session_key)
+                    with admission.lock:
+                        merge_pending_message_event(
+                            self._pending_messages, session_key, event, merge_text=True
+                        )
+                        self._record_and_fence_followup_locked(admission)
                 return
         now = time.monotonic()
-        if state is None:
-            state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
-            store[session_key] = state
-        else:
-            if event.text:
-                state.event.text = _append_text(state.event.text, event.text)
-            state.event.absorb_reply_expected(event)
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
-            state.last_ts = now
-        state.cancel_timer()
-        delay = self._text_debounce_delay(session_key)
-        state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
+        admission = self.followup_admission_state(session_key)
+        with admission.lock:
+            if state is None:
+                state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
+                store[session_key] = state
+            else:
+                if event.text:
+                    state.event.text = _append_text(state.event.text, event.text)
+                state.event.absorb_reply_expected(event)
+                latest_message_id = getattr(event, "message_id", None)
+                latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
+                if latest_message_id is not None:
+                    state.event.message_id = str(latest_message_id)
+                if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
+                    state.event.reply_to_message_id = str(latest_anchor)
+                state.last_ts = now
+            self._record_and_fence_followup_locked(admission)
+            state.cancel_timer()
+            delay = self._text_debounce_delay(session_key)
+            state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
 
     async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
         """Timer task that flushes the debounced text buffer."""
@@ -3814,18 +3885,22 @@ class BasePlatformAdapter(ABC):
 
     async def _flush_text_debounce_now(self, session_key: str) -> bool:
         """Force-flush one debounced busy-text burst into the pending slot."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is None:
-            return False
-        state.cancel_timer(unless=asyncio.current_task())
-        state.task = None
-        pending = self._pending_messages.get(session_key)
-        if pending is not None and not self._can_merge_text_debounce_events(pending, state.event):
-            return False
-        store.pop(session_key, None)
-        merge_pending_message_event(self._pending_messages, session_key, state.event, merge_text=True)
-        return True
+        admission = self.followup_admission_state(session_key)
+        with admission.lock:
+            store = self._text_debounce_store()
+            state = store.get(session_key)
+            if state is None:
+                return False
+            state.cancel_timer(unless=asyncio.current_task())
+            state.task = None
+            pending = self._pending_messages.get(session_key)
+            if pending is not None and not self._can_merge_text_debounce_events(pending, state.event):
+                return False
+            store.pop(session_key, None)
+            merge_pending_message_event(
+                self._pending_messages, session_key, state.event, merge_text=True
+            )
+            return True
 
     def _discard_text_debounce(self, session_key: str) -> None:
         """Cancel and drop pending text debounce state for control commands."""
@@ -3861,6 +3936,7 @@ class BasePlatformAdapter(ABC):
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
+        self._followup_admission_store().pop(session_key, None)
         return True
 
     def _start_session_processing(self, event: MessageEvent, session_key: str, *,
@@ -4068,7 +4144,10 @@ class BasePlatformAdapter(ABC):
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
             logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event)
+            admission = self.followup_admission_state(session_key)
+            with admission.lock:
+                merge_pending_message_event(self._pending_messages, session_key, event)
+                self._record_and_fence_followup_locked(admission)
             event._gateway_accepted = True
             return
         if self._is_queue_text_debounce_candidate(event):
@@ -4079,8 +4158,13 @@ class BasePlatformAdapter(ABC):
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event,
-                                        merge_text=event.message_type == MessageType.TEXT)
+            admission = self.followup_admission_state(session_key)
+            with admission.lock:
+                merge_pending_message_event(
+                    self._pending_messages, session_key, event,
+                    merge_text=event.message_type == MessageType.TEXT,
+                )
+                self._record_and_fence_followup_locked(admission)
             event._gateway_accepted = True
 
     def _get_human_delay(self) -> float:
@@ -4609,6 +4693,7 @@ class BasePlatformAdapter(ABC):
         self._release_session_guard(session_key, guard=interrupt_event)
         if session_key not in self._active_sessions:
             self._session_tasks.pop(session_key, None)
+            self._followup_admission_store().pop(session_key, None)
 
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
@@ -4637,7 +4722,8 @@ class BasePlatformAdapter(ABC):
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
-                       self._pending_messages, self._active_sessions, self._text_debounce_store()):
+                       self._pending_messages, self._active_sessions, self._text_debounce_store(),
+                       self._followup_admission_store()):
             bucket.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:
@@ -4647,6 +4733,18 @@ class BasePlatformAdapter(ABC):
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
         """Get and clear any pending message for a session."""
         return self._pending_messages.pop(session_key, None)
+
+    def has_pending_message(self, session_key: str) -> bool:
+        """Return whether a session has a queued message without consuming it."""
+        state = self._existing_followup_admission_state(session_key)
+        if state is None:
+            pending = getattr(self, "_pending_messages", None) or {}
+            debounce = getattr(self, "_text_debounce", None) or {}
+            return session_key in pending or session_key in debounce
+        with state.lock:
+            pending = getattr(self, "_pending_messages", None) or {}
+            debounce = getattr(self, "_text_debounce", None) or {}
+            return session_key in pending or session_key in debounce
 
     def build_source(
         self, chat_id: str, chat_name: Optional[str] = None, chat_type: str = "dm",

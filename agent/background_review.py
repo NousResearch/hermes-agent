@@ -12,9 +12,9 @@ import json
 import logging
 import os
 import threading
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
@@ -25,22 +25,85 @@ _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS = 2.0
 
 
 class _BackgroundReviewRun:
-    """Per-review cancellation and request-completion handshake."""
+    """Per-review cancellation and request-completion handshake.
 
-    def __init__(self) -> None:
+    ``admission_gate`` (automatic reviews only) is the foreground-ownership probe, re-evaluated
+    HERE, inside the admission lock. The pre-spawn checks cannot be the last word: building the
+    fork takes real time, and a gateway follow-up queued in that window only becomes a live turn
+    after it is delivered — so without this gate the review would still get its full-transcript
+    request onto the wire first. Automatic admission takes the follow-up lock, then the foreground
+    registry lock, then the run lock. /refine passes no gate: an explicit review is never preempted.
+    """
+
+    def __init__(
+        self,
+        admission_gate: Optional[Callable[[], Optional[str]]] = None,
+        admission_lock: Any = None,
+        foreground_admission_lock: Any = None,
+        followup_cancellable: bool = True,
+    ) -> None:
         self.cancel_requested = threading.Event()
         self.request_done = threading.Event()
+        self.refused_reason: Optional[str] = None
         self._lock = threading.Lock()
+        self._admission_gate = admission_gate
+        self._admission_lock = admission_lock
+        self._foreground_admission_lock = foreground_admission_lock
+        self._followup_cancellable = followup_cancellable
         self._review_agent = None
         self._request_finished = self._cancel_dispatched = False
 
     def begin_request(self, review_agent: Any) -> bool:
-        """Atomically admit the first provider-capable review phase."""
-        with self._lock:
-            if self.cancel_requested.is_set() or self._request_finished:
+        """Atomically admit the first provider-capable review phase.
+
+        The admission scopes are held for the whole sample -> publication window, so a queue
+        insertion or a live-turn registration either lands first (and the gate refuses) or finds a
+        published fork to cancel. The RUN lock is taken only for the flag reads and the
+        publication, never across ``_foreground_reason()``: the host probe takes the gateway's
+        per-session admission lock, and the gateway's queue fence takes that same lock and THEN
+        cancels (which takes the run lock). Holding the run lock across the probe inverts those two
+        orders and wedges the gateway event loop behind a review.
+        """
+        admission_scope = self._admission_lock or nullcontext()
+        foreground_scope = self._foreground_admission_lock or nullcontext()
+        with admission_scope, foreground_scope:
+            if self._fenced():
                 return False
-            self._review_agent = review_agent
-            return True
+            if reason := self._foreground_reason():
+                self._refuse(reason)
+                return False
+            with self._lock:
+                # Re-read under the publication lock: a cancel may have landed while the probe ran.
+                if self.cancel_requested.is_set() or self._request_finished:
+                    return False
+                self._review_agent = review_agent
+                return True
+
+    def _fenced(self) -> bool:
+        """Whether this run is already cancelled or past its request phase."""
+        with self._lock:
+            return self.cancel_requested.is_set() or self._request_finished
+
+    def _refuse(self, reason: str) -> None:
+        """Fence the run exactly like a cancel: nothing may be admitted afterwards, and a deferred
+        review is requeued rather than lost (``run_agent._requeue_deferred_review``)."""
+        with self._lock:
+            self.refused_reason = reason
+            self.cancel_requested.set()
+
+    def _foreground_reason(self) -> Optional[str]:
+        """Body-free reason the foreground owns the session, or None. A raising gate reads free:
+        an unknown foreground state must not starve learning (same contract as the host probe)."""
+        if self._admission_gate is None:
+            return None
+        try:
+            return self._admission_gate()
+        except Exception:  # noqa: BLE001 — a broken gate must not break the review path
+            logger.debug(
+                "Background review admission gate raised; treating the session as free",
+                exc_info=True,
+            )
+            return None
 
     def cancel(self) -> Any:
         """Fence startup and return the running fork, if one was admitted."""
@@ -50,6 +113,12 @@ class _BackgroundReviewRun:
                 return None
             self._cancel_dispatched = True
             return self._review_agent
+
+    def cancel_for_pending_followup(self) -> Any:
+        """Fence an automatic review; explicit /refine waits for normal live-turn cancellation."""
+        if not self._followup_cancellable:
+            return None
+        return self.cancel()
 
     def mark_request_finished(self) -> bool:
         """Latch request completion once; the caller publishes the event."""
@@ -71,9 +140,21 @@ def _optional_lock(agent: Any, attr: str) -> Iterator[None]:
         yield
 
 
-def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
+def prepare_background_review_run(
+    agent: Any,
+    *,
+    admission_gate: Optional[Callable[[], Optional[str]]] = None,
+    admission_lock: Any = None,
+    foreground_admission_lock: Any = None,
+    followup_cancellable: bool = True,
+) -> Optional[_BackgroundReviewRun]:
     """Install a unique run token on the parent before ``Thread.start()``."""
-    run = _BackgroundReviewRun()
+    run = _BackgroundReviewRun(
+        admission_gate,
+        admission_lock,
+        foreground_admission_lock,
+        followup_cancellable,
+    )
     try:
         lock = getattr(agent, "_background_review_lock", None)
         if lock is None:
@@ -117,23 +198,31 @@ def _interrupt_background_review(review_agent: Any) -> None:
         logger.debug("Failed to start background-review cancellation thread", exc_info=True)
 
 
-def cancel_background_review_for_live_turn(agent: Any) -> None:
-    """Cancel the current review and await its request-phase acknowledgement. Foreground priority:
-    past the bounded deadline, warn and let the live turn proceed — self-improvement work must
-    never block a user-facing turn.
-
-    Foreground priority is preserved: if the review does not acknowledge within the bounded deadline, a
-    warning is logged and the live turn proceeds anyway. See #84423.
-    """
+def _cancel_background_review(
+    agent: Any, *, pending_followup: bool = False
+) -> Tuple[Optional[_BackgroundReviewRun], Any]:
+    """Fence the current run and return ``(run, admitted_fork)`` for its caller's policy."""
     with _optional_lock(agent, "_background_review_lock"):
         run = getattr(agent, "_background_review_run", None)
         legacy_agent = getattr(agent, "_background_review_agent", None)
-    review_agent = legacy_agent if run is None else run.cancel()
-    # Attribute the review fork's usage to the PARENT session. Snapshot BEFORE unregister/close so counters
-    # survive teardown. Placed in this finally so a fork that consumed tokens and THEN raised is still
-    # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
+    if run is None:
+        return run, legacy_agent
+    review_agent = run.cancel_for_pending_followup() if pending_followup else run.cancel()
+    return run, review_agent
+
+
+def cancel_background_review_for_pending_followup(agent: Any) -> None:
+    """Non-blocking queue-side fence. The pending-state admission gate handles unstarted forks;
+    an already admitted fork receives the normal hard interrupt without stalling the gateway loop."""
+    _run, review_agent = _cancel_background_review(agent, pending_followup=True)
     if review_agent is not None:
         _interrupt_background_review(review_agent)
+
+
+def wait_for_background_review_cancellation(
+    run: Optional[_BackgroundReviewRun],
+) -> None:
+    """Wait outside admission locks for the request-phase cancellation acknowledgement."""
     if run is None:
         return
     if not run.request_done.wait(timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS):
@@ -142,6 +231,27 @@ def cancel_background_review_for_live_turn(agent: Any) -> None:
             "proceeding with foreground live turn",
             _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS,
         )
+
+
+def cancel_background_review_for_live_turn(
+    agent: Any, *, wait: bool = True
+) -> Optional[_BackgroundReviewRun]:
+    """Cancel the current review and await its request-phase acknowledgement. Foreground priority:
+    past the bounded deadline, warn and let the live turn proceed — self-improvement work must
+    never block a user-facing turn.
+
+    Foreground priority is preserved: if the review does not acknowledge within the bounded deadline, a
+    warning is logged and the live turn proceeds anyway. See #84423.
+    """
+    run, review_agent = _cancel_background_review(agent)
+    # Attribute the review fork's usage to the PARENT session. Snapshot BEFORE unregister/close so counters
+    # survive teardown. Placed in this finally so a fork that consumed tokens and THEN raised is still
+    # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
+    if review_agent is not None:
+        _interrupt_background_review(review_agent)
+    if wait:
+        wait_for_background_review_cancellation(run)
+    return run
 
 
 # Aux-model routing: by default ("auto") the fork runs on the MAIN model and replays the full
@@ -1180,6 +1290,16 @@ def _run_review_fork(
                     "at runtime — do not attempt them." + prompt_extra
                 ),
                 conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
+            )
+        elif reason := review_run.refused_reason:
+            # Only a GATE refusal sets a reason; a cancelled run leaves it None and is already
+            # logged by whoever cancelled, so this never doubles up. Body-free slug + hashed tag,
+            # like every other skip/defer decision (agent/review_admission.py).
+            from agent.review_admission import session_tag
+
+            logger.info(
+                "Background review refused at admission (session=%s): %s",
+                session_tag(getattr(agent, "session_id", None)), reason,
             )
     finally:
         clear_thread_tool_whitelist()

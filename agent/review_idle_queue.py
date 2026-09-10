@@ -12,13 +12,14 @@ fork. Idle truth is the supervisor's /slots held for a settle window.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
 import time
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Hashable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,16 @@ def review_targets_managed_local(agent: Any, task_cfg: Optional[Dict[str, Any]])
 @dataclass(slots=True)
 class _PendingReview:
     agent: Any
-    session_key: str
+    session_key: Hashable
     kwargs: Dict[str, Any]
     enqueued_at: float
+    context: contextvars.Context
+
+
+def _session_log_tag(session_key: Hashable) -> str:
+    """Body-free trailing session label for either legacy or profile-scoped queue keys."""
+    raw = session_key[-1] if isinstance(session_key, tuple) and session_key else session_key
+    return str(raw)[-12:]
 
 
 class ReviewIdleQueue:
@@ -71,7 +79,7 @@ class ReviewIdleQueue:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._pending: Dict[str, _PendingReview] = {}
+        self._pending: Dict[Hashable, _PendingReview] = {}
         self._wake = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._live_turns = 0
@@ -92,16 +100,32 @@ class ReviewIdleQueue:
                 self._quiet_since = self._now()
         self._wake.set()
 
-    def enqueue(self, agent: Any, session_key: str, kwargs: Dict[str, Any]) -> None:
+    def enqueue(
+        self,
+        agent: Any,
+        session_key: Hashable,
+        kwargs: Dict[str, Any],
+        *,
+        replace_existing: bool = True,
+    ) -> None:
         """Add (or replace — newest snapshot wins) a session's pending review, keeping the ORIGINAL
-        enqueue time on coalesce so a busy session cannot push its age-out forever."""
+        enqueue time on coalesce so a busy session cannot push its age-out forever. A retry uses
+        ``replace_existing=False`` so it cannot overwrite a newer snapshot queued while dispatching."""
+        dispatch_context = contextvars.copy_context()
         with self._lock:
             existing = self._pending.get(session_key)
+            if existing is not None and not replace_existing:
+                return
             enqueued_at = existing.enqueued_at if existing is not None else self._now()
-            self._pending[session_key] = _PendingReview(agent, session_key, kwargs, enqueued_at)
+            self._pending[session_key] = _PendingReview(
+                agent, session_key, kwargs, enqueued_at, dispatch_context
+            )
         self._ensure_thread()
         self._wake.set()
-        logger.info("Background review deferred (session=%s, queued=%d)", session_key[-12:], len(self._pending))
+        logger.info(
+            "Background review deferred (session=%s, queued=%d)",
+            _session_log_tag(session_key), len(self._pending),
+        )
 
     def pending_count(self) -> int:
         with self._lock:
@@ -149,19 +173,27 @@ class ReviewIdleQueue:
             try:
                 item = self._pop_dispatchable()
                 if item is not None:
-                    if not self._still_enabled(item):
-                        logger.info(
-                            "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
-                            item.session_key[-12:])
-                        continue
-                    logger.info(
-                        "Dispatching deferred background review (session=%s, waited=%.0fs, queued=%d)",
-                        item.session_key[-12:], self._now() - item.enqueued_at, self.pending_count())
-                    item.agent._spawn_background_review_now(**item.kwargs)
+                    self._dispatch_item(item)
             except Exception:  # noqa: BLE001 — dispatcher must survive anything
                 logger.warning("Deferred review dispatch failed", exc_info=True)
             if item is None:
                 time.sleep(_POLL_INTERVAL_S)
+
+    def _dispatch_item(self, item: _PendingReview) -> None:
+        """Dispatch one popped item; separated so aged/preempted interleavings are deterministic."""
+        if not self._still_enabled(item):
+            logger.info(
+                "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
+                _session_log_tag(item.session_key),
+            )
+            return
+        logger.info(
+            "Dispatching deferred background review (session=%s, waited=%.0fs, queued=%d)",
+            _session_log_tag(item.session_key), self._now() - item.enqueued_at, self.pending_count(),
+        )
+        dispatch_kwargs = dict(item.kwargs)
+        dispatch_kwargs["_idle_queue_origin"] = True
+        item.context.run(item.agent._spawn_background_review_now, **dispatch_kwargs)
 
     @staticmethod
     def _still_enabled(item: _PendingReview) -> bool:

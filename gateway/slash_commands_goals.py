@@ -183,6 +183,7 @@ class GatewayGoalCommandsMixin:
             agent._spawn_background_review(
                 messages_snapshot=snapshot, review_memory=True,
                 review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()), focus=args or None,
+                explicit=True,
             )
         except Exception as exc:
             return f"/refine failed to start: {exc}"

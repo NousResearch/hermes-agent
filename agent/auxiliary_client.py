@@ -5431,7 +5431,12 @@ def _get_cached_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
-    if client is not None:
+    if client is not None and not isinstance(client, _AuxProbeClientStub):
+        # probe stubs must never be cached — the next hit would get a dud client
+        # (same rule _store_cached_client enforces; the check was missing on this
+        # duplicate write path, so probe stubs poisoned the cache: every later
+        # check_vision_requirements() in the same process hit the stub, tripped
+        # its loud-failure __getattr__, and resolved False forever after).
         with _client_cache_lock:
             if cache_key not in _client_cache:
                 # FIFO safety-belt eviction. Do NOT close evicted clients: another caller may be

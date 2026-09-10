@@ -398,6 +398,7 @@ def cron_status():
     else:
         pids = find_gateway_pids()
         gateway_alive_via_lock = False
+        served_by_multiplexer = False
         if not pids:
             # The pid scan transiently misses a live gateway right after a restart; the runtime
             # lock proves the process is alive. Declare "not running" only when both agree.
@@ -409,15 +410,54 @@ def cron_status():
                 gateway_alive_via_lock = is_gateway_runtime_lock_active()
                 lock_pid = get_running_pid() if gateway_alive_via_lock else None
                 pids = [lock_pid] if lock_pid else pids
-        if pids or gateway_alive_via_lock:
-            _print_ticker_health(pids)
+            # Satellite profile: no local gateway.pid, but the default multiplexer ticks its store
+            # (#107168). Without this, `cron status` in a bot profile always says "not running"
+            # even though the default gateway *is* the live ticker for it, and the message is
+            # both wrong and masks the real Desktop-only-ticker cliff.
+            if not pids and not gateway_alive_via_lock:
+                with contextlib.suppress(Exception):
+                    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+                    served_by_multiplexer = named_profile_served_by_running_multiplexer()
+                    if served_by_multiplexer:
+                        # Re-check liveness via default profile's lock for heartbeat display.
+                        with contextlib.suppress(Exception):
+                            from hermes_constants import get_default_hermes_root
+                            from gateway.status import _pid_exists, _pid_from_record, _read_pid_record
+                            rec = _read_pid_record(get_default_hermes_root() / "gateway.pid")
+                            pid = _pid_from_record(rec) if rec else None
+                            if pid and _pid_exists(pid):
+                                pids = [pid]
+        if pids or gateway_alive_via_lock or served_by_multiplexer:
+            if served_by_multiplexer and not (pids or gateway_alive_via_lock):
+                print(color("✓ Gateway is running via the default-profile multiplexer"
+                            " — cron jobs will fire automatically", Colors.GREEN))
+                if pids:
+                    print(f"  PID: {', '.join(map(str, pids))} (default profile)")
+            else:
+                _print_ticker_health(pids)
         else:
             print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
-            print("\n  To enable automatic execution:\n"
-                  "    hermes gateway install    # Install as a user service\n"
-                  "    sudo hermes gateway install --system  "
-                  "# Linux servers: boot-time system service\n"
-                  "    hermes gateway            # Or run in foreground")
+            # For non-default profiles the default multiplexer is the 24/7 ticker; the
+            # Desktop scheduler only runs while the app is open (#107168). Name the fix
+            # so the message is not misread as a false positive on desktop installs.
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                active = get_active_profile_name() or "default"
+            except Exception:
+                active = "default"
+            if active != "default":
+                print("\n  This is a non-default profile. Two ways to make its jobs fire 24/7:\n"
+                      "    1) Keep the Desktop app open (its scheduler ticks all profiles), or\n"
+                      "    2) Enable the default gateway to tick all profiles:\n"
+                      "       hermes --profile default config set gateway.multiplex_profiles true\n"
+                      "       hermes gateway restart  # from the default profile\n"
+                      "  Check: hermes cron status  (from default) should show the ticker heartbeat.\n")
+            else:
+                print("\n  To enable automatic execution:\n"
+                      "    hermes gateway install    # Install as a user service\n"
+                      "    sudo hermes gateway install --system  "
+                      "# Linux servers: boot-time system service\n"
+                      "    hermes gateway            # Or run in foreground")
 
     print()
     _print_active_jobs_summary(list_jobs(include_disabled=False))
@@ -502,6 +542,32 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     if unverified := job.get("last_delivery_unverified"):
         issues.append("last delivery unverified (adapter acked without evidence): "
                       + _unverified_targets(unverified))
+    # Missed-fire visibility: a catch-up/late dispatch means the scheduler was down
+    # and the job ran hours after schedule (#107168). Without this, doctor says
+    # "found no issues" on a job that just silently skipped an occurrence then
+    # fast-forwarded next_run_at — the overdue check passes because next_run_at
+    # is now in the future, so the missed occurrence is invisible.
+    if isinstance(job.get("last_dispatch"), dict):
+        kind = job["last_dispatch"].get("kind")
+        if kind == "catch_up":
+            lateness = job["last_dispatch"].get("lateness_seconds", 0)
+            scheduled = job["last_dispatch"].get("scheduled_at", "?")
+            issues.append(
+                f"last fire was a catch-up after a missed schedule (scheduled {scheduled}, "
+                f"{_format_lateness(lateness)} late) — scheduler was not running at the scheduled time")
+        elif kind == "late":
+            lateness = job["last_dispatch"].get("lateness_seconds", 0)
+            scheduled = job["last_dispatch"].get("scheduled_at", "?")
+            issues.append(
+                f"last fire was late (scheduled {scheduled}, {_format_lateness(lateness)} late) — "
+                f"scheduler was delayed")
+    if fire_err := job.get("last_fire_error"):
+        # last_fire_error is set when a scheduled fire was missed/skipped entirely
+        # (e.g. ticker down, fire-claim wedged). Surface it in doctor so the missed
+        # occurrence is not silently swallowed when next_run_at jumped.
+        detail = fire_err.get("detail") if isinstance(fire_err, dict) else str(fire_err)
+        at = fire_err.get("at", "?") if isinstance(fire_err, dict) else "?"
+        issues.append(f"missed scheduled fire at {at}: {detail}")
     if job.get("enabled", True) and job.get("state") not in {"paused", "completed"}:
         next_run = str(job.get("next_run_at") or "").strip()
         issue = _next_run_overdue_issue(next_run) if next_run else "active job has no next_run_at"

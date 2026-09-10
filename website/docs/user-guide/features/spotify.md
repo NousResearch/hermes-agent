@@ -76,6 +76,12 @@ If `SSH_CLIENT` or `SSH_TTY` is set, Hermes skips the automatic browser open dur
 ssh -N -L 43827:127.0.0.1:43827 user@remote-host
 ```
 
+Prefer not to hold a tunnel open? Pass `--manual-paste` to skip the loopback listener entirely and paste the failed callback URL back at a prompt instead:
+
+```bash
+hermes auth spotify --manual-paste
+```
+
 For jump-box / bastion setups and other gotchas (mosh, tmux, port conflicts), see [OAuth over SSH / Remote Hosts](../../guides/oauth-over-ssh.md).
 
 ## Verify

@@ -68,6 +68,67 @@ def _env_field(platform, key):
 
 
 class TestProfileScopedMessagingReads:
+    @pytest.mark.parametrize(
+        "live_pid,runtime_pid,writer_pid,writer_start,state,enabled,configured",
+        [
+            (123, 123, 123, 1000, "connected", True, True),
+            (None, None, 123, 1000, "connected", True, False),
+            (123, None, 123, 1000, "connected", True, False),
+            (123, 456, 123, 1000, "connected", True, False),
+            (123, 123, 456, 1000, "connected", True, False),
+            (123, 123, 123, 999, "connected", True, False),
+            (123, 123, None, None, "connected", True, False),
+            (123, 123, 123, 1000, "unknown", True, False),
+            (123, 123, 123, 1000, "connected", False, False),
+        ],
+    )
+    def test_live_profile_connection_without_local_token(
+        self, client, isolated_profiles, monkeypatch,
+        live_pid, runtime_pid, writer_pid, writer_start, state, enabled, configured,
+    ):
+        """External service credentials need not be copied into a profile file.
+
+        Runtime evidence must belong to this profile's current gateway, not a
+        stale record or a different process. Root environment stays private.
+        """
+        worker_home = isolated_profiles["worker_alpha"]
+        (worker_home / "config.yaml").write_text(
+            yaml.safe_dump({"platforms": {"telegram": {"enabled": enabled}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-only-credential")
+        runtime = {"gateway_state": "running", "platforms": {"telegram": {
+            "state": state, "writer_pid": writer_pid, "writer_start_time": writer_start,
+        }}}
+
+        def read_runtime(*, path):
+            assert path == worker_home / "gateway_state.json"
+            return runtime
+
+        def running_pid(path):
+            assert path == worker_home / "gateway.pid"
+            return live_pid
+
+        def runtime_running_pid(record, *, expected_home):
+            assert record is runtime
+            assert expected_home == worker_home
+            return runtime_pid
+
+        monkeypatch.setattr(_gw_status, "read_runtime_status", read_runtime)
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", running_pid)
+        monkeypatch.setattr(_gw_status, "get_runtime_status_running_pid", runtime_running_pid)
+        monkeypatch.setattr(_gw_status, "_get_process_start_time", lambda pid: 1000)
+
+        response = client.get("/api/messaging/platforms", params={"profile": "worker_alpha"})
+        assert response.status_code == 200
+        telegram = _telegram(response.json())
+        assert telegram["configured"] is configured
+        assert telegram["state"] == ("connected" if configured else "not_configured" if enabled else "disabled")
+        token = _env_field(telegram, "TELEGRAM_BOT_TOKEN")
+        assert token["is_set"] is False
+        assert token["redacted_value"] is None
+        assert (worker_home / ".env").read_text() == ""
+
     def test_scoped_read_does_not_show_root_credentials(
         self, client, isolated_profiles
     ):

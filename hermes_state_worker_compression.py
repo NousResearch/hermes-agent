@@ -302,7 +302,7 @@ def worker_archive(db, conn, sid, payload):
         raise RuntimeStoreError('invalid_params')
     value = archive_on_connection(db, conn, sid, payload['messages'], model_config_patch=patch,
         watermark=payload['watermark'], lock_holder=payload['lock_holder'], tail_count=payload['tail_count'])
-    return {'value': value}
+    return {'value': value, 'row_ids': [message['_row_id'] for message in payload['messages']]}
 
 
 def _migrate_worker_automation(db, conn, parent, child):
@@ -367,7 +367,8 @@ def worker_publish(db, conn, sid, payload):
     conn.execute("UPDATE session_admissions SET target_session_id=?,lineage_json=json_insert(lineage_json,'$[#]',?) "
                  "WHERE target_session_id=? AND generation=? AND status IN ('started','unknown')",
                  (child, child, sid, worker['generation']))
-    return {'value': None, 'worker_assignment': {'parent': sid, 'session_id': child}}
+    return {'value': None, 'worker_assignment': {'parent': sid, 'session_id': child},
+            'row_ids': [message['_row_id'] for message in payload['messages']]}
 
 
 def worker_receipt_assignment(conn, execution_id, session_id, generation, sequence, digest):

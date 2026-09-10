@@ -54,20 +54,25 @@ class RuntimeSessionCompressionMixin:
     def archive_and_compact(self, session_id, compacted_messages, model_config_patch=None,
                             watermark=None, lock_holder=None, tail_count=0):
         self._session(session_id)
-        return self._apply('compression.archive', dict(messages=compacted_messages,
+        result = self._apply('compression.archive', dict(messages=compacted_messages,
             model_config_patch=model_config_patch, watermark=watermark, lock_holder=lock_holder,
-            tail_count=tail_count))['value']
+            tail_count=tail_count))
+        for message, row_id in zip(compacted_messages, result['row_ids'], strict=True):
+            message['_row_id'] = row_id
+        return result['value']
 
     def publish_compression_child(self, *, parent_session_id, child_session_id, source, messages,
             model=None, model_config=None, system_prompt=None, cwd=None, profile_name=None,
             compression_lock_holder=None, require_compression_lease=True, require_lease_refresh=False,
             lease_ttl_seconds=300.0, watermark=None, watermark_ceiling=None):
         self._session(parent_session_id)
-        self._apply('compression.publish', dict(child_session_id=child_session_id, source=source,
+        result = self._apply('compression.publish', dict(child_session_id=child_session_id, source=source,
             messages=messages, model=model, model_config=model_config, system_prompt=system_prompt,
             cwd=cwd, profile_name=profile_name, compression_lock_holder=compression_lock_holder,
             require_compression_lease=require_compression_lease, require_lease_refresh=require_lease_refresh,
             lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling))
+        for message, row_id in zip(messages, result['row_ids'], strict=True):
+            message['_row_id'] = row_id
 
     def _compression_receipt_journal(self, candidate, result):
         assignment = result.get('worker_assignment')

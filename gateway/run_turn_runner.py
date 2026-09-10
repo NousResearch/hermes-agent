@@ -858,8 +858,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def _prepare_turn_message(self, agent_history):
         """Prepend recovery/notice guidance to ``ctx.message``.
 
-        Returns (persist_user_message_override, persist_user_timestamp_override): real user text is
-        kept separate from API-only recovery guidance so stale guidance never replays as user text.
+        Returns (persist_user_message_override, persist_user_timestamp_override,
+        native_persist_user_text): real user text is kept separate from API-only recovery guidance
+        so stale guidance never replays as user text, including native multimodal turns whose
+        persisted override must mirror the API content-list shape.
         """
         from gateway.run import (
             _auto_continue_freshness_window, _is_fresh_gateway_interruption,
@@ -867,6 +869,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         )
         ctx = self._ctx
         persist_override: Optional[Any] = ctx.persist_user_message
+        # The user's own text, captured BEFORE any recovery guidance rewrites ctx.message.
+        # A native multimodal turn persists this (not the guidance) so the durable row stays
+        # the real user input instead of the recovery scaffold.
+        native_persist_user_text = (
+            persist_override
+            if isinstance(persist_override, str)
+            else ctx.message
+            if persist_override is None and isinstance(ctx.message, str)
+            else None
+        )
         from gateway.session_cli_turn import cli_turn
         api_text = cli_turn(ctx.inbound_message_id).get('api_text')
         if api_text is not None:
@@ -929,12 +941,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 interactive=self._resume_note_interactive(),
                 startup_resume=True,
             )
-        return persist_override, ctx.persist_user_timestamp
+        return persist_override, ctx.persist_user_timestamp, native_persist_user_text
 
-    def _native_image_run_message(self):
+    def _native_image_run_message(self, persist_user_text: Optional[str] = None):
         """Wrap the user turn as an OpenAI-style multimodal content list when
         _prepare_inbound_message_text buffered image paths; consume-and-clear so later turns on the
-        same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
+        same runner never re-attach stale images. Return ``(api_message, clean_persist_parts)``;
+        the latter is populated when API-only guidance changed the visible text. Falls back to
+        plain text when nothing is readable."""
         ctx = self._ctx
         from gateway.session_api_turn import api_execution
         api = api_execution.get()
@@ -942,20 +956,33 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             return api['content']
         native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
         if not native_imgs:
-            return ctx.message
+            return ctx.message, None
         try:
             from agent.image_routing import build_native_content_parts
             parts, skipped = build_native_content_parts(ctx.message, native_imgs)
             if skipped:
                 logger.warning("Native image attachment: skipped %d unreadable path(s): %s", len(skipped), skipped)
             if any(p.get("type") == "image_url" for p in parts):
-                return parts
+                persist_parts = None
+                if persist_user_text is not None and persist_user_text != ctx.message:
+                    # Reuse the exact attached image parts instead of reading the files twice. The
+                    # builder's documented first part is ``<caption>\n\n<attachment hints>``.
+                    api_prefix = (ctx.message or "").strip() or "What do you see in this image?"
+                    clean_prefix = persist_user_text.strip() or "What do you see in this image?"
+                    combined_text = parts[0].get("text", "")
+                    if combined_text.startswith(api_prefix):
+                        persist_parts = [
+                            {**parts[0], "text": clean_prefix + combined_text[len(api_prefix):]},
+                            *parts[1:],
+                        ]
+                return parts, persist_parts
         except Exception as exc:
             logger.warning("Native image attachment failed, falling back to text: %s", exc)
-        return ctx.message
+        return ctx.message, None
 
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
-                                        persist_user_message_override, persist_user_timestamp_override):
+                                        persist_user_message_override, persist_user_timestamp_override,
+                                        native_persist_user_text):
         """Run the turn with the per-session gateway approval callback registered: dangerous-command
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from gateway.run import _wrap_current_message_with_observed_context
@@ -966,7 +993,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
-            api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
+            native_message, native_persist_override = self._native_image_run_message(
+                native_persist_user_text
+            )
+            api_message = _wrap_current_message_with_observed_context(native_message, observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             from gateway.session_api_turn import api_execution
             api = api_execution.get()
@@ -980,7 +1010,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                                                "is_bot": bool(getattr(ctx.source, "is_bot", False))})
             if ctx.title_user_message is not None:
                 kwargs["title_user_message"] = ctx.title_user_message
-            if persist_user_message_override is not None:
+            if native_persist_override is not None:
+                kwargs["persist_user_message"] = native_persist_override
+            elif persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override
             elif observed_group_context:
                 kwargs["persist_user_message"] = ctx.message
@@ -1320,7 +1352,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))
         try:
             agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
-            persist_msg, persist_ts = self._prepare_turn_message(agent_history)
+            persist_msg, persist_ts, native_persist_text = self._prepare_turn_message(agent_history)
             compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
             from gateway.session_cli_turn import run_classic_cli_turn
             from gateway.session_secret_prompt import secret_prompt_scope
@@ -1328,7 +1360,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             from gateway.session_vault_prompt import vault_prompt_scope
             with sudo_prompt_scope(self, agent), secret_prompt_scope(self, agent), vault_prompt_scope(self, agent):
                 result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
-                    agent, agent_history, observed_group_context, persist_msg, persist_ts))
+                    agent, agent_history, observed_group_context, persist_msg, persist_ts,
+                    native_persist_text))
         finally:
             if local_sinks is not None:
                 from gateway import local_viewer_events

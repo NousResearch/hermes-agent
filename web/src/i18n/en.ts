@@ -190,6 +190,9 @@ export const en: Translations = {
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     newChat: "New chat",
+    copyId: "Copy session ID",
+    idCopied: "Session ID copied",
+    copyIdFailed: "Failed to copy session ID",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {

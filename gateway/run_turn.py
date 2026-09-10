@@ -51,7 +51,7 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "request entity too large", "prompt is too long",
     "payload too large", "input is too long",
 )
-# Whole-token 400 only: "Limit 40000" in a rate-limit envelope or a request id must not read as a status.
+# Whole-token 400 only: "Limit 40000" in a rate-limit envelope must not read as a status.
 _HTTP_400_RE = re.compile(r"\b400\b")
 
 
@@ -67,7 +67,7 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
         return True
     err = str(agent_result.get("error") or "").lower()
     return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or (
-        history_len > 50 and _HTTP_400_RE.search(err) is not None)
+        history_len > 50 and bool(_HTTP_400_RE.search(err)))
 
 
 class GatewayTurnMixin:

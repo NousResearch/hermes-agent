@@ -16,7 +16,7 @@ The gateway classifier must distinguish:
 """
 
 
-from gateway.run_turn import is_context_overflow_failure_result as _classify
+from gateway.run_turn import is_context_overflow_failure_result
 
 
 class TestContextOverflowStillSkipsTranscript:
@@ -28,18 +28,18 @@ class TestContextOverflowStillSkipsTranscript:
             "compression_exhausted": True,
             "error": "Request payload too large: max compression attempts reached.",
         }
-        assert _classify(agent_result, history_len=100)
+        assert is_context_overflow_failure_result(agent_result, history_len=100)
 
     def test_bare_400_status_on_long_session_is_context_overflow(self):
         agent_result = {"failed": True, "error": 'HTTP 400: {"object":"error","model":"deepseek-v4-flash"}'}
-        assert _classify(agent_result, history_len=138)
+        assert is_context_overflow_failure_result(agent_result, history_len=138)
 
     def test_digits_400_inside_a_larger_number_are_not_a_status(self):
         agent_result = {
             "failed": True,
             "error": "API call failed after 3 retries: HTTP 429 rate limit exceeded. Limit 40000, Used 39990",
         }
-        assert not _classify(agent_result, history_len=138)
+        assert not is_context_overflow_failure_result(agent_result, history_len=138)
 
 
 class TestTransientFailureKeepsUserMessage:
@@ -54,14 +54,14 @@ class TestTransientFailureKeepsUserMessage:
                 "— rate limit exceeded"
             ),
         }
-        assert not _classify(agent_result, history_len=10)
+        assert not is_context_overflow_failure_result(agent_result, history_len=10)
 
     def test_read_timeout_is_not_context_overflow(self):
         agent_result = {
             "failed": True,
             "error": "ReadTimeout: HTTPSConnectionPool(host='api.z.ai'): Read timed out.",
         }
-        assert not _classify(agent_result, history_len=10)
+        assert not is_context_overflow_failure_result(agent_result, history_len=10)
 
 
 class TestSuccessfulResultUnaffected:
@@ -70,4 +70,4 @@ class TestSuccessfulResultUnaffected:
             "final_response": "Hello!",
             "messages": [{"role": "assistant", "content": "Hello!"}],
         }
-        assert not _classify(agent_result, history_len=10)
+        assert not is_context_overflow_failure_result(agent_result, history_len=10)

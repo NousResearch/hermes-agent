@@ -2141,9 +2141,18 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
+    # KENSEI CUSTOM (fork 7385d324): drift is judged against the CONFIGURED provider
+    # (pre-fallback), so a Codex auth failure that walks the fallback chain is not drift.
+    _configured_provider_for_drift = ""
+    _model_cfg_for_drift = _cfg.get("model") if isinstance(_cfg, dict) else None
+    if isinstance(_model_cfg_for_drift, dict):
+        _configured_provider_for_drift = str(_model_cfg_for_drift.get("provider") or "").strip().lower()
+    _configured_model_for_drift = ""
+    if isinstance(_model_cfg_for_drift, dict):
+        _configured_model_for_drift = str(_model_cfg_for_drift.get("default") or "").strip().lower()
     _check_model_drift(
         job, job_id, _cfg, setup.runtime,
-        setup.runtime.get("provider"), setup.model)
+        _configured_provider_for_drift, _configured_model_for_drift or setup.model)
     setup.fallback_model = get_fallback_chain(_cfg) or None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
@@ -2162,6 +2171,7 @@ def _check_model_drift(
     never count as drift."""
     if not cron_model_drift_guard_enabled(cfg):
         return
+    import sys as _s
     _current_provider = str(
         primary_provider_for_drift or runtime.get("provider") or ""
     ).strip().lower()

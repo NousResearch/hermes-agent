@@ -965,6 +965,33 @@ def _send_media_via_adapter(
                 job_ref, f"failed to send media {media_path}: {str(e) or type(e).__name__}", errors)
 
     # KENSEI CUSTOM — document batch: one call, per-batch error surfaced.
+    # Adapters without the batch contract (test doubles, minimal stubs) fall back
+    # to per-document sends so per-file failures still surface to the caller.
+    batch_adapter = hasattr(adapter, "send_multiple_documents")
+    if doc_files and not batch_adapter:
+        for media_path, _is_voice in doc_files:
+            try:
+                coro = adapter.send_document(
+                    chat_id=chat_id, metadata=metadata, file_path=media_path)
+                future = safe_schedule_threadsafe(coro, loop)
+                if future is None:
+                    _note_target_error(
+                        job_ref, f"cannot send document {media_path}: gateway loop unavailable", errors)
+                    return errors
+                try:
+                    result = future.result(timeout=_script._get_media_send_timeout())
+                except TimeoutError:
+                    future.cancel()
+                    raise
+                if result and not getattr(result, "success", True):
+                    _note_target_error(
+                        job_ref,
+                        f"document send failed for {media_path}: {getattr(result, 'error', 'unknown')}",
+                        errors)
+            except Exception as e:
+                _note_target_error(
+                    job_ref, f"failed to send document {media_path}: {str(e) or type(e).__name__}", errors)
+        return errors
     if doc_files:
         try:
             coro = adapter.send_multiple_documents(

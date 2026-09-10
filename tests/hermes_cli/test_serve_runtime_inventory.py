@@ -245,3 +245,95 @@ def test_inventory_records_the_serve_process_incarnation(monkeypatch):
     plan = update_inventory.collect_runtime_inventory()
     serves = [r for r in plan.runtimes if r.kind == "serve"]
     assert serves and serves[0].detail["create_time"] == 1712345678.5
+
+
+def test_inventory_classifies_systemd_owned_serve(monkeypatch):
+    entry = _ledger_entry()
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(
+        main_dashboard, "_get_systemd_service_for_pid", lambda pid: "hermes-serve.service"
+    )
+    plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves and serves[0].supervisor == "systemd"
+    assert serves[0].restart_via == "systemd"
+
+
+def test_inventory_classifies_systemd_owned_dashboard(monkeypatch):
+    entry = _ledger_entry(purpose="dashboard", port=9120, host="127.0.0.1")
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(
+        main_dashboard, "_get_systemd_service_for_pid", lambda pid: "hermes-dashboard.service"
+    )
+    plan = update_inventory.collect_runtime_inventory()
+    dashboards = [r for r in plan.runtimes if r.kind == "dashboard"]
+    assert dashboards and dashboards[0].supervisor == "systemd"
+
+
+def test_inventory_classifies_profiled_systemd_unit(monkeypatch):
+    entry = _ledger_entry(profile="work")
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(
+        main_dashboard, "_get_systemd_service_for_pid", lambda pid: "hermes-serve-work.service"
+    )
+    plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves and serves[0].supervisor == "systemd"
+
+
+def test_inventory_ignores_non_hermes_systemd_unit(monkeypatch):
+    entry = _ledger_entry()
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(
+        main_dashboard, "_get_systemd_service_for_pid", lambda pid: "nginx.service"
+    )
+    plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves and serves[0].supervisor == "manual-serve"
+    assert serves[0].restart_via == "respawn-argv"
+
+
+def test_inventory_ignores_lookalike_systemd_unit(monkeypatch):
+    entry = _ledger_entry()
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(
+        main_dashboard, "_get_systemd_service_for_pid", lambda pid: "hermes-server.service"
+    )
+    plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves and serves[0].supervisor == "manual-serve"
+
+
+def test_inventory_stays_manual_serve_when_cgroup_probe_returns_none(monkeypatch):
+    entry = _ledger_entry()
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(
+        main_dashboard, "_get_systemd_service_for_pid", lambda pid: None
+    )
+    plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves and serves[0].supervisor == "manual-serve"

@@ -204,13 +204,37 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
 
 
+def _ledger_serve_supervisor(entry: dict) -> str:
+    from hermes_cli.process_identity import spawner_is_dead
+
+    if spawner_is_dead(entry) is False:
+        return "desktop"
+    pid = entry.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return "manual-serve"
+    with _probe("Ledger systemd-owner probe"):
+        from hermes_cli.main_dashboard import _get_systemd_service_for_pid
+
+        unit = _get_systemd_service_for_pid(pid)
+    if not unit:
+        return "manual-serve"
+    if (
+        unit == "hermes-serve.service"
+        or unit.startswith("hermes-serve-")
+        or unit == "hermes-dashboard.service"
+        or unit.startswith("hermes-dashboard-")
+    ):
+        return "systemd"
+    return "manual-serve"
+
+
 def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours."""
     with _probe("Serve/dashboard ledger inventory"):
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+        from hermes_cli.process_identity import ledger_entries
 
         for entry in ledger_entries():
             purpose, pid = entry.get("purpose"), entry.get("pid")
@@ -221,7 +245,7 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
             # survivor probe comparing PIDs alone calls a NEW serve that reused the number a survivor.
             plan.runtimes.append(_runtime(
                 str(purpose), str(entry.get("profile") or "default"), pid,
-                "desktop" if spawner_is_dead(entry) is False else "manual-serve",
+                _ledger_serve_supervisor(entry),
                 detail={
                     "argv": entry.get("argv") or "", "host": entry.get("host") or "",
                     "port": entry.get("port"), "create_time": entry.get("create_time"),

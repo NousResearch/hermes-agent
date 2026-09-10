@@ -145,6 +145,16 @@ const OAUTH_NOT_SIGNED_IN_MESSAGE =
   'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
   'Open Settings → Gateway and click "Sign in", or switch back to Local.'
 
+// A connection whose auth mode is OAuth but whose backend only offers a
+// password provider can never persist an OAuth session — every sign-in
+// succeeds against the password gate, yet nothing OAuth-redeemable is stored,
+// so the next boot loops straight back to "not signed in". Pointing the user
+// at "Sign in" again re-triggers that loop; the fix is switching the
+// connection's auth mode, so the message must say so.
+const OAUTH_PASSWORD_BACKEND_MESSAGE =
+  'The remote gateway only offers username/password sign-in, which cannot persist an OAuth-mode connection. ' +
+  'Open Settings → Gateways, edit this connection, and switch its authentication to Session token.'
+
 const OAUTH_SESSION_EXPIRED_MESSAGE =
   'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
 
@@ -202,7 +212,20 @@ export function normalizeAdvertisedAuthProviders(providers: unknown): Advertised
  * an unreadable keychain otherwise look like a live oauth session and the
  * ticket mint 401s — that must send the user to Sign in, not "expired".
  */
-export function oauthTicketFailureAuthMessage(hasDecryptableNativeSession: boolean): string {
+export function oauthTicketFailureAuthMessage(
+  hasDecryptableNativeSession: boolean,
+  advertisedProviders?: unknown
+): string {
+  // Password-only backends mis-sign-in (see OAUTH_PASSWORD_BACKEND_MESSAGE), so
+  // they need the mismatch copy even before the expired-vs-unsigned choice —
+  // a native session that "decrypts" here is a password gate session, not an
+  // OAuth one. Mixed/unknown provider lists keep the existing messages: the
+  // caller's probe is best-effort, and a wrong "switch auth mode" hint on a
+  // genuine OAuth outage would be worse than the loop.
+  if (advertisedProviders !== undefined && !oauthGuardMayHardFail(advertisedProviders)) {
+    return OAUTH_PASSWORD_BACKEND_MESSAGE
+  }
+
   return hasDecryptableNativeSession ? OAUTH_SESSION_EXPIRED_MESSAGE : OAUTH_NOT_SIGNED_IN_MESSAGE
 }
 

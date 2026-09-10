@@ -155,6 +155,37 @@ test('oauthTicketFailureAuthMessage is expired only with a decryptable native se
   assert.match(oauthTicketFailureAuthMessage(false), /not signed in/)
 })
 
+test('oauthTicketFailureAuthMessage names the auth-mode mismatch for password-only backends', () => {
+  // OAuth auth mode + a backend that only offers a password provider can
+  // never persist: sign-in succeeds against the password gate but nothing
+  // OAuth-redeemable is stored, so the next boot loops to "not signed in".
+  // The message must break that loop by pointing at the auth-mode switch,
+  // regardless of whether a password-gate session "decrypts".
+  const passwordOnly = [{ name: 'basic', supports_password: true }]
+  const mismatch = /only offers username\/password sign-in[\s\S]*Session token/
+
+  assert.match(oauthTicketFailureAuthMessage(true, passwordOnly), mismatch)
+  assert.match(oauthTicketFailureAuthMessage(false, passwordOnly), mismatch)
+  // Status-shaped bare-string providers count too (`/api/status` lists "basic").
+  assert.match(oauthTicketFailureAuthMessage(false, ['basic']), mismatch)
+})
+
+test('oauthTicketFailureAuthMessage keeps the existing copy when providers are missing or mixed', () => {
+  // No probe result (undefined / empty list) or a mixed provider list keeps
+  // the strict OAuth messages — a wrong "switch auth mode" hint on a genuine
+  // OAuth outage would be worse than the loop.
+  assert.match(oauthTicketFailureAuthMessage(false, undefined), /not signed in/)
+  assert.match(oauthTicketFailureAuthMessage(false, []), /not signed in/)
+  assert.match(
+    oauthTicketFailureAuthMessage(false, [
+      { name: 'basic', supports_password: true },
+      { name: 'oauth', supports_password: false }
+    ]),
+    /not signed in/
+  )
+  assert.match(oauthTicketFailureAuthMessage(true, undefined), /session has expired/)
+})
+
 // --- 6. gated download auth (guards the Files-panel 401 on cookieless native) ---
 
 test('resolveGatedDownloadAuth matches oauth REST: bearer first, then cookie', () => {

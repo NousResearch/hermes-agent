@@ -101,6 +101,9 @@ interface SessionActions {
   pinned?: boolean
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
+  /** The row is already archived (the sidebar's Archived view): the shared
+   * archive verb becomes Unarchive and restores the session (#98813). */
+  archived?: boolean
   profile?: string
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
@@ -186,6 +189,7 @@ function useSessionActions({
   title,
   pinned = false,
   unread = false,
+  archived = false,
   profile,
   onPin,
   onToggleUnread,
@@ -432,7 +436,10 @@ function useSessionActions({
     spec({
       disabled: !onArchive,
       icon: 'archive',
-      label: r.archive,
+      // Already archived (the Archived view): the same verb restores the row
+      // instead of re-archiving it (#98813). No unarchive codicon exists, so
+      // the archive glyph stays and the label carries the direction.
+      label: archived ? r.unarchive : r.archive,
       onSelect: () => {
         triggerHaptic('selection')
         onArchive?.()

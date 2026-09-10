@@ -308,6 +308,7 @@ function SidebarSessionRowImpl({
         </span>
       ))}
       <SessionActionsMenu
+        archived={Boolean(session.archived)}
         onArchive={onArchive}
         onBranch={onBranch}
         onDelete={onDelete}
@@ -337,6 +338,7 @@ function SidebarSessionRowImpl({
 
   return (
     <SessionContextMenu
+      archived={Boolean(session.archived)}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}

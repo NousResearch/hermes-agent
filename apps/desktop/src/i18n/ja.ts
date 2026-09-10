@@ -2173,6 +2173,7 @@ export const ja = defineLocale({
       branchFrom: '分岐',
       rename: '名前を変更…',
       archive: 'アーカイブ',
+      unarchive: 'アーカイブを解除',
       newWindow: '新しいウィンドウ',
       openInTerminal: 'ターミナルで開く',
       copyIdFailed: 'セッション ID をコピーできませんでした',
@@ -3376,6 +3377,8 @@ export const ja = defineLocale({
     deleteFailed: '削除に失敗しました',
     archived: 'アーカイブしました',
     archiveFailed: 'アーカイブに失敗しました',
+    restored: '復元しました',
+    unarchiveFailed: 'アーカイブ解除に失敗しました',
     cwdChangeFailed: '作業ディレクトリの変更に失敗しました',
     cwdStagedTitle: '作業ディレクトリがステージングされました',
     cwdStagedMessage:

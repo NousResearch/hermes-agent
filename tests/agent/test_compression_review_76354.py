@@ -43,6 +43,27 @@ def _drain_admission_slots():
         time.sleep(0.02)
 
 
+class _FakeTimeModule:
+    """Stand-in for the ``time`` module with a controllable ``monotonic``.
+
+    Only ``monotonic`` is faked — that is the clock the compression host does
+    its budget arithmetic on. ``sleep`` stays real but is driven with the
+    module's own (tiny) poll intervals, and ``time``/``perf_counter`` are
+    passed through because production calls them for unrelated bookkeeping
+    (log timestamps, telemetry) that must not be distorted.
+    """
+
+    def __init__(self, monotonic, real_monotonic):
+        self.monotonic = monotonic
+        self._real_monotonic = real_monotonic
+        self.time = time.time
+        self.perf_counter = time.perf_counter
+        self.sleep = time.sleep
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 class TestF1CommitOverrunWhileHung:
     def test_overrun_warning_fires_while_commit_still_blocked(self, monkeypatch):
         """The warning + on_commit_overrun fire DURING the hang, not after.
@@ -462,39 +483,139 @@ class TestF6ExecutorSaturation:
 
 class TestS3IdleChargedFromLastProgress:
     def test_silence_cannot_approach_double_idle_timeout(self):
-        """Progress early in an interval must not extend silence to ~2x idle."""
+        """Progress early in an interval must not extend silence to ~2x idle.
+
+        Budget ARITHMETIC, asserted on a fake clock rather than a stopwatch.
+        The old form measured real elapsed wall-clock against ``idle * 1.8``;
+        on a loaded runner the scheduler alone spent that slack (measured on
+        CI: 0.93s vs a 0.72s bound; reproduced locally 3/4 runs under 64 CPU
+        burners at 0.72-0.85s), so it failed for being busy rather than for
+        being wrong.
+
+        What the test actually needs to pin is *when* the host stops waiting
+        relative to the LAST PROGRESS event, not how long the process took.
+        Driving ``time.monotonic`` from a controlled counter makes that exact:
+        the host must give up at ``last_progress + idle`` (charged from
+        progress), never at ``check_time + idle`` (charged from the check,
+        which is what allows silence to reach ~2x idle).
+        """
         _drain_admission_slots()
-        idle = 0.4
+        # Exact binary fractions: the fake clock advances only by the host's
+        # own wait slices, so every intermediate is representable and the
+        # expected instant is exact rather than approximate.
+        idle = 0.5
+        progress_at = 0.25
         release = threading.Event()
 
-        def worker(fence: CompressionCommitFence):
-            time.sleep(0.05)
-            fence.touch_progress()  # early progress, then total silence
-            assert release.wait(timeout=10)
+        # Fake clock: real waits stay ~instant, but the host's budget
+        # arithmetic sees a timeline we control.
+        clock = {"t": 0.0}
+        clock_lock = threading.Lock()
+
+        def _now():
+            with clock_lock:
+                return clock["t"]
+
+        def _advance(dt):
+            with clock_lock:
+                clock["t"] += dt
+
+        def worker(_fence: CompressionCommitFence):
+            # Silent for the whole wait. Finite: a regression that inlines
+            # this must fail fast, not hang (a hang is not a RED).
+            release.wait(timeout=10)
             return ([], "late")
 
-        t0 = time.monotonic()
+        real_monotonic = time.monotonic
+        gave_up_at = {}
+        slices: list = []
+
+        real_executor = cc._get_compress_timeout_executor()
+        mp = pytest.MonkeyPatch()
         try:
-            msgs, prompt = run_compress_context_with_progress_timeout(
-                worker=worker,
-                messages=[{"role": "user", "content": "a"}],
-                system_prompt_fallback="fb",
-                idle_timeout_seconds=idle,
-                total_ceiling_seconds=5.0,
-                stall_fallback=False,
+            mp.setattr(cc, "time", _FakeTimeModule(_now, real_monotonic))
+            # Built AFTER the clock is faked so its _last_progress baseline
+            # is 0.0 on our timeline.
+            fence = CompressionCommitFence()
+
+            class _ClockedFuture:
+                """Future proxy: each poll burns its own slice off the clock.
+
+                Progress lands PART-WAY through the first slice — that is the
+                condition the regression needs. The host then extends the
+                wait, and the length of the SECOND slice is what distinguishes
+                charged-from-progress from charged-from-check.
+                """
+
+                def __init__(self, inner):
+                    self._inner = inner
+                    self._polls = 0
+
+                def result(self, timeout=None):
+                    if timeout is None:
+                        return self._inner.result(timeout=timeout)
+                    self._polls += 1
+                    slices.append(timeout)
+                    if self._polls == 1:
+                        _advance(progress_at)
+                        fence.touch_progress()
+                        _advance(timeout - progress_at)
+                    else:
+                        _advance(timeout)
+                    raise concurrent.futures.TimeoutError()
+
+                def __getattr__(self, name):
+                    return getattr(self._inner, name)
+
+            class _ClockedExecutor:
+                def __init__(self, inner):
+                    self._inner = inner
+
+                def submit(self, fn, *args, **kwargs):
+                    return _ClockedFuture(self._inner.submit(fn, *args, **kwargs))
+
+            mp.setattr(
+                cc,
+                "_get_compress_timeout_executor",
+                lambda: _ClockedExecutor(real_executor),
             )
+            t_start = _now()
+            try:
+                msgs, prompt = run_compress_context_with_progress_timeout(
+                    worker=worker,
+                    messages=[{"role": "user", "content": "a"}],
+                    system_prompt_fallback="fb",
+                    idle_timeout_seconds=idle,
+                    total_ceiling_seconds=5.0,
+                    fence=fence,
+                    stall_fallback=False,
+                )
+            finally:
+                gave_up_at["t"] = _now() - t_start
+                release.set()
         finally:
-            elapsed = time.monotonic() - t0
-            release.set()
+            mp.undo()
+
         assert prompt == "fb"
-        # Old behavior waited a full interval from the CHECK (~2x idle ≈
-        # 0.85s+). New behavior times out ~idle after the last progress
-        # (~0.45s). Allow generous slack while still excluding ~2x.
-        assert elapsed < idle * 1.8, (
-            f"silence exceeded ~2x idle budget shape: {elapsed:.2f}s"
+        assert msgs == [{"role": "user", "content": "a"}]
+        # Progress landed at 0.25 inside the first 0.5 slice, so the host
+        # extends. The extension must be charged from the LAST PROGRESS:
+        # 0.5 - 0.25 = 0.25 more, giving up at 0.75 == progress_at + idle.
+        # Charged from the CHECK it would take a full fresh 0.5 interval and
+        # give up at 1.0 == 2x idle — the regression this guards.
+        assert slices == [idle, idle - progress_at], (
+            f"second wait slice was not charged from the last progress event: "
+            f"slices={slices}, expected [{idle}, {idle - progress_at}]"
+        )
+        assert gave_up_at["t"] == pytest.approx(
+            progress_at + idle, abs=1e-9
+        ), (
+            f"idle budget was not charged from the last progress event: host "
+            f"waited {gave_up_at['t']:.4f}s of fake time; charged-from-progress "
+            f"is {progress_at + idle}s, charged-from-check (~2x idle) is "
+            f"~{idle * 2}s"
         )
         _drain_admission_slots()
-
 
 class TestRound2MidCommitLeaseRelease:
     """Round-2 #1: revoke must not release the durable lease mid-commit.

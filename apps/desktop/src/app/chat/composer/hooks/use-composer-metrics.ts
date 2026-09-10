@@ -1,4 +1,3 @@
-import { useAuiState } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import {
@@ -23,6 +22,8 @@ interface UseComposerMetricsArgs {
   composerRef: RefObject<HTMLFormElement | null>
   composerSurfaceRef: RefObject<HTMLDivElement | null>
   editorRef: RefObject<HTMLDivElement | null>
+  hasHardNewline: boolean
+  isEmpty: boolean
   poppedOut: boolean
 }
 
@@ -62,16 +63,12 @@ export function useComposerMetrics({
   composerRef,
   composerSurfaceRef,
   editorRef,
+  hasHardNewline,
+  isEmpty,
   poppedOut
 }: UseComposerMetricsArgs): UseComposerMetricsResult {
   const [expanded, setExpanded] = useState(false)
   const [fit, setFit] = useState<ComposerFit>(ROOMY)
-
-  // Edge signals, not the live text: these only re-render when emptiness / the
-  // presence of a non-trailing newline actually flips, so typing within a line
-  // costs nothing here.
-  const isEmpty = useAuiState(s => s.composer.text.length === 0)
-  const hasHardNewline = useAuiState(s => s.composer.text.trimEnd().includes('\n'))
 
   // Expansion (input on its own full-width row, controls below) is driven by
   // the editor's *actual* rendered height via the ResizeObserver in

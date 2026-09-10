@@ -297,3 +297,104 @@ class TestNamedCustomProviders:
         env["LONGCAT_API_KEY"] = "lc-fresh"
 
         assert agent._try_refresh_env_client_credentials() is False
+
+
+class TestOpenRouter:
+    """OpenRouter is an aggregator with no PROVIDER_REGISTRY entry, so the
+    registry branch never matches it — but its OPENROUTER_API_KEY is
+    env-sourced exactly like a registry api-key provider. It must refresh
+    mid-session so a depleted key can be swapped without a restart."""
+
+    def _make_openrouter_agent(self, *, api_key="no-key-required"):
+        return _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+        )
+
+    def test_key_added_mid_session_is_adopted(self, env):
+        """Long-lived worker spawned before the key was written to .env — the
+        first turn after the save must pick it up."""
+        agent = self._make_openrouter_agent(api_key="sk-or-old")
+        env["OPENROUTER_API_KEY"] = "sk-or-fresh"
+
+        assert agent._try_refresh_env_client_credentials() is True
+        assert agent.api_key == "sk-or-fresh"
+        assert agent._client_kwargs["api_key"] == "sk-or-fresh"
+        agent._replace_primary_openai_client.assert_called_once_with(
+            reason="env_credential_refresh"
+        )
+
+    def test_key_rotation_between_turns_is_adopted(self, env):
+        agent = self._make_openrouter_agent(api_key="sk-or-old")
+        env["OPENROUTER_API_KEY"] = "sk-or-old"
+        assert agent._try_refresh_env_client_credentials() is False
+
+        env["OPENROUTER_API_KEY"] = "sk-or-new"
+        assert agent._try_refresh_env_client_credentials() is True
+        assert agent.api_key == "sk-or-new"
+        assert agent._client_kwargs["api_key"] == "sk-or-new"
+
+    def test_unchanged_env_is_a_noop(self, env):
+        agent = self._make_openrouter_agent(api_key="sk-or-old")
+        env["OPENROUTER_API_KEY"] = "sk-or-old"
+
+        assert agent._try_refresh_env_client_credentials() is False
+        agent._replace_primary_openai_client.assert_not_called()
+
+    def test_skipped_when_no_key_resolves(self, env):
+        agent = self._make_openrouter_agent(api_key="sk-or-old")
+
+        assert agent._try_refresh_env_client_credentials() is False
+
+    def test_custom_base_url_wins_over_env_edit(self, env):
+        """A session pointed at a proxy/non-default OpenRouter endpoint keeps
+        its base_url — the env edit only watches key rotation on the default
+        route."""
+        agent = self._make_openrouter_agent(api_key="sk-or-old")
+        agent.base_url = "https://my-proxy.example/v1"
+        env["OPENROUTER_API_KEY"] = "sk-or-new"
+
+        # First look adopts nothing: current base isn't the default route.
+        assert agent._try_refresh_env_client_credentials() is False
+        assert agent.base_url == "https://my-proxy.example/v1"
+
+
+class TestResolveEnvKeyBinding:
+    """Unit tests for the shared provider→env credential resolver. Its whole
+    job is: every env-sourced api-key credential is covered, regardless of
+    provider, with no per-provider branch needed in the consumer."""
+
+    def _resolve(self, provider, requested_provider=None):
+        import agent.credential_pool as cp
+
+        return cp.resolve_env_key_binding(provider, requested_provider)
+
+    def test_openrouter(self):
+        binding = self._resolve("openrouter")
+        assert binding["key_env_vars"] == ("OPENROUTER_API_KEY",)
+        assert binding["default_base_url"].rstrip("/") == "https://openrouter.ai/api/v1"
+
+    def test_registry_api_key_provider(self):
+        binding = self._resolve("openai-api")
+        assert binding["key_env_vars"] == ("OPENAI_API_KEY",)
+        assert binding["base_url_env_var"] == "OPENAI_BASE_URL"
+        assert binding["default_base_url"].rstrip("/") == "https://api.openai.com/v1"
+
+    def test_anthropic_three_token_override(self):
+        binding = self._resolve("anthropic")
+        assert binding["key_env_vars"] == (
+            "ANTHROPIC_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+        )
+
+    def test_registry_oauth_provider_has_no_env_binding(self):
+        # nous is OAuth device-code — nothing env-sourced to watch.
+        assert self._resolve("nous") is None
+
+    def test_unknown_provider_has_no_env_binding(self):
+        assert self._resolve("not-a-real-provider") is None
+
+    def test_provider_is_lowercased(self):
+        assert self._resolve("OpenRouter") is not None

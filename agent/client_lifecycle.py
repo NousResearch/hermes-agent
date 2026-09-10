@@ -660,42 +660,34 @@ class ClientLifecycleMixin:
     def _resolve_env_credentials(self) -> Optional[tuple]:
         """Current ``.env``-sourced ``(api_key, base_url, default_base)`` for this provider, or ``None``.
 
-        Covers registry api-key providers and named custom providers with ``key_env``.
+        Covers every env-sourced api-key credential via ``resolve_env_key_binding``:
+        registry api-key providers, OpenRouter (an aggregator with no registry
+        entry), and named custom providers with ``key_env``.
         """
         try:
-            from agent.credential_pool import get_env_prefer_dotenv
-            from hermes_cli.auth import PROVIDER_REGISTRY
+            from agent.credential_pool import get_env_prefer_dotenv, resolve_env_key_binding
         except ImportError:
             return None
-        pconfig = PROVIDER_REGISTRY.get(self.provider)
-        if pconfig and getattr(pconfig, "auth_type", "") == "api_key" and getattr(pconfig, "api_key_env_vars", ()):
-            # First non-empty env var wins (lazy: later vars are not read).
-            api_key = next((k for k in (get_env_prefer_dotenv(v).strip() for v in pconfig.api_key_env_vars) if k), "")
-            if not api_key:
-                return None
-            url_var = pconfig.base_url_env_var
-            env_url = get_env_prefer_dotenv(url_var).strip().rstrip("/") if url_var else ""
-            default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
-            base_url = env_url or default_base
-            if self.provider in ("kimi-coding", "zai"):
-                from hermes_cli import auth as _auth
-                resolver = _auth._resolve_kimi_base_url if self.provider == "kimi-coding" else _auth._resolve_zai_base_url
-                base_url = resolver(api_key, pconfig.inference_base_url, env_url).rstrip("/")
-        elif self.provider == "custom":
-            # Named custom provider: identity in config, credential in key_env; no key_env → nothing to watch.
-            try:
-                from hermes_cli.runtime_provider import _get_named_custom_provider
-            except ImportError:
-                return None
-            custom_provider = _get_named_custom_provider(getattr(self, "requested_provider", "") or "")
-            key_env = str((custom_provider or {}).get("key_env") or "").strip()
-            api_key = get_env_prefer_dotenv(key_env).strip() if key_env else ""
-            if not custom_provider or not api_key:
-                return None
-            # Custom providers pin base_url in config, so only key edits are adopted here.
-            base_url = default_base = str(custom_provider.get("base_url") or "").strip().rstrip("/")
-        else:
+        binding = resolve_env_key_binding(
+            self.provider, getattr(self, "requested_provider", "") or ""
+        )
+        if not binding:
             return None
+        # First non-empty env var wins (lazy: later vars are not read).
+        api_key = next(
+            (k for k in (get_env_prefer_dotenv(v).strip() for v in binding["key_env_vars"]) if k),
+            "",
+        )
+        if not api_key:
+            return None
+        url_var = binding["base_url_env_var"]
+        env_url = get_env_prefer_dotenv(url_var).strip().rstrip("/") if url_var else ""
+        default_base = (binding["default_base_url"] or "").strip().rstrip("/")
+        base_url = env_url or default_base
+        if self.provider in ("kimi-coding", "zai"):
+            from hermes_cli import auth as _auth
+            resolver = _auth._resolve_kimi_base_url if self.provider == "kimi-coding" else _auth._resolve_zai_base_url
+            base_url = resolver(api_key, binding["default_base_url"], env_url).rstrip("/")
         if not base_url:
             return None
         return api_key, base_url, default_base
@@ -721,9 +713,10 @@ class ClientLifecycleMixin:
         """Adopt ``~/.hermes/.env`` credential/base-url edits at the turn boundary (a Settings save updates ``.env``
         but a live worker keeps init-time values). Adoption rule: ``_should_adopt_env_credentials``.
 
-        Covers api-key registry providers and named custom providers with a ``key_env`` (#67935) — the
-        latter resolve to ``provider="custom"`` with no registry entry, so they are matched through the
-        runtime provider's config lookup instead.
+        Covers every env-sourced api-key credential via ``resolve_env_key_binding``
+        (shared with the pool seeder): registry api-key providers, OpenRouter
+        (an aggregator with no registry entry), and named custom providers with
+        a ``key_env`` (#67935).
         """
         if self.api_mode != "chat_completions" or getattr(self, "_fallback_activated", False):
             return False

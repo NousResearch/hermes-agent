@@ -2540,6 +2540,78 @@ def get_env_prefer_dotenv(key: str) -> str:
     return raw or scoped_value
 
 
+def resolve_env_key_binding(
+    provider: str, requested_provider: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Resolve a provider's env-sourced API-key binding, or ``None``.
+
+    Single source of truth for "which env var(s) hold this provider's key and
+    what is its default endpoint", shared by the refresh consumer in
+    ``ClientLifecycleMixin`` and by the env seeder below so the two can never
+    drift.
+
+    Returns a dict with:
+        key_env_vars      ordered candidate env var names, first non-empty wins
+        base_url_env_var  env var name for a base-URL override ("" if none)
+        default_base_url  the provider's default endpoint ("" if unknown)
+
+    or ``None`` when the credential is NOT env-sourced — OAuth singletons
+    (nous, openai-codex, xai-oauth, qwen-oauth, minimax-oauth), inline
+    ``api_key`` config, or pool-only entries. Nothing in ``~/.hermes/.env``
+    to watch for those.
+    """
+    provider = (provider or "").strip().lower()
+
+    # OpenRouter is an aggregator with no PROVIDER_REGISTRY entry (the
+    # registry branch below would miss it) — its OPENROUTER_API_KEY is
+    # env-sourced exactly like a registry api-key provider.
+    if provider == "openrouter":
+        return {
+            "key_env_vars": ("OPENROUTER_API_KEY",),
+            "base_url_env_var": "",
+            "default_base_url": OPENROUTER_BASE_URL,
+        }
+
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and getattr(pconfig, "auth_type", "") == AUTH_TYPE_API_KEY and getattr(
+        pconfig, "api_key_env_vars", ()
+    ):
+        env_vars = list(pconfig.api_key_env_vars)
+        if provider == "anthropic":
+            env_vars = [
+                "ANTHROPIC_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_API_KEY",
+            ]
+        return {
+            "key_env_vars": tuple(env_vars),
+            "base_url_env_var": getattr(pconfig, "base_url_env_var", "") or "",
+            "default_base_url": getattr(pconfig, "inference_base_url", "") or "",
+        }
+
+    # Named custom provider (config ``providers.<name>`` / ``custom_providers``)
+    # whose credential is env-sourced via ``key_env``. Looked up lazily to
+    # avoid a credential_pool → runtime_provider import cycle.
+    if provider == "custom":
+        try:
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+
+            custom_provider = _get_named_custom_provider(requested_provider or "")
+        except Exception:
+            custom_provider = None
+        if custom_provider:
+            key_env = str(custom_provider.get("key_env") or "").strip()
+            base_url = str(custom_provider.get("base_url") or "").strip().rstrip("/")
+            if key_env:
+                return {
+                    "key_env_vars": (key_env,),
+                    "base_url_env_var": "",
+                    "default_base_url": base_url,
+                }
+
+    return None
+
+
 # Providers already warned about env-key -> pool ingestion, once per process
 # (#81952 expected-behavior #3).
 _ENV_INGESTION_WARNED: Set[str] = set()
@@ -2601,36 +2673,35 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     if provider == "copilot":
         return seed.result
 
-    if provider == "openrouter":
-        token = get_env_prefer_dotenv("OPENROUTER_API_KEY")
-        if token and seed.upsert(
-            "env:OPENROUTER_API_KEY",
-            _env_payload(env_var="OPENROUTER_API_KEY", token=token, base_url=OPENROUTER_BASE_URL),
-        ):
-            _warn_env_ingestion_once(provider, "OPENROUTER_API_KEY")
-        return seed.result
-
-    pconfig = PROVIDER_REGISTRY.get(provider)
-    if not pconfig or pconfig.auth_type != AUTH_TYPE_API_KEY:
+    # One resolver for every env-sourced api-key credential: openrouter (an
+    # aggregator with no registry entry), registry api-key providers with an
+    # env var (including anthropic's three-token override), and named custom
+    # providers with ``key_env``. Anything else (OAuth singletons, inline
+    # config keys, pool-only) has no env credential to seed — resolver returns
+    # None.
+    binding = resolve_env_key_binding(provider)
+    if not binding:
         return seed.result
 
     env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = get_env_prefer_dotenv(pconfig.base_url_env_var).rstrip("/")
-
-    env_vars = list(pconfig.api_key_env_vars)
-    if provider == "anthropic":
-        env_vars = ["ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+    if binding["base_url_env_var"]:
+        env_url = get_env_prefer_dotenv(binding["base_url_env_var"]).rstrip("/")
 
     resolve_base_url = _ENV_BASE_URL_RESOLVERS.get(provider)
-    for env_var in env_vars:
+    default_base = binding["default_base_url"]
+    for env_var in binding["key_env_vars"]:
         token = get_env_prefer_dotenv(env_var)
         if not token:
             continue
-        base_url = env_url or pconfig.inference_base_url
+        base_url = env_url or default_base
         if resolve_base_url is not None:
-            base_url = resolve_base_url(token, pconfig.inference_base_url, env_url)
-        seed.upsert(f"env:{env_var}", _env_payload(env_var=env_var, token=token, base_url=base_url))
+            base_url = resolve_base_url(token, default_base, env_url)
+        ingested = seed.upsert(
+            f"env:{env_var}",
+            _env_payload(env_var=env_var, token=token, base_url=base_url),
+        )
+        if ingested and provider == "openrouter":
+            _warn_env_ingestion_once(provider, env_var)
     return seed.result
 
 

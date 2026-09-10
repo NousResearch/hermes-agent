@@ -1852,7 +1852,11 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
-        # Owning multiplex profile (None on primary); see _session_key_profile.
+        # Optional gateway callback: session_key -> True when a turn is running.
+        # Adapters with an ingress debounce (WhatsApp) skip the debounce for
+        # messages landing on an active turn so steer/redirect/interrupt are
+        # not delayed behind the batch window.
+        self._busy_state_query: Optional[Callable[[str], bool]] = None
         self._owner_profile: Optional[str] = None
         # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
@@ -2198,12 +2202,19 @@ class BasePlatformAdapter(ABC):
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
 
-    def set_reaction_handler(self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]) -> None:
-        """Set the handler for platform-native emoji-reaction events: a normalised dict
-        (``platform``, ``event_name`` "reaction:added"/"reaction:removed", ``reaction``,
-        ``user_id``, ``item_user_id``, ``channel_id``, ``message_ts``, ``event_ts``, ``raw_event``)
-        fanned out via ``HookRegistry.emit``."""
-        self._reaction_handler = handler
+    def set_busy_state_query(self, query: Optional[Callable[[str], bool]]) -> None:
+        """Set an optional callback reporting whether a session_key is busy.
+
+        query(session_key) returns True when the gateway holds a running
+        turn for that key. Adapters whose inbound path debounces text
+        (WhatsApp) use this to SKIP the debounce for messages that would
+        land on an active turn: the debounce is tuned for batch-coalescing
+        a QUIET chat, but holding a follow-up 5-10s while a turn is running
+        delays the busy-handshake (steer/redirect/interrupt) until after
+        the turn finished — the user sees "⚡ Interrupting current task"
+        arrive only when nothing is left to interrupt.
+        """
+        self._busy_state_query = query
 
     def set_authorization_check(
         self, callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]]) -> None:

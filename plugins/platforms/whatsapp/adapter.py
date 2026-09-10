@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -263,6 +264,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
         self._session_path = Path(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
+        # Per-chat banner map (JID -> prefix) for the multiplex bridge. Config-driven:
+        # group banners come from config (reply_prefixes), not a hardcoded literal in
+        # bridge.js / whatsapp_common.py.
+        self._reply_prefixes: Dict[str, str] = dict(extra.get("reply_prefixes") or {})
         self._dm_policy = str(extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(extra.get("group_policy") or _wenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
@@ -373,6 +378,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         bridge_env = with_hermes_node_path()
         if self._reply_prefix is not None:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+        if self._reply_prefixes:
+            # Pass the per-chat banner map to the bridge so it replaces the
+            # hardcoded GROUP_PREFIXES literal with config-driven banners.
+            bridge_env["WHATSAPP_REPLY_PREFIXES"] = json.dumps(self._reply_prefixes)
         bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = "true" if self._send_read_receipts else "false"
         for _key, _v in [("WHATSAPP_MODE", _wenv("WHATSAPP_MODE", "self-chat"))] + [(k, _wenv(k)) for k in _BRIDGE_PASSTHROUGH_ENV]:
             if _v:
@@ -692,7 +701,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
+                                # Debounce for any event with text or media (TEXT, VOICE,
+                                # AUDIO, PHOTO, VIDEO, DOCUMENT — any media+text combo
+                                # within 8s merges into one turn). Binary/media-only
+                                # events still join via media_urls/media_types; gateway
+                                # run.py filters non-processable types downstream.
+                                # Immediate dispatch only for pure non-text/non-media
+                                # events (e.g. LOCATION, STICKER, standalone polls).
+                                has_media = bool(event.media_urls) or event.message_type != MessageType.TEXT
+                                has_text = bool((event.text or "").strip())
+                                if has_media or has_text:
                                     self._enqueue_text_event(event)
                                 else:
                                     await self.handle_message(event)
@@ -718,15 +736,78 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        return str(getattr(event.source, "chat_id", "") or "")
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer.
+
+        When WhatsApp delivers rapid-fire messages (e.g. forwarded
+        batches), this concatenates them and waits for a short quiet
+        period before dispatching the combined message.
+
+        Messages that would land on an ACTIVE gateway turn bypass the
+        debounce entirely (``_busy_state_query``): the debounce coalesces
+        a quiet chat, but holding a follow-up 5-10s while a turn runs
+        delays the busy handshake (steer/redirect/interrupt) until the
+        turn finished — the user's "stop" arrives only after the task
+        completed, defeating interruption.  The immediate dispatch is
+        scheduled as a task so the sync poll-loop caller is not blocked.
+        """
+        busy_query = getattr(self, "_busy_state_query", None)
+        if callable(busy_query):
+            try:
+                # Pass the EVENT (not the key): the gateway callback resolves
+                # the source's ROUTED profile (catch-all routes included)
+                # before building the session key — the adapter's own
+                # The adapter's own key resolves to the default-profile lane
+                # under multiplex (source.profile is stamped later, inside
+                # the message handler), so keying the busy check here would
+                # never match the routed profile's live turn.
+                if busy_query(event):
+                    asyncio.create_task(self.handle_message(event))
+                    return
+            except Exception:
+                logger.debug(
+                    "[%s] busy-state query failed; falling through to debounce",
+                    self.name, exc_info=True,
+                )
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
     async def _flush_text_batch(self, key: str) -> None:
+        """Wait for quiet period then dispatch aggregated text."""
         current_task = asyncio.current_task()
         try:
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            await asyncio.sleep(self._text_batch_split_delay_seconds if last_len >= self._SPLIT_THRESHOLD else self._text_batch_delay_seconds)
+            if last_len >= self._SPLIT_THRESHOLD:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
             event = self._pending_text_batches.pop(key, None)
-            if event:
-                await self.handle_message(event)
+            if not event:
+                return
+            await self.handle_message(event)
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)

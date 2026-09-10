@@ -1040,6 +1040,9 @@ class GatewayAdapterLifecycleMixin:
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(busy_session_handler or self._handle_active_session_busy_message)
+        _set_busy_query = getattr(adapter, "set_busy_state_query", None)
+        if callable(_set_busy_query):
+            _set_busy_query(self._make_busy_state_query())
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)

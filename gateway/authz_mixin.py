@@ -502,8 +502,45 @@ class GatewayAuthorizationMixin:
         # Adapter-verified role auth (Discord DISCORD_ALLOWED_ROLES). ``is True``: no MagicMock pass.
         if allow_adapter_delegation and getattr(source, "role_authorized", False) is True:
             return True
-        # Pairing store: a first-class grant created only by an operator approving a code. Honored as
-        # a UNION with the allowlist (approval also mirrors into it).
+
+        # WhatsApp group-chat bypass: an explicitly allowed group (WHATSAPP_GROUP_ALLOW_FROM
+        # or config.extra group_allow_from) authorizes any participant *inside that group*
+        # without requiring them in WHATSAPP_ALLOWED_USERS — the DM allowlist must stay
+        # operator-only, otherwise every group member leaks DM access. This is the group
+        # counterpart to TELEGRAM_GROUP_ALLOWED_CHATS; WhatsApp has no dedicated env map
+        # (platform_group_chat_env_map) so we handle it here explicitly.
+        if source.chat_type in {"group", "forum"} and source.chat_id:
+            wa_group_chat_raw = _auth_env("WHATSAPP_GROUP_ALLOW_FROM") or _auth_env("WHATSAPP_GROUP_ALLOWED_USERS") or _auth_env("WHATSAPP_GROUP_ALLOWED_CHATS")
+            if wa_group_chat_raw:
+                wa_allowed_chats = {c.strip() for c in wa_group_chat_raw.split(",") if c.strip()}
+                if "*" in wa_allowed_chats or source.chat_id in wa_allowed_chats:
+                    return True
+            try:
+                _ga_adapter = self._adapter_for_source(source)
+                _ga_extra = getattr(getattr(_ga_adapter, "config", None), "extra", None) or {}
+                _ga_allow = _ga_extra.get("group_allow_from")
+                if _ga_allow:
+                    _ga_set = _coerce_allow_set(_ga_allow)
+                    if "*" in _ga_set or source.chat_id in _ga_set:
+                        return True
+            except Exception:
+                pass
+
+        # Check pairing store. A pairing entry is a first-class authorization
+        # grant, created only by a trusted operator approving a pairing code
+        # (hermes gateway pairing approve / the authenticated dashboard) — an
+        # inbound sender can never reach approve_code, so this is not an
+        # attacker-controlled path. Honored as a UNION with the allowlist: a
+        # paired user is authorized regardless of the allowlist, and when an
+        # allowlist IS configured, operator approval also writes the user into
+        # that allowlist (see PairingStore._approve_user), keeping a single
+        # operator-visible source of truth. (#23778: the original bypass was the
+        # inbound message/approval-button gate, not this gate; that gate is
+        # fixed separately.)
+        # In multiplex gateways, route to the per-profile PairingStore so each
+        # profile's whitelist is isolated; falls back to the global store when
+        # the source has no profile or the profile isn't registered.
+        platform_name = source.platform.value if source.platform else ""
         pairing_store = self._pairing_store_for(source)
         if pairing_store is not None and pairing_store.is_approved(source.platform.value if source.platform else "", user_id):
             return True

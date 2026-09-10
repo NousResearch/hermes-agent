@@ -123,7 +123,11 @@ def _transcribe_openai(
     if not _HAS_OPENAI:
         return _error_result("openai package not installed")
     # Auto-correct a Groq-only model on the native OpenAI path only (third-party endpoints may serve it).
-    if provider_label == "openai" and model_name in GROQ_MODELS:
+    # Only the NATIVE OpenAI endpoint: third-party OpenAI-compatible endpoints
+    # (e.g. OpenRouter serving openai/whisper-large-v3-turbo) legitimately
+    # serve whisper-large-v3 variants.
+    _is_openai_native = bool(base_url) and "api.openai.com" in base_url
+    if provider_label == "openai" and model_name in GROQ_MODELS and _is_openai_native:
         logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
         model_name = DEFAULT_STT_MODEL
 

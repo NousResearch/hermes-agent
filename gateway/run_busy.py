@@ -472,6 +472,44 @@ class GatewayBusySessionMixin:
             )
         return False
 
+    @staticmethod
+    def _signal_inflight_tool_abort(running_agent, session_key: str, reason: str) -> None:
+        """Abort the in-flight tool after a steer/redirect.
+
+        Steer alone only surfaces the text at the NEXT tool-result boundary —
+        a long-running tool (build, test suite, download) keeps running for
+        its whole natural duration before the user's message is even seen,
+        which reads as "the interruption never worked". Signal the per-thread
+        interrupt bit (the same one /stop uses) on the execution thread and
+        every registered tool-worker thread so poll loops in terminal /
+        code-execution tools honor it and return "[Command interrupted]"
+        immediately. The turn itself continues — the steer text still guides
+        the next iteration; this is NOT a full interrupt().
+        """
+        try:
+            from tools.interrupt import set_interrupt as _set_interrupt
+
+            _exec_tid = getattr(running_agent, "_execution_thread_id", None)
+            if _exec_tid is not None:
+                _set_interrupt(True, _exec_tid, reason=reason)
+            _tracker = getattr(running_agent, "_tool_worker_threads", None)
+            _tracker_lock = getattr(running_agent, "_tool_worker_threads_lock", None)
+            if _tracker is not None and _tracker_lock is not None:
+                with _tracker_lock:
+                    _worker_tids = list(_tracker)
+                for _wtid in _worker_tids:
+                    try:
+                        _set_interrupt(True, _wtid, reason=reason)
+                    except Exception:
+                        pass
+            logger.info(
+                "Session %s: in-flight tool abort signalled so the follow-up "
+                "text is consumed at the next tool-result boundary",
+                session_key,
+            )
+        except Exception:
+            logger.debug("post-steer tool abort signal failed", exc_info=True)
+
     async def _resolve_busy_steer_or_redirect(
         self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
     ) -> "GatewayRunner._BusySteerOutcome":
@@ -492,6 +530,7 @@ class GatewayBusySessionMixin:
             effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
         steered = redirected = False
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
+        abort_signalled = False
         plain_text = (
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
         )
@@ -509,6 +548,8 @@ class GatewayBusySessionMixin:
                 steered = self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
                 )
+                if steered:
+                    self._signal_inflight_tool_abort(running_agent, session_key, "steered follow-up aborts the in-flight tool")
             if not steered:
                 effective_mode = "queue"
         elif (
@@ -519,6 +560,8 @@ class GatewayBusySessionMixin:
             redirected = self._try_agent_verb(
                 running_agent, "redirect", (event.text or "").strip(), session_key, event=event
             )
+            if redirected:
+                self._signal_inflight_tool_abort(running_agent, session_key, "redirected follow-up aborts the in-flight tool")
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
@@ -652,6 +695,54 @@ class GatewayBusySessionMixin:
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
+    def _make_busy_state_query(self):
+        """Return a busy-probe callback for adapters' ingress paths.
+
+        The probe resolves the event source's ROUTED profile
+        (``_profile_name_for_source`` — including catch-all routes) before
+        building the session key. Under multiplex, the adapter's poll loop
+        runs BEFORE ``source.profile`` is stamped by the message handler, so
+        a naive key lookup would answer for the default-profile lane while
+        the turn actually runs under the routed profile's lane — the busy
+        check would never fire for routed DMs.
+        """
+
+        def _busy_for_event(event) -> bool:
+            import dataclasses as _dc
+            try:
+                profile = self._profile_name_for_source(event.source)
+            except Exception:
+                profile = None
+            if profile:
+                try:
+                    routed = _dc.replace(event.source, profile=profile)
+                except Exception:
+                    return False
+            else:
+                routed = event.source
+            try:
+                key = self._session_key_for_source(routed)
+            except Exception:
+                return False
+            if self._is_session_running(key):
+                return True
+            # Same-account phone/LID flip: the turn may be registered under
+            # the OTHER alias form of the same WhatsApp account — treat the
+            # session as busy when ANY alias variant holds a running turn.
+            try:
+                from gateway.whatsapp_identity import expand_whatsapp_aliases
+
+                if ":whatsapp:" in key:
+                    prefix, _, tail = key.rpartition(":")
+                    for v in expand_whatsapp_aliases(tail):
+                        if v != tail and self._is_session_running(f"{prefix}:{v}"):
+                            return True
+            except Exception:
+                logger.debug("busy alias-variant probe failed", exc_info=True)
+            return False
+
+        return _busy_for_event
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
@@ -698,6 +789,34 @@ class GatewayBusySessionMixin:
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
+        if _busy_state is None or running_agent is None:
+            # Same-account phone/LID flip (#clarify-family): the turn may be
+            # registered under the OTHER alias form of the same WhatsApp
+            # account. The adapter's key and the live session's key are the
+            # SAME human under two keys — treat the session as busy when ANY
+            # alias variant holds a running turn.
+            try:
+                from gateway.whatsapp_identity import expand_whatsapp_aliases
+
+                if ":whatsapp:" in session_key:
+                    _prefix, _, _tail = session_key.rpartition(":")
+                    for _v in expand_whatsapp_aliases(_tail):
+                        _vk = f"{_prefix}:{_v}"
+                        if _vk == session_key:
+                            continue
+                        _alt = self._peek_session_state(_vk)
+                        if _alt is not None and _alt.turn.agent is not None:
+                            _busy_state = _alt
+                            running_agent = _alt.turn.agent
+                            logger.info(
+                                "Busy-session alias variant matched for %s: turn "
+                                "registered under the other phone/LID form of the "
+                                "same account",
+                                _vk,
+                            )
+                            break
+            except Exception:
+                logger.debug("busy alias-variant probe failed", exc_info=True)
         _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)
         effective_mode, redirected = _steer.effective_mode, _steer.redirected
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in

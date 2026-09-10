@@ -127,6 +127,11 @@ _IMAGE_API_MODELS: Dict[str, Dict[str, Any]] = {
         "Qwen Image 3 Pro", "Precise small text and detail rendering; n up to 6; 1K/2K; seed",
         aspect_ratios=("1:1", "1:2", "1:4", "2:1", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "9:16", "16:9"),
         resolutions=("1K", "2K"), seed=True, max_n=6, max_refs=4),
+    "meta/muse-image": _image_api_model(
+        "Meta Muse Image", "Agentic Meta model; output_format png/jpeg/webp honored",
+        aspect_ratios=("1:1", "16:9", "9:16", "3:2", "2:3", "4:3", "3:4", "5:4", "21:9", "1:2", "auto"),
+        resolutions=("512", "1K", "2K", "4K"),
+        output_format=("png", "jpeg", "webp"), seed=True, max_n=10, max_refs=3),
 }
 
 # For catalog models the table doesn't describe; empty ``aspect_ratios`` = unknown enum → omitted.

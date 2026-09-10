@@ -456,6 +456,41 @@ def gmail_modify(args):
     print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
 
 
+def gmail_trash(args):
+    """Move a message to Trash (reversible; auto-purged after 30 days)."""
+    if _gws_binary():
+        result = _run_gws(
+            ["gmail", "users", "messages", "trash"],
+            params={"userId": "me", "id": args.message_id},
+        )
+        print(json.dumps({"status": "trashed", "id": result.get("id", args.message_id), "permanent": False}, indent=2))
+        return
+
+    service = build_service("gmail", "v1")
+    result = service.users().messages().trash(userId="me", id=args.message_id).execute()
+    print(json.dumps({"status": "trashed", "id": result.get("id", args.message_id), "permanent": False}, indent=2))
+
+
+def gmail_delete(args):
+    """Permanently delete a message (bypasses Trash). Requires the full
+    https://mail.google.com/ scope; gmail.modify can only trash."""
+    if not args.permanent:
+        # Safety: default to trash unless --permanent is explicitly passed.
+        return gmail_trash(args)
+
+    if _gws_binary():
+        _run_gws(
+            ["gmail", "users", "messages", "delete"],
+            params={"userId": "me", "id": args.message_id},
+        )
+        print(json.dumps({"status": "deleted", "id": args.message_id, "permanent": True}, indent=2))
+        return
+
+    service = build_service("gmail", "v1")
+    service.users().messages().delete(userId="me", id=args.message_id).execute()
+    print(json.dumps({"status": "deleted", "id": args.message_id, "permanent": True}, indent=2))
+
+
 # =========================================================================
 # Calendar
 # =========================================================================
@@ -1092,6 +1127,15 @@ def main():
     p.add_argument("--add-labels", default="", help="Comma-separated label IDs to add")
     p.add_argument("--remove-labels", default="", help="Comma-separated label IDs to remove")
     p.set_defaults(func=gmail_modify)
+
+    p = gmail_sub.add_parser("trash")
+    p.add_argument("message_id")
+    p.set_defaults(func=gmail_trash)
+
+    p = gmail_sub.add_parser("delete")
+    p.add_argument("message_id")
+    p.add_argument("--permanent", action="store_true", help="Permanently delete (default is trash, which is reversible)")
+    p.set_defaults(func=gmail_delete)
 
     # --- Calendar ---
     cal = sub.add_parser("calendar")

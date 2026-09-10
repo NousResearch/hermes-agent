@@ -515,6 +515,35 @@ def _hermetic_environment(tmp_path, monkeypatch):
         monkeypatch.setattr(
             hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
         )
+        # ...and move the import-time baseline with it, so the two stay EQUAL.
+        #
+        # ``_default_db_path()`` treats "DEFAULT_DB_PATH differs from the value
+        # captured at import" as "a caller deliberately re-pointed it" and
+        # returns the constant verbatim, short-circuiting live resolution.
+        # Re-pinning only the constant therefore trips that branch, and every
+        # argless SessionDB() for the rest of the test is nailed to THIS
+        # fixture's path — a test can no longer redirect HERMES_HOME at
+        # runtime, which is precisely what
+        # test_session_store_default_db_uses_runtime_hermes_home exists to
+        # verify.
+        #
+        # It only bites when ``hermes_state`` is already imported (i.e. when
+        # some other test file in the same session has a top-level import of
+        # it), so the test passed alone and failed in the suite, in both file
+        # order and shuffled.
+        #
+        # Keeping both in sync preserves the safety property this block is for
+        # — direct readers of DEFAULT_DB_PATH still get the fake home — while
+        # letting ``_default_db_path()`` fall through to ``get_hermes_home()``,
+        # which resolves HERMES_HOME live. Same answer by default (the fixture
+        # sets HERMES_HOME to the same directory), and a test that re-points
+        # HERMES_HOME is now followed instead of ignored.
+        if hasattr(hermes_state_mod, "_IMPORT_DEFAULT_DB_PATH"):
+            monkeypatch.setattr(
+                hermes_state_mod,
+                "_IMPORT_DEFAULT_DB_PATH",
+                fake_hermes_home / "state.db",
+            )
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.

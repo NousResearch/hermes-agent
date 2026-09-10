@@ -344,6 +344,42 @@ class TestPreloadResumedSession:
         error = cli._resume_history_limit_error(tip_only=True)
         assert error and "in its tip segment" in error
 
+    def test_markup_in_title_renders_literally(self):
+        """A stored title containing Rich markup chars must not crash the
+        resume status line with MarkupError (#103602)."""
+        cli = _make_cli(resume="20260905_101343_84feda")
+        cli.session_id = "20260905_101343_84feda"
+        messages = [{"role": "user", "content": "hi"}]
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {
+            "id": "20260905_101343_84feda",
+            "title": "[/plan — plan mode]",
+        }
+        mock_db.get_resume_conversations.return_value = (messages, messages)
+        mock_db.resolve_resume_session_id.return_value = "20260905_101343_84feda"
+        cli._session_db = mock_db
+
+        buf = StringIO()
+        cli.console.file = buf
+        cli._preload_resumed_session()
+
+        output = buf.getvalue()
+        assert "[/plan — plan mode]" in output
+
+    def test_markup_in_session_id_renders_literally(self):
+        cli = _make_cli(resume="bad[bold]id")
+        cli.session_id = "bad[bold]id"
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = None
+        cli._session_db = mock_db
+
+        buf = StringIO()
+        cli.console.file = buf
+        result = cli._preload_resumed_session()
+
+        assert result is False
+        assert "bad[bold]id" in buf.getvalue()
+
 
 
 # ── Tests for _handle_resume_command recap display ───────────────────

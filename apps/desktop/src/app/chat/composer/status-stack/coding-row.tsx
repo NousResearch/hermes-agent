@@ -140,14 +140,18 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     branchTargets.push({ base: undefined, label: s.newBranch })
   }
 
-  const switchTarget =
-    onSwitchBranch && current && status.defaultBranch && status.defaultBranch !== current ? status.defaultBranch : null
-
   // Other worktrees to jump into — everything except the one we're already in
   // (matched by its checked-out branch) and the bare/main placeholder entry.
   const otherWorktrees = onOpenWorktree
     ? worktrees.filter(w => w.path && !w.detached && w.branch && w.branch !== current)
     : []
+
+  const defaultBranchWorktree = otherWorktrees.find(worktree => worktree.branch === status.defaultBranch)
+
+  const switchTarget =
+    onSwitchBranch && current && status.defaultBranch && status.defaultBranch !== current
+      ? status.defaultBranch
+      : null
 
   const hasLineDelta = status.added > 0 || status.removed > 0
   // Untracked files carry no line delta vs HEAD, so surface them as a count when
@@ -178,7 +182,15 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           renderActionItem(kit, {
             key: '__switch__',
             label: <span className="truncate">{s.switchTo(switchTarget)}</span>,
-            onSelect: () => void switchToBranch(switchTarget)
+            onSelect: () => {
+              if (defaultBranchWorktree) {
+                onOpenWorktree?.(defaultBranchWorktree.path)
+
+                return
+              }
+
+              void switchToBranch(switchTarget)
+            }
           })}
         <kit.Separator />
         <kit.Label className={MENU_SECTION}>{s.worktrees}</kit.Label>

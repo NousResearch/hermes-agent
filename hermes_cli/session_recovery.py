@@ -25,6 +25,10 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 _CANONICAL_TABLES = (
     "system_prompts", "sessions", "messages", "session_model_usage", "compression_locks", "gateway_routing",
     "async_delegations",
+    # Passive-history receipts carry the external-history revision and the dedupe tombstones that stop
+    # a retry re-inserting deleted content. Copied WITH their ids (shared-column copy) so revisions and
+    # spent identities survive recovery; a source predating the table simply reports "missing".
+    "passive_history_commits",
 )
 _TOPIC_TABLES = ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
 

@@ -834,3 +834,90 @@ def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path)
         lf_conn.close()
         dest.close()
     assert rows == [("ob-1", "pending", None), ("ob-2", "failed", "boom")]
+
+
+PASSIVE_IDENTITY = {"producer": "talk.voice", "event_id": "evt-1", "origin_turn_id": "origin-1"}
+PASSIVE_MESSAGES = [
+    {"role": "user", "content": "recovered voice turn"},
+    {"role": "assistant", "content": "acknowledged"},
+]
+
+
+def _commit_passive_history(path: Path):
+    """Save two external turns into the source store and return their receipts."""
+    db = SessionDB(db_path=path)
+    try:
+        return (
+            db.append_passive_messages(
+                "recovery-session-0", messages=[dict(m) for m in PASSIVE_MESSAGES],
+                **PASSIVE_IDENTITY),
+            db.append_passive_messages(
+                "recovery-session-1", messages=[dict(PASSIVE_MESSAGES[0])],
+                producer="talk.voice", event_id="evt-2", origin_turn_id="origin-2"),
+        )
+    finally:
+        db.close()
+
+
+def _drop_passive_history_table(path: Path) -> None:
+    """Shape the source like a store from before passive ingress shipped."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("DROP INDEX IF EXISTS idx_passive_history_conversation")
+        conn.execute("DROP TABLE IF EXISTS passive_history_commits")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_recovery_preserves_passive_history_receipts_and_their_dedupe_authority(
+    tmp_path: Path,
+) -> None:
+    """Receipt ids ARE the external-history revision, so salvage must copy them verbatim."""
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+    first, second = _commit_passive_history(source)
+
+    inspection = inspect_session_database(source, work_dir=tmp_path)
+    assert inspection["tables"]["passive_history_commits"]["rows"] == 2
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    copied = report["copy"]["passive_history_commits"]
+    assert copied["status"] == "complete" and copied["copied_rows"] == 2
+    assert report["verification"]["table_counts"]["passive_history_commits"] == 2
+    assert report["complete"] is True and report["verified"] is True
+
+    recovered = SessionDB(db_path=output)
+    try:
+        # Revisions survive, so a cached agent's marker still means the same thing.
+        assert recovered.get_passive_history_watermark("recovery-session-0").revision == first.revision
+        assert recovered.get_passive_history_watermark("recovery-session-1").revision == second.revision
+        # A retry against the recovered store is acknowledged, not re-inserted.
+        replay = recovered.append_passive_messages(
+            "recovery-session-0", messages=[dict(m) for m in PASSIVE_MESSAGES], **PASSIVE_IDENTITY)
+        assert replay.replayed is True
+        assert replay.message_ids == first.message_ids
+        assert replay.revision == first.revision
+        assert [m["content"] for m in recovered.get_messages("recovery-session-0")][-2:] == [
+            PASSIVE_MESSAGES[0]["content"], PASSIVE_MESSAGES[1]["content"]]
+    finally:
+        recovered.close()
+
+
+def test_recovery_of_a_store_without_passive_history_is_not_lossy(tmp_path: Path) -> None:
+    """A store predating the receipt table has nothing to salvage; that is not data loss."""
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+    _drop_passive_history_table(source)
+
+    inspection = inspect_session_database(source, work_dir=tmp_path)
+    assert inspection["tables"]["passive_history_commits"]["available"] is False
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["copy"]["passive_history_commits"]["status"] == "missing"
+    assert report["verification"]["table_counts"]["passive_history_commits"] == 0
+    assert report["complete"] is True and report["verified"] is True

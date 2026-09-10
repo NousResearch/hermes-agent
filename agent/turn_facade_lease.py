@@ -213,6 +213,64 @@ class TurnLeaseAdmission:
     conversation_history: Optional[List[Dict[str, Any]]] = None
 
 
+#: Last successfully loaded ``(conversation_id, revision)`` external-history marker on the agent.
+#: The conversation id travels with it: a bare revision would let one conversation's generation
+#: silence a reload on another after a resume/target switch. A missing attribute means "unknown".
+_PASSIVE_WATERMARK_ATTR = "_passive_history_watermark"
+
+
+def _durable_external_watermark(db, session_id: str):
+    """Durable external-history marker, or None on a store that predates passive ingress.
+
+    Concrete-type check, same reason as ``acquire_session_turn_lease`` above: MagicMock-style test
+    doubles accept any attribute. A REAL read error is never swallowed — treating a failed read as
+    "nothing changed" would silently drop the operator's saved turn from this turn's context.
+    """
+    if not callable(getattr(type(db), "get_passive_history_watermark", None)):
+        return None
+    return db.get_passive_history_watermark(session_id)
+
+
+def _refresh_admitted_history(agent, db, session_id: str, task_context, admission, *, waited: bool) -> None:
+    """Reload the durable transcript when the wait or an external passive commit changed it.
+
+    Two reasons to reload, both only AFTER admission so the conversation lease is held while the tip
+    is resolved and the rows are read:
+
+    * ``waited`` — the previous holder may have compressed/rotated the session (pre-existing).
+    * a positive external revision differs from the marker last loaded — an idle agent whose
+      acquisition never waited, including the first turn of an already-created agent.
+
+    An unchanged revision keeps the caller's history object and the ordinary prompt-cache path: the
+    completed prefix and its ``api_content`` bytes are untouched, only a new external suffix is
+    appended and alternation-repaired for replay. The marker advances only after a successful load,
+    so a failed read propagates (releasing the lease) and the next attempt retries it.
+    """
+    watermark = _durable_external_watermark(db, session_id)
+    changed = watermark is not None and watermark.revision > 0 and (
+        getattr(agent, _PASSIVE_WATERMARK_ATTR, None)
+        != (watermark.conversation_id, watermark.revision)
+    )
+    if not waited and not changed:
+        return
+    if waited:
+        agent._emit_status("Session is free; loading the latest transcript...")
+        # The holder may have compressed/rotated the session while we waited.
+        latest_session_id = db.resolve_resume_session_id(session_id)
+    else:
+        # Strict compression tip only: resolve_resume_session_id also prefers children and swallows
+        # errors, which must never decide where external history is read from.
+        latest_session_id = db.get_compression_tip(session_id)
+    if latest_session_id:
+        agent.session_id = latest_session_id
+        task_context["session_id"] = latest_session_id
+    admission.conversation_history = db.get_messages_as_conversation(
+        agent.session_id, repair_alternation=True, include_row_ids=True
+    )
+    if watermark is not None:
+        setattr(agent, _PASSIVE_WATERMARK_ATTR, (watermark.conversation_id, watermark.revision))
+
+
 def _durable_session_exists(db, session_id: str) -> bool:
     try:
         return db.get_session(session_id) is not None
@@ -282,17 +340,10 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
-        if waited:
-            agent._emit_status("Session is free; loading the latest transcript...")
-            # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
-            latest_session_id = db.resolve_resume_session_id(session_id)
-            if latest_session_id:
-                agent.session_id = latest_session_id
-                task_context["session_id"] = latest_session_id
-            admission.conversation_history = db.get_messages_as_conversation(
-                agent.session_id, repair_alternation=True, include_row_ids=True
-            )
+        # An immediate acquisition still reloads when external history changed, and otherwise skips
+        # it (a needless prompt-cache miss).
+        _refresh_admitted_history(
+            agent, db, session_id, task_context, admission, waited=waited)
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.

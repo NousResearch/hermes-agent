@@ -5890,3 +5890,72 @@ class TestFts5SanitizerCharacterClass:
         # text; keep % intact there (pre-existing contract).
         sanitized = self._sanitize("完成50%")
         assert "%" in sanitized
+
+
+class TestPassiveHistoryCommitsUpgrade:
+    """The passive-history receipt table is an additive, repeatable upgrade (v30 -> v31)."""
+
+    def _pre_upgrade_store(self, path):
+        """A store shaped like the release before passive ingress: no receipt table, version 30."""
+        with SessionDB(db_path=path) as db:
+            db.create_session("s1", source="cli")
+            db.append_message("s1", "user", "legacy payload zebra")
+            db.append_message("s1", "assistant", "legacy reply")
+            row_ids = [m["id"] for m in db.get_messages("s1")]
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_passive_history_conversation")
+            conn.execute("DROP TABLE IF EXISTS passive_history_commits")
+            conn.execute("UPDATE schema_version SET version = 30")
+            conn.commit()
+        finally:
+            conn.close()
+        return row_ids
+
+    @staticmethod
+    def _schema_objects(path):
+        conn = sqlite3.connect(str(path))
+        try:
+            return {
+                name for (name,) in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE name IN "
+                    "('passive_history_commits', 'idx_passive_history_conversation')"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+    def test_reopening_a_pre_upgrade_store_twice_adds_the_table_only(self, tmp_path):
+        path = tmp_path / "state.db"
+        original_row_ids = self._pre_upgrade_store(path)
+        assert self._schema_objects(path) == set()
+
+        for _reopen in range(2):
+            with SessionDB(db_path=path) as db:
+                # No transcript rewrite and no re-sequenced ids: the upgrade is pure DDL.
+                assert [m["id"] for m in db.get_messages("s1")] == original_row_ids
+                assert [m["content"] for m in db.get_messages("s1")] == [
+                    "legacy payload zebra", "legacy reply"]
+                # No FTS rebuild either — the existing index still answers.
+                assert [r["session_id"] for r in db.search_messages("zebra")] == ["s1"]
+                assert db.get_passive_history_watermark("s1").revision == 0
+            assert self._schema_objects(path) == {
+                "passive_history_commits", "idx_passive_history_conversation"}
+
+        conn = sqlite3.connect(str(path))
+        try:
+            assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+        finally:
+            conn.close()
+
+    def test_upgraded_store_commits_passive_history_from_revision_one(self, tmp_path):
+        path = tmp_path / "state.db"
+        self._pre_upgrade_store(path)
+
+        with SessionDB(db_path=path) as db:
+            receipt = db.append_passive_messages(
+                "s1", producer="talk.voice", event_id="evt-1", origin_turn_id="origin-1",
+                messages=[{"role": "user", "content": "spoken after the upgrade"}])
+            assert (receipt.revision, receipt.replayed) == (1, False)
+            assert db.get_passive_history_watermark("s1").revision == 1
+            assert [m["content"] for m in db.get_messages("s1")][-1] == "spoken after the upgrade"

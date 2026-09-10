@@ -319,6 +319,7 @@ from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
+from hermes_cli.subcommands.inventory import build_inventory_parsers
 from hermes_cli.subcommands.setup import build_setup_parser
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser, build_whatsapp_cloud_parser
@@ -1837,6 +1838,18 @@ def cmd_model(args):
     )
 
 
+def cmd_models(args):
+    from hermes_cli.inventory_cmd import cmd_models as _cmd_models
+
+    _cmd_models(args)
+
+
+def cmd_providers(args):
+    from hermes_cli.inventory_cmd import cmd_providers as _cmd_providers
+
+    _cmd_providers(args)
+
+
 # Provider id -> flow(config, current_model, args). Lambdas resolve the
 # _model_flow_* names at call time so test monkeypatches keep intercepting.
 # ``custom:*``, remove-custom and the generic API-key set are the fallthrough
@@ -2337,7 +2350,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve",
         "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
-        "memory", "dump", "debug", "backup", "import", "completion", "logs",
+        "memory", "dump", "debug", "backup", "import", "completion", "logs", "models", "providers",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -2622,7 +2635,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
+        "model", "models", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
+        "providers",
         "project", "proxy",
         "prompt-size",
         "resume",
@@ -3190,6 +3204,9 @@ def _build_cli_parser():
     chat_parser.set_defaults(func=cmd_chat)
 
     build_model_parser(subparsers, cmd_model=cmd_model)
+    build_inventory_parsers(
+        subparsers, cmd_models=cmd_models, cmd_providers=cmd_providers
+    )
     build_moa_parser(subparsers)
     build_fallback_parser(subparsers)
     build_worktree_parser(subparsers)

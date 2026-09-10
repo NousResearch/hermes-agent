@@ -439,7 +439,7 @@ _RO_MOUNT_SOURCES = (
     ("get_skills_directory_mount", False, "skills dir"),
     ("get_cache_directory_mounts", False, "cache dir"),
     ("get_hermes_context_file_mounts", True, "persona file"),
-    ("get_hermes_context_dir_mounts", False, "persona dir"))
+    ("get_hermes_context_dir_mounts", False, "scripts dir"))
 
 
 def _readonly_skill_mount_args() -> list[str]:

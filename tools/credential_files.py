@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 from hermes_cli.config import cfg_get
-from hermes_constants import get_hermes_dir, get_hermes_home
+from hermes_constants import get_hermes_dir, get_hermes_home, named_profile_home
 
 from agent.skill_utils import EXCLUDED_SKILL_DIRS
 
@@ -314,10 +314,13 @@ def _hermes_context_mounts(
     """
     home = get_hermes_home()
     base = container_base.rstrip("/")
-    parts = home.parts
     targets = [base]
-    if "profiles" in parts:
-        profile_target = f"{base}/{'/'.join(parts[parts.index('profiles'):])}"
+    profile_home = named_profile_home(home)
+    if profile_home is not None:
+        # Only the ``<root>/profiles/<name>`` suffix names the container-side
+        # profile path; a "profiles" component elsewhere in the host path
+        # (e.g. ``/srv/profiles/dev/.hermes``) must not hijack the target.
+        profile_target = f"{base}/{'/'.join(profile_home.parts[-2:])}"
         if profile_target != base:
             targets.append(profile_target)
     mounts: List[Dict[str, str]] = []

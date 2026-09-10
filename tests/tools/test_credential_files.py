@@ -538,6 +538,38 @@ class TestHermesContextMounts:
             "/root/.hermes/profiles/work/SOUL.md",
         }
 
+    def test_profiles_component_above_home_not_dual_mounted(self, tmp_path, monkeypatch):
+        """A "profiles" directory above the real home is not a profile root.
+
+        ``tmp_path/profiles/dev/.hermes`` is a default home whose host path
+        merely contains a "profiles" segment; it must not gain a second,
+        wrong container target built from that outer segment.
+        """
+        hermes_home = tmp_path / "profiles" / "dev" / ".hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "SOUL.md").write_text("# persona", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_hermes_context_file_mounts()
+        assert [m["container_path"] for m in mounts] == ["/root/.hermes/SOUL.md"]
+
+    def test_real_profile_below_profiles_named_ancestor_targets_profile_only(
+        self, tmp_path, monkeypatch
+    ):
+        """A real profile home below a coincidental "profiles" ancestor still dual-mounts
+        to the canonical ``profiles/<name>`` container path, not the outer segment."""
+        hermes_home = tmp_path / "profiles" / "dev" / ".hermes" / "profiles" / "work"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "SOUL.md").write_text("# work persona", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_hermes_context_file_mounts()
+        container_paths = {m["container_path"] for m in mounts}
+        assert container_paths == {
+            "/root/.hermes/SOUL.md",
+            "/root/.hermes/profiles/work/SOUL.md",
+        }
+
 
 class TestMapCachePathToContainer:
     """Tests for map_cache_path_to_container() — the backend-agnostic mapper."""

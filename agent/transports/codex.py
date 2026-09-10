@@ -405,6 +405,39 @@ def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
     return False
 
 
+def _is_azure_responses(params: dict[str, Any]) -> bool:
+    """True for any Azure-hosted Responses endpoint: the ``azure-foundry`` provider, a resource-level
+    ``*.openai.azure.com`` host, or the project-scoped ``*.services.ai.azure.com`` gateway."""
+    from utils import base_url_host_matches
+
+    if str(params.get("provider") or "").strip().lower() == "azure-foundry":
+        return True
+    base_url = str(params.get("base_url") or "")
+    return base_url_host_matches(base_url, "openai.azure.com") or base_url_host_matches(base_url, "services.ai.azure.com")
+
+
+def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy of ``messages`` keeping ``codex_reasoning_items`` only on the newest assistant row that has any.
+    Foundry rejects a request that replays encrypted reasoning from more than one prior response (HTTP 400
+    "Conflicting authenticated continuation identities", #105369). ``compaction`` checkpoints stay everywhere."""
+    out: list[dict[str, Any]] = []
+    newest_kept = False
+    for msg in reversed(messages):
+        items = msg.get("codex_reasoning_items") if isinstance(msg, dict) and msg.get("role") == "assistant" else None
+        if isinstance(items, list) and any(isinstance(i, dict) and i.get("type") != "compaction" for i in items):
+            if newest_kept:
+                checkpoints = [i for i in items if isinstance(i, dict) and i.get("type") == "compaction"]
+                msg = dict(msg)
+                if checkpoints:
+                    msg["codex_reasoning_items"] = checkpoints
+                else:
+                    msg.pop("codex_reasoning_items")
+            newest_kept = True
+        out.append(msg)
+    out.reverse()
+    return out
+
+
 def _native_compaction_active(context_management: Any) -> bool:
     """True only when the caller's eligibility gate produced a non-empty payload.
 
@@ -536,6 +569,10 @@ class ResponsesApiTransport(ProviderTransport):
         replay_encrypted_reasoning = bool(params.get("replay_encrypted_reasoning", True)) and not (
             _is_azure_foundry_responses(params) and _is_post_tool_replay(payload_messages)
         )
+        # Own predicate: #101243 may narrow _is_azure_foundry_responses to the project gateway, and the
+        # multi-item rejection happens on resource-level hosts too.
+        if replay_encrypted_reasoning and _is_azure_responses(params):
+            payload_messages = _newest_reasoning_only(payload_messages)
         # One predicate decides whether context_management goes out AND whether the converter may replay a checkpoint.
         context_management = params.get("context_management")
         native_compaction_active = _native_compaction_active(context_management)

@@ -496,6 +496,8 @@ class _AgentPluginInstallBody(BaseModel):
     identifier: str
     force: bool = False
     enable: bool = True
+    # Install by curated-catalog name (resolves repo + pinned SHA server-side).
+    catalog_name: Optional[str] = None
 
 class _PluginProvidersPutBody(BaseModel):
     memory_provider: Optional[str] = None

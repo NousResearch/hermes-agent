@@ -22,6 +22,7 @@ import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import {
   $sidebarListGroupIds,
+  $sidebarShowAllSessions,
   $sidebarWorkspaceNodeOpen,
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
@@ -227,6 +228,7 @@ export function SidebarSessionsSection({
   card = false
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
+  const showAllSessions = useStore($sidebarShowAllSessions)
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
@@ -372,6 +374,21 @@ export function SidebarSessionsSection({
     [renderRow]
   )
 
+  // Limit complete groups, not sessions, so a burst and its branches stay
+  // together. Compute boundaries from the whole pool, just like Updated.
+  const renderPreviewRows = useCallback(
+    (items: SessionInfo[], projectId: string) => {
+      const rows = groupEntriesByRecency(flattenSessionsWithBranches(items), undefined, undefined, 2).map(row =>
+        row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row
+      )
+
+      const ordered = manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
+
+      return hideCollapsedGroupRows(ordered, isListGroupOpen).map(row => renderListRow(row, false))
+    },
+    [isListGroupOpen, manualOrderIds, renderListRow]
+  )
+
   // Same as `renderRows`, but with date dividers folded in — used for
   // entered-project lanes so a lane spanning multiple days reads
   // chronologically, matching the flat recents list.
@@ -503,7 +520,7 @@ export function SidebarSessionsSection({
         // preview rows instead of the live overlay.
         previewSessions={projectOverviewPreviews?.[project.id]}
         project={project}
-        renderRows={renderRows}
+        renderRows={showAllSessions ? items => renderPreviewRows(items, project.id) : renderRows}
       />
     )
 

@@ -244,6 +244,44 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     return fallback
 
 
+def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> Any:
+    """Stamp ``{turn_id, current_turn_user_idx}`` on a result envelope, proven against the
+    exact ``result["messages"]`` projection it travels with.
+
+    Hosts that settle their own transcript by index (hermes-webui) must never guess which
+    row is the current user turn after this loop rewrote history (alternation repair,
+    compaction, post-turn micro-compaction): a guessed index or a text match can relabel an
+    identical historical prompt and claim its old answer as this turn's. So the producer
+    exports the coordinate, computed on the final list, only when the addressed row is this
+    turn's user message verbatim. Otherwise the keys are omitted and hosts fail closed.
+
+    A preflight-timeout envelope carries the prior history without this turn's row (#7100), so a
+    repeated prompt would resolve to its historical copy: nothing is exported there.
+    """
+    if not isinstance(result, dict) or result.get("turn_exit_reason") == "context_compression_timeout":
+        return result
+    messages = result.get("messages")
+    turn_id = str(getattr(agent, "_current_turn_id", "") or "")
+    if not isinstance(messages, list) or not turn_id or user_message is None:
+        return result
+    idx = reanchor_current_turn_user_idx(messages, user_message)
+    if idx < 0 or idx >= len(messages):
+        return result
+    row = messages[idx]
+    if not (isinstance(row, dict) and row.get("role") == "user"):
+        return result
+    from agent.context_compressor import user_originated_turn_view
+
+    live_view = user_originated_turn_view(row)
+    if row.get("content") != user_message and not (
+        isinstance(live_view, dict) and live_view.get("content") == user_message
+    ):
+        return result  # rewritten (merge-into-tail) row: not a proven boundary
+    result["turn_id"] = turn_id
+    result["current_turn_user_idx"] = idx
+    return result
+
+
 def compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:
@@ -835,6 +873,8 @@ def build_turn_context(
     # warning and a needless first-turn prefix cache miss. (Issue #45499.)
     set_session_context(agent.session_id)
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
+    from tools.skill_provenance import set_review_attended
+    set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)

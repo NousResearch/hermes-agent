@@ -127,6 +127,13 @@ files, and the Termux package. Linux release legs remain disabled and are listed
 as not built. Only receipt-listed artifacts that exist in storage get download
 links. Missing receipts show the failed or incomplete leg.
 
+Each commit build also writes a downloads page to
+`releases/commit/<FULL_SHA>/index.html` on the R2 public origin; a tag run
+writes its channel page instead (`releases/stable/index.html` or
+`releases/canary/index.html`). Pages list only objects the build actually
+staged, and a re-run of an older tag never replaces a newer channel page.
+`release.py --build-commit` prints the commit page URL before dispatching.
+
 Commit builds require the signing credentials used by their release legs.
 Store bundle envelopes remain unsigned for Partner Center, but these builds
 never submit them. No GitHub release, updater feed, or APT channel is changed.

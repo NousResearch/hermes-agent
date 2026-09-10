@@ -28,6 +28,12 @@ promotion can leave some services advanced and others unchanged. Such a run
 stays red. Inspect its per-service results before retrying; do not rebuild or
 replace the tested candidate to recover a pointer update.
 
+Promotion also replaces the stable downloads page at `releases/stable/index.html`
+on the R2 public origin, so the latest stable builds stay readable without
+GitHub. Canary tag builds own `releases/canary/index.html`, and commit builds
+own `releases/commit/<sha>/index.html`. Pages list only objects the build
+actually staged; a re-run of an older tag never regresses a channel page.
+
 ## Run a release
 
 Use `scripts/release.py --bump patch --publish --remote <remote>` to create

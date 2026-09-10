@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Render the release download tables into <!-- HERMES_BUILDS_TABLE -->.
+"""Render the release download tables into <!-- HERMES_BUILDS_TABLE -->, and
+the same rows as standalone pages in the bucket.
 
 Runs as the LAST job of desktop-bundled-release.yml, after every matrix
 leg has uploaded, and edits the GitHub release body in place. The tables
@@ -9,6 +10,15 @@ a missing artifact shows up as a missing row, never a dead link. The
 GitHub release carries the notes only; the binaries live in the R2 bucket
 under releases/tag/<tag>/, and the download links point at the R2 public
 URL (CLOUDFLARE_R2_PUBLIC_URL / --r2-base-url).
+
+Every run also publishes the same rows as a tiny HTML page in the bucket,
+so a build can be read straight from the download origin:
+
+  releases/<channel>/index.html      replaced by each release; the channel
+                                    page holds the latest stable or canary
+                                    builds for every variant
+  releases/commit/<sha>/index.html  commit mode: every expected binary of
+                                    one commit build, built or not
 
 Tables: Hermes Desktop (bundled) and Hermes Light, one row per (OS,
 arch). Feed manifests (latest*/light*/canary*.yml), blockmaps and mac .zip
@@ -30,18 +40,19 @@ marker is kept as an HTML comment wrapper around the tables).
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
-from urllib.parse import quote
 
 # Direct-script invocation starts with scripts/, not the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.releases import handoff, r2  # noqa: E402
+from scripts.releases import handoff, r2, semver  # noqa: E402
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
 END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
@@ -85,10 +96,13 @@ def parse_assets(names: list[str]) -> dict[str, dict[tuple[str, str], tuple[str,
     return out
 
 
-def render_tables(assets_by_app: dict, base_url: str) -> str:
-    """The replacement block: marker + tables + end marker."""
-    base = base_url.rstrip("/")
-    sections = []
+def table_rows(assets_by_app: dict) -> list[tuple[str, list[tuple[str, str, str, str]]]]:
+    """[(section title, [(os label, arch label, kind label, object key), ...]), ...].
+
+    The ONE row set every sink renders (release-body markdown, R2 page);
+    a row exists only for an object that is actually in the bucket.
+    """
+    sections: list[tuple[str, list[tuple[str, str, str, str]]]] = []
     for app, title in (("HermesBundled", "Hermes Desktop"), ("HermesLight", "Hermes Light (remote-only client)")):
         rows = []
         for key in _ROW_ORDER:
@@ -96,16 +110,23 @@ def render_tables(assets_by_app: dict, base_url: str) -> str:
             if not entry:
                 continue
             name, ext = entry
-            os_name, arch = key
-            rows.append(
-                f"| {_OS_LABEL[os_name]} | {_ARCH_LABEL[key]} "
-                f"| [{_KIND_LABEL[ext]}]({base}/{name}) |"
-            )
+            rows.append((_OS_LABEL[key[0]], _ARCH_LABEL[key], _KIND_LABEL[ext], name))
         if rows:
-            sections.append(
-                f"### {title}\n\n| OS | Architecture | Download |\n|---|---|---|\n"
-                + "\n".join(rows)
-            )
+            sections.append((title, rows))
+    return sections
+
+
+def render_tables(assets_by_app: dict, base_url: str) -> str:
+    """The replacement block: marker + tables + end marker."""
+    sections = []
+    for title, rows in table_rows(assets_by_app):
+        lines = [
+            f"| {os_name} | {arch} | [{kind}]({r2.public_url_for(base_url, name)}) |"
+            for os_name, arch, kind, name in rows
+        ]
+        sections.append(
+            f"### {title}\n\n| OS | Architecture | Download |\n|---|---|---|\n" + "\n".join(lines)
+        )
     if not sections:
         return ""
     return MARKER + "\n## Downloads\n\n" + "\n\n".join(sections) + "\n" + END_MARKER
@@ -165,6 +186,10 @@ _COMMIT_EXPECTED = [
     ("Termux aarch64 (.deb)", "termux", r"^.*\.deb$"),
 ]
 
+# Linux release legs are disabled; they still get a row so a reader can see
+# they were never expected to publish.
+_COMMIT_DISABLED = ["Linux x64 (AppImage)", "Linux ARM64 (AppImage)"]
+
 COMMIT_RECEIPT_NAMES = sorted({leg for _label, leg, _pattern in _COMMIT_EXPECTED})
 _COMMIT_JOBS = {
     "win32-x64": "build-win32", "win32-arm64": "build-win32",
@@ -197,41 +222,58 @@ def commit_expected_rows(names: list[str],
     return rows
 
 
-def render_commit_summary(names: list[str], base_url: str, commit: str,
-                          receipts: dict[str, dict | None],
-                          failed_legs: list[str] | None = None) -> str:
-    """Render every expected product without reading or changing a release."""
+def _validated_commit_inputs(commit: str, receipts: dict[str, dict | None]) -> None:
+    """The summary and the commit page must never disagree about what was
+    built, so both validate the SHA and every receipt the same way."""
     r2.commit_prefix_for(commit)
     for leg, receipt in receipts.items():
         if receipt is not None:
             handoff.validate_commit_receipt(receipt, commit, leg)
-    base = base_url.rstrip("/")
+
+
+def commit_entries(commit: str, names: list[str], base_url: str,
+                   receipts: dict[str, dict | None],
+                   failed_legs: list[str] | None = None,
+                   ) -> list[tuple[str, str, str | None, str | None]]:
+    """[(label, status, download URL or None, object basename or None)] — the
+    ONE row set the step summary and the commit page render. A link exists
+    only for a receipt-listed object that is really in the bucket."""
     failed = set(failed_legs or [])
+    entries: list[tuple[str, str, str | None, str | None]] = []
+    for row in commit_expected_rows(names, receipts):
+        label, leg, key, state = row["label"], row["leg"], row["key"], row["state"]
+        if state == "built":
+            entries.append((label, "✅ Built", r2.public_url_for(base_url, key), key.rsplit("/", 1)[-1]))
+        elif state == "receipt-missing":
+            related = failed.intersection({leg, _COMMIT_JOBS[leg]})
+            blame = f"failed: {', '.join(sorted(related))}" if related \
+                else "leg incomplete or upload interrupted"
+            entries.append((label, f"❌ Not built ({blame})", None, None))
+        elif state == "object-missing":
+            entries.append((label, "❌ Not built (receipt present but object missing)", None, None))
+        elif state == "receipt-omits":
+            entries.append((label, "❌ Not built (artifact absent from receipt)", None, None))
+        else:
+            entries.append((label, "❌ Not built (ambiguous: multiple objects match)", None, None))
+    for label in _COMMIT_DISABLED:
+        entries.append((label, "❌ Not built (release leg disabled)", None, None))
+    return entries
+
+
+def render_commit_summary(names: list[str], base_url: str, commit: str,
+                          receipts: dict[str, dict | None],
+                          failed_legs: list[str] | None = None) -> str:
+    """Render every expected product without reading or changing a release."""
+    _validated_commit_inputs(commit, receipts)
     lines = [
         f"## Commit build `{commit[:12]}`",
         "",
         "| Binary | Status | Download |",
         "|---|---|---|",
     ]
-    for row in commit_expected_rows(names, receipts):
-        label, key, state = row["label"], row["key"], row["state"]
-        if state == "built":
-            basename = key.rsplit("/", 1)[-1]
-            link = f"{base}/{quote(key, safe='/')}"
-            lines.append(f"| {label} | ✅ Built | [{basename}]({link}) |")
-        elif state == "receipt-missing":
-            related = failed.intersection({row["leg"], _COMMIT_JOBS[row["leg"]]})
-            blame = f"failed: {', '.join(sorted(related))}" if related \
-                else "leg incomplete or upload interrupted"
-            lines.append(f"| {label} | ❌ Not built ({blame}) | — |")
-        elif state == "object-missing":
-            lines.append(f"| {label} | ❌ Not built (receipt present but object missing) | — |")
-        elif state == "receipt-omits":
-            lines.append(f"| {label} | ❌ Not built (artifact absent from receipt) | — |")
-        else:
-            lines.append(f"| {label} | ❌ Not built (ambiguous: multiple objects match) | — |")
-    for label in ("Linux x64 (AppImage)", "Linux ARM64 (AppImage)"):
-        lines.append(f"| {label} | ❌ Not built (release leg disabled) | — |")
+    for label, status, url, basename in commit_entries(commit, names, base_url, receipts, failed_legs):
+        cell = f"[{basename}]({url})" if url and basename else "—"
+        lines.append(f"| {label} | {status} | {cell} |")
     return "\n".join([*lines, ""])
 
 
@@ -259,6 +301,143 @@ def failed_legs_from_release_needs(release_needs_json: str | None) -> list[str]:
         return []
     return sorted(name for name, info in needs.items()
                   if isinstance(info, dict) and info.get("result") not in ("success", "skipped"))
+
+
+# ---------------------------------------------------------------------------
+# Bucket pages: the same rows as the tables, served from the download origin
+# ---------------------------------------------------------------------------
+
+_PAGE_STYLE = (
+    "body{font:15px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;margin:2rem auto;"
+    "max-width:54rem;padding:0 1rem;color:#1a1a1a;background:#fff}"
+    "h1{font-size:1.4rem}h2{font-size:1.05rem;margin-top:1.75rem}"
+    "p{color:#444}table{border-collapse:collapse;width:100%}"
+    "th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid #dcdcdc}"
+    "th{font-weight:600}a{color:#0a58ca}code{font-size:.95em}"
+)
+
+# The record a channel page keeps of the release it describes; the write
+# guard reads it back so an older tag re-run never regresses the page.
+_BUILD_META_RE = re.compile(r'<meta name="hermes-build" content="([^"]*)"')
+
+
+def _page(title: str, build: str, body: list[str]) -> str:
+    return (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f'<meta name="hermes-build" content="{html.escape(build, quote=True)}">\n'
+        f"<title>{html.escape(title)}</title>\n<style>{_PAGE_STYLE}</style>\n</head>\n<body>\n"
+        + "\n".join(body)
+        + "\n</body>\n</html>\n"
+    )
+
+
+def _table(headers: tuple[str, ...], rows: list[list[str]]) -> list[str]:
+    head = "".join(f"<th>{html.escape(name)}</th>" for name in headers)
+    body = ["<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows]
+    return [f"<table>\n<thead><tr>{head}</tr></thead>\n<tbody>", *body, "</tbody>\n</table>"]
+
+
+def _link(url: str) -> str:
+    return f'<a href="{html.escape(url, quote=True)}">'
+
+
+def render_page(tag: str, assets_by_app: dict, base_url: str) -> str:
+    """The channel page: the release-body download table as HTML."""
+    channel = r2.channel_for_tag(tag)
+    body = [
+        f"<h1>Hermes Desktop {channel} builds</h1>",
+        f"<p>Release <code>{html.escape(tag)}</code>. Only objects this release "
+        "actually staged in the bucket are listed.</p>",
+    ]
+    for title, rows in table_rows(assets_by_app):
+        body.append(f"<h2>{html.escape(title)}</h2>")
+        body.extend(_table(
+            ("OS", "Architecture", "Download"),
+            [[html.escape(os_name), html.escape(arch),
+              f"{_link(r2.public_url_for(base_url, name))}{html.escape(kind)}</a>"]
+             for os_name, arch, kind, name in rows],
+        ))
+    return _page(f"Hermes Desktop {channel} builds", tag, body)
+
+
+def render_commit_page(commit: str, names: list[str], base_url: str,
+                       receipts: dict[str, dict | None],
+                       failed_legs: list[str] | None = None) -> str:
+    """The commit-build page: every expected binary, built or not."""
+    _validated_commit_inputs(commit, receipts)
+    rows = []
+    for label, status, url, basename in commit_entries(commit, names, base_url, receipts, failed_legs):
+        cell = (f"{_link(url)}{html.escape(basename)}</a>" if url and basename else "—")
+        rows.append([html.escape(label), html.escape(status), cell])
+    body = [
+        f"<h1>Hermes commit build <code>{html.escape(commit[:12])}</code></h1>",
+        f"<p>Commit <code>{html.escape(commit)}</code>. Every expected binary is listed; "
+        "a row without a link was not built.</p>",
+        *_table(("Binary", "Status", "Download"), rows),
+    ]
+    return _page(f"Hermes commit build {commit[:12]}", commit, body)
+
+
+def recorded_build(page: str | None) -> str | None:
+    """The release tag or commit a page in the bucket describes."""
+    match = _BUILD_META_RE.search(page or "")
+    return (match.group(1) or None) if match else None
+
+
+def supersedes(existing_page: str | None, tag: str) -> bool:
+    """Whether `tag` may replace the channel page.
+
+    Channel pages are mutable pointers: a re-run of an OLDER tag must not
+    regress the page a newer release already published (the release body
+    cannot regress — each tag owns its own release). Ordering uses the same
+    semver authority the feeds do; an absent or unreadable record is written,
+    because the new page is then the best available information.
+    """
+    recorded = recorded_build(existing_page)
+    if not recorded:
+        return True
+    try:
+        return semver.compare(recorded.lstrip("v"), tag.lstrip("v")) <= 0
+    except ValueError:
+        return True
+
+
+def write_page(key: str, page: str, base_url: str) -> str:
+    """PUT one page object at `key` (a FULL key, no tag archive) and return
+    its public URL. Mutable: the page is replaced by each build of its own
+    channel/commit."""
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n",
+                                     suffix=".html", delete=False) as handle:
+        handle.write(page)
+        path = handle.name
+    try:
+        r2.put(tag="", key=key, file=path, key_is_full=True)
+    finally:
+        os.unlink(path)
+    url = r2.public_url_for(base_url, key)
+    print(f"✓ Page {url} ({len(page)} bytes)")
+    return url
+
+
+def existing_page(key: str) -> str | None:
+    """The page currently at `key`, or None when nothing is published there."""
+    try:
+        creds, base, bucket = r2.credentials()
+        return r2.get_object(creds, base, bucket, key, r2.amz_timestamp())
+    except r2.R2RequestError as err:
+        if err.status == 404:
+            return None
+        raise
+
+
+def write_channel_page(tag: str, assets_by_app: dict, base_url: str) -> str | None:
+    """Publish releases/<channel>/index.html for the tag's own channel."""
+    key = r2.channel_page_key_for(r2.channel_for_tag(tag))
+    if not supersedes(existing_page(key), tag):
+        print(f"::warning::{key} already describes a newer release; leaving it unchanged")
+        return None
+    return write_page(key, render_page(tag, assets_by_app, base_url), base_url)
 
 
 def r2_object_names_under(prefix: str) -> list[str]:
@@ -299,7 +478,8 @@ def main() -> int:
     parser.add_argument("--r2-base-url", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL"),
                         help="Public base URL of the R2 bucket (default: $CLOUDFLARE_R2_PUBLIC_URL)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Print the spliced body instead of editing the release")
+                        help="Print the spliced body instead of editing the release "
+                             "(writes nothing, including the channel page)")
     parser.add_argument("--pending-run-url", default=None,
                         help="Render a 'builds in progress' link to this workflow run "
                              "instead of the tables")
@@ -329,6 +509,9 @@ def main() -> int:
         block = render_commit_summary(names, args.r2_base_url, commit, receipts, failed_legs)
         with open(args.summary_out, "a", encoding="utf-8") as out:
             out.write(block)
+        write_page(r2.commit_page_key_for(commit),
+                   render_commit_page(commit, names, args.r2_base_url, receipts, failed_legs),
+                   args.r2_base_url)
         built = sum(1 for row in commit_expected_rows(names, receipts) if row["state"] == "built")
         print(f"✓ Commit summary appended to {args.summary_out} ({built}/{len(_COMMIT_EXPECTED)} binaries built)")
         return 0
@@ -355,10 +538,15 @@ def main() -> int:
             print("::error::--r2-base-url (or CLOUDFLARE_R2_PUBLIC_URL) is required to render the tables")
             return 1
         names = r2_object_names(args.tag)
-        block = render_tables(parse_assets(names), args.r2_base_url)
+        assets = parse_assets(names)
+        block = render_tables(assets, args.r2_base_url)
         if not block:
             print("::warning::no table-shaped assets for this tag in the bucket; leaving the body unchanged")
             return 0
+        # The channel page is independent of the release body (and of the
+        # marker), so it is published even if the body cannot be edited.
+        if not args.dry_run:
+            write_channel_page(args.tag, assets, args.r2_base_url)
     if MARKER not in body:
         print("::warning::release body has no HERMES_BUILDS_TABLE marker; leaving it unchanged")
         return 0

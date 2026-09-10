@@ -29,6 +29,7 @@ def fixture_repo(tmp_path):
     git(repo, 'push', '-q', 'origin', 'main')
     git(repo, 'remote', 'set-url', 'origin', 'https://github.com/fixture-owner/fixture-repo.git')
     for relative in ('scripts/release.py', 'scripts/releases/commit_build.py',
+                     'scripts/releases/r2.py', 'scripts/release-content-types.json',
                      'hermes_cli/__init__.py', 'hermes_cli/update_channel.py',
                      'hermes_cli/runtime_paths.py', 'hermes_constants.py'):
         dest = repo / relative
@@ -96,6 +97,9 @@ def test_commit_build_cli_dispatches_only_the_resolved_remote_commit(tmp_path):
         result, calls = invoke('--build-commit', revision)
         assert result.returncode == 0, result.stderr
         assert f'Commit: {tip}' in result.stdout and f'releases/commit/{tip}/' in result.stdout
+        # The commit build's downloads page is named before anything is
+        # dispatched, so the URL can be opened once the matrix finishes.
+        assert 'Page: http' in result.stdout and f'releases/commit/{tip}/index.html' in result.stdout
         assert not any(call[1:3] == ['workflow', 'run'] for call in calls)
     result, calls = invoke('--build-commit', tip, '--publish')
     assert result.returncode == 0, result.stderr

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -221,3 +223,52 @@ def test_summary_uses_exact_nested_keys_and_lists_both_universal_bundles():
     assert len(built) == len(names)
     assert any("Store" in line and "MSIXBUNDLE" in line for line in built)
     assert "Linux x64" in summary and "Linux ARM64" in summary
+
+
+def test_commit_page_matches_the_summary_rows():
+    """Two sinks, ONE row set: every link and every status in the step
+    summary appears on the page, and neither sink drops a missing binary."""
+    receipts = _receipts_all_built()
+    names = _all_built_names()
+    summary = rbt.render_commit_summary(names, BASE, COMMIT, receipts)
+    page = rbt.render_commit_page(COMMIT, names, BASE, receipts)
+    links = re.findall(r"\]\((https?://[^)]+)\)", summary)
+    assert len(links) == len(rbt._COMMIT_EXPECTED)
+    for url in links:
+        assert f'href="{url}"' in page
+    assert page.count("✅ Built") == summary.count("✅ Built") == len(rbt._COMMIT_EXPECTED)
+    assert page.count("❌ Not built") == summary.count("❌ Not built") == len(rbt._COMMIT_DISABLED)
+    assert rbt.recorded_build(page) == COMMIT
+
+
+def test_commit_page_lists_a_missing_binary_without_a_link():
+    receipts = _receipts_all_built()
+    receipts["darwin-arm64"] = None
+    names = _names("HermesBundled-0.28.0-win-x64.msix")
+    page = rbt.render_commit_page(COMMIT, names, BASE, receipts, failed_legs=["build-darwin"])
+    assert page.count("<tr>") == len(rbt._COMMIT_EXPECTED) + len(rbt._COMMIT_DISABLED) + 1
+    assert "failed: build-darwin" in page
+    # Only the one staged object was built, so it is the only anchor.
+    assert page.count("<a href=") == 1
+
+
+def test_commit_run_publishes_the_commit_page(tmp_path, monkeypatch, capsys):
+    """The real CLI path: commit mode writes the summary AND the page."""
+    summary = tmp_path / "summary.md"
+    uploads: list[tuple[str, str, bool]] = []
+    receipts = _receipts_all_built()
+    monkeypatch.setattr(rbt.r2, "list_objects", lambda prefix="": {"keys": _all_built_names()})
+    monkeypatch.setattr(rbt.handoff, "read_commit_receipt", lambda commit, name: receipts[name])
+    monkeypatch.setattr(rbt.r2, "put", lambda tag, key, file, key_is_full=False, immutable=False:
+                        uploads.append((key, Path(file).read_text(encoding="utf-8"), key_is_full)))
+    monkeypatch.setattr(sys, "argv", ["render-builds-table.py", "--summary-commit", COMMIT,
+                                      "--summary-out", str(summary), "--r2-base-url", BASE])
+    assert rbt.main() == 0
+    assert len(uploads) == 1
+    key, page, key_is_full = uploads[0]
+    assert key == f"releases/commit/{COMMIT}/index.html" and key_is_full
+    assert f"✓ Page {BASE}/releases/commit/{COMMIT}/index.html" in capsys.readouterr().out
+    written = summary.read_text(encoding="utf-8")
+    for url in re.findall(r"\]\((https?://[^)]+)\)", written):
+        assert f'href="{url}"' in page
+    assert written.count("✅ Built") == page.count("✅ Built") == len(rbt._COMMIT_EXPECTED)

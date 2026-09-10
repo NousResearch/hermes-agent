@@ -430,13 +430,40 @@ def commit_prefix_for(commit: str) -> str:
     return f"releases/commit/{commit}/"
 
 
+# Public download origin for object keys. CI supplies the authoritative
+# value as CLOUDFLARE_R2_PUBLIC_URL; the documented production origin is the
+# fallback so a local command can still name a page it is about to publish.
+DEFAULT_PUBLIC_URL = "https://hermes-assets.nousresearch.com"
+
+
+def public_base_url(explicit: str | None = None) -> str:
+    return (
+        explicit or os.environ.get("CLOUDFLARE_R2_PUBLIC_URL") or DEFAULT_PUBLIC_URL
+    ).rstrip("/")
+
+
+def public_url_for(base_url: str, key: str) -> str:
+    """Public download URL of an object key (segment-wise encoded)."""
+    return f"{base_url.rstrip('/')}/{quote(key, safe='/')}"
+
+
+def channel_page_key_for(channel: str) -> str:
+    """The mutable per-channel downloads page, replaced by each release."""
+    return f"releases/{channel}/index.html"
+
+
+def commit_page_key_for(commit: str) -> str:
+    """The per-commit-build downloads page (every expected binary, built or not)."""
+    return commit_prefix_for(commit) + "index.html"
+
+
 def feed_dir_for(platform: str, channel: str) -> str:
     return f"releases/{platform}/{channel}"
 
 
 def cache_control_for(key: str) -> str | None:
     """APT indexes are mutable; by-hash indexes and versioned packages are not."""
-    if key.endswith(".appinstaller") or key.startswith("releases/stable/") or (key.startswith("releases/darwin/") and key.endswith("-mac.yml")):
+    if key.endswith((".appinstaller", ".html")) or key.startswith("releases/stable/") or (key.startswith("releases/darwin/") and key.endswith("-mac.yml")):
         return "no-store"
     if not key.startswith("releases/termux/"):
         return None

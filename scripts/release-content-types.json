@@ -1,5 +1,6 @@
 {
   ".appinstaller": "application/appinstaller",
+  ".html": "text/html; charset=utf-8",
   ".msixbundle": "application/msixbundle",
   ".msix": "application/msix",
   ".deb": "application/vnd.debian.binary-package",

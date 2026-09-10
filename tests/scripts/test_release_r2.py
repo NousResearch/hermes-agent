@@ -34,11 +34,16 @@ from scripts.releases.r2 import (
     canonical_query,
     canonical_request,
     channel_for_tag,
+    channel_page_key_for,
+    commit_page_key_for,
+    commit_prefix_for,
     content_type_for,
     encode_key_path,
     feed_dir_for,
     feed_referenced_keys,
     parse_list_xml,
+    public_base_url,
+    public_url_for,
     publish_feed_uploads,
     referenced_feed_bundle_filenames,
     rfc3986_encode,
@@ -198,14 +203,41 @@ def test_staging_key_and_feed_dir_layout_keys():
     assert feed_dir_for("darwin", "canary") == "releases/darwin/canary"
 
 
+def test_download_page_keys_and_public_urls():
+    assert channel_page_key_for("stable") == "releases/stable/index.html"
+    assert channel_page_key_for("canary") == "releases/canary/index.html"
+    commit = "a" * 40
+    assert commit_page_key_for(commit) == f"releases/commit/{commit}/index.html"
+    assert commit_prefix_for(commit) == f"releases/commit/{commit}/"
+    assert public_url_for("https://cdn.example.com/", "releases/tag/v1/Hermes-1-x64.msix") == (
+        "https://cdn.example.com/releases/tag/v1/Hermes-1-x64.msix"
+    )
+    # Segment-wise encoding: spaces and non-ASCII survive a link.
+    assert public_url_for("https://cdn.example.com", "a b/\u00fc.msix") == (
+        "https://cdn.example.com/a%20b/%C3%BC.msix"
+    )
+
+
+def test_public_base_url_precedence(monkeypatch):
+    # Explicit value, then $CLOUDFLARE_R2_PUBLIC_URL, then the documented
+    # production origin — so a local command always names a real page.
+    monkeypatch.delenv("CLOUDFLARE_R2_PUBLIC_URL", raising=False)
+    assert public_base_url() == "https://hermes-assets.nousresearch.com"
+    monkeypatch.setenv("CLOUDFLARE_R2_PUBLIC_URL", "https://cdn.example.com")
+    assert public_base_url() == "https://cdn.example.com"
+    assert public_base_url("https://explicit.example.com/") == "https://explicit.example.com"
+
+
 def test_content_type_for_maps_msix_and_appinstaller():
     assert content_type_for("HermesBundled-0.28.0-win-x64.msix") == "application/msix"
     assert content_type_for("HermesBundled-0.28.0-win.msixbundle") == "application/msixbundle"
     assert content_type_for("stable.appinstaller") == "application/appinstaller"
+    assert content_type_for("releases/stable/index.html") == "text/html; charset=utf-8"
     assert content_type_for("HermesBundled-0.28.0-mac-x64.dmg") is None
     assert content_type_for("latest-mac.yml") is None
     # Case-insensitive on the suffix.
     assert content_type_for("X.APPINSTALLER") == "application/appinstaller"
+    assert content_type_for("INDEX.HTML") == "text/html; charset=utf-8"
 
 
 def test_apt_mutable_metadata_revalidates_immutable_bytes_cache():
@@ -224,6 +256,10 @@ def test_apt_mutable_metadata_revalidates_immutable_bytes_cache():
         "public, max-age=31536000, immutable"
     )
     assert cache_control_for("releases/win32/stable/stable.appinstaller") == "no-store"
+    # Downloads pages are mutable pointers, like feed manifests.
+    assert cache_control_for("releases/stable/index.html") == "no-store"
+    assert cache_control_for("releases/canary/index.html") == "no-store"
+    assert cache_control_for(f"releases/commit/{'a' * 40}/index.html") == "no-store"
 
 
 def test_canonical_request_reads_mixed_case_header_values():
@@ -549,6 +585,28 @@ def test_put_streams_a_file_and_verifies_size(r2_server):
 
     expected_hash = hashlib.sha256(payload).hexdigest()
     assert puts[0][2]["x-amz-content-sha256"] == expected_hash
+
+
+def test_put_page_object_carries_html_type_and_no_store(r2_server):
+    """A downloads page must RENDER in a browser: the object it is stored
+    under has to arrive as HTML, and it is a mutable pointer, so it must not
+    be cached. Without the registered content type R2 serves it as an opaque
+    octet-stream download."""
+    import tempfile
+
+    page = "<!DOCTYPE html>\n<html lang=\"en\"><body><h1>Hermes stable builds</h1></body></html>\n"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", delete=False) as handle:
+        handle.write(page)
+        path = handle.name
+    try:
+        r2.put(tag="", key=r2.channel_page_key_for("stable"), file=path, key_is_full=True)
+    finally:
+        os.unlink(path)
+    stored, _etag = r2_server.store["releases/stable/index.html"]
+    assert stored == page.encode("utf-8")
+    headers = [r[2] for r in r2_server.requests if r[0] == "PUT"][0]
+    assert headers["Content-Type"] == "text/html; charset=utf-8"
+    assert headers["Cache-Control"] == "no-store"
 
 
 def test_put_immutable_conflict_verifies_remote_bytes(r2_server):

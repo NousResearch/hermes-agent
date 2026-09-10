@@ -12,6 +12,10 @@ and stays out of the tables), not the NSIS .exe.
 """
 
 import importlib.util
+import json
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "render-builds-table.py"
@@ -141,3 +145,120 @@ class TestPendingPlaceholder:
         assert "https://x/runs/1" not in twice
         assert twice.count("https://x/runs/2") == 1
         assert twice.count(rbt.END_MARKER) == 1
+
+
+class TestBucketPage:
+    """The page is the same row set as the release-body table.
+
+    Every download link in the markdown table exists in the page, and the
+    artifacts the table deliberately hides (zip/msixbundle/blockmap) stay
+    out of the page too — a page that outlives the release body must not
+    advertise a delta target as a download.
+    """
+
+    def test_page_carries_exactly_the_table_rows(self):
+        block = rbt.render_tables(rbt.parse_assets(ASSETS), BASE_URL)
+        page = rbt.render_page("v0.28.0", rbt.parse_assets(ASSETS), BASE_URL)
+        links = re.findall(r"\]\((https?://[^)]+)\)", block)
+        assert links  # the table is non-empty, so the comparison means something
+        for url in links:
+            assert f'href="{url}"' in page
+        # One row per table row, plus one header row per section.
+        assert page.count("<tr>") == len(links) + page.count("<table>")
+        assert ".zip" not in page and ".blockmap" not in page and ".msixbundle" not in page
+        # A leg that never uploaded has no row in either sink, while a leg
+        # that did (linux-x64) is listed.
+        assert BASE_URL + "/releases/tag/v0.28.0/HermesBundled-0.28.0-linux-x64.AppImage" in page
+        assert "linux-arm64" not in page
+
+    def test_page_names_the_build_it_describes(self):
+        page = rbt.render_page("v0.28.0", rbt.parse_assets(ASSETS), BASE_URL)
+        assert rbt.recorded_build(page) == "v0.28.0"
+        canary = rbt.render_page("v0.28.0-canary.20260818101010", rbt.parse_assets(ASSETS), BASE_URL)
+        assert rbt.recorded_build(canary) == "v0.28.0-canary.20260818101010"
+        assert "canary" in canary
+
+    def test_older_tag_never_regresses_the_channel_page(self):
+        """A re-run of an old tag must not overwrite the page a newer release
+        published; the recorded tag is compared with the feed's own authority."""
+        current = rbt.render_page("v0.29.0", rbt.parse_assets(ASSETS), BASE_URL)
+        assert not rbt.supersedes(current, "v0.28.0")
+        assert not rbt.supersedes(current, "v0.28.0-canary.20260818101010")
+        assert rbt.supersedes(current, "v0.29.0")   # same tag re-run rewrites
+        assert rbt.supersedes(current, "v0.30.0")
+        newer_canary = rbt.render_page("v0.29.0-canary.20260901090000", rbt.parse_assets(ASSETS), BASE_URL)
+        assert not rbt.supersedes(newer_canary, "v0.29.0-canary.20260801090000")
+        assert rbt.supersedes(newer_canary, "v0.29.0-canary.20260901090001")
+        # Nothing published yet, or an unreadable record: the new page wins.
+        assert rbt.supersedes(None, "v0.28.0")
+        assert rbt.supersedes("<html>garbage</html>", "v0.28.0")
+
+    def test_channel_page_key_follows_the_tag(self):
+        assert rbt.r2.channel_page_key_for(rbt.r2.channel_for_tag("v0.28.0")) == "releases/stable/index.html"
+        assert rbt.r2.channel_page_key_for(
+            rbt.r2.channel_for_tag("v0.28.0-canary.20260818101010")) == "releases/canary/index.html"
+
+
+class TestTagRunPublishesThePage:
+    """The real CLI path: the page is uploaded for the tag's own channel."""
+
+    TAG = "v0.28.0-canary.20260818101010"
+    KEYS = [
+        f"releases/tag/{TAG}/HermesBundled-0.28.0-canary.20260818101010-win-x64.msix",
+        f"releases/tag/{TAG}/HermesBundled-0.28.0-canary.20260818101010-mac-arm64.dmg",
+        f"releases/tag/{TAG}/HermesBundled-0.28.0-canary.20260818101010-win.msixbundle",
+        f"releases/tag/{TAG}/HermesLight-0.28.0-canary.20260818101010-win-x64.msix",
+        "releases/tag/v0.27.0/HermesBundled-0.27.0-win-x64.msix",  # neighbor release
+    ]
+
+    @staticmethod
+    def _gh(argv, **kwargs):
+        if argv[:3] == ["gh", "release", "view"]:
+            body = f"# Notes\n\n{rbt.MARKER}\n\n## Changes\n- x\n"
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"body": body}), stderr="")
+        if argv[:3] == ["gh", "release", "edit"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        raise AssertionError(argv)
+
+    def test_page_upload_key_and_bytes(self, monkeypatch, capsys, tmp_path):
+        uploads: list[tuple[str, str, bool]] = []
+        monkeypatch.setattr(rbt.r2, "list_objects", lambda prefix="": {"keys": self.KEYS})
+        monkeypatch.setattr(rbt, "existing_page", lambda key: None)
+        monkeypatch.setattr(rbt.r2, "put", lambda tag, key, file, key_is_full=False, immutable=False:
+                            uploads.append((key, Path(file).read_text(encoding="utf-8"), key_is_full)))
+        monkeypatch.setattr(rbt.subprocess, "run", self._gh)
+        monkeypatch.setattr(sys, "argv", [
+            "render-builds-table.py", "--tag", self.TAG, "--repo", "o/r", "--r2-base-url", BASE_URL,
+        ])
+        assert rbt.main() == 0
+        assert len(uploads) == 1
+        key, page, key_is_full = uploads[0]
+        # Canary tag → the canary channel page, as a full key (not a tag name).
+        assert key == "releases/canary/index.html" and key_is_full
+        assert rbt.recorded_build(page) == self.TAG
+        for name in ("HermesBundled-0.28.0-canary.20260818101010-win-x64.msix",
+                     "HermesBundled-0.28.0-canary.20260818101010-mac-arm64.dmg",
+                     "HermesLight-0.28.0-canary.20260818101010-win-x64.msix"):
+            assert f"{BASE_URL}/releases/tag/{self.TAG}/{name}" in page
+        # The neighbor release and the hidden artifact shapes stay out.
+        assert "v0.27.0" not in page and ".msixbundle" not in page
+        assert f"✓ Page {BASE_URL}/releases/canary/index.html" in capsys.readouterr().out
+
+    def test_dry_run_and_stale_tags_write_nothing(self, monkeypatch, tmp_path):
+        uploads: list[str] = []
+        monkeypatch.setattr(rbt.r2, "list_objects", lambda prefix="": {"keys": self.KEYS})
+        monkeypatch.setattr(rbt.r2, "put", lambda **kwargs: uploads.append(kwargs["key"]))
+        monkeypatch.setattr(rbt.subprocess, "run", self._gh)
+        stale = rbt.render_page("v0.29.0", rbt.parse_assets(ASSETS), BASE_URL)
+        monkeypatch.setattr(rbt, "existing_page", lambda key: stale)
+        monkeypatch.setattr(sys, "argv", [
+            "render-builds-table.py", "--tag", self.TAG, "--repo", "o/r", "--r2-base-url", BASE_URL,
+        ])
+        assert rbt.main() == 0                      # stale tag: page untouched
+        monkeypatch.setattr(rbt, "existing_page", lambda key: None)
+        monkeypatch.setattr(sys, "argv", [
+            "render-builds-table.py", "--tag", self.TAG, "--repo", "o/r",
+            "--r2-base-url", BASE_URL, "--dry-run",
+        ])
+        assert rbt.main() == 0                      # dry run: nothing published
+        assert uploads == []

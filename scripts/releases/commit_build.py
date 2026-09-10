@@ -84,6 +84,7 @@ def dispatch_command(commit: str, repository: str, branch: str) -> list[str]:
 
 def cmd_build_commit(args) -> None:
     from scripts import release
+    from scripts.releases import r2
 
     try:
         remote = release.resolve_push_remote(args.remote)
@@ -95,7 +96,8 @@ def cmd_build_commit(args) -> None:
         if not branch:
             raise ValueError("could not resolve the repository default branch")
         command = dispatch_command(commit, repository, branch)
-        print(f"Commit: {commit}\nR2: releases/commit/{commit}/\nWorkflow: {repository}@{branch}")
+        page = r2.public_url_for(r2.public_base_url(), r2.commit_page_key_for(commit))
+        print(f"Commit: {commit}\nR2: {r2.commit_prefix_for(commit)}\nPage: {page}\nWorkflow: {repository}@{branch}")
         print(shlex.join(command))
         if not args.publish:
             print("Dry run. Add --publish to dispatch. No tag, release or channel is changed.")

@@ -9554,7 +9554,14 @@ function isHermesProcess(pid) {
 //
 // Decision logic lives in profile-migration.ts (pure + unit-tested). This wrapper
 // just wires Electron/Node fs into a MigrationDeps bag and delegates.
+let activeProfileMigrationAttempted = false
+
 function migrateActiveProfileIfMissing() {
+  if (activeProfileMigrationAttempted) {
+    return
+  }
+
+  activeProfileMigrationAttempted = true
   migrateActiveProfileIfMissingPure(DESKTOP_PROFILE_CONFIG_PATH, {
     legacyActivePath: path.join(HERMES_HOME, 'active_profile'),
     hermesHome: HERMES_HOME,
@@ -11306,7 +11313,7 @@ async function ensureBackend(profile) {
   const route = resolveProfileBackendRoute(key, profileRouteOptions(key))
 
   if (route.backend === 'primary') {
-    const connection = await startHermes()
+    const connection = await startHermes(key)
     setWslBridgeProfileState(key, connection.mode !== 'remote')
 
     // A shared backend still owes the caller its profile scope, so renderer-side
@@ -12277,7 +12284,7 @@ async function prepareProfileRenameRequest(request) {
   })
 }
 
-async function startHermes() {
+async function startHermes(requestedProfile?: string) {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -12336,7 +12343,7 @@ async function startHermes() {
   migrateActiveProfileIfMissing()
 
   const connectionAttempt = backendConnectionState.startAttempt()
-  const primaryProfile = primaryProfileKey()
+  const primaryProfile = requestedProfile || primaryProfileKey()
 
   // Legacy path callers without an explicit profile belong to the primary
   // window backend. Profile-scoped callers still pass their key directly.
@@ -12401,7 +12408,7 @@ async function startHermes() {
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
     // unset preference keeps the legacy launch so existing installs are
     // unaffected.
-    const activeProfile = readActiveDesktopProfile()
+    const activeProfile = requestedProfile || readActiveDesktopProfile()
 
     if (activeProfile) {
       backendArgs.unshift('--profile', activeProfile)

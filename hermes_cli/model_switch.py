@@ -18,7 +18,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -1309,6 +1309,17 @@ def _creds_for_current_provider(st: _Switch) -> None:
             st.resolve_runtime(requested=st.current_provider)
         except Exception:
             pass
+        # Bare ``custom``/``local`` sessions whose base_url is session-only (not a trusted config
+        # ``model.base_url``) re-resolve to the OpenRouter DEFAULT — a host the user never picked
+        # (#74143). Keep the session endpoint + key then; a config-backed custom URL still wins so
+        # key/endpoint rotation is not pinned to a stale session.
+        if (
+            st.current_provider in {"custom", "local"} and st.current_base_url
+            and (not st.base_url or base_url_host_matches(st.base_url, "openrouter.ai"))
+            and not base_url_host_matches(st.current_base_url, "openrouter.ai")
+        ):
+            st.base_url, st.api_key = st.current_base_url, st.current_api_key
+            st.api_mode = determine_api_mode(st.current_provider, st.base_url)
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:

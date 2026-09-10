@@ -5,6 +5,7 @@ import logging
 import os
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple
+from agent.model_metadata import is_local_endpoint
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     build_cron_model_impact,
@@ -425,7 +426,12 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
             canonical = normalize_provider(cur_provider)
             prov_in = cur_provider
         else:
-            canonical = prov_in = "openrouter"
+            from hermes_cli.models_detect import provider_has_credentials
+
+            # Only guess OpenRouter when the user actually holds a key for it; otherwise keep the
+            # pair as sent rather than persisting a provider they never selected.
+            if provider_has_credentials("openrouter"):
+                canonical = prov_in = "openrouter"
 
     if canonical in _KNOWN_PROVIDER_NAMES and not canonical.startswith("custom"):
         try:
@@ -616,6 +622,10 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
             continue
         slot_provider = str(slot_cfg.get("provider", "") or "").strip()
         if slot_provider and slot_provider.lower() not in {"auto", ""} and slot_provider.lower() != new_provider:
+            # A pin on a private/LAN endpoint (per-task base_url, e.g. a home Ollama box) never bills
+            # a provider, so a main switch does not orphan it.
+            if is_local_endpoint(str(slot_cfg.get("base_url", "") or "")):
+                continue
             stale_aux.append({
                 "task": slot, "provider": slot_provider, "model": str(slot_cfg.get("model", "") or ""),
             })
@@ -765,11 +775,15 @@ def _infer_provider_on_model_change(model_val: str, prev_provider: str) -> tuple
 
     if "/" in name:
         try:
+            from hermes_cli.models_detect import provider_has_credentials
+
             cur_is_aggregator = normalize_provider(prev_provider) in _AGGREGATOR_PROVIDERS
+            # A vendor slug on a native provider is a guess at an aggregator; never guess one the
+            # user has no key for — that silently writes a metered provider into config.yaml.
+            if not cur_is_aggregator and provider_has_credentials("openrouter"):
+                return "openrouter", name
         except Exception:
-            cur_is_aggregator = False
-        if not cur_is_aggregator:
-            return "openrouter", name
+            pass
     return "", name
 
 

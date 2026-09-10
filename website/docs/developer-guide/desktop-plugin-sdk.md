@@ -58,14 +58,16 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 | **Unified package** | `$HERMES_HOME/plugins/<id>/desktop/plugin.js` | plugins that also ship agent-side code | none — same disk pipeline |
 | **Bundled** | `apps/desktop/src/plugins/<id>/plugin.tsx` | in-tree, shipped with the app | the app's own Vite build |
 
-All three take the same `HermesPlugin` contract, appear in **Settings → Plugins**,
+All three take the same `HermesPlugin` contract, appear in **Capabilities → Plugins**,
 and enable/disable live. A unified package is just the disk door scanning inside
 your agent plugin's folder — see
 [One package, both SDKs](#one-package-both-sdks). Everything on this page is
 written against the disk door (what you and the agent write);
 [Bundled plugins](#bundled-plugins) notes the two
-differences. No desktop plugins ship in the core tree today — reference demos
-live in the companion
+differences. Radio ships as a bundled SDK-only plugin, off by default. Enable it
+in **Capabilities → Plugins** for free live streams, station search, and status-bar
+playback controls with an audio-reactive waveform. It uses the existing plugin
+toggle and contributes nothing while disabled. Reference demos live in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 repo.
 
@@ -148,7 +150,7 @@ interface HermesPlugin {
   /** Human name for Settings / about UI. Defaults to `id`. */
   name?: string
   /** Registers on load when the user hasn't chosen (default true). Set false
-   *  for opt-in plugins: they inventory in Settings ▸ Plugins, off until the
+   *  for opt-in plugins: they inventory in Capabilities ▸ Plugins, off until the
    *  user flips the switch. */
   defaultEnabled?: boolean
   /** Called once at load; wire contributions through `ctx`. */
@@ -248,7 +250,7 @@ data: {
 the pane doesn't claim half the zone.
 
 Closing the only pane contributed by a plugin disables that plugin, which can
-be re-enabled from **Settings → Plugins**. When a plugin contributes multiple
+be re-enabled from **Capabilities → Plugins**. When a plugin contributes multiple
 panes, closing one dismisses only that pane and leaves the plugin's other panes,
 commands, and middleware active. **Reset layout** restores dismissed contributed
 panes.
@@ -714,7 +716,7 @@ imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
 Installing, sharing, or removing the feature is one folder.
 
 Two enable switches still apply, on purpose, and both default to **off**: the
-desktop half ships opt-in — it inventories in **Settings → Plugins** but stays
+desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays
 disabled until the user toggles it — matching the Python half's
 `plugins.enabled` gate in `config.yaml` (the security boundary below). Dropping
 a package into `~/.hermes/plugins` is inert on every surface until the user
@@ -778,7 +780,7 @@ hermes-agent codebase directly (`hermes_state`, `hermes_cli.config`, …). See
 for the full backend reference — the mount is identical.
 
 :::caution The Python backend is gated separately
-Enabling a plugin in the desktop **Settings → Plugins** panel is a renderer-side
+Enabling a plugin in the desktop **Capabilities → Plugins** panel is a renderer-side
 choice; it does **not** import Python. A user plugin's `plugin_api.py` is
 imported only when the plugin is in the `plugins.enabled` allow-list in
 `config.yaml` (and not in `plugins.disabled`). Project plugins (`./.hermes/`)
@@ -815,7 +817,7 @@ For gateway-wide data (not your own namespace), use `host.request` (JSON-RPC) an
 
 ## Settings, enable state, and storage
 
-Every plugin — enabled or not — inventories in **Settings → Plugins**, where the
+Every plugin — enabled or not — inventories in **Capabilities → Plugins**, where the
 user toggles it live (no app restart), reveals its folder, or rescans. The user's
 choice is remembered:
 

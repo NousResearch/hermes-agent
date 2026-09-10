@@ -934,6 +934,80 @@ def _cmd_stats(db, args):
         print(f"Database size: {_size_mb(db.db_path):.1f} MB")
 
 
+def _cmd_retitle(db, args):
+    """Manual retitle for any historical session.
+
+    Mirrors the /retitle slash handler but works against an arbitrary session
+    id (not just the current one). Reuses the shared ``retitle_session``
+    worker so every trigger surface (auto / slash / CLI) writes through the
+    same code path.
+    """
+    from agent.title_generator import _retitle_config, retitle_session
+
+    resolved_session_id = db.resolve_session_id(args.session_id)
+    if not resolved_session_id:
+        print(f"Session '{args.session_id}' not found.")
+        return 1
+
+    cfg = _retitle_config()
+    default_turns = int(cfg.get("turns_window") or 10)
+    turns = int(getattr(args, "turns", None) or default_turns)
+    force = bool(getattr(args, "force", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    # Pull the last N user+assistant messages (skip tool rows). Fetch 2N to
+    # account for interleaved tool messages the worker filters out.
+    history = db.get_messages(resolved_session_id, latest=True, limit=turns * 2)
+    if not history:
+        print(f"Session '{resolved_session_id}' has no history to retitle from.")
+        return 1
+
+    current_title = db.get_session_title(resolved_session_id) or "(untitled)"
+    current_source = db.get_session_title_source(resolved_session_id) or "unknown"
+
+    if current_source == "user" and not force:
+        print(
+            f"Session '{resolved_session_id}' has a manual title "
+            f"({current_title!r}). Pass --force to overwrite."
+        )
+        return 1
+
+    if dry_run:
+        # Dry-run: show what would happen without calling the LLM. The actual
+        # title candidate requires the LLM call, so we surface the guardrails.
+        print(f"Would retitle session '{resolved_session_id}':")
+        print(f"  Current title:  {current_title!r} (source: {current_source})")
+        print(f"  Turns window:   {turns}")
+        print(f"  Force:          {force}")
+        print(f"  Platform names: NOT touched (DB-only)")
+        print("Pass without --dry-run to actually regenerate.")
+        return 0
+
+    try:
+        new_title = retitle_session(
+            db,
+            resolved_session_id,
+            history,
+            turns_window=turns,
+            force=force,
+            touch_platform_names=False,
+        )
+    except Exception as e:
+        print(f"Error: retitle failed — {e}")
+        return 1
+
+    if new_title:
+        print(f"Session '{resolved_session_id}' retitled:")
+        print(f"  {current_title!r}")
+        print(f"  → {new_title!r}")
+        return 0
+    print(
+        f"Session '{resolved_session_id}': no title change "
+        "(model returned nothing usable, or a higher-authority title held the row)."
+    )
+    return 1
+
+
 # -- dispatch -----------------------------------------------------------------
 
 _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
@@ -941,6 +1015,7 @@ _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
+    "retitle": _cmd_retitle,
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "stats": _cmd_stats,

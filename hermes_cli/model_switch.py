@@ -25,6 +25,15 @@ from hermes_cli.model_switch_providers import list_authenticated_providers
 
 logger = logging.getLogger(__name__)
 
+# Invisible zero-width markers that are *not* whitespace by Python's definition
+# (so ``str.split()`` keeps them glued to a token) but are invisible in a
+# ``/model`` argument and corrupt the resulting model ID. Built once at import.
+#   \u200b  ZERO WIDTH SPACE
+#   \u200c  ZERO WIDTH NON-JOINER
+#   \u200d  ZERO WIDTH JOINER
+#   \ufeff  BOM / ZERO WIDTH NO-BREAK SPACE
+_MODEL_ARG_INVISIBLES = str.maketrans({"\u200b": "", "\u200c": "", "\u200d": "", "\ufeff": ""})
+
 
 def _declared_model_ids(value: Any) -> list[str]:
     """Configured model IDs from ``{"id": {...}}``, ``["a", "b"]``, ``[{"id"|"name": ...}]`` or ``"a"``."""
@@ -467,6 +476,13 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
     # Telegram/iOS auto-convert ``--`` to an em/en dash: normalize a single Unicode dash before
     # a flag keyword.
     raw_args = re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|once)', r'--\1', raw_args)
+
+    # Strip invisible zero-width markers (ZWSP/ZWNJ/ZWJ/BOM). These are not
+    # whitespace to Python, so ``.split()`` glues them to a token and the value
+    # reaches validation as a "model name" with an embedded invisible char —
+    # a common mobile-autocorrect / IME / rich-text copy-paste corruption.
+    # A model ID never legitimately contains these, so dropping them is safe.
+    raw_args = raw_args.translate(_MODEL_ARG_INVISIBLES)
 
     # Hand-rolled: model IDs may contain colons/slashes and the historical parser did not
     # require shell quoting.

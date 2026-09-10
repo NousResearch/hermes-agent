@@ -441,14 +441,45 @@ def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, An
     return status
 
 
+def _runs_input_messages(
+    raw_input: Any, *, _api_server, _openai_error
+) -> tuple[list[dict[str, Any]], web.Response | None]:
+    """``(messages, error)`` for a ``/v1/runs`` ``input``: a string, or an array of strings and
+    ``{role, content}`` objects, with each content normalized like ``chat_completions`` does, so
+    multimodal blocks (images) survive instead of being stringified. On success the last message
+    (the turn's user message) has a visible payload."""
+    if raw_input is None:
+        return [], _json_error(_openai_error, "Missing 'input' field", status=400)
+    if not isinstance(raw_input, (str, list)):
+        return [], _json_error(_openai_error, "'input' must be a string or array", status=400)
+    messages: list[dict[str, Any]] = []
+    for idx, item in enumerate([raw_input] if isinstance(raw_input, str) else raw_input):
+        if isinstance(item, str):
+            messages.append({"role": "user", "content": item})
+        elif isinstance(item, dict):
+            try:
+                content = _api_server._normalize_multimodal_content(item.get("content", ""))
+            except ValueError as exc:
+                return [], _api_server._multimodal_validation_error(exc, param=f"input[{idx}].content")
+            messages.append({"role": str(item.get("role", "user")), "content": content})
+    if not messages or not _api_server._content_has_visible_payload(messages[-1]["content"]):
+        return [], _json_error(_openai_error, "No user message found in input", status=400)
+    return messages, None
+
+
 def _resolve_conversation_history(
-    self, body: dict, raw_input: Any, *, _openai_error
-) -> tuple[list[dict[str, str]], Any, Any, web.Response | None]:
+    self, body: dict, input_messages: list[dict[str, Any]], *, _api_server, _openai_error
+) -> tuple[list[dict[str, Any]], Any, Any, web.Response | None]:
     """Return ``(history, instructions, stored_session_id, error)``; precedence:
-    ``conversation_history`` > ``previous_response_id`` chain > all-but-last ``input`` messages."""
+    ``conversation_history`` > ``previous_response_id`` chain > all-but-last ``input`` messages.
+
+    ``input_messages`` is the caller's already role/content-normalized ``input`` (see
+    ``_handle_runs``), so multimodal content blocks (images) survive into history instead
+    of being flattened to text or stringified.
+    """
     instructions = body.get("instructions")
     previous_response_id = body.get("previous_response_id")
-    conversation_history: list[dict[str, str]] = []
+    conversation_history: list[dict[str, Any]] = []
     raw_history = body.get("conversation_history")
     if raw_history:
         if not isinstance(raw_history, list):
@@ -459,7 +490,12 @@ def _resolve_conversation_history(
                 return [], instructions, None, _json_error(
                     _openai_error, f"conversation_history[{i}] must have 'role' and 'content' fields",
                     status=400)
-            conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+            try:
+                entry_content = _api_server._normalize_multimodal_content(entry["content"])
+            except ValueError as exc:
+                return [], instructions, None, _api_server._multimodal_validation_error(
+                    exc, param=f"conversation_history[{i}].content")
+            conversation_history.append({"role": str(entry["role"]), "content": entry_content})
         if previous_response_id:
             logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
     stored_session_id = None
@@ -470,25 +506,19 @@ def _resolve_conversation_history(
             stored_session_id = stored.get("session_id")
             if instructions is None:
                 instructions = stored.get("instructions")
-    if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
-        for msg in raw_input[:-1]:
-            if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                content = msg["content"]
-                if isinstance(content, list):  # flatten multi-part content blocks to text
-                    content = " ".join(p.get("text", "") for p in content
-                                       if isinstance(p, dict) and p.get("type") == "text")
-                conversation_history.append({"role": msg["role"], "content": str(content)})
+    if not conversation_history and len(input_messages) > 1:
+        conversation_history.extend(input_messages[:-1])
     return conversation_history, instructions, stored_session_id, None
 
 
-async def _resolve_chained_history(self, body: dict, raw_input: Any, *, _openai_error):
+async def _resolve_chained_history(self, body: dict, input_messages: list[dict[str, Any]], *, _api_server, _openai_error):
     """``_resolve_conversation_history`` with the chain's live session: a deleted chain moves to
     its next generation (an explicit body ``session_id`` still wins in the caller), and a store
     that cannot answer is the retryable store verdict (``continued_session``). The last item is the
     stored session the chain moved past (``walked_from``), else None."""
     from gateway.platforms.api_server_authority_runs import continued_session
     history, instructions, chain_root, error = _resolve_conversation_history(
-        self, body, raw_input, _openai_error=_openai_error)
+        self, body, input_messages, _api_server=_api_server, _openai_error=_openai_error)
     stored_session_id = chain_root
     if error is None:
         stored_session_id, error = await continued_session(self, chain_root)
@@ -667,19 +697,6 @@ def _run_idempotency_identity(self, request, body, gateway_session_key, idempote
     ).encode()).hexdigest()
 
 
-def _run_user_message(raw_input, _openai_error) -> tuple:
-    """POST /v1/runs ``input`` -> ``(user_message, error_response_or_None)``."""
-    if not raw_input:
-        return None, _json_error(_openai_error, "Missing 'input' field", status=400)
-    if isinstance(raw_input, str):
-        user_message = raw_input
-    else:
-        user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
-    if not user_message:
-        return None, _json_error(_openai_error, "No user message found in input", status=400)
-    return user_message, None
-
-
 async def _admit_run_to_authority(
     self, launch, run_id, session_history_delivery, _declared_selected,
     idempotency_scope, idempotency_key, _openai_error,
@@ -742,16 +759,17 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             code="invalid_idempotency_key", status=400)
     idempotency_scope, idempotency_fingerprint = _run_idempotency_identity(
         self, request, body, gateway_session_key, idempotency_key)
-    raw_input = body.get("input")
-    user_message, input_err = _run_user_message(raw_input, _openai_error)
+    input_messages, input_err = _runs_input_messages(
+        body.get("input"), _api_server=_api_server, _openai_error=_openai_error)
     if input_err is not None:
         return input_err
+    user_message: Any = input_messages[-1]["content"]
     try:
         turn_author = _api_server._request_turn_author(body)
     except ValueError as exc:
         return _json_error(_openai_error, str(exc), code="invalid_author", status=400)
     conversation_history, instructions, stored_session_id, history_err, walked_from = await _resolve_chained_history(
-        self, body, raw_input, _openai_error=_openai_error)
+        self, body, input_messages, _api_server=_api_server, _openai_error=_openai_error)
     if history_err is not None:
         return history_err
     previous_response_id = body.get("previous_response_id")

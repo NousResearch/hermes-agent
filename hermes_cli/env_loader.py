@@ -237,21 +237,22 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
-def _sanitize_env_file_if_needed(path: Path) -> None:
+def _sanitize_env_file_if_needed(path: Path) -> bool:
     """Pre-sanitize a .env file before python-dotenv reads it. Sniffs a leading BOM *before* any text
     decode: UTF-16 (Notepad "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched) so
-    we never fall through to the errors=replace corruption path."""
+    we never fall through to the errors=replace corruption path. Returns ``False`` only when the file is
+    known to be unsafe for python-dotenv; other best-effort failures retain historical load behavior."""
     if not path.exists():
-        return
+        return True
     try:
         from hermes_cli.config import _sanitize_env_lines
     except ImportError:
-        return  # early bootstrap — config module not available yet
+        return True  # early bootstrap — config module not available yet
 
     try:
         raw = path.read_bytes()
     except Exception:
-        return
+        return True
 
     # ORDER MATTERS: BOM_UTF32_LE (FF FE 00 00) startswith BOM_UTF16_LE (FF FE); UTF-16 first would mangle it.
     force_utf8_rewrite = False
@@ -261,9 +262,9 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         path_key = str(path.resolve())
         if path_key not in _WARNED_UTF32_PATHS:
             _WARNED_UTF32_PATHS.add(path_key)
-            logger.warning("Skipping .env sanitize for %s: UTF-32 BOM detected; "
+            logger.warning("Skipping .env load for %s: UTF-32 BOM detected; "
                            "leaving file untouched to avoid corruption", path)
-        return
+        return False
     if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
         # "utf-16" uses the BOM for endianness and strips it; newline=None matches open()'s universal
         # newlines (not splitlines()'s extra boundaries like U+2028) so sanitize sees the same lines.
@@ -271,7 +272,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
             with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-16", newline=None) as f:
                 original = f.readlines()
         except UnicodeDecodeError:
-            return
+            return True
         force_utf8_rewrite = True  # always rewrite UTF-16 as UTF-8 so the dotenv load sees a canonical file
     else:
         # utf-8-sig strips a UTF-8 BOM; errors=replace so embedded NULs can be stripped below.
@@ -279,11 +280,11 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
             with open(path, encoding="utf-8-sig", errors="replace") as f:
                 original = f.readlines()
         except Exception:
-            return
+            return True
         # errors=replace turns undecodable leading bytes into U+FFFD; persisting would glue them onto
         # the first key name permanently — leave the file untouched instead.
         if original and original[0].startswith("\ufffd"):
-            return
+            return True
 
     try:
         # Strip NULs (os.environ raises ValueError on them); also repairs BOM-less UTF-16 (NUL-padded ASCII).
@@ -306,6 +307,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
                 raise
     except Exception:
         pass  # best-effort — don't block gateway startup
+    return True
 
 
 def load_hermes_dotenv(
@@ -341,12 +343,17 @@ def load_hermes_dotenv(
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
-    if user_env.exists():  # normalize formatting / strip NULs before parsing
-        _sanitize_env_file_if_needed(user_env)
-    if project_env_path and project_env_path.exists():
-        _sanitize_env_file_if_needed(project_env_path)
+    # Normalize safe formatting and remove invalid NUL bytes before parsing.
+    user_env_loadable = (
+        user_env.exists() and _sanitize_env_file_if_needed(user_env)
+    )
+    project_env_loadable = bool(
+        project_env_path
+        and project_env_path.exists()
+        and _sanitize_env_file_if_needed(project_env_path)
+    )
 
-    if user_env.exists():
+    if user_env_loadable:
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
@@ -358,7 +365,7 @@ def load_hermes_dotenv(
     if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         _load_dotenv_with_fallback(op_env, override=False)
 
-    if project_env_path and project_env_path.exists():
+    if project_env_loadable and project_env_path is not None:
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
@@ -421,8 +428,8 @@ def _apply_managed_env() -> None:
     managed_env = managed_dir / ".env"
     if not managed_env.exists():
         return
-    _sanitize_env_file_if_needed(managed_env)
-    _load_dotenv_with_fallback(managed_env, override=True)
+    if _sanitize_env_file_if_needed(managed_env):
+        _load_dotenv_with_fallback(managed_env, override=True)
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:

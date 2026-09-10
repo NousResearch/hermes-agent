@@ -36,6 +36,21 @@ Don't try to hand-hold every step. Say "find and fix the failing test" rather th
 
 Before writing a long prompt explaining how to do something, check if there's already a skill for it. Type `/skills` to browse available skills, or just invoke one directly like `/axolotl` or `/github-pr-workflow`.
 
+### Give /goal a Finish Line, Not Just a Task
+
+The [goal judge](/user-guide/features/goals) can only check what you told it to want — a vague goal gets vague judging. End every `/goal` with an explicit definition of done, naming things the judge can verify from the agent's output:
+
+```text
+/goal organize the files in ~/Downloads/messy into subfolders by type,
+then write a report.md summarizing what moved where.
+done means zero loose files at the root except report.md,
+and report.md exists with the summary.
+```
+
+Good done-criteria are checkable: a file exists, a command exits 0, output shows N items. "done means the tests pass" beats "make it work". For mechanically checkable goals, add a [quality gate](/user-guide/features/goals#quality-gates) so done is not a judgment call at all: `/goal gate add ./run_tests.sh`.
+
+Not sure what the contract should be? Let Hermes write it: `/goal draft <one-line objective>` expands your one-liner into outcome, verification, constraints, boundaries, and stop-when fields, and shows you the result before setting it.
+
 ## CLI Power User Tips
 
 ### Multi-Line Input

@@ -388,7 +388,12 @@ class GatewayStartupMixin:
             content = row["content"]
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
-            metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
+            metadata = {
+                "_turn_final": True,
+                "_delivery_obligation_id": row["obligation_id"],
+            }
+            if row.get("thread_id"):
+                metadata["thread_id"] = row["thread_id"]
             try:
                 result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
             except Exception as send_err:

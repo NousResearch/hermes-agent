@@ -247,17 +247,25 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         progress = "\n".join(self._tool_progress_lines)
         return "\n\n---\n".join(p for p in (self._accumulated, progress) if p)
 
-    def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False) -> dict | None:
+    def _metadata_for_send(
+        self, *, final: bool = False, expect_edits: bool = False,
+        is_turn_final: bool = False,
+    ) -> dict | None:
         """Per-send metadata.  ``final`` → notify=True (Mattermost treats notify-worthy sends
         as final when a broken thread root may fall back flat); ``expect_edits`` keeps
-        editable previews on Telegram's legacy send path."""
+        editable previews on Telegram's legacy send path.  ``is_turn_final`` is the
+        authoritative-turn fact for adapter-only final-egress behavior; transport segment
+        finalization must not set it."""
         meta = dict(self.metadata) if self.metadata else {}
+        meta.pop("_turn_final", None)
         if self._initial_reply_to_id:
             meta["reply_to_message_id"] = self._initial_reply_to_id
         if expect_edits:
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
+        if final and is_turn_final:
+            meta["_turn_final"] = True
         return meta or None
 
     # Read-only views for the gateway (flag semantics: see _clear_turn_final_flags).
@@ -748,7 +756,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._last_edit_time = time.monotonic()
         if tick.got_done:
             tail_delivered = (not self._accumulated
-                              or await self._send_or_edit(self._accumulated, finalize=True))
+                              or await self._send_or_edit(
+                                  self._accumulated, finalize=True, is_turn_final=True))
             # ``_already_sent`` may be True from prior state — only heads + tail count.
             self._final_response_sent = heads_delivered and tail_delivered
             if self._final_response_sent:

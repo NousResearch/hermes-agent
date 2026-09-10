@@ -7,6 +7,7 @@ import struct
 from hermes_cli.main_desktop import (
     _HTML_TAG_WITH_URL,
     _MODULE_TAG,
+    _asar_header,
     _desktop_build_needed,
     _desktop_exe_integrity_error,
     _desktop_packaged_executable,
@@ -21,14 +22,10 @@ def _verify_packaged_entry(resources: Path) -> None:
     """
     archive = resources / "app.asar"
     try:
+        # One header reader for the whole codebase (hermes_cli.main_desktop): the macOS bundle gate reads
+        # the same framing to decide whether node-pty is loadable, and two parsers would drift.
+        header, header_size = _asar_header(archive)
         with archive.open("rb") as stream:
-            size, header_size, payload_size, json_size = struct.unpack("<4I", stream.read(16))
-            if (size != 4 or header_size != payload_size + 4
-                    or payload_size != 4 + ((json_size + 3) // 4) * 4
-                    or not 0 < json_size <= 64 * 1024 * 1024
-                    or 8 + header_size > archive.stat().st_size):
-                raise ValueError("invalid ASAR header")
-            header = json.loads(stream.read(json_size))
 
             def read_member(name: str) -> bytes:
                 path = PurePosixPath(name)

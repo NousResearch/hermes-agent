@@ -209,7 +209,14 @@ def _win_tree(tmp_path: Path) -> tuple[Path, Path]:
     return desktop_dir, exe
 
 
+@pytest.mark.windows_only
 def test_rollback_restores_backup_and_keeps_corrupt_copy(tmp_path):
+    """``windows_only``: the rollback consults ``_desktop_exe_integrity_error`` to decide
+    whether the backup is usable, and that verdict is platform-dispatched — the PE header on
+    Windows, the bundle's arch and node-pty payload on macOS. This test's ``win-unpacked``
+    tree is Windows-shaped, so off Windows the gate correctly reports it as unloadable and no
+    backup is restored. Same reasoning as ``test_gate_fails_clearly_without_backup`` below.
+    """
     desktop_dir, exe = _win_tree(tmp_path)
     make_pe(exe, PE_AMD64, truncate_to=0x300)  # corrupt new build
     backup_exe = desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe"

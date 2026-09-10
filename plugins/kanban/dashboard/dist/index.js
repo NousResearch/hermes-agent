@@ -640,6 +640,7 @@
     const [config, setConfig] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [actionError, setActionError] = useState(null);
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
@@ -1001,6 +1002,7 @@
     }, [selectedIds, requestMoveConfirm, requestCompletionSummary, performMoveTask]);
 
     const createTask = useCallback(function (body, attachments) {
+      setActionError(null);
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1011,7 +1013,7 @@
         // the task was created successfully — but the user should know
         // their ready task will sit idle until the gateway is up.
         if (res && res.warning) {
-          setError(tx(t, "taskCreatedWarning", "Task created, but: ") + res.warning);
+          setActionError(tx(t, "taskCreatedWarning", "Task created, but: ") + res.warning);
         }
         const taskId = res && res.task && res.task.id;
         const upload = taskId
@@ -1020,7 +1022,7 @@
         return upload.catch(function (e) {
           // The task already exists; resolve so the create dialog closes rather
           // than letting a retry create a duplicate card.
-          setError(tx(t, "taskCreatedUploadFailed",
+          setActionError(tx(t, "taskCreatedUploadFailed",
             "Task created, but attachment upload failed: ") + String(e.message || e));
         }).then(function () {
           loadBoard();
@@ -1339,6 +1341,7 @@
          onDelete: deleteSelected,
        }) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
+        actionError ? h("div", { className: "text-xs text-destructive px-2" }, actionError) : null,
         h(KanbanDialogs, {
           dialogProps: kanbanDialogs.dialogProps,
           dialogState: kanbanDialogs.dialogState,

@@ -911,20 +911,24 @@ def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
     agent.client = None
 
 
-def _rebuild_bedrock_client_from_runtime(
+def _restore_bedrock_converse_runtime(
     agent: Any, rt: Dict[str, Any], *, reason: str,
 ) -> None:
-    """Rebuild the Bedrock-SDK-backed Anthropic client from a runtime snapshot.
+    """Restore the ``bedrock_converse`` runtime state (region + client slots).
+
+    ``bedrock_converse`` never reads ``_anthropic_client``: the request path
+    (``_dispatch_nonstreaming_api_request`` → ``_bedrock_converse_call``) obtains
+    a real client lazily from ``_get_bedrock_runtime_client(region)`` through
+    **boto3**. The Bedrock dependency group installs boto3 and NOT the optional
+    Anthropic SDK, so constructing an ``AnthropicBedrock`` client here (as an
+    earlier revision of this fix did) replaced the reported OPENAI_API_KEY
+    failure with an Anthropic-dependency failure and still stranded the
+    fallback chain (#102860 review, ehz0ah).
 
     Shared by :func:`_rebuild_primary_client` (fallback restore) and
-    :func:`try_recover_primary_transport` (transient-error recovery): both
-    previously fell through to ``_create_openai_client`` for
-    ``api_mode == "bedrock_converse"``, which demands an OPENAI_API_KEY and
-    raised a spurious error — Bedrock authenticates via the boto3 chain
-    (#102860).
+    :func:`try_recover_primary_transport` (transient-error recovery) — both
+    previously fell through to ``_create_openai_client`` for this api_mode.
     """
-    from agent.anthropic_adapter import build_anthropic_bedrock_client
-
     # The region was captured at init from the primary base_url
     # (bedrock-runtime.<region>.amazonaws.com) into _bedrock_region. Fall back
     # to re-extracting it from the snapshot base_url (attribute missing on a
@@ -949,11 +953,15 @@ def _rebuild_bedrock_client_from_runtime(
             )
     agent._bedrock_region = _region
     logger.debug(
-        "%s: rebuilding Bedrock client for region %s (resolved from %s)",
+        "%s: restored bedrock_converse runtime for region %s (resolved from %s); "
+        "the boto3 bedrock-runtime client is created lazily on the next request",
         reason, _region, _region_source,
     )
-    agent._anthropic_client = build_anthropic_bedrock_client(_region)
+    # Mirror the init path (agent_init's bedrock_converse branch): no eager
+    # client. Drop any stale Anthropic client carried over from a
+    # fallback/previous mode — this api_mode must never use it.
     agent.client = None
+    agent._anthropic_client = None
     agent._client_kwargs = {}
 
 
@@ -973,13 +981,13 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
     elif agent.api_mode == "anthropic_messages":
         _build_anthropic_client_from_runtime(agent, rt)
     elif agent.api_mode == "bedrock_converse":
-        # AWS Bedrock — the runtime client is the Bedrock-SDK-backed Anthropic
-        # client, NOT an OpenAI-compatible client. The generic else branch below
-        # would call _create_openai_client(), which demands an OPENAI_API_KEY and
-        # raises a spurious "The api_key client option must be set ..." error for
-        # Bedrock (authenticated via the boto3 chain) — stranding the fallback
-        # chain for every subsequent turn (#102860).
-        _rebuild_bedrock_client_from_runtime(agent, rt, reason=reason)
+        # AWS Bedrock (boto3 Converse API) — the runtime client is created
+        # lazily by the request path and never reads _anthropic_client; the
+        # generic else branch below would call _create_openai_client(), which
+        # demands an OPENAI_API_KEY and raises a spurious "The api_key client
+        # option must be set ..." error — stranding the fallback chain for
+        # every subsequent turn (#102860).
+        _restore_bedrock_converse_runtime(agent, rt, reason=reason)
     else:
         agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason=reason, shared=True)
 
@@ -1021,13 +1029,19 @@ def try_recover_primary_transport(
             from agent.moa_loop import build_moa_facade
             agent.client = build_moa_facade(agent, agent.model)
         elif agent.api_mode == "bedrock_converse":
-            # Same Bedrock carve-out as _rebuild_primary_client: the generic else
-            # would call _create_openai_client(), which demands an OPENAI_API_KEY
-            # Bedrock never has (boto3 chain instead) — the recovery would fail
-            # and the primary transport would stay down (#102860 class).
-            _rebuild_bedrock_client_from_runtime(
+            # Same carve-out as _rebuild_primary_client: restore the Converse
+            # state (the generic else would call _create_openai_client(), which
+            # demands an OPENAI_API_KEY Bedrock never has — the recovery would
+            # fail and the primary transport would stay down, #102860 class),
+            # then evict the cached boto3 bedrock-runtime client for the region
+            # so the retry really gets a fresh connection pool (this is what
+            # retiring/rebuilding the OpenAI client does on the other path).
+            _restore_bedrock_converse_runtime(
                 agent, rt, reason="primary_recovery",
             )
+            with contextlib.suppress(Exception):
+                from agent.bedrock_adapter import invalidate_runtime_client
+                invalidate_runtime_client(str(getattr(agent, "_bedrock_region", "") or ""))
         else:
             agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason="primary_recovery", shared=True)
         wait_time = min(3 + retry_count, 8)

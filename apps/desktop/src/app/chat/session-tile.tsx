@@ -461,7 +461,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   if (tile?.error) {
     return (
       <div className="grid h-full place-items-center p-4">
-        <div className="max-w-[24rem] space-y-2 text-center font-mono text-[11px]">
+        <div className="max-w-[24rem] space-y-2 text-center font-mono text-[11px]" data-selectable-text="true">
           <div className="text-(--ui-danger,#f87171)">Couldn't open this session</div>
           <div className="break-words text-(--ui-text-quaternary)">{tile.error}</div>
           <Button onClick={() => patchSessionTile(storedSessionId, { error: undefined })} size="sm" variant="outline">

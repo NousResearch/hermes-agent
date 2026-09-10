@@ -1,0 +1,30 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: synthesis
+description: Query your commerce data — Amazon, Shopify, Meta, NetSuite, Klaviyo and more — grounded in your real numbers, with a judgment layer that verifies its own answers.
+source: https://synthesisintelligence.ai/integrations
+
+# Synthesis ships a remote MCP server with native OAuth 2.1 + Dynamic Client
+# Registration over Streamable HTTP. Hermes's MCP client + mcp_oauth_manager
+# handle discovery, PKCE, token exchange, and refresh — nothing to install
+# locally.
+transport:
+  type: http
+  url: https://synthesisintelligence.ai/mcp
+
+auth:
+  type: oauth
+  # Native MCP OAuth (case 1) — the MCP client triggers the browser flow on
+  # the first probe / first connect. Sign in with your Synthesis access key.
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with
+  Synthesis. Paste your Synthesis access key — generate one at
+  https://synthesisintelligence.ai/connections ("Connect to Claude, ChatGPT &
+  more" -> Generate access key). After auth, restart your Hermes session so
+  the Synthesis tools are loaded.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure synthesis

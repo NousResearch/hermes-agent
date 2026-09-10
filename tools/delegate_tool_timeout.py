@@ -1,12 +1,14 @@
 """P-0106: non-fatal delegate_task sequential-deadline handling.
 
-On this branch ``delegate_task`` is not in
-``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` (agent/tool_executor.py): under
-agent.deadline's sequential-call deadline (420s by default) every real batch
-"timeouts out" while its children keep running on daemon threads. The
-orchestrator then re-dispatches and multiplies children and spend, and the
-timeout branch cancels the worker and interrupts its thread. This module lets
-the executor treat the timeout as non-fatal when the batch's live transcripts
+``delegate_task`` is exempt from the sequential-call deadline on main
+(``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS``, agent/tool_executor.py, upstream
+#107255) — that exemption is the primary fix. This module is regression
+insurance for the class "a deadline applies to ``delegate_task`` again":
+under a 420s deadline every real batch "timed out" while its children kept
+running on daemon threads, the orchestrator re-dispatched and multiplied
+children and spend, and the timeout branch cancelled the worker and
+interrupted its thread. When a timeout does fire, the executor consults
+this module and treats it as non-fatal while the batch's live transcripts
 show recent activity.
 """
 

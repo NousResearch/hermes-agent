@@ -938,7 +938,8 @@ def detect_provider_for_model(
     skipped and the ladder continues (``None`` = stay on the current provider). Exceptions: the user
     NAMED the provider (``/model nous``), or there is no current provider yet (``auto``) — then the
     first guess is returned so the credential step fails loudly instead of silently ignoring input."""
-    from hermes_cli.models_detect import current_provider_catalog_match, provider_has_credentials
+    from hermes_cli.models_detect import (
+        current_provider_catalog_match, current_provider_owns_vendor, provider_has_credentials)
 
     name = (model_name or "").strip()
     if not name:
@@ -950,6 +951,10 @@ def detect_provider_for_model(
     served = current_provider_catalog_match(name, current_provider)
     if served is not None:
         return (current_provider, served) if served != name else None
+    # Live catalog unavailable or lagging: the vendor's own id on the vendor's first-party provider
+    # is still a selection — an aggregator relisting it is not grounds to switch.
+    if current_provider_owns_vendor(name, current_provider):
+        return None
 
     no_selection = (current_provider or "").strip().lower() in {"", "auto"}
     for candidate in _detection_candidates(name, current_provider):

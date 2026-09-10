@@ -32,6 +32,20 @@ describe('toast titles', () => {
     expect(className).toMatch(/\boverflow-y-auto\b/)
   })
 
+  it.each(['default', 'bottom-right'] as const)('caps the %s toast stack at two back edges and keeps older notifications reachable', placement => {
+    for (let index = 0; index < 7; index++) {
+      notify({ id: `notice-${index}`, message: `Notice ${index}`, placement, durationMs: 0 })
+    }
+    render(<NotificationStack />)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(document.querySelectorAll('[data-slot="card-stack-edge"]')).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: /Show.*6/ }))
+    expect(screen.getByText('Notice 0')).toBeTruthy()
+    expect(screen.getAllByRole('status')).toHaveLength(7)
+    fireEvent.click(screen.getAllByRole('button', { name: /Dismiss/ })[0])
+    expect(screen.queryByText('Notice 6')).toBeNull()
+  })
+
   it('renders the full title and body instead of truncating them', () => {
     notify({ kind: 'error', title: LONG_TITLE, message: DETAIL })
 

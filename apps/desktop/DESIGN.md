@@ -86,6 +86,13 @@ Menus and popovers use their own shared `shadow-md` +
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
 
+**Queued cards:** `CardStack` (`src/components/ui/card-stack.tsx`) shows one
+interactive front card and at most two inert, inset back edges. Queue length
+changes the count, not the pile height. Approvals rise above the composer;
+top-center toasts stack downward and bottom-right toasts upward. Pass the
+existing surface tokens/radius; the primitive owns only depth. Hidden cards
+have no live controls. Toasts may explicitly expand to the full list.
+
 ## Window glass
 
 Glass defaults to **29% Tint, Sidebar only** in both light and dark appearances.

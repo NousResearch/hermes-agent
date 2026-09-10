@@ -1,5 +1,7 @@
 """Test Discord slash command sync respects the 100-command hard limit."""
 
+import asyncio
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import sys
@@ -138,3 +140,31 @@ async def test_safe_sync_deletes_before_creating():
         f"Deletions must happen before creations to avoid exceeding 100-command limit. "
         f"Last delete at index {last_delete_idx}, first create at index {first_create_idx}"
     )
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_cancellation_reports_progress(adapter, caplog):
+    entered_mutation = asyncio.Event()
+
+    async def blocked_upsert(*args):
+        entered_mutation.set()
+        await asyncio.Event().wait()
+
+    adapter._client.tree.fetch_commands = AsyncMock(return_value=[])
+    adapter._client.tree.get_commands = MagicMock(
+        return_value=[_FakeTreeCommand(name="new-command")]
+    )
+    adapter._client.http.upsert_global_command.side_effect = blocked_upsert
+    caplog.set_level("INFO", logger="plugins.platforms.discord.adapter")
+
+    task = asyncio.create_task(adapter._safe_sync_slash_commands())
+    await entered_mutation.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "slash_reconcile_mutation_start ordinal=1 type=create" in caplog.text
+    assert "slash_reconcile_cancelled" in caplog.text
+    assert "mutations_started=1 mutations_completed=0" in caplog.text
+    assert "active_mutation=create" in caplog.text

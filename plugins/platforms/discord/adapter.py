@@ -2405,6 +2405,35 @@ class DiscordAdapter(BasePlatformAdapter):
         if interval > 0:
             await asyncio.sleep(interval)
 
+    def _log_command_sync_interruption(
+        self, kind: str, *, timeout_seconds: Optional[float] = None
+    ) -> None:
+        diagnostics = getattr(self, "_command_sync_diagnostics", None) or {}
+        started_at = diagnostics.get("started_at")
+        elapsed = time.perf_counter() - started_at if started_at is not None else 0.0
+        timeout_field = (
+            f" timeout_seconds={timeout_seconds:.0f}" if timeout_seconds is not None else ""
+        )
+        logger.warning(
+            "[%s] slash_reconcile_%s%s desired=%s existing=%s unchanged=%s "
+            "updated=%s recreated=%s created=%s deleted=%s mutations_started=%s "
+            "mutations_completed=%s active_mutation=%s elapsed_seconds=%.3f",
+            self.name,
+            kind,
+            timeout_field,
+            diagnostics.get("desired", 0),
+            diagnostics.get("existing", "unknown"),
+            diagnostics.get("unchanged", 0),
+            diagnostics.get("updated", 0),
+            diagnostics.get("recreated", 0),
+            diagnostics.get("created", 0),
+            diagnostics.get("deleted", 0),
+            diagnostics.get("mutations_started", 0),
+            diagnostics.get("mutations_completed", 0),
+            diagnostics.get("active_mutation", "none"),
+            elapsed,
+        )
+
     async def _run_post_connect_initialization(self) -> None:
         """Finish non-critical startup work after Discord is connected."""
         if not self._client:
@@ -2471,11 +2500,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 summary["deleted"],
             )
         except asyncio.TimeoutError:
-            logger.warning(
-                "[%s] Slash command sync timed out — Discord rate-limit bucket "
-                "may be saturated; will retry on next reconnect",
-                self.name,
-            )
+            self._log_command_sync_interruption("timeout", timeout_seconds=600)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover - defensive logging
@@ -3237,6 +3262,26 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _safe_sync_slash_commands(self) -> Dict[str, int]:
         """Diff existing global commands and only mutate the commands that changed."""
+        self._command_sync_diagnostics = {
+            "started_at": time.perf_counter(),
+            "desired": 0,
+            "existing": "unknown",
+            "unchanged": 0,
+            "updated": 0,
+            "recreated": 0,
+            "created": 0,
+            "deleted": 0,
+            "mutations_started": 0,
+            "mutations_completed": 0,
+            "active_mutation": "none",
+        }
+        try:
+            return await self._safe_sync_slash_commands_inner()
+        except asyncio.CancelledError:
+            self._log_command_sync_interruption("cancelled")
+            raise
+
+    async def _safe_sync_slash_commands_inner(self) -> Dict[str, int]:
         if not self._client:
             return {
                 "total": 0,
@@ -3253,11 +3298,20 @@ class DiscordAdapter(BasePlatformAdapter):
             raise RuntimeError("Discord application ID is unavailable for slash command sync")
 
         desired_payloads = [command.to_dict(tree) for command in tree.get_commands()]
+        self._command_sync_diagnostics["desired"] = len(desired_payloads)
         desired_by_key = {
             (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
             for payload in desired_payloads
         }
         existing_commands = await tree.fetch_commands()
+        self._command_sync_diagnostics["existing"] = len(existing_commands)
+        logger.info(
+            "[%s] slash_reconcile_fetch_complete desired=%d existing=%d elapsed_seconds=%.3f",
+            self.name,
+            len(desired_payloads),
+            len(existing_commands),
+            time.perf_counter() - self._command_sync_diagnostics["started_at"],
+        )
         existing_by_key = {
             (
                 int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
@@ -3274,12 +3328,35 @@ class DiscordAdapter(BasePlatformAdapter):
         http = self._client.http
         mutation_count = 0
 
-        async def mutate(call, *args):
+        async def mutate(mutation_type, call, *args):
             nonlocal mutation_count
+            diagnostics = self._command_sync_diagnostics
+            diagnostics["mutations_started"] += 1
+            ordinal = diagnostics["mutations_started"]
+            diagnostics["active_mutation"] = mutation_type
+            logger.info(
+                "[%s] slash_reconcile_mutation_start ordinal=%d type=%s elapsed_seconds=%.3f",
+                self.name,
+                ordinal,
+                mutation_type,
+                time.perf_counter() - diagnostics["started_at"],
+            )
             if mutation_count:
                 await self._sleep_between_command_sync_mutations()
+            mutation_started_at = time.perf_counter()
             result = await call(*args)
             mutation_count += 1
+            diagnostics["mutations_completed"] = mutation_count
+            diagnostics["active_mutation"] = "none"
+            logger.info(
+                "[%s] slash_reconcile_mutation_complete ordinal=%d type=%s "
+                "elapsed_seconds=%.3f duration_seconds=%.3f",
+                self.name,
+                ordinal,
+                mutation_type,
+                time.perf_counter() - diagnostics["started_at"],
+                time.perf_counter() - mutation_started_at,
+            )
             return result
 
         # Delete obsolete commands FIRST to stay under Discord's 100-command
@@ -3292,14 +3369,16 @@ class DiscordAdapter(BasePlatformAdapter):
         obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
         for key in obsolete_keys:
             current = existing_by_key.pop(key)
-            await mutate(http.delete_global_command, app_id, current.id)
+            await mutate("delete_obsolete", http.delete_global_command, app_id, current.id)
             deleted += 1
+            self._command_sync_diagnostics["deleted"] = deleted
 
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
-                await mutate(http.upsert_global_command, app_id, desired)
+                await mutate("create", http.upsert_global_command, app_id, desired)
                 created += 1
+                self._command_sync_diagnostics["created"] = created
                 continue
 
             current_existing_payload = self._existing_command_to_payload(current)
@@ -3307,16 +3386,38 @@ class DiscordAdapter(BasePlatformAdapter):
             desired_payload = self._canonicalize_app_command_payload(desired)
             if current_payload == desired_payload:
                 unchanged += 1
+                self._command_sync_diagnostics["unchanged"] = unchanged
                 continue
+
+            differing_fields = sorted(
+                field
+                for field in current_payload
+                if current_payload[field] != desired_payload[field]
+            )
+            logger.info(
+                "[%s] slash_reconcile_diff command_type=%d command_name=%s "
+                "differing_fields=%s contexts_desired=%s contexts_existing=%s "
+                "integration_types_desired=%s integration_types_existing=%s",
+                self.name,
+                key[0],
+                key[1],
+                ",".join(differing_fields),
+                desired_payload.get("contexts") if desired_payload.get("contexts") is not None else "default",
+                current_payload.get("contexts") if current_payload.get("contexts") is not None else "default",
+                desired_payload.get("integration_types") if desired_payload.get("integration_types") is not None else "default",
+                current_payload.get("integration_types") if current_payload.get("integration_types") is not None else "default",
+            )
 
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
-                await mutate(http.upsert_global_command, app_id, desired)
+                await mutate("recreate_delete", http.delete_global_command, app_id, current.id)
+                await mutate("recreate_create", http.upsert_global_command, app_id, desired)
                 recreated += 1
+                self._command_sync_diagnostics["recreated"] = recreated
                 continue
 
-            await mutate(http.edit_global_command, app_id, current.id, desired)
+            await mutate("update", http.edit_global_command, app_id, current.id, desired)
             updated += 1
+            self._command_sync_diagnostics["updated"] = updated
 
         return {
             "total": len(desired_payloads),

@@ -440,7 +440,9 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
-async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
+async def test_post_connect_initialization_retries_fingerprint_after_timeout(
+    tmp_path, monkeypatch, caplog
+):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
 
@@ -496,6 +498,7 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
     assert timed_out_entry["fingerprint"] == desired_fingerprint
     assert "last_success_at" not in timed_out_entry
     assert "summary" not in timed_out_entry
+    assert "slash_reconcile_timeout timeout_seconds=600" in caplog.text
 
     await adapter._run_post_connect_initialization()
 
@@ -503,6 +506,75 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
     recovered_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]
     assert recovered_entry["last_success_at"] >= recovered_entry["last_attempt_at"]
     assert recovered_entry["summary"] == summary
+
+
+@pytest.mark.parametrize(
+    ("expanded_field", "expanded_default"),
+    [
+        ("contexts", [0, 1, 2]),
+        ("integration_types", [0, 1]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_safe_sync_reports_discord_expanded_defaults(
+    expanded_field, expanded_default, caplog
+):
+    """Discord expands omitted install/context defaults on round-trip.
+
+    Keep this as a mismatch reproduction until semantic normalization is
+    deliberately implemented: the safe sync recreates the command, and its
+    diagnostics must make the exact non-secret default expansion visible.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    desired = {
+        "name": "status",
+        "description": "sensitive-description-must-not-be-logged",
+        "type": 1,
+        "options": [],
+    }
+    existing_payload = {**desired, expanded_field: expanded_default}
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return dict(desired)
+
+    class _ExistingCommand:
+        id = 42
+        name = "status"
+        type = SimpleNamespace(value=1)
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **existing_payload,
+            }
+
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(
+            get_commands=lambda: [_DesiredCommand()],
+            fetch_commands=AsyncMock(return_value=[_ExistingCommand()]),
+        ),
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+    caplog.set_level("INFO", logger="plugins.platforms.discord.adapter")
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["recreated"] == 1
+    assert "slash_reconcile_fetch_complete desired=1 existing=1" in caplog.text
+    assert f"differing_fields={expanded_field}" in caplog.text
+    assert f"{expanded_field}_desired=default" in caplog.text
+    assert f"{expanded_field}_existing={expanded_default}" in caplog.text
+    assert "sensitive-description-must-not-be-logged" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -706,4 +778,3 @@ class TestPrivilegedIntentsRequiredFatal:
         assert "Message Content Intent" in (adapter.fatal_error_message or "")
         assert "discord.com/developers/applications" in (adapter.fatal_error_message or "")
         assert adapter._bot_task is None
-

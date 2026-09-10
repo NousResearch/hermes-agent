@@ -1553,7 +1553,9 @@ def _dispatch_lane_task(
         return False
     try:
         resolved_branch_name = None
-        if claimed.workspace_kind == "worktree":
+        if lane == "review":
+            workspace = _kbw.resolve_review_workspace(claimed, board=board)
+        elif claimed.workspace_kind == "worktree":
             workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
         else:
             workspace = _kbw.resolve_workspace(claimed, board=board)
@@ -1564,11 +1566,31 @@ def _dispatch_lane_task(
         ):
             result.auto_blocked.append(claimed.id)
         return False
-    _kbw.set_workspace_path(conn, claimed.id, str(workspace))
-    if claimed.workspace_kind == "worktree":
-        _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+    # A review checkout is run-scoped and must not replace the implementer's
+    # durable workspace: request_changes needs to route the next build round
+    # back to the original checkout. Record its exact path for board-independent
+    # cleanup when the same-card task reaches a terminal state.
+    if lane == "review":
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, claimed.id, "review_workspace",
+                {"path": str(workspace), "reviewer": claimed.assignee},
+                run_id=claimed.current_run_id,
+            )
+    else:
+        _kbw.set_workspace_path(conn, claimed.id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
+        # Task model/provider overrides belong to the implementer run. A review
+        # handoff changes the assignee profile, so carrying those overrides
+        # across silently boots the reviewer on the builder's model instead of
+        # the reviewer's configured model. Clear only the claimed in-memory
+        # copy: the durable task keeps its builder overrides for a subsequent
+        # request-changes round.
+        claimed.model_override = None
+        claimed.provider_override = None
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))

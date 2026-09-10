@@ -158,6 +158,16 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
+    if platform == "feishu":
+        # Interactive-card callbacks are synthetic events: their message_id is
+        # a callback token or UUID, not a Feishu open_message_id. Replying to
+        # it makes the API reject the follow-up with 99992354 (invalid
+        # open_message_id). Detect card-callback payloads by their action
+        # shape and send the response as a fresh message instead.
+        raw = getattr(event, "raw_message", None)
+        raw_event = raw if getattr(raw, "action", None) is not None else getattr(raw, "event", None)
+        if getattr(raw_event, "action", None) is not None:
+            return None
     return getattr(event, "message_id", None)
 
 

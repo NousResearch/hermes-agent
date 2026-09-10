@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import Mock
+from tests.wisdom.test_native_install_policy import native_install as native_install
 
 import pytest
 
@@ -503,9 +504,9 @@ def test_private_browse_pagination_refreshes_install_state_without_planning():
     assert not any(call[0].endswith(("_plan", "_apply")) for call in service.calls)
 
 
-def test_local_action_command_resumes_bound_controller_action():
-    service = _Service()
-    context = _context(chat_id="local:session-1")
+def test_local_action_command_resumes_bound_controller_action(native_install):
+    service, _, _ = native_install
+    context = _context(user_id="local-user", chat_id="local:session-1")
     view = WisdomCommandController().execute("install skill-1", service, context)
     rendered = render_local_view(view, context)
 
@@ -515,8 +516,9 @@ def test_local_action_command_resumes_bound_controller_action():
     token = action_line.rsplit(" ", 1)[-1]
     resumed = WisdomCommandController().execute(f"action {token}", service, context)
 
-    assert resumed.title == "Confirm install"
-    assert ("install_plan", "skill-1", "MANUAL") in service.calls
+    assert "Future updates: Manual" in resumed.to_text()
+    assert any((a.callback_data or "").startswith("wi:agent:confirm:") for a in resumed.actions)
+    assert service.client.records == []
 
 
 def test_local_action_command_rejects_another_session():

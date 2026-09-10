@@ -106,9 +106,9 @@ class WisdomConsent:
 
     def request(
         self, org: str, reference: dict[str, Any], actor: ConsentActor,
-        *, title: str, explanation: str,
+        *, title: str, explanation: str, queue_delivery: bool = True,
     ) -> dict[str, Any]:
-        """Queue explicit review, replacing deferred/expired consent, never applying it."""
+        """Prepare explicit review; passive command replies do not queue a notification."""
         self.service.require_setup()
         now = self.queue.clock()
         reference = {**reference, "user_requested": True}
@@ -174,9 +174,9 @@ class WisdomConsent:
             advice = {"assessment_id": identity, "title": title,
                       "explanation": explanation, "relevance": "recommend"}
             db.execute(
-                """UPDATE wisdom_assessment SET owner_session=?,advice_json=?,state='ready',updated_at=?
-                WHERE id=? AND state='pending' AND lease_token IS NULL""",
-                (actor.session_key, json.dumps(advice), now, identity),
+                """UPDATE wisdom_assessment SET owner_session=?,advice_json=?,state=?,updated_at=?
+                WHERE id=? AND state IN ('pending','passive') AND lease_token IS NULL""",
+                (actor.session_key, json.dumps(advice), "ready" if queue_delivery else "passive", now, identity),
             )
         return self.present(org, identity, actor)
 
@@ -415,6 +415,8 @@ class WisdomConsent:
             or plan.get("allowed") is False
             or (plan.get("compatibility") or {}).get("outcome")
             not in {None, "compatible"}
+            or (value["operation"] in {"install", "update"}
+                and (plan.get("security_check") or {}).get("status") not in {"pass", "advisory"})
         )
         return {
             "id": value["id"],
@@ -841,7 +843,7 @@ class WisdomConsent:
                     "update_mode": plan.get("update_mode"),
                 }
                 operation, refreshed = self._plan(ref)
-                if operation != value["operation"] or _signature(
+                if "confirm" not in self.project({**value, "plan": refreshed})["actions"] or operation != value["operation"] or _signature(
                     refreshed
                 ) != _signature(plan):
                     raise WisdomConflict("the exact plan changed; review again")

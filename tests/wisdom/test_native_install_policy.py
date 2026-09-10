@@ -15,6 +15,9 @@ def native_install(tmp_path, monkeypatch):
     class Client(InstallClient):
         identity = {"owner": "member"}
         display_org_id = "org-1"
+        latest = 1
+        installed = 0
+        security_status = "pass"
 
         def __init__(self):
             super().__init__()
@@ -23,11 +26,23 @@ def native_install(tmp_path, monkeypatch):
         def version(self, skill_id, version):
             result = super().version(skill_id, version)
             result.version["version"] = version
+            result.version["security_check"] = {"status": self.security_status}
             result.model_dump = lambda **_: {"version": result.version}
             return result
 
+        def skill(self, skill_id):
+            result = super().skill(skill_id)
+            result.versions = [{"version": self.latest}]
+            return result
+
+        def installations(self, identity):
+            return [{"skill_id": "skill-1", "installed_version": self.installed,
+                     "latest_version": self.latest, "update_mode": "MANUAL",
+                     "skill_state": "active", "takedown_generation": 0}]
+
         def record_install(self, **kwargs):
             self.records.append(kwargs)
+            self.installed = kwargs["version"]
             return SimpleNamespace(effective_update_mode=kwargs["update_mode"] or "REQUIRED")
 
     client = Client()

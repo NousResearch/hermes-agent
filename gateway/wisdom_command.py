@@ -463,6 +463,8 @@ class WisdomCommandController:
             )
         elif keyword == "versions":
             view = self._versions(service, args)
+        elif keyword == "update":
+            view = self._update(service, args, context=context)
         else:
             view = handler(service, args)
         if context.is_group:
@@ -665,7 +667,7 @@ class WisdomCommandController:
             )
             return complete(
                 self._attach_navigation(
-                    self._plan_view(self._reviewed_plan(service, plan), kind="install"),
+                    self._review_plan(service, plan, kind="install", context=context),
                     _NavigationTarget("install_plan", dict(args)),
                     value.navigation_history,
                 )
@@ -697,7 +699,7 @@ class WisdomCommandController:
                 )
             return complete(
                 self._attach_navigation(
-                    self._plan_view(self._reviewed_plan(service, plan), kind="update"),
+                    self._review_plan(service, plan, kind="update", context=context),
                     _NavigationTarget("update_plan", dict(args)),
                     value.navigation_history,
                 )
@@ -1546,6 +1548,45 @@ class WisdomCommandController:
             )
         return self._plan_view(self._reviewed_plan(service, plan), kind=kind)
 
+    def _review_plan(
+        self, service: WisdomService, plan: dict[str, Any], *, kind: str,
+        context: WisdomCommandContext | None = None,
+    ) -> WisdomView:
+        if context is None or not context.chat_id.startswith("local:"):
+            return self._plan_view(self._reviewed_plan(service, plan), kind=kind)
+        from hermes_wisdom.consent import ConsentActor, WisdomConsent
+        from hermes_wisdom.mediation_view import interaction_view
+
+        session_key = context.chat_id.removeprefix("local:")
+        if context.is_group or context.user_id != "local-user" or not session_key:
+            raise PermissionError("Open a private local session to review this installation.")
+        org = service.store.active_org_id()
+        if org != context.organization_id:
+            raise PermissionError("The active organization changed. Reopen the review.")
+        consent = WisdomConsent(service)
+        actor = ConsentActor(session_key, "local", "local-user", context.chat_id)
+        # Register ownership without electing this read-only command as the next
+        # background worker. The normal session lifecycle owns availability.
+        with service.store.transaction() as db:
+            consent.queue._check_org(db, org)
+            existing = db.execute(
+                "SELECT 1 FROM wisdom_agent_session WHERE organization_id=? AND session_key=?",
+                (org, session_key),
+            ).fetchone()
+        if not existing:
+            consent.queue.register_session(
+                org, session_key=session_key, session_id=session_key,
+                platform="local", actor_id=actor.actor_id, private=True,
+                available=False, address=actor.address,
+            )
+        result = consent.request(
+            org, {"kind": "skill", "skill_id": plan["skill_id"],
+                  "version": plan["version"], "update_mode": plan.get("update_mode")},
+            actor, title=str(plan.get("slug") or plan["skill_id"]),
+            explanation="You requested this exact package review.", queue_delivery=False,
+        )
+        return interaction_view(result)
+
     @staticmethod
     def _expired_plan_view(plan: dict[str, Any], *, kind: str) -> WisdomView:
         skill_id, version = plan.get("skill_id"), plan.get("version")
@@ -1672,7 +1713,10 @@ class WisdomCommandController:
             notice=None if rows else "No managed installations to check.",
         )
 
-    def _update(self, service: WisdomService, args: list[str]) -> WisdomView:
+    def _update(
+        self, service: WisdomService, args: list[str], *,
+        context: WisdomCommandContext | None = None,
+    ) -> WisdomView:
         if not args:
             raise ValueError("Usage: /wisdom update <skill|all>")
         if args[0].lower() == "all":
@@ -1686,7 +1730,7 @@ class WisdomCommandController:
             raise WisdomNotFound("managed skill not found")
         plan = service.update_plan(str(matches[0]["skill_id"]))
         return (
-            self._plan_view(self._reviewed_plan(service, plan), kind="update")
+            self._review_plan(service, plan, kind="update", context=context)
             if plan.get("receipt")
             else WisdomView("Skill is current")
         )

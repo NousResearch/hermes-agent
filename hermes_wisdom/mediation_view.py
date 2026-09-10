@@ -579,7 +579,7 @@ def resolve_surface_action(
 
         job = _decode(assessment)
         result["assessment"] = job.get("advice")
-        if not job.get("advice") or result["state"] != "pending":
+        if not job.get("advice") or job["state"] == "passive" or result["state"] != "pending":
             return interaction_view(
                 result, checks_expanded=action == "checks.show",
                 assessment_expanded=action in {"assessment.show", "checks.show", "checks.hide"},

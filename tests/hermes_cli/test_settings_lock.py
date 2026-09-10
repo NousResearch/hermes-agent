@@ -1,8 +1,9 @@
 """The operator settings lock.
 
 Named config paths that no writer may change until an unlock window is opened. The gate lives in
-``save_config`` — the one function every config writer in the tree funnels through — so these
-tests exercise both the predicate layer and a real ``save_config`` round trip.
+the two whole-document write primitives (``atomic_config_write`` / ``atomic_roundtrip_yaml_save``);
+these tests exercise the predicate layer and a real ``save_config`` round trip, and
+``test_settings_lock_writers.py`` drives every other shipped writer through its real entry point.
 """
 
 from __future__ import annotations

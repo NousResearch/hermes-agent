@@ -480,17 +480,24 @@ export function packagedBinaryExists(): boolean {
 export interface PackagedAppFixture {
   app: ElectronApplication
   page: Page
+  mock: Awaited<ReturnType<typeof startMockServer>>
+  mockUrl: string
   sandbox: Sandbox
   cleanup: () => Promise<void>
 }
 
 /**
  * Launch the *packaged* Electron binary (from `npm run pack` →
- * `electron-builder --dir`) with `BOOT_FAKE=1` so it simulates boot
- * progress without spawning a real Hermes backend.
+ * `electron-builder --dir`) with a real isolated Hermes backend and a local
+ * mock inference provider. The renderer stays packaged: the explicit backend
+ * root only supplies the CLI runtime, while HERMES_HOME and user data stay in
+ * the test sandbox.
  *
  * Uses the same sandbox isolation (credential stripping, isolated
  * HERMES_HOME + userData, unique app name) as the dev-mode fixtures.
+ * Worktrees without their own Python environment can opt in to a known test
+ * interpreter via HERMES_E2E_PYTHON; it is mapped explicitly and never
+ * inherited by the packaged child process.
  *
  * Skips if the packaged binary doesn't exist — run `npm run pack` first.
  */
@@ -502,39 +509,53 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
   }
 
   const sandbox = createSandbox('packaged')
+  let mock: Awaited<ReturnType<typeof startMockServer>> | undefined
 
-  // Build the sandbox env using the shared helpers, then add the
-  // packaged-binary-specific overrides.
-  const env = buildAppEnv(sandbox, {
-    // Fake boot: simulates progress steps without spawning the real backend.
-    HERMES_DESKTOP_BOOT_FAKE: '1',
-    HERMES_DESKTOP_BOOT_FAKE_STEP_MS: '120',
-  })
+  try {
+    const startedMock = await startMockServer()
+    mock = startedMock
+    writeMockProviderConfig(sandbox.hermesHome, startedMock.url)
+    writeEnvFile(sandbox.hermesHome)
 
-  // Clear development-only overrides — the packaged binary should use its
-  // own bundled renderer and its real packaged-mode resolution.
-  delete (env as Record<string, string | undefined>).HERMES_DESKTOP_DEV_SERVER
-  delete (env as Record<string, string | undefined>).HERMES_DESKTOP_HERMES
-  delete (env as Record<string, string | undefined>).HERMES_DESKTOP_HERMES_ROOT
-  delete (env as Record<string, string | undefined>).HERMES_DESKTOP_FORCE_DEV
+    // buildAppEnv supplies this worktree as the explicit backend root. Keep
+    // that deliberate test seam, but remove renderer-mode overrides so the
+    // process loads app.asar instead of a Vite/dev renderer.
+    const e2ePython = process.env.HERMES_E2E_PYTHON
 
-  const app = await _electron.launch({
-    executablePath: PACKAGED_BINARY_PATH,
-    args: ['--disable-gpu', '--no-sandbox'],
-    env,
-  })
+    const env = buildAppEnv(
+      sandbox,
+      e2ePython ? { HERMES_DESKTOP_PYTHON: e2ePython } : {},
+    )
 
-  const page = await app.firstWindow()
-  installErrorBannerGuard(page)
+    delete (env as Record<string, string | undefined>).HERMES_DESKTOP_DEV_SERVER
+    delete (env as Record<string, string | undefined>).HERMES_DESKTOP_HERMES
+    delete (env as Record<string, string | undefined>).HERMES_DESKTOP_FORCE_DEV
 
-  return {
-    app,
-    page,
-    sandbox,
-    cleanup: async () => {
-      await app.close().catch(() => undefined)
-      sandbox.cleanup()
-    },
+    const app = await _electron.launch({
+      executablePath: PACKAGED_BINARY_PATH,
+      args: ['--disable-gpu', '--no-sandbox'],
+      env,
+    })
+
+    const page = await app.firstWindow()
+    installErrorBannerGuard(page)
+
+    return {
+      app,
+      page,
+      mock: startedMock,
+      mockUrl: startedMock.url,
+      sandbox,
+      cleanup: async () => {
+        await app.close().catch(() => undefined)
+        await startedMock.close().catch(() => undefined)
+        sandbox.cleanup()
+      },
+    }
+  } catch (error) {
+    await mock?.close().catch(() => undefined)
+    sandbox.cleanup()
+    throw error
   }
 }
 
@@ -558,7 +579,10 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
  *     so checking the composer alone catches the app mid-boot at ~92%
  *     with the loading bar still showing.
  */
-export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFixture | DeadBackendFixture, timeoutMs = 60_000): Promise<void> {
+export async function waitForAppReady(
+  fixture: Pick<MockBackendFixture, 'app' | 'page'>,
+  timeoutMs = 60_000,
+): Promise<void> {
   const { page, app } = fixture
 
   // Wait for the composer to exist in the DOM (not necessarily interactive yet).

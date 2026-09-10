@@ -25,16 +25,44 @@ export function installPluginSdk(): void {
 }
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.
- *  Export names come from the namespace itself, so the list can't drift. */
+ *  Export names come from the namespace itself, so the list can't drift.
+ *
+ *  Names must be valid binding identifiers — the /^[A-Za-z_$][\w$]*$/ shape
+ *  alone is NOT enough: a minified SDK chunk can leak a reserved word as an
+ *  export alias (proven: `in`), and `export const { in } = m` is a SyntaxError
+ *  that Chromium surfaces as a confusing "Unexpected token ')'" at the chunk
+ *  line. Filter reserved words too. */
+const RESERVED_WORDS = new Set([
+  'break','case','catch','class','const','continue','debugger','default','delete',
+  'do','else','enum','export','extends','false','finally','for','function','if',
+  'import','in','instanceof','new','null','return','super','switch','this','throw',
+  'true','try','typeof','var','void','while','with','yield','let','static','await',
+  'implements','package','protected','interface','private','public'
+])
+
 function shimUrl(globalKey: keyof typeof GLOBALS): string {
-  const names = Object.keys(GLOBALS[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
+  // The shim's own local binding must not collide with an export name: a
+  // minified SDK chunk can export ANY valid identifier, including the local
+  // name the shim uses for the namespace (`const m = ...; export const { m }
+  // = m;` is `Identifier 'm' has already been declared` — proven: the
+  // session-list-density chunk exports `m`). Use an unlikely internal name
+  // AND exclude it from the destructure list so a future collision stays
+  // impossible.
+  const LOCAL = '__hermes_shim_ns__'
+  const names = Object.keys(GLOBALS[globalKey]).filter(
+    name =>
+      name !== 'default' &&
+      name !== LOCAL &&
+      /^[A-Za-z_$][\w$]*$/.test(name) &&
+      !RESERVED_WORDS.has(name)
+  )
 
   const source =
-    `const m = globalThis.${globalKey};\n` +
-    `export default m.default ?? m;\n` +
+    `const ${LOCAL} = globalThis.${globalKey};\n` +
+    `export default ${LOCAL}.default ?? ${LOCAL};\n` +
     // Guard the destructuring: `export const {  } = m` is a syntax error, so
     // only emit it when the namespace actually has named exports.
-    (names.length ? `export const { ${names.join(', ')} } = m;\n` : '')
+    (names.length ? `export const { ${names.join(', ')} } = ${LOCAL};\n` : '')
 
   return URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
 }

@@ -59,7 +59,7 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   }
 }
 
-function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate {
+export function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate {
   const contextLength = Number.parseInt(form.contextLength, 10)
 
   return {
@@ -68,7 +68,10 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
     base_url: form.baseUrl.trim(),
     model: form.model.trim(),
     api_key: form.apiKey.trim() || undefined,
-    context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
+    // An empty Context field means "Auto". Send an explicit 0 so the endpoint writer
+    // clears any stored override; omitting the key reads as "unchanged" and leaves a
+    // stale pin that the panel reloads, so the value appeared to revert on save.
+    context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : 0,
     discover_models: form.discoverModels,
     make_default: form.makeDefault,
     models: models?.length ? models : undefined

@@ -53,7 +53,12 @@ export function tabStripScrollLeft({
 }
 
 /** Scroll `activeId`'s tab into view whenever the activation or the tab set
- *  changes. `last` drives the "+"-follows-the-final-tab case. */
+ *  changes. `last` drives the "+"-follows-the-final-tab case.
+ *
+ *  `enabled` is false on a WRAPPED strip: there is no horizontal overflow to
+ *  correct, and writing `scrollLeft` on a `flex-wrap` container is a silent
+ *  no-op that would leave a tab on row three just as unreachable. Rows are the
+ *  reveal mechanism there — every tab is already on screen. */
 export function useActiveTabVisible(
   scrollerRef: RefObject<HTMLDivElement | null>,
   activeId: string,

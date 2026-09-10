@@ -1,6 +1,6 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 
@@ -8,6 +8,23 @@ import type { GroupNode } from '../model'
 import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
 
 import { TreeGroup } from './tree-group'
+
+// jsdom ships no ResizeObserver, and a zone that renders a header strip
+// measures it (the strip's height is no longer the constant 28px once tabs can
+// wrap onto more rows).
+//
+// beforeEach, not beforeAll: this file's afterEach calls `vi.unstubAllGlobals()`,
+// so a one-time stub survives only the first test and every later one that
+// renders a header would throw.
+class TestResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', TestResizeObserver)
+})
 
 let root: null | Root = null
 let container: HTMLDivElement | null = null

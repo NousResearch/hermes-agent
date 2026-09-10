@@ -489,6 +489,8 @@ export interface Translations {
       tabStripAuto: string
       tabStripAlways: string
       tabStripNever: string
+      tabStripWrapTitle: string
+      tabStripWrapDesc: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string

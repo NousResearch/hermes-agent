@@ -82,6 +82,65 @@ test.describe('chat interaction with mock backend', () => {
     )
   })
 
+  test('keeps assistant Markdown links identifiable without hover', async () => {
+    const page = fixture!.page
+    const testFixtureId = 'markdown-link-affordance-fixture'
+
+    await page.evaluate(id => {
+      const testFixture = document.createElement('div')
+      testFixture.dataset.testid = id
+      testFixture.innerHTML = `
+        <a class="ref" data-testid="reference-outside-markdown" href="#other-reference">Other reference</a>
+        <div data-slot="aui_assistant-message-content">
+          <div class="aui-md">
+            <p>Read the <a class="ref" href="#markdown-link">link guide</a> for details.</p>
+          </div>
+        </div>
+      `
+      document.body.prepend(testFixture)
+      ;(document.activeElement as HTMLElement | null)?.blur()
+    }, testFixtureId)
+
+    const testFixture = page.getByTestId(testFixtureId)
+    const markdownLink = testFixture.getByRole('link', { name: 'link guide' })
+    const otherReference = testFixture.getByTestId('reference-outside-markdown')
+
+    try {
+      await page.mouse.move(600, 400)
+
+      const restingStyle = await markdownLink.evaluate(element => {
+        const style = getComputedStyle(element)
+
+        return {
+          color: style.color,
+          textDecorationColor: style.textDecorationColor,
+          textDecorationLine: style.textDecorationLine
+        }
+      })
+
+      expect(restingStyle.textDecorationLine).toContain('underline')
+      expect(restingStyle.textDecorationColor).toBe(restingStyle.color)
+      expect(await otherReference.evaluate(element => getComputedStyle(element).textDecorationLine)).not.toContain(
+        'underline'
+      )
+
+      await otherReference.focus()
+      await page.keyboard.press('Tab')
+      await expect(markdownLink).toBeFocused()
+
+      const focusStyle = await markdownLink.evaluate(element => {
+        const style = getComputedStyle(element)
+
+        return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth }
+      })
+
+      expect(focusStyle.outlineStyle).not.toBe('none')
+      expect(focusStyle.outlineWidth).not.toBe('0px')
+    } finally {
+      await testFixture.evaluate(element => element.remove())
+    }
+  })
+
   test('screenshot of chat with messages', async () => {
     await expectVisualSnapshot(fixture!.page, { name: 'chat-with-messages', app: fixture!.app })
   })

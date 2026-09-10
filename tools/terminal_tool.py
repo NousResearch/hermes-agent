@@ -784,6 +784,26 @@ def _resolve_command_cwd(
     return recorded or default_cwd
 
 
+def _terminal_cwd_outside_safe_root(cwd: str) -> Optional[str]:
+    """Return an error when a local command cwd escapes the trusted root."""
+    safe_root = str(os.environ.get("HERMES_TERMINAL_SAFE_ROOT", "") or "").strip()
+    if not safe_root:
+        return None
+
+    resolved_root = os.path.realpath(safe_root)
+    resolved_cwd = os.path.realpath(cwd)
+    try:
+        within_root = os.path.commonpath([resolved_cwd, resolved_root]) == resolved_root
+    except ValueError:
+        within_root = False
+    if within_root:
+        return None
+    return (
+        f"Terminal cwd {cwd!r} is outside HERMES_TERMINAL_SAFE_ROOT "
+        f"({safe_root!r}); command blocked."
+    )
+
+
 def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:
     """The terminal error envelope: ``output``/``exit_code``/``error`` (+ ``status``, extras)."""
     body: Dict[str, Any] = {"output": "", "exit_code": exit_code, "error": error}
@@ -948,6 +968,10 @@ def _plan_execution(
                 cwd, env_type, remapped,
             )
         cwd = remapped
+    if env_type == "local":
+        safe_root_error = _terminal_cwd_outside_safe_root(cwd)
+        if safe_root_error:
+            raise _Rejected(tool_error(safe_root_error))
     # Reject non-positive timeouts before deadline math: ``timeout or
     # default`` would silently turn 0 into the default, and a negative
     # value is truthy and would fire an immediate "-Ns" timeout.

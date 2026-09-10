@@ -2084,6 +2084,10 @@ def apply_terminal_config_to_env(
                 value = os.path.expanduser(value)
         if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)
+
+    cwd_override = str(target.get("HERMES_TERMINAL_CWD_OVERRIDE", "") or "").strip()
+    if cwd_override and os.path.isabs(cwd_override):
+        target["TERMINAL_CWD"] = cwd_override
     return target
 
 

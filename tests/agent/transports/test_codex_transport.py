@@ -942,6 +942,89 @@ class TestCodexBuildKwargs:
             for t in tools
         )
 
+    # --- OpenAI Codex native web-search swap ---
+    # The Codex Responses endpoint exposes the same server-executed
+    # ``web_search`` built-in as xAI, so selecting the ``openai-native``
+    # backend performs the same 1:1 swap. Unlike xAI there is no alias path:
+    # an unselected or non-Codex request keeps the client-side function, so a
+    # custom OpenAI-compatible endpoint never receives a tool it cannot host.
+
+    def test_openai_native_swaps_client_web_search_for_builtin(self, transport, monkeypatch):
+        """Selecting ``openai-native`` replaces the client ``web_search``
+        function with the provider-executed built-in. ``web_extract`` is a
+        separate capability and must survive — native search covers search only.
+        """
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: True)
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Find current prices."}],
+            tools=[
+                {"type": "function", "function": {
+                    "name": "read_file", "description": "Read a file.",
+                    "parameters": {"type": "object",
+                                   "properties": {"path": {"type": "string"}}}}},
+                {"type": "function", "function": {
+                    "name": "web_search", "description": "Search the web.",
+                    "parameters": {"type": "object",
+                                   "properties": {"query": {"type": "string"}}}}},
+                {"type": "function", "function": {
+                    "name": "web_extract", "description": "Extract a page.",
+                    "parameters": {"type": "object",
+                                   "properties": {"url": {"type": "string"}}}}},
+            ],
+            is_codex_backend=True,
+        )
+        tools = kw.get("tools", [])
+        assert any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "web_search" not in names
+        assert "read_file" in names
+        assert "web_extract" in names
+
+    def test_openai_native_not_selected_keeps_client_web_search(self, transport, monkeypatch):
+        """A Codex turn that has not selected ``openai-native`` keeps Hermes
+        dispatch — the built-in must never be granted additively."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: False)
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Find current prices."}],
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_codex_backend=True,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "web_search" in names
+
+    def test_openai_native_ignored_on_non_codex_transport(self, transport, monkeypatch):
+        """The provider-executed built-in only exists on
+        ``chatgpt.com/backend-api/codex``. A custom OpenAI-compatible endpoint
+        must keep the client tool even when the search backend says native.
+        """
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: True)
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Find current prices."}],
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_codex_backend=False,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "web_search" in names
+
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
     # on grok-4 / grok-4-fast / grok-3 / grok-code-fast / grok-4.20-0309-*.

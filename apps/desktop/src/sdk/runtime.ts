@@ -13,21 +13,32 @@ import * as jsxRuntime from 'react/jsx-runtime'
 
 import * as sdk from './index'
 
-const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
-} as const
+/** Namespaces resolve at CALL time, never captured at module-eval time: the
+ *  built `sdk` chunk concatenates module sections, and a dependency cycle can
+ *  order this module's section BEFORE the sections that assign the imported
+ *  bindings — a module-level object then captured `undefined`, and every
+ *  runtime-plugin load died in the shim builder (`Object.keys(undefined)` →
+ *  TypeError "Cannot convert undefined or null to object"). Both callers
+ *  below run after boot, when every binding is assigned. */
+function sdkGlobals() {
+  return {
+    __HERMES_PLUGIN_SDK__: sdk,
+    __HERMES_REACT__: React,
+    __HERMES_REACT_JSX__: jsxRuntime,
+    __HERMES_REACT_JSX_DEV__: jsxDevRuntime
+  } as const
+}
+
+type SdkGlobalKey = keyof ReturnType<typeof sdkGlobals>
 
 export function installPluginSdk(): void {
-  Object.assign(globalThis, GLOBALS)
+  Object.assign(globalThis, sdkGlobals())
 }
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.
  *  Export names come from the namespace itself, so the list can't drift. */
-function shimUrl(globalKey: keyof typeof GLOBALS): string {
-  const names = Object.keys(GLOBALS[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
+function shimUrl(globalKey: SdkGlobalKey): string {
+  const names = Object.keys(sdkGlobals()[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
 
   const source =
     `const m = globalThis.${globalKey};\n` +

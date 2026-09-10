@@ -1,17 +1,26 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { $paneStates } from '@/store/panes'
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
+import { $layoutEditMode } from '../../edit-mode'
 import type { GroupNode } from '../model'
-import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
+import { $layoutTree, $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
 
 import { TreeGroup } from './tree-group'
 
 let root: null | Root = null
 let container: HTMLDivElement | null = null
 let disposePane: (() => void) | null = null
+const disposers: (() => void)[] = []
+
+beforeAll(() => {
+  stubResizeObserver()
+  stubMenuDomApis()
+})
 
 function render(ui: ReactNode) {
   if (!container) {
@@ -50,6 +59,10 @@ afterEach(() => {
 
   container?.remove()
   disposePane?.()
+  disposers.splice(0).forEach(d => d())
+  $paneStates.set({})
+  $layoutTree.set(null)
+  $layoutEditMode.set(false)
   root = null
   container = null
   disposePane = null

@@ -1,7 +1,7 @@
 import type { LayoutNode } from '../model'
 
 import { TreeGroup } from './tree-group'
-import { TreeSplit } from './tree-split'
+import { type LockedBoundaryAxes, TreeSplit } from './tree-split'
 
 /** Dispatch a layout node to its renderer — the split/group recursion point.
  *  `root` marks the tree's top split (side collapse applies only there).
@@ -13,12 +13,14 @@ import { TreeSplit } from './tree-split'
  *  column → horizontal header). `railSide` is which half of that row the
  *  child sits in — the rail's divider stroke faces the content side. */
 export function TreeNode({
+  lockedBoundaries,
   node,
   parentAxis,
   railSide,
   root,
   rootRow
 }: {
+  lockedBoundaries?: LockedBoundaryAxes
   node: LayoutNode
   parentAxis?: 'column' | 'row'
   railSide?: 'left' | 'right'
@@ -26,7 +28,7 @@ export function TreeNode({
   rootRow?: boolean
 }) {
   return node.type === 'split' ? (
-    <TreeSplit node={node} root={root} rootRow={rootRow} />
+    <TreeSplit lockedBoundaries={lockedBoundaries} node={node} root={root} rootRow={rootRow} />
   ) : (
     <TreeGroup node={node} parentAxis={parentAxis} railSide={railSide} />
   )

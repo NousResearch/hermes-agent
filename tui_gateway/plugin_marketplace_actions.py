@@ -144,6 +144,7 @@ def update_plugin(params: dict) -> dict:
             force=True,
             ref=entry.sha,
             metadata_extra=_marketplace_metadata(entry),
+            expected_install=marketplace,
         )
     except PluginOperationError as exc:
         raise MarketplaceRequestError(str(exc), 5026) from exc

@@ -1478,6 +1478,63 @@ def test_real_private_marketplace_install_and_subtree_update(tmp_path: Path) -> 
     assert refreshed["installed_tree_sha"] != original_tree
 
 
+def test_private_marketplace_update_cannot_resurrect_removed_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import hermes_cli.plugins_cmd as plugins_cmd
+    from tui_gateway import server
+
+    repo = _marketplace_repo(tmp_path)
+    source = add_marketplace(f"file://{repo}", allow_file=True)
+    installed = plugins_cmd.dashboard_install_plugin(
+        "",
+        force=False,
+        enable=True,
+        catalog_name="demo",
+        catalog_source=source["id"],
+    )
+    assert installed["ok"] is True
+
+    skill = repo / "plugins" / "demo" / "skills" / "demo" / "SKILL.md"
+    skill.write_text(skill.read_text(encoding="utf-8") + "\nUpdated.\n", encoding="utf-8")
+    _git(repo, "add", "plugins/demo")
+    _git(repo, "commit", "-m", "update plugin")
+
+    update_scanned = Event()
+    resume_update = Event()
+    scan = plugins_cmd._scan_plugin_tree
+
+    def paused_scan(plugin_dir, identifier, **kwargs):
+        scan(plugin_dir, identifier, **kwargs)
+        update_scanned.set()
+        assert resume_update.wait(timeout=5)
+
+    monkeypatch.setattr(plugins_cmd, "_scan_plugin_tree", paused_scan)
+    target = Path(os.environ["HERMES_HOME"]) / "plugins" / "demo"
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        updating = pool.submit(
+            server.handle_request,
+            {
+                "id": "update",
+                "method": "plugins.manage",
+                "params": {"action": "update", "key": "demo"},
+            },
+        )
+        assert update_scanned.wait(timeout=5)
+        plugins_cmd._remove_plugin_core(target)
+        resume_update.set()
+        response = updating.result(timeout=10)
+
+    assert response is not None
+    assert "changed or was removed" in response["error"]["message"]
+    assert not target.exists()
+    assert "demo" not in plugins_cmd._read_install_metadata()
+    assert plugins_cmd._plugin_membership("demo") == (False, False)
+
+
 def test_catalog_sidecar_symlink_does_not_write_external_file(tmp_path: Path) -> None:
     import hermes_cli.plugins_cmd as plugins_cmd
     from hermes_cli.plugins_cmd_catalog import CATALOG_SIDECAR, write_catalog_sidecar

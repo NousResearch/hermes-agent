@@ -646,6 +646,7 @@ def _install_plugin_core(
     metadata_extra: Optional[dict[str, object]] = None,
     catalog_entry=None,
     enable_on_commit: bool = False,
+    expected_install: Optional[dict[str, object]] = None,
 ) -> tuple[Path, dict, str]:
     """Clone, validate, and transactionally install one Git plugin."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
@@ -710,6 +711,12 @@ def _install_plugin_core(
             with _install_metadata_lock():
                 current_metadata = _read_install_metadata()
                 prior = current_metadata.get(plugin_name)
+                if expected_install is not None and (
+                    not target.is_dir() or prior != expected_install
+                ):
+                    raise PluginOperationError(
+                        f"Plugin '{plugin_name}' changed or was removed while its update was in progress."
+                    )
                 if target.exists() and not force:
                     raise PluginOperationError(
                         f"Plugin '{plugin_name}' already exists. Use force reinstall "

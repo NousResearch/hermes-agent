@@ -281,13 +281,41 @@ def _register_plugin_provider(pp: Any) -> None:
         PROVIDER_REGISTRY.setdefault(alias, pconfig)
 
 
-try:
-    from providers import list_providers as _list_providers_for_registry
-    for _pp in _list_providers_for_registry():
-        if _pp.name not in PROVIDER_REGISTRY:
-            _register_plugin_provider(_pp)
-except Exception:
-    pass
+def sync_plugin_provider_registry() -> int:
+    """Mirror provider-plugin profiles into ``PROVIDER_REGISTRY``; return how many were added.
+
+    Idempotent and cheap (only missing names are registered, existing entries are never replaced),
+    so it is safe from resolution paths. It runs once at import below and again whenever a name is
+    missing (:func:`_registry_lookup`) or when ``providers`` finishes discovery, because the
+    import-time pass can observe a *partial* profile list: if a plugin's own imports pull this
+    module in while ``providers._discover_providers()`` is still iterating the plugin directories,
+    ``list_providers()`` returns only what has been registered so far (the discovery guard is
+    already set) and every plugin discovered after that point would otherwise be invisible to
+    ``resolve_provider()`` and fail with "Unknown provider". See #102123."""
+    try:
+        from providers import list_providers as _list_providers_for_registry
+        profiles = _list_providers_for_registry()
+    except Exception:
+        return 0
+    added = 0
+    for pp in profiles:
+        if pp.name in PROVIDER_REGISTRY:
+            continue
+        _register_plugin_provider(pp)
+        if pp.name in PROVIDER_REGISTRY:
+            added += 1
+    return added
+
+
+def _registry_lookup(provider_id: str) -> Optional[ProviderConfig]:
+    """``PROVIDER_REGISTRY.get`` that re-syncs plugin profiles on a miss."""
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if pconfig is None and sync_plugin_provider_registry():
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+    return pconfig
+
+
+sync_plugin_provider_registry()
 
 
 def get_anthropic_key() -> str:
@@ -855,7 +883,7 @@ def mark_provider_active_if_unset(provider_id: str) -> None:
 
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
-    return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES
+    return _registry_lookup(normalized) is not None or normalized in SERVICE_PROVIDER_NAMES
 
 
 def get_auth_provider_display_name(provider_id: str) -> str:
@@ -1442,7 +1470,7 @@ def resolve_provider(
     normalized = (requested or "auto").strip().lower()
     normalized = _plugin_aliases().get(normalized, normalized)
 
-    if normalized in ("openrouter", "custom") or normalized in PROVIDER_REGISTRY:
+    if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
         return normalized
     if normalized != "auto":
         hint = _get_config_hint_for_unknown_provider(normalized)
@@ -1808,7 +1836,7 @@ def _provider_is_keyless(provider_id: str) -> bool:
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
     status = {
@@ -1904,7 +1932,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
 
     ``configured``/``logged_in`` are structural (executable resolves or TCP endpoint set): the
     subprocess owns real auth. ``auth_verified``/``auth_source`` carry positive evidence only."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
     command, args, base_url, resolved_command, _ = _external_process_spec(pconfig)
@@ -1936,7 +1964,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     status_fn_name = _BESPOKE_STATUS_FUNCTIONS.get(target)
     if status_fn_name:
         return globals()[status_fn_name]()
-    pconfig = PROVIDER_REGISTRY.get(target)
+    pconfig = _registry_lookup(target)
     if pconfig and pconfig.auth_type in _STATUS_BY_AUTH_TYPE:
         return globals()[_STATUS_BY_AUTH_TYPE[pconfig.auth_type]](target)
     return {"logged_in": False}
@@ -2036,7 +2064,7 @@ _API_KEY_BASE_URL_RESOLVERS: Dict[str, Callable[[str, str, str], str]] = {
 
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
@@ -2067,7 +2095,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         raise AuthError(
             f"Provider '{provider_id}' is not an external-process provider.",

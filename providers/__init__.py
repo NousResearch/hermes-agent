@@ -46,11 +46,32 @@ _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
+_discovering = False
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
     Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
 )
+
+
+def _sync_auth_registry() -> None:
+    """Mirror profiles into ``hermes_cli.auth.PROVIDER_REGISTRY`` if that module is loaded.
+
+    ``hermes_cli.auth`` takes its own snapshot of ``list_providers()`` when it is imported. If a
+    plugin's imports pull that module in while :func:`_discover_providers` is still running, the
+    snapshot is partial and later plugins never reach the auth registry ("Unknown provider",
+    #102123). Calling back into auth once discovery is complete closes that window. Looked up via
+    ``sys.modules`` on purpose: this layer must never import ``hermes_cli`` (that would run auth's
+    top-level code mid-scan and risk a circular import). Never raises: registration must not fail
+    because of the auth mirror.
+    """
+    sync = getattr(sys.modules.get("hermes_cli.auth"), "sync_plugin_provider_registry", None)
+    if sync is None:
+        return
+    try:
+        sync()
+    except Exception as exc:  # pragma: no cover — never break discovery
+        logger.debug("auth registry sync skipped: %s", exc)
 
 
 def register_provider(profile: ProviderProfile) -> None:
@@ -65,6 +86,8 @@ def register_provider(profile: ProviderProfile) -> None:
     for alias in profile.aliases:
         _ALIASES[alias] = profile.name
     _PROVIDER_LIST_CACHE = None
+    if _discovered and not _discovering:  # post-discovery registration: mirror it immediately
+        _sync_auth_registry()
 
 
 def get_provider_profile(name: str) -> ProviderProfile | None:
@@ -337,11 +360,22 @@ def _discover_providers() -> None:
     Each step imports its plugins, which call ``register_provider()`` at
     module-level. Later steps win on name collision.
     """
-    global _discovered
+    global _discovered, _discovering
     if _discovered:
         return
     _discovered = True
+    _discovering = True
+    try:
+        _run_discovery_steps()
+    finally:
+        _discovering = False
+        # hermes_cli.auth may have been imported by a plugin during discovery and snapshotted a
+        # partial profile list — hand it the complete one (no-op unless auth is already loaded).
+        _sync_auth_registry()
 
+
+def _run_discovery_steps() -> None:
+    """The discovery passes, in precedence order (see :func:`_discover_providers`)."""
     # 0. Pip-installed plugins — entry points in the ``hermes_agent.plugins``
     #    group (the same group the general PluginManager uses). The manager
     #    records model-provider manifests for introspection but deliberately

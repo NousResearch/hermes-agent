@@ -171,6 +171,44 @@ def test_plan_excludes_disallowed_fields():
         assert "profile_url" not in a["disclosure_fields"]
 
 
+def test_usphonebook_plan_prewarns_about_location_plus_dob_or_street_gate():
+    d = _consenting()
+    action = next(
+        a for a in tiers.plan(d, brokers.load_all(), config.DEFAULT_CONFIG)
+        if a["broker_id"] == "usphonebook"
+    )
+
+    assert action["optout_requires"]["address_or_dob"] is True
+    assert action["disclosure_fields"] == ["contact_email", "full_name"]
+    assert any("city/state/postal" in warning for warning in action["needs_operator_input"])
+    assert any("date_of_birth or street" in warning for warning in action["needs_operator_input"])
+
+
+def test_usphonebook_next_action_preserves_operator_disclosure_boundary():
+    with temp_env():
+        d = _consenting()
+        b = brokers.get("usphonebook")
+        cfg = {
+            **config.DEFAULT_CONFIG,
+            "autonomy": "full",
+            "email_mode": "browser",
+            "browser_backend": "browserbase",
+        }
+        queue = autopilot.next_actions(
+            d,
+            [b],
+            cfg,
+            ledger={"usphonebook": {"state": "found"}},
+            env={"BROWSERBASE_API_KEY": "configured"},
+        )
+        action = next(a for a in queue["actions"] if a.get("broker_id") == "usphonebook")
+
+        assert action["type"] == "optout_web_form"
+        assert action["disclosure_fields"] == ["contact_email", "full_name"]
+        assert any("city/state/postal" in warning for warning in action["needs_operator_input"])
+        assert "stop before disclosing unplanned fields" in action["operator_boundary"]
+
+
 
 
 def _mini_broker(bid, owns=None, requires=None, notes="", quirks=None):
@@ -222,6 +260,61 @@ def test_ledger_valid_transition_and_audit():
         audit = storage.read_jsonl(__import__("paths").audit_path(sid))
         assert any(e["to"] == "found" for e in audit)
 
+
+def test_transition_clears_stale_human_task_reason_when_case_resumes():
+    with temp_env():
+        sid = "sub_test01"
+        ledger.transition(sid, "usphonebook", "found", found=True)
+        ledger.transition(
+            sid,
+            "usphonebook",
+            "human_task_queued",
+            human_task_reason="extra disclosure requires owner approval",
+        )
+
+        case = ledger.transition(sid, "usphonebook", "awaiting_processing")
+
+        assert case["state"] == "awaiting_processing"
+        assert "human_task_reason" not in case
+
+
+def test_transition_clears_stale_human_task_reason_from_blocked_case():
+    with temp_env():
+        sid = "sub_test01"
+        ledger.transition(
+            sid,
+            "propertyrecs",
+            "blocked",
+            human_task_reason="operator browser required",
+        )
+
+        case = ledger.transition(sid, "propertyrecs", "not_found")
+
+        assert case["state"] == "not_found"
+        assert "human_task_reason" not in case
+
+
+def test_transition_rejects_human_task_reason_metadata_on_nonhuman_target():
+    with temp_env():
+        sid = "sub_test01"
+        case = ledger.transition(
+            sid,
+            "propertyrecs",
+            "blocked",
+            human_task_reason="must not survive",
+        )
+        assert case["state"] == "blocked"
+        assert "human_task_reason" not in case
+
+        case = ledger.transition(
+            sid,
+            "propertyrecs",
+            "not_found",
+            human_task_reason="must not survive",
+        )
+
+        assert case["state"] == "not_found"
+        assert "human_task_reason" not in case
 
 
 

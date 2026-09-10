@@ -1658,7 +1658,10 @@ def _enable_multiplex_log_routing(config: object) -> bool:
         return False
     try:
         from hermes_logging import enable_profile_log_routing
-        return enable_profile_log_routing([home for _name, home in _multiplex_profile_homes(config)])
+        return enable_profile_log_routing(
+            [home for _name, home in _multiplex_profile_homes(config)],
+            live_membership=True,
+        )
     except Exception:
         logger.debug("could not enable per-profile log routing", exc_info=True)
         return False
@@ -5089,7 +5092,14 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         try:
             initial_profile_homes = _multiplex_profile_homes(runner.config)
             if initial_profile_homes:
-                cron_start_kwargs["profile_homes"] = lambda: _multiplex_profile_homes(runner.config)
+                def current_profile_homes():
+                    homes = _multiplex_profile_homes(runner.config)
+                    from hermes_logging import enable_profile_log_routing
+                    enable_profile_log_routing(
+                        [home for _name, home in homes], live_membership=True)
+                    return homes
+
+                cron_start_kwargs["profile_homes"] = current_profile_homes
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
                 cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
                 # runner.adapters belongs to "default"; naming it keeps the ticker from routing a secondary's

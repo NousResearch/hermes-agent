@@ -142,6 +142,35 @@ class TestSetupLogging:
             hermes_home / "logs" / "agent.log"
         ).read_text()
 
+    def test_profile_routing_accepts_home_discovered_after_startup(self, hermes_home, tmp_path):
+        """Live cron membership extends the routing allowlist without restart."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "created-later"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home], live_membership=True
+        ) is True
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home], live_membership=True
+        ) is True
+
+        logger = logging.getLogger("cron.scheduler.live-profile-routing-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("late profile cron record")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        assert "late profile cron record" in (
+            profile_home / "logs" / "agent.log"
+        ).read_text()
+        assert "late profile cron record" not in (
+            hermes_home / "logs" / "agent.log"
+        ).read_text()
+
 
 
 

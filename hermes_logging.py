@@ -377,6 +377,13 @@ class _ProfileRoutingFileHandler(logging.Handler):
         for log_filter in existing.filters:
             self.addFilter(log_filter)
 
+    def update_profile_homes(self, profile_homes: Sequence[Path]) -> None:
+        """Replace the allowed routing homes after live profile discovery."""
+        homes = {Path(home).expanduser().resolve() for home in profile_homes}
+        homes.add(self._default_home)
+        with self._profile_handlers_lock:
+            self._profile_homes = homes
+
     def _home_for_record(self, record: logging.LogRecord) -> Path:
         raw_home = getattr(record, "hermes_home", "")
         try:
@@ -513,13 +520,16 @@ def drain_log_queue(timeout: float = 1.0) -> None:
     t.join(timeout)
 
 
-def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
+def enable_profile_log_routing(
+    profile_homes: Sequence[str | Path], *, live_membership: bool = False
+) -> bool:
     """Make the queued file logs follow a desktop profile context.
 
     ``setup_logging`` binds handlers to one process home; the desktop dashboard's
     embedded cron ticker may run jobs for every profile, so its static file handlers
     are replaced with profile routers once the profile list is known. Returns ``True``
-    when routing is (or already was) enabled; a single-profile caller is left untouched.
+    when routing is (or already was) enabled. ``live_membership`` installs a
+    router for a single startup home and lets later calls refresh its allowlist.
     """
     global _queue_listener
     homes: list[Path] = []
@@ -530,13 +540,16 @@ def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
             continue
         if resolved not in homes:
             homes.append(resolved)
-    if len(homes) < 2:
+    if len(homes) < 2 and not live_membership:
         return False
 
     with _queue_state_lock:
         if not _queued_file_handlers:
             return False
-        if any(isinstance(h, _ProfileRoutingFileHandler) for h in _queued_file_handlers):
+        routers = [h for h in _queued_file_handlers if isinstance(h, _ProfileRoutingFileHandler)]
+        if routers:
+            for router in routers:
+                router.update_profile_homes(homes)
             return True
         listener = _queue_listener
         if listener is not None:

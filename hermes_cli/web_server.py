@@ -101,16 +101,26 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 
             initial_profile_homes = list(profiles_to_serve(multiplex=True))
             if initial_profile_homes:
-                start_kwargs["profile_homes"] = lambda: profiles_to_serve(multiplex=True)
+                from hermes_logging import enable_profile_log_routing
+
+                def current_profile_homes():
+                    homes = list(profiles_to_serve(multiplex=True))
+                    enable_profile_log_routing(
+                        [home for _name, home in homes], live_membership=True
+                    )
+                    return homes
+
+                start_kwargs["profile_homes"] = current_profile_homes
                 # Stand down, per tick, for a profile whose OWN gateway runs:
                 # it ticks with live adapters, and the tick-lock race would
                 # otherwise deliver through the standalone path (#100489).
                 from hermes_cli.profiles import _check_gateway_running
 
                 start_kwargs["profile_gate"] = lambda _name, home: not _check_gateway_running(Path(home))
-                from hermes_logging import enable_profile_log_routing
-
-                enable_profile_log_routing(initial_profile_homes)
+                enable_profile_log_routing(
+                    [home for _name, home in initial_profile_homes],
+                    live_membership=True,
+                )
                 _log.info(
                     "Desktop cron scheduler will tick %d profile(s): %s",
                     len(initial_profile_homes),

@@ -356,6 +356,7 @@ _PLUGIN_COMPAT_LAZY = {
     'SkillBundle': ('tools.skills_hub_models', 'SkillBundle'),
     'SkillMeta': ('tools.skills_hub_models', 'SkillMeta'),
     'SkillSource': ('tools.skills_hub_models', 'SkillSource'),
+    'LoopSkillSource': ('tools.skills_hub_loopskill', 'LoopSkillSource'),
     'SkillsShSource': ('tools.skills_hub_skillssh', 'SkillsShSource'),
     'TRUSTED_REPOS': ('tools.skills_guard', 'TRUSTED_REPOS'),
     'UrlSource': ('tools.skills_hub_sources', 'UrlSource'),

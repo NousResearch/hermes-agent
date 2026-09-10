@@ -477,12 +477,38 @@ When the agent delegates work to background subagents, the stream also carries
 `subagent.start` and `subagent.complete` lifecycle events, so clients can
 observe delegation outcomes — including timeouts and failures — instead of the
 run going silent while a child works. The `subagent.complete` payload carries
-the child's status, summary, duration, token/cost figures, and a
-`child_session_id` for correlation; free-text fields pass forced secret
+the child's status, summary, duration, token/cost figures, a
+`child_session_id` for correlation, and the `delegation_id` of the batch it
+belongs to (so concurrent or nested fan-outs stay distinguishable); free-text fields pass forced secret
 redaction before leaving the process. Per-tool child events
 (`subagent.tool`, progress ticks) are intentionally **not** forwarded — they
 are high-volume UI noise; use the per-child live transcript files for
-play-by-play.
+play-by-play. These events are available while the parent stream is open; a
+late detached completion does not reopen a finished run's SSE stream or change
+its terminal status.
+
+#### Detached results and session history
+
+Background delegation requires a continuation that reads server-side session
+history: an explicit `X-Hermes-Session-Id` on Chat Completions, a native
+`/api/sessions/{id}/chat` request, or a Runs request using session history.
+Header-less Chat Completions, Responses chains, and Runs requests with
+`previous_response_id` or caller-supplied history instead execute delegation
+synchronously, returning the result in the original turn. Merely deriving a
+session ID from request content does not enable detached delivery.
+
+For resumable requests, the completion is persisted once per delegation unit.
+It is available through `GET /api/sessions/{id}/messages` and in the next real
+client turn's session history. Retries do not insert the same result again;
+interim task-failure notices have separate identities. Delivery waits while a
+client turn owns the session lease and follows compression continuations.
+Chat Completions echoes the explicit session ID you supplied in both JSON and
+streaming responses; keep sending that ID even after compression.
+
+A completion **never starts an unsolicited model turn** or bypasses a pending
+human confirmation. The client owns the next turn. Clients that continue using
+their own history snapshots should use synchronous delegation rather than
+expecting a server-side delivery row to be merged into those snapshots.
 
 Unconsumed event buffers expire after five minutes so a detached client cannot
 grow memory indefinitely. This expires transport state only: a run that is
@@ -628,6 +654,10 @@ to the routed profile**:
 - Unprefixed routes and `/p/default/...` keep using the default profile's key.
 - A named profile with no `API_SERVER_KEY` of its own fails closed — its
   prefix is unreachable until you set one.
+- Runs are per-profile scoped: `/v1/runs/{run_id}` and its `events`, `stop`,
+  `steer`, and `approval` routes only answer for the profile that created
+  the run (including runs started via `/api/sessions/{id}/chat/stream`);
+  another profile's run id returns `404`, never `403`.
 
 :::warning Breaking change (July 2026)
 Before this fix, a valid default-profile key was accepted on any
@@ -694,6 +724,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 When CORS is enabled:
 - **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
 - **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
+- **`X-Hermes-Session-Id`** is an allowed request header, so browsers on an allowlisted origin can request session continuation.
 - **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.

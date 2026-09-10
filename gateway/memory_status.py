@@ -1,137 +1,74 @@
-"""Memory status rollup for ``/api/status`` (NS-656).
+"""Memory status rollup for ``/api/status``.
 
-The gateway already *produces* every memory-pressure signal a user would
-want to know about, but all of it dies in log files:
-
-* :func:`gateway.shutdown_watchdog.write_loop_heartbeat` embeds a
-  :func:`gateway.lifecycle_ledger.sample_memory` snapshot (gateway RSS +
-  system MemAvailable/MemTotal + swap) in ``state/gateway.heartbeat``
-  every 30 seconds.
-* :func:`gateway.lifecycle_ledger.record_startup` detects an unclean
-  previous death and flags ``suspected_oom`` — but only into
-  ``gateway-exit-diag.log`` and a WARNING line.
-* ``gateway/agent_cache_pressure.py`` evicts transcripts under pressure,
-  again log-only.
-
-So a hosted agent can be OOM-killed hourly (the BlueAtlas incident,
-NS-608) while its dashboard and the NAS agent card both look perfectly
-healthy.  This module is the read side that closes the gap: it distills
-the *already-persisted* heartbeat + lifecycle sentinel into a compact,
-public-safe block that ``/api/status`` can serve to the dashboard SPA
-and the NAS availability sweep — no new sampling, no IPC with the
-gateway process, just two small file reads.
-
-Public-safety note: ``/api/status`` is an unauthenticated liveness probe
-(``PUBLIC_API_PATHS``), which is exactly why NAS can consume it.  This
-block therefore carries only coarse numbers (MB granularity), enums, and
-booleans — the same disclosure class as the existing ``active_agents``
-count and ``nous_session_valid`` field (which was added for the same
-NAS-sweep audience).
-
-Everything here is best-effort and read-only: a missing/corrupt file
-degrades to ``pressure="unknown"`` rather than raising into the status
-endpoint.
+Read side for signals the gateway already persists: the 30s ``state/gateway.heartbeat``
+(RSS + MemAvailable/MemTotal + swap) and the lifecycle sentinel's ``suspected_oom``
+flag — two small file reads, no IPC.  ``/api/status`` is unauthenticated, so only
+coarse numbers (MB), enums and booleans.  A missing/corrupt file degrades to
+``pressure="unknown"`` rather than raising into the status endpoint.
 """
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
-
-# Pressure thresholds on system MemAvailable.  ``critical`` deliberately
-# mirrors the lifecycle ledger's OOM-suspicion heuristics
-# (:data:`gateway.lifecycle_ledger._LOW_MEM_AVAILABLE_KIB` /
-# ``_LOW_MEM_AVAILABLE_FRACTION``): if a memory level would make a
-# subsequent unclean death "suspected OOM", the user should already have
-# been warned at that level while the process was still alive.
+# Thresholds on system MemAvailable.  ``critical`` doubles as the lifecycle
+# ledger's OOM-suspicion heuristic: a level that makes a later unclean death
+# "suspected OOM" already warns while the process is alive.
 _CRITICAL_AVAILABLE_KIB = 64 * 1024  # < 64 MiB available
 _CRITICAL_AVAILABLE_FRACTION = 0.05  # < 5% of MemTotal
 _ELEVATED_AVAILABLE_KIB = 128 * 1024  # < 128 MiB available
 _ELEVATED_AVAILABLE_FRACTION = 0.15  # < 15% of MemTotal
+_PRESSURE_TIERS = (  # order-sensitive: worst first
+    ("critical", _CRITICAL_AVAILABLE_KIB, _CRITICAL_AVAILABLE_FRACTION),
+    ("elevated", _ELEVATED_AVAILABLE_KIB, _ELEVATED_AVAILABLE_FRACTION),
+)
 
-# A heartbeat older than this no longer describes the present.  The writer
-# cadence is 30s (DEFAULT_HEARTBEAT_INTERVAL_S); 150s of slack tolerates a
-# briefly stalled loop without letting a long-dead gateway's last sample
-# masquerade as current pressure.
+# Writer cadence is 30s; 150s tolerates a briefly stalled loop without letting
+# a long-dead gateway's last sample pose as current.
 _HEARTBEAT_FRESH_TTL_S = 150.0
 
-_KIB_PER_MB = 1024
+
+def _nonneg_int(value: Any) -> Optional[int]:
+    """Return *value* if it is a non-negative int (bools rejected), else None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _mb(kib: Any) -> Optional[int]:
-    if isinstance(kib, bool) or not isinstance(kib, int) or kib < 0:
-        return None
-    return kib // _KIB_PER_MB
+    return None if _nonneg_int(kib) is None else kib // 1024
 
 
 def _parse_iso(value: Any) -> Optional[datetime]:
-    if not isinstance(value, str) or not value:
-        return None
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value) if isinstance(value, str) and value else None
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+    return parsed.replace(tzinfo=timezone.utc) if parsed is not None and parsed.tzinfo is None else parsed
 
 
-def classify_pressure(
-    available_kib: Any, total_kib: Any
-) -> str:
-    """Map a MemAvailable/MemTotal pair to ``ok``/``elevated``/``critical``.
-
-    ``unknown`` when the sample is missing or malformed — the caller must
-    not treat "we could not read it" as "memory is fine".
-    """
-    if (
-        isinstance(available_kib, bool)
-        or not isinstance(available_kib, int)
-        or available_kib < 0
-    ):
+def classify_pressure(available_kib: Any, total_kib: Any) -> str:
+    """``ok``/``elevated``/``critical`` from MemAvailable/MemTotal; ``unknown`` when the
+    sample is missing/malformed — "could not read it" must never read as "fine"."""
+    available, total = _nonneg_int(available_kib), _nonneg_int(total_kib)
+    if available is None:
         return "unknown"
-    fraction: Optional[float] = None
-    if (
-        not isinstance(total_kib, bool)
-        and isinstance(total_kib, int)
-        and total_kib > 0
-    ):
-        fraction = available_kib / total_kib
-    if available_kib < _CRITICAL_AVAILABLE_KIB or (
-        fraction is not None and fraction < _CRITICAL_AVAILABLE_FRACTION
-    ):
-        return "critical"
-    if available_kib < _ELEVATED_AVAILABLE_KIB or (
-        fraction is not None and fraction < _ELEVATED_AVAILABLE_FRACTION
-    ):
-        return "elevated"
+    fraction = available / total if total else None
+    for level, kib_floor, frac_floor in _PRESSURE_TIERS:
+        if available < kib_floor or (fraction is not None and fraction < frac_floor):
+            return level
     return "ok"
 
 
-def _read_heartbeat(home: Optional[Path]) -> Optional[Dict[str, Any]]:
+def _read_state_files(home: Optional[Path]) -> tuple:
+    """``(heartbeat, sentinel)`` dicts, each ``None`` when unreadable."""
     try:
-        from gateway.lifecycle_ledger import _read_json
+        from gateway.lifecycle_ledger import _read_json, get_lifecycle_sentinel_path
         from gateway.shutdown_watchdog import get_loop_heartbeat_path
 
-        return _read_json(get_loop_heartbeat_path(home))
+        return _read_json(get_loop_heartbeat_path(home)), _read_json(get_lifecycle_sentinel_path(home))
     except Exception:
-        return None
-
-
-def _read_sentinel(home: Optional[Path]) -> Optional[Dict[str, Any]]:
-    try:
-        from gateway.lifecycle_ledger import (
-            _read_json,
-            get_lifecycle_sentinel_path,
-        )
-
-        return _read_json(get_lifecycle_sentinel_path(home))
-    except Exception:
-        return None
+        return None, None
 
 
 def collect_memory_status(
@@ -139,65 +76,60 @@ def collect_memory_status(
     *,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Build the ``memory`` block for ``/api/status``.
-
-    ``home`` scopes the read to a profile's HERMES_HOME (the status
-    endpoint's ``?profile=`` handling passes it through); ``None`` means
-    the active profile.  ``now`` is injectable for tests.
-
-    Always returns a dict — a gateway that is down, has never written a
-    heartbeat, or whose files are corrupt yields
-    ``{"pressure": "unknown", ...}`` with whatever fields could still be
-    recovered.  Never raises.
-    """
+    """``memory`` block for ``/api/status``; ``home`` scopes to a profile (``None`` =
+    active), ``now`` is injectable.  Never raises — a down gateway or corrupt files
+    yield ``pressure="unknown"`` plus whatever fields could be recovered."""
     moment = now or datetime.now(timezone.utc)
     status: Dict[str, Any] = {
-        "pressure": "unknown",
-        "gateway_rss_mb": None,
-        "system_total_mb": None,
-        "system_available_mb": None,
-        "swap_used_mb": None,
-        "sampled_at": None,
-        "last_boot_unclean": False,
-        "last_boot_suspected_oom": False,
-        # Identity of the CURRENT gateway life (the sentinel's started_at).
-        # A suspected-OOM restart writes a fresh sentinel, so this changes on
-        # every boot — the dashboard keys banner dismissal on it so that
-        # acknowledging one OOM restart does not mute reports of the NEXT
-        # one (the hourly-restart-loop case is exactly the one that matters).
+        "pressure": "unknown", "gateway_rss_mb": None, "system_total_mb": None, "system_available_mb": None,
+        "swap_used_mb": None, "sampled_at": None, "last_boot_unclean": False, "last_boot_suspected_oom": False,
+        # Identity of the CURRENT life (sentinel started_at): the dashboard keys
+        # banner dismissal on it so acknowledging one OOM restart does not mute the NEXT.
         "boot_id": None,
     }
 
-    heartbeat = _read_heartbeat(home)
+    heartbeat, sentinel = _read_state_files(home)
     if heartbeat:
-        sampled_at = _parse_iso(heartbeat.get("updated_at"))
-        mem = heartbeat.get("mem")
+        sampled_at, mem = _parse_iso(heartbeat.get("updated_at")), heartbeat.get("mem")
         if isinstance(mem, dict):
-            status["gateway_rss_mb"] = _mb(mem.get("rss_kib"))
-            status["system_total_mb"] = _mb(mem.get("mem_total_kib"))
-            status["system_available_mb"] = _mb(mem.get("mem_available_kib"))
-            status["swap_used_mb"] = _mb(mem.get("swap_used_kib"))
+            for dst, src in (("gateway_rss_mb", "rss_kib"), ("system_total_mb", "mem_total_kib"),
+                             ("system_available_mb", "mem_available_kib"), ("swap_used_mb", "swap_used_kib")):
+                status[dst] = _mb(mem.get(src))
             if sampled_at is not None:
                 status["sampled_at"] = sampled_at.isoformat()
-                age_s = (moment - sampled_at).total_seconds()
-                if 0 <= age_s <= _HEARTBEAT_FRESH_TTL_S:
-                    status["pressure"] = classify_pressure(
-                        mem.get("mem_available_kib"),
-                        mem.get("mem_total_kib"),
-                    )
-                # else: stale sample — numbers are still reported (they are
-                # honest about *when* via sampled_at) but pressure stays
-                # "unknown" so a dead gateway's final gasp cannot render a
-                # live "critical" banner forever.
+                # Stale sample: numbers still reported (sampled_at says when) but
+                # pressure stays "unknown" so a dead gateway's final gasp cannot
+                # render a live "critical" banner forever.
+                if 0 <= (moment - sampled_at).total_seconds() <= _HEARTBEAT_FRESH_TTL_S:
+                    status["pressure"] = classify_pressure(mem.get("mem_available_kib"), mem.get("mem_total_kib"))
 
-    sentinel = _read_sentinel(home)
     if sentinel:
         status["last_boot_unclean"] = bool(sentinel.get("prior_unclean_exit"))
-        status["last_boot_suspected_oom"] = bool(
-            sentinel.get("prior_suspected_oom")
-        )
+        status["last_boot_suspected_oom"] = bool(sentinel.get("prior_suspected_oom"))
         started_at = sentinel.get("started_at")
-        if isinstance(started_at, str) and started_at:
-            status["boot_id"] = started_at
+        status["boot_id"] = started_at if isinstance(started_at, str) and started_at else None
 
     return status
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import logging  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'logger': ('gateway.run', 'logger'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

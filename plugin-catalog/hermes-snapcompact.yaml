@@ -1,0 +1,14 @@
+name: hermes-snapcompact
+repo: https://github.com/vimona3ds/hermes-snapcompact
+sha: 8a274ca4a501e5661f1e2762150c4c3f99e374ce
+description: 'Snapcompact context engine: archives conversation history as dense bitmap PNG frames that
+  vision models read back at ~1/3 the token cost.'
+maintainer: vimona3ds
+tier: community
+docs_url: https://github.com/vimona3ds/hermes-snapcompact
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

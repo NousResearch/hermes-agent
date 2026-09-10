@@ -29,7 +29,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
         calls.append(("deliver", job["id"]))
         return None
 
@@ -88,7 +88,7 @@ def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
         s, "create_execution", lambda *_a, **_kw: {"id": "exec-j3"}
     )
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",
@@ -141,7 +141,7 @@ def test_run_one_job_exception_records_failure_alert_delivery_error(monkeypatch)
         s, "create_execution", lambda *_a, **_kw: {"id": "exec-j4"}
     )
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",
@@ -165,7 +165,7 @@ def _patch_escaped_failure(monkeypatch, delivered, *, exec_id, err):
     """Make run_job raise, and capture what the escape handler delivers."""
     monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": exec_id})
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",
@@ -246,7 +246,7 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
         s, "create_execution", lambda *_a, **_kw: {"id": "exec-j5"}
     )
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",
@@ -288,7 +288,7 @@ def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch)
         s, "create_execution", lambda *_a, **_kw: {"id": "exec-j6"}
     )
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",

@@ -22,9 +22,12 @@ else:
 
 import argparse
 import asyncio
+import json
 import logging
 import os
+import re
 import sys
+from datetime import date
 from pathlib import Path
 from hermes_constants import get_hermes_home
 
@@ -33,6 +36,51 @@ from hermes_constants import get_hermes_home
 # (clients treat that as "agent alive"), but the dispatching supervisor task also logs
 # ``"Background task failed"`` with a traceback every probe. Keep the response; silence the noise.
 _BENIGN_PROBE_METHODS = frozenset({"ping", "health", "healthcheck"})
+
+
+def _normalize_initialize_frame(line: bytes, protocol_version: int) -> bytes:
+    """Normalize MCP-style ACP initialize versions before SDK validation."""
+    try:
+        message = json.loads(line)
+    except (ValueError, UnicodeDecodeError, TypeError, RecursionError):
+        return line
+
+    if not isinstance(message, dict) or message.get("method") != "initialize":
+        return line
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return line
+
+    value = params.get("protocolVersion")
+    if not isinstance(value, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) is None:
+        return line
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return line
+
+    params["protocolVersion"] = protocol_version
+    return (
+        json.dumps(message, separators=(",", ":")).encode("utf-8")
+        + b"\n"
+    )
+
+
+class _InitializeCompatReader(asyncio.StreamReader):
+    """StreamReader facade that repairs only incompatible initialize frames."""
+
+    def __init__(self, source: asyncio.StreamReader, protocol_version: int) -> None:
+        super().__init__()
+        self._source = source
+        self._protocol_version = protocol_version
+        self._first_frame = True
+
+    async def readline(self) -> bytes:
+        line = await self._source.readline()
+        if not line or not self._first_frame:
+            return line
+        self._first_frame = False
+        return _normalize_initialize_frame(line, self._protocol_version)
 
 
 class _BenignProbeMethodFilter(logging.Filter):
@@ -157,6 +205,22 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
         return 1
 
 
+async def _run_agent_with_initialize_compat(agent) -> None:
+    """Run ACP over stdio with a narrow initialize-version compatibility shim."""
+    import acp
+    from acp.core import DEFAULT_STDIO_BUFFER_LIMIT_BYTES
+    from acp.stdio import stdio_streams
+
+    reader, writer = await stdio_streams(limit=DEFAULT_STDIO_BUFFER_LIMIT_BYTES)
+    compat_reader = _InitializeCompatReader(reader, acp.PROTOCOL_VERSION)
+    await acp.run_agent(
+        agent,
+        input_stream=writer,
+        output_stream=compat_reader,
+        use_unstable_protocol=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
     args = _parse_args(argv)
@@ -198,7 +262,7 @@ def main(argv: list[str] | None = None) -> None:
 
     agent = HermesACPAgent()
     try:
-        asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
+        asyncio.run(_run_agent_with_initialize_compat(agent))
     except KeyboardInterrupt:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:

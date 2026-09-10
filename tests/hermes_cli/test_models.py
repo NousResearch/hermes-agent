@@ -56,6 +56,25 @@ class TestFetchOpenRouterModels:
 
         assert models == OPENROUTER_MODELS
 
+    def test_falls_back_to_curated_floor_when_rate_limited_with_partial_cache(self, monkeypatch):
+        target = "deepseek/deepseek-v4.1-flash"
+        monkeypatch.setattr(
+            _models_mod,
+            "_openrouter_catalog_cache",
+            [("old/provider-model", "")],
+        )
+        with patch(
+            "hermes_cli.model_catalog.get_curated_openrouter_models",
+            return_value=[(target, "")],
+        ), patch(
+            "hermes_cli.models._fetch_live_catalog_index",
+            return_value=None,
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [model for model, _ in models]
+        assert ids[:2] == ["old/provider-model", target]
+
     def test_filters_out_models_without_tool_support(self, monkeypatch):
         """Models whose supported_parameters omits 'tools' must not appear in the picker.
 

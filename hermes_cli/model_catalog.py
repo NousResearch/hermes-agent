@@ -325,6 +325,14 @@ def seed_cache_from_checkout(project_root: "Path | str") -> bool:
         logger.debug("model catalog seed from checkout skipped: invalid manifest at %s", src)
         return False
     _write_disk_cache(data)
+    # The OpenRouter picker persists a filtered second-level cache. A checkout seed can add
+    # models that the old derived cache does not contain, so invalidate it atomically with the
+    # manifest seed rather than waiting for its independent TTL to expire.
+    try:
+        from hermes_cli.models import invalidate_openrouter_catalog_cache
+        invalidate_openrouter_catalog_cache(remove_disk=True)
+    except Exception:
+        logger.debug("openrouter derived catalog invalidation skipped", exc_info=True)
     reset_cache()  # drop the in-process copy so the next read picks up the seed
     return True
 

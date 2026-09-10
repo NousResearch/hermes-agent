@@ -218,6 +218,7 @@ class TestDefaultModelFromCache:
     """get_default_model_from_cache reads the '"default": true' label without
     ever hitting the network."""
 
+
     def _manifest_with_default(self) -> dict:
         m = _valid_manifest()
         m["providers"]["openrouter"]["models"][1]["default"] = True  # gpt-5.4
@@ -269,6 +270,23 @@ class TestDefaultModelFromCache:
                 f"{provider}: exactly one entry must be labeled default and it "
                 f"must match PREFERRED_SILENT_DEFAULT_MODEL"
             )
+
+
+class TestCheckoutSeedInvalidation:
+    def test_seed_removes_stale_openrouter_derived_cache(self, isolated_home, tmp_path):
+        from hermes_cli import model_catalog
+
+        source = tmp_path / "website" / "static" / "api" / "model-catalog.json"
+        source.parent.mkdir(parents=True)
+        source.write_text(json.dumps(_valid_manifest()))
+
+        derived = isolated_home / "cache" / "openrouter_curated_catalog.json"
+        derived.parent.mkdir(parents=True, exist_ok=True)
+        derived.write_text(json.dumps({"fetched_at": time.time(), "curated": [["old/model", ""]]}))
+        assert derived.exists()
+
+        assert model_catalog.seed_cache_from_checkout(tmp_path) is True
+        assert not derived.exists()
 
 
 class TestProviderOverride:

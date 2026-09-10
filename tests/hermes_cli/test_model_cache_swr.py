@@ -47,15 +47,34 @@ class TestProviderModelsSWR:
         import hermes_cli.models as mod
 
         # 2h old — beyond the 1h TTL, within the 7d stale-serve window.
-        cache = {"openrouter": self._cache_entry(["m1", "m2"], age_seconds=7200)}
+        cache = {"nous": self._cache_entry(["m1", "m2"], age_seconds=7200)}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_credential_fingerprint", return_value="fp"), \
              patch.object(mod, "_spawn_swr_refresh") as spawn, \
              patch.object(mod, "provider_model_ids") as live:
-            out = mod.cached_provider_model_ids("openrouter")
+            out = mod.cached_provider_model_ids("nous")
         assert out == ["m1", "m2"]  # served stale, no blocking
-        spawn.assert_called_once_with("openrouter")
+        spawn.assert_called_once_with("nous")
         live.assert_not_called()  # the caller thread never hit the network
+
+    def test_stale_openrouter_entry_refreshes_before_picker_uses_it(self):
+        import hermes_cli.models as mod
+
+        target = "deepseek/deepseek-v4.1-flash"
+        cache = {"openrouter": self._cache_entry(["old-model"], age_seconds=7200)}
+        refreshed = ["old-model", target]
+        with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+             patch.object(mod, "_credential_fingerprint", return_value="fp"), \
+             patch.object(mod, "_save_provider_models_cache") as save, \
+             patch.object(mod, "_spawn_swr_refresh") as spawn, \
+             patch.object(mod, "provider_model_ids", return_value=refreshed) as live:
+            out = mod.cached_provider_model_ids("openrouter")
+
+        assert out == refreshed
+        assert target in out
+        live.assert_called_once_with("openrouter", force_refresh=True)
+        spawn.assert_not_called()
+        save.assert_called_once()
 
     def test_too_old_entry_blocks_on_live_fetch(self):
         import hermes_cli.models as mod

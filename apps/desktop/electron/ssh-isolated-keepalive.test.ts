@@ -3,15 +3,11 @@
  * published SSH-isolated backend. Idle-exit (#101626) treats accepted WS as
  * ownership liveness; renderer sockets can drop while sshConnections still owns
  * the scope. Sticky artifacts (nonce / token file / lockfile) are NOT liveness.
+ *
+ * Wiring through main.ts is asserted via pool-stop / bootstrap-coordinator
+ * behavior tests — AGENTS.md forbids reading `.ts` source from tests.
  */
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { afterEach, describe, expect, it, vi } from 'vitest'
-
-const here = path.dirname(fileURLToPath(import.meta.url))
-const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
 
 function makeFakeWs(): { FakeWs: new (url: string) => any; instances: any[] } {
   const instances: any[] = []
@@ -43,73 +39,6 @@ function makeFakeWs(): { FakeWs: new (url: string) => any; instances: any[] } {
 
   return { FakeWs, instances }
 }
-
-describe('main.ts wiring for SSH-isolated keep-alive WS (#106935)', () => {
-  it('starts a keep-alive WebSocket after publishing sshConnections', () => {
-    const publishStart = mainSource.indexOf('publish: () => {')
-    expect(publishStart).toBeGreaterThan(-1)
-
-    const publishSlice = mainSource.slice(publishStart, publishStart + 4_000)
-    const setIdx = publishSlice.indexOf('sshConnections.set(scope, {')
-    expect(setIdx).toBeGreaterThan(-1)
-
-    const afterSet = publishSlice.slice(setIdx)
-    expect(afterSet).toMatch(/sshIsolatedKeepalives\.start\(\s*scope/)
-    expect(afterSet).toMatch(/baseUrl:\s*result\.baseUrl/)
-    expect(afterSet).toMatch(/token:\s*result\.token/)
-  })
-
-  it('stops the keep-alive in teardownSshConnection so sockets cannot leak', () => {
-    const fnStart = mainSource.indexOf('async function teardownSshConnection(')
-    expect(fnStart).toBeGreaterThan(-1)
-
-    const nextFn = mainSource.indexOf('\nfunction activeSshTerminalTarget(', fnStart + 1)
-    const body = mainSource.slice(fnStart, nextFn === -1 ? fnStart + 1_200 : nextFn)
-
-    expect(body).toContain('sshConnections.delete(scope)')
-    expect(body).toMatch(/sshIsolatedKeepalives\.stop\(\s*scope/)
-  })
-
-  it('stopPoolBackend tears down the matching SSH lifecycle (idle-reaper / LRU)', () => {
-    const fnStart = mainSource.indexOf('async function stopPoolBackend(')
-    expect(fnStart).toBeGreaterThan(-1)
-
-    const nextFn = mainSource.indexOf('\nasync function teardownPoolBackendAndWait(', fnStart + 1)
-    const body = mainSource.slice(fnStart, nextFn === -1 ? fnStart + 400 : nextFn)
-
-    expect(body).toMatch(/sshBootstrapCoordinator\.cancelAndWait\(\s*profile/)
-    expect(body).toMatch(/teardownSshConnection\(\s*profile/)
-  })
-
-  it('idle reaper retires descriptors only through stopPoolBackend', () => {
-    const fnStart = mainSource.indexOf('function startPoolIdleReaper(')
-    expect(fnStart).toBeGreaterThan(-1)
-
-    const nextFn = mainSource.indexOf('\nfunction releaseLocalBackendSlot(', fnStart + 1)
-    const body = mainSource.slice(fnStart, nextFn === -1 ? fnStart + 800 : nextFn)
-
-    expect(body).toContain('stopPoolBackend(profile)')
-    expect(body).not.toMatch(/backendPool\.delete/)
-    expect(body).not.toMatch(/sshConnections\.delete/)
-  })
-
-  it('imports the keep-alive registry from the electron helper (not inline in main)', () => {
-    expect(mainSource).toMatch(/createSshIsolatedKeepaliveRegistry/)
-    expect(mainSource).toMatch(/from '\.\/ssh-isolated-keepalive'/)
-  })
-
-  it('starts keep-alive with the published scope as-is, including empty v1/global primary', () => {
-    const publishStart = mainSource.indexOf('publish: () => {')
-    const publishSlice = mainSource.slice(publishStart, publishStart + 4_000)
-    const afterSet = publishSlice.slice(publishSlice.indexOf('sshConnections.set(scope, {'))
-
-    // sshScopeKey(null) is '' for the settings/registry primary. Do not
-    // truthiness-guard the scope before arming — that would skip the live WS.
-    expect(afterSet).toMatch(/sshIsolatedKeepalives\.start\(\s*scope,\s*\{\s*baseUrl:\s*result\.baseUrl,\s*token:\s*result\.token\s*\}\)/)
-    expect(afterSet).not.toMatch(/if\s*\(\s*scope\s*\)/)
-    expect(afterSet).not.toMatch(/scope\s*\|\|/)
-  })
-})
 
 describe('ssh-isolated keep-alive registry (#106935)', () => {
   afterEach(() => {

@@ -93,7 +93,7 @@ function createBootstrapCoordinator() {
     pending.get(scope)?.controller.abort()
   }
 
-  async function cancelAndWait(scope) {
+  async function cancelAndWait(scope, afterCancel?: () => Promise<void>) {
     let release
 
     const barrier = new Promise<void>(resolve => {
@@ -114,6 +114,11 @@ function createBootstrapCoordinator() {
       // drain barrier still prevents stale resurrection.
       await Promise.allSettled(entries.flatMap(entry => [...entry.forceCleanups]).map(cleanup => cleanup()))
       await Promise.allSettled(entries.map(entry => entry.promise))
+      // Keep the drain up through caller teardown (SSH keepalive / tunnel)
+      // so a replacement start() cannot publish before the old scope is gone.
+      if (afterCancel) {
+        await afterCancel()
+      }
     } finally {
       if (drains.get(scope) === barrier) {
         drains.delete(scope)

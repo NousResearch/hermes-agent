@@ -12737,18 +12737,19 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 const poolStopper = createPoolStopper({
   pool: backendPool,
   stopChild: child => stopBackendChild(child),
-  waitForExit: child => waitForBackendExit(child)
+  waitForExit: child => waitForBackendExit(child),
+  // Remote / SSH-isolated pool entries keep `process: null`. Child exit is
+  // immediate; hold the same in-flight fence through bootstrap drain + SSH
+  // teardown so a reconnect cannot publish into a dying scope (#106935).
+  afterStop: async key => {
+    await sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
+  }
 })
 
 async function stopPoolBackend(profile: string) {
   const entry = backendPool.get(profile)
   await poolStopper.stop(profile)
   releaseLocalBackendSlot(entry)
-  // Remote / SSH-isolated pool entries keep `process: null`. Evicting the
-  // descriptor alone leaves sshConnections + the keep-alive WS armed, so
-  // idle-reaper / LRU retirement would pin the tunnel indefinitely (#106935).
-  await sshBootstrapCoordinator.cancelAndWait(profile)
-  await teardownSshConnection(profile)
 }
 
 async function teardownPoolBackendAndWait(profile) {

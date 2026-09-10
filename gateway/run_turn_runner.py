@@ -746,8 +746,9 @@ class TurnRunner:
         })
 
     def combined_tool_complete_callback(self, call_id, tool_name, args, result):
-        if self._ctx.native_cot is not None:
-            self._ctx.native_cot.tool_completed(call_id, tool_name, args, result)
+        cot = self._ctx.native_cot
+        if cot is not None:
+            cot.tool_completed(call_id, tool_name, args, result)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
 
@@ -757,12 +758,14 @@ class TurnRunner:
             self.voice_ack_callback(call_id, tool_name, args)
         if self._ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
-        if self._ctx.native_cot is not None:
-            self._ctx.native_cot.tool_started(call_id, tool_name, args)
+        cot = self._ctx.native_cot
+        if cot is not None:
+            cot.tool_started(call_id, tool_name, args)
 
     def native_cot_commentary(self, text: str) -> None:
-        if self._ctx.native_cot is not None and self._ctx._run_still_current():
-            self._ctx.native_cot.commentary(text)
+        cot = self._ctx.native_cot
+        if cot is not None and self._ctx._run_still_current():
+            cot.commentary(text)
 
     async def start_native_cot(self) -> None:
         ctx = self._ctx
@@ -770,29 +773,43 @@ class TurnRunner:
             return
         adapter = self._runner._adapter_for_source(ctx.source)
         try:
-            ctx.native_cot = await adapter.start_native_cot(
-                ctx.source.chat_id,
-                ctx.inbound_message_id or ctx.event_message_id,
-                ctx.native_cot_mode,
-                str(ctx.message or ""),
+            ctx.native_cot = await asyncio.wait_for(
+                adapter.start_native_cot(
+                    ctx.source.chat_id,
+                    ctx.inbound_message_id or ctx.event_message_id,
+                    ctx.native_cot_mode,
+                    str(ctx.message or ""),
+                ),
+                timeout=0.6,
             )
         except Exception as exc:
             logger.warning("Native COT create failed: type=%s", type(exc).__name__)
 
     async def finish_native_cot(self, result) -> None:
-        cot = self._ctx.native_cot
+        cot, self._ctx.native_cot = self._ctx.native_cot, None
         if cot is None:
             return
         reason = "error"
-        if isinstance(result, dict):
+        if isinstance(result, dict) and self._ctx._run_still_current():
             if result.get("interrupted"):
                 reason = "interrupted"
             elif not result.get("failed") and not result.get("error"):
                 reason = "done"
-        try:
-            await cot.finish(reason)
-        except Exception as exc:
-            logger.warning("Native COT finish failed: type=%s", type(exc).__name__)
+        # finish closes event admission synchronously; I/O runs under gateway shutdown ownership.
+        task = cot.finish(reason)
+        self._runner._retain_background_task(task)
+        deadline = asyncio.get_running_loop().call_later(3.0, task.cancel)
+
+        def finished(task):
+            deadline.cancel()
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                logger.warning("Native COT finish cancelled (shutdown or timeout)")
+            except Exception as exc:
+                logger.warning("Native COT finish failed: type=%s", type(exc).__name__)
+
+        task.add_done_callback(finished)
 
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────
 
@@ -803,8 +820,9 @@ class TurnRunner:
         # prev_tools may be list[str] or list[dict] with "name"/"result" keys. Normalise so
         # "tool_names" stays backward-compatible for user hooks that do ', '.join(tool_names).
         names = [(t.get("name") or "") if isinstance(t, dict) else str(t) for t in (prev_tools or [])]
-        if ctx.native_cot is not None:
-            ctx.native_cot.step(iteration, names)
+        cot = ctx.native_cot
+        if cot is not None:
+            cot.step(iteration, names)
         if not ctx._hooks_ref.loaded_hooks:
             return
         self._schedule(
@@ -1781,7 +1799,7 @@ class TurnRunner:
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
             )
         except Exception as exc:
-            return {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [], "api_calls": 0, "tools": []}
+            return runner._agent_error_result(f"⚠️ Provider authentication failed: {exc}")
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config

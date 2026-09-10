@@ -2397,8 +2397,11 @@ class GatewayTurnMixin:
         return _run_still_current
 
     @staticmethod
-    def _proxy_error_result(text: str) -> Dict[str, Any]:
-        return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
+    def _agent_error_result(text: str) -> Dict[str, Any]:
+        return {
+            "final_response": text, "messages": [], "api_calls": 0, "tools": [],
+            "failed": True, "completed": False, "error": text,
+        }
 
     def _proxy_stream_consumer(self, source: "SessionSource", event_message_id, _thread_metadata, _run_still_current):
         """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""
@@ -2447,11 +2450,11 @@ class GatewayTurnMixin:
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
         except ImportError:
-            return self._proxy_error_result("⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp")
+            return self._agent_error_result("⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp")
 
         proxy_url = self._get_proxy_url()
         if not proxy_url:
-            return self._proxy_error_result("⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)")
+            return self._agent_error_result("⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)")
 
         # The proxy key is a per-profile credential: honor the installed secret scope under multiplex.
         # Only UnscopedSecretError / import failures fall back to the env; any other get_secret()
@@ -2512,7 +2515,7 @@ class GatewayTurnMixin:
                     if resp.status != 200:
                         error_text = await resp.text()
                         logger.warning("Proxy error (%d) from %s: %s", resp.status, proxy_url, error_text[:500])
-                        return self._proxy_error_result(f"⚠️ Proxy error ({resp.status}): {error_text[:300]}")
+                        return self._agent_error_result(f"⚠️ Proxy error ({resp.status}): {error_text[:300]}")
 
                     buffer = ""
                     async for chunk in resp.content.iter_any():
@@ -2543,7 +2546,7 @@ class GatewayTurnMixin:
         except Exception as e:
             logger.error("Proxy connection error to %s: %s", proxy_url, e)
             if not full_response:
-                return self._proxy_error_result(f"⚠️ Proxy connection error: {e}")
+                return self._agent_error_result(f"⚠️ Proxy connection error: {e}")
             # Partial response — return what we got
         finally:
             if _stream_consumer:
@@ -3820,13 +3823,6 @@ class GatewayTurnMixin:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
-        if self._get_proxy_url():
-            return await self._run_agent_via_proxy(
-                message=message, context_prompt=context_prompt, history=history, source=source,
-                session_id=session_id, session_key=session_key, run_generation=run_generation,
-                event_message_id=event_message_id,
-            )
-
         from run_agent import AIAgent
 
         disp = self._run_agent_display_settings(source)
@@ -3841,10 +3837,28 @@ class GatewayTurnMixin:
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
         )
+        response = None
+        try:
+            await turn_runner.start_native_cot()
+            if self._get_proxy_url():
+                response = await self._run_agent_via_proxy(
+                    message=message, context_prompt=context_prompt, history=history, source=source,
+                    session_id=session_id, session_key=session_key, run_generation=run_generation,
+                    event_message_id=event_message_id,
+                )
+            else:
+                response = await self._run_agent_local_turn(
+                    disp, turn_ctx, turn_runner, _cleanup_adapter, message_type,
+                )
+            return response
+        finally:
+            await turn_runner.finish_native_cot(response)
+
+    async def _run_agent_local_turn(self, disp, turn_ctx, turn_runner, _cleanup_adapter, message_type):
+        source, session_key = turn_ctx.source, turn_ctx.session_key
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
-            turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
+            turn_ctx, turn_runner, source, turn_ctx.event_message_id, disp._native_slack_task_cards,
         )
-        await turn_runner.start_native_cot()
         self._run_agent_start_streaming_tts(
             source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
         )
@@ -3862,7 +3876,6 @@ class GatewayTurnMixin:
         _executor_task_holder: list = [None]  # bound once the executor future exists (see below)
         _notify_task = spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
 
-        cot_finished = False
         try:
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
@@ -3871,7 +3884,6 @@ class GatewayTurnMixin:
             self._run_agent_evict_on_fallback(turn_ctx)
 
             await turn_runner.finish_native_cot(response)
-            cot_finished = True
 
             # Interrupted OR queued message (/queue)?
             result = turn_ctx.result_holder[0]
@@ -3883,8 +3895,6 @@ class GatewayTurnMixin:
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
-            if not cot_finished:
-                await turn_runner.finish_native_cot(None)
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,

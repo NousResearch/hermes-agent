@@ -503,7 +503,7 @@ describe('attachments', () => {
     expect(room.gateway.calls).toHaveLength(2)
   })
 
-  it('routes PDFs through pdf.attach and files through file.attach, per member', async () => {
+  it('routes PDFs and files through file.attach, and images through image.attach_bytes, per member', async () => {
     const room = await loadRoom()
     const pdf: Attachment = { data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf', name: 'spec.pdf' }
     const doc: Attachment = { data: 'data:text/plain;base64,aGVsbG8=', kind: 'file', name: 'notes.txt' }
@@ -526,11 +526,14 @@ describe('attachments', () => {
       byMethod[attach.method] = (byMethod[attach.method] || 0) + 1
     }
 
-    // 3 attachments × 2 members, each via its own RPC.
+    // 3 attachments × 2 members. PDFs share file.attach with other files so
+    // the member workspace gets a readable copy (1:1 chat does the same).
     expect(room.gateway.attaches).toHaveLength(6)
-    expect(byMethod).toEqual({ 'file.attach': 2, 'image.attach_bytes': 2, 'pdf.attach': 2 })
+    expect(byMethod).toEqual({ 'file.attach': 4, 'image.attach_bytes': 2 })
 
-    const staged = room.gateway.attaches.find(attach => attach.method === 'pdf.attach')
+    const staged = room.gateway.attaches.find(
+      attach => attach.method === 'file.attach' && attach.filename === 'spec.pdf'
+    )
 
     expect(staged?.filename).toBe('spec.pdf')
     expect(staged?.data).toBe(pdf.data)
@@ -543,9 +546,9 @@ describe('attachments', () => {
     room.rounds.sendToGroupChat('PdfFile', [{ name: 'research', title: '' }], 'read this', null, [pdf])
     await settle(room, 'PdfFile')
 
-    expect(room.gateway.attaches.some(attach => attach.method === 'file.attach' && attach.filename === 'spec.pdf')).toBe(
-      true
-    )
+    expect(
+      room.gateway.attaches.some(attach => attach.method === 'file.attach' && attach.filename === 'spec.pdf')
+    ).toBe(true)
     expect(room.gateway.calls).toHaveLength(1)
     expect(room.gateway.calls[0].prompt).toContain('Attached files staged in your session workspace:')
     expect(room.gateway.calls[0].prompt).toContain('spec.pdf → @file:attachments/spec.pdf')

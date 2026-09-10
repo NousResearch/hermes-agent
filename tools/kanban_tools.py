@@ -19,7 +19,7 @@ from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
-from tools.kanban_tools_schemas import _DESC_TASK_ID_DEFAULT, _board_schema_prop
+from tools.kanban_tools_schemas import _board_schema_prop, _DESC_TASK_ID_DEFAULT  # KENSEI CUSTOM: schema helper used by restored schemas
 from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
@@ -119,7 +119,7 @@ def _kanban_handler(tool_name: str) -> Callable:
 def _reject_delegated_child_mutation(tool_name: str) -> None:
     """A delegate_task child shares the parent's process, so inherited HERMES_KANBAN_*
     env is not proof of ownership: it may report findings but must not mutate."""
-    if _delegation_ctx("is_delegated_child_process_context", False):
+    if _is_delegated_child_context():
         raise _Reject(
             f"{tool_name} refused: delegate_task child agents are not Kanban run owners. "
             "Return findings to the parent agent; the dispatcher worker or an explicitly "
@@ -310,7 +310,7 @@ def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
     "created_at started_at completed_at result current_run_id model_override "
-    "provider_override completion_contract last_failure_error".split())
+    "provider_override".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
     "created_at started_at completed_at current_run_id model_override provider_override".split())
@@ -324,7 +324,7 @@ _CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
 
 def _fields(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
     """``{name: getattr(obj, name)}``; every value None when ``obj`` is None."""
-    return {n: getattr(obj, n, None) if obj is not None else None for n in names}
+    return {n: getattr(obj, n) if obj is not None else None for n in names}
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -495,9 +495,6 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 def _handle_show(args: dict, **kw) -> str:
     """Full task state: row, parents, children, comments, runs, last 50 events."""
     tid = _require_task_id(args)
-    # Read access follows the worker's assigned-task scope; only mutation handlers
-    # may use the broader orchestrator surface.
-    _enforce_worker_task_ownership(tid)
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
         return json.dumps({
@@ -591,9 +588,7 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"in-flight (no state change). Retry kanban_complete with the same "
                 f"summary/metadata and either drop these ids from created_cards, or pass "
                 f"created_cards=[] to skip the card-claim check entirely.")
-        task = kb.get_task(conn, tid)
-        _check(ok, (task.last_failure_error if task else None) or
-               f"could not complete {tid} (unknown id, stale run, or already terminal)")
+        _check(ok, f"could not complete {tid} (unknown id or already terminal)")
         run = kb.latest_run(conn, tid)
         return _ok(task_id=tid, run_id=run.id if run else None)
 
@@ -814,6 +809,12 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    # Prefer the request-scoped api_server origin binding over HERMES_SESSION_ID: the env
+    # var is clobbered with a subagent's internal id whenever a child agent is constructed
+    # in-process, which would stamp — and later wake — the wrong session.
+    from tools.async_delegation import _current_origin_session_id
+    session_id = (args.get("session_id") or _current_origin_session_id()
+                  or os.environ.get("HERMES_SESSION_ID"))
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing
@@ -829,14 +830,9 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
-        from tools.async_delegation import _current_origin_session_id
-        self_tid = (os.environ.get("HERMES_KANBAN_TASK")
-                    if _is_dispatcher_owned_worker() else None)
-        self_task = kb.get_task(conn, self_tid) if self_tid else None
-        # The worker/API runtime may be transient; the owning task's origin is durable.
-        session_id = (args.get("session_id") or (self_task.session_id if self_task else None)
-                      or _current_origin_session_id() or os.environ.get("HERMES_SESSION_ID"))
         if project_id is None and workspace_kind is None and workspace_path is None:
+            self_tid = os.environ.get("HERMES_KANBAN_TASK")
+            self_task = kb.get_task(conn, self_tid) if self_tid else None
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
         new_tid = kb.create_task(
@@ -846,12 +842,10 @@ def _handle_create(args: dict, **kw) -> str:
             workspace_kind=str(workspace_kind if workspace_kind is not None else "scratch"),
             workspace_path=workspace_path, project_id=project_id,
             project_source_task_id=project_source_task_id, triage=triage,
-            creator_task_id=self_tid,
             idempotency_key=args.get("idempotency_key"),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
-            completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
@@ -882,11 +876,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         except Exception:
             notifier_profile = "default"
     delivery_metadata: dict[str, Any] = {
-        k: v for k, v in (
-            ("thread_id", thread_id), ("chat_type", chat_type),
-            ("scope_id", env("HERMES_SESSION_SCOPE_ID", "")),
-            ("parent_chat_id", env("HERMES_SESSION_PARENT_CHAT_ID", "")),
-        ) if v}
+        k: v for k, v in (("thread_id", thread_id), ("chat_type", chat_type)) if v}
     if (platform.lower() == "telegram" and thread_id
             and (chat_type or "").lower() in {"dm", "direct", "private"}):
         delivery_metadata["telegram_dm_topic_reply_fallback"] = True
@@ -918,13 +908,8 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         target = _resolve_notify_target()
         if target is None:
             return False  # CLI / cron / test — no persistent channel
+        from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_notify as _kbn
-        # Inheritance and explicit subscriptions already encode the delivery policy.
-        # Auto-subscribe must not turn a passive destination into an agent wake.
-        if any(sub["platform"] == target["platform"] and sub["chat_id"] == target["chat_id"]
-               and (sub["thread_id"] or "") == (target["thread_id"] or "")
-               for sub in _kbn.list_notify_subs(conn, task_id)):
-            return True
         _kbn.add_notify_sub(conn, task_id=task_id, **target)
         return True
     except Exception as _exc:
@@ -1009,7 +994,7 @@ for _name, _sch, _handler, _emoji in _TOOLS:
                       check_fn=_gate)
 
 
-
+# ── KENSEI CUSTOM — fork kanban tools ported post-refactor (see merge run log) ──
 
 def _try_json_error(r) -> str:
     try:
@@ -1097,6 +1082,16 @@ def _handle_complete_pipeline(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_complete_pipeline failed")
         return tool_error(f"kanban_complete_pipeline: {e}")
+
+
+registry.register(
+    name="kanban_complete_pipeline",
+    toolset="kanban",
+    schema=KANBAN_COMPLETE_PIPELINE_SCHEMA,
+    handler=_handle_complete_pipeline,
+    check_fn=_check_kanban_mode,
+    emoji="🔁",
+)
 
 
 KANBAN_APPROVE_SCHEMA = {
@@ -1224,6 +1219,16 @@ def _handle_approve(args: dict, **kw) -> str:
         return tool_error(f"kanban_approve: {e}")
 
 
+registry.register(
+    name="kanban_approve",
+    toolset="kanban",
+    schema=KANBAN_APPROVE_SCHEMA,
+    handler=_handle_approve,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✅",
+)
+
+
 KANBAN_REJECT_SCHEMA = {
     "name": "kanban_reject",
     "description": (
@@ -1294,6 +1299,16 @@ def _handle_reject(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_reject failed")
         return tool_error(f"kanban_reject: {e}")
+
+
+registry.register(
+    name="kanban_reject",
+    toolset="kanban",
+    schema=KANBAN_REJECT_SCHEMA,
+    handler=_handle_reject,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🚫",
+)
 
 
 KANBAN_REASSIGN_SCHEMA = {
@@ -1367,6 +1382,16 @@ def _handle_reassign(args: dict, **kw) -> str:
         return tool_error(f"kanban_reassign: {e}")
 
 
+registry.register(
+    name="kanban_reassign",
+    toolset="kanban",
+    schema=KANBAN_REASSIGN_SCHEMA,
+    handler=_handle_reassign,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="↔️",
+)
+
+
 KANBAN_EDIT_SCHEMA = {
     "name": "kanban_edit",
     "description": (
@@ -1435,6 +1460,16 @@ def _handle_edit(args: dict, **kw) -> str:
         return tool_error(f"kanban_edit: {e}")
 
 
+registry.register(
+    name="kanban_edit",
+    toolset="kanban",
+    schema=KANBAN_EDIT_SCHEMA,
+    handler=_handle_edit,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✏️",
+)
+
+
 KANBAN_COLLATE_CHILDREN_SCHEMA = {
     "name": "kanban_collate_children",
     "description": (
@@ -1473,6 +1508,16 @@ def _handle_collate_children(args: dict, **kw) -> str:
         return json.dumps({"children": children, "count": len(children)}, indent=2, default=str)
     except Exception as exc:
         return tool_error(f"collate_children failed: {exc}")
+
+
+registry.register(
+    name="kanban_collate_children",
+    toolset="kanban",
+    schema=KANBAN_COLLATE_CHILDREN_SCHEMA,
+    handler=_handle_collate_children,
+    check_fn=_check_kanban_mode,
+    emoji="📊",
+)
 
 
 KANBAN_REQUEST_HUMAN_APPROVAL_SCHEMA = {
@@ -1532,6 +1577,16 @@ def _handle_request_human_approval(args: dict, **kw) -> str:
             conn.close()
     except Exception as exc:
         return tool_error(f"request_human_approval failed: {exc}")
+
+
+registry.register(
+    name="kanban_request_human_approval",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_HUMAN_APPROVAL_SCHEMA,
+    handler=_handle_request_human_approval,
+    check_fn=_check_kanban_mode,
+    emoji="🛑",
+)
 
 
 KANBAN_PROFILE_EDIT_SCHEMA = {
@@ -1656,6 +1711,16 @@ def _handle_profile_edit(args: dict, **kw) -> str:
         return tool_error(f"profile_edit error: {exc}")
 
 
+registry.register(
+    name="kanban_profile_edit",
+    toolset="kanban",
+    schema=KANBAN_PROFILE_EDIT_SCHEMA,
+    handler=_handle_profile_edit,
+    check_fn=_check_kanban_mode,
+    emoji="✏️",
+)
+
+
 KANBAN_PROFILE_ROLLBACK_SCHEMA = {
     "name": "kanban_profile_rollback",
     "description": (
@@ -1734,6 +1799,16 @@ def _handle_profile_rollback(args: dict, **kw) -> str:
         return _json.dumps(result, indent=2)
     except Exception as exc:
         return tool_error(f"profile_rollback error: {exc}")
+
+
+registry.register(
+    name="kanban_profile_rollback",
+    toolset="kanban",
+    schema=KANBAN_PROFILE_ROLLBACK_SCHEMA,
+    handler=_handle_profile_rollback,
+    check_fn=_check_kanban_mode,
+    emoji="↩️",
+)
 
 
 KANBAN_REQUEST_SUBPROFILE_SCHEMA = {
@@ -1842,87 +1917,10 @@ def _handle_request_subprofile(args: dict, **kw) -> str:
         return tool_error(f"request_subprofile failed: {exc}")
 
 
-# ── KENSEI CUSTOM — pipeline / review / profile-edit tool registrations (restored) ──
-registry.register(
-    name="kanban_complete_pipeline",
-    toolset="kanban",
-    schema=KANBAN_COMPLETE_PIPELINE_SCHEMA,
-    handler=_handle_complete_pipeline,
-    check_fn=_check_kanban_mode,
-    emoji="🔁",
-)
+# WS-7: profile_editor handlers — call the profile_editor.py script
+import subprocess as _sp
+import json as _json
 
-registry.register(
-    name="kanban_approve",
-    toolset="kanban",
-    schema=KANBAN_APPROVE_SCHEMA,
-    handler=_handle_approve,
-    check_fn=_check_kanban_orchestrator_mode,
-    emoji="✅",
-)
-
-registry.register(
-    name="kanban_reject",
-    toolset="kanban",
-    schema=KANBAN_REJECT_SCHEMA,
-    handler=_handle_reject,
-    check_fn=_check_kanban_orchestrator_mode,
-    emoji="🚫",
-)
-
-registry.register(
-    name="kanban_reassign",
-    toolset="kanban",
-    schema=KANBAN_REASSIGN_SCHEMA,
-    handler=_handle_reassign,
-    check_fn=_check_kanban_orchestrator_mode,
-    emoji="↔️",
-)
-
-registry.register(
-    name="kanban_edit",
-    toolset="kanban",
-    schema=KANBAN_EDIT_SCHEMA,
-    handler=_handle_edit,
-    check_fn=_check_kanban_orchestrator_mode,
-    emoji="✏️",
-)
-
-registry.register(
-    name="kanban_collate_children",
-    toolset="kanban",
-    schema=KANBAN_COLLATE_CHILDREN_SCHEMA,
-    handler=_handle_collate_children,
-    check_fn=_check_kanban_mode,
-    emoji="📊",
-)
-
-registry.register(
-    name="kanban_request_human_approval",
-    toolset="kanban",
-    schema=KANBAN_REQUEST_HUMAN_APPROVAL_SCHEMA,
-    handler=_handle_request_human_approval,
-    check_fn=_check_kanban_mode,
-    emoji="🛑",
-)
-
-registry.register(
-    name="kanban_profile_edit",
-    toolset="kanban",
-    schema=KANBAN_PROFILE_EDIT_SCHEMA,
-    handler=_handle_profile_edit,
-    check_fn=_check_kanban_mode,
-    emoji="✏️",
-)
-
-registry.register(
-    name="kanban_profile_rollback",
-    toolset="kanban",
-    schema=KANBAN_PROFILE_ROLLBACK_SCHEMA,
-    handler=_handle_profile_rollback,
-    check_fn=_check_kanban_mode,
-    emoji="↩️",
-)
 
 registry.register(
     name="kanban_request_subprofile",
@@ -1932,3 +1930,5 @@ registry.register(
     check_fn=_check_kanban_mode,
     emoji="🐣",
 )
+
+

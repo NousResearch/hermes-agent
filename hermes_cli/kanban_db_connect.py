@@ -678,16 +678,6 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
-    from agent.delegation_context import is_delegated_child_process_context
-    if is_delegated_child_process_context():
-        # Reads must not enter schema/backfill write transactions. Never create a
-        # missing board or migrate on a descendant's behalf; the owner initializes it.
-        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        if not _schema_is_present(conn):
-            conn.close()
-            raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
-        return conn
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, skip the
@@ -814,7 +804,6 @@ _LATER_TASK_COLUMNS = (
     # Ralph-style goal loop toggle; 0 = classic single-shot worker.
     ("goal_mode", "goal_mode INTEGER NOT NULL DEFAULT 0"),
     ("goal_max_turns", "goal_max_turns INTEGER"),
-    ("completion_contract", "completion_contract TEXT"),
     ("session_id", "session_id TEXT"),
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
@@ -835,7 +824,6 @@ _LATER_TASK_COLUMNS = (
 )
 
 _NOTIFY_SUB_COLUMNS = (
-    ("last_ping_event_id", "last_ping_event_id INTEGER NOT NULL DEFAULT 0"),
     ("notifier_profile", "notifier_profile TEXT"),
     ("delivery_mode", "delivery_mode TEXT NOT NULL DEFAULT 'notify'"),
     ("chat_type", "chat_type TEXT"),
@@ -984,7 +972,6 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         " last_tick INTEGER NOT NULL DEFAULT 0)"
     )
 
-
     # One-shot event-kind rename: old names still worked but were awkward on
     # the wire. Fires once per DB — after the UPDATE no rows match.
     for old, new in (
@@ -1004,7 +991,7 @@ def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:
     write_txn serializes against concurrent dispatchers, and the per-row
     UPDATE uses ``current_run_id IS NULL`` as a CAS guard so a racing claim
     can't produce an orphaned row."""
-    with write_txn(conn):
+    with write_txn(conn, internal=True):
         inflight = conn.execute(
             "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
             "       max_runtime_seconds, last_heartbeat_at, started_at "
@@ -1101,7 +1088,6 @@ _REBUILD_SPECS = {
         " notifier_profile TEXT, delivery_mode TEXT NOT NULL DEFAULT 'notify',"
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
-        " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),
@@ -1229,7 +1215,7 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
+def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False, internal: bool = False):
     """IMMEDIATE write transaction; a claim CAS inside is atomic — at most one
     concurrent writer succeeds.
 
@@ -1246,7 +1232,12 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     (``complete_task`` & co.) must never run under an open outer transaction,
     since those side effects would fire while the outer txn can still roll back.
     """
-    _kb._assert_not_delegated_child_mutation()
+    if not internal:
+        # Schema/maintenance migrations pass internal=True: they are system-internal
+        # (idempotent backfills on connect), not user mutations, and must not be
+        # blocked by the delegate-child guard — otherwise a delegate descendant
+        # cannot even READ a board that still needs migration.
+        _kb._assert_not_delegated_child_mutation()
     nested = getattr(conn, "in_transaction", False)
     _lock_handle = None
     if not nested:

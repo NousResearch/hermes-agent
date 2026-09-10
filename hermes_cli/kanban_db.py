@@ -2653,6 +2653,43 @@ def _stage_completion_artifacts(conn: sqlite3.Connection, task_id: str, metadata
         )
 
 
+# Follow-ups carried on a terminal event so the notifier can render them
+# without a second round-trip. Bounded: a notification is a pointer to the
+# board, not a replacement for reading it.
+FOLLOW_UPS_MAX = 5
+FOLLOW_UP_CHARS = 200
+
+
+def extract_follow_ups(metadata: Any) -> list[str]:
+    """``metadata["follow_ups"]`` normalised to a bounded list of one-line strings.
+
+    Work a worker could not finish -- a decision left to a human, a manual step,
+    a deliberately unaddressed gap -- is the part of a handoff that most needs to
+    reach a person, and it was previously reachable only by reading the board:
+    ``summary`` is rendered first-line-only, and ``metadata`` was never read by
+    the notifier at all. Anything not a non-empty string is dropped rather than
+    coerced, so a malformed value degrades to "no follow-ups" instead of
+    rendering ``None`` at a human.
+    """
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("follow_ups")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        text = _first_line(item, FOLLOW_UP_CHARS)
+        if text:
+            out.append(text)
+        if len(out) >= FOLLOW_UPS_MAX:
+            break
+    return out
+
+
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
 ) -> dict:
@@ -2677,6 +2714,9 @@ def _completed_event_payload(
             cleaned = [str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()]
             if cleaned:
                 payload["artifacts"] = cleaned
+    follow_ups = extract_follow_ups(metadata)
+    if follow_ups:
+        payload["follow_ups"] = follow_ups
     return payload
 
 
@@ -2906,10 +2946,15 @@ def edit_completed_task_result(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    metadata: Any = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``transient`` still counts toward the loop breaker
-    so a forever-flaky task escalates. True on any transition."""
+    so a forever-flaky task escalates. True on any transition.
+
+    ``metadata["follow_ups"]`` rides onto the event so a blocked task can name
+    what a human must decide, the same way a completion can.
+    """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
@@ -2942,6 +2987,9 @@ def block_task(
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
+        block_follow_ups = extract_follow_ups(metadata)
+        if block_follow_ups:
+            payload["follow_ups"] = block_follow_ups
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)
         if kind == "dependency":
@@ -3072,17 +3120,15 @@ def request_review(
             conn, task_id, outcome="review_requested", status="review",
             summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
         )
-        _append_event(
-            conn,
-            task_id,
-            "review_requested",
-            {
-                "summary": _first_line(summary, 400) or None,
-                "implementer": implementer,
-                "reviewer": reviewer,
-            },
-            run_id=run_id,
-        )
+        review_payload = {
+            "summary": _first_line(summary, 400) or None,
+            "implementer": implementer,
+            "reviewer": reviewer,
+        }
+        review_follow_ups = extract_follow_ups(metadata)
+        if review_follow_ups:
+            review_payload["follow_ups"] = review_follow_ups
+        _append_event(conn, task_id, "review_requested", review_payload, run_id=run_id)
     return _ret(True)
 
 

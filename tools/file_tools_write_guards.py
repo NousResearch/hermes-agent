@@ -59,8 +59,17 @@ def _get_hermes_config_resolved() -> str | None:
     try:
         return _config_path_resolved()
     except Exception:
+        # Resolver failure must stay bound to the ACTIVE profile's home, not the
+        # subprocess HOME. ``_expand_tilde("~/...")`` follows the subprocess-HOME
+        # contract, which under host ``auto`` mode can be the real/default user
+        # home rather than the active multiplex ``HERMES_HOME`` — comparing
+        # beta's ``config.yaml`` against the default/root config would let the
+        # hard-block fail open on the exception path. Re-derive from the same
+        # ``get_hermes_home()`` key the happy path uses, and substitute no
+        # unrelated home if even that is gone (#107327 follow-up; PR #107335).
         try:
-            return str(Path(_expand_tilde("~/.hermes/config.yaml")).resolve())
+            from hermes_constants import get_hermes_home
+            return str((Path(str(get_hermes_home())) / "config.yaml").resolve())
         except Exception:
             return None
 
@@ -75,8 +84,16 @@ def _get_real_hermes_home() -> str | None:
     try:
         return _hermes_home_real()
     except Exception:
+        # Same active-profile binding on the exception path (see
+        # ``_get_hermes_config_resolved``): re-derive from ``get_hermes_home()``
+        # rather than ``_expand_tilde("~/.hermes")`` so the protected-instruction
+        # exemption resolves against the active profile — not the subprocess /
+        # default home — and substitute no unrelated home if the active security
+        # path cannot be established (PR #107335). A ``None`` here fails closed at
+        # the consumer: the ``~/.hermes`` exemption is skipped, so the gate runs.
         try:
-            return os.path.realpath(_expand_tilde("~/.hermes"))
+            from hermes_constants import get_hermes_home
+            return os.path.realpath(str(get_hermes_home()))
         except Exception:
             return None
 

@@ -329,6 +329,32 @@ class TestCheckFnExceptionHandling:
         assert "works" in available
         assert any(u["name"] == "crashes" for u in unavailable)
 
+    def test_check_tool_availability_only_probes_requested_toolsets(self):
+        reg = ToolRegistry()
+        unselected_checks = []
+        reg.register(
+            name="selected",
+            toolset="selected",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+        reg.register(
+            name="unselected",
+            toolset="unselected",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: unselected_checks.append(True) or True,
+        )
+
+        available, unavailable = reg.check_tool_availability(
+            toolsets={"selected"}
+        )
+
+        assert available == ["selected"]
+        assert unavailable == []
+        assert unselected_checks == []
+
 
 class TestBuiltinDiscovery:
     def test_discovers_all_real_self_registering_builtin_tool_modules(self):

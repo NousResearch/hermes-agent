@@ -55,14 +55,6 @@ def _ascii_box(title: str, width: int) -> None:
     print("+" + "-" * width + "+")
 
 
-def _toolset_map(tools, availability, get_toolset_for_tool) -> dict:
-    """tool name → toolset id, including tools of unavailable toolsets (banner snapshot)."""
-    tmap = {t["function"]["name"]: get_toolset_for_tool(t["function"]["name"]) for t in tools}
-    for item in availability.get("unavailable_toolsets", []):
-        for name in item.get("tools", []):
-            tmap.setdefault(name, item.get("id", item.get("name", "")))
-    return tmap
-
 
 def _skill_line(item: dict) -> str:
     nm = item.get("name", "")
@@ -91,83 +83,46 @@ class CLIInfoMixin:
 
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
-        from cli import _build_compact_banner, get_tool_definitions, logger
+        from cli import _build_compact_banner, logger
         from hermes_cli.banner import build_welcome_banner
+        from hermes_cli.tool_resolution import ToolResolutionRequest, resolve_startup_tools
+
+        pending = getattr(self, "_startup_tool_resolution", None)
+        self._startup_tool_resolution = None
+        tools = getattr(getattr(self, "agent", None), "tools", None)
+        request = ToolResolutionRequest.from_lists(self.enabled_toolsets, self.disabled_toolsets)
+        deferred = (
+            tools is None and os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1"
+            and request.enabled_toolsets != frozenset()
+        )
+        if tools is None and not deferred:
+            tools = resolve_startup_tools(request, pending)
         self.console.clear()
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
 
         # Auto-compact for narrow terminals — the full banner needs ~80 columns to avoid wrapping.
-        if self.compact or shutil.get_terminal_size().columns < 80:
+        if deferred:
             self._console_print(_build_compact_banner())
             self._show_status()
+        elif tools is None:
+            self._console_print(_build_compact_banner())
+            self._console_print(
+                "[yellow]⚠ Tool discovery unavailable; tools will be resolved on the first message.[/]")
+        elif self.compact or shutil.get_terminal_size().columns < 80:
+            self._console_print(_build_compact_banner())
+            self._show_status(resolved_tools=tools)
         else:
-            # Warm-launch fast path: replay last launch's tool panel when the snapshot fingerprint
-            # (config.yaml + .env + checkout rev + toolsets) is unchanged, skipping the ~0.5-0.9s
-            # cold get_tool_definitions walk. The agent's REAL tool list is still computed fresh at
-            # first message; a background refresh re-verifies the snapshot so drift self-heals.
-            from hermes_cli.banner import (
-                compute_toolset_availability, load_banner_snapshot, save_banner_snapshot)
-            try:
-                snapshot = load_banner_snapshot(self.enabled_toolsets)
-            except Exception:
-                snapshot = None
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())  # where commands will execute
-            banner_kw = dict(
+            build_welcome_banner(
                 console=self.console, model=self.model, cwd=cwd,
-                enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
+                tools=tools, session_id=self.session_id,
                 context_length=ctx_len, provider=self.provider)
 
-            if snapshot is not None:
-                self._defer_tool_warnings = True
-                toolset_map = snapshot["toolset_map"]
-                build_welcome_banner(
-                    tools=snapshot["tools"],
-                    get_toolset_for_tool=lambda name: toolset_map.get(name),
-                    availability=snapshot["availability"],
-                    skills_by_category=snapshot.get("skills_by_category"),
-                    **banner_kw)
-
-                def _refresh_banner_snapshot() -> None:
-                    try:
-                        from model_tools import get_toolset_for_tool
-                        tools = get_tool_definitions(
-                            enabled_toolsets=self.enabled_toolsets,
-                            disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
-                        availability = compute_toolset_availability(self.enabled_toolsets)
-                        tmap = _toolset_map(tools, availability, get_toolset_for_tool)
-                        save_banner_snapshot(tools, self.enabled_toolsets, availability, tmap)
-                    except Exception:
-                        logger.debug("banner snapshot refresh failed", exc_info=True)
-
-                threading.Thread(
-                    target=_refresh_banner_snapshot, name="banner-snapshot-refresh", daemon=True,
-                ).start()
-            else:
-                # Cold path: compute live, then persist the snapshot for the next launch.
-                from model_tools import get_toolset_for_tool
-                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
-                                             disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
-                availability = compute_toolset_availability(self.enabled_toolsets)
-                build_welcome_banner(tools=tools, availability=availability, **banner_kw)
-                try:
-                    tmap = _toolset_map(tools, availability, get_toolset_for_tool)
-                    save_banner_snapshot(tools, self.enabled_toolsets, availability, tmap)
-                except Exception:
-                    logger.debug("banner snapshot save failed", exc_info=True)
-
-        # Tool discovery is deferred on the Termux bare prompt path (warnings show once tools
-        # init). On the snapshot fast path the check walks every check_fn (~180ms) — run it in
-        # the background and let its output land above the prompt (patch_stdout-safe).
-        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
-            if getattr(self, "_defer_tool_warnings", False):
-                threading.Thread(
-                    target=self._show_tool_availability_warnings,
-                    name="tool-availability-warnings",
-                    daemon=True).start()
-            else:
-                self._show_tool_availability_warnings()
+        # Complete diagnostics before prompt_toolkit takes terminal ownership.
+        if tools is not None:
+            self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH

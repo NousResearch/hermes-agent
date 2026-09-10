@@ -901,12 +901,12 @@ class ToolRegistry:
                 "tools": [entry.name for entry in members]}
         return result
 
-    def check_tool_availability(self, quiet: bool = False):
+    def check_tool_availability(self, quiet: bool = False, toolsets: Optional[Set[str]] = None):
         """Return (available_toolsets, unavailable_info) like the old function."""
         available, unavailable = [], []
         entries = self._snapshot_entries()
         groups = self._grouped(entries)
-        for ts in sorted(groups):
+        for ts in sorted(groups.keys() if toolsets is None else groups.keys() & toolsets):
             if self._toolset_has_exposable_tools(ts, entries):
                 available.append(ts)
             else:

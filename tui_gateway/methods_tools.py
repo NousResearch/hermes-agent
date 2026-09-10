@@ -183,13 +183,18 @@ def _joined_output(r) -> str:
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = set((getattr(session["agent"], "enabled_toolsets", []) if session else _load_enabled_toolsets()) or [])
+    selection = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
+    enabled = set(toolsets.get_all_toolsets() if selection is None else selection)
+    disabled = getattr(session["agent"], "disabled_toolsets", None) if session else None
+    if disabled:
+        from hermes_cli.tools_config import _prune_toolsets_stripped_by_disabled
+        enabled = _prune_toolsets_stripped_by_disabled(enabled, disabled)
     items = []
     for name in sorted(toolsets.get_all_toolsets().keys()):
         if info := toolsets.get_toolset_info(name):
             row = {
                 "name": name, "description": info["description"], "tool_count": info["tool_count"],
-                "enabled": name in enabled if enabled else True}
+                "enabled": name in enabled}
             if with_tools:
                 row["tools"] = info["resolved_tools"]
             items.append(row)
@@ -965,8 +970,10 @@ def _(rid, params: dict) -> dict:
     mt = _tools_mod("model_tools")
     session = _sessions.get(params.get("session_id", ""))
     enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
+    disabled = getattr(session["agent"], "disabled_toolsets", None) if session else None
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
-    tools = mt.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True, skip_tool_search_assembly=True)
+    tools = mt.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
+                                    quiet_mode=True, skip_tool_search_assembly=True)
     sections = {}
     for tool in sorted(tools, key=lambda t: t["function"]["name"]):
         name = tool["function"]["name"]

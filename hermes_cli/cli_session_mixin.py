@@ -209,11 +209,13 @@ class CLISessionMixin:
         print(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
         return None
 
-    def _show_status(self):
+    def _show_status(self, resolved_tools=None):
         """Show compact startup status line."""
         from cli import get_tool_definitions
         # Avoid pulling the full tool registry into the bare Termux prompt path.
-        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1":
+        if resolved_tools is not None:
+            tool_status = f"{len(resolved_tools)} tools"
+        elif os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1":
             tool_status = "tools deferred"
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,

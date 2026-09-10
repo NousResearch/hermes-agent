@@ -52,6 +52,10 @@ def main_mod(monkeypatch):
     monkeypatch.setattr(mod, "_pin_kanban_board_env", lambda: None)
     monkeypatch.setattr(mod, "_resolve_session_by_name_or_id", lambda val: val)
     monkeypatch.setattr(mod, "_oneshot_cleanup_done", False)
+    monkeypatch.setattr(
+        "hermes_cli.tool_resolution.start_cli_tool_resolution",
+        lambda *_args, **_kwargs: object(),
+    )
     return mod
 
 

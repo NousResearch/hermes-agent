@@ -73,6 +73,7 @@ class TestChatVerboseArg:
         import sys
 
         import hermes_cli.main as main_mod
+        import hermes_cli.tool_resolution as tool_resolution
         from hermes_cli._parser import build_top_level_parser
 
         parser, _subparsers, chat_parser = build_top_level_parser()
@@ -95,11 +96,18 @@ class TestChatVerboseArg:
         monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
         monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
         monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+        prefetched = object()
+        monkeypatch.setattr(
+            tool_resolution,
+            "start_cli_tool_resolution",
+            lambda *_args, **_kwargs: prefetched,
+        )
 
         main_mod.cmd_chat(args)
 
         assert captured["quiet"] is False
         assert "verbose" not in captured
+        assert captured["_prefetched_tool_resolution"] is prefetched
 
 
 class TestYoloEnvVar:

@@ -3063,7 +3063,7 @@ export const ja = defineLocale({
     newSessionTab: '新しいセッションタブ',
     newTab: '新しいタブ',
     pluginDisabled: pluginId => `プラグイン「${pluginId}」を無効化しました`,
-    pluginDisabledBody: '設定 → プラグイン で再有効化するとペインが戻ります。',
+    pluginDisabledBody: 'スキルとツール → プラグイン で再有効化するとペインが戻ります。',
     missingPane: paneId => `ペインが見つかりません: ${paneId}`,
     editTitle: 'レイアウト',
     editHint: 'レイアウトを選ぶか、ペインをゾーン間へドラッグ。',

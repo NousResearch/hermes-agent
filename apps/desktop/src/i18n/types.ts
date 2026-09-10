@@ -382,7 +382,6 @@ export interface Translations {
       about: string
       billing: string
       notifications: string
-      plugins: string
     }
     plugins: {
       title: string
@@ -398,11 +397,6 @@ export interface Translations {
       kinds: { bundled: string; disk: string; runtime: string }
       agentHalfMissing: string
       agentHalfMissingTip: string
-      agent: {
-        title: string
-        movedToCapabilities: string
-        openCapabilities: string
-      }
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -1323,6 +1317,8 @@ export interface Translations {
     skillArchivedMessage: string
     tabPlugins: string
     plugins: {
+      agentTitle: string
+      agentBlurb: string
       empty: string
       emptyHint: string
       loadFailed: string

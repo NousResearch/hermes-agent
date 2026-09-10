@@ -422,8 +422,7 @@ export const ru = defineLocale({
       archivedChats: 'Архив чатов',
       about: 'О программе',
       billing: 'Оплата',
-      notifications: 'Уведомления',
-      plugins: 'Плагины'
+      notifications: 'Уведомления'
     },
     plugins: {
       title: 'Плагины приложения',
@@ -437,12 +436,6 @@ export const ru = defineLocale({
       failed: 'ошибка',
       empty: 'Плагины приложения пока не установлены.',
       kinds: { bundled: 'встроенный', disk: 'на диске', runtime: 'runtime' },
-      agent: {
-        title: 'Плагины агента',
-        movedToCapabilities:
-          'Плагины агента управляются для каждого профиля в разделе «Возможности» — список установленных, переключатели и каталог плагинов находятся там.',
-        openCapabilities: 'Открыть Возможности → Плагины'
-      },
       installModal: {
         title: 'Установка плагина',
         description: 'Перед установкой посмотрите, что содержит этот репозиторий.',
@@ -3450,7 +3443,7 @@ export const ru = defineLocale({
     closeAll: 'Закрыть все',
     newSessionTab: 'Вкладка нового сеанса',
     pluginDisabled: pluginId => `Плагин «${pluginId}» отключён`,
-    pluginDisabledBody: 'Включите его снова в Настройки → Плагины, чтобы вернуть панель.',
+    pluginDisabledBody: 'Включите его снова в Возможности → Плагины, чтобы вернуть панель.',
     missingPane: paneId => `нет панели: ${paneId}`,
     editTitle: 'Раскладки',
     editHint: 'Выберите раскладку или перетащите панели между зонами.',

@@ -382,8 +382,7 @@ export const ar = defineLocale({
       archivedChats: 'المحادثات المؤرشفة',
       about: 'حول',
       notifications: 'الإشعارات',
-      keybinds: 'اختصارات لوحة المفاتيح',
-      plugins: 'الإضافات'
+      keybinds: 'اختصارات لوحة المفاتيح'
     },
     plugins: {
       title: 'إضافات سطح المكتب',
@@ -2617,7 +2616,7 @@ export const ar = defineLocale({
     closeToRight: 'إغلاق ما على اليمين',
     closeAll: 'إغلاق الكل',
     pluginDisabled: pluginId => `الإضافة "${pluginId}" معطلة`,
-    pluginDisabledBody: 'أعد تفعيلها من الإعدادات ← الإضافات لإرجاع اللوحة.',
+    pluginDisabledBody: 'أعد تفعيلها من القدرات ← الإضافات لإرجاع اللوحة.',
     missingPane: paneId => `لوحة مفقودة: ${paneId}`,
     editTitle: 'التخطيطات',
     editHint: 'اختر تخطيطا، أو اسحب اللوحات بين المناطق.',

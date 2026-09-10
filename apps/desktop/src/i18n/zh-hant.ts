@@ -2957,7 +2957,7 @@ export const zhHant = defineLocale({
     newSessionTab: '新增工作階段分頁',
     newTab: '新增分頁',
     pluginDisabled: pluginId => `外掛「${pluginId}」已停用`,
-    pluginDisabledBody: '在 設定 → 外掛 中重新啟用即可恢復面板。',
+    pluginDisabledBody: '在 技能與工具 → 外掛 中重新啟用即可恢復面板。',
     missingPane: paneId => `缺少面板：${paneId}`,
     editTitle: '版面配置',
     editHint: '選擇一個版面配置，或在區域之間拖曳面板。',

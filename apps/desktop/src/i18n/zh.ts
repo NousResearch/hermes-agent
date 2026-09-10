@@ -425,8 +425,7 @@ export const zh: Translations = {
       archivedChats: '已归档对话',
       about: '关于',
       billing: '账单',
-      notifications: '通知',
-      plugins: '插件'
+      notifications: '通知'
     },
     plugins: {
       title: '桌面插件',
@@ -444,11 +443,6 @@ export const zh: Translations = {
       agentHalfMissing: '此处缺少 agent 部分',
       agentHalfMissingTip:
         '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
-      agent: {
-        title: 'Agent 插件',
-        movedToCapabilities: 'Agent 插件按配置在「能力」页管理 — 已安装列表、开关和插件目录都在那里。',
-        openCapabilities: '打开 能力 → 插件'
-      },
       installModal: {
         installFromGit: '从 Git 安装',
         reviewRepository: '检查仓库',
@@ -1681,7 +1675,9 @@ export const zh: Translations = {
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
     plugins: {
-      empty: '此配置尚未安装任何 agent 插件',
+      agentTitle: 'Agent 插件',
+      agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
+      empty: '此配置尚未安装任何 agent 插件。',
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
       loadFailed: '无法加载 agent 插件',
       toggleFailed: (name: string) => `无法切换 ${name}`,
@@ -3631,7 +3627,7 @@ export const zh: Translations = {
     newSessionTab: '新建会话标签',
     newTab: '新建标签页',
     pluginDisabled: pluginId => `插件“${pluginId}”已禁用`,
-    pluginDisabledBody: '在 设置 → 插件 中重新启用即可恢复面板。',
+    pluginDisabledBody: '在 技能与工具 → 插件 中重新启用即可恢复面板。',
     missingPane: paneId => `缺少面板：${paneId}`,
     editTitle: '布局',
     editHint: '选择一个布局，或在区域之间拖动面板。',

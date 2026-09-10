@@ -315,6 +315,87 @@ def test_stop_reason_only_marks_unfinished_when_nothing_vouches_for_success(rece
     assert update_cmd._receipt_looks_unfinished(receipt) is unfinished
 
 
+def test_fossil_unfinished_receipt_without_checkout_move_is_not_pending(monkeypatch):
+    """A run that died BEFORE the pull (e.g. fetch 401) leaves pre_update.sha == post_update.sha.
+
+    Its plan.runtimes[].code_sha are pre-pull SHAs of a checkout that never moved — a fossil,
+    not a restart obligation. Comparing them against the live HEAD made every later update
+    believe the fleet was stale forever and fire a spurious fleet restart.
+    """
+    disk_sha = "d" * 40
+    old_sha = "7" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "failed",
+                "exit_code": 1,
+                "stop_reason": "sys.exit(1)",
+                "pre_update": {"sha": old_sha},
+                "post_update": {"sha": old_sha},
+                "fleet": [],
+                "plan": {
+                    "expected_sha": old_sha,
+                    "runtimes": [
+                        {
+                            "kind": "gateway",
+                            "profile": "default",
+                            "pid": 1,
+                            "code_sha": old_sha,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
+def test_unfinished_receipt_after_checkout_move_is_still_pending(monkeypatch):
+    """#95294 contract kept: a run that DID advance the tree (pre != post) but never
+    restarted the fleet still owes the catch-up restart."""
+    disk_sha = "d" * 40
+    old_sha = "7" * 40
+    new_sha = "a" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "failed",
+                "exit_code": 1,
+                "stop_reason": "sys.exit(1)",
+                "pre_update": {"sha": old_sha},
+                "post_update": {"sha": new_sha},
+                "fleet": [],
+                "plan": {
+                    "expected_sha": old_sha,
+                    "runtimes": [
+                        {
+                            "kind": "gateway",
+                            "profile": "default",
+                            "pid": 1,
+                            "code_sha": old_sha,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+
 def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
     disk_sha = "n" * 40
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)

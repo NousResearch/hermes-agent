@@ -205,6 +205,7 @@ import {
   writeBufferToFile
 } from './gateway-file-download'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
+import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import { readAndConsumeHandoffResult } from './handoff-result'
@@ -1277,13 +1278,10 @@ if (IS_WINDOWS) {
   app.setAppUserModelId('com.nousresearch.hermes')
 }
 
-// Seed the native About panel with the live Hermes version. This is refreshed
-// on every open via the explicit "About" menu handler (refreshAboutPanel), so
-// an in-place `hermes update` mid-session is reflected without an app restart;
-// the seed here just covers the first open and any non-menu invocation path.
+// The gateway version is unknown until the backend connects.
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
-  applicationVersion: resolveHermesVersion(),
+  applicationVersion: '',
   copyright: 'Copyright © 2026 Nous Research'
 })
 
@@ -17236,29 +17234,8 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
-// Resolve the canonical Hermes version (the one `release.py` bumps in
-// hermes_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
-// real Hermes version instead of the Electron app's own package.json version,
-// which historically drifted (stuck at 0.0.2). Falls back to app.getVersion()
-// when the source tree can't be read (e.g. a packaged build without the repo).
-function resolveHermesVersion() {
-  try {
-    const root = resolveUpdateRoot()
-    const initPath = path.join(root, 'hermes_cli', '__init__.py')
-
-    if (fileExists(initPath)) {
-      const raw = fs.readFileSync(initPath, 'utf8')
-      const match = raw.match(/__version__\s*=\s*["']([^"']+)["']/)
-
-      if (match) {
-        return match[1]
-      }
-    }
-  } catch {
-    // Fall through to the Electron app version below.
-  }
-
-  return app.getVersion()
+function resolveHermesVersion(scope: { connectionId?: string; profile?: string } = {}): Promise<string> {
+  return resolveGatewayVersion(path => handleHermesApiRequest({ ...scope, path, timeoutMs: 5000 }))
 }
 
 // Renderer-bundle skew: `hermes update` moves the SOURCE TREE, but the UI
@@ -17279,23 +17256,23 @@ async function detectRendererSkew() {
 // an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
 // other platforms don't use this menu item.
 function showAboutPanelFresh() {
-  void detectRendererSkew().then(skew => {
+  void Promise.all([detectRendererSkew(), resolveHermesVersion()]).then(([skew, version]) => {
     app.setAboutPanelOptions({
       applicationName: APP_NAME,
       applicationVersion: skew.outOfSync
-        ? `${resolveHermesVersion()} — app build out of date, update the desktop app`
-        : resolveHermesVersion(),
+        ? `${version} — app build out of date, update the desktop app`
+        : version,
       copyright: 'Copyright © 2026 Nous Research'
     })
     app.showAboutPanel()
   })
 }
 
-ipcMain.handle('hermes:version', async () => {
-  const skew = await detectRendererSkew()
+ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string; profile?: string }) => {
+  const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
 
   return {
-    ...resolveHermesVersionInfo(),
+    ...resolveHermesVersionInfo(version),
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
@@ -17359,9 +17336,8 @@ function readLatestSyncReceipt(): Record<string, unknown> | null {
 
 ipcMain.handle('hermes:sync-status', () => readLatestSyncReceipt())
 
-/** Build provenance read from the install stamp — the same facts the CLI
- *  reports. Falls back to the bare app version when there's no stamp. */
-function resolveHermesVersionInfo() {
+/** Runtime version comes from the gateway; build provenance stays with the app stamp. */
+function resolveHermesVersionInfo(version: string) {
   // The baked build-time constant is typed more narrowly than a full stamp
   // loaded from disk; cast to the full shape so every provenance field is
   // readable on either source.
@@ -17369,7 +17345,7 @@ function resolveHermesVersionInfo() {
 
   if (stamp) {
     return {
-      appVersion: resolveHermesVersion(),
+      appVersion: version,
       baseVersion: stamp.baseVersion ?? undefined,
       distance: stamp.distance ?? undefined,
       commit: stamp.commit,
@@ -17380,7 +17356,7 @@ function resolveHermesVersionInfo() {
     }
   }
 
-  return { appVersion: app.getVersion(), baseVersion: app.getVersion() }
+  return { appVersion: version, baseVersion: app.getVersion() }
 }
 
 // Python's Path.resolve() equivalent for install-id derivation: realpath when

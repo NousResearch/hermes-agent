@@ -29,7 +29,7 @@ export function AboutSettings() {
     if (remote) {
       void checkBackendUpdates()
     }
-  }, [remote])
+  }, [connection, remote])
 
   return (
     <SettingsContent>

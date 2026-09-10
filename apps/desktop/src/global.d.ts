@@ -521,7 +521,7 @@ declare global {
       repairBootstrap: () => Promise<{ ok: boolean; error?: string }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
-      getVersion: () => Promise<DesktopVersionInfo>
+      getVersion: (scope?: { connectionId?: string; profile?: string }) => Promise<DesktopVersionInfo>
       /** The latest pm/venv/plugin-operation receipt (machine-readable):
        *  bisect disables, failed rebuilds, update-check results. null when
        *  no venv operation has run yet. */
@@ -628,6 +628,7 @@ export interface DesktopSyncReceipt {
 }
 
 export interface DesktopVersionInfo {
+  /** Running gateway version; empty when the gateway cannot report it. */
   appVersion: string
   electronVersion: string
   nodeVersion: string

@@ -5,6 +5,7 @@
 
 import { atom } from 'nanostores'
 
+import { connectionScoped, profileScoped } from '@/api/client'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
@@ -352,11 +353,7 @@ export function requestActiveUpdate(): void {
   openUpdateOverlayFor(target)
 }
 
-/** Re-read the running app's version from the Electron main process and
- *  publish it on `$desktopVersion`. Called when the About panel mounts, the
- *  update flow finishes, and the window regains focus, so the About text
- *  stays in sync with the just-installed binary instead of frozen at the
- *  value captured at first-load. */
+/** Refresh the active gateway version and the desktop's build metadata. */
 export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null> {
   if (typeof window === 'undefined') {
     return null
@@ -368,7 +365,10 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
   // mid-reload, or the bridge not yet ready on first paint) would surface
   // as an unhandled promise rejection in the renderer. Swallow it.
   try {
-    const next = await window.hermesDesktop?.getVersion?.()
+    const connection = $connection.get()
+    const next = await window.hermesDesktop?.getVersion?.({ ...connectionScoped(), ...profileScoped() })
+
+    if ($connection.get() !== connection) { return null }
 
     if (next) {
       $desktopVersion.set(next)

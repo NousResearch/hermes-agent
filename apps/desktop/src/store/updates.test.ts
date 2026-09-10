@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopUpdateStatus } from '@/global'
+import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
+import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { en } from '@/i18n/en'
 
 const storage = new Map<string, string>()
@@ -81,6 +82,8 @@ vi.mock('@/store/gateway-reconnect', () => ({
 }))
 
 const {
+  refreshDesktopVersion,
+  $desktopVersion,
   maybeNotifyUpdateAvailable,
   checkBackendUpdates,
   $backendUpdateStatus,
@@ -133,6 +136,44 @@ const setRemote = (on: boolean) =>
     logs: [],
     windowButtonPosition: null
   })
+
+describe('gateway version refresh', () => {
+  afterEach(() => {
+    setApiRequestConnection(null)
+    setApiRequestProfile(null)
+    $desktopVersion.set(null)
+  })
+
+  it('requests the active gateway and does not publish a previous connection reply', async () => {
+    setRemote(true)
+    setApiRequestConnection('remote-box')
+    setApiRequestProfile('work')
+
+    const version: DesktopVersionInfo = {
+      appVersion: '4.5.6', electronVersion: '40', nodeVersion: '26', platform: 'win32', hermesRoot: ''
+    }
+
+    const getVersion = vi.fn().mockResolvedValue(version)
+    const previous = window.hermesDesktop
+    window.hermesDesktop = { ...previous, getVersion }
+
+    try {
+      expect(await refreshDesktopVersion()).toEqual(version)
+      expect(getVersion).toHaveBeenCalledWith({ connectionId: 'remote-box', profile: 'work' })
+      expect($desktopVersion.get()?.appVersion).toBe('4.5.6')
+      let finish!: (value: DesktopVersionInfo) => void
+      getVersion.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      const pending = refreshDesktopVersion()
+      setRemote(false)
+      $desktopVersion.set(null)
+      finish(version)
+      expect(await pending).toBeNull()
+      expect($desktopVersion.get()).toBeNull()
+    } finally {
+      window.hermesDesktop = previous
+    }
+  })
+})
 
 describe('maybeNotifyUpdateAvailable', () => {
   beforeEach(() => {

@@ -49,7 +49,7 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
       <div className="flex justify-between gap-4">
         <dt className="text-muted-foreground">{u.versionDetailsVersion}</dt>
         <dd>
-          v{version.appVersion}
+          {version.appVersion ? `v${version.appVersion}` : u.versionUnavailable}
           {version.dirty && <span className="text-warning"> (!)</span>}
         </dd>
       </div>

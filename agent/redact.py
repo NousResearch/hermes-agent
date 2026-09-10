@@ -642,21 +642,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     return text
 
 
-# Commands whose stdout is an env-var dump: terminal redaction runs the
-# ENV-assignment pass (code_file=False) for these so opaque tokens with no vendor
-# prefix are masked; everything else uses code_file=True (``MAX_TOKENS=100``).
-# Commands whose stdout is an environment-variable dump (KEY=value lines), NOT source code.
-# ``MY_SERVICE_TOKEN=abc123randomstring``) are still masked. For all other commands, code_file=True is used
-# to avoid mangling legitimate source/config dumps (``MAX_TOKENS=100``, ``"apiKey": "x"`` fixtures,
-# ``postgresql://{user}`` f-string templates). See issue #43025.
+# Commands whose stdout is an env-var dump (``env``/``printenv``/…): the
+# ENV-assignment pass (code_file=False) must run so opaque tokens with no vendor
+# prefix (``MY_SERVICE_TOKEN=abc123randomstring``) are masked rather than echoed
+# verbatim. Every other command keeps code_file=True to avoid mangling source /
+# config dumps (``MAX_TOKENS=100``, ``"apiKey": "x"`` fixtures,
+# ``postgresql://{user}`` f-string templates) — the one other exception being a
+# command that references a secrets file, handled by ``_command_reads_env_file``
+# below. See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
-
-# Commands that read file contents to stdout. A ``.env`` target is a credential
-# dump (per AGENTS.md ``.env`` holds only secrets), so the ENV pass must run.
-_FILE_READ_COMMANDS = frozenset({
-    "cat", "head", "tail", "type", "bat", "less", "more", "nl",
-    "zcat", "tac", "view", "batcat",
-})
 
 
 def _command_segments(command: str) -> list[str]:
@@ -665,21 +659,20 @@ def _command_segments(command: str) -> list[str]:
 
 
 def _command_reads_env_file(command: str | None) -> bool:
-    """True if ``command`` reads a ``.env``-style file (by basename) to stdout.
-    Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
-    .env)``, ``sed``/``awk``) are not detected, matching ``is_env_dump_command``."""
+    """Detect literal env-file path references in shell commands or executed source.
+
+    Reader-independent: wrappers, one-liners, substitutions and redirects can
+    all expose assignments. Split syntax delimiters without consuming Windows
+    path separators. This is a lexical hint, not data-flow analysis: computed
+    paths and symlink targets are not resolved; templates stay excluded by the
+    exact basename lookup.
+    """
     if not command:
         return False
-    for seg in _command_segments(command):
-        tokens = seg.split()  # not shlex: it mangles Windows paths (``C:\Users\...\.env``)
-        if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
-            continue
-        for arg in tokens[1:]:
-            if arg.startswith("-"):
-                continue
-            basename = arg.strip("\"'").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if basename.lower() in _ENV_FILE_BASENAMES:
-                return True
+    for arg in re.split(r"[\s\"'`|;&<>(){}\[\],=]+", command):
+        basename = arg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if basename.lower() in _ENV_FILE_BASENAMES:
+            return True
     return False
 
 

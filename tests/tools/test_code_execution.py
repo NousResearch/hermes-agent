@@ -924,3 +924,41 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize('filename', ['.env', '.env.local', '.env.example', 'source.txt'])
+def test_execute_code_env_file_output_contract(tmp_path, filename):
+    """Real registry dispatch and kernel I/O preserve fixtures but mask env dumps."""
+    value = 'q7Vm2R9xK4pL8wN6zB3d'
+    output = f'COMMANDCODE_API_KEY={value}\nMAX_TOKENS=100\n'
+    path = tmp_path / filename
+    path.write_text(output)
+    code = f'print(open({str(path)!r}).read(), end="")'
+    result = json.loads(registry.dispatch('execute_code', {'code': code}, task_id='redact-contract'))
+    assert result['status'] == 'success', result
+    if filename in ('.env', '.env.local'):
+        assert value not in result['output']
+        assert 'MAX_TOKENS=100' in result['output']
+    else:
+        assert result['output'] == output
+
+
+@pytest.mark.parametrize('persistent', [True, False])
+def test_execute_code_remote_env_file_output_contract(monkeypatch, persistent):
+    """Both remote transports must carry source context to output cleaning."""
+    import tools.code_execution_tool as execution
+    import tools.code_kernel_remote as remote
+
+    value = 'q7Vm2R9xK4pL8wN6zB3d'
+    output = f'DISCORD_BOT_TOKEN={value}\n'
+    env = MagicMock()
+    env.execute.return_value = {'output': 'OK\n' + output, 'returncode': 0}
+    monkeypatch.setattr(execution, '_get_or_create_env', lambda _: (env, 'docker'))
+    monkeypatch.setattr(execution, '_ship_file_to_remote', lambda *a: None)
+    monkeypatch.setattr(execution, '_rpc_poll_loop', lambda *a: None)
+    monkeypatch.setattr(remote, 'execute_in_remote_kernel', lambda *a, **kw:
+                        {'status': 'success', 'stdout': output} if persistent else None)
+    for filename in ('.env', '.env.example', 'source.txt'):
+        result = json.loads(execution._execute_remote(f'print(open({filename!r}).read())', 'redact', []))
+        assert result['status'] == 'success', result
+        assert (value not in result['output']) == (filename == '.env')

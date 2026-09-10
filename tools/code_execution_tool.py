@@ -478,13 +478,15 @@ def _format_interrupted_output(stdout_text: str) -> str:
     return f"{stdout_text}\n{marker}" if stdout_text else marker
 
 
-def _clean_output(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
-    """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
-    output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
+def _clean_output(stdout_text: str, code: str = "") -> Tuple[str, Dict[str, Any]]:
+    """Cap, strip ANSI and redact output; enable assignments only for env-file references.
+    Other snippets may echo source/config fixtures and must retain code_file=True.
+    """
     from tools.ansi_strip import strip_ansi
-    from agent.redact import redact_sensitive_text
+    from agent.redact import _command_reads_env_file, redact_sensitive_text
     stdout_text, metadata = _truncate_stdout_text(stdout_text)
-    return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
+    return redact_sensitive_text(
+        strip_ansi(stdout_text), code_file=not _command_reads_env_file(code)), metadata
 
 
 def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
@@ -509,10 +511,10 @@ _REMOTE_EXIT_STATUS = {124: "timeout", 130: "interrupted"}
 
 
 def _remote_result(status: str, raw_stdout: str, exec_start: float, fields: Dict[str, Any],
-                   kernel: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                   kernel: Optional[Dict[str, Any]] = None, *, code: str = "") -> Dict[str, Any]:
     """Common remote reply shape: status, cleaned output, *fields*, duration, optional kernel
     info, then truncation metadata (key order is part of the result contract)."""
-    stdout_text, stdout_metadata = _clean_output(raw_stdout)
+    stdout_text, stdout_metadata = _clean_output(raw_stdout, code)
     result: Dict[str, Any] = {"status": status, "output": stdout_text, **fields,
                               "duration_seconds": round(time.monotonic() - exec_start, 2)}
     if kernel is not None:
@@ -527,7 +529,7 @@ def _apply_timeout(result: Dict[str, Any], timeout_msg: str) -> None:
 
 
 def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
-                                 timeout: int, exec_start: float) -> str:
+                                 timeout: int, exec_start: float, code: str = "") -> str:
     """Post-process a remote-kernel cell result into the tool's JSON reply. Timeout messaging
     mirrors the local kernel contract (kernel killed, state lost, next call fresh)."""
     stdout_text = kernel_result.get("stdout", "") or ""
@@ -539,7 +541,7 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
         stdout_text = stdout_text + "\n--- stderr ---\n" + stderr_text + traceback_text
     result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
                             {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
-                            kernel=kernel_result.get("kernel", {"remote": True}))
+                            kernel=kernel_result.get("kernel", {"remote": True}), code=code)
     if result["status"] == "timeout":
         _apply_timeout(result, f"Cell timed out after {timeout}s; the remote session kernel was "
                                "killed and its state was lost. The next call starts fresh.")
@@ -599,7 +601,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
     result = _remote_result(status, stdout_text, exec_start,
-                            {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]})
+                            {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]}, code=code)
     if status == "timeout":
         _apply_timeout(result, f"Script timed out after {timeout}s and was killed.")
         logger.warning("execute_code (remote) timed out after %ss (limit %ss) with %d tool calls",
@@ -645,7 +647,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
             logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
             kernel_result = None
         if kernel_result is not None:
-            return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start)
+            return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start, code=code)
         logger.info("remote session kernel unavailable on %s; using per-call path", env_type)
     except Exception as exc:
         return _remote_failure(exc, exec_start, 0)

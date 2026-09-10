@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessagingPlatformInfo } from '@/types/hermes'
 
 const getMessagingPlatforms = vi.fn()
+const getHermesConfigRecord = vi.fn()
 const updateMessagingPlatform = vi.fn()
+const saveHermesConfig = vi.fn()
 const getPairing = vi.fn()
 const approvePairing = vi.fn()
 const revokePairing = vi.fn()
@@ -15,11 +17,13 @@ const openExternalLink = vi.fn()
 vi.mock('@/hermes', () => ({
   approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
     approvePairing(platformId, requestId, profile),
+  getHermesConfigRecord: (profile?: null | string) => getHermesConfigRecord(profile),
   getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
   getPairing: (profile?: null | string) => getPairing(profile),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   revokePairing: (platformId: string, userId: string, profile?: null | string) =>
     revokePairing(platformId, userId, profile),
+  saveHermesConfig: (config: unknown, profile?: null | string) => saveHermesConfig(config, profile),
   setApiRequestProfile: vi.fn(),
   updateMessagingPlatform: (id: string, body: unknown, profile?: null | string) =>
     updateMessagingPlatform(id, body, profile)
@@ -65,6 +69,8 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
 }
 
 beforeEach(() => {
+  getHermesConfigRecord.mockResolvedValue({})
+  saveHermesConfig.mockResolvedValue({ ok: true })
   updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'teams' })
   getPairing.mockResolvedValue({ approved: [], pending: [] })
 })
@@ -99,6 +105,55 @@ describe('MessagingView profile scope', () => {
 
     await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(undefined))
     expect(getPairing).toHaveBeenCalledWith(undefined)
+  })
+})
+
+describe('MessagingView Telegram client experience', () => {
+  it('shows effective display settings and saves a profile-scoped override', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          configured: true,
+          id: 'telegram',
+          name: 'Telegram'
+        })
+      ]
+    })
+    getHermesConfigRecord.mockResolvedValue({
+      display: {
+        platforms: {
+          telegram: {
+            interim_assistant_messages: true,
+            tool_progress: 'off'
+          }
+        }
+      }
+    })
+
+    await renderMessaging()
+
+    expect(await screen.findByText('Client experience')).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Tool activity' }).textContent).toContain('Off')
+
+    const updates = screen.getByRole('switch', { name: 'Mid-turn updates' })
+    expect(updates.getAttribute('data-state')).toBe('checked')
+
+    await act(async () => {
+      fireEvent.click(updates)
+    })
+
+    await waitFor(() =>
+      expect(saveHermesConfig).toHaveBeenCalledWith(
+        {
+          display: {
+            platforms: {
+              telegram: { interim_assistant_messages: false }
+            }
+          }
+        },
+        undefined
+      )
+    )
   })
 })
 

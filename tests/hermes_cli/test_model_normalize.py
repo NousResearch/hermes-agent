@@ -114,17 +114,20 @@ class TestDeepseekVSeriesPassThrough:
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
 class TestDeepseekCanonicalAndReasonerMapping:
-    """Retired aliases and fuzzy names rewrite to deepseek-v4-flash.
+    """Retired aliases and fuzzy names rewrite to ``deepseek-flash``.
 
     DeepSeek cut off ``deepseek-chat`` / ``deepseek-reasoner`` on
-    2026-07-24; sending them on the wire returns HTTP 400.
+    2026-07-24; sending them on the wire returns HTTP 400. Its live
+    ``/v1/models`` catalog lists exactly ``deepseek-flash`` +
+    ``deepseek-v4-pro``, so the canonical Flash id is the rewrite target
+    (``deepseek-v4-flash`` is an accepted legacy alias, not the canonical name).
     """
 
 
     def test_provider_path_rewrites_reasoner(self):
         assert (
             normalize_model_for_provider("deepseek-reasoner", "deepseek")
-            == "deepseek-v4-flash"
+            == "deepseek-flash"
         )
 
     @pytest.mark.parametrize("model", [
@@ -134,8 +137,17 @@ class TestDeepseekCanonicalAndReasonerMapping:
         "deepseek-reasoning-preview",
         "deepseek-cot-experimental",
     ])
-    def test_reasoner_keywords_map_to_v4_flash(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
+    def test_reasoner_keywords_map_to_canonical_flash(self, model):
+        assert _normalize_for_deepseek(model) == "deepseek-flash"
+
+
+    def test_canonical_flash_passes_through_unchanged(self):
+        """The id DeepSeek's live catalog advertises must not be rewritten."""
+        assert _normalize_for_deepseek("deepseek-flash") == "deepseek-flash"
+        assert (
+            normalize_model_for_provider("deepseek-flash", "deepseek")
+            == "deepseek-flash"
+        )
 
 
 # ── Regression: issue #78796 ───────────────────────────────────────────

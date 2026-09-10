@@ -339,9 +339,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Google / Gemma ("gemma4" is Ollama-style naming, e.g. gemma4:31b-cloud)
     "gemini": 1048576,
     "gemma-4": 256000, "gemma4": 256000, "gemma-4-31b": 256000, "gemma-3": 131072, "gemma": 8192,
-    # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes.
+    # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes. The live
+    # /v1/models catalog (2026-09) lists exactly ``deepseek-flash`` + ``deepseek-v4-pro``;
+    # ``deepseek-v4-flash`` is an accepted legacy alias of ``deepseek-flash``.
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-    "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
+    "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-flash": 1_000_000,
+    "deepseek-chat": 1_000_000,
     "deepseek-reasoner": 1_000_000, "deepseek": 128000,
     # Meta; Muse Spark family (1.1/1.2/1.3, -contributor(-free), meta/ prefixed) is 1M per OpenRouter,
     # models.dev and api.commandcode.ai /models — keep the "muse-spark" prefix (bare "muse" would match

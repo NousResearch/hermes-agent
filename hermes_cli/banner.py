@@ -755,13 +755,30 @@ def _active_profile_name() -> Optional[str]:
     return get_active_profile_name()
 
 
+def _provider_org_label(provider) -> str:
+    """Org label next to the model: provider display_name, else Nous Research."""
+    prov = (provider or "").strip().lower()
+    prov = prov.split(":", 1)[1] if prov.startswith("custom:") else prov
+    if not prov or prov == "nous":
+        return "Nous Research"
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(prov)
+        if profile:
+            dn = getattr(profile, "display_name", "")
+            return str(dn) if dn else prov.capitalize()
+    except Exception:
+        pass
+    return "Nous Research"
+
+
 def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str) -> list:
     """Model / cwd / session lines under the hero art."""
     def _dim_sep(label: str) -> str:
         return f" [dim {dim}]·[/] [dim {dim}]{label}[/]"
     lines = []
     ctx_str = _dim_sep(f"{_format_context_length(context_length)} context") if context_length else ""
-    nous_str = _dim_sep("Nous Research")
+    nous_str = _dim_sep(_provider_org_label(provider))
     if (provider or "").strip().lower() == "moa":
         # MoA virtual provider: ``model`` is a preset name; show it with its aggregator.
         agg_label = _quiet(lambda: _moa_aggregator_label(model), "")

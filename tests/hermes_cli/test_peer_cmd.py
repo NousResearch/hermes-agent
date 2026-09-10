@@ -78,6 +78,35 @@ def test_add_rejects_bad_name_and_url(monkeypatch):
     assert peer_cmd.cmd_peer(SimpleNamespace(peer_action="add", name="ok", url="ftp://x", key="", note="")) == 2
 
 
+# ── a2a disambiguation footer (issue #105174) ───────────────────────────────
+
+
+def test_list_empty_prints_a2a_disambiguation(monkeypatch, capsys):
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {})
+
+    assert peer_cmd.cmd_peer(SimpleNamespace(peer_action="list")) == 0
+
+    captured = capsys.readouterr()
+    assert "No peers registered" in captured.out
+    assert "not A2A agents" in captured.err
+    assert "a2a_list" in captured.err
+
+
+def test_list_footer_prints_a2a_disambiguation(monkeypatch, capsys):
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": "http://spark.lan:8377"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "k" * 20)
+
+    assert peer_cmd.cmd_peer(SimpleNamespace(peer_action="list")) == 0
+
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
+    assert any(line.startswith("spark\t") for line in lines)
+    # stdout stays machine-parseable: only peer rows, no advisory footer.
+    assert not any(line.startswith("Note:") for line in lines)
+    assert "not A2A agents" in captured.err
+    assert "a2a_list" in captured.err
+
+
 def test_dm_unknown_peer_and_missing_key(monkeypatch):
     monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": "http://x"}})
     monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "")

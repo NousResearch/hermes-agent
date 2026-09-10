@@ -135,8 +135,8 @@ class TestNonempty400EnvelopeOverflowReply:
 
     _ENVELOPE = 'HTTP 400: {"object":"error","model":"deepseek-v4-flash"}'
 
-    def _failed(self, text, error=None):
-        return {"final_response": text, "failed": True, "error": error or text, "api_calls": 1}
+    def _failed(self, text):
+        return {"final_response": text, "failed": True, "error": text, "api_calls": 1}
 
     def test_long_history_rewrites_envelope_to_session_too_large(self):
         response = _normalize_empty_agent_response(

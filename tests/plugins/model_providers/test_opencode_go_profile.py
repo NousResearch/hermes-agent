@@ -182,6 +182,27 @@ class TestOpenCodeGoDeepSeekThinking:
             assert extra_body == {}
             assert top_level == {"reasoning_effort": "max"}
 
+    def test_go_short_slug_for_v41_flash_gets_effort(self, opencode_go_profile):
+        """OpenCode Go serves V4.1 Flash as "deepseek-flash" (no V prefix).
+
+        Before the fix the thinking check missed this slug, so the effort
+        was silently dropped and the relay used its server default.
+        """
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="deepseek-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "high"}
+
+    def test_prefixed_v41_flash_spelling_gets_effort(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="deepseek/deepseek-v4.1-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "high"}
+
 
 class TestOpenCodeGoGLM52Reasoning:
     """GLM-5.2 uses its native high/max reasoning_effort knob on OpenCode Go."""

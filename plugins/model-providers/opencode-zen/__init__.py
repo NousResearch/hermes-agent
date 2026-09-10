@@ -27,7 +27,11 @@ def _flat_model_name(model: str | None) -> str:
 
 def _is_deepseek_thinking_model(model: str | None) -> bool:
     m = _flat_model_name(model)
-    return (m.startswith("deepseek-v") and not m.startswith("deepseek-v3")) or m == "deepseek-reasoner"
+    return (m.startswith("deepseek-v") and not m.startswith("deepseek-v3")) or m in (
+        "deepseek-reasoner",
+        # OpenCode Go serves V4.1 Flash as the short slug "deepseek-flash".
+        "deepseek-flash",
+    )
 
 
 def _is_glm_5_2_model(model: str | None) -> bool:

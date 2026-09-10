@@ -547,16 +547,44 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         // Agent creation. Click-path resolution (openBotCanonicalChat) mints
         // silently so a resolution miss never burns a turn (ScottFive).
         const sid = await createCanonicalChat(slug, {
-          kickoff: true
+          kickoff: true,
+          // Genuine New Agent creation: wait for the ACTUAL live roster to
+          // admit this just-created profile before authorizing/resolving —
+          // never a caller-supplied claim (Architect corrective, 2026-09-02,
+          // second pass). Local-only: the remote branch returns above before
+          // reaching here.
+          newAgentBirth: true,
         })
 
-        if (!sid && typeof host.newChat === 'function') {
-          host.newChat(slug)
+        if (!sid) {
+          // A `null` result here means resolution genuinely produced no
+          // canonical identity (not an authorization/roster failure — those
+          // throw, see below) — still an unresolved outcome that must not
+          // silently open ANY chat for this profile. `host.newChat(slug)`
+          // was previously used as a fallback here, but it is a bare-string
+          // call into the generic session-open path with zero roster or
+          // canonical checks (Architect corrective, 2026-09-02, third pass:
+          // a failed admission/resolution must never fall through to
+          // opening an unconfirmed profile). Surface an honest error
+          // instead — the bot row remains visible and the user can retry.
+          host.notify({
+            kind: 'error',
+            message: `"${slug}" was created, but its chat could not be opened yet. Try opening it from the roster.`
+          })
         }
-      } catch {
-        if (typeof host.newChat === 'function') {
-          host.newChat(slug)
-        }
+      } catch (err) {
+        // Any admission/resolution failure (roster rejection, roster-fetch
+        // failure, title-persistence failure, etc.) — fail closed. Do NOT
+        // fall through to `host.newChat(slug)`: that path bypasses roster
+        // admission and canonical resolution entirely, which is exactly the
+        // authorization boundary this whole corrective round exists to
+        // enforce. Surface the real failure instead.
+        host.notify({
+          kind: 'error',
+          message: `"${slug}" was created, but its chat could not be opened: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        })
       }
     } catch (err) {
       setBusy(false)

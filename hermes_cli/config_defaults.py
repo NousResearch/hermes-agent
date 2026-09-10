@@ -901,6 +901,18 @@ DEFAULT_CONFIG = {
         "status_bar": {
             "fields": [],
         },
+        # TUI terminal title templates. Empty = the built-in composition:
+        # tab (OSC 1) `{marker} {session}`, window (OSC 2)
+        # `{marker} {session} · {model} · {cwd}`. The tab label deliberately
+        # omits model/cwd — narrow tab bars truncate from the LEFT, so a long
+        # window string would hide the session name.
+        # Tokens: {marker} {session} {session_full} {model} {model_full}
+        # {cwd} {cwd_full}. The short forms are capped/abbreviated
+        # ({session} 28 chars, {model} vendor prefix stripped, {cwd} 24 chars
+        # and $HOME → ~); the *_full forms are verbatim. Unknown {tokens} are
+        # left as written. Empty tokens collapse their ` · ` separators.
+        "tab_title_template": "",
+        "window_title_template": "",
         "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
         # Petdex animated mascot (github.com/crafter-station/petdex): cosmetic sprite across
         # CLI/TUI/desktop, managed with `hermes pets`. No effect on prompt caching.

@@ -16,7 +16,13 @@ import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
-import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
+import {
+  fmtProjectCwdBranch,
+  resolveTerminalTitle,
+  shortCwd,
+  shortSessionName,
+  TITLE_MAX_CWD
+} from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
@@ -643,20 +649,33 @@ export function useMainApp(gw: GatewayClient) {
   }, [gw, ui.sid])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
-  // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
-  const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
+  // Default format: `<marker> <session name> · <model> · <cwd>` — name/cwd
+  // omitted when absent. `display.tab_title_template` (OSC 1 tab label) and
+  // `display.window_title_template` (OSC 2 window bar) override the two
+  // compositions independently; empty config keeps these defaults.
+  const modelFull = ui.info?.model ?? ''
+
+  const model = modelFull.replace(/^.*\//, '')
 
   const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
 
   const tabCwd = ui.info?.cwd
 
+  const titleTokens = useMemo(
+    () => ({
+      cwd: tabCwd ? shortCwd(tabCwd, TITLE_MAX_CWD) : '',
+      cwdFull: tabCwd ?? '',
+      marker,
+      model,
+      modelFull,
+      session: shortSessionName(ui.sessionTitle),
+      sessionFull: ui.sessionTitle.trim()
+    }),
+    [marker, model, modelFull, tabCwd, ui.sessionTitle]
+  )
+
   useTerminalTitle(
-    model
-      ? {
-          tab: composeTabTitle(marker, ui.sessionTitle, '', ''),
-          window: composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '')
-        }
-      : 'Hermes'
+    resolveTerminalTitle({ tab: ui.tabTitleTemplate, window: ui.windowTitleTemplate }, titleTokens, ui.sessionTitle)
   )
 
   useEffect(() => {

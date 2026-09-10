@@ -94,6 +94,9 @@ export interface ConfigDisplayConfig {
    *  Raw YAML: callers must runtime-validate entries. */
   status_bar?: { fields?: unknown }
   streaming?: boolean
+  /** Template for the terminal TAB label (OSC 1). Empty/absent = built-in
+   *  default (`{marker} {session}`). See `renderTitleTemplate`. */
+  tab_title_template?: string
   thinking_mode?: string
   /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
    *  honors on its user/assistant labels (#41531). */
@@ -118,6 +121,9 @@ export interface ConfigDisplayConfig {
   /** Theme mode pin: 'light' / 'dark' beat background auto-detection; 'auto'
    *  (default) trusts the OSC-11 probe + env signals. */
   tui_theme?: string
+  /** Template for the terminal WINDOW title (OSC 2). Empty/absent = built-in
+   *  default (`{marker} {session} · {model} · {cwd}`). */
+  window_title_template?: string
 }
 
 export interface ConfigVoiceConfig {

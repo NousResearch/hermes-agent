@@ -1992,6 +1992,8 @@ display:
     fields: ["model", "context_pct", "cwd"]
   status_bar:             # CLI/TUI: choose which status-bar fields are visible
     fields: []            # empty = show the default set; see below
+  tab_title_template: ""     # TUI: template for the terminal tab label (OSC 1). Empty = built-in. See below
+  window_title_template: ""  # TUI: template for the terminal window title (OSC 2). Empty = built-in. See below
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
@@ -2115,6 +2117,39 @@ Notes:
 - `battery` and `title` visibility here compose with their own toggles (`/battery`, `/title`) — both must be on for the segment to show.
 - The same key also filters the **Ink TUI** status rule (`hermes tui`), where `cache_hit`, `latency`, and `tps` render as width-budgeted tail segments (◎ / ◷ / ↑) on terminals ≥96/104/110 columns respectively.
 - Display-only: no effect on prompt caching or request payloads. Changes take effect on the next session start.
+
+### Terminal title templates (TUI)
+
+The Ink TUI (`hermes --tui`) sets two terminal titles: the **tab label** (OSC 1) and the **window title** (OSC 2). By default the tab shows only the marker and session name, while the window adds the model and cwd — the split exists because narrow tab bars truncate from the *left*, so a long window string would hide the session name.
+
+`display.tab_title_template` and `display.window_title_template` override each composition:
+
+```yaml
+display:
+  tab_title_template: "{session_full}"
+  window_title_template: "{marker} {session_full}"
+```
+
+Available tokens:
+
+| Token | Renders | Example |
+| --- | --- | --- |
+| `{marker}` | Session state: `⚠` awaiting approval, `⏳` busy, `✓` idle | `✓` |
+| `{session}` | Session title, truncated to 28 chars | `auth refactor` |
+| `{session_full}` | Session title, verbatim and uncapped | `auth refactor across the gateway adapters` |
+| `{model}` | Model id with the vendor prefix dropped | `claude-opus-5` |
+| `{model_full}` | Model id as configured | `anthropic/claude-opus-5` |
+| `{cwd}` | Working directory, home-relative, capped at 24 chars | `~/src/hermes` |
+| `{cwd_full}` | Working directory, verbatim | `/Users/you/src/hermes-agent` |
+
+Notes:
+
+- An empty string (the default) keeps the built-in composition: `{marker} {session}` for the tab, `{marker} {session} · {model} · {cwd}` for the window.
+- Literal text passes through, so `"hermes: {session}"` works.
+- A token that resolves to nothing collapses its surrounding ` · ` separator, so a template does not leave dangling punctuation when there is no session title yet. Literal text and `*_full` values are otherwise passed through byte-for-byte, including runs of spaces.
+- Unknown tokens are left verbatim (`{sesion}` renders as `{sesion}`) so a typo is visible instead of silently blanking the title.
+- Display-only: no effect on prompt caching or request payloads. Edits apply live — the TUI re-reads the config without a restart.
+- Your terminal may still truncate the result. Terminal.app clips the active tab's title from the left; if the session name matters most, put it first and drop `{model}`/`{cwd}`.
 
 ### Runtime-metadata footer (gateway only)
 

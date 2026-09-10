@@ -351,11 +351,17 @@ export interface UiState {
   // the default set).
   statusBarFields: null | ReadonlySet<string>
   streaming: boolean
+  // `display.tab_title_template` — user template for the OSC 1 tab label.
+  // Empty string = use the built-in default composition.
+  tabTitleTemplate: string
   theme: Theme
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).
   timestamps: boolean
   usage: Usage
+  // `display.window_title_template` — user template for the OSC 2 window
+  // title. Empty string = use the built-in default composition.
+  windowTitleTemplate: string
 }
 
 export interface VirtualHistoryState {

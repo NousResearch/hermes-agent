@@ -9,6 +9,7 @@ import {
   normalizeIndicatorStyle,
   normalizeMouseTracking,
   normalizeStatusBar,
+  normalizeTitleTemplate,
   syncMcpReload
 } from '../app/useConfigSync.js'
 
@@ -117,6 +118,29 @@ describe('applyDisplay', () => {
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
     expect(s.sections).toEqual({})
+    // Empty template = keep the built-in title composition.
+    expect(s.tabTitleTemplate).toBe('')
+    expect(s.windowTitleTemplate).toBe('')
+  })
+
+  it('fans the title templates out to $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay(
+      {
+        config: {
+          display: {
+            tab_title_template: '{session_full}',
+            window_title_template: '{marker} {session_full} · {model_full}'
+          }
+        }
+      },
+      setBell
+    )
+
+    const s = $uiState.get()
+    expect(s.tabTitleTemplate).toBe('{session_full}')
+    expect(s.windowTitleTemplate).toBe('{marker} {session_full} · {model_full}')
   })
 
   it('uses documented mouse_tracking with legacy tui_mouse fallback', () => {
@@ -589,5 +613,53 @@ describe('hydrateFullConfig', () => {
     // display flags (round-2 / round-8 invariant).
     await expect(hydrateFullConfig(gw, setBell)).resolves.toBeTruthy()
     expect(setBell).toHaveBeenCalledWith(true)
+  })
+})
+
+describe('applyDisplay title-template fail-safe', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('preserves live templates when the full-config RPC fails (cfg=null)', () => {
+    const setBell = vi.fn()
+
+    applyDisplay(
+      { config: { display: { tab_title_template: '{session_full}', window_title_template: '{marker} {cwd_full}' } } },
+      setBell
+    )
+
+    // A transient `config.get full` failure must not reset the user's
+    // templates: the mtime poller already advanced, so the clobber would
+    // survive until the next config edit.
+    applyDisplay(null, setBell)
+
+    const s = $uiState.get()
+    expect(s.tabTitleTemplate).toBe('{session_full}')
+    expect(s.windowTitleTemplate).toBe('{marker} {cwd_full}')
+  })
+
+  it('still clears templates when a SUCCESSFUL payload drops the keys', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tab_title_template: '{session_full}' } } }, setBell)
+    applyDisplay({ config: { display: {} } }, setBell)
+
+    expect($uiState.get().tabTitleTemplate).toBe('')
+  })
+})
+
+describe('normalizeTitleTemplate', () => {
+  it('keeps a real template verbatim, including its spacing', () => {
+    expect(normalizeTitleTemplate('  {marker} {session_full} ')).toBe('  {marker} {session_full} ')
+  })
+
+  it('collapses blank and non-string values to the default sentinel', () => {
+    expect(normalizeTitleTemplate('')).toBe('')
+    expect(normalizeTitleTemplate('   ')).toBe('')
+    expect(normalizeTitleTemplate(undefined)).toBe('')
+    expect(normalizeTitleTemplate(3)).toBe('')
+    expect(normalizeTitleTemplate(null)).toBe('')
+    expect(normalizeTitleTemplate({ a: 1 })).toBe('')
   })
 })

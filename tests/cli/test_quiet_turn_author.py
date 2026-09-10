@@ -60,5 +60,3 @@ def test_quiet_one_shot_consumes_the_variable_before_the_turn(monkeypatch):
     _run(monkeypatch, json.dumps(AUTHOR), run_conversation)
     assert seen["env"] is None
     assert TURN_AUTHOR_ENV not in os.environ
-
-

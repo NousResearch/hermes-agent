@@ -38,5 +38,3 @@ class TestEnvCarrier:
         assert take_turn_author_from_env(env) == author
         assert env == {"OTHER": "kept"}
         assert take_turn_author_from_env(env) is None
-
-

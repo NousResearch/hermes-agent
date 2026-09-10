@@ -177,7 +177,11 @@ jobs:
           working-directory: website
 
       - name: Build Docusaurus
-        run: npm run build
+        env:
+          ALGOLIA_SEARCH_API_KEY: ${{ secrets.ALGOLIA_SEARCH_API_KEY }}
+        run: |
+          node -e "if (!process.env.ALGOLIA_SEARCH_API_KEY?.trim()) { throw new Error('Set the ALGOLIA_SEARCH_API_KEY deployment secret before publishing docs'); }"
+          npm run build
         working-directory: website
 
       - name: Stage deployment

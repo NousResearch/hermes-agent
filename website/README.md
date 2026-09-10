@@ -24,6 +24,25 @@ yarn build
 
 This command generates static content into the `build` directory and can be served using any static contents hosting service.
 
+## Documentation search
+
+DocSearch is enabled only when `ALGOLIA_SEARCH_API_KEY` is supplied at build time.
+Local builds and source archives contain no default key; the site builds without search when the variable is absent or blank.
+
+For the hosted site, create an Algolia key with only the `search` permission, restricted to the documentation index.
+Store it in the `ALGOLIA_SEARCH_API_KEY` secret for the repository or its `github-pages` environment before merging this configuration change.
+The deployment workflow requires this secret before building, so missing configuration leaves the previous deployment in place.
+
+The generated browser bundle contains the configured key, as required by DocSearch.
+Never supply an admin key or a key with unnecessary `browse`, write, or delete permissions.
+Moving a key out of source does not revoke an older key; the Algolia application owner must replace or revoke it separately.
+
+Run the configuration checks after installing website dependencies:
+
+```bash
+node --test docusaurus.config.test.mjs
+```
+
 ## Deployment
 
 Using SSH:

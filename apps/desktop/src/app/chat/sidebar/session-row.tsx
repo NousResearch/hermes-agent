@@ -32,6 +32,7 @@ import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/sess
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
+import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
 import { $todoProgressBySession } from '@/store/todos'
 
 import { SessionStatusDot } from '../session-status-dot'
@@ -257,6 +258,7 @@ function SidebarSessionRowImpl({
   // whenever any session's status changes, but a row only repaints on its own.
   const dotState = useStoreSelector($sessionDotStateById, states => states[session.id] ?? 'idle')
   const liveTurn = hasLiveTurn(dotState)
+  const sidebarSessionsOpenInNewTab = useStore($sidebarSessionsOpenInNewTab)
 
   // Card header line: the workspace this belongs to — the project when it
   // resolves (same function the session color reads, so name and tint agree;
@@ -438,7 +440,11 @@ function SidebarSessionRowImpl({
             const action = resolveSessionRowClick(event, { canOpenWindow: true })
 
             if (action === 'resume') {
-              onResume()
+              if (sidebarSessionsOpenInNewTab) {
+                openSession(session.id, () => undefined, 'tab')
+              } else {
+                onResume()
+              }
 
               return
             }

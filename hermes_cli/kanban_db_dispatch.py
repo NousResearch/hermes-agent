@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import signal
@@ -24,15 +25,9 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
-# KENSEI CUSTOM (fork re-anchor): datetime (daily spawn counter), hashlib
-# (deterministic review sampling), and module logger for re-anchored machinery.
-from datetime import datetime  # noqa: E402
-import hashlib  # noqa: E402
-import json  # noqa: E402
-import logging  # noqa: E402
-import random  # noqa: E402
+if TYPE_CHECKING:
+    from hermes_cli.kanban_db import Task
 
-_log = logging.getLogger(__name__)
 
 # KENSEI CUSTOM (fork re-anchor): best-effort activity-ledger import — the
 # ledger must never break dispatch.
@@ -42,16 +37,13 @@ except Exception:  # pragma: no cover
     def record_event_if_enabled(**_kw):
         return None
 
-if TYPE_CHECKING:
-    from hermes_cli.kanban_db import Task
-
 
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
-
-# KENSEI CUSTOM (fork re-anchor): fork's alias name for the same breaker default.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
+
+
 
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
@@ -140,6 +132,29 @@ class DispatchResult:
     # KENSEI CUSTOM (fork re-anchor): True when the daily spawn budget was exhausted
     # this tick (cost-governance hard stop, P2-1).
     budget_exhausted: bool = False
+    crashed: list[str] = field(default_factory=list)
+    """Task ids reclaimed because their worker PID disappeared."""
+    auto_blocked: list[str] = field(default_factory=list)
+    """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    timed_out: list[str] = field(default_factory=list)
+    """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    stale: list[str] = field(default_factory=list)
+    """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
+    respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
+    (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
+    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    rate_limited: list[str] = field(default_factory=list)
+    """Task ids whose workers bailed on a provider rate-limit / quota wall
+    (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
+    a failure — a long quota window must never trip the circuit breaker."""
+    skipped_locked: bool = False
+    """True when another process held the board's dispatch lock: this tick did
+    no DB writes; the lock holder is making progress on the same board."""
+    memory_pressure: Optional[str] = None
+    """Memory pressure that restricted this tick: ``"critical"`` (no new
+    workers), ``"elevated"`` (at most one), ``None`` (no restriction).
+    Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -404,6 +419,26 @@ def _defer_reclaim_for_live_worker(
         payload = {"reason": reason, "claim_lock": claim_lock, "claim_expires_now": grace}
         payload.update(termination)
         _kb._append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
+def _clear_stale_ready_claims(conn: sqlite3.Connection) -> int:
+    """Clear orphaned claim_lock / worker_pid fields from ready tasks.
+
+    When a task is manually reset from running→ready (e.g. after DB
+    recovery, operator intervention, or a kill -9 on stuck workers),
+    the claim_lock and worker_pid columns retain their old values.
+    The dispatcher interprets a non-NULL claim_lock as an active claim
+    and skips the task — it stays stuck in 'ready' forever.
+
+    This runs at the start of every dispatch tick so the board self-
+    heals without operator intervention.  Returns the number of tasks
+    cleaned.
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, started_at = NULL "
+            "WHERE status = 'ready' AND claim_lock IS NOT NULL"
+        )
+        return cur.rowcount
 
 
 def _reap_done_workers(conn: sqlite3.Connection) -> list[int]:
@@ -452,26 +487,6 @@ def _reap_done_workers(conn: sqlite3.Connection) -> list[int]:
     return reaped
 
 
-def _clear_stale_ready_claims(conn: sqlite3.Connection) -> int:
-    """Clear orphaned claim_lock / worker_pid fields from ready tasks.
-
-    When a task is manually reset from running→ready (e.g. after DB
-    recovery, operator intervention, or a kill -9 on stuck workers),
-    the claim_lock and worker_pid columns retain their old values.
-    The dispatcher interprets a non-NULL claim_lock as an active claim
-    and skips the task — it stays stuck in 'ready' forever.
-
-    This runs at the start of every dispatch tick so the board self-
-    heals without operator intervention.  Returns the number of tasks
-    cleaned.
-    """
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, "
-            "worker_pid = NULL, started_at = NULL "
-            "WHERE status = 'ready' AND claim_lock IS NOT NULL"
-        )
-        return cur.rowcount
 
 
 def heartbeat_worker(
@@ -706,6 +721,122 @@ def detect_stale_running(
             reclaimed.append(tid)
 
     return reclaimed
+def clear_stale_pipeline_claims(conn: sqlite3.Connection) -> int:
+    """Clear stale claim locks on pipeline-stage tasks.
+
+    ``release_stale_claims`` only looks at ``status='running'``, but
+    pipeline tasks sit in stage statuses (research, prd, spec, etc.)
+    with ``claim_lock`` still set after a worker crash.  The pipeline
+    dispatch query at line ~7684 requires ``claim_lock IS NULL``, so
+    those tasks become permanently invisible to the dispatcher.
+
+    This function targets pipeline-stage tasks whose claim has expired
+    and clears the lock fields so they re-enter the gate-check loop.
+    """
+    try:
+        from hermes_cli.feature_pipeline import PIPELINE_STAGES
+    except ImportError:
+        return 0
+    _pipeline_statuses = tuple(PIPELINE_STAGES)
+    if not _pipeline_statuses:
+        return 0
+    now = int(time.time())
+    _placeholders = ",".join("?" * len(_pipeline_statuses))
+    rows = conn.execute(
+        f"SELECT id FROM tasks "
+        f"WHERE status IN ({_placeholders}) "
+        f"  AND claim_lock IS NOT NULL "
+        f"  AND claim_expires IS NOT NULL "
+        f"  AND claim_expires < ?",
+        (*_pipeline_statuses, now),
+    ).fetchall()
+    if not rows:
+        return 0
+    cleared = 0
+    with write_txn(conn):
+        for r in rows:
+            conn.execute(
+                "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, "
+                "worker_pid = NULL WHERE id = ?",
+                (r["id"],),
+            )
+            _append_event(
+                conn, r["id"], "claim_stale_cleared",
+                {"reason": "pipeline claim expired, clearing for gate re-entry"},
+            )
+            cleared += 1
+    return cleared
+
+
+def complete_pipeline_task(
+    conn,
+    task_id,
+    *,
+    result=None,
+    summary=None,
+    metadata=None,
+):
+    """Return a pipeline-stage worker to its original stage.
+
+    After a pipeline worker finishes writing its artifact (e.g.
+    research-brief.md), the task MUST go back to its pipeline stage
+    — NOT ``done`` — so the gate re-checks on the next dispatcher
+    tick and advances naturally.
+
+    Reads the originating ``pipeline_stage`` from the most recent
+    ``claimed`` event whose ``source_status`` = ``"pipeline"``.
+    Falls back to the current ``tasks.pipeline_stage`` column.
+    """
+    import time
+
+    now = int(time.time())
+    row = conn.execute(
+        "SELECT id, pipeline_stage FROM tasks WHERE id = ? AND status = 'running'",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return False
+
+    # Recover the originating stage from the latest pipeline claim event.
+    origin = conn.execute(
+        """SELECT json_extract(payload, '$.pipeline_stage')
+             FROM task_events
+            WHERE task_id = ?
+              AND kind = 'claimed'
+              AND json_extract(payload, '$.source_status') = 'pipeline'
+            ORDER BY id DESC LIMIT 1""",
+        (task_id,),
+    ).fetchone()
+    origin_stage = origin[0] if origin else None
+
+    # Belt-and-braces: fall back to the column if the event is missing.
+    stage = origin_stage or row["pipeline_stage"]
+    if not stage:
+        stage = "research"
+
+    with write_txn(conn):
+        conn.execute(
+            """UPDATE tasks
+                 SET status        = ?,
+                     pipeline_stage = ?,
+                     claim_lock    = NULL,
+                     claim_expires = NULL,
+                     worker_pid    = NULL,
+                     result        = ?,
+                     completed_at  = ?
+               WHERE id = ?
+                 AND status = 'running'""",
+            (stage, stage, result, now, task_id),
+        )
+        _append_event(
+            conn, task_id, "completed",
+            {"result_len": len(result) if result else 0,
+             "summary": summary or None,
+             "source_status": "pipeline",
+             "returned_to_stage": stage,
+             "pipeline_stage": stage},
+        )
+    return True
 
 
 def claim_pipeline_task(
@@ -804,122 +935,6 @@ def claim_pipeline_task(
         return get_task(conn, task_id)
 
 
-def complete_pipeline_task(
-    conn,
-    task_id,
-    *,
-    result=None,
-    summary=None,
-    metadata=None,
-):
-    """Return a pipeline-stage worker to its original stage.
-
-    After a pipeline worker finishes writing its artifact (e.g.
-    research-brief.md), the task MUST go back to its pipeline stage
-    — NOT ``done`` — so the gate re-checks on the next dispatcher
-    tick and advances naturally.
-
-    Reads the originating ``pipeline_stage`` from the most recent
-    ``claimed`` event whose ``source_status`` = ``"pipeline"``.
-    Falls back to the current ``tasks.pipeline_stage`` column.
-    """
-    import time
-
-    now = int(time.time())
-    row = conn.execute(
-        "SELECT id, pipeline_stage FROM tasks WHERE id = ? AND status = 'running'",
-        (task_id,),
-    ).fetchone()
-    if not row:
-        return False
-
-    # Recover the originating stage from the latest pipeline claim event.
-    origin = conn.execute(
-        """SELECT json_extract(payload, '$.pipeline_stage')
-             FROM task_events
-            WHERE task_id = ?
-              AND kind = 'claimed'
-              AND json_extract(payload, '$.source_status') = 'pipeline'
-            ORDER BY id DESC LIMIT 1""",
-        (task_id,),
-    ).fetchone()
-    origin_stage = origin[0] if origin else None
-
-    # Belt-and-braces: fall back to the column if the event is missing.
-    stage = origin_stage or row["pipeline_stage"]
-    if not stage:
-        stage = "research"
-
-    with write_txn(conn):
-        conn.execute(
-            """UPDATE tasks
-                 SET status        = ?,
-                     pipeline_stage = ?,
-                     claim_lock    = NULL,
-                     claim_expires = NULL,
-                     worker_pid    = NULL,
-                     result        = ?,
-                     completed_at  = ?
-               WHERE id = ?
-                 AND status = 'running'""",
-            (stage, stage, result, now, task_id),
-        )
-        _append_event(
-            conn, task_id, "completed",
-            {"result_len": len(result) if result else 0,
-             "summary": summary or None,
-             "source_status": "pipeline",
-             "returned_to_stage": stage,
-             "pipeline_stage": stage},
-        )
-    return True
-
-
-def clear_stale_pipeline_claims(conn: sqlite3.Connection) -> int:
-    """Clear stale claim locks on pipeline-stage tasks.
-
-    ``release_stale_claims`` only looks at ``status='running'``, but
-    pipeline tasks sit in stage statuses (research, prd, spec, etc.)
-    with ``claim_lock`` still set after a worker crash.  The pipeline
-    dispatch query at line ~7684 requires ``claim_lock IS NULL``, so
-    those tasks become permanently invisible to the dispatcher.
-
-    This function targets pipeline-stage tasks whose claim has expired
-    and clears the lock fields so they re-enter the gate-check loop.
-    """
-    try:
-        from hermes_cli.feature_pipeline import PIPELINE_STAGES
-    except ImportError:
-        return 0
-    _pipeline_statuses = tuple(PIPELINE_STAGES)
-    if not _pipeline_statuses:
-        return 0
-    now = int(time.time())
-    _placeholders = ",".join("?" * len(_pipeline_statuses))
-    rows = conn.execute(
-        f"SELECT id FROM tasks "
-        f"WHERE status IN ({_placeholders}) "
-        f"  AND claim_lock IS NOT NULL "
-        f"  AND claim_expires IS NOT NULL "
-        f"  AND claim_expires < ?",
-        (*_pipeline_statuses, now),
-    ).fetchall()
-    if not rows:
-        return 0
-    cleared = 0
-    with write_txn(conn):
-        for r in rows:
-            conn.execute(
-                "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, "
-                "worker_pid = NULL WHERE id = ?",
-                (r["id"],),
-            )
-            _append_event(
-                conn, r["id"], "claim_stale_cleared",
-                {"reason": "pipeline claim expired, clearing for gate re-entry"},
-            )
-            cleared += 1
-    return cleared
 
 
 def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
@@ -1511,24 +1526,6 @@ def _record_task_failure(
                 )
             # Timeout/crash path's caller already emitted its own event.
     return blocked
-
-
-def _record_spawn_failure(
-    conn: sqlite3.Connection,
-    task_id: str,
-    error: str,
-    *,
-    failure_limit: int = None,
-) -> bool:
-    return _record_task_failure(
-        conn, task_id, error,
-        outcome="spawn_failed",
-        failure_limit=failure_limit,
-        release_claim=True,
-        end_run=True,
-    )
-
-
 def _attach_loop_diagnosis(
     conn: sqlite3.Connection,
     task_id: str,
@@ -1578,6 +1575,24 @@ def _attach_loop_diagnosis(
             "loop-diagnostics: attach failed for %s run %s (%s)",
             task_id, run_id, exc,
         )
+
+
+def _record_spawn_failure(
+    conn: sqlite3.Connection,
+    task_id: str,
+    error: str,
+    *,
+    failure_limit: int = None,
+) -> bool:
+    return _record_task_failure(
+        conn, task_id, error,
+        outcome="spawn_failed",
+        failure_limit=failure_limit,
+        release_claim=True,
+        end_run=True,
+    )
+
+
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
@@ -1727,51 +1742,18 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
-    """Return True iff there is at least one ready+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    """True iff a ready+assigned+unclaimed task maps to a real Hermes profile.
 
-    Used by the gateway- and CLI-embedded dispatchers' health telemetry to
-    decide whether ``0 spawned`` is a "stuck" condition (real spawnable
-    work waiting) or a "correctly idle" condition (only control-plane
-    lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
-    that pull tasks via ``claim_task`` directly).
-
-    Falls back to "any ready+assigned" if ``profile_exists`` is not
-    importable (e.g. partial install) — preserves the old behavior so
-    the warning still fires in degraded environments.
+    Lets health telemetry tell "stuck" (``0 spawned`` with spawnable work) from
+    "correctly idle" (only control-plane lanes waiting on ``claim_task``). Falls
+    back to "any assigned" when ``profile_exists`` is unimportable.
     """
-    rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = 'ready' AND assignee IS NOT NULL "
-        "    AND claim_lock IS NULL"
-    ).fetchall()
-    if not rows:
-        return False
-    for row in rows:
-        if _is_profile_spawnable(row["assignee"]):
-            return True
-    return False
+    return _has_spawnable(conn, "ready")
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
-    """Return True iff there is at least one review+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
-
-    Mirror of :func:`has_spawnable_ready` for the review column —
-    used by the health telemetry to decide whether the dispatcher
-    should have spawned a review agent.
-    """
-    rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = 'review' AND assignee IS NOT NULL "
-        "    AND claim_lock IS NULL"
-    ).fetchall()
-    if not rows:
-        return False
-    for row in rows:
-        if _is_profile_spawnable(row["assignee"]):
-            return True
-    return False
+    """:func:`has_spawnable_ready` for the review column."""
+    return _has_spawnable(conn, "review")
 
 
 def review_dispatch_enabled() -> bool:
@@ -1912,6 +1894,45 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
         except Exception:
             continue
     return total
+from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
+from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402
+_parents_satisfied = _kb._parents_satisfied
+
+
+write_txn = _kb.write_txn
+
+
+get_task = _kb.get_task
+
+
+create_task = _kb.create_task
+
+
+block_task = _kb.block_task
+
+
+_resolve_claim_ttl_seconds = _kb._resolve_claim_ttl_seconds
+
+
+_claimer_id = _kb._claimer_id
+
+
+DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT  # fork alias name (KENSEI CUSTOM re-anchor)
+
+
+preferred_reviewer_profile = _kb.preferred_reviewer_profile
+
+
+kanban_home = _kb.kanban_home
+
+
+Task = _kb.Task
+
+
+kanban_db_path = _kb.kanban_db_path
+
+
 
 
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
@@ -3433,547 +3454,232 @@ def _dispatch_once_locked(
                     result.auto_blocked.append(claimed.id)
 
     return result
+def _pin_sticky_reviewers(conn: sqlite3.Connection) -> int:
+    """Reassign unclaimed review-column tasks to their preferred reviewer.
 
+    Called from ``dispatch_once`` right before the review-row sweep.
+    Bounded scan: at most one UPDATE per review task with a recorded
+    rejection. Tasks without a prior rejection are no-ops.
 
-_MAX_REVISE_LOOPS_HARD_CAP = 4
-
-
-def _get_max_revise_loops() -> int:
-    """Return max_revise_loops, preferring council.* then legacy pipeline.*.
-
-    Hard-clamped to ``_MAX_REVISE_LOOPS_HARD_CAP`` (4): a configured value
-    above 4 is ignored so no task can exceed the maximum council revision
-    cycles.  Valid lower configured values are respected.
+    R-2: only pin when the preferred reviewer is spawnable; otherwise the
+    task would sit in review with a non-spawnable assignee and the
+    dispatcher would skip it forever.
     """
-    try:
-        from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly()
-        loops = cfg.get("council", {}).get("max_revise_loops")
-        if loops is None:
-            loops = cfg.get("pipeline", {}).get("max_revise_loops", 4)
-        value = int(loops) if loops is not None else 4
-    except Exception:
-        value = 4
-    return min(value, _MAX_REVISE_LOOPS_HARD_CAP)
-
-
-def _get_stage_owner(stage: str) -> str | None:
-    """Return the configured stage owner for *stage* from config.yaml.
-
-    Reads ``pipeline.stage_owners`` map (e.g. ``research: remii``,
-    ``spec: octacon``).  Returns None when no owner is configured for the
-    stage or the config is unreadable.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly()
-        owners = cfg.get("pipeline", {}).get("stage_owners", {})
-        return owners.get(stage)
-    except Exception:
-        return None
-
-
-def _is_profile_spawnable(name: str) -> bool:
-    """Return True if *name* is eligible for kanban worker spawn.
-
-    A profile must BOTH: (a) have a directory on disk, AND (b) NOT be
-    listed in ``kanban.nonspawnable_profiles``.  This blocks lead profiles
-    (remii, octacon, quan, etc.) from being spawned while allowing their
-    specialist sub-profiles (remii-deep, quan-code, etc.).
-
-    Orchestrator-only names (no profile directory) are blocked by
-    ``profile_exists()`` already — this function adds the second layer
-    for profiles that DO have directories but are not workers.
-
-    Fails CLOSED: if spawnability cannot be determined (profiles import
-    failure, or config load failure), the profile is treated as
-    non-spawnable. A task that cannot be assigned simply waits in
-    ``ready`` (recoverable), which is safer than dispatching to a
-    profile whose spawnability could not be verified.
-    """
-    try:
-        from hermes_cli.profiles import profile_exists
-    except Exception as exc:
-        _log.error(
-            "_is_profile_spawnable(%s): could not import hermes_cli.profiles "
-            "(%s); treating as non-spawnable (fail-closed)", name, exc,
-        )
-        return False
-    if not profile_exists(name):
-        return False
-    try:
-        from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly()
-        blocked = cfg.get("kanban", {}).get("nonspawnable_profiles", [])
-        if name in blocked:
-            return False
-    except Exception as exc:
-        _log.error(
-            "_is_profile_spawnable(%s): could not load config (%s); "
-            "treating as non-spawnable (fail-closed)", name, exc,
-        )
-        return False
-    # Tier gate: Tier-3 (dormant/specialized) profiles are never spawnable.
-    # They require explicit Sahil approval and runtime proof before activation.
-    # Fails open for profile-level config reads (tier is advisory);
-    # fails closed for the root nonspawnable list above.
-    try:
-        from hermes_cli.config import read_user_config_raw
-        from hermes_cli.profiles import get_profile_dir
-        _profile_dir = get_profile_dir(name)
-        _config_path = _profile_dir / "config.yaml"
-        if _config_path.is_file():
-            _profile_cfg = read_user_config_raw(_config_path)
-            _tier = _profile_cfg.get("tier")
-            if _tier is not None:
-                try:
-                    if int(_tier) == 3:
-                        _log.info(
-                            "_is_profile_spawnable(%s): tier 3 profile — "
-                            "not spawnable", name,
-                        )
-                        return False
-                except (ValueError, TypeError):
-                    pass
-    except Exception as exc:
-        _log.warning(
-            "_is_profile_spawnable(%s): tier check skipped (%s)", name, exc,
-        )
-    return True
-
-
-def _hours_since_last_event(
-    conn: sqlite3.Connection, task_id: str, kind: str, stage: str,
-) -> Optional[float]:
-    """Hours since the most recent event of ``kind`` for ``stage``.
-
-    Returns None if no such event exists. Used to throttle repeat nudges.
-    """
-    row = conn.execute(
-        "SELECT created_at FROM task_events "
-        "WHERE task_id = ? AND kind = ? "
-        "AND json_extract(payload, '$.stage') = ? "
-        "ORDER BY created_at DESC LIMIT 1",
-        (task_id, kind, stage),
-    ).fetchone()
-    if not row or row[0] is None:
-        return None
-    # created_at is an epoch-seconds integer (see _append_event).
-    try:
-        created = int(row[0])
-    except (TypeError, ValueError):
-        return None
-    return max(0.0, (time.time() - created) / 3600.0)
-
-
-def _get_sign_off_timeout_hours() -> int:
-    """Return the sign-off stale timeout from config, default 48 hours."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly()
-        return int(cfg.get("pipeline", {}).get("sign_off_timeout_hours", 48))
-    except Exception:
-        return 48
-
-
-def _revise_event_kind(loop_kind: str) -> str:
-    """Event kind used to track a given revise loop.
-
-    Council REVISE and audit BLOCKED have independent caps (design doc §3),
-    so each gets its own event kind and counter.
-    """
-    return "audit_revise" if loop_kind == "audit" else "council_revise"
-
-
-def _get_council_revise_count(
-    conn: sqlite3.Connection, task_id: str, loop_kind: str = "council"
-) -> int:
-    """Count revise loops of ``loop_kind`` ("council" or "audit") for a task."""
-    row = conn.execute(
-        "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = ?",
-        (task_id, _revise_event_kind(loop_kind)),
-    ).fetchone()
-    return row[0] if row else 0
-
-
-def _record_council_revise(
-    conn: sqlite3.Connection, task_id: str, loop_kind: str = "council"
-) -> None:
-    """Record a revise event for loop tracking (epoch created_at via _append_event)."""
-    kind = _revise_event_kind(loop_kind)
-    _append_event(conn, task_id, kind, {"stage": loop_kind})
-
-
-def _council_artifact_dir(task_id: str) -> str:
-    # FIX 2026-08-13 (t_9df6f54b): anchored to the SHARED kanban root via
-    # kanban_home(), not the dispatcher gateway's HERMES_HOME — a profile
-    # gateway (sirvir) would otherwise write/read the council verdict in
-    # its own profile home and never see the pipeline's verdict.
-    base = os.path.join(
-        str(kanban_home()),
-        "feature-artifacts",
-    )
-    return os.path.join(base, task_id)
-
-
-def _write_fallback_council_verdict(artifact_dir: str, task_id: str, error: str) -> None:
-    """Write a REVISE verdict when the council fails irrecoverably.
-
-    Keeps a failed deliberation bounded: the gate bounces the task to spec
-    (capped by max_revise_loops) instead of relaunching the council forever.
-    """
-    try:
-        os.makedirs(artifact_dir, exist_ok=True)
-        md_path = os.path.join(artifact_dir, "council-verdict.md")
-        json_path = os.path.join(artifact_dir, "council-verdict.json")
-        with open(md_path, "w") as f:
-            f.write(
-                f"# Council Verdict — {task_id}\n\n"
-                f"**Verdict: REVISE**\n\n"
-                f"## Issues\n\n"
-                f"- **[CRITICAL]** Council deliberation failed: {error}\n\n"
-                f"## Chairman Rationale\n\n"
-                f"Deliberation could not complete; manual review required.\n"
-            )
-        import json as _json
-        with open(json_path, "w") as f:
-            _json.dump({
-                "verdict": "REVISE",
-                "issues": [{"severity": "critical",
-                            "description": f"Council deliberation failed: {error}"}],
-                "dissents": [],
-                "chairman_rationale": "Deliberation could not complete; manual review required.",
-                "tokens_used": 0,
-                "elapsed_seconds": 0.0,
-                "critique_count": 0,
-                "critique_verdicts": [],
-            }, f, indent=2)
-    except OSError:
-        _log.exception("Could not write fallback council verdict for %s", task_id)
-
-
-def _maybe_launch_council(
-    conn: sqlite3.Connection, task_id: str, *, dry_run: bool = False
-) -> bool:
-    """Launch (or await) the council deliberation off the dispatcher thread.
-
-    Returns True if the dispatcher should skip this task this tick (verdict
-    not ready yet), False if a verdict exists and the gate should evaluate it.
-
-    Independently enforces the council revision cap before launching: if the
-    task's ``council_revise`` count has already reached the effective cap, the
-    council is NOT relaunched (even after a manual state reset or stale
-    ``council_running`` marker deletion).  The task is atomically blocked at
-    council and a single idempotent ``council_revision_cap_reached`` event is
-    appended.
-    """
-    artifact_dir = _council_artifact_dir(task_id)
-    if os.path.exists(os.path.join(artifact_dir, "council-verdict.md")):
-        return False  # verdict ready — let the gate parse it
-
-    # Independent revision-cap guard: a task that has already exhausted its
-    # council revisions must never relaunch, regardless of verdict/marker
-    # state.  This closes the manual-reset / stale-marker bypass.
-    revise_count = _get_council_revise_count(conn, task_id, "council")
-    cap = _get_max_revise_loops()
-    if revise_count >= cap:
-        if not dry_run:
-            with write_txn(conn):
-                # Always restore the canonical blocked state, even when an
-                # operator manually resets the task after the cap event was
-                # first recorded.  Event emission itself remains idempotent.
-                conn.execute(
-                    "UPDATE tasks SET status = ?, pipeline_stage = ? "
-                    "WHERE id = ?",
-                    ("blocked", "council", task_id),
-                )
-                already = conn.execute(
-                    "SELECT 1 FROM task_events WHERE task_id = ? "
-                    "AND kind = 'council_revision_cap_reached' LIMIT 1",
-                    (task_id,),
-                ).fetchone()
-                if not already:
-                    _append_event(
-                        conn, task_id, "council_revision_cap_reached",
-                        {
-                            "count": revise_count,
-                            "cap": cap,
-                            "reason": (
-                                "council revision cap reached; refusing to "
-                                "relaunch council"
-                            ),
-                        },
-                    )
-        return True
-
-    if dry_run:
-        return True
-
-    # Resolve the deliberation timeout so a crashed run can be relaunched.
-    try:
-        from hermes_cli.config import get_council_config
-        timeout_s = int(get_council_config().timeout_seconds)
-    except Exception:
-        timeout_s = 600
-    relaunch_after_h = (timeout_s / 3600.0) + 0.25  # timeout + 15min buffer
-
-    last_run = _hours_since_last_event(conn, task_id, "council_running", "council")
-    if last_run is not None and last_run < relaunch_after_h:
-        return True  # already deliberating
-
-    with write_txn(conn):
-        _append_event(conn, task_id, "council_running", {"stage": "council"})
-
-    import threading
-
-    def _worker() -> None:
-        try:
-            from hermes_cli.council import deliberate
-            deliberate(task_id, artifact_dir)
-        except Exception as exc:  # noqa: BLE001 — bound the failure to a verdict
-            _log.exception("Council deliberation failed for %s", task_id)
-            _write_fallback_council_verdict(artifact_dir, task_id, str(exc)[:300])
-
-    threading.Thread(target=_worker, name=f"council-{task_id}", daemon=True).start()
-    _log.info("Council deliberation launched (background) for %s", task_id)
-    return True
-
-
-def _clear_council_verdict(artifact_dir: str, task_id: str) -> None:
-    """Delete the council verdict file so a fresh deliberation runs on re-entry."""
-    verdict_path = os.path.join(artifact_dir, "council-verdict.md")
-    try:
-        os.remove(verdict_path)
-        _log.info("Council verdict cleared for %s (bouncing to spec)", task_id)
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        _log.warning("Could not clear council verdict for %s: %s", task_id, exc)
-
-
-def _record_pipeline_spawn(
-    conn: sqlite3.Connection, task_id: str, *, stage: str, assignee: str
-) -> None:
-    """Record a pipeline_spawn event for Denji's spawn-frequency tracking.
-
-    Fires each time the dispatcher claims a task in a pipeline stage and
-    spawns the lead to continue working. Denji's review-cycle scripts
-    group on ``assignee`` and surface recurring spawn patterns to be
-    promoted to persistent profiles (D6 in the design doc).
-    """
-    _append_event(conn, task_id, "pipeline_spawn",
-                  {"stage": stage, "assignee": assignee or ""})
-
-
-def _record_denji_review_signal(
-    conn: sqlite3.Connection, task_id: str, *, signal_type: str, **details
-) -> None:
-    """Emit a denji_review_signal event.
-
-    This is the consumer wiring for the existing ``denji_review_signal: True``
-    flag on completion events. Denji's review-cycle scripts scan for these
-    events to generate audit follow-up reviews (Phase D, #15 in the design).
-    """
-    _append_event(conn, task_id, "denji_review_signal",
-                  {"signal_type": signal_type, **details})
-
-
-def _get_spawn_frequency_threshold() -> int:
-    """Return the spawn-frequency threshold for Denji promotion proposals.
-
-    When a single (assignee, stage) pair accumulates this many pipeline_spawn
-    events in the rolling 7-day window, Denji surfaces a promotion proposal.
-    Default 8 — about once per workday.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly()
-        n = cfg.get("pipeline", {}).get("spawn_frequency_threshold", 8)
-        return int(n) if n is not None else 8
-    except Exception:
-        return 8
-
-
-def get_spawn_frequency(
-    conn: sqlite3.Connection, *, days: int = 7
-) -> list[dict]:
-    """Aggregate pipeline_spawn events by (assignee, stage) for Denji.
-
-    Returns a list of dicts:
-        [{"assignee": str, "stage": str, "spawn_count": int, "tasks": [str,...]}]
-
-    Sorted by spawn_count desc. A row hitting the configured threshold
-    (default 8) is the trigger for Denji to file a promotion proposal.
-    """
-    import json as _json
-    # created_at is epoch-seconds (int); compare against an epoch cutoff.
-    cutoff = int(time.time()) - int(days) * 86400
     rows = conn.execute(
-        "SELECT payload FROM task_events "
-        "WHERE kind = 'pipeline_spawn' AND created_at >= ?",
-        (cutoff,),
+        "SELECT id, assignee FROM tasks "
+        "WHERE status = 'review' AND claim_lock IS NULL"
     ).fetchall()
-    agg: dict[tuple[str, str], dict] = {}
+    pinned = 0
     for row in rows:
-        try:
-            data = _json.loads(row[0])
-        except (TypeError, ValueError):
+        preferred = preferred_reviewer_profile(conn, row["id"])
+        if not preferred:
             continue
-        assignee = data.get("assignee", "")
-        stage = data.get("stage", "")
-        key = (assignee, stage)
-        entry = agg.setdefault(key, {
-            "assignee": assignee, "stage": stage,
-            "spawn_count": 0, "tasks": set(),
-        })
-        entry["spawn_count"] += 1
-        task_id = data.get("task_id", "")
-        if task_id:
-            entry["tasks"].add(task_id)
-    # Materialise the sets for JSON-friendly output and sort by count desc
-    out = []
-    for entry in agg.values():
-        out.append({
-            "assignee": entry["assignee"],
-            "stage": entry["stage"],
-            "spawn_count": entry["spawn_count"],
-            "tasks": sorted(entry["tasks"]),
-        })
-    out.sort(key=lambda r: (-r["spawn_count"], r["assignee"], r["stage"]))
-    return out
+        if not _is_profile_spawnable(preferred):
+            # Sticky reviewer is not spawnable; don't pin to avoid strand
+            continue
+        if row["assignee"] == preferred:
+            continue
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET assignee = ? "
+                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                (preferred, row["id"]),
+            )
+            if cur.rowcount == 1:
+                _append_event(
+                    conn, row["id"], "assigned",
+                    {"profile": preferred, "via": "sticky_reviewer"},
+                )
+                pinned += 1
+    return pinned
 
 
-def build_denji_report(conn: sqlite3.Connection, *, days: int = 7) -> dict:
-    """Consume the pipeline governance signals into one report for Denji.
-
-    This is the consumer side of the Denji wiring (design doc build #15):
-    spawn-frequency promotion proposals, audit review signals, and express
-    bypass-records over the rolling window. Denji's review-cycle cron calls
-    this (via ``hermes feature denji-report``) instead of the signals sitting
-    unread in the events table.
-    """
-    import json as _json
-    cutoff = int(time.time()) - int(days) * 86400
-
-    spawn = get_spawn_frequency(conn, days=days)
-    threshold = _get_spawn_frequency_threshold()
-    promotion_proposals = [
-        {**r, "threshold": threshold}
-        for r in spawn if r["spawn_count"] >= threshold
-    ]
-
-    def _load(kind: str) -> list[dict]:
-        rows = conn.execute(
-            "SELECT task_id, payload, created_at FROM task_events "
-            "WHERE kind = ? AND created_at >= ? ORDER BY created_at DESC",
-            (kind, cutoff),
-        ).fetchall()
-        items = []
-        for r in rows:
-            try:
-                data = _json.loads(r[1]) if r[1] else {}
-            except (TypeError, ValueError):
-                data = {}
-            items.append({"task_id": r[0], "created_at": r[2], **data})
-        return items
-
-    review_signals = _load("denji_review_signal")
-    signal_counts: dict[str, int] = {}
-    for s in review_signals:
-        signal_counts[s.get("signal_type", "unknown")] = (
-            signal_counts.get(s.get("signal_type", "unknown"), 0) + 1
-        )
-    bypasses = _load("bypass_record")
-
-    return {
-        "window_days": days,
-        "spawn_frequency": spawn,
-        "promotion_proposals": promotion_proposals,
-        "review_signals": review_signals,
-        "review_signal_counts": signal_counts,
-        "bypass_records": bypasses,
-        "bypass_count": len(bypasses),
-    }
-
-
-def _create_audit_followup_task(
-    conn: sqlite3.Connection, parent_id: str, audit_verdict: str,
-    *, summary: str = "",
-) -> Optional[str]:
-    """Create a follow-up task tracking audit CONDITIONAL issues.
-
-    Only used when the audit gate returns CONDITIONAL — the gate still
-    passes, but the conditional issues are tracked as a child task so
-    they're not lost. Returns the new task id, or None on failure.
-    """
+def _kanban_setting(name: str, default: int) -> int:
     try:
-        # Read parent for context
-        parent = conn.execute(
-            "SELECT id, title FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()
-        if not parent:
-            return None
-        title = f"[audit-followup] {parent[1]}"
-        body_lines = [
-            "## Problem",
-            f"Audit returned CONDITIONAL for parent task {parent_id}.",
-            "Track and resolve the conditional issues surfaced by the audit.",
-            "",
-            "## Success Criteria",
-            "- All CONDITIONAL issues from audit-report.md are addressed",
-            "- Tests still pass after the fixes",
-            "- New commit / PR linked back to the parent task",
-            "",
-            "## Audit Summary",
-            summary or "(see audit-report.md in parent artifacts)",
-            "",
-            "## Verdict",
-            f"**{audit_verdict}**",
-        ]
-        body = "\n".join(body_lines)
-        # The follow-up is written on the same connection as the parent, so
-        # it lands on the parent's board automatically (boards are separate
-        # DB files). board=None resolves the current board's default_workdir.
-        new_id = create_task(
-            conn,
-            title=title,
-            body=body,
-            assignee="octacon",
-            tier="fast",
-            board=None,
-        )
-        # Link the follow-up to the parent
-        conn.execute(
-            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-            (parent_id, new_id),
-        )
-        return new_id
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).exception(
-            "Failed to create audit follow-up task for %s: %s", parent_id, exc
-        )
-        return None
+        from hermes_cli.config import load_config
+        cfg = load_config().get("kanban", {})
+    except Exception:
+        return default
+    value = cfg.get(name, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
-def _decompose_children_event(
-    conn: sqlite3.Connection, parent_id: str,
-) -> list[dict[str, str]]:
-    row = conn.execute(
-        "SELECT payload FROM task_events WHERE task_id = ? "
-        "AND kind = 'decompose_children_created' ORDER BY id DESC LIMIT 1",
-        (parent_id,),
+def _should_review(
+    conn: sqlite3.Connection,
+    task_tier: str,
+    task_id: str,
+    *,
+    kanban_cfg: Optional[dict] = None,
+) -> bool:
+    """Decide whether a completed task should enter review based on its tier.
+
+    When ``kanban.tiered_review`` is enabled:
+      * ``full`` tier → always review (mandatory).
+      * ``fast`` tier → sampled review (1 in N + all failures).
+      * Unclassified / NULL tier → no review (system automation).
+
+    When ``tiered_review`` is disabled (or unset), the legacy WS-4
+    "review everything" behaviour applies: all ``full`` and ``fast``
+    tier tasks go to review.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import get_kanban_config
+            kanban_cfg = get_kanban_config()
+        except Exception:
+            kanban_cfg = {}
+
+    tiered_enabled = bool(kanban_cfg.get("tiered_review", False))
+    tier = (task_tier or "").lower().strip()
+
+    if tier not in ("full", "fast"):
+        return False
+
+    if tier == "full":
+        return True  # mandatory review
+
+    # Fast tier — sampled review.
+    # Always review tasks whose last run failed (non-completed).
+    last_outcome_row = conn.execute(
+        "SELECT outcome FROM task_runs WHERE task_id = ? "
+        "ORDER BY started_at DESC LIMIT 1",
+        (task_id,),
     ).fetchone()
-    if not row:
-        return []
-    try:
-        payload = json.loads(row[0])
-        children = payload.get("children", [])
-    except (TypeError, json.JSONDecodeError):
-        return []
-    if not isinstance(children, list):
-        return []
-    return [child for child in children if isinstance(child, dict)]
+    last_failed = (
+        last_outcome_row is not None
+        and last_outcome_row["outcome"] != "completed"
+    )
+    if last_failed:
+        return True
+
+    if not tiered_enabled:
+        # Legacy WS-4: review everything (fast tier just gets sampled by default)
+        return True
+
+    # Sample 1 in N fast-tier tasks.
+    sample_rate = max(1, int(kanban_cfg.get("review_sample_rate", 5) or 5))
+    # Deterministic sampling by task_id so the same task always gets the same
+    # decision across dispatcher ticks AND across gateway restarts. Built-in
+    # hash() is per-process salted (PYTHONHASHSEED), so it would flip the
+    # decision after a restart; sha256 is stable.
+    digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+    sample_bucket = int(digest, 16) % sample_rate
+    return sample_bucket == 0
+
+
+def _count_events(conn: sqlite3.Connection, task_id: str, kind: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, kind),
+    ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def _consume_daily_spawn(conn: sqlite3.Connection) -> None:
+    """Increment today's spawn counter. Creates the row if it does not exist.
+
+    Uses INSERT … ON CONFLICT so the row is auto-created on first spawn
+    of the day.  Called after a successful worker spawn so the budget is
+    only consumed by real spawns, not dry-runs or skipped tasks.
+    """
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO daily_spawn_counter (date_utc, count, last_tick) "
+        "VALUES (?, 1, ?) "
+        "ON CONFLICT(date_utc) DO UPDATE SET count = count + 1, last_tick = ?",
+        (today, now, now),
+    )
+    conn.commit()
+
+
+def _get_daily_spawn_count(conn: sqlite3.Connection) -> int:
+    """Return cumulative agent spawns for today (UTC). 0 if no row yet."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    row = conn.execute(
+        "SELECT count FROM daily_spawn_counter WHERE date_utc = ?", (today,),
+    ).fetchone()
+    return int(row["count"]) if row else 0
+
+
+def _record_bypass_record(
+    conn: sqlite3.Connection, task_id: str, *,
+    skipped_stages: list[str], launched_by: str, mode: str,
+) -> None:
+    """Record an express-path bypass-record event for Denji review.
+
+    Express launches skip PRD, Council, and Tech Review. Each launch
+    writes a ``bypass_record`` event with the skipped stages, the
+    launcher, and the timestamp. Denji samples these for governance
+    review (design doc §4a).
+    """
+    _append_event(conn, task_id, "bypass_record", {
+        "skipped_stages": skipped_stages,
+        "launched_by": launched_by,
+        "mode": mode,
+    })
+
+
+def _validate_pipeline_runtime_state(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    stage: str,
+    artifact_dir: str,
+) -> Optional[str]:
+    """Cross-check file evidence against canonical child-task state."""
+    if stage not in {"execute", "pr+qa", "audit"}:
+        return None
+    children = _decompose_children_event(conn, parent_id)
+    if not children:
+        return "Missing materialised decomposition child graph"
+    role = {"execute": "implementation", "pr+qa": "qa", "audit": "audit"}[stage]
+    expected = [child for child in children if child.get("role") == role]
+    if not expected:
+        return f"Materialised decomposition has no {role} tasks"
+    rows = {
+        row["id"]: row["status"]
+        for row in conn.execute(
+            f"SELECT id, status FROM tasks WHERE id IN ({','.join('?' for _ in expected)})",
+            [child["task_id"] for child in expected],
+        ).fetchall()
+    }
+    waiting = [
+        child["key"] for child in expected
+        if rows.get(child["task_id"]) != "done"
+    ]
+    if waiting:
+        return "Waiting for child tasks: " + ", ".join(waiting)
+
+    if stage == "execute":
+        path = os.path.join(artifact_dir, "execution-evidence.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                evidence = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None  # artifact gate reports the precise file error
+        if evidence.get("parent_task_id") != parent_id:
+            return "execution-evidence.json parent_task_id does not match task"
+        actual = {
+            (item.get("key"), item.get("task_id"))
+            for item in evidence.get("children", [])
+            if isinstance(item, dict)
+        }
+        wanted = {(item["key"], item["task_id"]) for item in expected}
+        if actual != wanted:
+            return "execution-evidence.json does not exactly cover implementation children"
+    elif stage == "pr+qa":
+        path = os.path.join(artifact_dir, "pr-qa-evidence.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                evidence = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None  # artifact gate reports the precise file error
+        if evidence.get("parent_task_id") != parent_id:
+            return "pr-qa-evidence.json parent_task_id does not match task"
+    return None
 
 
 def _create_decompose_child_tasks(
@@ -4080,232 +3786,547 @@ def _create_decompose_child_tasks(
     return children
 
 
-def _validate_pipeline_runtime_state(
-    conn: sqlite3.Connection,
-    parent_id: str,
-    stage: str,
-    artifact_dir: str,
+def _decompose_children_event(
+    conn: sqlite3.Connection, parent_id: str,
+) -> list[dict[str, str]]:
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'decompose_children_created' ORDER BY id DESC LIMIT 1",
+        (parent_id,),
+    ).fetchone()
+    if not row:
+        return []
+    try:
+        payload = json.loads(row[0])
+        children = payload.get("children", [])
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(children, list):
+        return []
+    return [child for child in children if isinstance(child, dict)]
+
+
+def _create_audit_followup_task(
+    conn: sqlite3.Connection, parent_id: str, audit_verdict: str,
+    *, summary: str = "",
 ) -> Optional[str]:
-    """Cross-check file evidence against canonical child-task state."""
-    if stage not in {"execute", "pr+qa", "audit"}:
+    """Create a follow-up task tracking audit CONDITIONAL issues.
+
+    Only used when the audit gate returns CONDITIONAL — the gate still
+    passes, but the conditional issues are tracked as a child task so
+    they're not lost. Returns the new task id, or None on failure.
+    """
+    try:
+        # Read parent for context
+        parent = conn.execute(
+            "SELECT id, title FROM tasks WHERE id = ?", (parent_id,)
+        ).fetchone()
+        if not parent:
+            return None
+        title = f"[audit-followup] {parent[1]}"
+        body_lines = [
+            "## Problem",
+            f"Audit returned CONDITIONAL for parent task {parent_id}.",
+            "Track and resolve the conditional issues surfaced by the audit.",
+            "",
+            "## Success Criteria",
+            "- All CONDITIONAL issues from audit-report.md are addressed",
+            "- Tests still pass after the fixes",
+            "- New commit / PR linked back to the parent task",
+            "",
+            "## Audit Summary",
+            summary or "(see audit-report.md in parent artifacts)",
+            "",
+            "## Verdict",
+            f"**{audit_verdict}**",
+        ]
+        body = "\n".join(body_lines)
+        # The follow-up is written on the same connection as the parent, so
+        # it lands on the parent's board automatically (boards are separate
+        # DB files). board=None resolves the current board's default_workdir.
+        new_id = create_task(
+            conn,
+            title=title,
+            body=body,
+            assignee="octacon",
+            tier="fast",
+            board=None,
+        )
+        # Link the follow-up to the parent
+        conn.execute(
+            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (parent_id, new_id),
+        )
+        return new_id
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Failed to create audit follow-up task for %s: %s", parent_id, exc
+        )
         return None
-    children = _decompose_children_event(conn, parent_id)
-    if not children:
-        return "Missing materialised decomposition child graph"
-    role = {"execute": "implementation", "pr+qa": "qa", "audit": "audit"}[stage]
-    expected = [child for child in children if child.get("role") == role]
-    if not expected:
-        return f"Materialised decomposition has no {role} tasks"
-    rows = {
-        row["id"]: row["status"]
-        for row in conn.execute(
-            f"SELECT id, status FROM tasks WHERE id IN ({','.join('?' for _ in expected)})",
-            [child["task_id"] for child in expected],
-        ).fetchall()
-    }
-    waiting = [
-        child["key"] for child in expected
-        if rows.get(child["task_id"]) != "done"
+
+
+def build_denji_report(conn: sqlite3.Connection, *, days: int = 7) -> dict:
+    """Consume the pipeline governance signals into one report for Denji.
+
+    This is the consumer side of the Denji wiring (design doc build #15):
+    spawn-frequency promotion proposals, audit review signals, and express
+    bypass-records over the rolling window. Denji's review-cycle cron calls
+    this (via ``hermes feature denji-report``) instead of the signals sitting
+    unread in the events table.
+    """
+    import json as _json
+    cutoff = int(time.time()) - int(days) * 86400
+
+    spawn = get_spawn_frequency(conn, days=days)
+    threshold = _get_spawn_frequency_threshold()
+    promotion_proposals = [
+        {**r, "threshold": threshold}
+        for r in spawn if r["spawn_count"] >= threshold
     ]
-    if waiting:
-        return "Waiting for child tasks: " + ", ".join(waiting)
 
-    if stage == "execute":
-        path = os.path.join(artifact_dir, "execution-evidence.json")
-        try:
-            with open(path, encoding="utf-8") as f:
-                evidence = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return None  # artifact gate reports the precise file error
-        if evidence.get("parent_task_id") != parent_id:
-            return "execution-evidence.json parent_task_id does not match task"
-        actual = {
-            (item.get("key"), item.get("task_id"))
-            for item in evidence.get("children", [])
-            if isinstance(item, dict)
-        }
-        wanted = {(item["key"], item["task_id"]) for item in expected}
-        if actual != wanted:
-            return "execution-evidence.json does not exactly cover implementation children"
-    elif stage == "pr+qa":
-        path = os.path.join(artifact_dir, "pr-qa-evidence.json")
-        try:
-            with open(path, encoding="utf-8") as f:
-                evidence = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return None  # artifact gate reports the precise file error
-        if evidence.get("parent_task_id") != parent_id:
-            return "pr-qa-evidence.json parent_task_id does not match task"
-    return None
+    def _load(kind: str) -> list[dict]:
+        rows = conn.execute(
+            "SELECT task_id, payload, created_at FROM task_events "
+            "WHERE kind = ? AND created_at >= ? ORDER BY created_at DESC",
+            (kind, cutoff),
+        ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                data = _json.loads(r[1]) if r[1] else {}
+            except (TypeError, ValueError):
+                data = {}
+            items.append({"task_id": r[0], "created_at": r[2], **data})
+        return items
+
+    review_signals = _load("denji_review_signal")
+    signal_counts: dict[str, int] = {}
+    for s in review_signals:
+        signal_counts[s.get("signal_type", "unknown")] = (
+            signal_counts.get(s.get("signal_type", "unknown"), 0) + 1
+        )
+    bypasses = _load("bypass_record")
+
+    return {
+        "window_days": days,
+        "spawn_frequency": spawn,
+        "promotion_proposals": promotion_proposals,
+        "review_signals": review_signals,
+        "review_signal_counts": signal_counts,
+        "bypass_records": bypasses,
+        "bypass_count": len(bypasses),
+    }
 
 
-def _record_bypass_record(
-    conn: sqlite3.Connection, task_id: str, *,
-    skipped_stages: list[str], launched_by: str, mode: str,
-) -> None:
-    """Record an express-path bypass-record event for Denji review.
+def get_spawn_frequency(
+    conn: sqlite3.Connection, *, days: int = 7
+) -> list[dict]:
+    """Aggregate pipeline_spawn events by (assignee, stage) for Denji.
 
-    Express launches skip PRD, Council, and Tech Review. Each launch
-    writes a ``bypass_record`` event with the skipped stages, the
-    launcher, and the timestamp. Denji samples these for governance
-    review (design doc §4a).
+    Returns a list of dicts:
+        [{"assignee": str, "stage": str, "spawn_count": int, "tasks": [str,...]}]
+
+    Sorted by spawn_count desc. A row hitting the configured threshold
+    (default 8) is the trigger for Denji to file a promotion proposal.
     """
-    _append_event(conn, task_id, "bypass_record", {
-        "skipped_stages": skipped_stages,
-        "launched_by": launched_by,
-        "mode": mode,
-    })
-
-
-def _get_daily_spawn_count(conn: sqlite3.Connection) -> int:
-    """Return cumulative agent spawns for today (UTC). 0 if no row yet."""
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    row = conn.execute(
-        "SELECT count FROM daily_spawn_counter WHERE date_utc = ?", (today,),
-    ).fetchone()
-    return int(row["count"]) if row else 0
-
-
-def _consume_daily_spawn(conn: sqlite3.Connection) -> None:
-    """Increment today's spawn counter. Creates the row if it does not exist.
-
-    Uses INSERT … ON CONFLICT so the row is auto-created on first spawn
-    of the day.  Called after a successful worker spawn so the budget is
-    only consumed by real spawns, not dry-runs or skipped tasks.
-    """
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    now = int(time.time())
-    conn.execute(
-        "INSERT INTO daily_spawn_counter (date_utc, count, last_tick) "
-        "VALUES (?, 1, ?) "
-        "ON CONFLICT(date_utc) DO UPDATE SET count = count + 1, last_tick = ?",
-        (today, now, now),
-    )
-    conn.commit()
-
-
-def _count_events(conn: sqlite3.Connection, task_id: str, kind: str) -> int:
-    row = conn.execute(
-        "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = ?",
-        (task_id, kind),
-    ).fetchone()
-    return int(row["n"]) if row else 0
-
-
-def _should_review(
-    conn: sqlite3.Connection,
-    task_tier: str,
-    task_id: str,
-    *,
-    kanban_cfg: Optional[dict] = None,
-) -> bool:
-    """Decide whether a completed task should enter review based on its tier.
-
-    When ``kanban.tiered_review`` is enabled:
-      * ``full`` tier → always review (mandatory).
-      * ``fast`` tier → sampled review (1 in N + all failures).
-      * Unclassified / NULL tier → no review (system automation).
-
-    When ``tiered_review`` is disabled (or unset), the legacy WS-4
-    "review everything" behaviour applies: all ``full`` and ``fast``
-    tier tasks go to review.
-    """
-    if kanban_cfg is None:
-        try:
-            from hermes_cli.config import get_kanban_config
-            kanban_cfg = get_kanban_config()
-        except Exception:
-            kanban_cfg = {}
-
-    tiered_enabled = bool(kanban_cfg.get("tiered_review", False))
-    tier = (task_tier or "").lower().strip()
-
-    if tier not in ("full", "fast"):
-        return False
-
-    if tier == "full":
-        return True  # mandatory review
-
-    # Fast tier — sampled review.
-    # Always review tasks whose last run failed (non-completed).
-    last_outcome_row = conn.execute(
-        "SELECT outcome FROM task_runs WHERE task_id = ? "
-        "ORDER BY started_at DESC LIMIT 1",
-        (task_id,),
-    ).fetchone()
-    last_failed = (
-        last_outcome_row is not None
-        and last_outcome_row["outcome"] != "completed"
-    )
-    if last_failed:
-        return True
-
-    if not tiered_enabled:
-        # Legacy WS-4: review everything (fast tier just gets sampled by default)
-        return True
-
-    # Sample 1 in N fast-tier tasks.
-    sample_rate = max(1, int(kanban_cfg.get("review_sample_rate", 5) or 5))
-    # Deterministic sampling by task_id so the same task always gets the same
-    # decision across dispatcher ticks AND across gateway restarts. Built-in
-    # hash() is per-process salted (PYTHONHASHSEED), so it would flip the
-    # decision after a restart; sha256 is stable.
-    digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
-    sample_bucket = int(digest, 16) % sample_rate
-    return sample_bucket == 0
-
-
-def _kanban_setting(name: str, default: int) -> int:
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config().get("kanban", {})
-    except Exception:
-        return default
-    value = cfg.get(name, default)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _pin_sticky_reviewers(conn: sqlite3.Connection) -> int:
-    """Reassign unclaimed review-column tasks to their preferred reviewer.
-
-    Called from ``dispatch_once`` right before the review-row sweep.
-    Bounded scan: at most one UPDATE per review task with a recorded
-    rejection. Tasks without a prior rejection are no-ops.
-
-    R-2: only pin when the preferred reviewer is spawnable; otherwise the
-    task would sit in review with a non-spawnable assignee and the
-    dispatcher would skip it forever.
-    """
+    import json as _json
+    # created_at is epoch-seconds (int); compare against an epoch cutoff.
+    cutoff = int(time.time()) - int(days) * 86400
     rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'review' AND claim_lock IS NULL"
+        "SELECT payload FROM task_events "
+        "WHERE kind = 'pipeline_spawn' AND created_at >= ?",
+        (cutoff,),
     ).fetchall()
-    pinned = 0
+    agg: dict[tuple[str, str], dict] = {}
     for row in rows:
-        preferred = preferred_reviewer_profile(conn, row["id"])
-        if not preferred:
+        try:
+            data = _json.loads(row[0])
+        except (TypeError, ValueError):
             continue
-        if not _is_profile_spawnable(preferred):
-            # Sticky reviewer is not spawnable; don't pin to avoid strand
-            continue
-        if row["assignee"] == preferred:
-            continue
-        with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET assignee = ? "
-                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
-                (preferred, row["id"]),
-            )
-            if cur.rowcount == 1:
-                _append_event(
-                    conn, row["id"], "assigned",
-                    {"profile": preferred, "via": "sticky_reviewer"},
+        assignee = data.get("assignee", "")
+        stage = data.get("stage", "")
+        key = (assignee, stage)
+        entry = agg.setdefault(key, {
+            "assignee": assignee, "stage": stage,
+            "spawn_count": 0, "tasks": set(),
+        })
+        entry["spawn_count"] += 1
+        task_id = data.get("task_id", "")
+        if task_id:
+            entry["tasks"].add(task_id)
+    # Materialise the sets for JSON-friendly output and sort by count desc
+    out = []
+    for entry in agg.values():
+        out.append({
+            "assignee": entry["assignee"],
+            "stage": entry["stage"],
+            "spawn_count": entry["spawn_count"],
+            "tasks": sorted(entry["tasks"]),
+        })
+    out.sort(key=lambda r: (-r["spawn_count"], r["assignee"], r["stage"]))
+    return out
+
+
+def _get_spawn_frequency_threshold() -> int:
+    """Return the spawn-frequency threshold for Denji promotion proposals.
+
+    When a single (assignee, stage) pair accumulates this many pipeline_spawn
+    events in the rolling 7-day window, Denji surfaces a promotion proposal.
+    Default 8 — about once per workday.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        n = cfg.get("pipeline", {}).get("spawn_frequency_threshold", 8)
+        return int(n) if n is not None else 8
+    except Exception:
+        return 8
+
+
+def _record_denji_review_signal(
+    conn: sqlite3.Connection, task_id: str, *, signal_type: str, **details
+) -> None:
+    """Emit a denji_review_signal event.
+
+    This is the consumer wiring for the existing ``denji_review_signal: True``
+    flag on completion events. Denji's review-cycle scripts scan for these
+    events to generate audit follow-up reviews (Phase D, #15 in the design).
+    """
+    _append_event(conn, task_id, "denji_review_signal",
+                  {"signal_type": signal_type, **details})
+
+
+def _record_pipeline_spawn(
+    conn: sqlite3.Connection, task_id: str, *, stage: str, assignee: str
+) -> None:
+    """Record a pipeline_spawn event for Denji's spawn-frequency tracking.
+
+    Fires each time the dispatcher claims a task in a pipeline stage and
+    spawns the lead to continue working. Denji's review-cycle scripts
+    group on ``assignee`` and surface recurring spawn patterns to be
+    promoted to persistent profiles (D6 in the design doc).
+    """
+    _append_event(conn, task_id, "pipeline_spawn",
+                  {"stage": stage, "assignee": assignee or ""})
+
+
+def _clear_council_verdict(artifact_dir: str, task_id: str) -> None:
+    """Delete the council verdict file so a fresh deliberation runs on re-entry."""
+    verdict_path = os.path.join(artifact_dir, "council-verdict.md")
+    try:
+        os.remove(verdict_path)
+        _log.info("Council verdict cleared for %s (bouncing to spec)", task_id)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        _log.warning("Could not clear council verdict for %s: %s", task_id, exc)
+
+
+def _maybe_launch_council(
+    conn: sqlite3.Connection, task_id: str, *, dry_run: bool = False
+) -> bool:
+    """Launch (or await) the council deliberation off the dispatcher thread.
+
+    Returns True if the dispatcher should skip this task this tick (verdict
+    not ready yet), False if a verdict exists and the gate should evaluate it.
+
+    Independently enforces the council revision cap before launching: if the
+    task's ``council_revise`` count has already reached the effective cap, the
+    council is NOT relaunched (even after a manual state reset or stale
+    ``council_running`` marker deletion).  The task is atomically blocked at
+    council and a single idempotent ``council_revision_cap_reached`` event is
+    appended.
+    """
+    artifact_dir = _council_artifact_dir(task_id)
+    if os.path.exists(os.path.join(artifact_dir, "council-verdict.md")):
+        return False  # verdict ready — let the gate parse it
+
+    # Independent revision-cap guard: a task that has already exhausted its
+    # council revisions must never relaunch, regardless of verdict/marker
+    # state.  This closes the manual-reset / stale-marker bypass.
+    revise_count = _get_council_revise_count(conn, task_id, "council")
+    cap = _get_max_revise_loops()
+    if revise_count >= cap:
+        if not dry_run:
+            with write_txn(conn):
+                # Always restore the canonical blocked state, even when an
+                # operator manually resets the task after the cap event was
+                # first recorded.  Event emission itself remains idempotent.
+                conn.execute(
+                    "UPDATE tasks SET status = ?, pipeline_stage = ? "
+                    "WHERE id = ?",
+                    ("blocked", "council", task_id),
                 )
-                pinned += 1
-    return pinned
+                already = conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id = ? "
+                    "AND kind = 'council_revision_cap_reached' LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if not already:
+                    _append_event(
+                        conn, task_id, "council_revision_cap_reached",
+                        {
+                            "count": revise_count,
+                            "cap": cap,
+                            "reason": (
+                                "council revision cap reached; refusing to "
+                                "relaunch council"
+                            ),
+                        },
+                    )
+        return True
+
+    if dry_run:
+        return True
+
+    # Resolve the deliberation timeout so a crashed run can be relaunched.
+    try:
+        from hermes_cli.config import get_council_config
+        timeout_s = int(get_council_config().timeout_seconds)
+    except Exception:
+        timeout_s = 600
+    relaunch_after_h = (timeout_s / 3600.0) + 0.25  # timeout + 15min buffer
+
+    last_run = _hours_since_last_event(conn, task_id, "council_running", "council")
+    if last_run is not None and last_run < relaunch_after_h:
+        return True  # already deliberating
+
+    with write_txn(conn):
+        _append_event(conn, task_id, "council_running", {"stage": "council"})
+
+    import threading
+
+    def _worker() -> None:
+        try:
+            from hermes_cli.council import deliberate
+            deliberate(task_id, artifact_dir)
+        except Exception as exc:  # noqa: BLE001 — bound the failure to a verdict
+            _log.exception("Council deliberation failed for %s", task_id)
+            _write_fallback_council_verdict(artifact_dir, task_id, str(exc)[:300])
+
+    threading.Thread(target=_worker, name=f"council-{task_id}", daemon=True).start()
+    _log.info("Council deliberation launched (background) for %s", task_id)
+    return True
+
+
+def _write_fallback_council_verdict(artifact_dir: str, task_id: str, error: str) -> None:
+    """Write a REVISE verdict when the council fails irrecoverably.
+
+    Keeps a failed deliberation bounded: the gate bounces the task to spec
+    (capped by max_revise_loops) instead of relaunching the council forever.
+    """
+    try:
+        os.makedirs(artifact_dir, exist_ok=True)
+        md_path = os.path.join(artifact_dir, "council-verdict.md")
+        json_path = os.path.join(artifact_dir, "council-verdict.json")
+        with open(md_path, "w") as f:
+            f.write(
+                f"# Council Verdict — {task_id}\n\n"
+                f"**Verdict: REVISE**\n\n"
+                f"## Issues\n\n"
+                f"- **[CRITICAL]** Council deliberation failed: {error}\n\n"
+                f"## Chairman Rationale\n\n"
+                f"Deliberation could not complete; manual review required.\n"
+            )
+        import json as _json
+        with open(json_path, "w") as f:
+            _json.dump({
+                "verdict": "REVISE",
+                "issues": [{"severity": "critical",
+                            "description": f"Council deliberation failed: {error}"}],
+                "dissents": [],
+                "chairman_rationale": "Deliberation could not complete; manual review required.",
+                "tokens_used": 0,
+                "elapsed_seconds": 0.0,
+                "critique_count": 0,
+                "critique_verdicts": [],
+            }, f, indent=2)
+    except OSError:
+        _log.exception("Could not write fallback council verdict for %s", task_id)
+
+
+def _council_artifact_dir(task_id: str) -> str:
+    # FIX 2026-08-13 (t_9df6f54b): anchored to the SHARED kanban root via
+    # kanban_home(), not the dispatcher gateway's HERMES_HOME — a profile
+    # gateway (sirvir) would otherwise write/read the council verdict in
+    # its own profile home and never see the pipeline's verdict.
+    base = os.path.join(
+        str(kanban_home()),
+        "feature-artifacts",
+    )
+    return os.path.join(base, task_id)
+
+
+def _record_council_revise(
+    conn: sqlite3.Connection, task_id: str, loop_kind: str = "council"
+) -> None:
+    """Record a revise event for loop tracking (epoch created_at via _append_event)."""
+    kind = _revise_event_kind(loop_kind)
+    _append_event(conn, task_id, kind, {"stage": loop_kind})
+
+
+def _get_council_revise_count(
+    conn: sqlite3.Connection, task_id: str, loop_kind: str = "council"
+) -> int:
+    """Count revise loops of ``loop_kind`` ("council" or "audit") for a task."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, _revise_event_kind(loop_kind)),
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def _revise_event_kind(loop_kind: str) -> str:
+    """Event kind used to track a given revise loop.
+
+    Council REVISE and audit BLOCKED have independent caps (design doc §3),
+    so each gets its own event kind and counter.
+    """
+    return "audit_revise" if loop_kind == "audit" else "council_revise"
+
+
+def _get_sign_off_timeout_hours() -> int:
+    """Return the sign-off stale timeout from config, default 48 hours."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        return int(cfg.get("pipeline", {}).get("sign_off_timeout_hours", 48))
+    except Exception:
+        return 48
+
+
+def _hours_since_last_event(
+    conn: sqlite3.Connection, task_id: str, kind: str, stage: str,
+) -> Optional[float]:
+    """Hours since the most recent event of ``kind`` for ``stage``.
+
+    Returns None if no such event exists. Used to throttle repeat nudges.
+    """
+    row = conn.execute(
+        "SELECT created_at FROM task_events "
+        "WHERE task_id = ? AND kind = ? "
+        "AND json_extract(payload, '$.stage') = ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (task_id, kind, stage),
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    # created_at is an epoch-seconds integer (see _append_event).
+    try:
+        created = int(row[0])
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, (time.time() - created) / 3600.0)
+
+
+def _is_profile_spawnable(name: str) -> bool:
+    """Return True if *name* is eligible for kanban worker spawn.
+
+    A profile must BOTH: (a) have a directory on disk, AND (b) NOT be
+    listed in ``kanban.nonspawnable_profiles``.  This blocks lead profiles
+    (remii, octacon, quan, etc.) from being spawned while allowing their
+    specialist sub-profiles (remii-deep, quan-code, etc.).
+
+    Orchestrator-only names (no profile directory) are blocked by
+    ``profile_exists()`` already — this function adds the second layer
+    for profiles that DO have directories but are not workers.
+
+    Fails CLOSED: if spawnability cannot be determined (profiles import
+    failure, or config load failure), the profile is treated as
+    non-spawnable. A task that cannot be assigned simply waits in
+    ``ready`` (recoverable), which is safer than dispatching to a
+    profile whose spawnability could not be verified.
+    """
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception as exc:
+        _log.error(
+            "_is_profile_spawnable(%s): could not import hermes_cli.profiles "
+            "(%s); treating as non-spawnable (fail-closed)", name, exc,
+        )
+        return False
+    if not profile_exists(name):
+        return False
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        blocked = cfg.get("kanban", {}).get("nonspawnable_profiles", [])
+        if name in blocked:
+            return False
+    except Exception as exc:
+        _log.error(
+            "_is_profile_spawnable(%s): could not load config (%s); "
+            "treating as non-spawnable (fail-closed)", name, exc,
+        )
+        return False
+    # Tier gate: Tier-3 (dormant/specialized) profiles are never spawnable.
+    # They require explicit Sahil approval and runtime proof before activation.
+    # Fails open for profile-level config reads (tier is advisory);
+    # fails closed for the root nonspawnable list above.
+    try:
+        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.profiles import get_profile_dir
+        _profile_dir = get_profile_dir(name)
+        _config_path = _profile_dir / "config.yaml"
+        if _config_path.is_file():
+            _profile_cfg = read_user_config_raw(_config_path)
+            _tier = _profile_cfg.get("tier")
+            if _tier is not None:
+                try:
+                    if int(_tier) == 3:
+                        _log.info(
+                            "_is_profile_spawnable(%s): tier 3 profile — "
+                            "not spawnable", name,
+                        )
+                        return False
+                except (ValueError, TypeError):
+                    pass
+    except Exception as exc:
+        _log.warning(
+            "_is_profile_spawnable(%s): tier check skipped (%s)", name, exc,
+        )
+    return True
+
+
+def _get_stage_owner(stage: str) -> str | None:
+    """Return the configured stage owner for *stage* from config.yaml.
+
+    Reads ``pipeline.stage_owners`` map (e.g. ``research: remii``,
+    ``spec: octacon``).  Returns None when no owner is configured for the
+    stage or the config is unreadable.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        owners = cfg.get("pipeline", {}).get("stage_owners", {})
+        return owners.get(stage)
+    except Exception:
+        return None
+
+
+def _get_max_revise_loops() -> int:
+    """Return max_revise_loops, preferring council.* then legacy pipeline.*.
+
+    Hard-clamped to ``_MAX_REVISE_LOOPS_HARD_CAP`` (4): a configured value
+    above 4 is ignored so no task can exceed the maximum council revision
+    cycles.  Valid lower configured values are respected.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        loops = cfg.get("council", {}).get("max_revise_loops")
+        if loops is None:
+            loops = cfg.get("pipeline", {}).get("max_revise_loops", 4)
+        value = int(loops) if loops is not None else 4
+    except Exception:
+        value = 4
+    return min(value, _MAX_REVISE_LOOPS_HARD_CAP)
+
+
+_MAX_REVISE_LOOPS_HARD_CAP = 4
+
+
 
 
 def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
@@ -4456,38 +4477,6 @@ def _resolve_hermes_argv() -> list[str]:
     if hermes_bin:
         return _hermes_path_argv(hermes_bin)
     return _module_hermes_argv()
-
-
-def validate_forced_skills_visible(forced_skills: list[str], profile_home: str) -> list[str]:
-    """Public API: return forced skill names not visible under a profile home.
-
-    Mirrors the visibility check used by the dispatcher pre-spawn gate.
-    Used by SDK consumers and tests; does not resolve profile env vars.
-    """
-    roots = [Path(profile_home) / "skills"]
-    roots.extend(_profile_external_skill_dirs(Path(profile_home)))
-
-    missing: list[str] = []
-    seen: set[str] = set()
-    for raw in forced_skills:
-        skill_name = str(raw or "").strip()
-        if not skill_name or skill_name in seen:
-            continue
-        seen.add(skill_name)
-        if not _skill_visible_in_search_dirs(skill_name, roots):
-            missing.append(skill_name)
-    return missing
-
-
-def _worker_skill_visible_in_home(skill_name: str, profile_home: Path) -> bool:
-    search_dirs: list[Path] = []
-    local_skills = profile_home / "skills"
-    if local_skills.is_dir():
-        search_dirs.append(local_skills)
-    search_dirs.extend(_profile_external_skill_dirs(profile_home))
-    return _skill_visible_in_search_dirs(skill_name, search_dirs)
-
-
 def _worker_skill_enabled_in_home(skill_name: str, profile_home: Path) -> bool:
     """True if ``skill_name`` is in the profile's ``skills.enabled_skills``
     allowlist (or ``always_skills``, which is implicitly enabled).
@@ -4522,6 +4511,274 @@ def _worker_skill_enabled_in_home(skill_name: str, profile_home: Path) -> bool:
         elif isinstance(raw, list):
             enabled.update(str(x).strip() for x in raw if str(x).strip())
     return skill_name in enabled
+
+
+def _worker_skill_visible_in_home(skill_name: str, profile_home: Path) -> bool:
+    search_dirs: list[Path] = []
+    local_skills = profile_home / "skills"
+    if local_skills.is_dir():
+        search_dirs.append(local_skills)
+    search_dirs.extend(_profile_external_skill_dirs(profile_home))
+    return _skill_visible_in_search_dirs(skill_name, search_dirs)
+
+
+def _skill_visible_in_search_dirs(skill_name: str, search_dirs: Iterable[Path]) -> bool:
+    """Mirror the local-skill lookup strategies used by ``skill_view``."""
+    name = (skill_name or "").strip()
+    if not name:
+        return True
+
+    local_category_name: Optional[str] = None
+    if ":" in name:
+        namespace, _, bare = name.partition(":")
+        if namespace and bare:
+            local_category_name = f"{namespace}/{bare}"
+
+    try:
+        from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    except Exception:
+        is_excluded_skill_path = lambda path: False  # type: ignore[assignment]
+        iter_skill_index_files = None  # type: ignore[assignment]
+
+    for search_dir in search_dirs:
+        if not search_dir.is_dir():
+            continue
+        direct_path = search_dir / name
+        if direct_path.is_dir() and (direct_path / "SKILL.md").is_file():
+            return True
+        if direct_path.with_suffix(".md").is_file():
+            return True
+        if local_category_name:
+            categorized_path = search_dir / local_category_name
+            if categorized_path.is_dir() and (categorized_path / "SKILL.md").is_file():
+                return True
+            if categorized_path.with_suffix(".md").is_file():
+                return True
+        try:
+            skill_files = (
+                iter_skill_index_files(search_dir, "SKILL.md")
+                if iter_skill_index_files is not None
+                else search_dir.rglob("SKILL.md")
+            )
+            for skill_md in skill_files:
+                if is_excluded_skill_path(skill_md):
+                    continue
+                if skill_md.parent.name == name and skill_md.is_file():
+                    return True
+            for found_md in search_dir.rglob(f"{name}.md"):
+                if is_excluded_skill_path(found_md):
+                    continue
+                if found_md.name != "SKILL.md" and found_md.is_file():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _profile_external_skill_dirs(profile_home: Path) -> list[Path]:
+    """Return ``skills.external_dirs`` as the child profile will resolve them."""
+    config_path = profile_home / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        from agent.skill_utils import yaml_load
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+    raw_dirs = skills_cfg.get("external_dirs")
+    if not raw_dirs:
+        return []
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if not isinstance(raw_dirs, list):
+        return []
+
+    local_skills = (profile_home / "skills").resolve()
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for entry in raw_dirs:
+        entry_s = str(entry or "").strip()
+        if not entry_s:
+            continue
+        expanded = os.path.expandvars(entry_s.replace("~", str(Path.home()), 1))
+        candidate = Path(expanded)
+        if not candidate.is_absolute():
+            candidate = profile_home / candidate
+        try:
+            candidate = candidate.resolve()
+        except OSError:
+            continue
+        if candidate == local_skills or candidate in seen or not candidate.is_dir():
+            continue
+        seen.add(candidate)
+        result.append(candidate)
+    return result
+
+
+def _skill_visible_in_search_dirs(skill_name: str, search_dirs: Iterable[Path]) -> bool:
+    """Mirror the local-skill lookup strategies used by ``skill_view``."""
+    name = (skill_name or "").strip()
+    if not name:
+        return True
+
+    local_category_name: Optional[str] = None
+    if ":" in name:
+        namespace, _, bare = name.partition(":")
+        if namespace and bare:
+            local_category_name = f"{namespace}/{bare}"
+
+    try:
+        from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    except Exception:
+        is_excluded_skill_path = lambda path: False  # type: ignore[assignment]
+        iter_skill_index_files = None  # type: ignore[assignment]
+
+    for search_dir in search_dirs:
+        if not search_dir.is_dir():
+            continue
+        direct_path = search_dir / name
+        if direct_path.is_dir() and (direct_path / "SKILL.md").is_file():
+            return True
+        if direct_path.with_suffix(".md").is_file():
+            return True
+        if local_category_name:
+            categorized_path = search_dir / local_category_name
+            if categorized_path.is_dir() and (categorized_path / "SKILL.md").is_file():
+                return True
+            if categorized_path.with_suffix(".md").is_file():
+                return True
+        try:
+            skill_files = (
+                iter_skill_index_files(search_dir, "SKILL.md")
+                if iter_skill_index_files is not None
+                else search_dir.rglob("SKILL.md")
+            )
+            for skill_md in skill_files:
+                if is_excluded_skill_path(skill_md):
+                    continue
+                if skill_md.parent.name == name and skill_md.is_file():
+                    return True
+            for found_md in search_dir.rglob(f"{name}.md"):
+                if is_excluded_skill_path(found_md):
+                    continue
+                if found_md.name != "SKILL.md" and found_md.is_file():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _profile_external_skill_dirs(profile_home: Path) -> list[Path]:
+    """Return ``skills.external_dirs`` as the child profile will resolve them."""
+    config_path = profile_home / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        from agent.skill_utils import yaml_load
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+    raw_dirs = skills_cfg.get("external_dirs")
+    if not raw_dirs:
+        return []
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if not isinstance(raw_dirs, list):
+        return []
+
+    local_skills = (profile_home / "skills").resolve()
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for entry in raw_dirs:
+        entry_s = str(entry or "").strip()
+        if not entry_s:
+            continue
+        expanded = os.path.expandvars(entry_s.replace("~", str(Path.home()), 1))
+        candidate = Path(expanded)
+        if not candidate.is_absolute():
+            candidate = profile_home / candidate
+        try:
+            candidate = candidate.resolve()
+        except OSError:
+            continue
+        if candidate == local_skills or candidate in seen or not candidate.is_dir():
+            continue
+        seen.add(candidate)
+        result.append(candidate)
+    return result
+
+
+def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
+    """True if the bundled ``kanban-worker`` skill resolves for the home the
+    spawned worker will run under.
+
+    The dispatcher injects ``--skills kanban-worker`` into every worker. When
+    the worker activates a profile (``hermes -p <name>``), its ``SKILLS_DIR``
+    becomes ``<profile_home>/skills`` — which on many profiles does NOT contain
+    the bundled skill (it ships in the *default* root home, not every
+    profile-scoped skills dir). Preloading a missing skill is fatal at CLI
+    startup (``ValueError: Unknown skill(s): kanban-worker``), aborting the
+    worker before the agent loop runs.
+
+    For profiles that have ``kanban-worker`` in their ``always_skills`` config,
+    we skip the ``--skills`` flag entirely — the profile loads it naturally.
+    This avoids the ``--skills`` resolution bug on sub-profile workers.
+    """
+    base = Path(hermes_home) if hermes_home else (Path.home() / ".hermes")
+    # If profile has kanban-worker in always_skills, skip the flag
+    # -- always_skills resolution works where --skills flag fails.
+    config_path = base / "config.yaml"
+    if config_path.exists():
+        try:
+            from agent.skill_utils import yaml_load
+            cfg = yaml_load(config_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict):
+                always = cfg.get("skills", {}).get("always_skills", [])
+                if isinstance(always, list) and "kanban-worker" in always:
+                    return False  # profile loads it, no --skills needed
+        except Exception:
+            pass
+    return _worker_skill_visible_in_home("kanban-worker", base)
+
+
+def _block_missing_forced_skills(
+    conn: sqlite3.Connection,
+    task_id: str,
+    assignee: str,
+    missing: list[str],
+    forced_skills: Optional[list[str]] = None,
+) -> bool:
+    missing_display = ", ".join(missing)
+    reason = (
+        f"forced skill(s) not visible to assignee profile '{assignee}': "
+        f"{missing_display}. Install/copy the skill into that profile or "
+        "remove it from task.skills before dispatch."
+    )
+    blocked = block_task(conn, task_id, reason=reason)
+    if blocked:
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "forced_skill_rejected",
+                {
+                    "reason": "missing_forced_skills",
+                    "assignee": assignee,
+                    "missing_skills": list(missing),
+                    "forced_skills": list(forced_skills) if forced_skills else None,
+                },
+            )
+    return blocked
 
 
 def _missing_worker_forced_skills(profile_name: str, skills: Optional[Iterable[Any]]) -> list[str]:
@@ -4561,274 +4818,6 @@ def _missing_worker_forced_skills(profile_name: str, skills: Optional[Iterable[A
     ]
 
 
-def _block_missing_forced_skills(
-    conn: sqlite3.Connection,
-    task_id: str,
-    assignee: str,
-    missing: list[str],
-    forced_skills: Optional[list[str]] = None,
-) -> bool:
-    missing_display = ", ".join(missing)
-    reason = (
-        f"forced skill(s) not visible to assignee profile '{assignee}': "
-        f"{missing_display}. Install/copy the skill into that profile or "
-        "remove it from task.skills before dispatch."
-    )
-    blocked = block_task(conn, task_id, reason=reason)
-    if blocked:
-        with write_txn(conn):
-            _append_event(
-                conn,
-                task_id,
-                "forced_skill_rejected",
-                {
-                    "reason": "missing_forced_skills",
-                    "assignee": assignee,
-                    "missing_skills": list(missing),
-                    "forced_skills": list(forced_skills) if forced_skills else None,
-                },
-            )
-    return blocked
-
-
-def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
-    """True if the bundled ``kanban-worker`` skill resolves for the home the
-    spawned worker will run under.
-
-    The dispatcher injects ``--skills kanban-worker`` into every worker. When
-    the worker activates a profile (``hermes -p <name>``), its ``SKILLS_DIR``
-    becomes ``<profile_home>/skills`` — which on many profiles does NOT contain
-    the bundled skill (it ships in the *default* root home, not every
-    profile-scoped skills dir). Preloading a missing skill is fatal at CLI
-    startup (``ValueError: Unknown skill(s): kanban-worker``), aborting the
-    worker before the agent loop runs.
-
-    For profiles that have ``kanban-worker`` in their ``always_skills`` config,
-    we skip the ``--skills`` flag entirely — the profile loads it naturally.
-    This avoids the ``--skills`` resolution bug on sub-profile workers.
-    """
-    base = Path(hermes_home) if hermes_home else (Path.home() / ".hermes")
-    # If profile has kanban-worker in always_skills, skip the flag
-    # -- always_skills resolution works where --skills flag fails.
-    config_path = base / "config.yaml"
-    if config_path.exists():
-        try:
-            from agent.skill_utils import yaml_load
-            cfg = yaml_load(config_path.read_text(encoding="utf-8"))
-            if isinstance(cfg, dict):
-                always = cfg.get("skills", {}).get("always_skills", [])
-                if isinstance(always, list) and "kanban-worker" in always:
-                    return False  # profile loads it, no --skills needed
-        except Exception:
-            pass
-    return _worker_skill_visible_in_home("kanban-worker", base)
-
-
-def _profile_external_skill_dirs(profile_home: Path) -> list[Path]:
-    """Return ``skills.external_dirs`` as the child profile will resolve them."""
-    config_path = profile_home / "config.yaml"
-    if not config_path.exists():
-        return []
-    try:
-        from agent.skill_utils import yaml_load
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, dict):
-        return []
-    skills_cfg = parsed.get("skills")
-    if not isinstance(skills_cfg, dict):
-        return []
-    raw_dirs = skills_cfg.get("external_dirs")
-    if not raw_dirs:
-        return []
-    if isinstance(raw_dirs, str):
-        raw_dirs = [raw_dirs]
-    if not isinstance(raw_dirs, list):
-        return []
-
-    local_skills = (profile_home / "skills").resolve()
-    seen: set[Path] = set()
-    result: list[Path] = []
-    for entry in raw_dirs:
-        entry_s = str(entry or "").strip()
-        if not entry_s:
-            continue
-        expanded = os.path.expandvars(entry_s.replace("~", str(Path.home()), 1))
-        candidate = Path(expanded)
-        if not candidate.is_absolute():
-            candidate = profile_home / candidate
-        try:
-            candidate = candidate.resolve()
-        except OSError:
-            continue
-        if candidate == local_skills or candidate in seen or not candidate.is_dir():
-            continue
-        seen.add(candidate)
-        result.append(candidate)
-    return result
-
-
-def _skill_visible_in_search_dirs(skill_name: str, search_dirs: Iterable[Path]) -> bool:
-    """Mirror the local-skill lookup strategies used by ``skill_view``."""
-    name = (skill_name or "").strip()
-    if not name:
-        return True
-
-    local_category_name: Optional[str] = None
-    if ":" in name:
-        namespace, _, bare = name.partition(":")
-        if namespace and bare:
-            local_category_name = f"{namespace}/{bare}"
-
-    try:
-        from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
-    except Exception:
-        is_excluded_skill_path = lambda path: False  # type: ignore[assignment]
-        iter_skill_index_files = None  # type: ignore[assignment]
-
-    for search_dir in search_dirs:
-        if not search_dir.is_dir():
-            continue
-        direct_path = search_dir / name
-        if direct_path.is_dir() and (direct_path / "SKILL.md").is_file():
-            return True
-        if direct_path.with_suffix(".md").is_file():
-            return True
-        if local_category_name:
-            categorized_path = search_dir / local_category_name
-            if categorized_path.is_dir() and (categorized_path / "SKILL.md").is_file():
-                return True
-            if categorized_path.with_suffix(".md").is_file():
-                return True
-        try:
-            skill_files = (
-                iter_skill_index_files(search_dir, "SKILL.md")
-                if iter_skill_index_files is not None
-                else search_dir.rglob("SKILL.md")
-            )
-            for skill_md in skill_files:
-                if is_excluded_skill_path(skill_md):
-                    continue
-                if skill_md.parent.name == name and skill_md.is_file():
-                    return True
-            for found_md in search_dir.rglob(f"{name}.md"):
-                if is_excluded_skill_path(found_md):
-                    continue
-                if found_md.name != "SKILL.md" and found_md.is_file():
-                    return True
-        except OSError:
-            continue
-    return False
-
-
-def _profile_external_skill_dirs(profile_home: Path) -> list[Path]:
-    """Return ``skills.external_dirs`` as the child profile will resolve them."""
-    config_path = profile_home / "config.yaml"
-    if not config_path.exists():
-        return []
-    try:
-        from agent.skill_utils import yaml_load
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, dict):
-        return []
-    skills_cfg = parsed.get("skills")
-    if not isinstance(skills_cfg, dict):
-        return []
-    raw_dirs = skills_cfg.get("external_dirs")
-    if not raw_dirs:
-        return []
-    if isinstance(raw_dirs, str):
-        raw_dirs = [raw_dirs]
-    if not isinstance(raw_dirs, list):
-        return []
-
-    local_skills = (profile_home / "skills").resolve()
-    seen: set[Path] = set()
-    result: list[Path] = []
-    for entry in raw_dirs:
-        entry_s = str(entry or "").strip()
-        if not entry_s:
-            continue
-        expanded = os.path.expandvars(entry_s.replace("~", str(Path.home()), 1))
-        candidate = Path(expanded)
-        if not candidate.is_absolute():
-            candidate = profile_home / candidate
-        try:
-            candidate = candidate.resolve()
-        except OSError:
-            continue
-        if candidate == local_skills or candidate in seen or not candidate.is_dir():
-            continue
-        seen.add(candidate)
-        result.append(candidate)
-    return result
-
-
-def _skill_visible_in_search_dirs(skill_name: str, search_dirs: Iterable[Path]) -> bool:
-    """Mirror the local-skill lookup strategies used by ``skill_view``."""
-    name = (skill_name or "").strip()
-    if not name:
-        return True
-
-    local_category_name: Optional[str] = None
-    if ":" in name:
-        namespace, _, bare = name.partition(":")
-        if namespace and bare:
-            local_category_name = f"{namespace}/{bare}"
-
-    try:
-        from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
-    except Exception:
-        is_excluded_skill_path = lambda path: False  # type: ignore[assignment]
-        iter_skill_index_files = None  # type: ignore[assignment]
-
-    for search_dir in search_dirs:
-        if not search_dir.is_dir():
-            continue
-        direct_path = search_dir / name
-        if direct_path.is_dir() and (direct_path / "SKILL.md").is_file():
-            return True
-        if direct_path.with_suffix(".md").is_file():
-            return True
-        if local_category_name:
-            categorized_path = search_dir / local_category_name
-            if categorized_path.is_dir() and (categorized_path / "SKILL.md").is_file():
-                return True
-            if categorized_path.with_suffix(".md").is_file():
-                return True
-        try:
-            skill_files = (
-                iter_skill_index_files(search_dir, "SKILL.md")
-                if iter_skill_index_files is not None
-                else search_dir.rglob("SKILL.md")
-            )
-            for skill_md in skill_files:
-                if is_excluded_skill_path(skill_md):
-                    continue
-                if skill_md.parent.name == name and skill_md.is_file():
-                    return True
-            for found_md in search_dir.rglob(f"{name}.md"):
-                if is_excluded_skill_path(found_md):
-                    continue
-                if found_md.name != "SKILL.md" and found_md.is_file():
-                    return True
-        except OSError:
-            continue
-    return False
-
-
-def _worker_skill_visible_in_home(skill_name: str, profile_home: Path) -> bool:
-    search_dirs: list[Path] = []
-    local_skills = profile_home / "skills"
-    if local_skills.is_dir():
-        search_dirs.append(local_skills)
-    search_dirs.extend(_profile_external_skill_dirs(profile_home))
-    return _skill_visible_in_search_dirs(skill_name, search_dirs)
-
-
 def _worker_skill_enabled_in_home(skill_name: str, profile_home: Path) -> bool:
     """True if ``skill_name`` is in the profile's ``skills.enabled_skills``
     allowlist (or ``always_skills``, which is implicitly enabled).
@@ -4863,6 +4852,38 @@ def _worker_skill_enabled_in_home(skill_name: str, profile_home: Path) -> bool:
         elif isinstance(raw, list):
             enabled.update(str(x).strip() for x in raw if str(x).strip())
     return skill_name in enabled
+
+
+def _worker_skill_visible_in_home(skill_name: str, profile_home: Path) -> bool:
+    search_dirs: list[Path] = []
+    local_skills = profile_home / "skills"
+    if local_skills.is_dir():
+        search_dirs.append(local_skills)
+    search_dirs.extend(_profile_external_skill_dirs(profile_home))
+    return _skill_visible_in_search_dirs(skill_name, search_dirs)
+
+
+def validate_forced_skills_visible(forced_skills: list[str], profile_home: str) -> list[str]:
+    """Public API: return forced skill names not visible under a profile home.
+
+    Mirrors the visibility check used by the dispatcher pre-spawn gate.
+    Used by SDK consumers and tests; does not resolve profile env vars.
+    """
+    roots = [Path(profile_home) / "skills"]
+    roots.extend(_profile_external_skill_dirs(Path(profile_home)))
+
+    missing: list[str] = []
+    seen: set[str] = set()
+    for raw in forced_skills:
+        skill_name = str(raw or "").strip()
+        if not skill_name or skill_name in seen:
+            continue
+        seen.add(skill_name)
+        if not _skill_visible_in_search_dirs(skill_name, roots):
+            missing.append(skill_name)
+    return missing
+
+
 
 
 def _worker_terminal_timeout_env(
@@ -4950,11 +4971,6 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
-
-
-_spawn_board_cache: dict[int, tuple[bool, object]] = {}
-
-
 def _spawn_with_board(
     spawn_fn, task, workspace: str, *, board: Optional[str] = None
 ) -> Optional[int]:
@@ -4977,6 +4993,11 @@ def _spawn_with_board(
     if accepts_board:
         return spawn_fn(task, workspace, board=board)
     return spawn_fn(task, workspace)
+
+
+_spawn_board_cache: dict[int, tuple[bool, object]] = {}
+
+
 
 
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
@@ -5156,6 +5177,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # kanban_comment reads HERMES_PROFILE for its default author; `-p` alone
     # doesn't set the env var.
     env["HERMES_PROFILE"] = profile_arg
+    # This is the grant boundary: the dispatcher assigned this new worker's task.
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    env.pop(DELEGATED_CHILD_ENV_MARKER, None)
     # `--cli` is the highest-precedence TUI override; dropping HERMES_TUI covers
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
@@ -5165,6 +5189,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
     cmd = _restart_safe_worker_argv(task, cmd)
+    from tools.process_registry import systemd_user_bus_env
+    env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
@@ -5204,6 +5230,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             "workspace": workspace,
         },
     )
+    return proc.pid
     return proc.pid
 
 
@@ -5264,50 +5291,48 @@ def run_daemon(
             import traceback
             traceback.print_exc()
         stop_event.wait(timeout=interval)
-
-
-# Late-bound origin namespace (see module docstring); imported LAST so this
-# module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb  # noqa: E402
-from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
-from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402
-
-# KENSEI CUSTOM (fork re-anchor): best-effort activity-ledger import — the
-# ledger must never break dispatch.
-try:
-    from hermes_cli.profile_activity_ledger import record_event_if_enabled
-except Exception:  # pragma: no cover
-    def record_event_if_enabled(**_kw):
-        return None
-
-# ---------------------------------------------------------------------------
-# KENSEI CUSTOM (fork re-anchor): late-bound aliases so the re-anchored
-# council/pipeline/forced-skill machinery can use the fork's original bare
-# names (they resolve at call time via this namespace binding).
-# ---------------------------------------------------------------------------
-_append_event = _kb._append_event
-_fire_dispatch_tick_hook = _kb._fire_dispatch_tick_hook
-_fire_kanban_lifecycle_hook = _kb._fire_kanban_lifecycle_hook
-_fire_worker_spawned_hook = _kb._fire_worker_spawned_hook
-_kanban_observer_consumed = _kb._kanban_observer_consumed
-_resolve_rate_limit_cooldown_seconds = _kb._resolve_rate_limit_cooldown_seconds
-_resolve_crash_grace_seconds = _kb._resolve_crash_grace_seconds
-_retry_status_for_run = _kb._retry_status_for_run
-_end_run = _kb._end_run
-_current_run_id = _kb._current_run_id
-release_stale_claims = _kb.release_stale_claims
-recompute_ready = _kb.recompute_ready
-get_current_board = _kb.get_current_board
 count_running_tasks_other_boards = count_running_tasks_other_boards  # local
-kanban_db_path = _kb.kanban_db_path
-Task = _kb.Task
-kanban_home = _kb.kanban_home
-preferred_reviewer_profile = _kb.preferred_reviewer_profile
-DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT  # fork alias name (KENSEI CUSTOM re-anchor)
-_claimer_id = _kb._claimer_id
-_resolve_claim_ttl_seconds = _kb._resolve_claim_ttl_seconds
-block_task = _kb.block_task
-create_task = _kb.create_task
-get_task = _kb.get_task
-write_txn = _kb.write_txn
-_parents_satisfied = _kb._parents_satisfied
+
+
+get_current_board = _kb.get_current_board
+
+
+recompute_ready = _kb.recompute_ready
+
+
+release_stale_claims = _kb.release_stale_claims
+
+
+_current_run_id = _kb._current_run_id
+
+
+_end_run = _kb._end_run
+
+
+_retry_status_for_run = _kb._retry_status_for_run
+
+
+_resolve_crash_grace_seconds = _kb._resolve_crash_grace_seconds
+
+
+_resolve_rate_limit_cooldown_seconds = _kb._resolve_rate_limit_cooldown_seconds
+
+
+_kanban_observer_consumed = _kb._kanban_observer_consumed
+
+
+_fire_worker_spawned_hook = _kb._fire_worker_spawned_hook
+
+
+_fire_kanban_lifecycle_hook = _kb._fire_kanban_lifecycle_hook
+
+
+_fire_dispatch_tick_hook = _kb._fire_dispatch_tick_hook
+
+
+_append_event = _kb._append_event
+
+
+
+
+_log = logging.getLogger(__name__)

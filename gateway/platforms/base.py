@@ -15,6 +15,8 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime
+from enum import Enum
 import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
@@ -423,10 +425,8 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
-from enum import Enum
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 

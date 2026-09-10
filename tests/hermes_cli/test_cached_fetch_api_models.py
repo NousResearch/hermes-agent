@@ -28,7 +28,7 @@ class TestCachedFetchApiModels:
     def test_fresh_entry_served_without_live_fetch(self):
         import hermes_cli.models as mod
 
-        cache = {"custom:https://gw.example.com/v1": self._entry(["m1", "m2"], age_seconds=10)}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["m1", "m2"], age_seconds=10)}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
              patch.object(mod, "_save_provider_models_cache") as save, \
@@ -44,7 +44,7 @@ class TestCachedFetchApiModels:
         slash — config.yaml entries are not guaranteed to be normalized."""
         import hermes_cli.models as mod
 
-        cache = {"custom:https://gw.example.com/v1": self._entry(["m1"], age_seconds=10)}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["m1"], age_seconds=10)}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
              patch.object(mod, "fetch_api_models") as live:
@@ -59,7 +59,7 @@ class TestCachedFetchApiModels:
         # live fetch (within the window it stale-serves + refreshes off
         # thread — covered in TestSalvageFollowups).
         too_old = mod._PROVIDER_MODELS_STALE_SERVE_MAX + 60
-        cache = {"custom:https://gw.example.com/v1": self._entry(["old"], age_seconds=too_old)}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["old"], age_seconds=too_old)}
         saved = {}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
@@ -70,8 +70,8 @@ class TestCachedFetchApiModels:
             )
         assert out == ["fresh-a", "fresh-b"]
         live.assert_called_once()
-        assert saved["custom:https://gw.example.com/v1"]["models"] == ["fresh-a", "fresh-b"]
-        assert saved["custom:https://gw.example.com/v1"]["fp"] == "fp"
+        assert saved["custom:https://gw.example.com/v1#fp"]["models"] == ["fresh-a", "fresh-b"]
+        assert saved["custom:https://gw.example.com/v1#fp"]["fp"] == "fp"
 
     def test_rotated_api_key_busts_cache_even_when_fresh(self):
         """A same-age entry with a DIFFERENT fingerprint (key rotated, or
@@ -79,7 +79,7 @@ class TestCachedFetchApiModels:
         credentials' catalog."""
         import hermes_cli.models as mod
 
-        cache = {"custom:https://gw.example.com/v1": self._entry(["old-key-models"], 10, fp="old-fp")}
+        cache = {"custom:https://gw.example.com/v1#old-fp": self._entry(["old-key-models"], 10, fp="old-fp")}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="new-fp"), \
              patch.object(mod, "_save_provider_models_cache"), \
@@ -91,7 +91,7 @@ class TestCachedFetchApiModels:
     def test_force_refresh_bypasses_fresh_cache(self):
         import hermes_cli.models as mod
 
-        cache = {"custom:https://gw.example.com/v1": self._entry(["stale-but-fresh"], age_seconds=5)}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["stale-but-fresh"], age_seconds=5)}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
              patch.object(mod, "_save_provider_models_cache"), \
@@ -108,7 +108,7 @@ class TestCachedFetchApiModels:
         cached_provider_model_ids')."""
         import hermes_cli.models as mod
 
-        cache = {"custom:https://gw.example.com/v1": self._entry(["last-known-good"], age_seconds=99999, fp="fp")}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["last-known-good"], age_seconds=99999, fp="fp")}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
              patch.object(mod, "_save_provider_models_cache") as save, \
@@ -130,14 +130,15 @@ class TestCachedFetchApiModels:
 
 
 class TestCacheOnly:
-    """``cache_only=True`` is the no-network read used by picker opens that
-    deliberately skip live probing. It must answer from disk or not at all —
-    never a live fetch, never a background revalidation."""
+    """``cache_only=True`` is the non-blocking read used by picker opens that
+    deliberately skip live probing. The caller's thread never fetches; a
+    past-TTL entry is served AND revalidated off-thread so a newly loaded local
+    model appears on a later open instead of hiding for the whole stale window."""
 
     def _entry(self, models, age_seconds, fp="fp"):
         return {"fp": fp, "at": time.time() - age_seconds, "models": list(models)}
 
-    def _call(self, cache, *, fp="fp", **kwargs):
+    def _call(self, cache, *, fp="fp", expect_revalidate=False, **kwargs):
         import hermes_cli.models as mod
 
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
@@ -148,13 +149,13 @@ class TestCacheOnly:
             out = mod.cached_fetch_api_models(
                 "sk-key", "https://gw.example.com/v1", cache_only=True, **kwargs
             )
-        live.assert_not_called()
-        swr.assert_not_called()
+        live.assert_not_called()  # the caller's thread never blocks on the network
         save.assert_not_called()
+        assert swr.called == expect_revalidate
         return out
 
     def test_fresh_entry_is_served(self):
-        cache = {"custom:https://gw.example.com/v1": self._entry(["m1", "m2"], 10)}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["m1", "m2"], 10)}
         assert self._call(cache) == ["m1", "m2"]
 
     def test_entry_past_ttl_is_still_served_within_the_stale_window(self):
@@ -164,27 +165,27 @@ class TestCacheOnly:
         import hermes_cli.models as mod
 
         age = mod._PROVIDER_MODELS_CACHE_TTL + 60
-        cache = {"custom:https://gw.example.com/v1": self._entry(["m1", "m2"], age)}
-        assert self._call(cache) == ["m1", "m2"]
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["m1", "m2"], age)}
+        assert self._call(cache, expect_revalidate=True) == ["m1", "m2"]
 
     def test_entry_beyond_the_stale_window_is_a_miss(self):
         import hermes_cli.models as mod
 
         age = mod._PROVIDER_MODELS_STALE_SERVE_MAX + 60
-        cache = {"custom:https://gw.example.com/v1": self._entry(["ancient"], age)}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["ancient"], age)}
         assert self._call(cache) is None
 
     def test_empty_cache_is_a_miss(self):
         assert self._call({}) is None
 
     def test_rotated_credentials_are_a_miss(self):
-        cache = {"custom:https://gw.example.com/v1": self._entry(["old"], 10, fp="old-fp")}
+        cache = {"custom:https://gw.example.com/v1#old-fp": self._entry(["old"], 10, fp="old-fp")}
         assert self._call(cache, fp="new-fp") is None
 
     def test_force_refresh_is_a_miss_rather_than_a_live_fetch(self):
         """cache_only outranks force_refresh: the caller has said no network,
         so an un-revalidatable entry is withheld instead of fetched."""
-        cache = {"custom:https://gw.example.com/v1": self._entry(["m1"], 10)}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["m1"], 10)}
         assert self._call(cache, force_refresh=True) is None
 
     def test_missing_base_url_is_a_miss_rather_than_a_live_fetch(self):
@@ -274,8 +275,25 @@ class TestCachedFetchApiModelsDiskRoundTrip:
         mod.cached_provider_model_ids("openrouter")
 
         cache = mod._load_provider_models_cache()
-        assert cache["custom:https://openrouter.ai/v1"]["models"] == ["custom-endpoint-model"]
+        custom_rows = [v for k, v in cache.items() if k.startswith("custom:https://openrouter.ai/v1#")]
+        assert [row["models"] for row in custom_rows] == [["custom-endpoint-model"]]
         assert cache["openrouter"]["models"] == ["openrouter-curated-model"]
+
+    def test_same_url_distinct_credentials_keep_separate_rows(self, tmp_path, monkeypatch):
+        """N custom_providers rows sharing one proxy URL with different keys (#106184): a probe
+        for key B must not evict key A's catalog, and a cache-only read for A must still hit."""
+        import hermes_cli.models as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(mod, "fetch_api_models", lambda key, *a, **k: [f"models-for-{key}"])
+
+        url = "https://proxy.example.com/v1"
+        assert mod.cached_fetch_api_models("sk-A", url) == ["models-for-sk-A"]
+        assert mod.cached_fetch_api_models("sk-B", url) == ["models-for-sk-B"]
+
+        monkeypatch.setattr(mod, "fetch_api_models", lambda *a, **k: pytest.fail("cache miss"))
+        assert mod.cached_fetch_api_models("sk-A", url, cache_only=True) == ["models-for-sk-A"]
+        assert mod.cached_fetch_api_models("sk-B", url, cache_only=True) == ["models-for-sk-B"]
 
 
 class TestSalvageFollowups:
@@ -291,7 +309,7 @@ class TestSalvageFollowups:
         background refresh is spawned for the next open."""
         import hermes_cli.models as mod
 
-        cache = {"custom:https://gw.example.com/v1": self._entry(["stale-ok"], age_seconds=7200)}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["stale-ok"], age_seconds=7200)}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
              patch.object(mod, "_spawn_swr_refresh") as spawn, \
@@ -302,13 +320,13 @@ class TestSalvageFollowups:
         assert out == ["stale-ok"]
         live.assert_not_called()
         spawn.assert_called_once()
-        assert spawn.call_args[0][0] == "custom:https://gw.example.com/v1"
+        assert spawn.call_args[0][0] == "custom:https://gw.example.com/v1#fp"
 
     def test_entry_beyond_stale_window_blocks_on_live_fetch(self):
         import hermes_cli.models as mod
 
         too_old = mod._PROVIDER_MODELS_STALE_SERVE_MAX + 60
-        cache = {"custom:https://gw.example.com/v1": self._entry(["ancient"], age_seconds=too_old)}
+        cache = {"custom:https://gw.example.com/v1#fp": self._entry(["ancient"], age_seconds=too_old)}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
              patch.object(mod, "_save_provider_models_cache"), \
@@ -336,12 +354,12 @@ class TestSalvageFollowups:
         with patch.object(mod, "_load_provider_models_cache", return_value={}), \
              patch.object(mod, "_save_provider_models_cache", side_effect=fake_save):
             mod._spawn_swr_refresh(
-                "custom:https://gw.example.com/v1",
+                "custom:https://gw.example.com/v1#fp",
                 lambda: {"fp": "fp", "at": time.time(), "models": ["refreshed"]},
             )
             assert done.wait(timeout=5), "background refresh did not complete"
-        assert saved["custom:https://gw.example.com/v1"]["models"] == ["refreshed"]
-        assert "custom:https://gw.example.com/v1" not in mod._swr_refresh_inflight
+        assert saved["custom:https://gw.example.com/v1#fp"]["models"] == ["refreshed"]
+        assert "custom:https://gw.example.com/v1#fp" not in mod._swr_refresh_inflight
 
     def test_corrupt_at_field_degrades_to_live_fetch_instead_of_raising(self):
         """provider_models_cache.json is user-editable; a corrupted 'at' must
@@ -349,7 +367,7 @@ class TestSalvageFollowups:
         import hermes_cli.models as mod
 
         cache = {
-            "custom:https://gw.example.com/v1": {
+            "custom:https://gw.example.com/v1#fp": {
                 "fp": "fp", "at": "yesterday", "models": ["corrupt-row"],
             }
         }

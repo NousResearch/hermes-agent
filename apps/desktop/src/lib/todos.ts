@@ -31,6 +31,10 @@ export interface TodoSnapshot {
 
 const STATUSES: readonly TodoStatus[] = ['pending', 'in_progress', 'completed', 'cancelled']
 
+/** The task tool is `todo_list` on the wire since the core-tool rename; `todo`
+ *  survives as the legacy alias in stored transcripts and older backends. */
+export const isTodoToolName = (name: unknown): boolean => name === 'todo_list' || name === 'todo'
+
 const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v && typeof v === 'object' && !Array.isArray(v))
 const isStatus = (v: unknown): v is TodoStatus => (STATUSES as readonly string[]).includes(v as string)
 
@@ -346,7 +350,7 @@ export function todosFromMessageContent(content: unknown): null | TodoItem[] {
   let latest: null | TodoItem[] = null
 
   for (const part of content) {
-    if (!isRecord(part) || part.type !== 'tool-call' || part.toolName !== 'todo') {
+    if (!isRecord(part) || part.type !== 'tool-call' || !isTodoToolName(part.toolName)) {
       continue
     }
 

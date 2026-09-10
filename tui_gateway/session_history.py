@@ -4,6 +4,7 @@ turn tracking and turn-failure detail. Bodies are rebound onto server.py's globa
 from __future__ import annotations
 
 from .method_ctx import bind_module
+from agent.prompt_builder import STEER_DISPLAY_KIND
 
 
 def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
@@ -156,8 +157,6 @@ def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
         return text
 
 
-# Opening of the crash-recovery note synthesized by _auto_continue_note; matched (not just built) for
-# rows persisted before display typing existed and for the messaging gateway's twin note.
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted mid-run"
 
 
@@ -167,7 +166,13 @@ def _legacy_display_kind(role: str, text: str) -> str | None:
     return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
 
 
-_HISTORY_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items")
+_HISTORY_ASSISTANT_DETAIL_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
@@ -196,8 +201,10 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-            if not content_text.strip():
-                continue
+        if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
+            # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
+            from agent.conversation_compression import _extract_steer_text_from_message
+            content_text = _extract_steer_text_from_message(m) or content_text
         if role == "tool":
             tc_name, tc_args = tool_call_args.get(m.get("tool_call_id") or "", (None, None))
             name = tc_name or m.get("tool_name") or "tool"
@@ -205,9 +212,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
             messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args), **({"args": args} if args else {})})
             continue
-        # A reasoning-only assistant turn is kept so "Thinking…" still shows after resume/reload.
-        has_reasoning = role == "assistant" and any(m.get(key) for key in _HISTORY_REASONING_KEYS)
-        if not content_text.strip() and not has_reasoning:
+        # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
+        has_assistant_detail = role == "assistant" and any(m.get(key) for key in _HISTORY_ASSISTANT_DETAIL_KEYS)
+        if not content_text.strip() and not has_assistant_detail:
             continue
         msg = {"role": role, "text": content_text}
         # Authoring time (Unix seconds) for display.timestamps; display-only.
@@ -223,7 +230,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if invocation:
             msg.update(text=invocation, display_kind="skill_invocation")
         if role == "assistant":
-            msg.update((key, m[key]) for key in _HISTORY_REASONING_KEYS if m.get(key) is not None)
+            msg.update((key, m[key]) for key in _HISTORY_ASSISTANT_DETAIL_KEYS if m.get(key) is not None)
         # Display-only timeline metadata (model switches, delegation events).
         display_kind = m.get("display_kind") or _legacy_display_kind(role, content_text)
         if display_kind:
@@ -307,9 +314,7 @@ def _fail_inflight_turn(session: dict, error: Any, error_surface: Optional[dict]
 
 
 _TURN_FAILURE_DETAIL_LIMIT = 240
-# Shortest prompt run counting as a quote-back: above shared boilerplate, below a quoted sentence.
 _TURN_PROMPT_ECHO_WINDOW = 24
-# Ceiling on the prompt we shingle (an @-expanded prompt can carry a whole file).
 _TURN_PROMPT_ECHO_MAX_PROMPT = 65536
 
 
@@ -382,3 +387,4 @@ def _turn_failure_detail(error: Any, reason: Any = None, prompt: Any = None) -> 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
+_HISTORY_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items")

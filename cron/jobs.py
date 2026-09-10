@@ -69,9 +69,9 @@ HERMES_DIR = get_hermes_home().resolve()
 # scope paths with use_cron_store() instead of mutating these process-wide.
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
-# KENSEI CUSTOM — last-known-good snapshot of jobs.json (refresh on save;
-# recovery helper retained, currently write-only).
 LASTGOOD_FILE = CRON_DIR / "jobs.json.lastgood"
+
+
 # Heartbeat: touched every ticker loop so `hermes cron status` can tell the ticker THREAD is alive,
 # not just the gateway PROCESS; success = last tick that completed WITHOUT raising.
 # The gateway process and the (separate) ``hermes cron status`` process share it so status can tell whether
@@ -587,32 +587,6 @@ def ensure_dirs():
     _ensure_cron_dir(store.output_dir)
     _secure_dir(store.cron_dir)
     _secure_dir(store.output_dir)
-
-
-# --- Schedule Parsing ---
-
-def _capture_job_owner_profile() -> Optional[str]:
-    """Best-effort capture of the profile that owns a cron job.
-
-    Attribution seam for governance telemetry: ``_record_cron_activity``
-    reads ``job["profile"]`` for ``actor_profile`` so per-profile failure
-    analysis (e.g. denji-self-eval-trigger's repeated_failure reason) can
-    attribute ``job_run_error`` events. The root gateway's fleet crons
-    resolve to ``"default"`` via get_active_profile_name(); that is mapped
-    to ``"root"`` so it matches the fleet's profile vocabulary. Any failure
-    here must never break job creation — return None (legacy unattributed).
-    """
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-
-        name = get_active_profile_name()
-        if not name:
-            return None
-        return "root" if name == "default" else name
-    except Exception:
-        return None
-
-
 def _record_cron_activity(event_type: str, job: Dict[str, Any], **extra: Any) -> None:
     """Best-effort Profile Activity Ledger hook for cron job changes."""
     try:
@@ -646,10 +620,31 @@ def _record_cron_activity(event_type: str, job: Dict[str, Any], **extra: Any) ->
         pass
 
 
-# =============================================================================
-# Schedule Parsing
-# =============================================================================
+def _capture_job_owner_profile() -> Optional[str]:
+    """Best-effort capture of the profile that owns a cron job.
 
+    Attribution seam for governance telemetry: ``_record_cron_activity``
+    reads ``job["profile"]`` for ``actor_profile`` so per-profile failure
+    analysis (e.g. denji-self-eval-trigger's repeated_failure reason) can
+    attribute ``job_run_error`` events. The root gateway's fleet crons
+    resolve to ``"default"`` via get_active_profile_name(); that is mapped
+    to ``"root"`` so it matches the fleet's profile vocabulary. Any failure
+    here must never break job creation — return None (legacy unattributed).
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        name = get_active_profile_name()
+        if not name:
+            return None
+        return "root" if name == "default" else name
+    except Exception:
+        return None
+
+
+
+
+# --- Schedule Parsing ---
 
 def normalize_repeat_value(repeat: Any) -> Optional[int]:
     """Coerce a repeat value (int or user-facing string) into ``Optional[int]``:
@@ -949,6 +944,9 @@ def _classify_dispatch_lateness(lateness_seconds: float, grace_seconds: int) -> 
 _persisted_error_recoveries: int = 0
 # Bounded in-memory history kept by every probe-visible fire-path counter.
 _TELEMETRY_RECENT_HISTORY = 20
+# A fire_claim younger than this is a live run (heartbeat cadence is 60 s). One value
+# for claiming, one-shot re-arm, and stale-error recovery so they cannot disagree.
+FIRE_CLAIM_TTL_SECONDS = 300
 _persisted_error_recoveries_recent: list = []
 
 
@@ -968,6 +966,10 @@ def _job_is_stale_error_recurring(
     if job.get("last_status") != "error":
         return False
     if _job_running_in_this_process(str(job.get("id") or "")):
+        return False
+    # A fresh fire_claim means the job is running in ANOTHER process sharing this
+    # store, not wedged; re-arming it here would only claim-fight the live run.
+    if _claim_is_live(job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS):
         return False
     last_run = job.get("last_run_at")
     last_run_dt = _parse_aware(last_run) if last_run else None
@@ -1491,55 +1493,18 @@ def _save_jobs_unlocked(
     except BaseException:
         _unlink_quiet(tmp_path)
         raise
-
-
-def _coerce_jobs_shape(data: Any) -> Optional[List[Dict[str, Any]]]:
-    """Return the jobs list from a parsed jobs.json payload, or None if the
-    payload is not recoverable.
-
-    Recoverable shapes: a dict carrying a ``jobs`` list, or a bare list. In
-    either case every element must be a dict; a list containing non-dict items
-    (e.g. ``[null, {...}]``) is treated as corruption (return None) so callers
-    fall back to the lastgood snapshot rather than crashing later on ``job.get``.
-    """
-    if isinstance(data, dict):
-        jobs = data.get("jobs", [])
-    elif isinstance(data, list):
-        jobs = data
-    else:
+def _recover_from_lastgood() -> Optional[List[Dict[str, Any]]]:
+    """Try to load jobs from the last-known-good snapshot. Returns the jobs list
+    on success, or None if no usable snapshot exists."""
+    if not LASTGOOD_FILE.exists():
         return None
-    if not isinstance(jobs, list):
-        return None
-    if not all(isinstance(j, dict) for j in jobs):
-        return None
-    return jobs
-
-
-def _quarantine_corrupt_file() -> None:
-    """Preserve the corrupted jobs.json for forensics before it is overwritten
-    by a recovery write. Best-effort; never breaks the recovery path. This is
-    the cron store for an agent with shell execution, so keeping the artefact
-    that caused a recovery matters for diagnosing the offending writer."""
     try:
-        if not JOBS_FILE.exists():
-            return
-        stamp = _hermes_now().strftime("%Y%m%d_%H%M%S")
-        dest = CRON_DIR / f"jobs.json.corrupt.{stamp}"
-        shutil.copy2(JOBS_FILE, dest)
-        _secure_file(dest)
-        logger.error("Preserved corrupted jobs.json for forensics at %s", dest)
-    except Exception as e:  # noqa: BLE001 - forensic copy is best-effort
-        logger.warning("Could not preserve corrupted jobs.json: %s", e)
-
-
-def _self_heal(jobs: List[Dict[str, Any]]) -> None:
-    """Persist a recovered job list back to jobs.json. Guarded: a failure to
-    write must not turn a successful in-memory recovery into a hard crash, so we
-    log and continue serving the recovered jobs for this cycle."""
-    try:
-        save_jobs(jobs)
-    except Exception as e:  # noqa: BLE001 - keep serving recovered jobs in-memory
-        logger.error("Recovered jobs in-memory but failed to persist self-heal: %s", e)
+        with open(LASTGOOD_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:  # noqa: BLE001
+        logger.error("jobs.json.lastgood is itself unreadable: %s", e)
+        return None
+    return _coerce_jobs_shape(data)
 
 
 def _write_lastgood(jobs: List[Dict[str, Any]]) -> None:
@@ -1565,18 +1530,55 @@ def _write_lastgood(jobs: List[Dict[str, Any]]) -> None:
         logger.warning("Could not refresh jobs.json.lastgood snapshot: %s", e)
 
 
-def _recover_from_lastgood() -> Optional[List[Dict[str, Any]]]:
-    """Try to load jobs from the last-known-good snapshot. Returns the jobs list
-    on success, or None if no usable snapshot exists."""
-    if not LASTGOOD_FILE.exists():
-        return None
+def _self_heal(jobs: List[Dict[str, Any]]) -> None:
+    """Persist a recovered job list back to jobs.json. Guarded: a failure to
+    write must not turn a successful in-memory recovery into a hard crash, so we
+    log and continue serving the recovered jobs for this cycle."""
     try:
-        with open(LASTGOOD_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception as e:  # noqa: BLE001
-        logger.error("jobs.json.lastgood is itself unreadable: %s", e)
+        save_jobs(jobs)
+    except Exception as e:  # noqa: BLE001 - keep serving recovered jobs in-memory
+        logger.error("Recovered jobs in-memory but failed to persist self-heal: %s", e)
+
+
+def _quarantine_corrupt_file() -> None:
+    """Preserve the corrupted jobs.json for forensics before it is overwritten
+    by a recovery write. Best-effort; never breaks the recovery path. This is
+    the cron store for an agent with shell execution, so keeping the artefact
+    that caused a recovery matters for diagnosing the offending writer."""
+    try:
+        if not JOBS_FILE.exists():
+            return
+        stamp = _hermes_now().strftime("%Y%m%d_%H%M%S")
+        dest = CRON_DIR / f"jobs.json.corrupt.{stamp}"
+        shutil.copy2(JOBS_FILE, dest)
+        _secure_file(dest)
+        logger.error("Preserved corrupted jobs.json for forensics at %s", dest)
+    except Exception as e:  # noqa: BLE001 - forensic copy is best-effort
+        logger.warning("Could not preserve corrupted jobs.json: %s", e)
+
+
+def _coerce_jobs_shape(data: Any) -> Optional[List[Dict[str, Any]]]:
+    """Return the jobs list from a parsed jobs.json payload, or None if the
+    payload is not recoverable.
+
+    Recoverable shapes: a dict carrying a ``jobs`` list, or a bare list. In
+    either case every element must be a dict; a list containing non-dict items
+    (e.g. ``[null, {...}]``) is treated as corruption (return None) so callers
+    fall back to the lastgood snapshot rather than crashing later on ``job.get``.
+    """
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+    elif isinstance(data, list):
+        jobs = data
+    else:
         return None
-    return _coerce_jobs_shape(data)
+    if not isinstance(jobs, list):
+        return None
+    if not all(isinstance(j, dict) for j in jobs):
+        return None
+    return jobs
+
+
 
 
 def save_jobs(
@@ -1638,7 +1640,7 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
 
 def _resolve_default_model_snapshot() -> Optional[str]:
     """Default model resolved as the ticker's ``run_job`` does, so unpinned jobs can snapshot it and
-    detect a later swap. ``None`` on missing config or failure (fail-open: "no snapshot")."""
+    keep running on it after a later swap. ``None`` on missing config or failure ("no snapshot")."""
     try:
         from hermes_cli.config import _expand_env_vars, read_user_config_raw
 
@@ -1743,8 +1745,9 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
 def _compute_provider_model_snapshots(
     *, provider: Any, model: Any, base_url: Any, no_agent: Any,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Snapshot unpinned provider/model resolution so a later global switch fails closed at fire
-    time instead of silently changing spend. Pinned axes and no-agent jobs carry no snapshot."""
+    """Snapshot unpinned provider/model resolution: the scheduler runs the job on this snapshot after
+    a later global switch instead of silently changing spend. Pinned axes and no-agent jobs carry no
+    snapshot."""
     normalized_provider = _normalize_job_optional_text(provider)
     normalized_model = _normalize_job_optional_text(model)
     normalized_base_url = _normalize_base_url(base_url)
@@ -1781,23 +1784,6 @@ def _normalized_inference_axes(
         _normalize_job_optional_text(job.get("model")), _normalize_base_url(job.get("base_url")),
         bool(job.get("no_agent")),
     )
-
-
-class ContextFromCycleError(ValueError):
-    """Raised when a prospective cron dependency graph contains a cycle."""
-
-
-def _context_from_refs(job: Dict[str, Any]) -> List[str]:
-    """Return a job's stored context dependencies in normalized list form."""
-    raw = job.get("context_from")
-    if isinstance(raw, str):
-        value = raw.strip()
-        return [value] if value else []
-    if isinstance(raw, list):
-        return [str(ref).strip() for ref in raw if str(ref).strip()]
-    return []
-
-
 def _validate_context_from_acyclic(jobs: List[Dict[str, Any]]) -> None:
     """Reject cycles in the prospective jobs graph before it is persisted.
 
@@ -1843,6 +1829,21 @@ def _validate_context_from_acyclic(jobs: List[Dict[str, Any]]) -> None:
     for job_id in graph:
         if state.get(job_id, 0) == 0:
             visit(job_id)
+
+
+def _context_from_refs(job: Dict[str, Any]) -> List[str]:
+    """Return a job's stored context dependencies in normalized list form."""
+    raw = job.get("context_from")
+    if isinstance(raw, str):
+        value = raw.strip()
+        return [value] if value else []
+    if isinstance(raw, list):
+        return [str(ref).strip() for ref in raw if str(ref).strip()]
+    return []
+
+
+class ContextFromCycleError(ValueError):
+    """Raised when a prospective cron dependency graph contains a cycle."""
 
 
 
@@ -1907,12 +1908,12 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
-    # KENSEI CUSTOM — atomic disabled creation (fork a730814ae5)
-    enabled: bool = True,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
+    paused: bool = False,
+    paused_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1922,6 +1923,12 @@ def create_job(
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    if not isinstance(paused, bool):
+        raise ValueError("paused must be a boolean.")
+    if paused_reason is not None and not isinstance(paused_reason, str):
+        raise ValueError("paused_reason must be a string.")
+    if paused_reason is not None and not paused:
+        raise ValueError("paused_reason requires paused=True.")
     parsed_schedule = parse_schedule(schedule)
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
@@ -1938,7 +1945,6 @@ def create_job(
     f = {key: norm(raw[key]) for key, norm in _CREATE_FIELD_NORMALIZERS.items()}
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
-    normalized_enabled = bool(enabled)  # KENSEI CUSTOM
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
 
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
@@ -1982,12 +1988,12 @@ def create_job(
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {"times": repeat, "completed": 0},  # times None = forever
-        "enabled": normalized_enabled,
-        "state": "scheduled" if normalized_enabled else "paused",
-        "paused_at": None if normalized_enabled else now,
-        "paused_reason": None if normalized_enabled else "created_disabled",
+        "enabled": not paused,
+        "state": "paused" if paused else "scheduled",
+        "paused_at": now if paused else None,
+        "paused_reason": ((paused_reason or "").strip() or "Created paused; awaiting operator approval.") if paused else None,
         "created_at": now,
-        "next_run_at": next_run_at,
+        "next_run_at": None if paused else next_run_at,
         "last_run_at": None,
         "last_status": None,
         "last_error": None,
@@ -2284,7 +2290,7 @@ def rearm_oneshot(job_id: str, run_at: Any) -> Optional[Dict[str, Any]]:
         now = _hermes_now()
         if _claim_is_live(job.get("run_claim"), now, _oneshot_run_claim_ttl_seconds()):
             raise ValueError("Cannot re-arm one-shot over a live run claim.")
-        if _claim_is_live(job.get("fire_claim"), now, 300):
+        if _claim_is_live(job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS):
             raise ValueError("Cannot re-arm one-shot over a live fire claim.")
         if job.get("schedule", {}).get("kind") != "once":
             raise ValueError(_REARM_RECURRING_ERROR)
@@ -2366,11 +2372,11 @@ def mark_preflight_alerted(job_id: str) -> bool:
 def clear_preflight_alerted(job_id: str) -> None:
     """Clear the preflight alert-dedup marker (config validates again)."""
     _set_alert_flag(job_id, "preflight_alerted", False)
-
-
 def mark_drift_alerted(job_id: str) -> bool:
     """Mark the job as drift-alerted; return True if it already was."""
     return _set_alert_flag(job_id, "drift_alerted", True)
+
+
 
 
 def note_fire_forward_failure(job_id: str, detail: str) -> bool:
@@ -2728,13 +2734,15 @@ def _machine_id() -> str:
 
 
 def claim_job_for_fire(
-    job_id: str, *, claim_ttl_seconds: int = 300, force: bool = False, return_job: bool = False,
+    job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
+    manual: bool = False, return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
     fence + file lock: reject missing/terminal/paused jobs unless ``force`` (explicit manual
     fire, which also resumes the job atomically; external callbacks must leave it false so a
-    stale callback cannot resurrect a paused job). Lose if a claim younger than
+    stale callback cannot resurrect a paused job). ``manual`` = off-tick run-now without the
+    resume: no occurrence stamp, so the still-pending ``next_run_at`` slot is not skipped. Lose if a claim younger than
     ``claim_ttl_seconds`` exists (the TTL lets another fire reclaim after a crash; mark_job_run
     clears the claim). Otherwise stamp ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` so a stale re-delivery cannot re-fire."""
@@ -2748,6 +2756,20 @@ def claim_job_for_fire(
         now = _hermes_now()
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
+        from cron.occurrences import completed_occurrence, scheduled_instant
+
+        # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
+        # scheduler tick ``next_run_at`` is the NEXT occurrence, not the one being run, so
+        # stamping it would make completed_occurrence() skip that slot when it arrives.
+        manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
+        instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
+        if instant and completed_occurrence(job, instant):
+            if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
+                nxt = compute_next_run(job["schedule"], now.isoformat())
+                if nxt:
+                    job["next_run_at"] = nxt
+                    save_jobs(jobs)
+            return False
         if force:
             _activate_job_record(job)
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
@@ -2758,7 +2780,7 @@ def claim_job_for_fire(
             if nxt:
                 job["next_run_at"] = nxt
         save_jobs(jobs)
-        return copy.deepcopy(job) if return_job else True
+        return dict(copy.deepcopy(job), _scheduled_instant=instant) if return_job else True
 
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
@@ -3159,11 +3181,21 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # into both fields, and any rewrite of next_run_at (edit, re-anchor, fire-claim advance) must
     # invalidate the marker. Do not "fix" this with _ensure_aware normalization.
     manual_run = job.get("manual_run_at") == next_run
+    from cron.occurrences import completed_occurrence, scheduled_instant
+
+    if not manual_run and completed_occurrence(job, next_run):
+        new_next = d.recompute_next() if recurring else None
+        if new_next:
+            scan.persist(job["id"], next_run_at=new_next)
+        return False
     if kind == "cron" and not manual_run and _repair_timezone_shifted_cron(d):
         return False
     d.next_run_dt = _rearm_stale_error_recurring(d)
     if d.next_run_dt > now:
         return False
+
+    # Only the dispatch snapshot carries this field; never infer it from a later stamp.
+    job["_scheduled_instant"] = None if manual_run else scheduled_instant(job.get("next_run_at"))
 
     if not manual_run and kind == "cron" and _reanchor_stale_cron(d):
         return False

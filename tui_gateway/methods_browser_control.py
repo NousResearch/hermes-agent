@@ -3,10 +3,12 @@
 The controller extension registers over the authenticated ``/api/ws`` gateway. Everything
 binds to the SERVER-MINTED identity (``WSTransport.auth_identity``, stamped from the single-use
 ticket); a client-supplied ``principal_id`` is ignored and replaced by a digest of it. Broker
-frames are re-enveloped as Gateway ``event`` frames; ``result`` resolves a command only on the
-owning transport for the exact attached scope (the broker's exact-scope ``complete`` is the
-backstop). Capabilities come from the broker's explicit allowlist (no raw CDP/eval/uploads).
-Bodies are rebound onto server.py's globals (bind_module publishes this module's helpers too).
+frames are re-enveloped as Gateway ``event`` frames; ``result`` resolves a command only when the
+request arrives on a transport ATTACHED to the session and that transport is the broker-recorded
+owner of the exact attached scope (the broker's exact-scope ``complete`` is the backstop).
+Capabilities come from the broker's explicit allowlist (no raw CDP/eval/uploads). Bodies are
+rebound onto server.py's globals (bind_module publishes this module's helpers too), which is how
+the session gate reaches ``_session_transport_contains`` with no import of its own.
 """
 
 from __future__ import annotations
@@ -24,8 +26,7 @@ logger = logging.getLogger(__name__)
 _registry = HandlerRegistry()
 method = _registry.method
 
-# Transport family stamped into every scope attached here; the broker treats it as an
-# identity field, so an API transport can never address a dashboard controller.
+
 _CLOUD_TRANSPORT_FAMILY = "cloud-ticket-ws"
 _ERR_FORBIDDEN = 4403  # identity / session / flag denials
 _IDENTITY_REQUIRED = "authenticated controller identity required"
@@ -81,9 +82,10 @@ def _controller_method(
     """Register a handler behind the shared fail-closed (4403) controller gates.
 
     Order: ``precheck(rid, params)`` (may return an error envelope) → caller holds a
-    server-authenticated, non-internal identity → the named session exists and its
-    ``transport`` is exactly the caller → when ``lookup_scope``, a scope is attached for
-    this session/principal/family and the caller owns it. Then
+    server-authenticated, non-internal identity → the named session exists and the caller is
+    ATTACHED to it, directly or through the ``FanoutTransport`` a mirrored session holds in its
+    slot → when ``lookup_scope``, a scope is attached for this session/principal/family and the
+    caller owns it. Then
     ``fn(rid, params, transport, identity, session_id, broker, scope, session)`` runs.
     """
 
@@ -102,7 +104,11 @@ def _controller_method(
             session_id = str(params.get("session_id") or "")
             with _sessions_lock:
                 session = _sessions.get(session_id)
-                if session is None or session.get("transport") is not transport:
+                # Membership, not slot identity: a mirrored session holds a FanoutTransport, which is
+                # identical to no peer's transport, so slot identity would refuse every client here — the
+                # peer that registered the controller included. The broker's is_owner check below still
+                # keys on the transport that attached the scope.
+                if not _session_transport_contains(session, transport):
                     return _err(rid, _ERR_FORBIDDEN, "session is not owned by this transport")
             broker = browser_control_broker.get_browser_control_broker()
             scope = None
@@ -190,7 +196,11 @@ def _(rid, params: dict, _transport, _identity, _session_id, broker, scope, _ses
 
 @_controller_method("browser.controller.heartbeat")
 def _(rid, params: dict, *_gate) -> dict:
-    """Acknowledge a heartbeat only for this transport's attached controller."""
+    """Acknowledge a heartbeat only for this transport's own attached controller.
+
+    The session gate admits any client attached to the session, including a fan-out peer; the
+    broker's ``is_owner`` check then narrows the answer to the transport that actually registered
+    the controller."""
     return _ok(rid, {"ok": True})
 
 
@@ -204,14 +214,6 @@ def _(rid, params: dict, transport, _identity, _session_id, broker, scope, _sess
 def register(server) -> None:
     """Publish helpers/constants onto ``server`` and install handlers (rebound to its globals)."""
     bind_module(globals(), server, skip=("_",))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
 _PLUGIN_COMPAT_LAZY = {
     'BROWSER_CONTROL_PROTOCOL_VERSION': ('gateway.browser_control_broker', 'BROWSER_CONTROL_PROTOCOL_VERSION'),
     'browser_control_protocol_supported': ('gateway.browser_control_broker', 'browser_control_protocol_supported'),
@@ -227,4 +229,3 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     from hermes_cli.plugin_compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

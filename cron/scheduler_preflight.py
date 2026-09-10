@@ -316,8 +316,8 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     so the caller refuses BEFORE building agent machinery or burning an LLM call. Every check fails
     open — preflight blocks only on an affirmative misconfiguration verdict.
 
-    Same fail-before-spend spirit as the #44585 drift guard and the fail-loud-on-hidden-tools direction in
-    #27948; alert dedup follows the alert-once pattern from the dead-pin auto-pause (#73506).
+    Same fail-before-spend spirit as the fail-loud-on-hidden-tools direction in #27948; alert dedup
+    follows the alert-once pattern from the dead-pin auto-pause (#73506).
     """
     for name, check in (
         ("provider_key", lambda: _preflight_check_provider_key(job, cfg)),

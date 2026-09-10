@@ -58,6 +58,9 @@ _AGENT_PASSTHROUGH = (
     "base_url", "api_key", "ephemeral_system_prompt", "providers_allowed", "providers_ignored",
     "providers_order", "provider_sort", "openrouter_min_coding_score", "max_tokens",
     "reasoning_config", "prefill_messages",
+    # Without this, every batch task run is attributed to the "unknown" execution
+    # surface in shared metrics even though "batch" is a first-class surface.
+    "platform",
 )
 
 
@@ -251,7 +254,11 @@ def _process_single_prompt(
             log_prefix=f"[B{batch_num}:P{prompt_index}]",
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
             skip_memory=True,  # Don't use persistent memory in batch runs
-            **{key: config.get(key) for key in _AGENT_PASSTHROUGH},
+            **{key: config.get(key) for key in _AGENT_PASSTHROUGH if key != "platform"},
+            # Batch is a first-class execution surface. Defaulting here (rather than
+            # relying on the caller's config dict) keeps task-run telemetry attributable
+            # even for callers that build a config without it.
+            platform=config.get("platform") or "batch",
         )
 
         # task_id ensures each task gets its own isolated VM
@@ -428,6 +435,7 @@ class BatchRunner:
         provider_sort: str = None,
         openrouter_min_coding_score: Optional[float] = None,
         max_tokens: int = None,
+
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         max_samples: int = None,
@@ -442,6 +450,9 @@ class BatchRunner:
         self.dataset_file = Path(dataset_file)
         for name in _RUNNER_FIELDS:
             setattr(self, name, params[name])
+        # Batch runs are their own execution surface; declaring it here keeps every
+        # worker's task-run telemetry attributable instead of falling back to "unknown".
+        self.platform = "batch"
 
         if not validate_distribution(distribution):
             raise ValueError(f"Unknown distribution: {distribution}. Available: {list(list_distributions().keys())}")
@@ -862,6 +873,7 @@ def main(
     providers_order: str = None,
     provider_sort: str = None,
     max_tokens: int = None,
+
     reasoning_effort: str = None,
     reasoning_disabled: bool = False,
     prefill_messages_file: str = None,
@@ -890,6 +902,7 @@ def main(
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+
         reasoning_effort (str): Reasoning effort: "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
@@ -905,9 +918,9 @@ def main(
         # Use specific distribution
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
         
-        # With disabled reasoning and max tokens
+        # With disabled reasoning
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
-                               --reasoning_disabled --max_tokens=128000
+                               --reasoning_disabled
         
         # With prefill messages from file
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
@@ -982,6 +995,7 @@ def main(
             providers_order=_split_csv(providers_order),
             provider_sort=provider_sort,
             max_tokens=max_tokens,
+
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
             max_samples=max_samples,

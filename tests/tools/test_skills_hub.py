@@ -522,7 +522,12 @@ class TestCheckForSkillUpdates:
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
 
-    def test_reports_update_when_remote_hash_differs(self):
+    def test_reports_update_when_remote_hash_differs(self, tmp_path, monkeypatch):
+        import tools.skills_hub as hub
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "demo-skill").mkdir(parents=True)
+        monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+
         lock = MagicMock()
         lock.list_installed.return_value = [{
             "name": "demo-skill",
@@ -547,6 +552,37 @@ class TestCheckForSkillUpdates:
         assert len(results) == 1
         assert results[0]["name"] == "demo-skill"
         assert results[0]["status"] == "update_available"
+
+    @pytest.mark.parametrize("path_kind", ["missing", "regular_file", "unsafe", "corrupt"])
+    def test_unusable_entry_reported_without_remote_fetch(self, tmp_path, monkeypatch, path_kind):
+        """A lock-file entry whose install directory no longer exists is
+        reported ``orphaned`` without paying the remote fetch cost (#104291)."""
+        import tools.skills_hub as hub
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        if path_kind == "regular_file":
+            (skills_dir / "demo-skill").write_text("not an installed directory")
+        monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "demo-skill",
+            "source": "github",
+            "identifier": "owner/repo/demo-skill",
+            "content_hash": "hash",
+            "install_path": {"unsafe": "../outside", "corrupt": ["bad"]}.get(path_kind, "demo-skill"),
+        }]
+
+        source = MagicMock()
+        source.source_id.return_value = "github"
+
+        results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert len(results) == 1
+        expected = "invalid_install" if path_kind in {"unsafe", "corrupt"} else "orphaned"
+        assert results[0]["status"] == expected
+        assert "bundle" not in results[0]
+        source.fetch.assert_not_called()
 
 class TestCreateSourceRouter:
 

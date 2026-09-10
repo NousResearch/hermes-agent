@@ -99,6 +99,9 @@ def _truncate_with_footer(content: str, url: str, char_limit: int) -> tuple[str,
         tail = tail[nl + 1:]
 
     stored_path = _store_full_text(url, content)
+    if stored_path:
+        from tools.credential_files import to_agent_visible_cache_path
+        stored_path = to_agent_visible_cache_path(stored_path)
     footer_lines = [
         "", "─" * 8 + " [TRUNCATED] " + "─" * 8,
         f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) "

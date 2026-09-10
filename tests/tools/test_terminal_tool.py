@@ -104,6 +104,32 @@ def test_validate_workdir_still_blocks_metachars_in_unicode_paths():
     assert terminal_tool._validate_workdir("/tmp/ü\x00ber")
 
 
+def test_literal_sudo_executables_receive_password_stdin(monkeypatch):
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    for prefix in ("", "VAR='a b' ", "env ", "'/usr/bin/env' -i -u UNUSED X=1 ",
+                   "env --unset=UNUSED --chdir /tmp -- X=1 ", "env -uUNUSED -C/tmp "):
+        for executable in ("sudo", "/usr/bin/sudo", "'/opt/my tools/sudo'", '"/usr/bin/sudo"'):
+            command = prefix + executable + " -u root true"
+            rewritten, stdin = terminal_tool_sudo._transform_sudo_command(command)
+            assert rewritten == prefix + executable + " -S -p '' -u root true"
+            assert stdin == "testpass\n"
+
+
+def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    commands = (
+        "echo '/usr/bin/sudo true'", "env echo sudo true", "env -u sudo echo ok",
+        "env --chdir sudo echo ok", "env --unset=sudo echo ok", "env -- sudo=1 echo ok",
+        ">/tmp/sudo echo ok", "env 2>/tmp/sudo echo ok", "env > /tmp/sudo echo ok",
+        "/tmp/{a,b}/sudo true", "env X=1 -u UNUSED sudo", "env - -u UNUSED sudo", "env echo /usr/bin/sudo", "/tmp/*/sudo true",
+        "env -S 'sudo true'", "env --unknown sudo true", "env --help sudo",
+        "bash -c 'sudo true'", "echo ok # prose; /usr/bin/sudo true",
+        '"/usr/bin/sudo', "env -u sudo", "env X=sudo", '"X=1" /usr/bin/sudo true',
+    )
+    for command in commands:
+        assert terminal_tool_sudo._transform_sudo_command(command) == (command, None)
+
+
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2

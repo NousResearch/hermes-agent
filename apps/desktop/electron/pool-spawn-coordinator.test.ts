@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
-import { LocalBackendSpawnCoordinator, releaseLocalBackendSlotAfterExit } from './pool-spawn-coordinator'
+import {
+  LocalBackendSlotWaitTimeoutError,
+  LocalBackendSpawnCoordinator,
+  releaseLocalBackendSlotAfterExit
+} from './pool-spawn-coordinator'
 
 const deferred = () => {
   let resolve!: () => void
@@ -306,6 +310,197 @@ test('setLimit rejects a non-positive or fractional cap', () => {
   assert.equal(coordinator.limit, 2)
 })
 
+test('cap 3: two background leases leave a reserved slot for foreground', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(3)
+  const bg1 = await coordinator.request('bg-1', { priority: 'background' }).acquired
+  const bg2 = await coordinator.request('bg-2', { priority: 'background' }).acquired
+  assert.equal(coordinator.activeCount, 2)
+  assert.equal(coordinator.queuedCount, 0)
+
+  let fgGranted = false
+
+  const fgPromise = coordinator.request('fg', { priority: 'foreground' }).acquired.then(release => {
+    fgGranted = true
+
+    return release
+  })
+
+  await flush()
+  assert.equal(fgGranted, true)
+  assert.equal(coordinator.activeCount, 3)
+
+  const releaseFg = await fgPromise
+  bg1()
+  bg2()
+  releaseFg()
+  assert.equal(coordinator.activeCount, 0)
+})
+
+test('untagged acquire still fills the cap (foreground default)', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(3)
+  const releases = await Promise.all(['a', 'b', 'c'].map(key => coordinator.acquire(key)))
+  assert.equal(coordinator.activeCount, 3)
+  assert.equal(coordinator.queuedCount, 0)
+
+  for (const release of releases) {
+    release()
+  }
+
+  assert.equal(coordinator.activeCount, 0)
+})
+
+test('foreground is granted the reserved slot ahead of a background hydration queue', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(3)
+
+  const bgRunning = await Promise.all(
+    ['bg-run-1', 'bg-run-2'].map(key => coordinator.request(key, { priority: 'background' }).acquired)
+  )
+
+  const queued = Array.from({ length: 20 }, (_, index) =>
+    coordinator.request(`bg-wait-${index}`, { priority: 'background', timeoutMs: 5_000 })
+  )
+
+  await flush()
+  assert.equal(coordinator.activeCount, 2)
+  assert.equal(coordinator.queuedCount, 20)
+
+  const started = Date.now()
+  const releaseFg = await coordinator.request('user-click', { priority: 'foreground', timeoutMs: 100 }).acquired
+  assert.ok(Date.now() - started < 80, 'foreground must not wait behind the background queue')
+  assert.equal(coordinator.activeCount, 3)
+
+  for (const request of queued) {
+    request.cancel()
+  }
+
+  releaseFg()
+
+  for (const release of bgRunning) {
+    release()
+  }
+
+  await Promise.all(
+    queued.map(request =>
+      request.acquired.then(
+        () => undefined,
+        () => undefined
+      )
+    )
+  )
+  assert.equal(coordinator.activeCount, 0)
+  assert.equal(coordinator.queuedCount, 0)
+})
+
+test('drain prefers a foreground waiter over an earlier background waiter', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(1)
+  const releaseHolder = await coordinator.acquire('holder')
+  const background = coordinator.request('background', { priority: 'background' })
+  const foreground = coordinator.request('foreground', { priority: 'foreground' })
+  await flush()
+  assert.equal(coordinator.queuedCount, 2)
+
+  let backgroundEntered = false
+  let foregroundEntered = false
+
+  const backgroundGrant = background.acquired.then(release => {
+    backgroundEntered = true
+
+    return release
+  })
+
+  const foregroundGrant = foreground.acquired.then(release => {
+    foregroundEntered = true
+
+    return release
+  })
+
+  releaseHolder()
+  await flush()
+  assert.equal(foregroundEntered, true)
+  assert.equal(backgroundEntered, false)
+  assert.equal(coordinator.activeCount, 1)
+
+  const releaseForeground = await foregroundGrant
+  releaseForeground()
+  const releaseBackground = await backgroundGrant
+  assert.equal(backgroundEntered, true)
+  releaseBackground()
+  assert.equal(coordinator.activeCount, 0)
+})
+
+test('background slot-wait timeout is distinguishable; foreground keeps a user-facing message', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(1)
+  const releaseFirst = await coordinator.acquire('first')
+
+  const background = coordinator.request('bg', { priority: 'background', timeoutMs: 10 })
+  await assert.rejects(background.acquired, error => {
+    assert.ok(error instanceof LocalBackendSlotWaitTimeoutError)
+    assert.equal(error.name, 'LocalBackendSlotWaitTimeoutError')
+    assert.equal(error.priority, 'background')
+    assert.equal(error.silent, true)
+    assert.match(error.message, /timed out while waiting for a free slot/)
+    assert.match(error.message, /\(background\)/)
+
+    return true
+  })
+
+  const foreground = coordinator.request('fg', { priority: 'foreground', timeoutMs: 10 })
+  await assert.rejects(foreground.acquired, error => {
+    assert.ok(error instanceof Error)
+    assert.match(error.message, /timed out while waiting for a free slot/)
+    assert.doesNotMatch(error.message, /\(background\)/)
+    assert.notEqual(error.name, 'LocalBackendSlotWaitTimeoutError')
+
+    return true
+  })
+
+  releaseFirst()
+  assert.equal(coordinator.activeCount, 0)
+})
+
+test('request() reports whether the caller actually waited behind the queue', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(3)
+  const bg1 = coordinator.request('bg-1', { priority: 'background' })
+  const bg2 = coordinator.request('bg-2', { priority: 'background' })
+  const bgWait = coordinator.request('bg-3', { priority: 'background' })
+  assert.equal(bg1.queued, false)
+  assert.equal(bg2.queued, false)
+  assert.equal(bgWait.queued, true)
+
+  // The reserved slot is free: a foreground request is granted immediately
+  // even though a background waiter is queued.
+  const fg = coordinator.request('fg', { priority: 'foreground' })
+  assert.equal(fg.queued, false)
+  assert.equal(coordinator.activeCount, 3)
+
+  bgWait.cancel()
+  await bgWait.acquired.catch(() => undefined)
+  ;(await fg.acquired)()
+  ;(await bg1.acquired)()
+  ;(await bg2.acquired)()
+  assert.equal(coordinator.activeCount, 0)
+})
+
+test('promoting a queued background waiter lets it take the reserved foreground slot', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(3)
+  const bg1 = await coordinator.request('bg-1', { priority: 'background' }).acquired
+  const bg2 = await coordinator.request('bg-2', { priority: 'background' }).acquired
+  const queued = coordinator.request('same-bot', { priority: 'background' })
+  await flush()
+  assert.equal(coordinator.activeCount, 2)
+  assert.equal(coordinator.queuedCount, 1)
+
+  assert.equal(queued.promote('foreground'), true)
+  const releasePromoted = await queued.acquired
+  assert.equal(coordinator.activeCount, 3)
+  assert.equal(coordinator.queuedCount, 0)
+
+  releasePromoted()
+  bg1()
+  bg2()
+  assert.equal(coordinator.activeCount, 0)
+})
+
 // ── main.ts wiring ──────────────────────────────────────────────────────────
 // The coordinator is only as good as the timeout main.ts hands it. A queued
 // ticket that outlives the renderer's backend-boot budget holds the pool key
@@ -330,7 +525,10 @@ test('setLimit rejects a non-positive or fractional cap', () => {
     assert.ok(Number.isFinite(slotWait) && slotWait > 0, 'POOL_SLOT_WAIT_MS must be a literal in main.ts')
     assert.ok(Number.isFinite(bootBudget), 'BACKEND_BOOT_WAIT_TIMEOUT_MS must be a literal')
     assert.ok(slotWait < bootBudget, `slot wait ${slotWait}ms must be below the boot budget ${bootBudget}ms`)
-    assert.match(mainSource, /localBackendSpawnCoordinator\.request\(poolKey, \{ timeoutMs: POOL_SLOT_WAIT_MS \}\)/)
+    assert.match(
+      mainSource,
+      /localBackendSpawnCoordinator\.request\(poolKey, \{\s*timeoutMs: POOL_SLOT_WAIT_MS,\s*priority: spawnPriority\s*\}\)/
+    )
     assert.doesNotMatch(mainSource, /request\(poolKey, \{ timeoutMs: POOL_IDLE_MS \}\)/)
   })
 

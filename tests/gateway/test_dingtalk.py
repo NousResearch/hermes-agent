@@ -403,7 +403,7 @@ class TestExtractMedia:
         reset it to TEXT, dropping the voice note from the STT path
         (#38211, #38219)."""
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         msg = self._msg_with_rich_text(
             [{"type": "voice", "downloadCode": "dl_voice_rt"}]
@@ -420,7 +420,7 @@ class TestExtractMedia:
     def test_image_no_filename_still_photo(self):
         """msgtype='image' without fileName → still PHOTO (MIME heuristic)."""
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         msg = MagicMock()
         msg.text = None

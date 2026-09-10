@@ -20,6 +20,7 @@ _INHERITED_KEYS = (
     "recallMode", "writeFrequency", "sessionStrategy", "contextTokens",
     "dialecticReasoningLevel", "dialecticDynamic", "dialecticMaxChars",
     "messageMaxChars", "dialecticMaxInputChars", "saveMessages", "observation",
+    "recallSync",
 )
 # clone_honcho_for_profile also carries the operator's runtime-to-peer routing intent.
 _CLONE_KEYS = _INHERITED_KEYS[:3] + ("sessionPeerPrefix",) + _INHERITED_KEYS[3:] + (
@@ -661,6 +662,10 @@ def _setup_tuning(cfg: dict, hermes_host: dict) -> None:
     _menu("Recall mode", *(f"{m:<7} -- {desc}" for m, desc in _MODES.items()))
     raw_recall = _pref(hermes_host, cfg, "recallMode", "hybrid")
     _choice_step(hermes_host, "recallMode", raw_recall if raw_recall in _MODES else "hybrid", "Recall mode", _MODES)
+
+    hermes_host["recallSync"] = _yes(_prompt(
+        "Wait for current-query recall (bounded by request timeout, default 5s)? (y/N)",
+        default="y" if hermes_host.get("recallSync", cfg.get("recallSync", False)) else "n"))
 
     current_ctx_tokens = _pref(hermes_host, cfg, "contextTokens")
     _menu("Context injection per turn (hybrid/context recall modes only)",

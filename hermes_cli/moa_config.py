@@ -152,11 +152,7 @@ def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] |
     effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
     if effort:
         clean["reasoning_effort"] = effort
-    # Optional per-slot max_tokens overrides the preset-level reference_max_tokens for this
-    # advisor; None (default) = no cap.
-    slot_mt = _coerce_number(slot.get("max_tokens"), int, positive=True)
-    if slot_mt is not None:
-        clean["max_tokens"] = slot_mt
+
     if include_enabled:
         clean["enabled"] = _coerce_bool(slot.get("enabled"), True)
     return clean
@@ -230,10 +226,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "reference_timeout": _coerce_reference_timeout(raw.get("reference_timeout")),
         # Failed-advisor disclosure policy; unknown values fail loud.
         "degraded_reference_policy": policy if policy in {"loud", "silent"} else "loud",
-        "max_tokens": _coerce_number(raw.get("max_tokens"), int, 4096),
-        # Per-turn cap on each reference ADVISOR (never the acting aggregator). None = uncapped;
-        # advisor generation dominates MoA latency, so e.g. 600 roughly halves wall time.
-        "reference_max_tokens": _coerce_number(raw.get("reference_max_tokens"), int, positive=True),
+
         # "user_turn" (default, cheapest): advisors run ONCE per user turn; "per_iteration": every
         # tool iteration; "every_n:<N>": first iteration of each turn and every Nth after.
         "fanout": _coerce_fanout(raw.get("fanout"))}
@@ -241,7 +234,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 
 _FLAT_PRESET_KEYS = (
     "reference_models", "aggregator", "reference_temperature", "aggregator_temperature",
-    "reference_timeout", "degraded_reference_policy", "max_tokens", "reference_max_tokens",
+    "reference_timeout", "degraded_reference_policy",
     "fanout", "enabled")
 
 

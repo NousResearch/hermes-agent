@@ -103,6 +103,7 @@ class TestAgentCloseMethod:
             from run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-cleanup"
+            agent._process_owner_task_ids = {"sa-owned"}
             agent._active_children = []
             agent._active_children_lock = threading.Lock()
             agent.client = None
@@ -111,11 +112,17 @@ class TestAgentCloseMethod:
                  patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
                  patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
                  patch("tools.computer_use.tool.release_computer_use_session") as mock_cleanup_cua:
+                mock_registry.list_sessions.return_value = [
+                    {"session_id": "owned", "owner_task_id": "sa-owned", "status": "running"},
+                    {"session_id": "foreign", "owner_task_id": "parent", "status": "running"},
+                    {"session_id": "finished", "owner_task_id": "sa-owned", "status": "exited"},
+                ]
                 agent.close()
 
-                mock_registry.kill_all.assert_called_once_with(
-                    task_id="test-close-cleanup"
+                mock_registry.kill_process.assert_called_once_with(
+                    "owned", source="agent_close", consume_output=True,
                 )
+                mock_registry.kill_all.assert_not_called()
                 mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_cua.assert_called_once_with("test-close-cleanup")
@@ -149,7 +156,7 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch(
-                "tools.process_registry.process_registry.kill_all",
+                "tools.process_registry.process_registry.list_sessions",
                 side_effect=RuntimeError("process cleanup failed"),
             ), patch(
                 "tools.computer_use.tool.release_computer_use_session",
@@ -272,7 +279,7 @@ class TestAgentCloseMethod:
             ) as mock_vm, patch(
                 "run_agent.cleanup_browser"
             ) as mock_browser:
-                mock_reg.kill_all.side_effect = RuntimeError("boom")
+                mock_reg.list_sessions.side_effect = RuntimeError("boom")
 
                 agent.close()
 
@@ -366,6 +373,12 @@ class TestDelegationCleanup:
     def test_run_single_child_calls_close(self):
         """_run_single_child finally block should call close() on child."""
         from unittest.mock import MagicMock
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from agent import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
@@ -373,6 +386,51 @@ class TestDelegationCleanup:
         parent._active_children_lock = threading.Lock()
 
         child = MagicMock()
+        child.session_id = "child-session"
+        child._delegate_saved_tool_names = ["tool1"]
+        observed = {}
+
+        def run_conversation(**_kwargs):
+            observed["hermes_home"] = get_hermes_home()
+            raise RuntimeError("test abort")
+
+        child.run_conversation.side_effect = run_conversation
+        relay_host = MagicMock()
+        monkeypatch.setattr(relay_runtime, "get_runtime", lambda **kwargs: relay_host)
+
+        parent._active_children.append(child)
+
+        profile_home = tmp_path / "profile-a"
+        token = set_hermes_home_override(profile_home)
+        try:
+            result = _run_single_child(
+                task_index=0,
+                goal="test goal",
+                child=child,
+                parent_agent=parent,
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        child.close.assert_called_once()
+        assert observed["hermes_home"] == profile_home
+        relay_host.unregister_subagent.assert_called_once_with(
+            {"child_session_id": "child-session"}
+        )
+        assert child not in parent._active_children
+        assert result["status"] == "error"
+
+    def test_active_child_turn_owns_relay_scope_cleanup(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from agent import relay_runtime
+        from tools.delegate_tool import _run_single_child
+
+        parent = MagicMock()
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+        child = MagicMock()
+        child.session_id = "active-child-session"
         child._delegate_saved_tool_names = ["tool1"]
         child.run_conversation.side_effect = RuntimeError("test abort")
 

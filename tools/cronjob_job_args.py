@@ -337,13 +337,14 @@ def _validate_context_from_refs(refs: List[Any]) -> Optional[str]:
     return None
 
 
-# Optional fields echoed by _format_job only when truthy (order = JSON key order).
 _FORMAT_JOB_OPTIONAL_KEYS = (
     "script", "reasoning_effort", "monitor_script", "monitor_url",
     "monitor_state", "no_agent", "enabled_toolsets", "workdir")
 
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    from agent.redact import redact_sensitive_text
+
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
@@ -366,6 +367,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_delivery_error": job.get("last_delivery_error"),
         "last_delivery_unverified": job.get("last_delivery_unverified"),
         "last_fire_error": job.get("last_fire_error"),
+        "last_error": redact_sensitive_text(
+            job["last_error"], force=True, redact_url_credentials=True,
+        ) if job.get("last_error") else job.get("last_error"),
         "enabled": job.get("enabled", True),
         # Derive from enabled so half-paused records never render as paused.
         "state": effective_job_state(job),

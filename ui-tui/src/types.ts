@@ -224,6 +224,7 @@ export interface SessionInfo {
   profile_name?: string
   project?: null | ProjectInfo
   reasoning_effort?: string
+  running?: boolean
   release_date?: string
   service_tier?: string
   skills: Record<string, string[]>
@@ -247,6 +248,8 @@ export interface Usage {
   compressions?: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_status?: string
   cost_usd?: number

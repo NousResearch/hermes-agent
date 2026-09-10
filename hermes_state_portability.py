@@ -80,6 +80,55 @@ _PROMPT_RESOLVED_SQL = "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_r
 class SessionPortabilityMixin:
     """See module docstring — mixin for SessionDB (Port cluster)."""
 
+    @staticmethod
+    def _find_foreign_import_on_conn(conn, origin):
+        rows = conn.execute("SELECT id, origin_json FROM sessions WHERE source = ? AND origin_json IS NOT NULL",
+                            (origin["tool"],)).fetchall()
+        for row in rows:
+            imported = (safe_json_loads(row["origin_json"], default={}) or {}).get("imported_from", {})
+            if imported.get("tool") != origin["tool"]:
+                continue
+            foreign_id = origin.get("foreign_session_id")
+            if ((foreign_id and foreign_id == imported.get("foreign_session_id"))
+                    or (not foreign_id and imported.get("path") == origin["path"])):
+                return row["id"]
+        return None
+
+    def find_foreign_import(self, origin):
+        with self._read_ctx() as conn:
+            return self._find_foreign_import_on_conn(conn, origin)
+
+    def import_foreign_history(self, origin, messages, *, title, cwd, profile):
+        """Adopt or mint a foreign snapshot in one transaction, including its provenance.
+
+        BEGIN IMMEDIATE serializes duplicate clicks across connections/processes.
+        Reuse the portability validator and message writer so counters and FTS
+        obey the same contract as ordinary transcript imports.
+        """
+        import uuid
+        session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:12]}"
+        normalized, errors = self._validate_import_payload([
+            {"id": session_id, "source": origin["tool"], "title": title,
+             "cwd": cwd, "messages": messages}])
+        if errors:
+            raise ValueError(errors[0]["error"])
+
+        def _do(conn):
+            existing = self._find_foreign_import_on_conn(conn, origin)
+            if existing:
+                return {"session_id": existing, "already_imported": True}
+            # Titles are globally unique within a profile. Preserve a readable
+            # title while giving unrelated conversations with the same text room.
+            item = normalized[0]
+            if conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
+                item["session"]["title"] = f"{title} ({session_id[-12:]})"
+            self._import_session_row(conn, item["session"], item["messages"], session_id)
+            conn.execute("UPDATE sessions SET origin_json = ?, profile_name = ? WHERE id = ?",
+                         (json.dumps({"imported_from": origin}), profile, session_id))
+            return {"session_id": session_id, "already_imported": False}
+
+        return self._execute_write(_do)
+
     @classmethod
     def _compact_session_cols(cls) -> str:
         """``s.``-prefixed SELECT list of every SCHEMA_SQL ``sessions`` column except

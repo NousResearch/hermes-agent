@@ -415,6 +415,8 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             f"Cannot connect to Camofox at {get_camofox_url()}. "
             "Is the server running? Start with: npm start (in camofox-browser dir) "
             "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")})
+    except ValueError:
+        return tool_error("Camofox returned a non-JSON response; this is not a valid Camofox endpoint.", success=False)
     except Exception as e:
         return tool_error(str(e), success=False)
 

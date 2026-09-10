@@ -701,32 +701,6 @@ class PluginContext:
                     )
                     return False
 
-            # Preserve the manager-owned gateway seam for isolated plugin managers
-            # and older gateway hosts.  It is deliberately queue-only: steering and
-            # hard interrupts require a surface router that owns the live turn.
-            if (
-                self._manager.has_gateway_message_injector
-                and target_surface in (None, "gateway")
-            ):
-                if (
-                    not effective_target
-                    or mode != "queue"
-                    or not self._gateway_injection_allowed()
-                ):
-                    return False
-                plugin_id = self.manifest.key or self.manifest.name
-                msg = content if role == "user" else f"[{role}] {content}"
-                try:
-                    return bool(
-                        self._manager.inject_gateway_message(
-                            session_key=effective_target,
-                            content=msg,
-                            plugin_id=plugin_id,
-                        )
-                    )
-                except Exception:
-                    return False
-
             # No CLI attached (gateway, TUI/dashboard, headless serve): route via
             # the host-owned routers registered by each surface. Dashboard takes
             # precedence in serving processes, then the gateway.
@@ -1270,6 +1244,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
+        # Fallback hooks registered by a memory provider before general discovery.
+        self._memory_hook_registrations: Dict[Tuple[str, str], List[PluginRegistration]] = {}
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
@@ -2305,6 +2281,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
 
 # ── KENSEI CUSTOM — on_session_open lifecycle hook (ported) ──
 _SESSION_OPEN_LIMIT = 4096

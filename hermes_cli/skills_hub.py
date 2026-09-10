@@ -808,6 +808,24 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
     c.print(table)
     update_count = sum(1 for entry in results if entry.get("status") == "update_available")
     c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
+    orphaned = [entry.get("name", "") for entry in results if entry.get("status") == "orphaned"]
+    if orphaned:
+        c.print(f"[yellow]Orphaned:[/] {', '.join(orphaned)} — lock-file entries whose local "
+                "directory is missing or replaced by a non-directory. For missing directories, "
+                "remove the stale entry with: hermes skills uninstall <name>\n")
+
+
+def _has_local_edits(installed: dict) -> bool:
+    """True when the on-disk content no longer matches the install-time hash."""
+    from tools.skills_hub import SKILLS_DIR
+    from tools.skills_guard import content_hash
+    recorded_hash = installed.get("content_hash", "")
+    skill_path = SKILLS_DIR / installed.get("install_path", "")
+    try:
+        return (bool(recorded_hash) and skill_path.is_dir()
+                and content_hash(skill_path) != recorded_hash)
+    except OSError:
+        return False
 
 
 def _has_local_edits(installed: dict) -> bool:

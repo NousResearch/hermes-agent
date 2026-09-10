@@ -341,7 +341,7 @@ class _ThreadedProcessHandle:
 
 
 # --- Stdout drain thread ---
-def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector) -> None:
+def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "threading.Event | None" = None) -> None:
     """Drain ``proc.stdout`` into *output* until EOF or shortly after exit.
     ``for line in proc.stdout`` would block on ``readline()`` until EOF, and a backgrounded
     grandchild (``cmd &``, ``setsid cmd & disown``) inherits the pipe's write end — so the
@@ -384,7 +384,7 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector) -> None:
             while chunk := os.read(fd, 4096):
                 output.append(decoder.decode(chunk))
         else:
-            _drain_fd_select(proc, fd, output, decoder)
+            _drain_fd_select(proc, fd, output, decoder, stop)
     except Exception:
         pass  # closed fd / broken stream: keep what was captured
     finally:
@@ -397,10 +397,13 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector) -> None:
             pass
 
 
-def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder) -> None:
-    """POSIX drain: select() poll, stopping ~300ms after bash exits with the pipe idle."""
+def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+    """POSIX drain: select() poll, stopping ~300ms after bash exits with the pipe idle, or
+    when *stop* is set (the pipe is being handed to another reader — yield-to-background)."""
     idle_after_exit = 0
     while True:
+        if stop is not None and stop.is_set():
+            return
         try:
             ready, _, _ = select.select([fd], [], [], 0.1)
         except (ValueError, OSError):
@@ -422,8 +425,10 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder) ->
                 return
 
 
-def _start_drain_thread(proc: ProcessHandle, output: _BoundedOutputCollector) -> threading.Thread:
-    """Start the daemon thread running :func:`_drain_stdout`."""
-    thread = threading.Thread(target=_drain_stdout, args=(proc, output), daemon=True)
+def _start_drain_thread(
+        proc: ProcessHandle, output: _BoundedOutputCollector, stop: "threading.Event | None" = None,
+) -> threading.Thread:
+    """Start the daemon thread running :func:`_drain_stdout`; *stop* ends it early."""
+    thread = threading.Thread(target=_drain_stdout, args=(proc, output, stop), daemon=True)
     thread.start()
     return thread

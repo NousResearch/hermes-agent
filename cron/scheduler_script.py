@@ -461,8 +461,4 @@ def _run_job_script_with_claim_heartbeat(
         stop.set()
         # Bounded join: the heartbeat may be blocked on another process's jobs-file lock.
         heartbeat_thread.join(timeout=1.0)
-
-
-# Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
-# populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched  # noqa: E402

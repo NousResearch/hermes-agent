@@ -267,6 +267,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import profile_scoped as _profile_scoped_config_load
 
@@ -8920,7 +8921,6 @@ async def _standalone_send(
                     )
                     logger.error(warning)
                     warnings.append(warning)
-
         if last_data is None:
             error = "No deliverable text or media remained after processing"
             if warnings:

@@ -268,9 +268,9 @@ def _ensure_server(job: Dict[str, Any], config: dict, model_id: str, *, fail_det
 
 
 def _assign_default(job: Dict[str, Any], model_id: str) -> None:
-    """Make ``model_id`` the main model via the same machinery as /api/model/set (late-bound: tests stub web_deps.late)."""
+    """Make ``model_id`` the main model via the same machinery as /api/model/set."""
     _step(job, "setting-default", "Making it your default")
-    web_deps.late("_apply_model_assignment_sync")("main", "llamacpp", model_id, "", "", "")
+    web_deps.late("_apply_model_assignment_sync", "hermes_cli.web_server_config")("main", "llamacpp", model_id, "", "", "")
 
 
 # ── downloads: ranged parallel streams ───────────────────────

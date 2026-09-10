@@ -42,7 +42,7 @@ class TestShouldCompressInfo:
 
     def test_cooldown_reports_reason(self):
         comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
+        comp.last_prompt_tokens = comp.last_real_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 60
         should, reason = comp.should_compress_info(73_000)
         assert should is False
@@ -55,7 +55,7 @@ class TestShouldCompressInfo:
         """should_compress() must still return a bare bool for existing
         callers in conversation_loop.py (and/or chains)."""
         comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
+        comp.last_prompt_tokens = comp.last_real_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 60
         result = comp.should_compress(73_000)
         assert result is False
@@ -115,7 +115,7 @@ def _run_build(agent):
 class TestTurnContextOverflowWarning:
     def test_warns_on_cooldown_block(self):
         comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
+        comp.last_prompt_tokens = comp.last_real_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 30
         agent = _build_warn_agent(comp)
         _run_build(agent)
@@ -136,7 +136,7 @@ class TestTurnContextOverflowWarning:
         cooldown timer moves.
         """
         comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
+        comp.last_prompt_tokens = comp.last_real_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 30
         agent = _build_warn_agent(comp)
         # Turn 1: over threshold + cooldown -> warn.

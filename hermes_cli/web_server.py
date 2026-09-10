@@ -1114,7 +1114,7 @@ def _configure_auth_gate(
         )
 
 
-def _build_uvicorn_server(host: str, port: int):
+def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     """Build the uvicorn ``Config`` + ``Server`` for this bind (reads ``app.state.auth_required``).
 
     uvicorn.Server is driven directly (not uvicorn.run) so startup is split from
@@ -1145,8 +1145,22 @@ def _build_uvicorn_server(host: str, port: int):
         except (TypeError, ValueError):
             return default
 
+    # A Desktop-owned SSH-isolated backend is loopback on the SERVER, but the client sits at the far
+    # end of a tunnel: the local socket stays healthy while the laptop sleeps, so only a slow WS ping
+    # notices the half-open tunnel (#101626). Its client count is tracked at the ASGI boundary so
+    # the idle watchdog can retire the backend once nothing is connected.
+    served_app = app
+    ping_interval, ping_timeout = (None, None) if _is_loopback else (
+        _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
+    if ssh_isolated:
+        from hermes_cli.web_server_idle_exit import (
+            TUNNEL_WS_PING_INTERVAL_S, TUNNEL_WS_PING_TIMEOUT_S, IdleClientTracker, wrap_asgi_with_ws_tracking)
+        app.state.ssh_isolated_clients = IdleClientTracker()
+        served_app = wrap_asgi_with_ws_tracking(app, app.state.ssh_isolated_clients)
+        ping_interval, ping_timeout = TUNNEL_WS_PING_INTERVAL_S, TUNNEL_WS_PING_TIMEOUT_S
+
     config = uvicorn.Config(
-        app, host=host, port=port, log_level="warning",
+        served_app, host=host, port=port, log_level="warning",
         # Off by default so _ws_client_is_allowed sees the real peer, not
         # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs
         # X-Forwarded-Proto for cookie Secure flags.
@@ -1154,8 +1168,8 @@ def _build_uvicorn_server(host: str, port: int):
         # Loopback-only unless the operator trusts a bounded upstream proxy, so
         # spoofed X-Forwarded-* from arbitrary callers is never honoured.
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
-        ws_ping_interval=None if _is_loopback else _ws_ping_setting("ws_ping_interval"),
-        ws_ping_timeout=None if _is_loopback else _ws_ping_setting("ws_ping_timeout"),
+        ws_ping_interval=ping_interval,
+        ws_ping_timeout=ping_timeout,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     return config, uvicorn.Server(config)
@@ -1207,6 +1221,15 @@ def _on_server_started(
 
     # No-op for standalone `hermes serve` (no HERMES_PARENT_PID).
     _start_parent_death_watchdog()
+    # SSH-isolated backends are detached from any parent on purpose (#91668); their liveness signal
+    # is "does a client still hold a WebSocket" (#101626).
+    if getattr(app.state, "ssh_isolated_clients", None) is not None:
+        from hermes_cli.web_server_idle_exit import DEFAULT_IDLE_GRACE_S, start_idle_watchdog
+        try:
+            grace = float((load_config().get("dashboard") or {}).get("ssh_isolated_idle_grace_s", DEFAULT_IDLE_GRACE_S))
+        except (TypeError, ValueError):
+            grace = DEFAULT_IDLE_GRACE_S
+        start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
@@ -1372,7 +1395,7 @@ def start_server(
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
 
-    config, server = _build_uvicorn_server(host, port)
+    config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
 
     # Flush-on-kill guard (#94724): chaining SIGTERM/SIGINT handlers persist
     # in-memory transcripts to state.db before shutdown. Installed BEFORE

@@ -291,13 +291,12 @@ Table-driven beats condition ladders for ids/routes/views. `src/app` owns routes
 
 ## Dependency Pinning Policy
 
-<<<<<<< ours
 All dependencies carry upper bounds (litellm compromise #2796/#2810; Mini Shai-Hulud worm,
 May 2026). PyPI: `>=floor,<next_major` (`"httpx>=0.28.1,<1"`); pre-1.0: `<0.(minor+2)`
 (`>=0.29,<0.32`). Git URLs: 40-char commit SHA. GitHub Actions: SHA + `# vN` comment. CI-only
 pip: `==exact`. A bare `>=X.Y.Z` is rejected by CI and reviewers. Run `uv lock` after
 changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
-=======
+
 All dependencies must have upper bounds to limit supply-chain attack surface.
 This policy was established after the litellm compromise (PR #2796, #2810) and
 reinforced after the Mini Shai-Hulud worm campaign (May 2026).
@@ -602,7 +601,6 @@ Scan order:
 User plugins of the same name override bundled ones — `register_provider()`
 is last-writer-wins. This lets third parties swap out any built-in
 profile without a repo patch.
->>>>>>> theirs
 
 ## Commits, Merges, PRs
 
@@ -617,13 +615,12 @@ profile without a repo patch.
 
 ## Testing (applies everywhere)
 
-<<<<<<< ours
 **ALWAYS use `scripts/run_tests.sh`**, never bare `pytest`. It enforces CI parity: credential
 vars unset, `TZ=UTC`, `LANG=C.UTF-8`, `HERMES_HOME` → temp dir, and per-file subprocess
 isolation via `scripts/run_tests_parallel.py` (no xdist; workers scale with CPU count) so
 module-level dicts/ContextVars cannot leak between files. Direct `pytest` on a big machine
 with API keys set has caused repeated "works locally, fails in CI" incidents (and the reverse).
-=======
+
 `plugins/context_engine/`, `plugins/image_gen/`, etc. follow the same
 pattern (ABC + orchestrator + per-plugin directory). Context engines
 plug into `agent/context_engine.py`; image-gen providers into
@@ -1296,7 +1293,6 @@ per-file subprocess isolation via `scripts/run_tests_parallel.py` — no xdist,
 worker count auto-scaled from CPU count). Direct `pytest`
 on a 16+ core developer machine with API keys set diverges from CI in ways
 that have caused multiple "works locally, fails in CI" incidents (and the reverse).
->>>>>>> theirs
 
 ```bash
 scripts/run_tests.sh                                    # full suite

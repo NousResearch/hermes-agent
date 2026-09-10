@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Dict, Optional, Protocol, runtime_checkable
 
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.relay.descriptor import CapabilityDescriptor
 
 # Callback the transport invokes for each inbound normalized event.

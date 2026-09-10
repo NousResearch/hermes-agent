@@ -108,6 +108,33 @@ class TodoStore:
         rebuilt = {item["id"]: existing.get(item["id"], item) for item in self._items}
         self._items = self._normalize_order(list(rebuilt.values()))
 
+    def _merge(self, todos: List[Dict[str, Any]]) -> None:
+        """Update existing items only in the fields provided; append new ones (validated)."""
+        existing = {item["id"]: item for item in self._items}
+        for t in self._dedupe_by_id(todos):
+            item_id = str(t.get("id", "")).strip()
+            if not item_id:
+                continue  # can't merge without an id
+            cur = existing.get(item_id)
+            if cur is None:
+                validated = self._validate(t)
+                existing[validated["id"]] = validated
+                self._items.append(validated)
+                continue
+            if t.get("content"):
+                cur["content"] = self._cap_content(str(t["content"]).strip())
+            if t.get("status") and str(t["status"]).strip().lower() in VALID_STATUSES:
+                cur["status"] = str(t["status"]).strip().lower()
+            if "parent" in t:
+                parent = str(t["parent"] or "").strip()
+                if parent:
+                    cur["parent"] = parent
+                else:
+                    cur.pop("parent", None)
+        # Rebuild preserving original order for existing items (first occurrence wins).
+        rebuilt = {item["id"]: existing.get(item["id"], item) for item in self._items}
+        self._items = self._normalize_order(list(rebuilt.values()))
+
     def read(self) -> List[Dict[str, str]]:
         return [item.copy() for item in self._items]
 

@@ -200,6 +200,10 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
         tail = tail[nl + 1:]
 
     spill_path = _spill_summary_to_file(task_index, summary)
+    if spill_path:
+        # Agent-visible path: the parent's read_file runs inside the active backend (#81984, #77015).
+        from tools.credential_files import to_agent_visible_cache_path
+        spill_path = to_agent_visible_cache_path(spill_path)
     footer_lines = [
         "", "─" * 8 + " [SUMMARY TRUNCATED] " + "─" * 8,
         f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) "
@@ -218,18 +222,38 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     footer_lines.append("─" * 37)
     return head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer_lines), spill_path
 
+def _parent_prompt_size_tokens(parent_agent) -> Optional[int]:
+    """The parent's current prompt size: the aggregator's own last ``prompt_tokens`` (pre-MoA-fold), else
+    the last provider usage. ``None`` when no request has completed yet: the caller then applies the
+    static ceiling only. Treating "no usage yet" as zero handed a 190K/200K parent a 384K-char budget."""
+    size = getattr(parent_agent, "_last_prompt_size_tokens", None)
+    if isinstance(size, (int, float)) and size > 0:
+        return int(size)
+    last_usage = getattr(parent_agent, "_last_turn_usage", None) or {}
+    used = last_usage.get("prompt_tokens") if isinstance(last_usage, dict) else None
+    if isinstance(used, (int, float)) and used > 0:
+        return int(used)
+    return None
+
+
 def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]:
-    """Per-summary char budget from the parent's *remaining* context headroom (context length − prompt tokens − the
-    compressor's output reserve), a fraction of it split across the batch at ~4 chars/token. None when the parent's
-    context state is unknown — caller then uses the static ceiling only."""
+    """Per-summary char budget from the parent's *remaining* context headroom (context length − the parent's
+    current prompt size − the compressor's output reserve), a fraction of it split across the batch at ~4
+    chars/token. None when the parent's context state is unknown — caller then uses the static ceiling only.
+
+    "Current prompt size" is the last API call's ``prompt_tokens`` (``_last_turn_usage``), never
+    ``session_prompt_tokens``: that field is the running SUM over every call in the session, so after a
+    few hundred calls it exceeds any context window and every summary collapsed to the 2,000-char floor
+    (measured: all 1,393 child summaries in one run, each spilled to disk, the orchestrator working from
+    the stub)."""
     try:
         compressor = getattr(parent_agent, "context_compressor", None)
         context_length = getattr(compressor, "context_length", None)
         if not isinstance(context_length, int) or context_length <= 0:
             return None
-        used_tokens = getattr(parent_agent, "session_prompt_tokens", 0)
-        if not isinstance(used_tokens, (int, float)) or used_tokens < 0:
-            used_tokens = 0
+        used_tokens = _parent_prompt_size_tokens(parent_agent)
+        if used_tokens is None:
+            return None  # no usage yet and nothing to estimate from: static ceiling only, never "zero context"
         headroom_tokens = context_length - int(used_tokens) - int(getattr(compressor, "max_tokens", 0) or 0)
         if headroom_tokens <= 0:
             return _MIN_SUMMARY_CHARS  # parent already over budget: floor only
@@ -384,133 +408,3 @@ def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=No
     task = {"goal": goal}
     _finalize_child_results([result], [{"goal": ""} for _ in range(task_index)] + [task], [(task_index, task, child)], parent_agent)
     return result
-
-
-# ── KENSEI CUSTOM — receipts + verify/synthesis primitives (ported) ──
-
-def _extract_finding(summary: str) -> str:
-    """Extract the core finding from a producer summary, stripping reasoning.
-
-    Tries multiple strategies in order:
-    1. JSON block with named key (finding / answer / conclusion / claim)
-    2. Any JSON block — serialise whole block as the finding
-    3. Markdown heading '## Finding' or '## Conclusion'
-
-    Returns the extracted finding string, or empty string on failure.
-    When empty, verification is skipped and a warning is logged.
-    """
-    if not summary or not summary.strip():
-        return ""
-
-    text = summary.strip()
-
-    # Cap scanned text to prevent pathological regex behaviour on unusually
-    # large producer summaries (bounded polynomial, not catastrophic, but
-    # this box has two documented regex-freeze incidents).
-    if len(text) > 20000:
-        text = text[-20000:]
-    import re as _re
-
-    # --- Strategy 1: JSON extraction via shared parser ---
-
-    # 1a: Try the shared parser on the whole text first
-    from hermes_cli.llm_json import parse_llm_json
-    parsed = parse_llm_json(text, raise_on_failure=False)
-    if parsed is not None:
-        for key in ("finding", "answer", "conclusion", "claim"):
-            if key in parsed and isinstance(parsed[key], str) and parsed[key]:
-                return str(parsed[key])
-        # No named key; serialise the whole dict as the finding
-        return json.dumps(parsed, indent=2)
-
-    # 1b: Scan for inline JSON blocks with named keys (the shared parser
-    #     expects a clean JSON document; inline blocks need regex extraction).
-    #     NOTE: regex handles ONE nesting level only; deeper nested JSON
-    #     falls through to the heading strategy below (DG-2, acceptable
-    #     degradation; nested findings are rare in practice).
-    key_pats = "finding|answer|conclusion|claim"
-    named_blocks = _re.findall(
-        r'\{[^{}]*"(?:' + key_pats + r')"[^{}]*\}',
-        text, _re.DOTALL,
-    )
-    for block in reversed(named_blocks):
-        try:
-            parsed = json.loads(block)
-            for key in ("finding", "answer", "conclusion", "claim"):
-                if key in parsed and parsed[key]:
-                    return str(parsed[key])
-        except (json.JSONDecodeError, TypeError, KeyError):
-            continue
-
-    # --- Strategy 2: Markdown heading ---
-    for heading in ("Finding", "Conclusion", "Claim", "Result"):
-        m = _re.search(
-            rf"^##\s+{heading}\s*\n(.+?)(?:\n##|\Z)",
-            text, _re.DOTALL | _re.MULTILINE | _re.IGNORECASE,
-        )
-        if m:
-            return m.group(1).strip()
-
-    # Structured extraction failed.
-    return ""
-
-
-_RECEIPT_PATH_RE = None  # compiled lazily to keep import cost flat
-_RECEIPT_DIFF_RE = None
-_RECEIPT_HASH_RE = None
-
-def _receipt_res() -> tuple:
-    """Compile (once) the receipt-signal regexes."""
-    import re as _re
-
-    global _RECEIPT_PATH_RE, _RECEIPT_DIFF_RE, _RECEIPT_HASH_RE
-    if _RECEIPT_PATH_RE is None:
-        _RECEIPT_PATH_RE = _re.compile(r"(?:/home/|/tmp/|[\w.\-]+/[\w.\-/]+(?:\.[\w]+)?)")
-        _RECEIPT_DIFF_RE = _re.compile(r"\d+\s+insertions?\(\+\)|\d+\s+files?\s+changed|diff\s+--git")
-        _RECEIPT_HASH_RE = _re.compile(r"\b[0-9a-f]{40}\b|\b[0-9a-f]{7,12}\b(?=\s+(?:on|main|commit)|\s*$)")
-    return _RECEIPT_PATH_RE, _RECEIPT_DIFF_RE, _RECEIPT_HASH_RE
-
-
-def _has_receipts(text: str | None) -> bool:
-    """True when a summary carries verifiable handles (heuristic).
-
-    Counts: absolute/relative file paths, diff stats, full or short
-    commit hashes in a commit context, or an explicit no-files-changed
-    statement. Short-hash matches require a commit-ish context word so
-    random hex (ids, tokens) does not count.
-    """
-    if not text or not isinstance(text, str):
-        return False
-    _lower = text.lower()
-    if "no files" in _lower and ("change" in _lower or "modified" in _lower or "touched" in _lower):
-        return True
-    _path_re, _diff_re, _hash_re = _receipt_res()
-    if _diff_re.search(text):
-        return True
-    if _hash_re.search(text):
-        return True
-    for _m in _path_re.finditer(text):
-        _hit = _m.group(0)
-        if "/" in _hit and ("." in _hit or _hit.startswith("/")):
-            return True
-    return False
-
-
-# Minimal shape for nested spawns that arrive without a contract.
-# summary required; receipts encouraged (flagged, not hard-failed —
-# a research child may legitimately touch no files).
-_NESTED_DEFAULT_SCHEMA: dict = {
-    "type": "object",
-    "properties": {
-        "summary": {"type": "string"},
-        "receipts": {"type": "array", "items": {"type": "string"}},
-        "status": {"type": "string"},
-    },
-    "required": ["summary"],
-    "additionalProperties": True,
-}
-
-# Cap on quoted prior-output inside a continuation turn so the rescue
-# turn itself cannot flood the child's remaining budget.
-_CONTINUATION_QUOTE_CAP = 4000
-

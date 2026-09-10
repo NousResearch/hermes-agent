@@ -12,6 +12,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import build_anthropic_client, build_anthropic_bedrock_client, build_anthropic_kwargs
 from agent.anthropic_credentials import _is_oauth_token, _refresh_oauth_token, _write_claude_code_credentials, is_claude_code_token_valid, read_claude_code_credentials, resolve_anthropic_token, run_oauth_setup_token
 from agent.anthropic_endpoints import _is_azure_anthropic_endpoint
+from agent.credential_pool import PooledCredential
 from agent.anthropic_message_convert import _to_plain_data, convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name
 from agent.transports import get_transport
 
@@ -272,10 +273,9 @@ class TestResolveAnthropicToken:
         # returns nothing, mirroring a Hermes-PKCE-only setup.
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
-        pool_entry = SimpleNamespace(
-            auth_type="oauth",
-            access_token="pool-oauth-token",
-        )
+        pool_entry = PooledCredential.from_dict("anthropic", {
+            "auth_type": "oauth", "access_token": "pool-oauth-token",
+        })
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: ([pool_entry], []),
         )
@@ -330,7 +330,9 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
-        api_key_entry = SimpleNamespace(auth_type="api_key", access_token="sk-pool-apikey")
+        api_key_entry = PooledCredential.from_dict("anthropic", {
+            "auth_type": "api_key", "access_token": "sk-pool-apikey",
+        })
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: ([api_key_entry], []),
         )
@@ -351,7 +353,9 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
         captured = {}
-        pool_entry = SimpleNamespace(auth_type="oauth", access_token="pool-oauth-token")
+        pool_entry = PooledCredential.from_dict("anthropic", {
+            "auth_type": "oauth", "access_token": "pool-oauth-token",
+        })
 
         def _available_entries(**kwargs):
             captured.update(kwargs)

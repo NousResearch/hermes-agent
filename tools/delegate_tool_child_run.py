@@ -203,7 +203,7 @@ def _dump_subagent_timeout_diagnostic(
 # ── Per-run helpers ──────────────────────────────────────────────────────────
 
 class _Heartbeat:
-    """One child's parent-activity heartbeat on the shared periodic scheduler thread
+    """One child's parent-activity heartbeat via the shared periodic scheduler
     (``agent.periodic_scheduler``) — not one daemon thread per child. NOT started at construction:
     the caller calls ``start()`` inside its ``try`` so a failed schedule (OS thread exhaustion on
     first use) leaves ``handle`` None and ``stop()`` is a no-op."""
@@ -465,13 +465,7 @@ def _build_result_entry(
     """Parent-visible result entry (status, exit_reason, tool trace, tokens, cost).
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
     wins over the summary-presence heuristic (a fallback for legacy/mock results only)."""
-    # ── KENSEI CUSTOM — memory-leak choke point (ported) ──
-    # Strip any <memory-context>…</…> (or fence/notes) block the child's raw
-    # LLM output may carry before it enters the parent's context via the sync
-    # tool-result JSON or the async completion event (single choke point).
-    from agent.memory_manager import sanitize_context as _sanitize_context
-    summary = _sanitize_context(result.get("final_response") or "")
-    # ── END KENSEI CUSTOM ──
+    summary = result.get("final_response") or ""
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
@@ -524,8 +518,7 @@ def _build_result_entry(
                 "Final answer does not satisfy the declared output_schema" + (" (after 1 retry)." if schema.retries else ".")
             )
         else:
-            # KENSEI CUSTOM: sanitize error text through the same choke point.
-            entry["error"] = _sanitize_context(result.get("error", "Subagent did not produce a response."))
+            entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
         # lets the parent tell a quota wall from a task error without parsing prose.
         _failure_reason = result.get("failure_reason")
@@ -747,6 +740,26 @@ class _ChildRun:
                 entry["summary"] = entry["summary"] + reminder
             else:
                 entry["stale_paths"] = mod_paths
+
+    def account_background_processes(self, entry: Dict[str, Any]) -> None:
+        """Name the child's background processes on the result BEFORE ``cleanup`` kills them: handed-off ones now
+        belong to the parent (their completion lands in the parent's chat); anything else still running is about to be
+        terminated, and the parent must hear that from the runtime rather than trust a child's "watcher running"."""
+        handed = list(getattr(self.child, "_handed_off_processes", None) or [])
+        if handed:
+            entry["handed_off_processes"] = handed
+        with _quiet(None):
+            from tools.process_registry import process_registry, _output_tail
+            leftover = process_registry.running_owned_by(self.child_task_id)
+            if leftover:
+                entry["orphaned_processes"] = [
+                    {"session_id": s.id, "command": s.command[:200], "runtime_seconds": round(time.time() - s.started_at)}
+                    for s in leftover]
+            unread = process_registry.unread_completions_owned_by(self.child_task_id)
+            if unread:
+                entry["unread_completions"] = [
+                    {"session_id": s.id, "command": s.command[:200], "exit_code": s.exit_code,
+                     "output_tail": _output_tail(s, 600)} for s in unread]
 
     def emit_complete(self, result: Dict[str, Any], entry: Dict[str, Any], duration: float) -> None:
         """Fire ``subagent.complete`` with the per-branch observability payload (tokens, cost, files touched,

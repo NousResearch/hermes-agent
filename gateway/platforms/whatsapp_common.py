@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.platforms._shared import get_scoped_secret as _get_wsecret

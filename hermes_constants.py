@@ -206,6 +206,32 @@ def named_profile_home(path: str | Path) -> Path | None:
     return None
 
 
+def profile_name_for_home(path: str | Path | None) -> str | None:
+    """Return the canonical profile id owning *path*, or ``None`` when it is not a profile home.
+
+    The default home is the Hermes root itself, so its basename is an installation detail (``.hermes``
+    on POSIX and commonly ``hermes`` on Windows), not the profile id ``default``.
+    """
+    if path is None or not str(path).strip():
+        return None
+    current = Path(path).expanduser()
+    try:
+        default_root = get_default_hermes_root()
+        for candidate in (current, current.resolve(strict=False)):
+            if candidate == default_root or candidate == default_root.resolve(strict=False):
+                return "default"
+            named = named_profile_home(candidate)
+            if named is not None:
+                return named.name
+            # A stored profile home is authoritative: its owner already resolved it, so the
+            # <root>/profiles/<name> shape names the profile even when <root> carries no markers.
+            if candidate.parent.name == "profiles" and not candidate.name.startswith("."):
+                return candidate.name
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
 def profile_tombstone_path(profile_home: Path) -> Path:
     return profile_home.parent / _DELETED_PROFILES_DIR / profile_home.name
 
@@ -1045,12 +1071,16 @@ def is_container() -> bool:
     return _container_detected
 
 
-def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
+def _read_proc(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
+            return f.read()
     except OSError:
-        return False
+        return ""
+
+
+def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
+    content = _read_proc(path)
     return any(marker in content for marker in markers)
 
 
@@ -1062,28 +1092,32 @@ def _detect_container() -> bool:
         or _proc_file_has_marker("/proc/1/cgroup", ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio"))
     ):
         return True
-    # cgroup v2: /proc/1/cgroup is just "0::/"; the runtime still shows in mountinfo.
-    # ── KENSEI CUSTOM (ported): generic overlay-root check — /proc/mounts ──
-    # Fork addition: plain Docker/podman runs whose cgroup-v2 lines carry no
-    # runtime marker still show an overlay root mount. Check /proc/mounts.
-    try:
-        with open("/proc/mounts", "r", encoding="utf-8") as f:
-            for line in f:
-                fields = line.split(" - ", 1)
-                if len(fields) != 2:
-                    continue
-                left = fields[0].split()
-                if len(left) < 5 or left[4] != "/":
-                    continue
-                fs_type = fields[1].split()[0] if fields[1].split() else ""
-                if fs_type in ("overlay", "overlayfs"):
-                    _container_detected = True
-                    return True
-                break  # root mount found and it isn't an overlay — done
-    except OSError:
-        pass
-    # ── END KENSEI CUSTOM ──
-    return _proc_file_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio"))
+    # cgroup v2: /proc/1/cgroup is just "0::/"; the runtime still shows in mountinfo — but ONLY on
+    # the root ("/") mount line. A host that merely *runs* containers exposes every container's
+    # overlay lowerdir (``lowerdir=/var/lib/containerd/...``) at non-root mount points, which a
+    # whole-file scan misread as "inside a container" and flipped subprocess HOME (#58135).
+    # KENSEI CUSTOM: retain generic Docker/Podman detection when the root filesystem is overlay
+    # even if no runtime name appears in cgroup or mount options.
+    return _root_mount_has_marker(
+        "/proc/self/mountinfo", ("kubepods", "containerd", "crio"), ("overlay", "overlayfs")
+    )
+
+
+def _root_mount_has_marker(
+    path: str,
+    markers: tuple[str, ...],
+    fs_types: tuple[str, ...] = (),
+) -> bool:
+    """Match runtime markers or filesystem types only on the process root mount."""
+    root_lines = [line for line in _read_proc(path).splitlines() if len(f := line.split()) >= 5 and f[4] == "/"]
+    for line in root_lines:
+        if any(marker in line for marker in markers):
+            return True
+        fields = line.split(" - ", 1)
+        if len(fields) == 2 and fields[1].split() and fields[1].split()[0] in fs_types:
+            return True
+    return False
+
 
 
 def get_config_path() -> Path:

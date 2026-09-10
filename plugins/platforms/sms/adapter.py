@@ -9,6 +9,8 @@ validation â€” required), SMS_INSECURE_NO_SIGNATURE (true disables validation â€
 SMS_ALLOWED_USERS (comma-separated E.164), SMS_ALLOW_ALL_USERS, SMS_HOME_CHANNEL (cron).
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import hashlib

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Iterator, Mapping, MutableMapping
+from typing import Iterator, Mapping, MutableMapping, overload
 
 _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_context", default=False)
 # Any in-process execution that is NOT the dispatcher-owned worker (cron jobs). Kept separate
@@ -20,8 +20,8 @@ _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatc
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 
 KANBAN_ENV_KEYS: tuple[str, ...] = (
-    "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_WORKSPACE", "HERMES_KANBAN_WORKSPACES_ROOT",
-    "HERMES_KANBAN_CLAIM_LOCK", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
+    "HERMES_KANBAN_GOAL_MODE", "HERMES_KANBAN_GOAL_MAX_TURNS",
 )
 
 
@@ -70,7 +70,7 @@ def non_dispatcher_owned_context() -> Iterator[None]:
 
 def is_dispatcher_owned_worker_context() -> bool:
     """The single predicate every ``HERMES_KANBAN_*`` identity gate should use."""
-    return not (_DELEGATED_CHILD_CONTEXT.get() or _NON_DISPATCHER_OWNED_CONTEXT.get())
+    return not (is_delegated_child_process_context() or _NON_DISPATCHER_OWNED_CONTEXT.get())
 
 
 def is_delegated_child_process_context() -> bool:
@@ -79,17 +79,34 @@ def is_delegated_child_process_context() -> bool:
 
 
 def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:
-    """Return *env* with dispatcher-only Kanban variables removed and the lineage marker set."""
+    """Remove worker identity, retaining board/location and an inherited write fence.
+
+    TASK absence alone would promote a descendant to an orchestrator. The marker
+    survives later execs, including scripts that remove TASK themselves. This is
+    cooperative runtime scoping, not confinement of code with direct SQLite access.
+    """
     cleaned = {k: v for k, v in env.items() if k not in KANBAN_ENV_KEYS}
     cleaned[DELEGATED_CHILD_ENV_MARKER] = "1"
     return cleaned
 
 
+@overload
+def delegated_child_subprocess_env(env: Mapping[str, str]) -> dict[str, str]: ...
+
+
+@overload
+def delegated_child_subprocess_env(env: None = None) -> dict[str, str] | None: ...
+
+
 def delegated_child_subprocess_env(
     env: Mapping[str, str] | MutableMapping[str, str] | None = None,
 ) -> dict[str, str] | None:
-    """Env override only when delegated-child lineage must cross fork: preserves ``env=None``
-    inherit semantics for non-delegated calls; in a child, a scrubbed env carrying the marker."""
-    if not is_delegated_child_process_context():
+    """Carry worker/delegate descendant denial across a real process spawn.
+
+    Location and credentials are untouched; callers retain their existing secret policy.
+    Dispatcher workers and supervised tool transports grant their own explicit scope.
+    """
+    if not (is_delegated_child_process_context() or os.environ.get("HERMES_KANBAN_TASK")
+            or (env and (env.get("HERMES_KANBAN_TASK") or env.get(DELEGATED_CHILD_ENV_MARKER)))):
         return None if env is None else dict(env)
     return scrub_kanban_env(os.environ if env is None else env)

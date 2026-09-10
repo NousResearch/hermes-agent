@@ -208,7 +208,7 @@ def format_batch_tag(delegation_id: Optional[str], parent_agent: Any = None) -> 
     are indistinguishable, and a raw hex slice is unreadable. Ordinals are scoped per parent conversation
     (``parent_agent.session_id``): one process hosts many conversations and every child's own fan-out, so a
     process-wide counter showed a user's second wave as ``set 20``. Empty string when no id is known so callers
-    concatenate unconditionally."""
+    can concatenate unconditionally."""
     if not isinstance(delegation_id, str) or not delegation_id:
         return ""
     scope = str(getattr(parent_agent, "session_id", None) or "")

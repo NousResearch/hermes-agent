@@ -127,6 +127,8 @@ class DeliveryTarget:
         """Convert back to string format."""
         if self.is_origin:
             return "origin"
+        if self.unknown_platform is not None:
+            return self.unknown_platform
         if self.platform == Platform.LOCAL:
             return "local"
         parts = [self.platform.value, self.chat_id, self.thread_id if self.chat_id else None]

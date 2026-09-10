@@ -563,11 +563,14 @@ def _print_capped(header: str, lines: List[str], indent: str) -> None:
 
 # --- Backup ---
 
+_RUN_BACKUP_PREFIX = "hermes-backup-"
+
+
 def _resolve_backup_output_path(output: Optional[str]) -> Path:
     """Turn ``--output`` (file, directory, or None) into a ``.zip`` path whose parent exists;
     an unwritable path exits with a one-line error, not a traceback."""
     out_path = None
-    default_name = f"hermes-backup-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
+    default_name = f"{_RUN_BACKUP_PREFIX}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
     try:
         if output:
             out_path = Path(output).expanduser().resolve()
@@ -679,6 +682,11 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
         _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "  ")
     else:
         print(f"\nRestore with: hermes import {out_path.name}")
+    keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
+    if keep and out_path.name.startswith(_RUN_BACKUP_PREFIX):
+        pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
+        if pruned:
+            print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
 
 
 # --- Import ---

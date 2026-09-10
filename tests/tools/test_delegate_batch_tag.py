@@ -28,6 +28,20 @@ def test_format_batch_tag_assigns_stable_ordinals_per_batch():
     assert format_batch_tag("") == ""
 
 
+def test_batch_ordinals_are_scoped_per_parent_conversation():
+    """One process hosts many conversations plus every child's nested fan-out; a user's
+    second wave must read ``set 2``, not the process-wide count of all batches ever seen."""
+    parent_a = types.SimpleNamespace(session_id="conv-a")
+    parent_b = types.SimpleNamespace(session_id="conv-b")
+    assert format_batch_tag("deleg_a1", parent_a) == "set 1"
+    # Sibling conversation and a child's own fan-out interleave on the same process...
+    assert format_batch_tag("deleg_b1", parent_b) == "set 1"
+    assert format_batch_tag("deleg_b2", parent_b) == "set 2"
+    # ...without inflating parent A's next wave.
+    assert format_batch_tag("deleg_a2", parent_a) == "set 2"
+    assert format_batch_tag("deleg_a1", parent_a) == "set 1"  # stable
+
+
 @pytest.mark.parametrize(
     "deleg, idx, count, expected",
     [

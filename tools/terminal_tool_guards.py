@@ -213,10 +213,12 @@ def gateway_lifecycle_block(
     # oversized roots never reach shlex here.
     if lifecycle_scan_root_within_budget(command) and contains_launchctl_submit_command(command):
         return _blocked_json(
-            "Blocked: launchctl submit/bootstrap registers a persistent "
-            "KeepAlive job and is unsafe from inside the gateway process. "
-            "Use Hermes cron for one-shot delayed work, or install an "
-            "explicit LaunchAgent from a separate shell.",
+            "Blocked: launchctl submit/bootstrap is restricted inside a supervised "
+            "gateway regardless of the job label, to prevent indirect gateway "
+            "restart loops. This guard does not inspect the job's KeepAlive settings "
+            "or determine whether it is independent of Hermes. Perform authorized "
+            "LaunchAgent maintenance from a separate shell outside the gateway, "
+            "not by switching launchctl verbs to bypass this rejection.",
             "error",
         )
     guard_cwd_base = get_session_cwd(session_key)

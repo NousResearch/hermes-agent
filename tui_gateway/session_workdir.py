@@ -73,7 +73,6 @@ def _session_cwd(session: dict | None) -> str:
     return str(session["cwd"]) if session and session.get("cwd") else _completion_cwd()
 
 
-# Sources whose launch directory is an artifact of how the app was started, not a workspace the user picked.
 _LAUNCH_CWD_NOT_A_WORKSPACE = {"desktop"}
 
 
@@ -275,7 +274,7 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # #94724 legacy-owner backfill exists to repair, and rows minted AFTER that one-shot
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
-                profile_name=Path(profile_home).name if profile_home else _current_profile_name())
+                profile_name=profile_name_for_home(profile_home) or _current_profile_name())
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:
@@ -295,10 +294,6 @@ def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
     if is_disk_full_error(exc):
         raise exc
     logger.debug(log_msg, exc_info=True)
-
-
-# Seed row fields copied from the parent transcript. display_kind/metadata: timeline markers ride as role=user;
-# dropping the tag re-plants them as bare user turns after a restart and corrupts the truncate ordinal address space.
 _WORKDIR_SEED_FIELDS = (
     "content", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
     "codex_message_items", "display_kind", "display_metadata", "timestamp")
@@ -329,9 +324,6 @@ def _persist_branch_seed(session: dict) -> None:
             session["_branch_seed_persisted"] = True
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
-
-
-# Yielded by _workdir_owner_db when the profile db failed to OPEN (vs "no store in this context"); row creation fails loud.
 _WORKDIR_DB_OPEN_FAILED = object()
 
 

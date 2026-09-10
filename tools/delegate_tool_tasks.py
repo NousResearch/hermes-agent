@@ -104,43 +104,17 @@ def _normalize_task_list(
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None
     return (None, batch_error) if batch_error else (task_list, None)
 
-# ── KENSEI CUSTOM — nested-delegation default contract (ported) ──
-# Minimal shape for nested spawns that arrive without a contract.
-# summary required; receipts encouraged (flagged, not hard-failed —
-# a research child may legitimately touch no files).
-_NESTED_DEFAULT_SCHEMA: dict = {
-    "type": "object",
-    "properties": {
-        "summary": {"type": "string"},
-        "receipts": {"type": "array", "items": {"type": "string"}},
-        "status": {"type": "string"},
-    },
-    "required": ["summary"],
-    "additionalProperties": True,
-}
-# ── END KENSEI CUSTOM ──
-
-
 def _coerce_task_schemas(
-    task_list: List[Dict[str, Any]], output_schema: Optional[Dict[str, Any]],
-    parent_depth: int = 0,
+    task_list: List[Dict[str, Any]], output_schema: Optional[Dict[str, Any]]
 ) -> tuple[List[Optional[Dict[str, Any]]], Optional[str]]:
     """Per-task coerced output schemas. A malformed output_schema fails the whole call before any child spawns;
     schema-less tasks resolve to None and take no new code paths downstream."""
     from tools.delegation_output_schema import coerce_output_schema
-    # ── KENSEI CUSTOM (ported): nested spawns must carry a shape. A depth>=1
-    # parent spawning without a contract gets the minimal nested default so
-    # the existing validate + one-retry path always has something to enforce.
-    # Top-level (depth-0) calls keep the old opt-in behavior.
-    nested_default = _NESTED_DEFAULT_SCHEMA if parent_depth >= 1 else None
-    # ── END KENSEI CUSTOM ──
     task_schemas: List[Optional[Dict[str, Any]]] = []
     for i, task in enumerate(task_list):
         raw_schema = task.get("output_schema")
         if raw_schema is None and len(task_list) == 1 and output_schema is not None:
             raw_schema = output_schema
-        if raw_schema is None and nested_default is not None:
-            raw_schema = nested_default
         coerced_schema, schema_err = coerce_output_schema(raw_schema)
         if schema_err:
             return [], f"Task {i} output_schema invalid: {schema_err}"

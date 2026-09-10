@@ -192,6 +192,9 @@ DEFAULT_CONFIG = {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,
+        # Optional one-time model-visible checkpoint warning before a finite turn cap is exhausted.
+        # null = off; set a ratio strictly between 0 and 1 (for example, 0.75).
+        "budget_warning_ratio": None,
         # Wall-clock budget (seconds) per run. null = off. When set: one-time wrap-up notice at 80%
         # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
         # `hermes chat --run-budget N`.
@@ -474,6 +477,10 @@ DEFAULT_CONFIG = {
         # default for images whose entrypoints must start as root (e.g. the bundled Hermes image,
         # which drops to `hermes` via s6-setuidgid). When on, SETUID/SETGID caps are omitted.
         "docker_run_as_host_user": False,
+        # Snap-packaged Docker under AppArmor (Ubuntu cloud images; LP#1908448) refuses to exec
+        # anything under `--init` or `--security-opt no-new-privileges` ("operation not
+        # permitted"). True drops those two flags; every other hardening stays. See #9730.
+        "docker_snap_compat": False,
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
@@ -738,9 +745,9 @@ DEFAULT_CONFIG = {
         # instead of dropping the middle with a "summary unavailable" placeholder; the session
         # freezes at its size until /compress (bypasses the cooldown) or /new.
         "abort_on_summary_failure": False,
-        # (Historical key name.) When True, gpt-5.4/5.5/5.6 on the ChatGPT Codex OAuth route raise
-        # their compaction trigger to 85%: Codex hard-caps them at a 272K window, so the global 50%
-        # would compact at ~136K. False = global `threshold`. Only that route; the same models via
+        # (Historical key name.) When True, gpt-5.4/5.5/5.6 and gpt-6 Astra (any slug containing
+        # "astra" without "900k") on the ChatGPT Codex OAuth route raise their compaction trigger to
+        # 85%: Codex hard-caps them at a 272K window, so the global 50% would compact at ~136K. False = global `threshold`. Only that route; the same models via
         # OpenAI direct, OpenRouter or Copilot keep the global value.
         "codex_gpt55_autoraise": True,
         # Show the one-time autoraise banner; False keeps the autoraise, hides the notice.
@@ -1336,9 +1343,9 @@ DEFAULT_CONFIG = {
             "keyword": "jarvis",
         },
     },
-    
+
     "human_delay": {"mode": "off", "min_ms": 800, "max_ms": 2500},
-    
+
     # Context engine — how the context window is managed near the token limit. "compressor" =
     # built-in lossy summarization; or a plugin name (e.g. "lcm") installed in
     # plugins/context_engine/<name>/ or ~/.hermes/plugins/.
@@ -1374,6 +1381,11 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        # Fallback chain for delegated children (same entry format as the top-level list).
+        # For an unpinned child, null = inherit the parent chain; [] = disable fallback.
+        # A child pinned by provider, endpoint, or model gets no fallback unless this
+        # setting declares one explicitly.
+        "fallback_providers": None,
         "base_url": "",  # direct OpenAI-compatible endpoint for subagents
         "api_key": "",  # key for delegation.base_url (falls back to OPENAI_API_KEY)
         # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" |
@@ -1385,6 +1397,14 @@ DEFAULT_CONFIG = {
         # {"extra_body": {"provider": {"sort": "throughput"}}}. Explicit values win OVER
         # runtime/parent overrides (extra_body deep-merged 1 level).
         "request_overrides": {},
+        # compression_threshold_tokens: optional absolute cap on a subagent's compaction TRIGGER
+        # (not the request payload), applied as the lower of this and the child's ratio threshold.
+        # 0 (default) = no subagent-specific cap; children compact at the same 0.50 x window as the
+        # parent (500K on a 1M model). A replay of a 1,393-agent run showed 200K-400K caps within
+        # 5% of each other in cost once cache prefixes are intact, and every compaction is a
+        # chance to lose detail, so the default stays off. A token count >= 16000 enables it;
+        # other values (true, "200k") are config errors: warned and ignored.
+        "compression_threshold_tokens": 0,
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
@@ -1464,7 +1484,7 @@ DEFAULT_CONFIG = {
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
                 "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-                "max_tokens": 4096,
+
                 "enabled": True,
             }
         },
@@ -1778,13 +1798,10 @@ DEFAULT_CONFIG = {
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.
         # False = fail during the run instead.
         "preflight": True,
-        # Fail closed when an unpinned job's current global model/provider differs from its
-        # creation-time snapshot, so unattended jobs never silently inherit a paid default. False
-        # only when jobs should track changing global inference defaults.
-        "model_drift_guard": True,
         # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
-        # cron.model > model.default. When set, unpinned jobs follow it deliberately and the drift
-        # guard does not engage for the model axis. "" = fall through to model.default.
+        # cron.model > the job's creation-time snapshot > model.default. An unpinned job keeps
+        # running on the model it was created under when model.default later changes; cron.model
+        # is the way to move the whole fleet at once. "" = fall through.
         "model": "",
         # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
         # from global config.
@@ -1952,7 +1969,8 @@ DEFAULT_CONFIG = {
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
-        # Session kernels are always on locally (`kernel_mode` is ignored; remote backends run
+        # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
+        # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
         # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
         # across calls and turns; subagents get their own. Kernels die with the session, after
         # kernel_idle_timeout idle seconds, or by LRU eviction past max_session_kernels. A
@@ -2264,6 +2282,8 @@ DEFAULT_CONFIG = {
     },
 
     "updates": {
+        # Passive version/banner checks only; explicit `hermes update --check` remains enabled.
+        "check": True,
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,
         # config.yaml, .env, auth.json, profile DBs) into <HERMES_HOME>/state-snapshots/, skipping
         # files >1 GiB; restore via ``/snapshot``. full = quick PLUS a ``hermes backup`` zip in
@@ -2460,6 +2480,9 @@ DEFAULT_CONFIG = {
         # gnome-libsecret|kwallet|kwallet5|kwallet6|basic force one (basic = unencrypted). Bridged
         # to HERMES_DESKTOP_PASSWORD_STORE; ignored off-Linux.
         "password_store": "auto",
+        # Linux: False preserves an existing custom XDG launcher entry; missing entries
+        # are still created. True keeps the generated entry current on each launch.
+        "manage_launcher_entry": True,
         # macOS only: code-signing identity (login-keychain cert; self-signed works) to re-sign
         # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
         # updates. Empty = default ad-hoc identifier-pinned signing.
@@ -2479,6 +2502,15 @@ DEFAULT_CONFIG = {
         # server-issued credential lifetime (raising above it has no effect). 0 disables the
         # keepalive thread.
         "keepalive_interval_seconds": 900,
+        # anthropic_wire: which Portal route carries anthropic/* models. "chat" =
+        # /v1/chat/completions (default for now); "native" = /v1/messages, the Anthropic
+        # Messages wire (signed thinking passthrough, native cache_control scopes); "auto" =
+        # start on chat and, per session, switch to native from the first response when the
+        # Portal upstream serving the model is one where native is known clean. Native is the
+        # better wire but on the OpenRouter-served path it re-writes the previous turn's cache on
+        # 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
+        # NousResearch/api#227), so chat is the default until that is fixed.
+        "anthropic_wire": "chat",
     },
     # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
     # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
@@ -2505,7 +2537,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 40,  # Config schema version - bump this when adding new required fields
+    "_config_version": 42,  # Config schema version - bump this when adding new required fields
 }
 
 

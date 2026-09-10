@@ -86,6 +86,15 @@ Menus and popovers use their own shared `shadow-md` +
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
 
+## Window glass
+
+Glass defaults to **29% Tint, Sidebar only** in both light and dark appearances.
+Fade defaults to zero so the content column and text stay opaque. Native frost
+keeps its platform/appearance defaults. Explicitly saved settings take precedence;
+changing defaults must not overwrite a user's existing choices. The shared
+`apps/shared/src/translucency.ts` resolver owns these defaults for both the
+renderer and Electron's first window paint.
+
 ## Stroke & color tokens
 
 | Token | Use |
@@ -145,6 +154,10 @@ does not flash a trail. After a tip has opened the page is warm: the next
 trigger within 300ms opens instantly. The cooldown starts on close, so a
 hover a second later waits again. Close is immediate. `OverflowTip` stays
 on its own longer delay (list titles must not trail while scanning).
+
+**Slash descriptions.** Keep autocomplete rows single-line and ellipsized, but reveal the complete catalog description in the shared themed tooltip when hovering anywhere on a slash row. Size that tooltip to the window with collision padding and word wrapping; it must not intercept row selection. Catalog and completion producers preserve the full author-supplied description.
+
+**Model search.** Model filters and their highlighted labels treat hyphens, dots, underscores and spaces equivalently. Preserve original label spelling inside marks. The shared highlighter remains literal for other surfaces such as the command palette; model callers explicitly opt in. Model identifier search does not use dictionary spellcheck.
 
 **Keybind hints in tooltips.** On a tipped button bound to a rebindable hotkey,
 use `<TipKeybindLabel actionId="..." />` — it reads the i18n label and the
@@ -227,6 +240,9 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 - Bordered surfaces in the transcript (tables, fences, callouts, attachments)
   use `--ui-stroke-tertiary`. Not `border-border` — that's the app-wide
   default and reads too hot against the thread.
+- Interactive directive chips in the composer expose their action on hover.
+  The action stays visible for a 500ms grace period while the pointer crosses
+  from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
 - Install, onboarding, connecting, boot failure, and reauthentication are
@@ -259,6 +275,10 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 ## Motion
 
+- Visible windows keep animating when another app takes focus. Hidden/minimized
+  windows and inactive panes may pause; background polling stays focus-gated.
+- Animated integer counts reuse `AnimatedInt` in `src/components/ui/diff-count.tsx`.
+  Its spring updates the DOM directly without per-frame React renders.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element

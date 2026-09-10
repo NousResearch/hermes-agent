@@ -40,6 +40,22 @@ def _none_profile(value: str) -> Optional[str]:
     """``none`` / ``-`` / ``null`` mean "unassign"."""
     return None if value.lower() in {"none", "-", "null"} else value
 
+def _none_profile(value: str) -> Optional[str]:
+    """``none`` / ``-`` / ``null`` mean "unassign"."""
+    return None if value.lower() in {"none", "-", "null"} else value
+
+
+def _parse_metadata_flag(raw: Optional[str]) -> tuple[Optional[dict], int]:
+    """Parse ``--metadata`` JSON; returns ``(dict|None, rc)`` with rc=2 on error."""
+    if not raw:
+        return None, 0
+    try:
+        metadata = json.loads(raw)
+        if not isinstance(metadata, dict):
+            raise ValueError("must be a JSON object")
+    except (ValueError, json.JSONDecodeError) as exc:
+        return None, _err(f"kanban: --metadata: {exc}", 2)
+    return metadata, 0
 
 def _parse_metadata_flag(raw: Optional[str]) -> tuple[Optional[dict], int]:
     """Parse ``--metadata`` JSON; returns ``(dict|None, rc)`` with rc=2 on error."""
@@ -191,84 +207,13 @@ def kanban_command(args: argparse.Namespace) -> int:
             return _err(f"kanban: unknown action {action!r}", 2)
         try:
             return int(handler(args) or 0)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, PermissionError) as exc:
             return _err(f"kanban: {exc}")
 
 
-# --- Handlers ---
-
-def _profile_author() -> str:
-    """Best-effort author name for an interactive CLI call."""
-    for env in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
-        v = os.environ.get(env)
-        if v:
-            return v
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "user"
-    except Exception:
-        return "user"
 
 
-_DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
-    "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
-    "gc",
-})
-
-_DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
-    "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
-    "set-default-workdir",
-})
-
-
-def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
-    action = getattr(args, "kanban_action", None)
-    if action == "boards":
-        if (getattr(args, "boards_action", None) or "list") not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
             return False
-    elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
-        return False
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
-
-        return is_delegated_child_process_context()
-    except Exception:
-        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
-
-
-def _joined_words(words) -> Optional[str]:
-    """Free-text positional ``nargs="*"`` words -> stripped string, or None when absent."""
-    return " ".join(words).strip() if words else None
-
-
-def _stripped_or_none(value: Optional[str]) -> Optional[str]:
-    """``None`` stays ``None``; otherwise strip, and treat the empty string as ``None``."""
-    return None if value is None else (value.strip() or None)
-
-
-def _ok_or_err(ok, fail: str, done: str) -> int:
-    """Single-mutation handlers: print ``done`` (rc 0) or ``fail`` to stderr (rc 1)."""
-    if not ok:
-        return _err(fail)
-    print(done)
-    return 0
-
-
-def _bulk_ids(args: argparse.Namespace) -> list[str]:
-    """Positional ``task_id`` plus ``--ids`` extras (bulk verbs)."""
-    return [args.task_id] + list(getattr(args, "ids", None) or [])
-
-
-def _require_ids(args: argparse.Namespace) -> tuple[list[str], int]:
-    """``args.task_ids`` -> ``(ids, 0)`` or ``([], 1)`` after printing the standard error."""
-    ids = list(args.task_ids or [])
-    if not ids:
-        return ids, _err("at least one task_id is required")
-    return ids, 0
-
 
 def _parse_duration(val) -> Optional[int]:
     """``30s`` / ``5m`` / ``2h`` / ``1d`` or a raw integer → seconds; None for empty input;
@@ -340,6 +285,8 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
@@ -368,7 +315,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
+            completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
+            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
+                             if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -737,6 +687,7 @@ def _cmd_attach(args: argparse.Namespace) -> int:
     """Attach a local file via the shared ``store_attachment_bytes`` path (same 25 MB cap and name
     sanitisation as the dashboard upload and agent tool)."""
     import mimetypes
+    _worker_run_id_for(args.task_id)
 
     src = Path(args.path).expanduser()
     if not src.is_file():
@@ -783,6 +734,9 @@ def _cmd_attach_rm(args: argparse.Namespace) -> int:
 
 
 def _worker_run_id_for(task_id: str) -> Optional[int]:
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if env_tid and env_tid != task_id:
+        raise ValueError(f"worker is scoped to task {env_tid}; refusing to mutate {task_id}")
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if os.environ.get("HERMES_KANBAN_TASK") != task_id or not raw:
         return None
@@ -928,6 +882,8 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
 
 
 def _cmd_unblock(args: argparse.Namespace) -> int:
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return _err("kanban unblock is orchestrator-only; workers must hand off their assigned task")
     ids, rc = _require_ids(args)
     if rc:
         return rc
@@ -1333,6 +1289,11 @@ def _cmd_promote_backlog(args: argparse.Namespace) -> int:
         print(f"Promoted {tid} -> triage")
     return 0
 
+def _decompose_ok_line(o) -> str:
+    if o.fanout and o.child_ids:
+        return (f"Decomposed {o.task_id} → {len(o.child_ids)} "
+                f"children ({', '.join(o.child_ids)}); root promoted to todo")
+    return f"Specified {o.task_id} → todo (no fanout){_retitled_suffix(o)}"
 
 def _cmd_epics(args: argparse.Namespace) -> int:
     """Manage epics: list, show, create."""
@@ -1341,155 +1302,35 @@ def _cmd_epics(args: argparse.Namespace) -> int:
     import glob as _glob
     import os as _os
 
-    action = getattr(args, "epics_action", None)
-    if action is None:
-        print("usage: hermes kanban epics <list|show|create>", file=sys.stderr)
-        return 1
+def _cmd_decompose(args: argparse.Namespace) -> int:
+    """Fan a triage task (or all) out into child tasks via the auxiliary LLM."""
+    from hermes_cli import kanban_decompose as decomp
 
-    # Collect all board DB paths
-    all_dbs: list[tuple[str, str]] = [("default", str(kb.kanban_db_path(board="default")))]
-    boards_dir = _os.path.expanduser("~/.hermes/kanban/boards")
-    if _os.path.isdir(boards_dir):
-        for child in sorted(_os.listdir(boards_dir)):
-            child_path = _os.path.join(boards_dir, child, "kanban.db")
-            if _os.path.exists(child_path):
-                all_dbs.append((child, child_path))
+    return _run_triage_sweep(args, "decompose", decomp, decomp.decompose_task, "decomposed",
+                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
-    if action == "list":
-        # List all epics with task counts by status
-        epic_data: dict[str, dict] = {}  # epic_id → {title, board, status, counts}
 
-        for board, db_path in all_dbs:
-            if not _os.path.exists(db_path):
-                continue
-            try:
-                conn = _sqlite3.connect(db_path)
-                conn.row_factory = _sqlite3.Row
-                cur = conn.cursor()
-
-                # Get epics
-                cur.execute("SELECT id, title, board_slug, status, parent_epic_id FROM epics")
-                for row in cur.fetchall():
-                    eid = row["id"]
-                    if eid not in epic_data:
-                        epic_data[eid] = {
-                            "title": row["title"],
-                            "board": row["board_slug"] or "",
-                            "status": row["status"],
-                            "parent": row["parent_epic_id"] or "",
-                            "counts": defaultdict(int),
-                        }
-
-                # Get task counts per epic
-                cur.execute(
-                    "SELECT epic_id, status, COUNT(*) as cnt FROM tasks "
-                    "WHERE epic_id IS NOT NULL GROUP BY epic_id, status"
-                )
-                for row in cur.fetchall():
-                    eid = row["epic_id"]
-                    if eid in epic_data:
-                        epic_data[eid]["counts"][row["status"]] += row["cnt"]
-
-                conn.close()
-            except Exception:
-                pass
-
-        if not epic_data:
-            print("No epics found.")
-            return 0
-
-        # Filter by board if requested
-        if getattr(args, "board", None):
-            epic_data = {k: v for k, v in epic_data.items() if v["board"] == args.board}
-
-        print(f"{'ID':<25} {'Title':<25} {'Board':<12} {'Status':<8} {'Tasks':>5} {'Done':>5} {'Active':>6} {'Backlog':>7}")
-        print("-" * 95)
-        for eid in sorted(epic_data.keys()):
-            e = epic_data[eid]
-            total = sum(e["counts"].values())
-            done = e["counts"].get("done", 0)
-            active = sum(e["counts"].get(s, 0) for s in ("running", "ready", "todo", "review", "in_progress"))
-            backlog = e["counts"].get("backlog", 0)
-            print(f"{eid:<25} {e['title'][:24]:<25} {e['board'][:11]:<12} {e['status']:<8} {total:>5} {done:>5} {active:>6} {backlog:>7}")
-
-        return 0
-
-    elif action == "show":
-        epic_id = args.epic_id
-        found = False
-        for board, db_path in all_dbs:
-            if not _os.path.exists(db_path):
-                continue
-            try:
-                conn = _sqlite3.connect(db_path)
-                conn.row_factory = _sqlite3.Row
-                cur = conn.cursor()
-
-                # Get epic info
-                cur.execute("SELECT * FROM epics WHERE id = ?", (epic_id,))
-                epic = cur.fetchone()
-                if epic:
-                    print(f"Epic: {epic['title']}")
-                    print(f"  ID: {epic['id']}")
-                    print(f"  Board: {epic['board_slug'] or 'N/A'}")
-                    print(f"  Status: {epic['status']}")
-                    if epic['description']:
-                        print(f"  Description: {epic['description'][:200]}")
-                    print()
-
-                # Get tasks
-                cur.execute(
-                    "SELECT id, title, status, assignee, priority FROM tasks "
-                    "WHERE epic_id = ? ORDER BY status, priority DESC",
-                    (epic_id,),
-                )
-                tasks = cur.fetchall()
-                if tasks:
-                    found = True
-                    print(f"Tasks on {board} ({len(tasks)}):")
-                    for t in tasks:
-                        print(f"  [{t['status']:10s}] [P{t['priority']}] {t['id']} — {t['title'][:60]} ({t['assignee'] or '-'})")
-                    print()
-                conn.close()
-            except Exception:
-                pass
-
-        if not found:
-            print(f"No tasks found for epic '{epic_id}'")
-            return 1
-        return 0
-
-    elif action == "create":
-        import uuid
-        title = args.title
-        description = args.description
-        board_slug = args.board or ""
-        parent = args.parent
-        now = int(_time.time())
-        epic_id = f"epic_{uuid.uuid4().hex[:8]}"
-
-        # Create on the active board (or all boards for consistency)
-        created_on = []
-        for board, db_path in all_dbs:
-            if not _os.path.exists(db_path):
-                continue
-            try:
-                conn = _sqlite3.connect(db_path)
-                conn.execute(
-                    "INSERT OR IGNORE INTO epics (id, title, description, board_slug, status, parent_epic_id, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
-                    (epic_id, title, description, board_slug, parent, now, now),
-                )
-                conn.commit()
-                created_on.append(board)
-                conn.close()
-            except Exception:
-                pass
-
-        print(f"Created epic {epic_id} '{title}' on boards: {', '.join(created_on)}")
-        return 0
-
-    return 1
+_HANDLERS = {
+    "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
+    "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
+    "assign": _cmd_assign, "set-model": _cmd_set_model,
+    "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
+    "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
+    "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
+    "comment": _cmd_comment, "attach": _cmd_attach,
+    "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
+    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
+    "schedule": _cmd_schedule, "unblock": _cmd_unblock,
+    "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
+    "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
+    "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
+    "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
+    "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
+    "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
+    "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
+    "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
+    "gc": _cmd_gc,
+}
 
 
 def _cmd_decompose(args: argparse.Namespace) -> int:

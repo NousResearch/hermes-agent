@@ -15,7 +15,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from agent.model_metadata import capture_usage_anchor
+from agent.image_token_cost import calibrate_from_usage
+from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -81,6 +82,9 @@ def record_response_usage(
             # pending verdict so later readings aren't charged to it and
             # preflight deferral isn't latched indefinitely.
             compressor.update_from_response({})
+        _note_usage_less = getattr(compressor, "note_usage_less_response", None)
+        if callable(_note_usage_less):
+            _note_usage_less()
         logger.info(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
@@ -116,13 +120,14 @@ def record_response_usage(
     # transcript (main-loop ONLY; MoA uses pre-fold aggregator usage). The display meter
     # anchors on the turn's FIRST response: later same-turn responses inflate
     # prompt_tokens with replayed thinking. Display-only; compression math uses real usage.
+    # The provider just priced this request exactly: if the delta since the previous anchor
+    # introduced images, the residual is their real per-image cost (learned before re-anchoring).
+    calibrate_from_usage(agent, messages, aggregator_usage.prompt_tokens)
     _new_anchor = capture_usage_anchor(
         aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages
     )
     if _new_anchor is not None:
-        agent._usage_anchor = _new_anchor
-        if api_call_count == 1:
-            agent._turn_base_usage_anchor = _new_anchor
+        set_usage_anchor(agent, _new_anchor, turn_base=api_call_count == 1)
     _compression_threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
     if _loop_mod()._should_rearm_compression_budget(
         compression_attempts, completed_compaction_pending=_completed_compaction_pending,
@@ -143,6 +148,9 @@ def record_response_usage(
 
     # Stash canonical usage for on_turn_complete(); keep the latest call's.
     agent._last_turn_usage = dict(usage_dict)
+    # The parent's CURRENT prompt size for headroom math (delegate summary budgets): the
+    # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
+    agent._last_prompt_size_tokens = int(aggregator_usage.prompt_tokens or 0)
 
     # Persist only provider-confirmed context lengths, not probe tiers.
     if getattr(compressor, "_context_probed", False):
@@ -175,12 +183,28 @@ def record_response_usage(
     _cache_pct = ""
     if canonical_usage.cache_read_tokens and prompt_tokens:
         _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
+    # write= is the money (cache writes cost 50x a read); id= is what a provider needs to look the
+    # request up; upstream= is who actually served it when the route reports that (OpenRouter's
+    # `provider`). Diagnosing the 1,393-agent run's cache misses took a DB join and a live probe
+    # because none of the three were on this line.
+    if canonical_usage.cache_write_tokens:
+        _cache_pct += f" write={canonical_usage.cache_write_tokens}"
+    _rid = getattr(response, "id", None)
+    _ident = f" id={_rid}" if isinstance(_rid, str) and _rid else ""
+    _upstream = getattr(response, "provider", None)
+    if isinstance(_upstream, str) and _upstream:
+        _ident += f" upstream={_upstream}"
     logger.info(
-        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
+        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
         agent.session_api_calls, agent.model, agent.provider or "unknown",
         prompt_tokens, completion_tokens, total_tokens,
-        api_duration, _cache_pct,
+        api_duration, _cache_pct, _ident,
     )
+    # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
+    if agent.session_api_calls == 1 and (agent.provider or "") == "nous":
+        with suppress(Exception):
+            from agent.nous_wire import maybe_switch_wire_after_first_response
+            maybe_switch_wire_after_first_response(agent, response, agent.session_api_calls)
 
     # MoA: agent.model/provider are the virtual preset/"moa" with no pricing entry, silently
     # dropping aggregator spend. Price at the REAL model/provider from the aggregator slot.

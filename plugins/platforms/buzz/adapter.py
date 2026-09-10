@@ -189,6 +189,7 @@ logger = logging.getLogger(__name__)
 from gateway.platforms.base import (
     BasePlatformAdapter, CachedMedia, SendResult, MessageEvent, MessageType, cache_media_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
 

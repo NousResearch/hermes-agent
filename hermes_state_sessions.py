@@ -242,6 +242,41 @@ _INHERIT_PARENT_ROUTING_SQL = (
 class SessionSessionsMixin:
     """Session rows: create/inherit, lifecycle flags, model_config, listing, deletion."""
 
+    # KENSEI CUSTOM: session-scoped execution mode and task-tray state belong
+    # with session row lifecycle, not on the thin hermes_state facade.
+    def update_session_agent_mode(self, session_id: str, agent_mode: str) -> None:
+        """Persist the agent mode (auto/plan/gods_plan/recon) to the session row."""
+        self._write_sql(  # type: ignore[attr-defined]
+            "UPDATE sessions SET agent_mode = ? WHERE id = ?", (agent_mode, session_id)
+        )
+
+    def update_session_todo_state(self, session_id: str, state: Dict[str, Any]) -> bool:
+        """Persist one session's canonical in-progress task snapshot."""
+        if not session_id or not isinstance(state, dict):
+            return False
+        payload = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        return self._write_rowcount(  # type: ignore[attr-defined]
+            "UPDATE sessions SET todo_state = ? WHERE id = ?", (payload, session_id)
+        ) == 1
+
+    def get_session_todo_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return a validated JSON object for the session task sidecar."""
+        if not session_id:
+            return None
+        row = self._read_one(  # type: ignore[attr-defined]
+            "SELECT todo_state FROM sessions WHERE id = ?", (session_id,)
+        )
+        if row is None:
+            return None
+        raw = row["todo_state"] if isinstance(row, sqlite3.Row) else row[0]
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
     def _own_profile_name(self) -> Optional[str]:
         """The profile owning THIS store, from ``db_path`` alone (``<root>/state.db`` → default,
         ``<root>/profiles/<name>/state.db`` → name): a gateway serving a NON-launch profile opens that

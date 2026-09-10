@@ -37,6 +37,12 @@ from hermes_state import SessionDB
 from run_agent import AIAgent
 
 
+@pytest.fixture(autouse=True)
+def _disable_background_titles(monkeypatch):
+    # Persistence assertions must not race a title worker writing to pytest capture.
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
+
+
 def _make_tool_defs(*names: str) -> list:
     return [
         {

@@ -23,7 +23,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_transcript import TranscriptReadError
 
@@ -208,5 +208,4 @@ async def test_transcript_read_failure_stops_turn_before_agent_or_append(
 
 
 # ── Test 4: normal path (new_messages found) uses skip_db=True ────────
-
 

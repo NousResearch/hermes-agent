@@ -43,8 +43,8 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 const { botBackendProfileScope, botConnectionRoute, requestForBot } = await import('./routing')
 const { groupMemberKey } = await import('./group-membership')
 
-const { buildGroupChatTurnPrompt, formatGroupChatLine, parseGroupChatMentions, resolveGroupResponders } =
-  await import('./group-rounds')
+const { buildGroupChatTurnPrompt, formatGroupChatLine } = await import('./group-round-prompt')
+const { parseGroupChatMentions, resolveGroupResponders } = await import('./group-rounds')
 
 const aliasBot = {
   name: 'worker',

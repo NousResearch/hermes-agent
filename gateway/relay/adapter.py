@@ -25,6 +25,12 @@ from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult,
 )
 from gateway.relay.descriptor import CapabilityDescriptor
+from gateway.relay.egress import (
+    EGRESS_DECLINE_CODE,
+    decline_error,
+    is_egress_decline,
+    log_decline,
+)
 from gateway.relay.media import RelayMediaClient
 from gateway.relay.transport import RelayTransport
 from gateway.session import SessionSource
@@ -540,6 +546,66 @@ class RelayAdapter(BasePlatformAdapter):
             return None
         seal = await self._seal_open_draft(chat_id, content, metadata, draft_key=key)
         if seal.success:
+            return seal
+        logger.warning("relay seal failed (%s); delivering turn-final as plain send", seal.error)
+        return None
+
+    async def _card_frame(
+        self, chat_id: str, op: str, reply_to: Optional[str], metadata: Dict[str, Any], **fields: Any
+    ) -> Union[SendResult, Dict[str, Any]]:
+        """Emit one task-card op: the connector result dict, or a failed SendResult
+        when the lane is unavailable / the transport raised.
+
+        Card frames are advisory and run inside the progress loop / turn-cleanup
+        path: an escaping exception there skipped final delivery, so transport
+        errors degrade to the TurnRunner's text fallback instead of raising.
+        """
+        if not self.supports_native_task_cards():
+            return SendResult(success=False, error="connector does not advertise task_card")
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        frame = {
+            "op": op,
+            "chat_id": chat_id,
+            "card_id": self._card_key(reply_to, metadata),
+            **fields,
+            "metadata": self._with_scope(chat_id, metadata),
+        }
+        try:
+            return await self._outbound(chat_id, frame)
+        except Exception as e:
+            return SendResult(success=False, error=f"{op} transport error: {e}")
+
+    async def _absorb_into_open_draft(
+        self, chat_id: str, content: str, metadata: Dict[str, Any], interim: bool
+    ) -> Optional[SendResult]:
+        """Seal an open native stream with this turn-final; None = do a plain send.
+
+        An open stream absorbs the turn-final whichever egress door it arrives
+        through (send / send_for_platform) — otherwise the stream is left frozen
+        mid-word AND the final posts as a duplicate. A failed seal must NOT swallow
+        the final: the consumer already disabled the draft transport, so fall through
+        to a plain send (the orphaned stream is sealed connector-side). Interim sends
+        (commentary, tail flush, lifecycle acks) never seal.
+        """
+        if interim:
+            return None
+        key = self._match_open_draft(str(chat_id), metadata)
+        if key is None:
+            return None
+        seal = await self._seal_open_draft(chat_id, content, metadata, draft_key=key)
+        if seal.success:
+            return seal
+        # An AUTHORIZATION decline is not a lane failure. Falling through here
+        # re-sends the sealed content as a plain `send` into the destination the
+        # connector just refused — review demonstrated the leak end to end
+        # (ops: draft(partial) -> send(SECRET)). Surface the refusal instead.
+        if is_egress_decline(getattr(seal, "raw_response", None)):
+            logger.warning(
+                "relay draft seal DECLINED for %s — not falling back to a plain "
+                "send (the destination is not approved for this connection)",
+                chat_id,
+            )
             return seal
         logger.warning("relay seal failed (%s); delivering turn-final as plain send", seal.error)
         return None
@@ -1437,9 +1503,15 @@ class RelayAdapter(BasePlatformAdapter):
                 "metadata": self._text_metadata(chat_id, metadata),
             },
         )
+        # P5(b): carry the structured body. THREE separate callers read a bare
+        # edit failure as "editing is unavailable" and re-send the content as a
+        # NEW message to the same chat (stream edit-fallback, queued-response
+        # reconciliation, task-card fallback edit). The edit lane is the ninth
+        # place a decline could be laundered into a different op.
         return SendResult(
             success=bool(result.get("success")), message_id=result.get("message_id") or message_id,
             error=result.get("error"),
+            raw_response=result,
         )
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:

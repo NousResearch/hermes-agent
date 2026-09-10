@@ -441,17 +441,40 @@ def test_required_post_tool_failure_stops_before_next_provider_call(
     assert all("tool.completed" not in str(event) for event in progress)
 
 
+@pytest.mark.parametrize(
+    ("response_id", "call_id", "expected_pairing_id"),
+    (
+        pytest.param("call-batch-health", None, "call-batch-health", id="id-only"),
+        pytest.param(None, "call-batch-health", "call-batch-health", id="call-id-only"),
+        pytest.param(
+            "call-batch-health|item-batch-health",
+            None,
+            "call-batch-health",
+            id="composite-id",
+        ),
+    ),
+)
 def test_batch_local_required_lifecycle_failure_stops_before_compression_or_provider(
-    monkeypatch,
+    monkeypatch, response_id, call_id, expected_pairing_id,
 ):
+    from agent.transports.types import NormalizedResponse, ToolCall
     from hermes_cli.required_lifecycle import RequiredLifecycleError
 
     agent = _agent()
     agent.valid_tool_names.add("web_search")
-    tool_call = SimpleNamespace(
-        id="call-batch-health",
-        type="function",
-        function=SimpleNamespace(name="web_search", arguments="{}"),
+    tool_call = ToolCall(
+        id=response_id,
+        name="web_search",
+        arguments="{}",
+        provider_data={"call_id": call_id} if call_id else None,
+    )
+    normalized = NormalizedResponse(
+        content="",
+        tool_calls=[tool_call],
+        finish_reason="tool_calls",
+    )
+    monkeypatch.setattr(
+        agent._get_transport(), "normalize_response", lambda _response: normalized
     )
     provider_calls = []
 
@@ -495,12 +518,16 @@ def test_batch_local_required_lifecycle_failure_stops_before_compression_or_prov
     compress.assert_not_called()
     assert result["failed"] is True
     assert result["final_response"] == REQUIRED_LIFECYCLE_FAILURE_TEXT
+    assistant_calls = [
+        message
+        for message in result["messages"]
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    ]
+    assert assistant_calls[-1]["tool_calls"][0]["id"] == expected_pairing_id
     tool_results = [
         message for message in result["messages"] if message.get("role") == "tool"
     ]
-    assert [message["tool_call_id"] for message in tool_results] == [
-        "call-batch-health"
-    ]
+    assert [message["tool_call_id"] for message in tool_results] == [expected_pairing_id]
     assert tool_results[0]["effect_disposition"] == "none"
     assert persisted and persisted[-1] == result["messages"]
 

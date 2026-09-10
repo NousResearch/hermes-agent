@@ -1844,7 +1844,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     make_tool_result_message(
                         skipped.function.name,
                         REQUIRED_LIFECYCLE_FAILURE_TEXT,
-                        skipped.id,
+                        _pairing_tool_call_id(skipped),
                         effect_disposition="none",
                     )
                 )

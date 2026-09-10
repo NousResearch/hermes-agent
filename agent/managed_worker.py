@@ -35,7 +35,7 @@ def encode_frame(frame):
 
 
 def validate_bootstrap(frame):
-    if set(frame) != BOOTSTRAP_FIELDS or frame['version'] != 1:
+    if set(frame) - {'attachments_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
         raise ValueError('invalid_managed_worker_bootstrap')
     scope = frame['scope']
     fields = {'profile_id', 'session_id', 'execution_id', 'generation', 'pid', 'birth', 'secret', 'epoch'}
@@ -198,6 +198,14 @@ def execute(frame, channel):
             channel.send('ready', pid=os.getpid())
             history = store.get_messages_as_conversation(scope['session_id'])
             from gateway.session_kanban import run_worker_turns
+            if 'attachments_v1' in frame:
+                from gateway.session_ingress_media import restore_attachments
+                from agent.image_routing import build_native_content_parts
+                media = restore_attachments(frame)
+                content, skipped = build_native_content_parts(frame['text'], media['media_urls'])
+                if skipped:
+                    raise ValueError('managed_attachment_unavailable')
+                frame = {**frame, 'text': content}
             result = run_worker_turns(agent, frame, history)
             agent._end_session_on_close = False
             agent.close()

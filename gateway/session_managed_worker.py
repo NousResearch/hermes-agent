@@ -48,6 +48,7 @@ def _bootstrap(authority, ref, row, policy, scope):
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
             'policy': asdict(hydrated), 'api_key': launch_key(authority, policy),
             'text': row['payload']['text'], 'route': live.route,
+            **({'attachments_v1': row['payload']['attachments_v1']} if 'attachments_v1' in row['payload'] else {}),
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
             'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
 

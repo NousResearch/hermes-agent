@@ -589,8 +589,8 @@ Behaviour is **thread-preferred**, scoped to the job's own conversation:
   recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
   delivery's follow-up discussion isolated.
 - **DM-only platforms** (WhatsApp, Signal, SMS): no threads exist, so the brief
-  is mirrored into the origin DM session instead — the DM itself is the
-  continuation surface.
+  is mirrored into the target DM session instead (the origin DM, or the home DM
+  for fallback and bare-platform jobs) — the DM itself is the continuation surface.
 
 Only the job's **own conversation** is ever touched:
 

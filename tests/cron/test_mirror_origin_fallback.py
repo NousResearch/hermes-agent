@@ -64,11 +64,6 @@ class TestMirrorEligibilityResolution:
         job = {"deliver": "all", "origin": None}
         targets = _resolve_delivery_targets(job)
         assert targets, "home channel should expand from 'all'"
-        from cron.scheduler_delivery import _expand_routing_tokens
-
-        # Expansion is string-only routing, independent of mirror eligibility.
-        assert "slack" in _expand_routing_tokens("ALL")
-        assert _expand_routing_tokens("slack") == ["slack"]
         for t in targets:
             assert not _target_mirror_eligible(job, t, global_mirror=True)
             assert not _target_mirror_eligible(

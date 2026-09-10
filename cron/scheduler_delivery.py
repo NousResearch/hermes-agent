@@ -112,9 +112,9 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
 
 def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
                            thread_id: Optional[str]) -> bool:
-    """True when a delivery target is the job's own origin conversation. Mirroring is scoped to
-    the origin session (guaranteed to exist); fan-out targets are broadcasts, deliberately NOT
-    mirrored. A pinned origin thread_id must match — a target without it is a different lane."""
+    """True when a delivery target is the job's own origin conversation. A pinned origin
+    thread_id must match — a target without it is a different lane. Mirror eligibility for
+    non-origin targets is decided by ``_target_mirror_eligible``."""
     if (
         not origin
         or str(origin.get("platform", "")).lower() != str(platform_name).lower()

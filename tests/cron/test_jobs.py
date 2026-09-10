@@ -1372,6 +1372,7 @@ class TestLateEnvRepointScopesStore:
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
+        (profiles_dir / ".deleted").mkdir()
         deleted_home = profiles_dir / "deleted"
 
         with jobs.use_cron_store(deleted_home):
@@ -1878,6 +1879,7 @@ class TestEnsureCronDirWidened:
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
+        (profiles_dir / ".deleted").mkdir()
         deleted_home = profiles_dir / "deleted"
         # cron_dir doesn't exist because the profile was deleted
         output_dir = deleted_home / "cron" / "output" / "job_123"
@@ -1904,6 +1906,7 @@ class TestEnsureCronDirWidened:
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
+        (profiles_dir / ".deleted").mkdir()
         deleted_home = profiles_dir / "deleted"
         cron_dir = deleted_home / "cron"
 
@@ -1930,6 +1933,7 @@ class TestEnsureCronDirWidened:
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
+        (profiles_dir / ".deleted").mkdir()
         deleted_home = profiles_dir / "deleted"
         scripts_dir = deleted_home / "scripts"
 

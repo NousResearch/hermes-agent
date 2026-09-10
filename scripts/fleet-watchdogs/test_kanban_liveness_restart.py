@@ -28,6 +28,12 @@ import sys
 import tempfile
 import time
 
+# The real os.kill, captured before any test stubs it. ``kliw.os`` IS the global
+# ``os`` module, so ``kliw.os.kill = os.kill`` after a stub re-installs the stub
+# process-wide (and later tests in the same pytest run see every pid as dead).
+# Always restore from this.
+_REAL_OS_KILL = os.kill
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _TARGET = os.path.join(_HERE, "kanban-liveness-watch.py")
 
@@ -376,7 +382,7 @@ def test_run_successful_restart_commits_last_restart_at():
         finally:
             for k, v in saved.items():
                 setattr(kliw, k, v)
-            kliw.os.kill = os.kill
+            kliw.os.kill = _REAL_OS_KILL
 
 
 def read_json_state_temp(path):
@@ -419,7 +425,7 @@ def test_run_failed_restart_does_not_commit_last_restart_at():
         finally:
             for k, v in saved.items():
                 setattr(kliw, k, v)
-            kliw.os.kill = os.kill
+            kliw.os.kill = _REAL_OS_KILL
 
 
 def test_run_cannot_resolve_pid_surfaces():

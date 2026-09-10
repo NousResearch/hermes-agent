@@ -3068,15 +3068,9 @@ def _try_termux_fast_cli_launch() -> bool:
     _promote_top_level_resume(args)
     if args.command in {None, "chat"}:
         _set_chat_arg_defaults(args)
-        interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
-        if interactive_prompt:
-            # Reach the prompt first; agent-only discovery on the first turn.
-            setattr(args, "compact", True)
-            os.environ["HERMES_DEFER_AGENT_STARTUP"] = "1"
-            os.environ["HERMES_FAST_STARTUP_BANNER"] = "1"
-            if getattr(args, "accept_hooks", False):
-                os.environ["HERMES_ACCEPT_HOOKS"] = "1"
-        else:
+        # The gateway owns agent startup; legacy banner hints must not become
+        # execution options or leak into a newly ensured owner.
+        if getattr(args, "query", None) or getattr(args, "image", None):
             _prepare_agent_startup(args)
         cmd_chat(args)
         return True

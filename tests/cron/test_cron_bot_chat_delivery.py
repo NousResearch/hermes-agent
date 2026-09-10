@@ -207,7 +207,7 @@ def test_deliver_retries_when_recipient_session_is_busy():
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
             mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
 
     assert len(attempts) == 2, "a busy recipient must be retried, not dropped"
@@ -224,7 +224,7 @@ def test_deliver_does_not_retry_a_genuine_failure():
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
             mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
 
     assert len(attempts) == 1, "a non-capacity failure must not be retried"
@@ -245,7 +245,7 @@ def test_deliver_reports_error_when_recipient_stays_busy():
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
             mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
 
     assert len(attempts) > 1, "a persistently busy recipient must be retried"
@@ -271,7 +271,7 @@ def test_payload_mentioning_a_refusal_reason_is_not_retried():
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
             mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
 
     assert len(attempts) == 1, "output merely naming a reason must not be retried"
@@ -291,7 +291,7 @@ def test_coordination_unavailable_is_not_retried():
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
             mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
 
     assert len(attempts) == 1, "SESSION_COORDINATION_UNAVAILABLE must never retry"
@@ -320,7 +320,7 @@ def test_capacity_refusal_is_detected_behind_a_long_preamble():
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
             mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
 
     assert len(attempts) == 2, "a refusal marker before 500 chars of text must still retry"
@@ -380,6 +380,50 @@ def test_budget_does_not_interrupt_a_fast_retry_ladder():
 
     assert err is None
     assert len(attempts) == 2
+
+
+def test_retry_wait_abandons_on_gateway_shutdown():
+    """A retry sleep must yield to shutdown, not outlive the cron drain.
+
+    Gateway stop marks in-flight executions interrupted and drains cron for
+    agent.cron_drain_timeout (default 30s). The backoff ladder sleeps up to 210s,
+    so a bare time.sleep is still waiting when the drain gives up and the worker
+    is SIGKILLed -- a wedged job instead of a cleanly interrupted one.
+    """
+    busy = _completed(
+        returncode=1,
+        stderr="hermes-refusal-reason: SESSION_NOT_OWNED\nbusy",
+    )
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        # Shutdown lands while the first attempt is in flight.
+        sched._interrupted_job_ids.add("j-shutdown")
+        return busy
+
+    try:
+        with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+            err = _deliver_to_bot_chat({"id": "j-shutdown", "name": "n"}, "out", "")
+    finally:
+        sched._interrupted_job_ids.discard("j-shutdown")
+
+    assert len(attempts) == 1, "shutdown must stop the ladder, not run it to exhaustion"
+    assert err is not None
+    assert "shutdown" in err.lower()
+
+
+def test_retry_wait_sleeps_normally_without_shutdown():
+    """The interruptible sleep must still wait when nothing interrupts it."""
+    slept = []
+
+    with mock.patch.object(sched_delivery.time, "sleep", lambda s: slept.append(s)):
+        interrupted = sched_delivery._sleep_unless_interrupted(2.5, "quiet-job")
+
+    assert interrupted is False
+    assert slept, "it must actually sleep when not interrupted"
+    assert max(slept) <= 1.0, "sleep must be sliced so shutdown is noticed promptly"
 
 
 def test_deliver_message_carries_cron_attribution(tmp_path):

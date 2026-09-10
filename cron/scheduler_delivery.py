@@ -702,6 +702,27 @@ def _get_bot_chat_busy_budget_seconds() -> float:
         return 900.0
 
 
+def _sleep_unless_interrupted(
+    delay: float, job_id: str, token: Optional[object] = None,
+) -> bool:
+    """Sleep ``delay`` in slices; return True if shutdown interrupted this execution.
+
+    Gateway stop marks in-flight cron executions interrupted and drains for
+    ``agent.cron_drain_timeout`` (default 30s). A bare ``time.sleep`` of up to
+    210s ignores that signal, so the worker is still sleeping when the drain
+    gives up and is SIGKILLed — leaving a wedged job instead of a cleanly
+    interrupted one. Slicing lets the ladder abandon itself promptly.
+    """
+    deadline = time.monotonic() + delay
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if _sched._is_interrupted(job_id, token):
+            return True
+        time.sleep(min(1.0, remaining))
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
@@ -863,7 +884,17 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             logger.info(
                 "Job '%s': Bot Chat of profile '%s' busy; retrying in %.1fs (%d/%d)",
                 job_id, profile_label, delay, attempt + 1, attempts - 1)
-            time.sleep(delay)
+            # Sleep in slices and abandon the ladder when shutdown marks this
+            # execution interrupted. Gateway stop drains cron for
+            # agent.cron_drain_timeout (default 30s); an uninterruptible sleep of
+            # up to 210s outlives that drain, so the worker gets SIGKILLed while
+            # merely WAITING to retry and the job is left wedged rather than
+            # cleanly interrupted.
+            if _sleep_unless_interrupted(delay, job_id, job.get("_fire_token")):
+                return _fail(
+                    f"bot-chat delivery to profile '{profile_label}' abandoned: "
+                    f"shutdown interrupted the retry wait"
+                    + (f" (last: {tail})" if tail else ""))
     except subprocess.TimeoutExpired:
         return _fail(
             f"bot-chat delivery to profile '{profile_label}' timed out "

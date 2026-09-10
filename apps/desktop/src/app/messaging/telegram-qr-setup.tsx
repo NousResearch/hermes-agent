@@ -317,7 +317,9 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
                         <X className="size-3" />
                       </button>
                     ))}
-                    {allowedIds.length === 0 && <span className="text-xs text-muted-foreground">{q.addAtLeastOne}</span>}
+                    {allowedIds.length === 0 && (
+                      <span className="text-xs text-muted-foreground">{q.addAtLeastOne}</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <Input
@@ -358,11 +360,7 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
               {expiresIn ? q.expiresIn(expiresIn) : q.expired}
             </Badge>
             <div className="flex flex-wrap justify-center gap-2">
-              <Button
-                onClick={() => openExternalLink(setup.deep_link)}
-                size="sm"
-                variant="secondary"
-              >
+              <Button onClick={() => openExternalLink(setup.deep_link)} size="sm" variant="secondary">
                 <ExternalLink />
                 {q.openTelegram}
               </Button>

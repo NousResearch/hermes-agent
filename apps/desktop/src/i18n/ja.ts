@@ -1607,10 +1607,12 @@ export const ja = defineLocale({
       subtitle: 'どちらの方法でも、あなたが管理するボットを接続し、資格情報はこの Hermes にのみ保存されます。',
       quickSetup: 'クイックセットアップ',
       recommended: '推奨',
-      quickHelp: 'QR コードをスキャンして Telegram で確認します。Hermes がボットを作成し、あなたの Telegram ユーザー ID を自動検出します。',
+      quickHelp:
+        'QR コードをスキャンして Telegram で確認します。Hermes がボットを作成し、あなたの Telegram ユーザー ID を自動検出します。',
       createWithQr: 'QR で作成',
       starting: '開始中…',
-      replaceWarning: 'Telegram の資格情報はすでに設定されています。保存すると新しい QR セットアップまたはトークンが現在のボットを置き換えます。',
+      replaceWarning:
+        'Telegram の資格情報はすでに設定されています。保存すると新しい QR セットアップまたはトークンが現在のボットを置き換えます。',
       scanHint: 'スマートフォンの Telegram アプリでスキャンするか、このコンピューターでリンクを開いてください。',
       waiting: 'Telegram を待機中…',
       expiresIn: remaining => `有効期限: ${remaining}`,

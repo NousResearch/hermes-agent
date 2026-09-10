@@ -1918,10 +1918,12 @@ export const en: Translations = {
       subtitle: 'Both options connect a bot you control and save its credentials only to this Hermes installation.',
       quickSetup: 'Quick setup',
       recommended: 'Recommended',
-      quickHelp: 'Scan a QR code and confirm in Telegram. Hermes creates the bot and detects your Telegram user ID automatically.',
+      quickHelp:
+        'Scan a QR code and confirm in Telegram. Hermes creates the bot and detects your Telegram user ID automatically.',
       createWithQr: 'Create with QR',
       starting: 'Starting…',
-      replaceWarning: 'Telegram credentials are already configured. A new QR setup or bot token will replace the current bot when you save.',
+      replaceWarning:
+        'Telegram credentials are already configured. A new QR setup or bot token will replace the current bot when you save.',
       scanHint: 'Scan with the Telegram app on your phone, or open the link on this computer.',
       waiting: 'Waiting for Telegram…',
       expiresIn: remaining => `Expires in ${remaining}`,

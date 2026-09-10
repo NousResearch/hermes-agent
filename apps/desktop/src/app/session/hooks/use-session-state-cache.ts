@@ -17,6 +17,7 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setSessionStartedAt,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -260,6 +261,9 @@ export function useSessionStateCache({
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
+    // Keep the foreground duration anchored to the runtime's first renderer
+    // attachment. Background state remains cached without stealing this view.
+    setSessionStartedAt(pending.state.runtimeStartedAt)
     // Mirror the focused session's per-session turn clock into the global
     // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
     // time intact on focus instead of zeroing it (the "timer restarts" bug).

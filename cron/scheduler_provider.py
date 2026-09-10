@@ -56,7 +56,7 @@ def _profile_entry(entry) -> tuple:
     return entry if isinstance(entry, tuple) else (None, entry)
 
 
-def _existing_profile_homes(profile_homes: list) -> list:
+def _existing_profile_homes(profile_homes) -> list:
     """Drop homes no longer on disk: ticking/heartbeating a deleted home would recreate its
     ``cron/`` workspace and silently resurrect the profile.
 
@@ -66,7 +66,8 @@ def _existing_profile_homes(profile_homes: list) -> list:
     profile's home untouched, which is the correct invariant: a home that does not exist cannot hold jobs to
     fire.
     """
-    return [entry for entry in profile_homes if Path(_profile_entry(entry)[1]).is_dir()]
+    entries = profile_homes() if callable(profile_homes) else profile_homes
+    return [entry for entry in entries if Path(_profile_entry(entry)[1]).is_dir()]
 
 
 @contextlib.contextmanager
@@ -462,10 +463,15 @@ class InProcessCronScheduler(CronScheduler):
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
 
+        try:
+            initial_profile_homes = _existing_profile_homes(profile_homes)
+        except Exception as exc:
+            logger.error("Cron profile membership refresh failed at startup: %s", exc, exc_info=True)
+            initial_profile_homes = []
         logger.info(
             "Multiplex cron scheduler started for %d profile(s): %s",
-            len(profile_homes),
-            [p[0] if isinstance(p, tuple) else p for p in profile_homes],
+            len(initial_profile_homes),
+            [p[0] if isinstance(p, tuple) else p for p in initial_profile_homes],
         )
 
         def tick_adapters_for(profile_name):
@@ -482,7 +488,7 @@ class InProcessCronScheduler(CronScheduler):
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's
         # cron workspace via the heartbeat below (#47368).
-        for entry in _existing_profile_homes(profile_homes):
+        for entry in initial_profile_homes:
             _, home = _profile_entry(entry)
             try:
                 with _profile_cron_scope(home):
@@ -506,12 +512,13 @@ class InProcessCronScheduler(CronScheduler):
             # Worst failure this cycle (fd exhaustion wins); backoff applied once per cycle.
             # See #87644.
             _cycle_exc: BaseException | None = None
-            cycle_homes = [_profile_entry(e) for e in _existing_profile_homes(profile_homes)]
-            if profile_gate is not None:
-                cycle_homes = [
-                    (name, home) for name, home in cycle_homes if profile_gate(name, home)
-                ]
+            cycle_homes = []
             try:
+                cycle_homes = [_profile_entry(e) for e in _existing_profile_homes(profile_homes)]
+                if profile_gate is not None:
+                    cycle_homes = [
+                        (name, home) for name, home in cycle_homes if profile_gate(name, home)
+                    ]
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:

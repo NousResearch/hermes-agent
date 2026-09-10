@@ -2,6 +2,7 @@
 import io
 import logging
 import os
+import shutil
 import stat
 import sys
 import threading
@@ -138,8 +139,112 @@ class TestSetupLogging:
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
         ).read_text()
-        assert "profile-routed cron record" not in (
-            hermes_home / "logs" / "agent.log"
+        default_log = hermes_home / "logs" / "agent.log"
+        assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text()
+
+    def test_profile_routing_accepts_home_discovered_after_startup(
+        self, hermes_home, tmp_path, monkeypatch
+    ):
+        """Live cron membership extends the routing allowlist without restart."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "created-later"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home], live_membership=True
+        ) is True
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home], live_membership=True
+        ) is True
+
+        stale_record = logging.LogRecord(
+            "cron.scheduler.live-profile-routing-test",
+            logging.INFO,
+            __file__,
+            1,
+            "queued before profile recreation",
+            (),
+            None,
+        )
+        stale_record.hermes_home = str(profile_home)
+        stale_record._hermes_profile_routing_epoch = hermes_logging._profile_routing_epoch
+
+        logger = logging.getLogger("cron.scheduler.live-profile-routing-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("late profile cron record")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        assert "late profile cron record" in (
+            profile_home / "logs" / "agent.log"
+        ).read_text()
+        default_log = hermes_home / "logs" / "agent.log"
+        assert not default_log.exists() or "late profile cron record" not in default_log.read_text()
+
+        # Removing membership closes cached handlers before the profile path is
+        # deleted. Recreating the same name gets a fresh handler and file.
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home], live_membership=True
+        ) is True
+        shutil.rmtree(profile_home)
+        profile_home.mkdir()
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home], live_membership=True
+        ) is True
+        routing_handler = next(
+            handler
+            for handler in hermes_logging._queued_file_handlers
+            if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+        )
+        routing_handler.emit(stale_record)
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("recreated profile cron record")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        recreated_log = (profile_home / "logs" / "agent.log").read_text()
+        assert "recreated profile cron record" in recreated_log
+        assert "late profile cron record" not in recreated_log
+        assert "queued before profile recreation" not in recreated_log
+
+        # Even if delete + recreate happens between membership scans, the
+        # directory incarnation changes and fences records from its predecessor.
+        real_identity = hermes_logging._profile_home_identity
+        incarnation = 1
+
+        def profile_identity(home):
+            return (0, 0, incarnation) if home == profile_home.resolve() else real_identity(home)
+
+        monkeypatch.setattr(hermes_logging, "_profile_home_identity", profile_identity)
+        hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home], live_membership=True
+        )
+        same_path_stale = logging.LogRecord(
+            "cron.scheduler.live-profile-routing-test",
+            logging.INFO,
+            __file__,
+            1,
+            "queued before same-path recreation",
+            (),
+            None,
+        )
+        same_path_stale.hermes_home = str(profile_home)
+        same_path_stale._hermes_profile_routing_epoch = hermes_logging._profile_routing_epoch
+        incarnation = 2
+        hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home], live_membership=True
+        )
+        routing_handler.emit(same_path_stale)
+        hermes_logging.flush_log_queue()
+
+        assert "queued before same-path recreation" not in (
+            profile_home / "logs" / "agent.log"
         ).read_text()
 
 

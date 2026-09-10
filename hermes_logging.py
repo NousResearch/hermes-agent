@@ -353,6 +353,19 @@ def _new_file_handler(
     return handler
 
 
+_profile_routing_epoch = 0
+_profile_routing_epoch_lock = threading.Lock()
+
+
+def _profile_home_identity(home: Path) -> tuple[int, int, int] | None:
+    """Return an incarnation key so delete/recreate at one path changes membership."""
+    try:
+        info = home.stat()
+    except OSError:
+        return None
+    return info.st_dev, info.st_ino, info.st_ctime_ns
+
+
 class _ProfileRoutingFileHandler(logging.Handler):
     """Route queued records to the log file for their Hermes home.
 
@@ -360,7 +373,9 @@ class _ProfileRoutingFileHandler(logging.Handler):
     or dashboard event loop. Per-home handlers keep rotation, redaction and managed perms.
     """
 
-    def __init__(self, existing: RotatingFileHandler, profile_homes: Sequence[Path]) -> None:
+    def __init__(
+        self, existing: RotatingFileHandler, profile_homes: Sequence[Path], membership_epoch: int
+    ) -> None:
         """Take over *existing*'s path, level, rotation, formatter and filters."""
         super().__init__(level=existing.level)
         resolved = Path(existing.baseFilename).resolve()
@@ -368,6 +383,10 @@ class _ProfileRoutingFileHandler(logging.Handler):
         self._hermes_routed_log_path = resolved
         self._default_home = resolved.parent.parent.resolve()
         self._profile_homes = {Path(home).expanduser().resolve() for home in profile_homes}
+        self._profile_home_identities = {
+            home: _profile_home_identity(home) for home in self._profile_homes
+        }
+        self._membership_epoch = membership_epoch
         self._filename = resolved.name
         self._max_bytes = getattr(existing, "maxBytes", 0)
         self._backup_count = getattr(existing, "backupCount", 0)
@@ -376,6 +395,37 @@ class _ProfileRoutingFileHandler(logging.Handler):
         self.setFormatter(existing.formatter)
         for log_filter in existing.filters:
             self.addFilter(log_filter)
+
+    def has_profile_homes(self, profile_homes: Sequence[Path]) -> bool:
+        homes = {Path(home).expanduser().resolve() for home in profile_homes}
+        homes.add(self._default_home)
+        identities = {home: _profile_home_identity(home) for home in homes}
+        with self._profile_handlers_lock:
+            return homes == self._profile_homes and identities == self._profile_home_identities
+
+    def update_profile_homes(
+        self, profile_homes: Sequence[Path], membership_epoch: int
+    ) -> None:
+        """Replace the allowed routing homes after live profile discovery."""
+        homes = {Path(home).expanduser().resolve() for home in profile_homes}
+        homes.add(self._default_home)
+        identities = {home: _profile_home_identity(home) for home in homes}
+        with self._profile_handlers_lock:
+            changed_homes = {
+                home
+                for home in homes & self._profile_homes
+                if identities[home] != self._profile_home_identities.get(home)
+            }
+            self._profile_homes = homes
+            self._profile_home_identities = identities
+            self._membership_epoch = membership_epoch
+            stale_handlers = [
+                self._profile_handlers.pop(home)
+                for home in list(self._profile_handlers)
+                if home not in homes or home in changed_homes
+            ]
+            for handler in stale_handlers:
+                _quietly(handler.close)
 
     def _home_for_record(self, record: logging.LogRecord) -> Path:
         raw_home = getattr(record, "hermes_home", "")
@@ -396,7 +446,13 @@ class _ProfileRoutingFileHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._handler_for_home(self._home_for_record(record)).handle(record)
+            # Keep membership refresh, handler lookup and emission atomic so a
+            # removed profile's handler cannot be closed while writing or be
+            # recreated from a record that raced the allowlist update.
+            with self._profile_handlers_lock:
+                if getattr(record, "_hermes_profile_routing_epoch", -1) != self._membership_epoch:
+                    return
+                self._handler_for_home(self._home_for_record(record)).handle(record)
         except Exception:
             self.handleError(record)
 
@@ -436,7 +492,10 @@ class _NonFormattingQueueHandler(QueueHandler):
     """
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
-        return copy.copy(record)
+        prepared = copy.copy(record)
+        with _profile_routing_epoch_lock:
+            prepared._hermes_profile_routing_epoch = _profile_routing_epoch
+        return prepared
 
 
 def _stop_queue_listener() -> None:
@@ -513,15 +572,18 @@ def drain_log_queue(timeout: float = 1.0) -> None:
     t.join(timeout)
 
 
-def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
+def enable_profile_log_routing(
+    profile_homes: Sequence[str | Path], *, live_membership: bool = False
+) -> bool:
     """Make the queued file logs follow a desktop profile context.
 
     ``setup_logging`` binds handlers to one process home; the desktop dashboard's
     embedded cron ticker may run jobs for every profile, so its static file handlers
     are replaced with profile routers once the profile list is known. Returns ``True``
-    when routing is (or already was) enabled; a single-profile caller is left untouched.
+    when routing is (or already was) enabled. ``live_membership`` installs a
+    router for a single startup home and lets later calls refresh its allowlist.
     """
-    global _queue_listener
+    global _profile_routing_epoch, _queue_listener
     homes: list[Path] = []
     for entry in profile_homes:
         try:
@@ -530,25 +592,38 @@ def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
             continue
         if resolved not in homes:
             homes.append(resolved)
-    if len(homes) < 2:
+    if len(homes) < 2 and not live_membership:
         return False
 
     with _queue_state_lock:
         if not _queued_file_handlers:
             return False
-        if any(isinstance(h, _ProfileRoutingFileHandler) for h in _queued_file_handlers):
+        routers = [h for h in _queued_file_handlers if isinstance(h, _ProfileRoutingFileHandler)]
+        if routers:
+            if all(router.has_profile_homes(homes) for router in routers):
+                return True
+            with _profile_routing_epoch_lock:
+                _profile_routing_epoch += 1
+                membership_epoch = _profile_routing_epoch
+                for router in routers:
+                    router.update_profile_homes(homes, membership_epoch)
             return True
         listener = _queue_listener
         if listener is not None:
             listener.stop()
             _queue_listener = None
         replacement = []
-        for existing in _queued_file_handlers:
-            if isinstance(existing, RotatingFileHandler):
-                replacement.append(_ProfileRoutingFileHandler(existing, homes))
-                _quietly(existing.close)
-            else:
-                replacement.append(existing)
+        with _profile_routing_epoch_lock:
+            _profile_routing_epoch += 1
+            membership_epoch = _profile_routing_epoch
+            for existing in _queued_file_handlers:
+                if isinstance(existing, RotatingFileHandler):
+                    replacement.append(
+                        _ProfileRoutingFileHandler(existing, homes, membership_epoch)
+                    )
+                    _quietly(existing.close)
+                else:
+                    replacement.append(existing)
         _queued_file_handlers[:] = replacement
         if listener is not None:
             _start_queue_listener_locked()

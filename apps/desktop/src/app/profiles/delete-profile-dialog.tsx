@@ -2,6 +2,7 @@ import type { ProfileScope } from '@/api/client'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { deleteProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { $activeConnectionId, forgetLastProfileForConnection } from '@/store/connections'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 import { dropTilesForProfile } from '@/store/session-states'
@@ -60,6 +61,8 @@ export function DeleteProfileDialog({
         // onDeleted refresh so our reset is the last write — a refreshActiveProfile
         // racing the (still-dying) backend can't clobber the pill back to it.
         const remote = scope !== undefined && scope !== null
+        const deletionConnectionId =
+          typeof scope === 'object' && scope !== null ? (scope.connectionId ?? null) : $activeConnectionId.get()
 
         const wasActive =
           !remote && normalizeProfileKey(profile.name) === normalizeProfileKey($activeGatewayProfile.get())
@@ -70,6 +73,10 @@ export function DeleteProfileDialog({
 
         // Legacy arity when unscoped: callers and tests pin the one-arg call.
         await (remote ? deleteProfile(profile.name, scope) : deleteProfile(profile.name))
+        // A non-active profile can still be this source's persisted boot target.
+        // Clear only the source that owned the successful deletion; same-named
+        // profiles on other machines are independent.
+        forgetLastProfileForConnection(deletionConnectionId, profile.name)
         // The profile is gone. Drop its persisted tiles now — a leftover
         // session/Bot tile restores on relaunch and dials the deleted
         // profile's backend, whose ensure_hermes_home() re-creates the

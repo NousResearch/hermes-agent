@@ -1658,7 +1658,10 @@ def _enable_multiplex_log_routing(config: object) -> bool:
         return False
     try:
         from hermes_logging import enable_profile_log_routing
-        return enable_profile_log_routing([home for _name, home in _multiplex_profile_homes(config)])
+        return enable_profile_log_routing(
+            [home for _name, home in _multiplex_profile_homes(config)],
+            live_membership=True,
+        )
     except Exception:
         logger.debug("could not enable per-profile log routing", exc_info=True)
         return False
@@ -5087,17 +5090,24 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     # Multiplex: tell the ticker which profile homes to tick, else secondary profiles' jobs never run.
     if isinstance(cron_provider, InProcessCronScheduler) and multiplex_cron:
         try:
-            profile_homes = _multiplex_profile_homes(runner.config)
-            if profile_homes:
-                cron_start_kwargs["profile_homes"] = profile_homes
+            initial_profile_homes = _multiplex_profile_homes(runner.config)
+            if initial_profile_homes:
+                def current_profile_homes():
+                    homes = _multiplex_profile_homes(runner.config)
+                    from hermes_logging import enable_profile_log_routing
+                    enable_profile_log_routing(
+                        [home for _name, home in homes], live_membership=True)
+                    return homes
+
+                cron_start_kwargs["profile_homes"] = current_profile_homes
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
                 cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
                 # runner.adapters belongs to "default"; naming it keeps the ticker from routing a secondary's
                 # cron through the default bot (even before that profile's adapter connects).
                 cron_start_kwargs["default_profile"] = "default"
                 logger.info(
-                    "Cron scheduler will tick %d profile(s) under multiplex: %s", len(profile_homes),
-                    [p[0] if isinstance(p, tuple) else p for p in profile_homes])
+                    "Cron scheduler will tick %d profile(s) under multiplex: %s", len(initial_profile_homes),
+                    [p[0] if isinstance(p, tuple) else p for p in initial_profile_homes])
         except Exception as exc:
             logger.warning("Could not resolve profile homes for multiplex cron: %s", exc)
 

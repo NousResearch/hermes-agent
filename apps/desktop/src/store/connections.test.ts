@@ -82,6 +82,7 @@ const {
   $activeConnectionId,
   $connectionsRegistry,
   $pendingConnectionId,
+  forgetLastProfileForConnection,
   initializeConnectionsRegistry,
   refreshConnectionsRegistry,
   _resetConnectionsForTests,
@@ -827,5 +828,27 @@ describe('selectConnection', () => {
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
     expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('last profile cache invalidation', () => {
+  it('forgets a deleted profile only for the source that owned it', async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local', profile: 'research', registryScoped: true })
+    $activeGatewayProfile.set('research')
+    $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'research', registryScoped: true })
+    $activeGatewayProfile.set('research')
+
+    forgetLastProfileForConnection('local', 'research')
+
+    $connection.set({ connectionId: 'work-vps', mode: 'remote', profile: 'default', registryScoped: true })
+    $activeGatewayProfile.set('default')
+    await selectConnection('local')
+    await selectConnection('homelab')
+
+    expect(ensureGatewayAgent.mock.calls.slice(-2).map(call => [call[0], call[1]])).toEqual([
+      ['local', 'default'],
+      ['homelab', 'research']
+    ])
   })
 })

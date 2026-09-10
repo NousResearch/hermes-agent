@@ -691,11 +691,55 @@ def test_existing_profile_homes_filters_deleted(tmp_path):
     live.mkdir(parents=True)
     # deleted intentionally not created
 
-    as_tuples = _existing_profile_homes([("live", live), ("deleted", deleted)])
+    as_tuples = _existing_profile_homes(lambda: [("live", live), ("deleted", deleted)])
     assert [p[0] for p in as_tuples] == ["live"]
 
     as_paths = _existing_profile_homes([live, deleted])
     assert [p for p in as_paths] == [live]
+
+
+def test_multiplex_ticker_discovers_profile_created_after_startup(tmp_path):
+    """A long-lived multiplex ticker refreshes profile membership each cycle."""
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    default_home = tmp_path / "default"
+    later_home = tmp_path / "profiles" / "later"
+    (default_home / "cron").mkdir(parents=True)
+    (later_home / "cron").mkdir(parents=True)
+    entries = [("default", default_home)]
+    supplier_calls = 0
+    ticked_homes = []
+    stop = threading.Event()
+
+    def profile_homes():
+        nonlocal supplier_calls
+        supplier_calls += 1
+        return list(entries)
+
+    def tracking_tick(*_args, **_kwargs):
+        home = jobs._current_cron_store().cron_dir.parent
+        ticked_homes.append(home)
+        if entries == [("default", default_home)]:
+            entries.append(("later", later_home))
+        elif home == later_home.resolve():
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=tracking_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0, "profile_homes": profile_homes},
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert supplier_calls >= 3
+    assert later_home.resolve() in ticked_homes
 
 
 def _run_multiplex_capture(tmp_path, *, profile_adapters, shared_adapters):

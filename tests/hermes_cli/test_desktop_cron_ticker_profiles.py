@@ -53,7 +53,7 @@ def _providers(monkeypatch):
     return sp, builtin
 
 
-def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path):
+def test_profile_homes_passed_to_builtin_as_live_membership(monkeypatch, _providers, tmp_path):
     _sp, builtin = _providers
     homes = [
         ("default", tmp_path / "root"),
@@ -67,22 +67,52 @@ def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path
 
     assert builtin.start_kwargs is not None
     assert builtin.start_kwargs["interval"] == 7
-    assert builtin.start_kwargs["profile_homes"] == homes
+    current_profile_homes = builtin.start_kwargs["profile_homes"]
+    assert callable(current_profile_homes)
+    assert list(current_profile_homes()) == homes
+
+    # Deletion and explicit recreation are visible without restarting the
+    # long-lived primary Desktop backend.
+    deleted_home = homes.pop()
+    assert list(current_profile_homes()) == homes
+    homes.append(deleted_home)
+    assert list(current_profile_homes()) == homes
 
 
-def test_single_profile_keeps_legacy_path(monkeypatch, _providers, tmp_path):
+def test_single_profile_live_membership_tracks_delete_and_recreate(
+    monkeypatch, _providers, tmp_path
+):
     _sp, builtin = _providers
     import hermes_cli.profiles as profiles_mod
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    default_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setattr(profiles_mod, "_maybe_register_gateway_service", lambda _name: None)
     monkeypatch.setattr(
-        profiles_mod,
-        "profiles_to_serve",
-        lambda **_kw: [("default", tmp_path / "root")],
+        profiles_mod, "_cleanup_gateway_service", lambda _name, _home: None
     )
+    monkeypatch.setattr(profiles_mod, "_maybe_unregister_gateway_service", lambda _name: None)
+    monkeypatch.setattr(profiles_mod, "_stop_profile_backends", lambda _name, _home: None)
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=9)
 
-    assert builtin.start_kwargs == {"interval": 9}
+    assert builtin.start_kwargs is not None
+    assert builtin.start_kwargs["interval"] == 9
+    current_profile_homes = builtin.start_kwargs["profile_homes"]
+    assert callable(current_profile_homes)
+    assert [name for name, _home in current_profile_homes()] == ["default"]
+
+    profile_home = profiles_mod.create_profile("later", no_alias=True)
+    assert [name for name, _home in current_profile_homes()] == ["default", "later"]
+
+    profiles_mod.delete_profile("later", yes=True)
+    assert not profile_home.exists()
+    assert [name for name, _home in current_profile_homes()] == ["default"]
+
+    profiles_mod.create_profile("later", no_alias=True)
+    assert [name for name, _home in current_profile_homes()] == ["default", "later"]
 
 
 def test_enumeration_failure_fails_open(monkeypatch, _providers):

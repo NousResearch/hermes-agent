@@ -100,6 +100,21 @@ export function _resetConnectionsForTests(): void {
   $pendingConnectionId.set(null)
 }
 
+/** Drop a deleted profile only from the source that owned the delete. */
+export function forgetLastProfileForConnection(connectionId: null | string, profile: string): void {
+  const source = String(connectionId ?? '').trim()
+  const target = normalizeProfileKey(profile)
+  const current = $lastProfileByConnection.get()
+
+  if (!source || target === 'default' || normalizeProfileKey(current[source]) !== target) {
+    return
+  }
+
+  const remaining = { ...current }
+  delete remaining[source]
+  $lastProfileByConnection.set(remaining)
+}
+
 export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): void {
   $connectionsRegistry.set(registry)
 }

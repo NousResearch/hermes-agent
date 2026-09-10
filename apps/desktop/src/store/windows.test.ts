@@ -6,10 +6,12 @@ import {
   canOpenBrowserWindow,
   canOpenNewWindow,
   canOpenSessionWindow,
+  canOpenSkillsHubWindow,
   isPeerInstanceWindow,
   openBrowserInNewWindow,
   openNewWindow,
-  openSessionInNewWindow
+  openSessionInNewWindow,
+  openSkillsHubWindow
 } from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -24,12 +26,14 @@ vi.mock('./notifications', () => ({
 function installBridge(
   openSessionWindow?: Window['hermesDesktop']['openSessionWindow'],
   openWindow?: Window['hermesDesktop']['openWindow'],
-  openBrowserWindow?: Window['hermesDesktop']['openBrowserWindow']
+  openBrowserWindow?: Window['hermesDesktop']['openBrowserWindow'],
+  openSkillsHubWindow?: Window['hermesDesktop']['openSkillsHubWindow']
 ) {
   desktopWindow.hermesDesktop = {
     ...(openSessionWindow ? { openSessionWindow } : {}),
     ...(openWindow ? { openWindow } : {}),
-    ...(openBrowserWindow ? { openBrowserWindow } : {})
+    ...(openBrowserWindow ? { openBrowserWindow } : {}),
+    ...(openSkillsHubWindow ? { openSkillsHubWindow } : {})
   } as unknown as Window['hermesDesktop']
 }
 
@@ -228,6 +232,55 @@ describe('openBrowserInNewWindow', () => {
     installBridge(undefined, undefined, vi.fn().mockRejectedValue(new Error('boom')))
 
     expect(await openBrowserInNewWindow('tab-1')).toBe(false)
+    expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('canOpenSkillsHubWindow', () => {
+  it('is false when the desktop bridge is absent', () => {
+    delete desktopWindow.hermesDesktop
+    expect(canOpenSkillsHubWindow()).toBe(false)
+  })
+
+  it('is false when the bridge lacks openSkillsHubWindow', () => {
+    installBridge(vi.fn().mockResolvedValue({ ok: true }))
+    expect(canOpenSkillsHubWindow()).toBe(false)
+  })
+
+  it('is true when the bridge exposes openSkillsHubWindow', () => {
+    installBridge(undefined, undefined, undefined, vi.fn().mockResolvedValue({ ok: true }))
+    expect(canOpenSkillsHubWindow()).toBe(true)
+  })
+})
+
+describe('openSkillsHubWindow', () => {
+  it('returns false when the bridge is absent', async () => {
+    delete desktopWindow.hermesDesktop
+
+    expect(await openSkillsHubWindow()).toBe(false)
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('invokes the bridge', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(undefined, undefined, undefined, open)
+
+    expect(await openSkillsHubWindow()).toBe(true)
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('returns false and notifies on an ok:false result', async () => {
+    installBridge(undefined, undefined, undefined, vi.fn().mockResolvedValue({ ok: false, error: 'failed' }))
+
+    expect(await openSkillsHubWindow()).toBe(false)
+    expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns false and notifies when the bridge throws', async () => {
+    installBridge(undefined, undefined, undefined, vi.fn().mockRejectedValue(new Error('crash')))
+
+    expect(await openSkillsHubWindow()).toBe(false)
     expect(notifyError).toHaveBeenCalledTimes(1)
   })
 })

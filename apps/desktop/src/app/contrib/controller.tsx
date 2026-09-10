@@ -74,7 +74,7 @@ import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
-import { isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isBrowserWindow, isHudWindow, isSkillsHubWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
@@ -92,6 +92,7 @@ import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
+import { SkillsHubPopoutShell } from '../skills/hub-popout-shell'
 
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { ContribWiring, WiredPane } from './wiring'
@@ -458,7 +459,7 @@ watchContributedPanes()
 // tiles there would still run, and preview-tile watching would try to dock
 // into a tree this window never renders (and, in the HUD, paint a webview
 // into the transparent overlay).
-if (!isBrowserWindow() && !isHudWindow()) {
+if (!isBrowserWindow() && !isHudWindow() && !isSkillsHubWindow()) {
   watchSessionTiles()
   startUnrestoredTileTitleBackfill()
   watchRouteTiles()
@@ -841,6 +842,14 @@ export function ContribController() {
     return (
       <ContribWiring>
         <BrowserPopoutShell />
+      </ContribWiring>
+    )
+  }
+
+  if (isSkillsHubWindow()) {
+    return (
+      <ContribWiring>
+        <SkillsHubPopoutShell />
       </ContribWiring>
     )
   }

@@ -1748,6 +1748,7 @@ export const zh: Translations = {
       pickerTitle: '技能中心',
       pickerBrowse: '浏览完整技能中心',
       pickerHide: '隐藏技能中心浏览器',
+      pickerPopOut: '在独立窗口中打开',
       pickerHint: '点击任意技能上的“+ Add to this Agent”即可安装，安装后会出现在上方列表中。',
       loadFailed: '技能中心加载失败',
       previewFailed: '技能预览失败',

@@ -222,6 +222,13 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import {
+  buildHubWindowUrl,
+  HUB_WINDOW_HEIGHT,
+  HUB_WINDOW_MIN_HEIGHT,
+  HUB_WINDOW_MIN_WIDTH,
+  HUB_WINDOW_WIDTH
+} from './hub-window'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
@@ -420,7 +427,7 @@ import {
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
-import { createWindowOpenHandler } from './window-open-policy'
+import { createWindowOpenHandler, decideHubWindowOpen, describeDeniedUrl } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -13615,6 +13622,94 @@ function createBrowserWindow(tabId) {
   return browserWindows.openOrFocus(tabId, () => spawnBrowserWindow(tabId))
 }
 
+// Popped-out Skills Hub: the same hub iframe the Capabilities pane embeds
+// (EmbeddedHubPicker), at full size in its own OS window. The embedded picker
+// is capped at 75% of the app window and rendered scaled down to 0.75, which
+// makes the catalog hard to read; a dedicated window shows it at 100% with
+// room for the card grid. Singleton: re-open focuses the existing window, and
+// closing it leaves the embedded picker untouched.
+const skillsHubWindows = createSessionWindowRegistry()
+const SKILLS_HUB_WINDOW_KEY = 'skills-hub'
+
+function spawnSkillsHubWindow() {
+  const icon = getAppIconPath()
+
+  const win = new BrowserWindow({
+    width: HUB_WINDOW_WIDTH,
+    height: HUB_WINDOW_HEIGHT,
+    minWidth: HUB_WINDOW_MIN_WIDTH,
+    minHeight: HUB_WINDOW_MIN_HEIGHT,
+    title: 'Hermes',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: getTitleBarOverlayOptions(),
+    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    ...chatWindowSurfaceOptions(),
+    icon,
+    show: false,
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+  })
+
+  translucencyBackedWindows.add(win)
+
+  if (IS_MAC) {
+    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+  }
+
+  wireWindowReveal(win)
+
+  win.on('enter-full-screen', () => sendWindowStateChanged(true))
+  win.on('leave-full-screen', () => sendWindowStateChanged(false))
+
+  streamThrottle.register(win)
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  // The shared handler denies every window.open (GHSA-9f4c-93c8-jc8g) — right
+  // for windows that can render untrusted content. The hub window only ever
+  // loads the fixed, trusted Skills Hub URL, whose navbar / skill cards link
+  // out with target="_blank" (GitHub, Discord, source repos). Route those
+  // http/https/mailto popups through the audited external-open allowlist so
+  // the top-bar links actually work; everything else stays denied.
+  win.webContents.setWindowOpenHandler(details => {
+    const decision = decideHubWindowOpen(details.url)
+
+    if (decision.openExternal) {
+      openExternalUrl(decision.openExternal)
+    } else {
+      rememberLog(`[window-open] hub denied: ${describeDeniedUrl(details.url)}`)
+    }
+
+    return { action: 'deny' }
+  })
+  attachRendererConsoleCapture(win, 'skills-hub-window', rememberLog)
+
+  installWindowRendererLifecycle(win, {
+    kind: 'skills-hub',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        win.webContents.reload()
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
+
+  loadWindowUrl(
+    win,
+    buildHubWindowUrl({
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    }),
+    'Skills Hub window'
+  )
+
+  return win
+}
+
+function createSkillsHubWindow() {
+  return skillsHubWindows.openOrFocus(SKILLS_HUB_WINDOW_KEY, () => spawnSkillsHubWindow())
+}
+
 // Additional full "instance" windows — peers of the primary that render the
 // COMPLETE app (sidebar, routing, its own draft) against the shared backend, so
 // a user can run multiple GUI windows at once (⌘⇧N / the "New Window" palette
@@ -15074,6 +15169,23 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
   createBrowserWindow(tabId.trim())
 
   return { ok: true }
+})
+ipcMain.handle('hermes:window:openSkillsHub', async () => {
+  createSkillsHubWindow()
+
+  return { ok: true }
+})
+
+// Any renderer may announce that hub state (an install/update) changed — the
+// popped-out Skills Hub runs its own React Query client, so its local
+// invalidation can't reach the primary window's lists. Main fans the event out
+// to every window; each renderer refetches its hub/skills queries.
+ipcMain.on('hermes:hub:changed', () => {
+  for (const other of BrowserWindow.getAllWindows()) {
+    if (!other.isDestroyed()) {
+      other.webContents.send('hermes:hub:changed')
+    }
+  }
 })
 
 // Hand a session to the user's OWN terminal emulator, running the TUI against

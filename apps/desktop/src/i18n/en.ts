@@ -1578,6 +1578,7 @@ export const en: Translations = {
       pickerTitle: 'Skills Hub',
       pickerBrowse: 'Browse the full hub',
       pickerHide: 'Hide the hub browser',
+      pickerPopOut: 'Open in own window',
       pickerHint: 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above.',
       loadFailed: 'Skill hub failed to load',
       previewFailed: 'Skill preview failed',

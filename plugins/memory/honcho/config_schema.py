@@ -71,6 +71,9 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         # — Message writing —
         _field("saveMessages", "Save messages", KIND_BOOL, "Persist conversation messages to Honcho.",
                default="true", group="Message writing"),
+        _field("logging", "Injection audit log", KIND_BOOL,
+               "Append what each turn injected, and why, to ~/.honcho/injection.log. The record holds the user's "
+               "representation verbatim.", default="false", group="Recall"),
         _field("writeFrequency", "Write frequency", KIND_TEXT, "When to flush messages: async, turn, session, or every N turns.",
                default="async", info=_WRITE_FREQUENCY_INFO, placeholder="async | turn | session | N", group="Message writing"),
         # — Dialectic —
@@ -99,6 +102,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
                default="false", group="Recall"),
         _field("contextTokens", "Context token cap", KIND_NUMBER, "Cap on auto-injected context tokens. Blank leaves it uncapped.",
                placeholder="(uncapped)", group="Recall"),
+        # The plugin reads `injection` as one object, so the panel edits the whole block rather than a nested key.
+        _field("injection", "Session-start injection", KIND_JSON,
+               "Pin which base-context sections the first turn injects: summary, peerRepresentation, peerCard, "
+               "aiRepresentation, aiCard. Blank injects all of them; an empty list injects nothing.",
+               placeholder='{"sessionStart": ["summary", "peerCard"]}', group="Recall"),
         _field("initOnSessionStart", "Eager init", KIND_BOOL, "Initialize the session eagerly in tools mode instead of on first tool call.",
                default="false", group="Recall"),
         # — Limits —

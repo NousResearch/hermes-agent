@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
 
+# Honcho persists every message and get_or_create() re-hydrates on a miss, so the local copies stay bounded.
+_SESSION_MESSAGE_RETENTION = 200
+_SESSION_IDLE_TTL_SECONDS = 3600
+_SESSION_SWEEP_INTERVAL_SECONDS = 300
+# Hard caps for a burst of distinct sessions inside one TTL window; both dicts evict least recently used.
+_SESSION_CACHE_MAX_SIZE = 128
+_PEERS_CACHE_MAX_SIZE = 512
+
 
 @dataclass
 class HonchoSession:
@@ -37,6 +45,8 @@ class HonchoSession:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Held by _flush_session across select, send and the _synced flip. It lives with the message list it guards.
+    _flush_lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the local cache."""
@@ -61,9 +71,12 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._runtime_user_peer_name = runtime_user_peer_name
         self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
         self._cache: dict[str, HonchoSession] = {}
+        # Sessions whose flush failed after a newer object took their cache key; flush_all() retries them.
+        self._retry_sessions: list[HonchoSession] = []
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
+        self._last_idle_sweep_ts: float = 0.0
         # Bumped (under _cache_lock) whenever _force_reauth rebuilds the client, so an
         # in-flight resolver never stores an object bound to the discarded client.
         self._client_generation = 0
@@ -82,6 +95,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         ):
             setattr(self, f"_{name}", getattr(config, name) if config else default)
         self._turn_counter: int = 0
+        # honcho session id -> observation booleans. Whole dicts are swapped in one assignment, so readers never see a partial one.
+        self._session_observation: dict[str, dict[str, bool]] = {}
 
         # Prefetch cache: session_key -> last context result (consumed once per turn).
         # Dialectic results are cached on the plugin side (HonchoMemoryProvider._prefetch_result)
@@ -95,6 +110,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._async_queue: queue.Queue | None = queue.Queue() if self._write_frequency == "async" else None
         self._async_thread: threading.Thread | None = None
         self._async_thread_lock = threading.Lock()
+        # Set by shutdown/stop_async_writer: no new threads after the join, late saves flush inline.
+        self._shutting_down = False
 
     @property
     def honcho(self) -> Honcho:
@@ -115,6 +132,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         while True:
             with self._cache_lock:
                 if key in cache:
+                    cache[key] = cache.pop(key)  # dict order is the LRU order the caps evict from
                     return cache[key]
                 generation = self._client_generation
             obj = fetch()
@@ -122,6 +140,15 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 if self._client_generation == generation:
                     return cache.setdefault(key, obj)
             # Client rebuilt mid-resolve: this object holds the discarded transport. Retry.
+
+    def _cached_session(self, session_key: str) -> HonchoSession | None:
+        """The locally cached session, stamped as used so recall alone keeps it out of the idle sweep."""
+        with self._cache_lock:
+            session = self._cache.get(session_key)
+            if session is not None:
+                session.updated_at = datetime.now()
+                self._cache[session_key] = self._cache.pop(session_key)
+        return session
 
     def _sdk_session(self, session_id: str) -> Any:
         """Get or create the SDK session (cached until a client rebuild clears the cache)."""
@@ -132,19 +159,36 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         return self._cached_sdk_object(
             self._peers_cache, peer_id, lambda: self._authed_call("peer setup", lambda: self.honcho.peer(peer_id)))
 
+    # ----- Observation config (per session) -----
+
+    def _observation_flags(self, honcho_session_id: str) -> dict[str, bool]:
+        """The four observation booleans for one session: the values synced from that session's
+        server config once setup ran, else the config snapshot held on the manager."""
+        synced = self._session_observation.get(honcho_session_id)
+        if synced is not None:
+            return dict(synced)
+        return {f"{kind}_{name}": getattr(self, f"_{kind}_{name}")
+                for kind in ("user", "ai") for name in ("observe_me", "observe_others")}
+
+    def _ai_observes_others(self, session: HonchoSession) -> bool:
+        """Whether the AI peer observes other peers in this session; this picks the recall observer."""
+        synced = self._session_observation.get(session.honcho_session_id)
+        return synced["ai_observe_others"] if synced is not None else self._ai_observe_others
+
     # ----- Session creation -----
 
-    def _configure_session_peers(self, session_id: str, user_peer: Any, assistant_peer: Any) -> bool:
-        """add_peers with the local observation config, then adopt the server's effective
-        config (set via the Honcho UI, it wins over local defaults). Observation booleans are
-        manager-scoped, so the last session init wins. Returns False when auth died mid-way
-        (already recorded by _authed_call)."""
+    def _configure_session_peers(self, session_id: str, user_peer: Any, assistant_peer: Any) -> dict[str, bool] | None:
+        """add_peers with this session's observation config, then adopt the server's effective
+        config (set via the Honcho UI, it wins over local defaults). Returns the effective flags for
+        get_or_create to store next to the cache entry, or None when auth died mid-way (already
+        recorded by _authed_call)."""
         peers = (("user", user_peer), ("ai", assistant_peer))
+        flags = self._observation_flags(session_id)
+        synced = dict(flags)
         try:
             from honcho.session import SessionPeerConfig
             peer_entries = [
-                (peer, SessionPeerConfig(observe_me=getattr(self, f"_{kind}_observe_me"),
-                                         observe_others=getattr(self, f"_{kind}_observe_others")))
+                (peer, SessionPeerConfig(observe_me=flags[f"{kind}_observe_me"], observe_others=flags[f"{kind}_observe_others"]))
                 for kind, peer in peers
             ]
             self._authed_call("session peer setup", lambda: self._sdk_session(session_id).add_peers(peer_entries))
@@ -158,17 +202,18 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                     for field_name in ("observe_me", "observe_others"):
                         value = getattr(server_cfg, field_name)
                         if value is not None:
-                            setattr(self, f"_{kind}_{field_name}", value)
-                logger.debug("Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
-                             self._user_observe_me, self._user_observe_others, self._ai_observe_me, self._ai_observe_others)
+                            synced[f"{kind}_{field_name}"] = value
+                logger.debug("Honcho observation synced from server for session '%s': user(me=%s,others=%s) ai(me=%s,others=%s)",
+                             session_id, synced["user_observe_me"], synced["user_observe_others"],
+                             synced["ai_observe_me"], synced["ai_observe_others"])
 
             self._guarded(_adopt_server_config, None, logging.DEBUG,
                           "Honcho get_peer_configuration failed (using local config): %s")
         except HonchoAuthError:
-            return False
+            return None
         except Exception as e:
             logger.warning("Honcho session '%s' add_peers failed (non-fatal): %s", session_id, e)
-        return True
+        return synced
 
     def _load_existing_messages(self, session_id: str) -> list:
         """Load prior messages via context() (one call for messages + metadata), oldest first."""
@@ -193,30 +238,91 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             logger.warning("Honcho session '%s' loaded (failed to fetch context: %s)", session_id, e)
         return []
 
-    def _get_or_create_honcho_session(self, session_id: str, user_peer: Any, assistant_peer: Any) -> tuple[Any, list]:
-        """(honcho_session, existing_messages) with peers configured; a cached session yields no messages."""
+    def _get_or_create_honcho_session(self, session_id: str, user_peer: Any, assistant_peer: Any) -> tuple[Any, list, dict[str, bool] | None]:
+        """(honcho_session, existing_messages, observation flags) with peers configured; a cached session
+        yields no messages and the flags stored when it was configured."""
         with self._cache_lock:
             if session_id in self._sessions_cache:
                 logger.debug("Honcho session '%s' retrieved from cache", session_id)
-                return self._sessions_cache[session_id], []
+                return self._sessions_cache[session_id], [], self._session_observation.get(session_id)
 
         self._authed_call("session setup", lambda: self._sdk_session(session_id))
-        existing_messages: list = (self._load_existing_messages(session_id)
-                                   if self._configure_session_peers(session_id, user_peer, assistant_peer) else [])
+        observation = self._configure_session_peers(session_id, user_peer, assistant_peer)
+        existing_messages: list = self._load_existing_messages(session_id) if observation is not None else []
 
         with self._cache_lock:
             honcho_session = self._sessions_cache.get(session_id)
         if honcho_session is None:
             # A mid-init client rebuild dropped the cached session; resolve a fresh one.
             honcho_session = self._authed_call("session setup", lambda: self._sdk_session(session_id))
-        return honcho_session, existing_messages
+        return honcho_session, existing_messages, observation
+
+    @staticmethod
+    def _has_unsynced(session: HonchoSession) -> bool:
+        return any(not m.get("_synced") for m in list(session.messages))
+
+    def _evict_session_locked(self, key: str, session: HonchoSession) -> None:
+        """Drop one session and every entry keyed to it. Caller holds _cache_lock."""
+        del self._cache[key]
+        self._sessions_cache.pop(session.honcho_session_id, None)
+        self._session_observation.pop(session.honcho_session_id, None)
+        with self._prefetch_cache_lock:
+            self._context_cache.pop(key, None)
+
+    def _enforce_cache_caps_locked(self) -> None:
+        """Evict least recently used entries above the hard caps. A session with unsynced messages
+        is never evicted: it is the only copy until the flush lands. Caller holds _cache_lock."""
+        for key, session in list(self._cache.items()):
+            if len(self._cache) <= _SESSION_CACHE_MAX_SIZE:
+                break
+            if not self._has_unsynced(session):
+                self._evict_session_locked(key, session)
+        live_ids = {s.honcho_session_id for s in self._cache.values()}
+        for session_id in list(self._sessions_cache):
+            if len(self._sessions_cache) <= _SESSION_CACHE_MAX_SIZE:
+                break
+            if session_id not in live_ids:
+                del self._sessions_cache[session_id]
+        live_peers = {p for s in self._cache.values() for p in (s.user_peer_id, s.assistant_peer_id)}
+        for peer_id in list(self._peers_cache):
+            if len(self._peers_cache) <= _PEERS_CACHE_MAX_SIZE:
+                break
+            if peer_id not in live_peers:
+                del self._peers_cache[peer_id]
+        with self._prefetch_cache_lock:
+            for key in [k for k in self._context_cache if k not in self._cache]:
+                del self._context_cache[key]
+
+    def _sweep_idle_sessions_locked(self) -> int:
+        """Evict sessions idle beyond _SESSION_IDLE_TTL_SECONDS together with their SDK session,
+        observation flags and prefetch entries, then enforce the caps. Caller holds _cache_lock."""
+        cutoff = time.time() - _SESSION_IDLE_TTL_SECONDS
+        evicted = 0
+        for key, session in list(self._cache.items()):
+            if session.updated_at.timestamp() >= cutoff or self._has_unsynced(session):
+                continue
+            self._evict_session_locked(key, session)
+            evicted += 1
+        self._enforce_cache_caps_locked()
+        return evicted
+
+    def _maybe_sweep_idle_sessions(self) -> None:
+        """Rate-limited idle sweep, run from get_or_create so no watcher thread is needed."""
+        now = time.time()
+        with self._cache_lock:
+            if now - self._last_idle_sweep_ts < _SESSION_SWEEP_INTERVAL_SECONDS:
+                return
+            self._last_idle_sweep_ts = now
+            evicted = self._sweep_idle_sessions_locked()
+        if evicted:
+            logger.info("Honcho session cache idle sweep evicted %d session(s)", evicted)
 
     def get_or_create(self, key: str) -> HonchoSession:
         """Get an existing session or create a new one for ``key`` (usually channel:chat_id)."""
-        with self._cache_lock:
-            if key in self._cache:
-                logger.debug("Local session cache hit: %s", key)
-                return self._cache[key]
+        self._maybe_sweep_idle_sessions()
+        if (cached := self._cached_session(key)) is not None:
+            logger.debug("Local session cache hit: %s", key)
+            return cached
 
         # Gateway sessions normally use the platform-native runtime identity so multi-user
         # bots scope memory per user; config can alias/prefix it, or pinPeerName pins all
@@ -229,7 +335,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         honcho_session_id = self._sanitize_id(key)
         user_peer = self._get_or_create_peer(user_peer_id)
         assistant_peer = self._get_or_create_peer(assistant_peer_id)
-        _, existing_messages = self._get_or_create_honcho_session(honcho_session_id, user_peer, assistant_peer)
+        _, existing_messages, observation = self._get_or_create_honcho_session(honcho_session_id, user_peer, assistant_peer)
 
         session = HonchoSession(
             key=key, user_peer_id=user_peer_id, assistant_peer_id=assistant_peer_id, honcho_session_id=honcho_session_id,
@@ -241,12 +347,46 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         )
         with self._cache_lock:
             self._cache[key] = session
+            # Stored with the cache entry and dropped with it, so the dict can hold no orphan ids.
+            if observation is not None:
+                self._session_observation[honcho_session_id] = observation
+            self._enforce_cache_caps_locked()
         return session
 
     # ----- Writes -----
 
+    @staticmethod
+    def _trim_synced_messages(session: HonchoSession) -> None:
+        """Drop the oldest synced messages beyond _SESSION_MESSAGE_RETENTION. Messages are appended in
+        order, so trimming from the front stops at the first unsynced one and never drops it."""
+        excess = len(session.messages) - _SESSION_MESSAGE_RETENTION
+        while excess > 0 and session.messages and session.messages[0].get("_synced"):
+            session.messages.pop(0)
+            excess -= 1
+
     def _flush_session(self, session: HonchoSession) -> bool:
-        """Write unsynced messages to Honcho synchronously."""
+        """Write unsynced messages to Honcho synchronously. The session's lock keeps the async writer and an
+        exit-time flush_all() from posting the same batch."""
+        with session._flush_lock:
+            return self._flush_session_locked(session)
+
+    def _flush_session_before(self, session: HonchoSession, deadline: float | None) -> bool:
+        """_flush_session that starts only while ``deadline`` has time left and waits for the session's lock no
+        longer than that; False, with nothing sent, otherwise. An upload that has started is not interrupted: the
+        SDK has no per-call timeout, so it runs to the client's HTTP timeout."""
+        if deadline is None:
+            self._flush_session(session)
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not session._flush_lock.acquire(timeout=remaining):
+            return False
+        try:
+            self._flush_session(session)  # re-enters the RLock already held above
+        finally:
+            session._flush_lock.release()
+        return True
+
+    def _flush_session_locked(self, session: HonchoSession) -> bool:
         new_messages = [m for m in session.messages if not m.get("_synced")]
         if not new_messages:
             return True
@@ -257,7 +397,11 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
             honcho_session = self._sessions_cache.get(session.honcho_session_id)
             if honcho_session is None:
-                honcho_session, _ = self._get_or_create_honcho_session(session.honcho_session_id, user_peer, assistant_peer)
+                honcho_session, _, observation = self._get_or_create_honcho_session(
+                    session.honcho_session_id, user_peer, assistant_peer)
+                if observation is not None:
+                    with self._cache_lock:
+                        self._session_observation[session.honcho_session_id] = observation
             honcho_messages = [(user_peer if m["role"] == "user" else assistant_peer).message(m["content"]) for m in new_messages]
             honcho_session.add_messages(honcho_messages)
             return len(honcho_messages)
@@ -270,8 +414,10 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             ok = False
         for msg in new_messages:
             msg["_synced"] = ok
-        with self._cache_lock:
-            self._cache[session.key] = session
+        if ok:
+            # Under the cache lock so the eviction check never iterates a list being trimmed.
+            with self._cache_lock:
+                self._trim_synced_messages(session)
         return ok
 
     def _try_flush(self, session: HonchoSession, level: int, msg: str) -> bool:
@@ -292,6 +438,10 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 if item is _ASYNC_SHUTDOWN:
                     break
                 if not self._try_flush(item, logging.WARNING, "Honcho async write failed, retrying once"):
+                    if self._shutting_down:
+                        # The shutdown flush is already attempting this session within its own budget.
+                        logger.error("Honcho async write failed while shutting down, so the batch stays unsynced")
+                        continue
                     time.sleep(2)
                     self._try_flush(item, logging.ERROR, "Honcho async write retry failed, dropping batch")
             except queue.Empty:
@@ -299,68 +449,155 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             except Exception as e:
                 logger.error("Honcho async writer error: %s", e)
 
+    def _retain_for_retry(self, session: HonchoSession) -> None:
+        """Keep a session with unsynced messages where flush_all() looks. An evicted key takes it back; a key a
+        newer object owns keeps that object, and this one waits in the retry list."""
+        with self._cache_lock:
+            if not self._has_unsynced(session):
+                return
+            current = self._cache.get(session.key)
+            if current is session or any(s is session for s in self._retry_sessions):
+                return
+            if current is None:
+                self._cache[session.key] = session
+            else:
+                self._retry_sessions.append(session)
+
+    def _keep_until_flushed(self, session: HonchoSession) -> None:
+        """Put an evicted session that still holds unsynced messages back where flush_all() looks. When a
+        newer object already owns the key, this one's batch is written now instead."""
+        with self._cache_lock:
+            current = self._cache.get(session.key)
+            if current is session or not self._has_unsynced(session):
+                return
+            if current is None:
+                self._cache[session.key] = session
+                return
+        self._flush_now(session)
+
+    def _flush_now(self, session: HonchoSession) -> None:
+        """A save-time flush whose failed batch stays reachable for flush_all(), even after an eviction."""
+        if not self._flush_session(session):
+            self._retain_for_retry(session)
+
     def save(self, session: HonchoSession) -> None:
-        """Save messages per write_frequency: "async" enqueues for the background thread; "turn"
-        flushes now; "session" defers until flush_all(); int N flushes every N turns."""
+        """Save messages per write_frequency: "async" enqueues for the background thread, "turn"
+        flushes now, "session" defers until flush_all(), int N flushes every N turns."""
         self._turn_counter += 1
         wf = self._write_frequency
-        if wf == "async":
-            if self._async_queue is not None:
-                self._ensure_async_writer()
-                self._async_queue.put(session)
-        elif wf == "turn" or (isinstance(wf, int) and wf > 0 and self._turn_counter % wf == 0):
-            self._flush_session(session)
+        if wf == "async" and self._async_queue is not None:
+            # Under the writer lock, so a put cannot slip in after stop_async_writer() drained the queue.
+            with self._async_thread_lock:
+                if not self._shutting_down:
+                    self._ensure_async_writer_locked()
+                    self._async_queue.put(session)
+                    return
+            self._flush_now(session)
+        elif self._shutting_down or wf == "turn" or (isinstance(wf, int) and wf > 0 and self._turn_counter % wf == 0):
+            self._flush_now(session)
+        else:
+            self._keep_until_flushed(session)
 
-    def flush_all(self) -> None:
-        """Flush unsynced messages for all cached sessions, then drain the async queue inline."""
+    def flush_all(self, timeout: float | None = None) -> None:
+        """Flush unsynced messages for all cached sessions, then drain the async queue inline. ``timeout`` bounds
+        when a flush may start and how long it waits for a session's lock, not an upload already in flight, which
+        runs to the client's HTTP timeout. A session skipped keeps its messages and is counted in one warning."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        skipped = self._flush_cached_before(deadline)
+        skipped.extend(self._drain_async_queue(deadline))
+        self._warn_unsynced(skipped, timeout)
+
+    def _flush_cached_before(self, deadline: float | None) -> list[HonchoSession]:
+        """Flush every cached and retry-listed session that ``deadline`` allows; returns the ones it did not."""
         with self._cache_lock:
             sessions = list(self._cache.values())
+            sessions += [s for s in self._retry_sessions if not any(s is c for c in sessions)]
+        skipped: list[HonchoSession] = []
         for session in sessions:
             try:
-                self._flush_session(session)
+                if not self._flush_session_before(session, deadline):
+                    skipped.append(session)
             except Exception as e:
                 logger.error("Honcho flush_all error for %s: %s", session.key, e)
+        with self._cache_lock:
+            self._retry_sessions = [s for s in self._retry_sessions if self._has_unsynced(s)]
+        return skipped
 
-        if self._async_queue is not None:
-            while not self._async_queue.empty():
-                try:
-                    item = self._async_queue.get_nowait()
-                    if item is not _ASYNC_SHUTDOWN:
-                        self._flush_session(item)
-                except queue.Empty:
-                    break
+    def _warn_unsynced(self, skipped: list[HonchoSession], timeout: float | None) -> None:
+        left = [s for s in {id(s): s for s in skipped}.values() if self._has_unsynced(s)]
+        if left:
+            unsynced = sum(1 for s in left for m in list(s.messages) if not m.get("_synced"))
+            logger.warning("Honcho flush ran out of time after %.1fs with %d message(s) in %d session(s) still unsynced",
+                           timeout or 0.0, unsynced, len(left))
+
+    def _drain_async_queue(self, deadline: float | None = None) -> list[HonchoSession]:
+        """Flush every queued session inline. Returns the sessions ``deadline`` left unflushed."""
+        skipped: list[HonchoSession] = []
+        if self._async_queue is None:
+            return skipped
+        while not self._async_queue.empty():
+            try:
+                item = self._async_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is not _ASYNC_SHUTDOWN and not self._flush_session_before(item, deadline):
+                skipped.append(item)
+        return skipped
 
     def _ensure_async_writer(self) -> None:
         """Start the async writer on first enqueue (idempotent, thread-safe)."""
         if self._async_thread is not None and self._async_thread.is_alive():
             return
         with self._async_thread_lock:
-            if self._async_thread is None or not self._async_thread.is_alive():
-                self._async_thread = spawn_context_thread(self._async_writer_loop, name="honcho-async-writer")
-                self._async_thread.start()
+            self._ensure_async_writer_locked()
 
-    def stop_async_writer(self) -> None:
-        """Join the async writer WITHOUT flushing (saveMessages: false must still exit cleanly)."""
+    def _ensure_async_writer_locked(self) -> None:
+        if self._async_thread is None or not self._async_thread.is_alive():
+            self._async_thread = spawn_context_thread(self._async_writer_loop, name="honcho-async-writer", owner=self)
+            self._async_thread.start()
+
+    def stop_async_writer(self, timeout: float = 10.0) -> None:
+        """Join the async writer, then drain whatever was queued before the join, both within ``timeout``.
+        saveMessages: false never enqueues, so the drain is a no-op there and the exit stays clean."""
+        self._warn_unsynced(self._stop_async_writer_before(time.monotonic() + timeout), timeout)
+
+    def _stop_async_writer_before(self, deadline: float) -> list[HonchoSession]:
+        """Join the writer for what is left of ``deadline``, then drain the queue under the same deadline. A writer
+        still inside an upload keeps running to the client's HTTP timeout; it holds the shared client, so it is
+        joined, never abandoned."""
+        with self._async_thread_lock:
+            self._shutting_down = True
         if self._async_queue is not None and self._async_thread is not None and self._async_thread.is_alive():
             self._async_queue.put(_ASYNC_SHUTDOWN)
-            self._async_thread.join(timeout=10)
+            self._async_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        return self._drain_async_queue(deadline)
 
-    def shutdown(self) -> None:
-        """Flush everything, then stop the async writer thread."""
+    def shutdown(self, timeout: float = 10.0) -> None:
+        """Flush everything, then stop the async writer thread, within ``timeout``. The budget stops new uploads
+        from starting and bounds the lock waits and the join; an upload already in flight runs to the client's
+        HTTP timeout. Whatever stayed unsynced is counted in one warning."""
+        self._shutting_down = True
         if self._async_queue is not None:
-            self.flush_all()
-            self.stop_async_writer()
+            deadline = time.monotonic() + timeout
+            skipped = self._flush_cached_before(deadline)
+            skipped.extend(self._drain_async_queue(deadline))
+            skipped.extend(self._stop_async_writer_before(deadline))
+            self._warn_unsynced(skipped, timeout)
 
     # ----- Prefetch cache -----
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
-        """Fire get_prefetch_context in a background thread; consumed next turn via pop_context_result()."""
+        """Fire get_prefetch_context in a background thread; consumed next turn via pop_context_result().
+        No-op once shutdown began, so nothing is left running after the join."""
+        if self._shutting_down:
+            return
+
         def _run():
             result = self.get_prefetch_context(session_key, user_message)
             if result:
                 self.set_context_result(session_key, result)
 
-        spawn_context_thread(_run, name="honcho-context-prefetch").start()
+        spawn_context_thread(_run, name="honcho-context-prefetch", owner=self).start()
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:
         """Store a prefetched context result in a thread-safe way."""

@@ -1,5 +1,7 @@
 import type { ToolPart } from './types'
 
+const PACKAGED_RENDERER_FILE_RE = /[\\/]app\.asar[\\/]/i
+
 export function looksLikeUrl(value: string): boolean {
   return /^https?:\/\//i.test(value)
 }
@@ -11,6 +13,7 @@ export function looksLikePath(value: string): boolean {
 export function isPreviewableTarget(target: string): boolean {
   return Boolean(
     target &&
+    !PACKAGED_RENDERER_FILE_RE.test(target) &&
     (/^file:\/\//i.test(target) ||
       /^(?:\/|\.{1,2}\/|~\/).+\.html?$/i.test(target) ||
       /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(target))

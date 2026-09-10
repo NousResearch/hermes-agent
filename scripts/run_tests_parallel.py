@@ -303,6 +303,36 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         pass
 
 
+def _effective_file_timeout(
+    file: Path,
+    repo_root: Path,
+    file_timeout: float,
+    durations: dict[str, float] | None,
+) -> float:
+    """Scale the per-file timeout for files whose last observed runtime
+    approaches the flat cap.
+
+    The flat ``file_timeout`` (default 300s) is sized for the typical file,
+    but a handful of large-collection files (e.g. ``tests/test_hermes_state.py``,
+    239 tests × subprocess-per-test overhead) legitimately run 200s+ on a
+    quiet runner. Under CI load that dilates past the cap, the file is
+    SIGKILL'd mid-run, and the automatic retry then passes — a manufactured
+    FLAKY report for a file that was never broken (seen 2026-08-18 on main:
+    first attempt killed at 300s, retry passed in 205s).
+
+    Rule: a file gets ``max(flat_cap, 3 × last_observed_duration)``. Files
+    without a cache entry keep the flat cap. This only ever *raises* the
+    bound — a genuinely hung file is still killed, just with headroom
+    proportional to its known-good runtime.
+    """
+    if not durations:
+        return file_timeout
+    cached = durations.get(_format_file(file, repo_root))
+    if not cached:
+        return file_timeout
+    return max(file_timeout, float(cached) * 3.0)
+
+
 def _run_one_file(
     file: Path,
     pytest_args: List[str],
@@ -1123,12 +1153,19 @@ def main() -> int:
                 _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        # Duration cache for the timeout scaler: known-slow files get
+        # proportional headroom instead of a false timeout-kill under
+        # CI load (see _effective_file_timeout).
+        timeout_durations = _load_durations(repo_root)
         futures: List[Future] = []
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
                 _run_one_file, file, pytest_passthrough, repo_root,
-                args.file_timeout, args.file_retries,
+                _effective_file_timeout(
+                    file, repo_root, args.file_timeout, timeout_durations
+                ),
+                args.file_retries,
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)

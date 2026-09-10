@@ -1,8 +1,17 @@
 import { execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { createLocalGatewayDials, ensureLocalGateway, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure } from './local-gateway'
+import { configureWindowsGatewayTicketClient, createLocalGatewayDials, ensureLocalGateway, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure } from './local-gateway'
+import { mintGatewayTicketWithPython } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
+configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
+  const backend = await ensureRuntime(resolveHermesBackend([]))
+  if (backend.kind !== 'python' || backend.shell) {
+    throw new Error('Gateway ticket bootstrap requires the installed Hermes Python runtime')
+  }
+
+  return mintGatewayTicketWithPython(backend, resolveHermesCwd(), endpoint, purpose)
+})
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'

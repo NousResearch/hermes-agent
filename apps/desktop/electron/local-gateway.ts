@@ -129,10 +129,18 @@ export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: Ga
   return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(descriptor.gatewayEndpoint, 'native-http') }
 }
 
+let windowsTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http') => Promise<string>) | undefined
+
+export function configureWindowsGatewayTicketClient(client: NonNullable<typeof windowsTicketClient>) {
+  windowsTicketClient = client
+}
+
 export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' = 'interactive'): Promise<string> {
-  // Named-pipe bootstrap needs the same server-identity validation as Python's
-  // native bootstrap. Refuse rather than silently use an unauthenticated pipe.
-  if (process.platform === 'win32') {throw new Error('Native gateway bootstrap on Windows requires the validated named-pipe client')}
+  if (process.platform === 'win32') {
+    if (!windowsTicketClient) {throw new Error('Gateway ticket client is not configured')}
+
+    return windowsTicketClient(endpoint, purpose)
+  }
   const home = endpoint.profile_id
 
   if (await fs.realpath(home) !== home) {throw new Error('Noncanonical gateway profile')}

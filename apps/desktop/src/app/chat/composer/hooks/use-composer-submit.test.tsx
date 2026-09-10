@@ -20,6 +20,7 @@ import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } f
 import { useComposerSubmit } from './use-composer-submit'
 
 interface SubmitHarnessOptions {
+  cwd?: string | null
   attachments?: ComposerAttachment[]
   busy?: boolean
   compacting?: boolean
@@ -32,9 +33,21 @@ interface SubmitHarnessOptions {
   visible?: boolean
 }
 
+it('passes the completion CWD with inline refs and restores the original text on refusal', async () => {
+  const text = '@file:`retry-app/README.md`'
+  const { hook, onSubmit, loadIntoComposer } = renderSubmitHook({ cwd: '/scope/fixtures', text })
+  onSubmit.mockResolvedValueOnce(false)
+  await act(async () => {
+    hook.result.current.submitDraft()
+  })
+  expect(onSubmit).toHaveBeenCalledWith(text, expect.objectContaining({ referenceCwd: '/scope/fixtures' }))
+  expect(loadIntoComposer).toHaveBeenCalledWith(text, [])
+})
+
 let surfaceSequence = 0
 
 function renderSubmitHook({
+  cwd,
   attachments = [],
   busy = false,
   compacting = false,
@@ -52,6 +65,7 @@ function renderSubmitHook({
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
   const editorRef = { current: editor }
+  const loadIntoComposer = vi.fn()
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
@@ -93,6 +107,7 @@ function renderSubmitHook({
   const hook = renderHook(
     () =>
       useComposerSubmit({
+        cwd,
         activeQueueSessionKey: sessionKey,
         activeQueueSessionKeyRef: { current: sessionKey },
         attachments,
@@ -106,7 +121,7 @@ function renderSubmitHook({
         exitQueuedEdit: vi.fn(() => false),
         focusInput: vi.fn(),
         inputDisabled,
-        loadIntoComposer: vi.fn(),
+        loadIntoComposer,
         onCancel,
         onSteer,
         onSubmit,
@@ -121,6 +136,7 @@ function renderSubmitHook({
   )
 
   return {
+    loadIntoComposer,
     clearDraft,
     hook,
     onCancel,

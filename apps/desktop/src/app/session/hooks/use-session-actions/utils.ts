@@ -7,7 +7,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, type NewChatBackendOwner, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import {
   $cronSessions,
@@ -1268,7 +1268,7 @@ export function upsertOptimisticSession(
   preview: string | null = null,
   parentSessionId: string | null = null,
   lastActive?: number,
-  owner?: null | SessionProfileRoute
+  owner?: null | NewChatBackendOwner
 ) {
   const now = lastActive ?? Date.now() / 1000
   // Stamp the profile the session was just created on so the scoped sidebar
@@ -1282,7 +1282,7 @@ export function upsertOptimisticSession(
   // inserted), so a row stamped `default` then misroutes every session-scoped
   // RPC that resolves its owner off the row ("session not found" on turn two).
   const profileKey = normalizeProfileKey(owner ? owner.targetProfile || owner.profile : $activeGatewayProfile.get())
-  const connectionId = owner?.connectionId.trim() || ''
+  const connectionId = owner?.connectionId?.trim() || ''
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
@@ -1308,8 +1308,8 @@ export function upsertOptimisticSession(
     ...(connectionId ? { connection_id: connectionId } : {})
   }
 
-  if (owner) {
-    setSessionOwnerHint(id, owner)
+  if (owner?.connectionId) {
+    setSessionOwnerHint(id, { ...owner, connectionId: owner.connectionId })
   }
 
   setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
@@ -1578,7 +1578,7 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    'agentWorktree' | 'branch' | 'codingWorkspace' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -1668,6 +1668,14 @@ export function applyRuntimeInfo(
   reportInstallMethodWarning(info.install_warning)
 
   const sessionState: SessionRuntimeStatePatch = {}
+
+  if (info.coding_workspace !== undefined) {
+    sessionState.codingWorkspace = info.coding_workspace
+  }
+
+  if (info.agent_worktree !== undefined) {
+    sessionState.agentWorktree = info.agent_worktree
+  }
 
   if (typeof info.model === 'string') {
     sessionState.model = info.model

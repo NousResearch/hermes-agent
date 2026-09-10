@@ -161,6 +161,8 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # git subprocess probes on an arbitrary (maybe slow) mount.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
+    "projects.workspace.inspect", "projects.workspace.register", "projects.workspace.prepare",
+    "session.workspace.verify",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
@@ -1490,6 +1492,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             or model_config.get("follow_profile_config") or _row_title == "Bot Chat"):
         return {}
     overrides: dict = {}
+    if isinstance(model_config.get("coding_workspace"), dict):
+        overrides["coding_workspace"] = model_config["coding_workspace"]
     field = lambda k: str(model_config.get(k) or "").strip()
     model = str(row.get("model") or model_config.get("model") or "").strip()
     # ``billing_provider`` is only the billing bucket — for a custom endpoint the bare class "custom", which
@@ -2067,6 +2071,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
+        "coding_workspace": sess.get("coding_workspace"),
+        "agent_worktree": sess.get("agent_worktree"),
         "terminal_backend": _effective_terminal_backend(), "personality": str(personality or ""),
         "running": bool(sess.get("running")), "turn_started_at": _turn_started_at(session),
         "title": _session_live_title(sess, session_key) if session_key else "",
@@ -2262,7 +2268,8 @@ def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
-    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None):
+    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
+    coding_workspace: dict | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2279,6 +2286,10 @@ def _make_agent(
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
+    from tui_gateway.coding_workspaces import workspace_instructions
+    binding = coding_workspace or (_sessions.get(sid) or {}).get("coding_workspace")
+    if binding:
+        system_prompt = "\n\n".join(part for part in (system_prompt, workspace_instructions(binding)) if part)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
@@ -2330,11 +2341,16 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
+                        _sessions[sid]["coding_workspace"] = _parse_model_config(row.get("model_config"), quiet=True).get("coding_workspace")
             elif hasattr(db, "update_session_cwd"):
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
                 except Exception:
                     logger.debug("failed to persist resumed session cwd", exc_info=True)
+            # The badge lives in model_config regardless of whether the row carries a cwd (a desktop launch-dir
+            # session has none — exactly the shape that earns the badge).
+            if row and sid in _sessions:
+                _restore_agent_worktree(_sessions[sid], _parse_model_config(row.get("model_config"), quiet=True))
     finally:
         if owns_db and db is not None:
             with contextlib.suppress(Exception):
@@ -2650,6 +2666,8 @@ def _fallback_session_info(session: dict) -> dict:
     cwd = _session_cwd(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
+        "coding_workspace": session.get("coding_workspace"),
+        "agent_worktree": session.get("agent_worktree"),
         "model": _resolve_model(), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 
@@ -3205,6 +3223,7 @@ from . import (  # noqa: E402
     tool_progress as _tool_progress, change_watcher as _change_watcher,
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
+    session_agent_worktree as _session_agent_worktree,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
     session_transports as _session_transports,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
@@ -3216,7 +3235,7 @@ from . import (  # noqa: E402
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents)
 
 for _m in (
-    _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
+    _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _session_agent_worktree, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,

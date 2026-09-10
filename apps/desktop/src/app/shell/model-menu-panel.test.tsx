@@ -239,7 +239,9 @@ describe('ModelMenuPanel search', () => {
     })
 
     // First match auto-selected; ↓ steps to the second match.
+    input.focus()
     fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(window.document.activeElement).toBe(input)
     fireEvent.keyDown(input, { key: 'Enter' })
 
     await vi.waitFor(() => {

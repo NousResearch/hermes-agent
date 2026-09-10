@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ImageLightbox } from '@/components/chat/zoomable-image'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
@@ -17,10 +18,12 @@ import { openPreview } from '@/store/preview'
 
 export function AttachmentList({
   attachments,
-  onRemove
+  onRemove,
+  onUseAsProject
 }: {
   attachments: ComposerAttachment[]
   onRemove?: (id: string) => void
+  onUseAsProject?: (path: string) => void
 }) {
   return (
     <div className="flex max-w-full flex-wrap gap-1.5 px-1 pt-1" data-slot="composer-attachments">
@@ -29,13 +32,14 @@ export function AttachmentList({
           attachment={attachment}
           key={attachment.occurrenceId ? `occ:${attachment.occurrenceId}` : attachment.id}
           onRemove={onRemove}
+          onUseAsProject={onUseAsProject}
         />
       ))}
     </div>
   )
 }
 
-function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove?: (id: string) => void }) {
+function AttachmentPill({ attachment, onRemove, onUseAsProject }: { attachment: ComposerAttachment; onRemove?: (id: string) => void; onUseAsProject?: (path: string) => void }) {
   const { t } = useI18n()
   const c = t.composer
 
@@ -201,6 +205,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
               )}
             </span>
           </button>
+          {attachment.kind === 'folder' && attachment.path && onUseAsProject && <Button onClick={() => onUseAsProject(attachment.path!)} size="micro" type="button" variant="ghost">{t.codingWorkspace.useAsProject}</Button>}
           {onRemove && (
             <button
               aria-label={c.removeAttachment(attachment.label)}

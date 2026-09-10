@@ -31,7 +31,8 @@ export function ContextMenu({
   onPasteClipboardImage,
   onPickFiles,
   onPickFolders,
-  onPickImages
+  onPickImages,
+  onWorkInProject
 }: ContextMenuProps) {
   const { t } = useI18n()
   const c = t.composer
@@ -89,6 +90,8 @@ export function ContextMenu({
           </ContextMenuItem>
 
           <DropdownMenuSeparator />
+
+          {onWorkInProject && <ContextMenuItem icon={FolderOpen} onSelect={onWorkInProject}>{t.codingWorkspace.workInProject}</ContextMenuItem>}
 
           <ContextMenuItem icon={MessageSquareText} onSelect={() => setSnippetsOpen(true)}>
             {c.promptSnippets}
@@ -185,6 +188,7 @@ interface ContextMenuItemProps {
 }
 
 interface ContextMenuProps {
+  onWorkInProject?: () => void
   onInsertText: (text: string) => void
   onOpenUrlDialog: () => void
   onPasteClipboardImage?: (opts?: { silent?: boolean }) => Promise<boolean> | void

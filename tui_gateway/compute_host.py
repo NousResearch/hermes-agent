@@ -211,6 +211,8 @@ class ComputeHost:
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
+            from tui_gateway.coding_workspaces import verify_session_workspace
+            verify_session_workspace(session, probe=True)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
             with session["history_lock"]:
@@ -281,6 +283,10 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         session = server._sessions.get(sid)
         if session is not None:
+            if session.get("coding_workspace") or frame.get("coding_workspace"):
+                for field in ("cwd", "coding_workspace", "explicit_cwd"):
+                    if field in frame and session.get(field) != frame[field]:
+                        raise ValueError("Compute session workspace differs from the submitted binding")
             session["transport"] = self._transport
             if frame.get("cols") is not None:
                 session["cols"] = int(frame.get("cols") or 80)
@@ -316,6 +322,7 @@ class ComputeHost:
                 reasoning_config_override=frame.get("reasoning_config_override"),
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
+                coding_workspace=frame.get("coding_workspace"),
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
                 session_db=session_db)
@@ -339,7 +346,8 @@ class ComputeHost:
                 server._init_session(
                     sid, key, agent, list(history), cols=int(frame.get("cols") or 80),
                     cwd=str(frame.get("cwd") or "") or None, session_db=session_db,
-                    source=frame.get("source"))
+                    source=frame.get("source"), profile_home=profile_home or None,
+                    explicit_cwd=bool(frame.get("explicit_cwd")))
             finally:
                 reset_transport(token)
         except Exception:
@@ -360,6 +368,12 @@ class ComputeHost:
         session = server._sessions[sid]
         session["transport"] = self._transport
         session["profile_home"] = profile_home or session.get("profile_home")
+        if frame.get("coding_workspace"):
+            if session.get("coding_workspace") and session["coding_workspace"] != frame["coding_workspace"]:
+                raise ValueError("Stored workspace differs from the submitted binding")
+            session["coding_workspace"] = dict(frame["coding_workspace"])
+            session["explicit_cwd"] = bool(frame.get("explicit_cwd"))
+            server._register_session_cwd(session)
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")
         return session

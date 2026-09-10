@@ -83,6 +83,48 @@ export interface Translations {
     open: string
     continue: string
     importError: string
+  },
+  codingWorkspace: {
+    openFailed: string
+    worktree: string
+    folder: string
+    project: string
+    workIn: string
+    noProject: string
+    newWorktree: string
+    existingWorktree: string
+    currentCheckout: string
+    agentWorktree: string
+    agentWorktreeNote: string
+    newChatHere: string
+    projectFolder: string
+    initializeGit: string
+    initializeGitDescription: string
+    initializeGitFailed: string
+    searchProjects: string
+    noProjects: string
+    projectsFailed: string
+    browse: string
+    base: string
+    dirty: string
+    clean: string
+    detached: string
+    dirtyNotCopied: string
+    createOnSend: string
+    shared: string
+    inUse: string
+    preparing: string
+    workInProject: string
+    useAsProject: string
+    newChat: string
+    binding: string
+    selectCheckout: string
+    folderFailed: string
+    unavailable: string
+
+    showControls: string
+    showControlsDescription: string
+    saveFailed: string
   }
   common: {
     apply: string

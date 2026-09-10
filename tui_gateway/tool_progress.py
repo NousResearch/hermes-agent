@@ -238,6 +238,13 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or name in _TODO_TOOL_NAMES):
         _emit("tool.complete", sid, payload)
+    # A terminal call that landed in a linked worktree (agent-made mid-chat) surfaces on the desktop status row
+    # the moment work starts there, not at turn end.
+    try:
+        if session is not None and _observe_tool_activity(session, name, args, result):
+            _emit("session.info", sid, _session_info(session.get("agent"), session))
+    except Exception:
+        logger.debug("failed to observe tool activity for agent worktree", exc_info=True)
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets
     # every client reconcile without parsing tool args.
     if todo_state is not None:

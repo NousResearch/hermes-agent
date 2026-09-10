@@ -43,6 +43,18 @@ const {
   refreshProfiles
 } = await import('./profile')
 
+const profileModule = await import('./profile')
+
+it('carries explicit coding presentation through the existing fresh-chat request, then clears it on ordinary New chat', () => {
+  const route = { connectionId: 'local', profile: 'coder' }
+  const options = { codingWorkspaceControls: true, workspaceTarget: null }
+  profileModule.newSessionInAgent(route, options)
+  expect(profileModule.$freshSessionRequestOptions?.get()).toEqual(options)
+  expect(profileModule.$newChatRoute.get()).toEqual(route)
+  profileModule.requestFreshSession()
+  expect(profileModule.$freshSessionRequestOptions?.get()).toEqual({})
+})
+
 const { $poolLimits } = await import('@/store/pool-limits')
 
 const { $connection } = await import('./session')

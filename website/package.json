@@ -45,7 +45,7 @@
     "mermaid": "11.16.1",
     "image-size": "npm:@nous-research/image-size@2.0.3",
     "tar": "7.5.22",
-    "fast-uri": "3.1.6"
+    "fast-uri": "3.1.7"
   },
   "browserslist": {
     "production": [
@@ -61,7 +61,7 @@
   },
   "engines": {
     "node": ">=20.0",
-    "npm": ">=11.17.0"
+    "npm": ">=10.0.0"
   },
   "allowScripts": {
     "core-js@3.49.0": true,

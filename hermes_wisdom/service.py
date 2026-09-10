@@ -535,6 +535,9 @@ class WisdomService:
         return result
 
     def require_setup(self) -> None:
+        from .account_session import reject_revoked_account
+
+        reject_revoked_account(self.store)
         wisdom = _config()
         active_org_id = self.store.active_org_id()
         if (
@@ -550,6 +553,9 @@ class WisdomService:
         try:
             token_org_id = self.client.display_org_id
         except Exception:
+            # Resolving credentials above may just have persisted revocation.
+            # Do not turn that terminal result into permission to work offline.
+            reject_revoked_account(self.store)
             # The last server-verified org remains usable offline. Gateway is
             # authoritative whenever a network operation is attempted.
             return

@@ -69,6 +69,10 @@ Completed operations and delivery evidence remain available for recovery. A send
 already dispatched can still arrive after sign-out; its receipt is retained for
 settlement without sending the card again.
 
+Wisdom also retires pending advice when credential refresh records that the Nous
+session was revoked. A cached client cannot keep that advice active. Ordinary
+token expiry and temporary connection/server failures do not cancel it.
+
 Assessment claims are local to one profile and organization, with three-minute
 leases and three bounded attempts. Idle sessions poll at most once a minute
 per profile/org, and proactive routing uses a ten-minute recent-activity window.

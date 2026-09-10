@@ -7,11 +7,12 @@ from hermes_constants import get_hermes_home
 from .store import WisdomStore
 
 
-def sign_out() -> bool:
-    root = get_hermes_home() / "wisdom"
-    if not (root / "wisdom.db").is_file():
-        return False
-    store = WisdomStore(root)
+def sign_out(store: WisdomStore | None = None) -> bool:
+    if store is None:
+        root = get_hermes_home() / "wisdom"
+        if not (root / "wisdom.db").is_file():
+            return False
+        store = WisdomStore(root)
     now = time.time()
     with store.transaction() as db:
         changed = db.execute(
@@ -38,3 +39,18 @@ def sign_out() -> bool:
         db.execute("UPDATE wisdom_agent_session SET available=0,alive_until=0")
         db.execute("UPDATE wisdom_mute_control SET expires_at=0")
     return bool(changed)
+
+
+def reject_revoked_account(store: WisdomStore) -> None:
+    from hermes_cli.auth_nous import NOUS_SESSION_TERMINAL, get_nous_session_validity
+
+    from .client import WisdomAuthError
+
+    # This reads the persisted quarantine marker, never refreshes credentials.
+    # Network errors and ordinary token expiry are not proof of revocation.
+    if get_nous_session_validity() == NOUS_SESSION_TERMINAL:
+        sign_out(store)
+        raise WisdomAuthError(
+            "Your Nous session ended; sign in and re-verify your team with `hermes wisdom setup`.",
+            code="account_session_ended",
+        )

@@ -29,7 +29,7 @@ import yaml
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -90,7 +90,7 @@ def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value, *, base_url=""
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(
-        "hermes_cli.model_switch.list_picker_providers",
+        "hermes_cli.model_switch_providers.list_picker_providers",
         lambda **kw: [{"slug": "custom", "name": "Custom", "models": ["local-llama"]}],
     )
     monkeypatch.setattr(
@@ -140,29 +140,6 @@ async def test_typed_switch_to_custom_clears_stale_base_url_and_api_mode(tmp_pat
     assert "api_mode" not in written["model"], (
         "stale api_mode from the old custom endpoint must be cleared"
     )
-
-
-@pytest.mark.asyncio
-async def test_typed_switch_to_custom_persists_resolved_base_url_and_api_mode(tmp_path, monkeypatch):
-    """The normal case: a custom-provider switch that DOES resolve a fresh
-    base_url/api_mode must persist both (api_mode was never written here
-    before the fix)."""
-    cfg_path = _setup_isolated_home(
-        tmp_path,
-        monkeypatch,
-        dict(_STALE_MODEL_CFG),
-        base_url="https://new-endpoint.example/v1",
-        api_mode="anthropic_messages",
-    )
-
-    result = await _make_runner()._handle_model_command(
-        _make_event("/model local-llama --provider custom --global")
-    )
-
-    assert result is not None
-    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert written["model"]["base_url"] == "https://new-endpoint.example/v1"
-    assert written["model"]["api_mode"] == "anthropic_messages"
 
 
 # ---------------------------------------------------------------------------

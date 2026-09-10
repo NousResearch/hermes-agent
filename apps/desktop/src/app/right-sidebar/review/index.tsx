@@ -4,18 +4,12 @@ import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DiffSkeleton, TreeSkeleton } from '@/components/chat/skeletons'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DiffCount } from '@/components/ui/diff-count'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
@@ -162,9 +156,9 @@ export function ReviewPane() {
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
-              title={selectedFile.path}
+              title={displayPath(selectedFile.path)}
             >
-              {selectedFile.path}
+              {displayPath(selectedFile.path)}
             </span>
             <DiffCount added={selectedFile.added} className="text-[0.64rem] leading-4" removed={selectedFile.removed} />
             <Tip label={selectedFile.staged ? c.unstage : c.stage}>
@@ -208,32 +202,30 @@ export function ReviewPane() {
 
       <ReviewShipBar />
 
-      <Dialog onOpenChange={open => !open && cancelRevert()} open={revertTarget !== undefined}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{revertingAll ? c.revertAll : c.revert}</DialogTitle>
-            <DialogDescription>
-              {revertingAll ? c.revertAllConfirm : c.revertConfirm}
-              {!revertingAll && revertTarget?.path && (
-                <span
-                  className="mt-2 block truncate font-mono text-[0.7rem] text-(--ui-text-secondary)"
-                  title={revertTarget.path}
-                >
-                  {revertTarget.path}
-                </span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button onClick={cancelRevert} variant="ghost">
-              {t.common.cancel}
-            </Button>
-            <Button onClick={() => void confirmRevert().catch(err => notifyError(err, c.revert))} variant="destructive">
-              {revertingAll ? c.revertAll : c.revert}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        confirmLabel={revertingAll ? c.revertAll : c.revert}
+        description={
+          <>
+            {revertingAll ? c.revertAllConfirm : c.revertConfirm}
+            {!revertingAll && revertTarget?.path && (
+              <span
+                className="mt-2 block truncate font-mono text-[0.7rem] text-(--ui-text-secondary)"
+                title={displayPath(revertTarget.path)}
+              >
+                {displayPath(revertTarget.path)}
+              </span>
+            )}
+          </>
+        }
+        destructive
+        // confirmRevert closes the dialog itself, then reverts in the
+        // background — so the failure lands in a toast, not inline.
+        dismissOnConfirm
+        onClose={cancelRevert}
+        onConfirm={() => confirmRevert().catch(err => void notifyError(err, c.revert))}
+        open={revertTarget !== undefined}
+        title={revertingAll ? c.revertAll : c.revert}
+      />
     </aside>
   )
 }

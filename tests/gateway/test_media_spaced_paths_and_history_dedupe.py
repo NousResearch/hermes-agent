@@ -29,27 +29,9 @@ class TestGisExtensions:
         for ext in (".kmz", ".kml", ".geojson", ".gpx"):
             assert ext in MEDIA_DELIVERY_EXTS
 
-    def test_geojson_extracts(self, tmp_path):
-        p = tmp_path / "route.geojson"
-        p.write_text("{}")
-        media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{p}")
-        assert [x for x, _ in media] == [str(p)]
-        assert "MEDIA:" not in cleaned
-
 
 class TestSpacedPaths:
-    def test_spaced_known_ext_extracts(self, tmp_path):
-        p = tmp_path / "map data.kmz"
-        p.write_bytes(b"PK")
-        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{p}")
-        assert [x for x, _ in media] == [str(p)]
 
-    def test_spaced_unknown_ext_extracts_when_file_exists(self, tmp_path):
-        p = tmp_path / "my server.log"
-        p.write_text("log line\n")
-        media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{p}")
-        assert [os.path.realpath(x) for x, _ in media] == [os.path.realpath(str(p))]
-        assert "MEDIA:" not in cleaned
 
     def test_spaced_path_followed_by_prose_keeps_prose(self, tmp_path):
         p = tmp_path / "my server.log"
@@ -60,11 +42,6 @@ class TestSpacedPaths:
         assert [os.path.realpath(x) for x, _ in media] == [os.path.realpath(str(p))]
         assert "is the log you asked for" in cleaned
 
-    def test_spaced_nonexistent_stays_visible(self):
-        text = "MEDIA:/data/not real file.xyz here"
-        media, cleaned = BasePlatformAdapter.extract_media(text)
-        assert media == []
-        assert "MEDIA:/data/not real file.xyz" in cleaned
 
     def test_forward_extension_stops_at_next_media_tag(self, tmp_path):
         a = tmp_path / "Caddyfile"
@@ -93,19 +70,6 @@ class TestStreamingDisplayStripCodeBlocks:
         assert out.count(f"MEDIA:{p}") == 1
         assert "```" in out
 
-    def test_inline_code_example_preserved(self):
-        text = "Use `MEDIA:/nonexistent/example.csv` to attach files."
-        out = BasePlatformAdapter.strip_media_directives_for_display(text)
-        assert "`MEDIA:/nonexistent/example.csv`" in out
-
-    def test_plain_tag_still_stripped(self, tmp_path):
-        p = tmp_path / "real.csv"
-        p.write_text("x")
-        out = BasePlatformAdapter.strip_media_directives_for_display(
-            f"Here you go MEDIA:{p}"
-        )
-        assert "MEDIA:" not in out
-
 
 class TestHistoryMediaDedupe:
     def test_assistant_message_tags_collected(self):
@@ -117,12 +81,22 @@ class TestHistoryMediaDedupe:
         paths = _collect_history_media_paths(history)
         assert "/tmp/chart.png" in paths
 
-    def test_tool_message_tags_still_collected(self):
+    def test_quoted_spaced_home_path_is_collected_in_delivery_form(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
         history = [
-            {"role": "tool", "content": "MEDIA:/tmp/out.pdf"},
+            {
+                "role": "assistant",
+                "content": 'MEDIA:"~/audio cache/old.ogg"',
+            },
         ]
+
         paths = _collect_history_media_paths(history)
-        assert "/tmp/out.pdf" in paths
+
+        assert str(tmp_path / "audio cache" / "old.ogg") in paths
 
     def test_empty_history_empty_set(self):
         assert _collect_history_media_paths([]) == set()

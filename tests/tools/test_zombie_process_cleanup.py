@@ -96,27 +96,36 @@ class TestAgentCloseMethod:
     """Verify AIAgent.close() exists, is idempotent, and calls cleanup."""
 
     def test_close_calls_cleanup_functions(self):
-        """close() should call kill_all, cleanup_vm, cleanup_browser."""
+        """close() should release every session-owned execution backend."""
         from unittest.mock import patch
 
         with patch("run_agent.AIAgent.__init__", return_value=None):
             from run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-cleanup"
+            agent._process_owner_task_ids = {"sa-owned"}
             agent._active_children = []
             agent._active_children_lock = threading.Lock()
             agent.client = None
 
             with patch("tools.process_registry.process_registry") as mock_registry, \
                  patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
-                 patch("run_agent.cleanup_browser") as mock_cleanup_browser:
+                 patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
+                 patch("tools.computer_use.tool.release_computer_use_session") as mock_cleanup_cua:
+                mock_registry.list_sessions.return_value = [
+                    {"session_id": "owned", "owner_task_id": "sa-owned", "status": "running"},
+                    {"session_id": "foreign", "owner_task_id": "parent", "status": "running"},
+                    {"session_id": "finished", "owner_task_id": "sa-owned", "status": "exited"},
+                ]
                 agent.close()
 
-                mock_registry.kill_all.assert_called_once_with(
-                    task_id="test-close-cleanup"
+                mock_registry.kill_process.assert_called_once_with(
+                    "owned", source="agent_close", consume_output=True,
                 )
+                mock_registry.kill_all.assert_not_called()
                 mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
+                mock_cleanup_cua.assert_called_once_with("test-close-cleanup")
 
     def test_close_is_idempotent(self):
         """close() can be called multiple times without error."""
@@ -133,6 +142,49 @@ class TestAgentCloseMethod:
             agent.close()
             agent.close()
             agent.close()
+
+    def test_close_releases_computer_use_when_earlier_cleanup_fails(self):
+        """One failed cleanup step must not strand the computer-use session."""
+        from unittest.mock import patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-close-after-failure"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+
+            with patch(
+                "tools.process_registry.process_registry.list_sessions",
+                side_effect=RuntimeError("process cleanup failed"),
+            ), patch(
+                "tools.computer_use.tool.release_computer_use_session",
+            ) as mock_cleanup_cua:
+                agent.close()
+
+            mock_cleanup_cua.assert_called_once_with(
+                "test-close-after-failure"
+            )
+
+    def test_soft_client_release_preserves_computer_use_session(self):
+        """Cache eviction is not a hard session boundary."""
+        from unittest.mock import patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-soft-release"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+
+            with patch(
+                "tools.computer_use.tool.release_computer_use_session",
+            ) as mock_cleanup_cua:
+                agent.release_clients()
+
+            mock_cleanup_cua.assert_not_called()
 
     def test_close_propagates_to_children(self):
         """close() should call close() on all active child agents."""
@@ -227,7 +279,7 @@ class TestAgentCloseMethod:
             ) as mock_vm, patch(
                 "run_agent.cleanup_browser"
             ) as mock_browser:
-                mock_reg.kill_all.side_effect = RuntimeError("boom")
+                mock_reg.list_sessions.side_effect = RuntimeError("boom")
 
                 agent.close()
 
@@ -286,7 +338,7 @@ class TestGatewayCleanupWiring:
             with patch("gateway.status.remove_pid_file"), \
                  patch("gateway.status.write_runtime_status"), \
                  patch("tools.terminal_tool.cleanup_all_environments"), \
-                 patch("tools.browser_tool.cleanup_all_browsers"):
+                 patch("tools.browser_tool_lifecycle.cleanup_all_browsers"):
                 loop.run_until_complete(GatewayRunner.stop(runner))
         finally:
             loop.close()
@@ -325,7 +377,7 @@ class TestDelegationCleanup:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        from hermes_cli.observability import relay_runtime
+        from agent import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
@@ -370,7 +422,7 @@ class TestDelegationCleanup:
     def test_active_child_turn_owns_relay_scope_cleanup(self, monkeypatch):
         from unittest.mock import MagicMock
 
-        from hermes_cli.observability import relay_runtime
+        from agent import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()

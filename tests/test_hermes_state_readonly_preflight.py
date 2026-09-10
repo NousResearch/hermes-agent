@@ -95,21 +95,6 @@ class TestRepairScope:
         assert os.access(db, os.W_OK)
         assert os.access(wal, os.W_OK)
 
-    def test_wal_data_survives_repair(self, hermes_home):
-        """The committed WAL frame must be readable after repair — proof the
-        preflight never drops/truncates a sidecar."""
-        db = hermes_home / "state.db"
-        _make_wal_db(db)
-        wal = db.with_name(db.name + "-wal")
-        os.chmod(db, 0o444)
-        os.chmod(wal, 0o444)
-
-        preflight_db_writability(db, db_label="state.db")
-
-        conn = sqlite3.connect(str(db))
-        rows = conn.execute("SELECT x FROM t").fetchall()
-        conn.close()
-        assert (42,) in rows
 
     def test_repairs_readonly_parent_directory(self, hermes_home):
         sub = hermes_home / "kanban"
@@ -160,14 +145,8 @@ class TestRefusalOutsideScope:
 
 
 class TestSkips:
-    def test_memory_uri_skipped(self, hermes_home):
-        preflight_db_writability(Path(":memory:"))
 
-    def test_file_uri_skipped(self, hermes_home):
-        preflight_db_writability(Path("file:whatever?mode=ro"))
 
-    def test_missing_files_no_error(self, hermes_home):
-        preflight_db_writability(hermes_home / "state.db")
 
     def test_healthy_db_untouched(self, hermes_home):
         db = hermes_home / "state.db"

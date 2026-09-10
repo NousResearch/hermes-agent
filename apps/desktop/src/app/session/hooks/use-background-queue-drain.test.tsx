@@ -10,10 +10,32 @@ import {
   getQueuedPrompts,
   parkQueuedPrompts
 } from '@/store/composer-queue'
+import { $sessions, setSessions, setSessionsLoading } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
 
 import { useBackgroundQueueDrain } from './use-background-queue-drain'
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
+
+const lineageSession = (over: Partial<SessionInfo>): SessionInfo =>
+  ({
+    archived: false,
+    cwd: null,
+    ended_at: null,
+    id: 'live',
+    input_tokens: 0,
+    is_active: false,
+    last_active: 0,
+    message_count: 0,
+    model: null,
+    output_tokens: 0,
+    preview: null,
+    source: null,
+    started_at: 0,
+    title: null,
+    tool_call_count: 0,
+    ...over
+  }) as SessionInfo
 
 function Harness({
   enabled = true,
@@ -40,6 +62,9 @@ describe('useBackgroundQueueDrain', () => {
   beforeEach(() => {
     vi.useRealTimers()
     clearAllSessionStates()
+    // Production drain waits for the sidebar list. Tests that assert drain
+    // behavior are post-load unless they opt into the loading gate.
+    setSessionsLoading(false)
   })
 
   afterEach(() => {
@@ -48,6 +73,8 @@ describe('useBackgroundQueueDrain', () => {
     vi.useRealTimers()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    $sessions.set([])
+    setSessionsLoading(true)
     clearAllSessionStates()
   })
 
@@ -101,6 +128,40 @@ describe('useBackgroundQueueDrain', () => {
 
     expect(submitText).not.toHaveBeenCalled()
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  it('treats a tip working id as busy for a root queue key via lineage', async () => {
+    // Queue keys use the lineage root (resolveComposerSessionKey) while
+    // $workingSessionIds may hold the compression tip — strict equality misses.
+    const runtimeMap = { current: new Map([['root-a', 'rt-tip-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    setSessions([lineageSession({ id: 'tip-a', _lineage_root_id: 'root-a' })])
+    enqueueQueuedPrompt('root-a', { text: 'wait for tip turn', attachments: [] })
+    publishSessionState('rt-tip-a', { ...createClientSessionState('tip-a'), busy: true })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('root-a')).toHaveLength(1)
+  })
+
+  it('leaves a root queue to ChatBar when the selected id is the compression tip', async () => {
+    const runtimeMap = { current: new Map([['root-a', 'rt-tip-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    setSessions([lineageSession({ id: 'tip-a', _lineage_root_id: 'root-a' })])
+    enqueueQueuedPrompt('root-a', { text: 'visible after tip select', attachments: [] })
+    clearAllSessionStates()
+
+    render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="tip-a" submitText={submitText} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('root-a')).toHaveLength(1)
   })
 
   it('does not drain a parked background session, even when idle', async () => {
@@ -164,5 +225,53 @@ describe('useBackgroundQueueDrain', () => {
 
     expect(submitText).toHaveBeenCalledTimes(2)
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
+  })
+
+  it('does not drain restored queues while the session list is still loading', async () => {
+    vi.useFakeTimers()
+    setSessionsLoading(true)
+
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'wait for session list', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    // Four 750ms retries is what used to burn the drain budget and toast on boot.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(750 * 4)
+      await Promise.resolve()
+    })
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  it('drains a restored background queue once the session list finishes loading', async () => {
+    setSessionsLoading(true)
+
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'send after load', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    expect(submitText).not.toHaveBeenCalled()
+
+    setSessionsLoading(false)
+
+    await waitFor(() => {
+      expect(submitText).toHaveBeenCalledWith('send after load', {
+        attachments: [],
+        fromQueue: true,
+        sessionId: 'rt-session-a',
+        storedSessionId: 'stored-session-a'
+      })
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
   })
 })

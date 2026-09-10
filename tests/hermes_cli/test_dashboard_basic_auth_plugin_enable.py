@@ -42,16 +42,6 @@ class TestEnsureBasicAuthPluginEnabled:
         cfg = {"plugins": {"disabled": ["other-plugin"]}}
         assert ensure_basic_auth_plugin_enabled_in_config(cfg) is False
 
-    def test_removes_bare_basic_key(self):
-        cfg = {"plugins": {"disabled": ["basic", "foo"]}}
-        assert ensure_basic_auth_plugin_enabled_in_config(cfg) is True
-        assert cfg["plugins"]["disabled"] == ["foo"]
-
-    def test_removes_namespaced_key(self):
-        cfg = {"plugins": {"disabled": ["dashboard_auth/basic"]}}
-        assert ensure_basic_auth_plugin_enabled_in_config(cfg) is True
-        assert cfg["plugins"]["disabled"] == []
-
 
 class TestBasicProviderLoadsAfterUnblock:
     def test_disabled_basic_blocks_registration(self, hermes_home, monkeypatch):

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -13,10 +13,9 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
-
-import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 
@@ -85,84 +84,50 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   const [endpoints, setEndpoints] = useState<CustomEndpoint[]>([])
   const [form, setForm] = useState<EndpointForm>(EMPTY_FORM)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
-  const profileEpoch = useRef(0)
 
-  const refresh = useCallback(async (epoch = profileEpoch.current): Promise<boolean> => {
+  async function refresh() {
     const data = await getCustomEndpoints()
-
-    if (profileEpoch.current !== epoch) {
-      return false
-    }
-
     setEndpoints(data.endpoints)
+  }
 
-    return true
-  }, [])
+  useEffect(() => {
+    let cancelled = false
 
-  const loadProfile = useCallback(async () => {
-    const epoch = profileEpoch.current
-    setLoading(true)
+    async function load() {
+      try {
+        const data = await getCustomEndpoints()
 
-    try {
-      const data = await getCustomEndpoints()
+        if (cancelled) {
+          return
+        }
 
-      if (profileEpoch.current !== epoch) {
-        return
-      }
+        setEndpoints(data.endpoints)
+        const current = data.endpoints.find(endpoint => endpoint.is_current) ?? data.endpoints[0]
 
-      setEndpoints(data.endpoints)
-      const current = data.endpoints.find(endpoint => endpoint.is_current) ?? data.endpoints[0]
-
-      if (current) {
-        setForm(formFromEndpoint(current))
-        setDiscoveredModels(current.models)
-      } else {
-        setForm(EMPTY_FORM)
-        setDiscoveredModels([])
-      }
-    } catch (err) {
-      if (profileEpoch.current === epoch) {
+        if (current) {
+          setForm(formFromEndpoint(current))
+          setDiscoveredModels(current.models)
+        }
+      } catch (err) {
         notifyError(err, 'Could not load custom endpoints')
-      }
-    } finally {
-      if (profileEpoch.current === epoch) {
-        setLoading(false)
+      } finally {
+        if (!cancelled) {
+          setLoading(false)
+        }
       }
     }
-  }, [])
 
-  // eslint-disable-next-line no-restricted-syntax -- request epoch invalidates stale async completions, not an atom mirror
-  useEffect(() => {
-    void loadProfile()
+    void load()
 
     return () => {
-      profileEpoch.current += 1
+      cancelled = true
     }
-  }, [loadProfile])
-
-  useOnProfileSwitch(() => {
-    profileEpoch.current += 1
-    setEndpoints([])
-    setForm(EMPTY_FORM)
-    setDiscoveredModels([])
-    setSaving(false)
-    setTesting(false)
-    setActivating(null)
-    setDeleting(null)
-    void loadProfile()
-  })
+  }, [])
 
   async function handleSave() {
-    const epoch = profileEpoch.current
-
     try {
       setSaving(true)
       const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
-
-      if (profileEpoch.current !== epoch) {
-        return
-      }
-
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 
@@ -179,27 +144,16 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       onConfigSaved?.()
       notify({ kind: 'success', message: 'Custom endpoint saved.' })
     } catch (err) {
-      if (profileEpoch.current === epoch) {
-        notifyError(err, 'Save failed')
-      }
+      notifyError(err, 'Save failed')
     } finally {
-      if (profileEpoch.current === epoch) {
-        setSaving(false)
-      }
+      setSaving(false)
     }
   }
 
   async function handleValidate() {
-    const epoch = profileEpoch.current
-
     try {
       setTesting(true)
       const response = await validateCustomEndpoint(toPayload(form))
-
-      if (profileEpoch.current !== epoch) {
-        return
-      }
-
       setDiscoveredModels(response.models)
 
       if (response.ok) {
@@ -220,56 +174,36 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         })
       }
     } catch (err) {
-      if (profileEpoch.current === epoch) {
-        notifyError(err, 'Validation failed')
-      }
+      notifyError(err, 'Validation failed')
     } finally {
-      if (profileEpoch.current === epoch) {
-        setTesting(false)
-      }
+      setTesting(false)
     }
   }
 
   async function handleActivate(endpoint: CustomEndpoint) {
-    const epoch = profileEpoch.current
-
     try {
       setActivating(endpoint.id)
       const response = await activateCustomEndpoint(endpoint.id)
-
-      if (profileEpoch.current !== epoch || !(await refresh(epoch))) {
-        return
-      }
-
+      await refresh()
       onConfigSaved?.()
       onMainModelChanged?.(response.provider, response.model)
       triggerHaptic('success')
     } catch (err) {
-      if (profileEpoch.current === epoch) {
-        notifyError(err, 'Activation failed')
-      }
+      notifyError(err, 'Activation failed')
     } finally {
-      if (profileEpoch.current === epoch) {
-        setActivating(null)
-      }
+      setActivating(null)
     }
   }
 
   async function handleDelete(endpoint: CustomEndpoint) {
-    if (!window.confirm(`Delete ${endpoint.name}?`)) {
+    // This panel is not internationalized at all — keep the literal it had.
+    if (!(await confirm({ destructive: true, title: `Delete ${endpoint.name}?` }))) {
       return
     }
-
-    const epoch = profileEpoch.current
 
     try {
       setDeleting(endpoint.id)
       const response = await deleteCustomEndpoint(endpoint.id)
-
-      if (profileEpoch.current !== epoch) {
-        return
-      }
-
       setEndpoints(response.endpoints)
 
       if (form.id === endpoint.id) {
@@ -280,13 +214,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       onConfigSaved?.()
       triggerHaptic('success')
     } catch (err) {
-      if (profileEpoch.current === epoch) {
-        notifyError(err, 'Delete failed')
-      }
+      notifyError(err, 'Delete failed')
     } finally {
-      if (profileEpoch.current === epoch) {
-        setDeleting(null)
-      }
+      setDeleting(null)
     }
   }
 

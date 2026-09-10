@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
@@ -57,6 +57,8 @@ describe('ComposerStatusStack goal indicator', () => {
     renderStack()
 
     expect(screen.getByText('Goal active')).toBeTruthy()
+    expect(screen.queryByText('ship the feature')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Goal (active|paused)/ }))
     expect(screen.getByText('ship the feature')).toBeTruthy()
   })
 
@@ -66,6 +68,8 @@ describe('ComposerStatusStack goal indicator', () => {
     renderStack()
 
     expect(screen.getByText('Goal paused')).toBeTruthy()
+    expect(screen.queryByText('ship the feature')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Goal (active|paused)/ }))
     expect(screen.getByText('ship the feature')).toBeTruthy()
   })
 
@@ -74,6 +78,7 @@ describe('ComposerStatusStack goal indicator', () => {
 
     renderStack()
 
+    fireEvent.click(screen.getByRole('button', { name: /Goal active/ }))
     expect(screen.getByText('Continuing toward goal (3/20)')).toBeTruthy()
   })
 

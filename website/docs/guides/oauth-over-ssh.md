@@ -21,7 +21,7 @@ The fix is a one-line SSH local-forward. For MCP servers on an interactive termi
 ssh -N -L 43827:127.0.0.1:43827 user@remote-host
 
 # In your existing SSH session on the remote machine:
-hermes auth add spotify --no-browser
+hermes auth spotify --no-browser
 # → Hermes prints an authorize URL. Open it in a browser on your laptop.
 # → Your browser redirects to 127.0.0.1:43827/callback, the tunnel forwards
 #   the request to the remote listener, login completes.
@@ -43,6 +43,14 @@ Hermes prints the exact port it bound to on the `Waiting for callback on ...` li
 If your provider isn't in the table, you don't need a tunnel.
 
 ## MCP Servers
+
+**Desktop Skills → MCP:** the native app receives the callback on your computer
+and relays it to the selected connection and profile, so this flow does not need
+an SSH callback tunnel or `dashboard.public_url`. Tokens stay on the owning
+backend profile. Leaving the MCP tab or changing its scope cancels pending
+sign-in. If Desktop asks you to update the backend, update it before retrying;
+it does not fall back to a remote HTTP callback. The terminal workflows below
+are unchanged.
 
 Remote MCP servers (Linear, Sentry, Atlassian, Asana, Figma, etc.) use the same loopback redirect flow. Hermes auto-picks a free port per server and prints the authorize URL when the OAuth flow kicks off — either at startup (when a new server appears in `mcp_servers:`) or when you run `hermes mcp login <server>`.
 
@@ -92,7 +100,7 @@ ssh -N -L 43827:127.0.0.1:43827 user@remote-host
 
 ```bash
 ssh user@remote-host
-hermes auth add spotify --no-browser
+hermes auth spotify --no-browser
 ```
 
 Hermes detects the SSH session, skips the browser auto-open, and prints an authorize URL plus a `Waiting for callback on http://127.0.0.1:<port>/callback` line.

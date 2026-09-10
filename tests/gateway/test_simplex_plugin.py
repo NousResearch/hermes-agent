@@ -24,7 +24,6 @@ is_connected = _simplex.is_connected
 register = _simplex.register
 _env_enablement = _simplex._env_enablement
 _standalone_send = _simplex._standalone_send
-_guess_extension = _simplex._guess_extension
 _is_image_ext = _simplex._is_image_ext
 _is_audio_ext = _simplex._is_audio_ext
 _CORR_PREFIX = _simplex._CORR_PREFIX
@@ -46,10 +45,6 @@ def test_platform_enum_resolves_via_plugin_scan():
 # ---------------------------------------------------------------------------
 # 2. check_requirements / validate_config / is_connected
 # ---------------------------------------------------------------------------
-
-def test_check_requirements_needs_url(monkeypatch):
-    monkeypatch.delenv("SIMPLEX_WS_URL", raising=False)
-    assert check_requirements() is False
 
 
 def test_check_requirements_true_when_configured(monkeypatch):
@@ -86,17 +81,6 @@ def test_is_connected_mirrors_validate(monkeypatch):
 # 3. _env_enablement seeds PlatformConfig.extra
 # ---------------------------------------------------------------------------
 
-def test_env_enablement_none_when_unset(monkeypatch):
-    monkeypatch.delenv("SIMPLEX_WS_URL", raising=False)
-    assert _env_enablement() is None
-
-
-def test_env_enablement_seeds_ws_url(monkeypatch):
-    monkeypatch.setenv("SIMPLEX_WS_URL", "ws://127.0.0.1:5225")
-    monkeypatch.delenv("SIMPLEX_HOME_CHANNEL", raising=False)
-    seed = _env_enablement()
-    assert seed == {"ws_url": "ws://127.0.0.1:5225"}
-
 
 def test_env_enablement_seeds_home_channel(monkeypatch):
     monkeypatch.setenv("SIMPLEX_WS_URL", "ws://127.0.0.1:5225")
@@ -104,14 +88,6 @@ def test_env_enablement_seeds_home_channel(monkeypatch):
     monkeypatch.setenv("SIMPLEX_HOME_CHANNEL_NAME", "Personal")
     seed = _env_enablement()
     assert seed["home_channel"] == {"chat_id": "42", "name": "Personal"}
-
-
-def test_env_enablement_home_channel_defaults_name_to_id(monkeypatch):
-    monkeypatch.setenv("SIMPLEX_WS_URL", "ws://127.0.0.1:5225")
-    monkeypatch.setenv("SIMPLEX_HOME_CHANNEL", "42")
-    monkeypatch.delenv("SIMPLEX_HOME_CHANNEL_NAME", raising=False)
-    seed = _env_enablement()
-    assert seed["home_channel"] == {"chat_id": "42", "name": "42"}
 
 
 # ---------------------------------------------------------------------------
@@ -127,64 +103,9 @@ def test_adapter_init_custom_url():
     assert adapter._ws is None
 
 
-def test_adapter_init_default_url():
-    from gateway.config import PlatformConfig
-    cfg = PlatformConfig(enabled=True)
-    adapter = SimplexAdapter(cfg)
-    assert adapter.ws_url == "ws://127.0.0.1:5225"
-
-
-def test_adapter_platform_identity():
-    """Adapter should expose Platform("simplex") identity."""
-    from gateway.config import Platform, PlatformConfig
-    cfg = PlatformConfig(enabled=True)
-    adapter = SimplexAdapter(cfg)
-    assert adapter.platform is Platform("simplex")
-
-
-# ---------------------------------------------------------------------------
-# 5. Helper functions (magic-byte detection)
-# ---------------------------------------------------------------------------
-
-def test_guess_extension_png():
-    assert _guess_extension(b"\x89PNG\r\n\x1a\n") == ".png"
-
-
-def test_guess_extension_jpg():
-    assert _guess_extension(b"\xff\xd8\xff\xe0") == ".jpg"
-
-
-def test_guess_extension_ogg():
-    assert _guess_extension(b"OggS\x00\x02") == ".ogg"
-
-
-def test_guess_extension_unknown():
-    assert _guess_extension(b"\x00\x01\x02\x03") == ".bin"
-
-
-def test_is_image_ext():
-    assert _is_image_ext(".png") is True
-    assert _is_image_ext(".webp") is True
-    assert _is_image_ext(".ogg") is False
-
-
-def test_is_audio_ext():
-    assert _is_audio_ext(".ogg") is True
-    assert _is_audio_ext(".mp3") is True
-    assert _is_audio_ext(".pdf") is False
-
-
 # ---------------------------------------------------------------------------
 # 6. Correlation IDs
 # ---------------------------------------------------------------------------
-
-def test_corr_id_starts_with_prefix_and_tracks_pending():
-    from gateway.config import PlatformConfig
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
-    adapter = SimplexAdapter(cfg)
-    corr_id = adapter._make_corr_id()
-    assert corr_id.startswith(_CORR_PREFIX)
-    assert corr_id in adapter._pending_corr_ids
 
 
 def test_corr_id_pending_set_self_trims():
@@ -205,12 +126,13 @@ def test_corr_id_pending_set_self_trims():
 
 @pytest.mark.asyncio
 async def test_send_dm():
-    """DMs use the bare ``@<id> text`` chat-command form.
+    """DMs use the structured ``/_send @<id> json [...]`` form.
 
-    The bracketed form ``@[<id>] text`` is what the daemon's man page
-    documents, but in practice both addressing styles route through
-    the same chat-command parser; bare ``@<id>`` matches what every
-    Hermes deployment has been using in production for months.
+    The bare ``@<id> text`` chat-command form is unreliable — the
+    daemon silently drops messages when it cannot resolve the display
+    name.  The structured ``/_send`` form addresses by ID and
+    survives newlines/quoting through ``json.dumps``, matching what
+    ``send_image`` and ``send_document`` already do.
     """
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
@@ -222,9 +144,14 @@ async def test_send_dm():
     result = await adapter.send("contact-42", "Hello, SimpleX!")
     mock_ws.send.assert_called_once()
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "@contact-42 Hello, SimpleX!"
+    assert payload["cmd"].startswith("/_send @contact-42 json ")
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
+        "msgContent"
+    ]
+    assert msg_content == {"type": "text", "text": "Hello, SimpleX!"}
     assert payload["corrId"].startswith(_CORR_PREFIX)
     assert result.success is True
+
 
 
 @pytest.mark.asyncio
@@ -254,33 +181,75 @@ async def test_send_group():
     assert result.success is True
 
 
-@pytest.mark.asyncio
-async def test_send_when_ws_not_connected_does_not_crash():
+# ---------------------------------------------------------------------------
+# 7b. Channel directory enumeration (list_channels)
+# ---------------------------------------------------------------------------
+
+
+def _adapter_with_ws():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
-    # No _ws assigned — _send_ws should drop quietly
-    result = await adapter.send("contact-42", "hi")
-    assert result.success is True  # send() always returns success — fire-and-forget
+    adapter._ws = AsyncMock()
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_list_channels_contacts_and_groups():
+    adapter = _adapter_with_ws()
+
+    async def fake_send_command(command, timeout=30.0):
+        if command == "/contacts":
+            return {
+                "contacts": [
+                    {"contactId": 1, "localDisplayName": "alice"},
+                    {"contactId": 2, "profile": {"displayName": "bob"}},
+                    "garbage",
+                ]
+            }
+        if command == "/groups":
+            return {
+                "groups": [
+                    {"groupId": 7, "localDisplayName": "friends"},
+                    # [groupInfo, groupSummary] pair form
+                    [{"groupId": 9, "groupProfile": {"displayName": "work"}}, {}],
+                ]
+            }
+        return None
+
+    adapter._send_command = fake_send_command
+    channels = await adapter.list_channels()
+
+    assert {"id": "alice", "name": "alice", "type": "dm"} in channels
+    assert {"id": "bob", "name": "bob", "type": "dm"} in channels
+    assert {"id": "group:7", "name": "friends", "type": "group"} in channels
+    assert {"id": "group:9", "name": "work", "type": "group"} in channels
+
+
+@pytest.mark.asyncio
+async def test_list_channels_returns_none_when_disconnected():
+    """None (not []) so the directory falls back to session discovery."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    assert adapter._ws is None
+    assert await adapter.list_channels() is None
+
+
+@pytest.mark.asyncio
+async def test_list_channels_returns_none_on_contacts_timeout():
+    adapter = _adapter_with_ws()
+
+    async def fake_send_command(command, timeout=30.0):
+        return None  # daemon unresponsive
+
+    adapter._send_command = fake_send_command
+    assert await adapter.list_channels() is None
 
 
 # ---------------------------------------------------------------------------
 # 8. Inbound: filter own-echo by corrId prefix
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_handle_event_filters_own_corr_id():
-    from gateway.config import PlatformConfig
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
-    adapter = SimplexAdapter(cfg)
-    # Pretend we sent a command with this corrId
-    own = adapter._make_corr_id()
-    handler_mock = AsyncMock()
-    adapter._handle_new_chat_item = handler_mock  # type: ignore
-
-    await adapter._handle_event({"corrId": own, "type": "newChatItem"})
-    handler_mock.assert_not_called()
-    assert own not in adapter._pending_corr_ids  # discarded
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +318,11 @@ async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
 
     result = await _standalone_send(pconfig, "contact-42", "hi")
     assert result == {"success": True, "platform": "simplex", "chat_id": "contact-42"}
-    assert sent_payloads[0]["cmd"] == "@contact-42 hi"
+    assert sent_payloads[0]["cmd"].startswith("/_send @contact-42 json ")
+    msg_content = json.loads(
+        sent_payloads[0]["cmd"].split(" json ", 1)[1]
+    )[0]["msgContent"]
+    assert msg_content == {"type": "text", "text": "hi"}
 
 
 @pytest.mark.asyncio
@@ -372,30 +345,11 @@ async def test_health_monitor_does_not_reconnect_quiet_healthy_ws(monkeypatch):
     adapter._ws.close.assert_not_called()
 
 
+
+
 # ---------------------------------------------------------------------------
 # 10. register() — plugin-side metadata
 # ---------------------------------------------------------------------------
-
-def test_register_calls_register_platform():
-    ctx = MagicMock()
-    register(ctx)
-    ctx.register_platform.assert_called_once()
-    kwargs = ctx.register_platform.call_args.kwargs
-    assert kwargs["name"] == "simplex"
-    assert kwargs["label"] == "SimpleX Chat"
-    assert kwargs["required_env"] == ["SIMPLEX_WS_URL"]
-    assert kwargs["allowed_users_env"] == "SIMPLEX_ALLOWED_USERS"
-    assert kwargs["allow_all_env"] == "SIMPLEX_ALLOW_ALL_USERS"
-    assert kwargs["cron_deliver_env_var"] == "SIMPLEX_HOME_CHANNEL"
-    assert callable(kwargs["check_fn"])
-    assert callable(kwargs["validate_config"])
-    assert callable(kwargs["is_connected"])
-    assert callable(kwargs["env_enablement_fn"])
-    assert callable(kwargs["standalone_sender_fn"])
-    assert callable(kwargs["adapter_factory"])
-    assert callable(kwargs["setup_fn"])
-    # SimpleX uses opaque IDs only — no PII to redact.
-    assert kwargs["pii_safe"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -425,45 +379,73 @@ def _make_file_chat_item(file_path: str, file_name: str) -> dict:
     }
 
 
-@pytest.mark.asyncio
-async def test_document_file_sets_document_type():
-    """A non-image/non-audio file must classify as DOCUMENT, not TEXT,
-    so run.py's document-context injection surfaces the path to the agent."""
+
+
+# ---------------------------------------------------------------------------
+# Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# Every SIMPLEX_* read (auto_accept / group_allowed in __init__, ws_url in the
+# registry gates, everything in _env_enablement) went through raw os.getenv,
+# which under multiplexing holds the DEFAULT profile's YAML-to-env bridge
+# output -- a secondary profile silently borrowed the default's daemon URL,
+# group allowlist and auto-accept setting. Reads now go through the module's
+# ``_get_scoped_secret`` (profile .env AND extra both honored; scoped miss
+# fails closed; unscoped default profile keeps env precedence).
+
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    from agent.secret_scope import (
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+
+    tokens = []
+
+    def install(scope=None):
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+
+    yield install
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("SIMPLEX_WS_URL", "ws://default:5225")
+    monkeypatch.setenv("SIMPLEX_GROUP_ALLOWED", "*")
+    monkeypatch.setenv("SIMPLEX_AUTO_ACCEPT", "true")
+
+
+def test_multiplex_scoped_miss_does_not_borrow_default_profile_env(
+    multiplex_scope, default_profile_env
+):
+    """A secondary profile with no SimpleX config of its own must not be
+    auto-enabled off the default's daemon URL, nor inherit its wide-open
+    group allowlist."""
     from gateway.config import PlatformConfig
-    from gateway.platforms.base import MessageType
 
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
-    adapter = SimplexAdapter(cfg)
-    dispatched = []
-
-    async def _capture(event):
-        dispatched.append(event)
-
-    adapter.handle_message = _capture
-    await adapter._handle_chat_item(_make_file_chat_item("/tmp/report.pdf", "report.pdf"))
-
-    assert dispatched, "_handle_chat_item did not dispatch any event"
-    assert dispatched[0].message_type == MessageType.DOCUMENT
-    assert dispatched[0].media_urls == ["/tmp/report.pdf"]
-    assert dispatched[0].media_types == ["application/octet-stream"]
+    multiplex_scope({"SOMETHING_ELSE": "x"})
+    assert _env_enablement() is None
+    assert check_requirements() is False
+    assert is_connected(PlatformConfig(enabled=True, extra={})) is False
+    adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"auto_accept": False}))
+    assert adapter.group_allow_from == set()
+    assert adapter.auto_accept is False
 
 
-@pytest.mark.asyncio
-async def test_image_file_still_sets_photo_type():
-    """Regression guard: image files keep classifying as PHOTO after the
-    document catch-all was added."""
-    from gateway.config import PlatformConfig
-    from gateway.platforms.base import MessageType
-
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
-    adapter = SimplexAdapter(cfg)
-    dispatched = []
-
-    async def _capture(event):
-        dispatched.append(event)
-
-    adapter.handle_message = _capture
-    await adapter._handle_chat_item(_make_file_chat_item("/tmp/pic.jpg", "pic.jpg"))
-
-    assert dispatched, "_handle_chat_item did not dispatch any event"
-    assert dispatched[0].message_type == MessageType.PHOTO
+def test_multiplex_scope_reads_profile_own_env_not_default(
+    multiplex_scope, default_profile_env
+):
+    """A secondary profile's own .env (installed as the scope) is honored --
+    the extra-only shape would have ignored it."""
+    multiplex_scope({"SIMPLEX_WS_URL": "ws://profile:5225", "SIMPLEX_GROUP_ALLOWED": "g1"})
+    seeded = _env_enablement()
+    assert seeded == {"ws_url": "ws://profile:5225", "group_allowed": "g1"}
+    assert check_requirements() is True

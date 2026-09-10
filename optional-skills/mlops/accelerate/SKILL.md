@@ -1,5 +1,5 @@
 ---
-name: huggingface-accelerate
+name: accelerate
 description: Run PyTorch training across GPUs with minimal changes.
 version: 1.0.1
 author: Orchestra Research

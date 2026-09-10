@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import types
 
 import pytest
@@ -278,78 +279,44 @@ def test_subprocess_killall_hermes_blocked():
 # ──────────────────── pass-through cases (must NOT raise) ──────
 
 
-def test_systemctl_status_passes_through():
-    """Read-only systemctl probes (status/show/list-units) are fine."""
-    # Run with check=False so we don't fail on the gateway's exit code.
-    r = subprocess.run(
-        ["systemctl", "--user", "status", "hermes-gateway", "--no-pager"],
-        capture_output=True,
-        text=True,
-        check=False,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ──────────────────── real gateway runtime spawn ─────────────────
+
+
+def test_subprocess_popen_real_gateway_restart_blocked():
+    """``python -m hermes_cli.main gateway restart`` is a detached child that
+    inherits the pytest-tmp HERMES_HOME, resolves the developer's real
+    ``hermes-gateway`` unit, and outlives the test (39 six-day orphans squatted
+    the webhook port, 2026-09-03). Blocked at the spawn primitive."""
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.Popen(
+            [sys.executable, "-m", "hermes_cli.main", "gateway", "restart"],
+            start_new_session=True,
+        )
+
+
+def test_subprocess_run_gateway_status_passes_through():
+    """Only lifecycle verbs are blocked: ``gateway status`` (and every other
+    read-only subcommand) must still spawn — via the canonical matcher, not an
+    argv substring."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys; print(sys.argv[1:])", "-m", "hermes_cli.main", "gateway", "status"],
+        capture_output=True, text=True,
     )
-    assert r is not None  # Did not raise — the guard let it through.
-
-
-def test_systemctl_show_passes_through():
-    r = subprocess.run(
-        ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert r is not None
-
-
-def test_systemctl_list_units_passes_through():
-    r = subprocess.run(
-        ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert r is not None
-
-
-def test_systemctl_unrelated_unit_passes_through():
-    """systemctl restart of a non-hermes unit is allowed (we only protect hermes)."""
-    # Use --dry-run so we don't actually try to restart anything; just
-    # verify the guard doesn't block the call. systemctl supports
-    # --dry-run via the privileged API; on user scope it usually fails
-    # quickly without side effects.
-    r = subprocess.run(
-        ["systemctl", "--user", "show", "fake-not-real-unit"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert r is not None
-
-
-def test_kill_own_subtree_passes_through():
-    """We CAN kill our own children — guard recognizes them via psutil."""
-    p = subprocess.Popen(["sleep", "30"])
-    try:
-        os.kill(p.pid, signal.SIGTERM)
-    finally:
-        p.wait(timeout=2)
-    # SIGTERM = 15; subprocess returncode is -15 on POSIX.
-    assert p.returncode in {-signal.SIGTERM, 128 + int(signal.SIGTERM)}
-
-
-def test_subprocess_pkill_with_unrelated_pattern_passes_through():
-    """``pkill -f some-unrelated-pattern`` (no hermes/python) is fine."""
-    # We don't actually run pkill — just verify the guard would let it
-    # through by inspecting the matcher. Re-implementing the check here
-    # would duplicate the guard; instead spawn a noop to confirm no raise.
-    # Use 'true' so it succeeds quickly.
-    r = subprocess.run(["true"], capture_output=True)
-    assert r.returncode == 0
-
-
-def test_normal_subprocess_run_passes_through():
-    """Plain non-systemctl subprocess.run should work normally."""
-    r = subprocess.run(["echo", "hello"], capture_output=True, text=True)
-    assert r.stdout.strip() == "hello"
+    assert result.returncode == 0
 
 
 # ──────────────────── bypass marker ─────────────────────────────

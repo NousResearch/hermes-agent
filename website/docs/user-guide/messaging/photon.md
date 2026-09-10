@@ -73,7 +73,11 @@ The setup, in order:
    user with that number already exists, so re-running is safe.
 5. **Prints your assigned iMessage line** — the number you text to reach
    your agent.
-6. **Runs `npm install`** inside the plugin's sidecar directory.
+6. **Runs `npm install`** inside the plugin's sidecar directory. On
+   read-only / immutable install trees (hosted Docker images, Podman,
+   Nix) the sidecar automatically falls back to a writable mirror under
+   `~/.hermes/photon/sidecar`; set `PHOTON_SIDECAR_DIR` to pin an
+   explicit location.
 
 Runtime credentials are written to `~/.hermes/.env`
 (`PHOTON_PROJECT_ID` = the Spectrum project id, `PHOTON_PROJECT_SECRET`),
@@ -202,6 +206,16 @@ Common issues:
   `voice()` content builders via the sidecar's `/send-attachment`
   endpoint. Captions arrive as a separate iMessage bubble after the
   media.
+- **Native polls are supported.** Hermes sends poll content through
+  spectrum-ts' `poll()` builder via the sidecar's `/send-poll` endpoint.
+- **Read receipts are supported.** The sidecar marks an inbound iMessage
+  read after forwarding it to Hermes, so the sender sees `Read` without
+  waiting for a model/tool turn. Inbound receipts for Hermes-sent messages
+  are consumed as presence telemetry and never create an agent turn. Set
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
+- **Message effects are supported.** Hermes sends text with native iMessage
+  bubble/screen effects through spectrum-ts' iMessage `effect()` builder
+  via the sidecar's `/send-effect` endpoint.
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.

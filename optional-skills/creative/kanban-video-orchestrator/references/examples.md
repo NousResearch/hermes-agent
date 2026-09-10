@@ -216,7 +216,7 @@ When the user describes a video, look for these signals to map to an example:
 - **"Audio-reactive", "real-time", "installation"** → Example 6 (TouchDesigner)
 - **Comic-style narrative** → use `renderer-comic` (`baoyu-comic` skill)
 - **Retro game / pixel-art aesthetic** → use `renderer-pixel` (`pixel-art` skill)
-- **3D scene, photoreal environment** → use `renderer-3d` (`blender-mcp`)
+- **3D scene, photoreal environment** → use `renderer-3d` (Blender via `blender -b` scripting)
 - **Generative art, particle system, shader** → use `renderer-p5js` (`p5js`)
 - **AI-generated photoreal stills + animation** → use `renderer-comfyui`
   (`comfyui`) for both stills and image-to-video

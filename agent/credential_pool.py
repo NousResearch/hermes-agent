@@ -846,7 +846,7 @@ def _profile_owns_pool_provider(provider: str) -> bool:
     except Exception:
         return True  # unreadable store: assume ownership, keep legacy path
     entries = pool.get(provider) if isinstance(pool, dict) else None
-    return isinstance(entries, list) and bool(entries)
+    return isinstance(entries, list)
 
 
 def _borrowed_single_use_pool_root() -> Optional[Path]:

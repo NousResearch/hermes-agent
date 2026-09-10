@@ -165,33 +165,40 @@ def _connect_tracked_db(path, tracking_path=None, **kwargs):
     return connect_tracked(path, tracking_path=tracking_path, connect_fn=sqlite3.connect, **kwargs)
 
 
-def is_zeroed_state_db(path: Path, *, probe_bytes: int = 100, force: bool = False) -> bool:
-    """Detect the zeroed state.db signature (0-byte or NUL header).  Byte-level probe, so only
-    safe BEFORE any connection to *path* exists in this process (``close()`` cancels every POSIX
-    lock, even a running VACUUM's EXCLUSIVE); ``read_header_bytes_preopen`` refuses (-> False)
-    once a connection is live.  Pass ``force=True`` only for offline files (quarantined copies,
-    snapshots).  Prefers ``hermes_cli.backup.is_zeroed_sqlite_file``; this copy keeps SessionDB
-    openable without the CLI package in constrained embed paths.
+def _preopen_header(path: Path, probe_bytes: int, force: bool) -> Optional[bytes]:
+    """First ``probe_bytes`` of *path* read WITHOUT opening a SQLite connection, or None when the probe
+    must not run: special files (a FIFO would block), unreadable paths, or — unless ``force`` — a path
+    this process already has a connection to (``close()`` cancels every POSIX lock, even a running
+    VACUUM's EXCLUSIVE; see #97568).  ``force=True`` only for offline files (quarantined copies, snapshots)."""
+    try:
+        if not path.is_file():
+            return None
+        path.stat()
+        from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+        if not force and has_live_connection(path):
+            return None
+        return read_header_bytes_preopen(path, length=max(16, probe_bytes), force=force)
+    except Exception:
+        return None
 
-    See #97568.
-    """
+
+def is_zeroed_state_db(path: Path, *, probe_bytes: int = 100, force: bool = False) -> bool:
+    """Detect the zeroed state.db signature (0-byte or NUL header).  Prefers
+    ``hermes_cli.backup.is_zeroed_sqlite_file``; this copy keeps SessionDB openable without the CLI
+    package in constrained embed paths."""
     with contextlib.suppress(Exception):
         from hermes_cli.backup import is_zeroed_sqlite_file
         return is_zeroed_sqlite_file(path, probe_bytes=probe_bytes, force=force)
-    try:
-        # Special files (FIFO, device, socket) are never "zeroed", and probing
-        # a FIFO would block until a writer appears.
-        if not path.is_file():
-            return False
-        path.stat()
-    except OSError:
-        return False
-    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
-    if not force and has_live_connection(path):
-        return False
-    head = read_header_bytes_preopen(path, length=max(16, probe_bytes), force=force)
+    head = _preopen_header(path, probe_bytes, force)
     # b"" (0-byte file) is zeroed; all() over an empty header is True.
     return head is not None and not head.startswith(b"SQLite format 3") and all(b == 0 for b in head)
+
+
+def has_invalid_sqlite_header_preopen(path: Path, *, probe_bytes: int = 100, force: bool = False) -> bool:
+    """A pre-existing state.db whose first page is not SQLite: 0-byte, NUL, or clobbered page 0
+    (#102198).  Zeroed files are the subset :func:`is_zeroed_state_db` names."""
+    head = _preopen_header(path, probe_bytes, force)
+    return head is not None and not head.startswith(b"SQLite format 3")
 
 
 @contextlib.contextmanager
@@ -235,23 +242,24 @@ def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
             handle.close()
 
 
-def quarantine_zeroed_state_db(path: Path, *, already_locked: bool = False) -> Optional[Path]:
-    """Move a zeroed state.db aside (preserve bytes) and return quarantine path.  A cross-process
-    lock stops two concurrent startups racing: the second re-checks under the lock and finds the
-    file gone (or fresh) instead of clobbering the quarantine."""
+def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False) -> Optional[Path]:
+    """Move a non-SQLite state.db (zeroed or clobbered page 0) aside with its -wal/-shm sidecars,
+    preserving bytes; return the quarantine path.  A cross-process lock stops two concurrent
+    startups racing: the second re-checks under the lock and finds the file gone (or fresh)."""
     def _do_quarantine():
         if not path.exists():
-            logger.info("quarantine_zeroed_state_db: %s already moved by another process", path)
+            logger.info("quarantine_invalid_state_db: %s already moved by another process", path)
             return None
-        if not is_zeroed_state_db(path):
-            logger.info("quarantine_zeroed_state_db: %s is no longer zeroed (another "
+        if not has_invalid_sqlite_header_preopen(path):
+            logger.info("quarantine_invalid_state_db: %s is no longer invalid (another "
                         "process quarantined it and a fresh DB was created)", path)
             return None
+        kind = "zeroed" if is_zeroed_state_db(path) else "notadb"
         try:
             ts = time.strftime("%Y%m%d-%H%M%S")
         except Exception:
             ts = "unknown"
-        stem = f"{path.name}.zeroed-{ts}-{os.getpid()}"
+        stem = f"{path.name}.{kind}-{ts}-{os.getpid()}"
         dest = path.with_name(f"{stem}.bak")
         n = 0
         while dest.exists():
@@ -260,7 +268,7 @@ def quarantine_zeroed_state_db(path: Path, *, already_locked: bool = False) -> O
         try:
             path.rename(dest)
         except OSError as exc:
-            logger.error("Failed to quarantine zeroed %s: %s", path, exc)
+            logger.error("Failed to quarantine invalid %s: %s", path, exc)
             return None
         for suffix in ("-wal", "-shm"):
             side = Path(str(path) + suffix)
@@ -274,7 +282,7 @@ def quarantine_zeroed_state_db(path: Path, *, already_locked: bool = False) -> O
     with quarantine_cross_process_lock(path) as acquired:
         if not acquired:
             logger.error("quarantine lock for %s not acquired within 5s — refusing to "
-                         "quarantine without the cross-process lock. The zeroed file "
+                         "quarantine without the cross-process lock. The invalid file "
                          "is left in place. If sessions fail to load, restore from "
                          "state-snapshots via `hermes snapshot list` / `hermes snapshot restore <id>`.",
                          path)

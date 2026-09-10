@@ -600,8 +600,10 @@ def is_local_endpoint(base_url: str) -> bool:
         return False
     if host is None:
         return False
-    # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts entries, mDNS.
-    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or (host and "." not in host):
+    # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts
+    # entries, mDNS — as is `*.local` (RFC 6762 mDNS, LAN-only). IPv6 literals have no dots either, so
+    # they are excluded here and classified by scope below (a global address is not local).
+    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith(".local") or (host and "." not in host and ":" not in host):
         return True
     try:
         addr = ipaddress.ip_address(host)

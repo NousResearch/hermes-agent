@@ -578,6 +578,8 @@ telegram:
 
 With this setup, a group message like `@research_bot @ops_bot summarize this` is processed by `research_bot` and `ops_bot` only. Other Hermes bots in the group stay silent, even if the message is a reply to one of their earlier messages or would otherwise match a shared wake word.
 
+Two Hermes bots that answer each other's quote-replies can still loop forever with `TELEGRAM_ALLOW_BOTS=all`, because a reply to the bot always passes the `require_mention` gate. Setting `telegram.bots_require_mention: true` (env `TELEGRAM_BOTS_REQUIRE_MENTION`) closes that path: a message from another bot only triggers a response when it explicitly `@mentions` this bot, while human replies keep working unchanged.
+
 Group conversation text and media captions keep every mention when the message names other participants too (`@research_bot , @ops_bot are you both listening?` reaches `research_bot` verbatim); when this bot is the only one addressed, its own handle is still stripped so short answers such as `@hermes_bot 2` keep working. Group turns also carry the bot's own Telegram username in the per-channel context so the model can tell which retained mentions are for it. Slash commands still use the normal command-trigger cleanup.
 
 Set `exclusive_bot_mentions: false` only for legacy groups where explicit mentions should not override reply and wake-word triggers.

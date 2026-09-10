@@ -55,14 +55,28 @@ export const isLockedTarget = (name: string): boolean => (LOCKED_COLUMNS as read
 export const shortId = (id?: null | string) => (id ?? '').replace(/^t_/, '').slice(0, 6)
 
 // The electron REST bridge throws `Error("409: {\"detail\":\"…\"}")`; pull out
-// the human-readable detail for a toast.
+// the human-readable detail for a toast. A 422 can also shape `detail` as a
+// structured validation-error list ({loc, msg, type}[]) rather than a plain
+// string (see plugin_api.py's workspace_path/default_workdir mapping) —
+// flatten that into one line too instead of handing React a raw object.
 export function errText(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err)
   const brace = raw.indexOf('{')
 
   if (brace !== -1) {
     try {
-      return (JSON.parse(raw.slice(brace)) as { detail?: string }).detail ?? raw
+      const { detail } = JSON.parse(raw.slice(brace)) as {
+        detail?: string | { msg?: string }[]
+      }
+      if (Array.isArray(detail)) {
+        return (
+          detail
+            .map(d => d.msg)
+            .filter(Boolean)
+            .join('; ') || raw
+        )
+      }
+      return detail ?? raw
     } catch {
       // Not JSON — fall through to the raw message.
     }

@@ -936,6 +936,15 @@ def detect_provider_for_model(
     if not name:
         return None
 
+    # The current provider's LIVE catalog outranks every static guess: a model it already serves
+    # (Codex early-access ids, Portal-only slugs, Ollama Cloud models absent from _PROVIDER_MODELS)
+    # must never re-route the session to another vendor or to metered OpenRouter.
+    from hermes_cli.models_detect import current_provider_catalog_match
+
+    served = current_provider_catalog_match(name, current_provider)
+    if served is not None:
+        return (current_provider, served) if served != name else None
+
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
         return static_match

@@ -208,7 +208,7 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron).
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
-- **Messaging** — set up gateway channels.
+- **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
 ### Bot Mode (built in)
@@ -260,7 +260,7 @@ and the eye shows a dot when a hidden bot has unread activity. Hidden
 state is stored in the bot's profile, so it follows the bot across
 machines.
 
-Don't want it? Flip it off in **Settings → Plugins → Bots** — the roster,
+Don't want it? Flip it off in **Capabilities → Plugins → Desktop plugins → Bots** — the roster,
 routines pane, and composer middleware unregister live, no restart needed.
 
 Full guide — creating agents (including the multi-machine **Create on**
@@ -445,20 +445,30 @@ The desktop app is contribution-driven — panes, pages, sidebar nav, status-bar
 items, palette commands, keybinds, and themes all register through one SDK, and
 you can add your own. A plugin is a single ESM file dropped in
 `$HERMES_HOME/desktop-plugins/<id>/plugin.js`; the app loads it within seconds and
-hot-reloads every save. Manage installed plugins live in **Settings → Plugins**.
+hot-reloads every save. Manage installed plugins live in **Capabilities → Plugins**.
 
 See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
 reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
 
-The **Agent plugins** section on the same Settings → Plugins page manages
-backend (agent-side) [plugins](./features/plugins.md) you installed — user,
-git, project, pip, and portable installs. Repo-bundled built-ins (platform
-adapters, provider plugins, and similar) are not listed there: they ship
-enabled by default and are configured from their own surfaces, so the section
-stays focused on what you added yourself. With two or more profiles the
-section also has its own **Applies to** selector, so you can list and toggle
-another profile's agent plugins without switching the whole app (the backend
-`plugins.manage` RPC accepts an optional `profile` parameter for this).
+**Capabilities → Plugins** is the one place for everything that extends
+Hermes, in two sections on one page:
+
+- **Agent plugins** — backend (agent-side) [plugins](./features/plugins.md)
+  you installed for the selected profile: user, git, project, pip, and
+  portable installs, with enable/disable toggles and an **Update** chip when a
+  catalog pin moved. The page's profile selector picks which agent you are
+  configuring (the backend `plugins.manage` RPC takes a `profile` parameter).
+  Repo-bundled built-ins (platform adapters, provider plugins) are not listed:
+  they ship enabled and are configured from their own surfaces.
+- **Desktop plugins** — extensions loaded into this app, the same for every
+  profile. Toggles apply live; the desktop half of a bundled agent+desktop
+  package shows an **agent half missing here** chip when the selected
+  profile's backend does not have its agent half, with a one-click repair.
+
+Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
+picker installs reviewed entries at their pinned commit into the selected
+profile, and **Install from Git** takes any other repository through the same
+review-then-install dialog. Old `Settings → Plugins` links redirect here.
 
 ## Troubleshooting
 

@@ -294,6 +294,19 @@ async function fetchProviderDefaultModel(
     return null
   }
 
+  // Re-login to the provider already in use (expired OAuth grant): keep the
+  // model the user was on. Swapping in the provider's recommended default
+  // would silently change what they're chatting with.
+  const currentModel = String(options?.model ?? '')
+
+  if (
+    currentModel &&
+    String(options?.provider ?? '').toLowerCase() === String(matched.slug).toLowerCase() &&
+    models.map(String).includes(currentModel)
+  ) {
+    return { providerSlug: String(matched.slug), defaultModel: currentModel }
+  }
+
   // Prefer the backend's recommended default — it mirrors the curation
   // `hermes model` does (for Nous it honors the user's free/paid tier, so a
   // free user gets a free model rather than a paid default like opus). Fall

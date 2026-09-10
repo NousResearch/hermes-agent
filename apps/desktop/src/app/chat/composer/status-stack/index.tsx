@@ -81,8 +81,7 @@ const hasRunningTodo = (group: StatusGroup) =>
 
 interface ComposerStatusStackProps {
   onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
-  /** The queue, built by the composer (it owns the queue's callbacks). Rendered
-   *  as the last group so it stays fused to the composer like before. */
+  /** The queue, built by the composer (it owns the queue's callbacks). */
   queue: ReactNode
   sessionId: null | string
 }
@@ -168,19 +167,12 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const openSubagent = (item: ComposerStatusItem) =>
     item.sessionId ? void openSessionInNewWindow(item.sessionId, { watch: true }) : openAgents()
 
-  // Preview links live as child rows of the background group — a localhost dev
-  // server and its preview are the same thing — so they no longer float as an
-  // odd, differently-indented standalone block under the stack.
   const previewRows =
     visiblePreviews.length > 0 && sessionId
       ? visiblePreviews.map(item => (
           <PreviewStatusRow item={item} key={item.id} onDismiss={id => dismissPreviewArtifact(sessionId, id)} />
         ))
       : []
-
-  const hasBackgroundGroup = groups.some(g => g.type === 'background')
-
-  const previewBlock = <div className="px-1 py-0.5">{previewRows}</div>
 
   const sections: { key: string; node: ReactNode }[] = []
 
@@ -241,7 +233,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
               />
             ) : undefined
           }
-          defaultCollapsed={group.type !== 'todo' && group.type !== 'goal'}
+          defaultCollapsed={group.type !== 'todo'}
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
           label={groupLabel(group, t.statusStack)}
         >
@@ -257,25 +249,16 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
         </StatusSection>
       )
     })
-
-    // Preview links belong to the background group (a localhost dev server and
-    // its preview are the same thing), but they must stay VISIBLE even when that
-    // group is collapsed — the whole point is a one-tap open. Render them as an
-    // always-visible block right after the background section, not as collapsible
-    // children that get swallowed the moment a background task appears.
-    if (group.type === 'background' && previewRows.length > 0) {
-      sections.push({ key: 'preview', node: previewBlock })
-    }
-  }
-
-  // No background group to host them (e.g. a standalone on-disk file preview):
-  // still render them as their own always-visible block.
-  if (previewRows.length > 0 && !hasBackgroundGroup) {
-    sections.push({ key: 'preview', node: previewBlock })
   }
 
   if (queue) {
     sections.push({ key: 'queue', node: queue })
+  }
+
+  // Artifact links stay visible at the bottom, nearest the composer, even when
+  // the queue or background group expands.
+  if (previewRows.length > 0) {
+    sections.push({ key: 'preview', node: <div className="px-1 py-0.5">{previewRows}</div> })
   }
 
   // Micro actions are the TOP-MOST thing in the whole overlay lane — above the
@@ -313,7 +296,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             composerDockCard('top'),
             // Inset (mx-2) so the stack reads slightly narrower than the composer
             // surface below it — the original look.
-            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5'
+            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent'
           )}
         >
           <div

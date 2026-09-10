@@ -556,10 +556,10 @@ class CLIAgentSetupMixin:
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
-            # Route agent status output through prompt_toolkit so ANSI escapes
-            # aren't garbled by patch_stdout's StdoutProxy.
-            # See #2262.
-            self.agent._print_fn = _cprint
+            # Route agent status output through prompt_toolkit so ANSI escapes aren't garbled by
+            # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
+            # subagent/background completion notice never splits the reply mid-paragraph.
+            self.agent._print_fn = self._agent_status_print
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:

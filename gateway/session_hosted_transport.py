@@ -67,14 +67,17 @@ def owner_request(home, verb, params, *, timeout=30):
 def _attest(binding, operation, params):
     try:
         result = owner_request(binding['source_home'], 'hosted-attest', {
-            'selector': binding['selector'], 'operation': operation, 'params': params})
+            'selector': binding['selector'], 'operation': operation,
+            'params': {**params, '_target_home': binding['target_home']}})
     except RuntimeStoreError:
         raise
     except (OSError, ValueError) as exc:
         raise RuntimeStoreError('runtime_draining') from exc
     if not isinstance(result, dict) or not isinstance(result.get('owner'), str) or not result['owner']:
         raise RuntimeStoreError('permission_denied')
-    return result['owner']
+    if result.get('target_home') != binding['target_home']:
+        raise RuntimeStoreError('permission_denied')
+    return result
 
 
 def _principal(authority, binding):
@@ -110,8 +113,10 @@ def install_hosted_transport(server, authority, loop, *, attest):
         profile = home.name if home.parent.name == 'profiles' else 'default'
         if selector['profile'] != profile:
             raise RuntimeStoreError('profile_mismatch')
-        binding = {'source_home': envelope['source_home'], 'selector': selector}
-        binding['owner'] = _attest(binding, operation, params)
+        binding = {'source_home': envelope['source_home'], 'selector': selector,
+                   'target_home': authority.profile_id}
+        attested = _attest(binding, operation, params)
+        binding['owner'] = attested['owner']
         principal = _principal(authority, binding)
         rpc = HostedRoomAuthorityRPC(authority, loop, **selector, principal=principal,
                                     authorize=lambda *args: True)
@@ -150,11 +155,12 @@ def check_remote_hosted_admission(authority, ref, row):
         identity, generation = json.loads(row['request_id'][7:])
         if (not row['request_id'].startswith('hosted:')
                 or row['principal_id'] != _principal(authority, binding).subject
-                or ref.profile_id != authority.profile_id):
+                or ref.profile_id != authority.profile_id
+                or binding.get('target_home') != authority.profile_id):
             raise ValueError('binding mismatch')
         owner = _attest(binding, 'execute', {'task': identity,
             'execution_generation': generation, 'prompt': row['payload']['text']})
-        if owner != binding['owner']:
+        if owner['owner'] != binding['owner']:
             raise ValueError('owner changed')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc

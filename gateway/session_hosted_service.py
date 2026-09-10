@@ -29,12 +29,17 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         own = home.name if home.parent.name == 'profiles' else 'default'
         configured = _load_gateway_config().get('hosted_rooms', {}).get('profiles', {})
         result = {own: home}
+        if not isinstance(configured, dict):
+            raise RuntimeStoreError('invalid_params')
         for name, value in configured.items():
+            if not isinstance(name, str) or not isinstance(value, str):
+                raise RuntimeStoreError('invalid_params')
             target = Path(value)
             if not IDENTIFIER_RE.fullmatch(name) or not target.is_absolute() or target != target.resolve():
                 raise RuntimeStoreError('invalid_params')
-            if name != own:
-                result[name] = target
+            if name == own and target != home:
+                raise RuntimeStoreError('permission_denied')
+            result[name] = target
         return result
 
     def local_profiles(self):
@@ -52,7 +57,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         if not any(m['member_id'] == member and m['profile'] == profile
                    and m.get('target', {}).get('kind', 'local') == 'local' for m in room['members']):
             raise RuntimeStoreError('permission_denied')
-        if profile not in self.profile_homes():
+        target_home = self.profile_homes().get(profile)
+        if target_home is None or params.get('_target_home') != str(target_home):
             raise RuntimeStoreError('permission_denied')
         if operation in {'submit', 'execute'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
@@ -64,7 +70,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                        and t['payload']['prompt'] == params.get('prompt')]
             if len(matches) != 1:
                 raise RuntimeStoreError('permission_denied')
-        return {'owner': owner}
+        return {'owner': owner, 'target_home': str(target_home)}
 
 
     def bindings(self):
@@ -114,11 +120,11 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         member = str(payload.get('target_member_id') or payload.get('target_profile'))
         profile = payload['target_profile']
         owner = self._owner(binding.room_id)
-        key = binding.room_id, member, profile, owner
+        home = self.profile_homes().get(profile)
+        if home is None:
+            raise RuntimeStoreError('permission_denied')
+        key = binding.room_id, member, profile, owner, str(home)
         if key not in self.member_rpcs:
-            home = self.profile_homes().get(profile)
-            if home is None:
-                raise RuntimeStoreError('permission_denied')
             if home != Path(self.authority.profile_id):
                 from gateway.session_hosted_transport import HostedRoomOwnerRPC
                 self.member_rpcs[key] = HostedRoomOwnerRPC(home=home,
@@ -133,7 +139,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 members = room['members']
                 if not any(m.get('member_id') == member and m.get('profile') == profile for m in members):
                     return False
-                if profile not in self.local_profiles():
+                if self.profile_homes().get(profile) != home:
                     return False
                 if identity is not None:
                     from gateway.hosted_room_driver import list_tasks

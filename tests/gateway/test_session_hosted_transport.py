@@ -29,9 +29,9 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, t
         if operation in {'submit', 'execute'}:
             assert params['task'] == asdict(task)
             assert params['execution_generation'] == 1
-            if params['prompt'] != 'input':
+            if operation == 'submit' and params['prompt'] != 'input':
                 raise RuntimeStoreError('permission_denied')
-        return {'owner': 'room-owner'}
+        return {'owner': 'room-owner', 'target_home': authority.profile_id, 'prompt': 'input', 'attachments': []}
     servers = [GatewayControlServer(source), GatewayControlServer(target)]
     install_hosted_transport(servers[0], authority, loop, attest=attest)
     install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)
@@ -56,6 +56,15 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, t
             rpc.submit(**{**args, 'prompt': 'forged'})
         raw = json.dumps({'protocol': 1, 'verb': 'hosted-producer', 'params': {}}).encode()
         assert not json.loads(servers[1].handle_request_line(raw))['ok']
+        old_attest = servers[0].private_handlers['hosted-attest']
+        def remapped(params, peer):
+            return {**old_attest(params, peer), 'target_home': str(tmp_path / 'different')}
+        servers[0].private_handlers['hosted-attest'] = remapped
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            rpc.history(**coords, session_id=sid)
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            check_remote_hosted_admission(authority, ref, rows[0])
+        servers[0].private_handlers['hosted-attest'] = old_attest
         allowed[0] = False
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
             check_remote_hosted_admission(authority, ref, rows[0])

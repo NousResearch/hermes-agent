@@ -95,7 +95,8 @@ class TurnFacadeMixin:
                 model=str(getattr(self, "model", None) or ""),
             )
             relay_turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
-                relay_lease, turn_id=relay_turn_id, task_id=effective_task_id
+                relay_lease, turn_id=relay_turn_id, task_id=effective_task_id,
+                request_metadata=getattr(self, "_relay_request_metadata", None),
             )
             # Minimal relay-runtime shims may lack the opt-out flag: default enabled.
             if getattr(relay_turn, "relay_enabled", True):

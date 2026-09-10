@@ -82,6 +82,40 @@ def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str
         "error_code": "output_truncated" if finish_reason == "length" else "agent_error"}
 
 
+_REQUEST_METADATA_MAX_PAIRS = 16
+_REQUEST_METADATA_MAX_KEY_LEN = 64
+_REQUEST_METADATA_MAX_VALUE_LEN = 512
+_REQUEST_METADATA_VALUE_TYPES = (str, int, float, bool, type(None))
+
+
+def _sanitize_openai_request_metadata(raw: Any) -> Optional[Dict[str, Any]]:
+    """OpenAI-style request ``metadata`` → Relay extras, or None if absent/invalid.
+
+    Fail-open: missing / null / empty / non-dict / sanitize errors are treated as absent.
+    Reserved ``hermes.*`` keys are dropped so clients cannot overwrite Hermes stamps.
+    """
+    try:
+        if not isinstance(raw, dict):
+            return None
+        out: Dict[str, Any] = {}
+        for key, value in raw.items():
+            if len(out) >= _REQUEST_METADATA_MAX_PAIRS:
+                break
+            if not isinstance(key, str) or len(key) > _REQUEST_METADATA_MAX_KEY_LEN:
+                continue
+            if key.startswith("hermes."):
+                continue
+            if not isinstance(value, _REQUEST_METADATA_VALUE_TYPES):
+                continue
+            rendered = "" if value is None else str(value)
+            if len(rendered) > _REQUEST_METADATA_MAX_VALUE_LEN:
+                continue
+            out[key] = value
+        return out or None
+    except Exception:
+        return None
+
+
 def _message_item(text: Any) -> Dict[str, Any]:
     """Responses ``message`` output item carrying one ``output_text`` part."""
     return {"type": "message", "role": "assistant",
@@ -507,7 +541,8 @@ class OpenAICompatRoutesMixin:
             # and the client can resume the session by sending it again). A fingerprint-derived
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
-            session_history_delivery=("1" if provided_session_id else ""))
+            session_history_delivery=("1" if provided_session_id else ""),
+            request_metadata=_sanitize_openai_request_metadata(body.get("metadata")))
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -846,7 +881,8 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route)
+            **agent_overrides, route=route,
+            request_metadata=_sanitize_openai_request_metadata(body.get("metadata")))
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 

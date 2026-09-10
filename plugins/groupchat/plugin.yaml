@@ -1,0 +1,3 @@
+name: groupchat
+version: 0.1.0
+description: "Groupchat coordination by RechnerLotsen: relevance routing and outbound pingpong prevention."

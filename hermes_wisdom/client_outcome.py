@@ -11,7 +11,7 @@ class ClientOperationOutcome(StrictModel):
     request_id: RequestId
     operation_key: OpaqueKey
     operation: Literal["share", "publish", "install", "update"]
-    state: Literal["queued", "completed", "failed", "stale", "expired", "needs_review"]
+    state: Literal["queued", "files_installed", "completed", "failed", "stale", "expired", "needs_review"]
 
     @model_validator(mode="after")
     def valid_result(self):
@@ -19,6 +19,8 @@ class ClientOperationOutcome(StrictModel):
             raise ValueError("Only packaging may be queued")
         if self.state == "completed" and self.operation == "share":
             raise ValueError("Packaging queued is not publication completed")
+        if self.state == "files_installed" and self.operation not in {"install", "update"}:
+            raise ValueError("Only install and update can report installed files")
         return self
 
 

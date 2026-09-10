@@ -24,12 +24,13 @@ from tests.wisdom.test_share_staging import staged  # noqa: F401
 
 def reserve(service, queue, job, now, actor):
     client = service.client
+    org = service.store.active_org_id()
     client.identity = {"owner": "account-user"}
-    client.display_org_id = "org"
+    client.display_org_id = org
 
     def response(request_id, reference, *, state="claimed"):
         return ClientDeliveryResponse(
-            org_id="org",
+            org_id=org,
             recipient_user_id="account-user",
             event_id="gateway-event",
             request_id=request_id,
@@ -52,7 +53,7 @@ def reserve(service, queue, job, now, actor):
     )
     client.report_operation_outcome = Mock(
         side_effect=lambda event_id, outcome: ClientOperationResponse(
-            org_id="org",
+            org_id=org,
             recipient_user_id="account-user",
             event_id=event_id,
             outcome=outcome,
@@ -61,14 +62,14 @@ def reserve(service, queue, job, now, actor):
         )
     )
     delivery = DeliveryOutbox(service, clock=lambda: now[0])
-    request_id = delivery.reserve("org", job)
+    request_id = delivery.reserve(org, job)
     assert queue.begin_delivery(
-        "org", job["id"], job["lease_token"], request_id=request_id
+        org, job["id"], job["lease_token"], request_id=request_id
     )
 
     def acknowledge():
         assert queue.complete_delivery(
-            "org",
+            org,
             job["id"],
             job["lease_token"],
             receipt=DeliveryReceipt(
@@ -138,7 +139,7 @@ def test_operation_is_staged_atomically_and_waits_for_delivery_ack(outcome):
     assert rows(o)[0]["state"] == "settled"
     sent = o.service.client.report_operation_outcome.call_args.args[1]
     assert set(sent) == {"request_id", "operation_key", "operation", "state"}
-    assert sent["operation"] == "install" and sent["state"] == "completed"
+    assert sent["operation"] == "install" and sent["state"] == "files_installed"
     for secret in [
         o.shown["id"],
         "skill",
@@ -173,6 +174,53 @@ def test_lost_reply_retries_same_report_without_reapplying(outcome):
     assert o.service.client.report_operation_outcome.call_args.args[1] == received[0]
     assert rows(o)[0]["state"] == "settled"
     o.service.install_apply.assert_called_once()
+
+
+def test_verified_phase_waits_for_files_receipt_and_retries_independently(outcome):
+    from hermes_wisdom.mediation_store import _decode
+    from hermes_wisdom.operation_outbox import stage_verified
+
+    o = outcome
+    ready(o)
+    with o.service.store.transaction() as db:
+        parent = _decode(db.execute("SELECT * FROM wisdom_consent WHERE id=?", (o.shown["id"],)).fetchone())
+        assert stage_verified(db, parent, o.now[0])
+        assert not stage_verified(db, parent, o.now[0])
+    success = o.service.client.report_operation_outcome.side_effect
+    o.service.client.report_operation_outcome.side_effect = TimeoutError()
+    o.outbox.flush("org")
+    assert o.service.client.report_operation_outcome.call_count == 1
+    assert o.service.client.report_operation_outcome.call_args.args[1]["state"] == "files_installed"
+    assert {r["report_state"]: r["attempts"] for r in rows(o)} == {"files_installed": 1, "completed": 0}
+    o.now[0] += 60
+    o.service.client.report_operation_outcome.side_effect = success
+    o.outbox.flush("org")
+    reports = [call.args[1] for call in o.service.client.report_operation_outcome.call_args_list]
+    assert [r["state"] for r in reports] == ["files_installed", "files_installed", "completed"]
+    assert reports[0] == reports[1]
+    assert reports[1]["operation_key"] != reports[2]["operation_key"]
+    assert all(r["state"] == "settled" for r in rows(o))
+    o.service.install_apply.assert_called_once()
+
+
+def test_legacy_outbox_migration_preserves_payload_identity_and_lease():
+    from hermes_wisdom.operation_outbox import create_schema
+
+    db = sqlite3.connect(":memory:")
+    try:
+        db.execute("""CREATE TABLE wisdom_operation_outbox (
+          interaction_id TEXT PRIMARY KEY, organization_id TEXT, user_id TEXT, request_id TEXT,
+          outcome_json TEXT, state TEXT, attempts INTEGER, available_at REAL,
+          sync_token TEXT, sync_until REAL, last_error TEXT)""")
+        payload = json.dumps({"operation": "install", "state": "completed", "operation_key": "original"})
+        original = ("consent", "org", "user", "request", payload, "pending", 2, 10.0, "worker", 20.0, "outcome_unavailable")
+        db.execute("INSERT INTO wisdom_operation_outbox VALUES(?,?,?,?,?,?,?,?,?,?,?)", original)
+        create_schema(db)
+        create_schema(db)
+        row = db.execute("SELECT * FROM wisdom_operation_outbox").fetchone()
+        assert row == (original[0], "completed", *original[1:])
+    finally:
+        db.close()
 
 
 def test_concurrent_pollers_claim_one_report_and_stale_worker_cannot_overwrite(outcome):
@@ -311,7 +359,7 @@ def test_failed_atomic_staging_leaves_applying_for_journal_recovery(outcome):
     o.now[0] += 901
     o.instance.recover("org")
     assert rows(o)[0]["state"] == "pending"
-    assert json.loads(rows(o)[0]["outcome_json"])["state"] == "completed"
+    assert json.loads(rows(o)[0]["outcome_json"])["state"] == "files_installed"
     o.instance.recover("org")
     assert len(rows(o)) == 1
     o.service.install_apply.assert_called_once()

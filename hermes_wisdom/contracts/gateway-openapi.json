@@ -343,6 +343,39 @@
               "operation": {
                 "type": "string",
                 "enum": [
+                  "install",
+                  "update"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "files_installed"
+                ]
+              }
+            },
+            "required": [
+              "request_id",
+              "operation_key",
+              "operation",
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "operation_key": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
                   "share"
                 ]
               },
@@ -452,6 +485,39 @@
           },
           "outcome": {
             "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "operation_key": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "enum": [
+                      "install",
+                      "update"
+                    ]
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "files_installed"
+                    ]
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "operation_key",
+                  "operation",
+                  "state"
+                ],
+                "additionalProperties": false
+              },
               {
                 "type": "object",
                 "properties": {
@@ -651,6 +717,11 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 256
+                    },
+                    "owner_user_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
                     }
                   },
                   "required": [
@@ -659,7 +730,8 @@
                     "state",
                     "proposal_n",
                     "skill_slug",
-                    "draft_id"
+                    "draft_id",
+                    "owner_user_id"
                   ],
                   "additionalProperties": false
                 },

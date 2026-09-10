@@ -32,7 +32,7 @@ class WisdomSyncRecovery:
             (org, user),
         ).fetchall()
         operations = db.execute(
-            """SELECT o.interaction_id,o.state,o.attempts,o.sync_until,o.last_error,
+            """SELECT o.interaction_id,o.report_state,o.state,o.attempts,o.sync_until,o.last_error,
             (d.state='settled' AND d.outcome='acknowledged'
              AND d.event_id IS NOT NULL AND d.receipt_json IS NOT NULL) AS receipt_ready
             FROM wisdom_operation_outbox o LEFT JOIN wisdom_remote_delivery d
@@ -105,8 +105,8 @@ class WisdomSyncRecovery:
                 if self._state(row, "operation", now) == "retryable":
                     db.execute(
                         """UPDATE wisdom_operation_outbox SET state='pending',attempts=0,available_at=?,
-                        sync_token=NULL,sync_until=NULL,last_error=NULL WHERE interaction_id=?""",
-                        (now, row["interaction_id"]),
+                        sync_token=NULL,sync_until=NULL,last_error=NULL WHERE interaction_id=? AND report_state=?""",
+                        (now, row["interaction_id"], row["report_state"]),
                     )
         # Reconcile saved transport acceptance before reporting completed work.
         # Existing leases and immutable request keys make concurrent retries safe.

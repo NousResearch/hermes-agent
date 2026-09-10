@@ -558,12 +558,27 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
         assert prepare() == []
     install = consent.request("org-1", {"kind": "skill", "skill_id": "skill-1", "version": 1}, actor,
                               title="Review installation", explanation="Install this test skill.")
-    deliver(prepare())
+    initial = prepare()
+    if copy_mode == "agent":
+        from tests.wisdom.test_operation_outbox import reserve
+
+        delivery, acknowledge = reserve(service, mediation.queue, initial[0]["assessment"], now, actor)
+        acknowledge()
+        delivery.flush("org-1")
+    else:
+        deliver(initial)
     assert service.store.installation("skill-1") is None
     installed = consent.resolve("org-1", install["id"], actor, "confirm")
     assert installed["state"] == "completed"
     assert interaction_view(installed).summary == "Files installed"
     assert not marker.exists() and not model_calls
+    def reported_states():
+        with service.store.transaction() as db:
+            return {row[0] for row in db.execute(
+                "SELECT report_state FROM wisdom_operation_outbox WHERE interaction_id=?", (install["id"],),
+            )}
+
+    assert reported_states() == ({"files_installed"} if copy_mode == "agent" else set())
     consent.resolve("org-1", install["id"], actor, "confirm")
     with service.store.transaction() as db:
         assert db.execute("SELECT count(*) FROM wisdom_assessment WHERE event_key=?", (f"setup-handoff:{install['id']}",)).fetchone()[0] == 1
@@ -654,12 +669,14 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
     verification = verification_items[0]["interaction"]
     assert verification["facts"]["step"]["phase"] == "verify"
     assert inspect_installed_setup(service.store, "skill-1")["ready_to_use"] is not True
+    assert "completed" not in reported_states()
     deliver(verification_items)
     consent.resolve("org-1", verification["id"], actor, "confirm")
     assert _settle(consent, actor, verification["id"])["state"] == "completed"
     ready = prepare()
     assert ready[0]["advice"]["title"].endswith("Ready")
     assert inspect_installed_setup(service.store, "skill-1")["ready_to_use"] is True
+    assert reported_states() == ({"files_installed", "completed"} if copy_mode == "agent" else set())
     verified = resolve_surface_action(service, f"wi:agent:setup.status:{install['id']}",
                                       platform=actor.platform, actor_id=actor.actor_id, chat_id=actor.chat_id)
     assert verified.summary == "Ready"

@@ -392,6 +392,17 @@ def test_signature_still_rejects_changed_approval_facts(consent, field, value):
     instance.service.install_apply.assert_not_called()
 
 
+@pytest.mark.parametrize("field", ["security_check", "professionalism_check"])
+def test_changed_scan_requires_new_consent_even_when_still_allowed(consent, field):
+    instance, actor, identity, _ = consent
+    version = instance.service.version_detail.return_value["version"]
+    version[field] = {"status": "pass", "checks": []}
+    shown = instance.present("org", identity, actor)
+    version[field] = {"status": "advisory", "checks": [{"key": "language", "finding_count": 1}]}
+    assert instance.resolve("org", shown["id"], actor, "confirm")["state"] == "stale"
+    instance.service.install_apply.assert_not_called()
+
+
 @pytest.mark.parametrize("expired", [False, True])
 def test_recheck_creates_fresh_consent_without_applying_and_is_repeatable(consent, expired):
     instance, actor, identity, now = consent

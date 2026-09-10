@@ -66,6 +66,10 @@ def process_setup_handoff(mediation, org, job, *, runtime):
         with service.store.transaction() as db:
             if setup_source(db, queue, org, job) != parent:
                 raise WisdomConflict("setup source or session authority changed")
+            if next_reference.get("setup_status", {}).get("ready") is True:
+                from .operation_outbox import stage_verified
+
+                stage_verified(db, parent, queue.clock())
             db.execute(
                 "UPDATE wisdom_assessment SET reference_json=?,advice_json=?,state='ready',origin_session=?,last_error=NULL,updated_at=? WHERE id=?",
                 (json.dumps(next_reference), json.dumps(advice), parent["owner_session"], queue.clock(), job["id"]),

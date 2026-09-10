@@ -92,6 +92,20 @@ def _signature(plan: dict[str, Any]) -> dict[str, Any]:
             "setup_key",
         )
     }
+    for key in ("security_check", "professionalism_check"):
+        review = plan.get(key)
+        if isinstance(review, dict):
+            # Bind displayed findings, not a fresh scanner timestamp or routing metadata.
+            review = {k: v for k, v in review.items() if k not in {
+                "assessed_at", "checked_at", "scanned_at", "provenance",
+            }}
+            if isinstance(review.get("checks"), list):
+                review["checks"] = sorted(
+                    review["checks"], key=lambda value: json.dumps(value, sort_keys=True)
+                )
+        signature[key] = hashlib.sha256(
+            json.dumps(review, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
     # Plans cross a JSON persistence boundary. Compare wire values, not Python
     # tuple/list container types returned by compatibility evaluation.
     return json.loads(json.dumps(signature))

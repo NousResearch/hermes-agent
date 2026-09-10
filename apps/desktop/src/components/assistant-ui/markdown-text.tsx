@@ -7,14 +7,17 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
+import { useStore } from '@nanostores/react'
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { useI18n } from '@/i18n'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
@@ -22,10 +25,11 @@ import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
+  type GatewayMediaOrigin,
+  gatewayMediaOriginIsRemote,
   isFileMediaPath,
   isInlineMediaSrc,
   isMarkdownDocumentPath,
-  isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
   mediaName,
@@ -103,19 +107,40 @@ function preprocessWithTailRepair(text: string): string {
   }
 }
 
-function useOpenMediaFile(path: string) {
+function useOpenMediaFile(path: string, origin?: GatewayMediaOrigin) {
   const [openFailed, setOpenFailed] = useState(false)
 
   const open = () => {
-    if (window.hermesDesktop && isRemoteGateway()) {
+    if (window.hermesDesktop && gatewayMediaOriginIsRemote(origin)) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
+      void downloadGatewayMediaFile(path, origin).catch(() => setOpenFailed(true))
     } else {
       openExternalLink(mediaExternalUrl(path))
     }
   }
 
   return { open, openFailed }
+}
+
+function useTranscriptMediaOrigin(): GatewayMediaOrigin {
+  const view = useSessionView()
+  const owner = useStore(view.$ownerRoute)
+  const storedId = useStore(view.$storedId)
+  const connectionId = owner?.connectionId
+  const mode = owner?.mode
+  const profile = owner?.profile
+  const targetProfile = owner?.targetProfile
+
+  return useMemo(
+    () => ({
+      connectionId,
+      mode,
+      profile,
+      sessionId: storedId || undefined,
+      targetProfile
+    }),
+    [connectionId, mode, profile, storedId, targetProfile]
+  )
 }
 
 function OpenMediaFailedNote({ name }: { name: string }) {
@@ -126,8 +151,8 @@ function OpenMediaFailedNote({ name }: { name: string }) {
   )
 }
 
-function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
-  const { open, openFailed } = useOpenMediaFile(path)
+function OpenMediaButton({ kind, origin, path }: { kind: 'audio' | 'video'; origin?: GatewayMediaOrigin; path: string }) {
+  const { open, openFailed } = useOpenMediaFile(path, origin)
 
   return (
     <span className="block">
@@ -144,11 +169,15 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
 }
 
 function MediaAttachment({ path }: { path: string }) {
+  const { t } = useI18n()
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
-  const { open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
   const name = mediaName(path)
+  const origin = useTranscriptMediaOrigin()
+
+  const { open, openFailed } = useOpenMediaFile(path, origin)
+  const showDownload = Boolean(window.hermesDesktop && gatewayMediaOriginIsRemote(origin))
 
   useEffect(() => {
     let cancelled = false
@@ -165,7 +194,7 @@ function MediaAttachment({ path }: { path: string }) {
       }
     }
 
-    void resolveMediaPlaybackSrc(path)
+    void resolveMediaPlaybackSrc(path, origin)
       .then(value => {
         if (value.startsWith('blob:')) {
           objectUrl = value
@@ -190,7 +219,7 @@ function MediaAttachment({ path }: { path: string }) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [kind, path])
+  }, [kind, origin, path])
 
   if (kind === 'image' && src) {
     return (
@@ -205,7 +234,13 @@ function MediaAttachment({ path }: { path: string }) {
       <span className="my-3 block max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
         <audio className="block w-full" controls onError={() => setFailed(true)} preload="metadata" src={src} />
-        {failed && <OpenMediaButton kind="audio" path={path} />}
+        {showDownload && (
+          <button className="mt-2 ref text-xs font-medium" onClick={open} type="button">
+            {t.fileMenu.download}
+          </button>
+        )}
+        {failed && <OpenMediaButton kind="audio" origin={origin} path={path} />}
+        {openFailed && <OpenMediaFailedNote name={name} />}
       </span>
     )
   }
@@ -220,7 +255,13 @@ function MediaAttachment({ path }: { path: string }) {
           onError={() => setFailed(true)}
           src={src}
         />
-        {failed && <OpenMediaButton kind="video" path={path} />}
+        {showDownload && (
+          <button className="mt-2 ref text-xs font-medium" onClick={open} type="button">
+            {t.fileMenu.download}
+          </button>
+        )}
+        {failed && <OpenMediaButton kind="video" origin={origin} path={path} />}
+        {openFailed && <OpenMediaFailedNote name={name} />}
       </span>
     )
   }
@@ -371,7 +412,8 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
   const rawSrc = typeof src === 'string' ? src : ''
   const [resolvedSrc, setResolvedSrc] = useState(() => (rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : ''))
   const [failed, setFailed] = useState(false)
-  const { open, openFailed } = useOpenMediaFile(rawSrc)
+  const origin = useTranscriptMediaOrigin()
+  const { open, openFailed } = useOpenMediaFile(rawSrc, origin)
   const name = mediaName(rawSrc || String(alt || 'image'))
 
   useEffect(() => {
@@ -386,7 +428,7 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
       }
     }
 
-    void resolveMediaDisplaySrc(rawSrc)
+    void resolveMediaDisplaySrc(rawSrc, origin)
       .then(value => {
         if (!cancelled) {
           setResolvedSrc(value)
@@ -401,7 +443,7 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
     return () => {
       cancelled = true
     }
-  }, [rawSrc])
+  }, [origin, rawSrc])
 
   if (!rawSrc) {
     return null

@@ -23,6 +23,8 @@ interface MediaProtocolTarget {
   filePath: string
   mode: MediaProtocolMode
   profile?: string
+  sessionId?: string
+  targetProfile?: string
 }
 
 export interface MediaRemoteScope {
@@ -65,8 +67,10 @@ function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
 
   const connectionId = url.searchParams.get('connectionId')?.trim() || undefined
   const profile = url.searchParams.get('profile')?.trim() || undefined
+  const sessionId = url.searchParams.get('sessionId')?.trim() || undefined
+  const targetProfile = url.searchParams.get('targetProfile')?.trim() || undefined
 
-  return { connectionId, filePath, mode, profile }
+  return { connectionId, filePath, mode, profile, sessionId, targetProfile }
 }
 
 export function isStreamableMediaPath(filePath: string): boolean {
@@ -89,7 +93,28 @@ export function mediaRequestHeaders(source: Headers): Headers {
   return forwarded
 }
 
-export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?: string): string {
+export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?: string, sessionId?: string): string {
+  const normalizedBase = baseUrl.replace(/\/+$/, '')
+  const url = new URL(`${normalizedBase}/api/fs/stream`)
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`Unsupported Hermes backend URL protocol: ${url.protocol}`)
+  }
+
+  url.searchParams.set('path', filePath)
+
+  if (profile) {
+    url.searchParams.set('profile', profile)
+  }
+
+  if (sessionId) {
+    url.searchParams.set('session_id', sessionId)
+  }
+
+  return url.toString()
+}
+
+export function legacyRemoteMediaEndpoint(baseUrl: string, filePath: string, profile?: string): string {
   const normalizedBase = baseUrl.replace(/\/+$/, '')
   const url = new URL(`${normalizedBase}/api/files/stream`)
 
@@ -104,6 +129,20 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?:
   }
 
   return url.toString()
+}
+
+async function isMissingStreamRoute(response: Response, method: MediaRequestMethod): Promise<boolean> {
+  if (method !== 'GET' || response.status !== 404) {
+    return false
+  }
+
+  try {
+    const body = (await response.clone().json()) as { detail?: unknown }
+
+    return body.detail === 'Not Found'
+  } catch {
+    return false
+  }
 }
 
 export function createMediaProtocolHandler(dependencies: MediaProtocolDependencies) {
@@ -157,28 +196,63 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
       const endpoint = remoteMediaEndpoint(
         connection.baseUrl,
         target.filePath,
-        connection.sharedRemote ? target.profile : undefined
+        connection.sharedRemote ? target.targetProfile || target.profile : undefined,
+        target.sessionId
       )
+
+      let fetchAuthenticated: (url: string, requestMethod?: MediaRequestMethod, requestHeaders?: Headers) => Promise<Response>
 
       if (connection.authMode === 'oauth') {
         const bearer = await dependencies.ensureRemoteBearer(connection.baseUrl)
 
         if (bearer) {
           headers.set('authorization', `Bearer ${bearer}`)
-
-          return await dependencies.fetchRemote(endpoint, headers, method)
+          fetchAuthenticated = (url, requestMethod = method, requestHeaders = headers) =>
+            dependencies.fetchRemote(url, requestHeaders, requestMethod)
+        } else {
+          fetchAuthenticated = (url, requestMethod = method, requestHeaders = headers) =>
+            dependencies.fetchRemoteWithCookies(url, requestHeaders, requestMethod)
+        }
+      } else {
+        if (!connection.token) {
+          return new Response('Remote media authentication unavailable', { status: 401 })
         }
 
-        return await dependencies.fetchRemoteWithCookies(endpoint, headers, method)
+        headers.set('x-hermes-session-token', connection.token)
+        fetchAuthenticated = (url, requestMethod = method, requestHeaders = headers) =>
+          dependencies.fetchRemote(url, requestHeaders, requestMethod)
       }
 
-      if (!connection.token) {
-        return new Response('Remote media authentication unavailable', { status: 401 })
+      const response = await fetchAuthenticated(endpoint)
+      let missingRoute = await isMissingStreamRoute(response, method)
+
+      if (!missingRoute && method === 'HEAD' && response.status === 404) {
+        // HEAD bodies cannot distinguish a missing route from a missing file.
+        // Probe the same authenticated endpoint with a one-byte GET; only the
+        // canonical FastAPI route-missing body unlocks the legacy fallback.
+        const probeHeaders = new Headers(headers)
+
+        probeHeaders.set('range', 'bytes=0-0')
+        missingRoute = await isMissingStreamRoute(
+          await fetchAuthenticated(endpoint, 'GET', probeHeaders),
+          'GET'
+        )
       }
 
-      headers.set('x-hermes-session-token', connection.token)
+      if (!missingRoute) {
+        return response
+      }
 
-      return await dependencies.fetchRemote(endpoint, headers, method)
+      // Desktop and remote gateways update independently. Retry only a
+      // confirmed FastAPI missing-route response against the older
+      // managed-root endpoint. File/session 404s must keep failing closed.
+      return await fetchAuthenticated(
+        legacyRemoteMediaEndpoint(
+          connection.baseUrl,
+          target.filePath,
+          connection.sharedRemote ? target.targetProfile || target.profile : undefined
+        )
+      )
     } catch {
       return new Response('Remote media unavailable', { status: 502 })
     }

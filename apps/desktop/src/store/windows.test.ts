@@ -9,7 +9,9 @@ import {
   isPeerInstanceWindow,
   openBrowserInNewWindow,
   openNewWindow,
-  openSessionInNewWindow
+  openSessionInNewWindow,
+  windowConnectionOverride,
+  windowTargetProfileOverride
 } from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -71,6 +73,15 @@ describe('isPeerInstanceWindow', () => {
   })
 })
 
+describe('standalone window owner overrides', () => {
+  it('reads the exact connection and backend target profile', () => {
+    const search = '?win=secondary&connectionId=source-b&profile=desktop-alias&targetProfile=worker'
+
+    expect(windowConnectionOverride(search)).toBe('source-b')
+    expect(windowTargetProfileOverride(search)).toBe('worker')
+  })
+})
+
 describe('openSessionInNewWindow', () => {
   it('no-ops without a session id', async () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
@@ -102,6 +113,26 @@ describe('openSessionInNewWindow', () => {
     expect(open).toHaveBeenCalledWith('s1', { profile: 'research' })
     expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'work', watch: true })
     expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('carries an exact owner route across the preload boundary', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+
+    await openSessionInNewWindow('s1', {
+      ownerRoute: {
+        connectionId: 'source-b',
+        profile: 'desktop-alias',
+        targetProfile: 'worker'
+      }
+    })
+
+    expect(open).toHaveBeenCalledWith('s1', {
+      connectionId: 'source-b',
+      profile: 'desktop-alias',
+      targetProfile: 'worker',
+      watch: undefined
+    })
   })
 
   it('notifies on an ok:false result', async () => {

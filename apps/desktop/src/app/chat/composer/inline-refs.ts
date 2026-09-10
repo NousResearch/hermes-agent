@@ -1,6 +1,7 @@
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { translateNow } from '@/i18n'
 import { contextPath } from '@/lib/chat-runtime'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
 
@@ -19,6 +20,7 @@ export type InlineRefInput = string | { kind: string; label?: string; value: str
  *  (session-drag.ts); sessions never ride native DnD. */
 export interface SessionDragPayload {
   id: string
+  ownerRoute?: SessionOwnerRoute
   profile: string
   title: string
 }

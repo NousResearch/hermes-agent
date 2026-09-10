@@ -101,7 +101,11 @@ export function openSession(
 
   if (resolved === 'window') {
     if (canOpenSessionWindow()) {
-      void openSessionInNewWindow(storedSessionId)
+      if (workspaceScope.ownerRoute) {
+        void openSessionInNewWindow(storedSessionId, { ownerRoute: workspaceScope.ownerRoute })
+      } else {
+        void openSessionInNewWindow(storedSessionId)
+      }
 
       return
     }

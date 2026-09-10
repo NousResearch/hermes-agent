@@ -1,12 +1,36 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { $connection } from '@/store/session'
+import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
+import { clearAllSessionStates } from '@/store/session-states'
 
 import { MarkdownImage, MarkdownTextContent } from './markdown-text'
 
 const REMOTE_IMAGE_PATH = '/home/user/project/images/remote-preview.png'
 const REMOTE_IMAGE_DATA_URL = 'data:image/png;base64,cmVtb3RlLWltYWdl'
+
+function sessionView(storedId: string): SessionView {
+  return {
+    kind: 'primary',
+    $awaitingResponse: atom(false),
+    $busy: atom(false),
+    $cwd: atom('/srv/work'),
+    $fast: atom(false),
+    $lastVisibleIsUser: atom(false),
+    $messages: atom([]),
+    $messagesEmpty: atom(true),
+    $model: atom(''),
+    $ownerRoute: atom({ connectionId: 'remote-gateway', mode: 'remote', profile: 'assistant' }),
+    $provider: atom(''),
+    $reasoningEffort: atom(''),
+    $runtimeId: atom(null),
+    $storedId: atom(storedId),
+    $turnStartedAt: atom(null)
+  }
+}
 
 describe('MarkdownTextContent remote images', () => {
   const api = vi.fn(async ({ path }: { path: string }) => {
@@ -49,6 +73,23 @@ describe('MarkdownTextContent remote images', () => {
       profile: 'remote-work'
     })
   })
+
+  it('routes raw Markdown images through the transcript owner instead of the foreground', async () => {
+    $connection.set({ connectionId: 'local-device', mode: 'local', profile: 'default' } as never)
+
+    render(
+      <SessionViewProvider value={sessionView('remote-session')}>
+        <MarkdownTextContent isRunning={false} text="![Remote preview](/srv/media/frame.png)" />
+      </SessionViewProvider>
+    )
+
+    await screen.findByRole('img', { name: 'Remote preview' })
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'remote-gateway',
+      path: '/api/fs/read-data-url?path=%2Fsrv%2Fmedia%2Fframe.png&session_id=remote-session',
+      profile: 'assistant'
+    })
+  })
 })
 
 // Regression for #40896: generated media often arrives as image markdown
@@ -77,5 +118,81 @@ describe('MarkdownImage media routing', () => {
 
     expect(container.querySelector('video')).toBeNull()
     expect(container.querySelector('audio')).toBeNull()
+  })
+})
+
+describe('MarkdownTextContent remote video actions', () => {
+  const saveGatewayFile = vi.fn(async () => ({ saved: true }))
+
+  beforeEach(() => {
+    saveGatewayFile.mockClear()
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { saveGatewayFile }
+    })
+    $connection.set({ connectionId: 'local-device', mode: 'local', profile: 'default' } as never)
+    setSessionOwnerHint('remote-session', {
+      connectionId: 'remote-gateway',
+      mode: 'remote',
+      profile: 'assistant'
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearAllSessionStates()
+    _resetSessionOwnerHintsForTests()
+    $connection.set(null)
+  })
+
+  it('offers an explicit download routed through the transcript owner', async () => {
+    render(
+      <SessionViewProvider value={sessionView('remote-session')}>
+        <MarkdownTextContent
+          isRunning={false}
+          text="[Video: movie.mp4](#media:%2Fsrv%2Fmedia%2Fmovie.mp4)"
+        />
+      </SessionViewProvider>
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+
+    await waitFor(() =>
+      expect(saveGatewayFile).toHaveBeenCalledWith({
+        connectionId: 'remote-gateway',
+        path: '/srv/media/movie.mp4',
+        profile: 'assistant',
+        sessionId: 'remote-session',
+        suggestedName: 'movie.mp4'
+      })
+    )
+  })
+
+  it('routes colliding stored ids by the runtime bound to this transcript', async () => {
+    setSessionOwnerHint('remote-session', {
+      connectionId: 'other-gateway',
+      mode: 'remote',
+      profile: 'assistant'
+    })
+    render(
+      <SessionViewProvider value={sessionView('remote-session')}>
+        <MarkdownTextContent
+          isRunning={false}
+          text="[Video: movie.mp4](#media:%2Fsrv%2Fmedia%2Fmovie.mp4)"
+        />
+      </SessionViewProvider>
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+
+    await waitFor(() =>
+      expect(saveGatewayFile).toHaveBeenCalledWith({
+        connectionId: 'remote-gateway',
+        path: '/srv/media/movie.mp4',
+        profile: 'assistant',
+        sessionId: 'remote-session',
+        suggestedName: 'movie.mp4'
+      })
+    )
   })
 })

@@ -68,9 +68,14 @@ function chatWindowWebPreferences(preloadPath: string) {
 // HUD's buildHudWindowUrl): without it a pop-out/watch window adopts the
 // PRIMARY profile and resolves the session id against the wrong backend
 // (#82768, #61286). Absent → unchanged primary adoption.
-function buildSessionWindowUrl(sessionId: string, { devServer, profile, rendererIndexPath, watch }: any = {}) {
+function buildSessionWindowUrl(
+  sessionId: string,
+  { connectionId, devServer, profile, rendererIndexPath, targetProfile, watch }: any = {}
+) {
   const profileKey = typeof profile === 'string' ? profile.trim() : ''
-  const query = `?win=secondary${watch ? '&watch=1' : ''}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}`
+  const connectionKey = typeof connectionId === 'string' ? connectionId.trim() : ''
+  const targetProfileKey = typeof targetProfile === 'string' ? targetProfile.trim() : ''
+  const query = `?win=secondary${watch ? '&watch=1' : ''}${connectionKey ? `&connectionId=${encodeURIComponent(connectionKey)}` : ''}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}${targetProfileKey ? `&targetProfile=${encodeURIComponent(targetProfileKey)}` : ''}`
   const route = `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
@@ -121,7 +126,27 @@ function instanceWindowBounds(base: { x: number; y: number; width: number; heigh
   }
 }
 
-// A small registry keyed by sessionId that guarantees one window per chat:
+function sessionWindowRegistryKey(
+  sessionId: string,
+  { connectionId, profile, targetProfile }: any = {}
+): string {
+  const id = typeof sessionId === 'string' ? sessionId.trim() : ''
+  const connection = typeof connectionId === 'string' ? connectionId.trim() : ''
+
+  if (!id || !connection) {
+    return id
+  }
+
+  return JSON.stringify([
+    connection,
+    typeof profile === 'string' ? profile.trim() : '',
+    typeof targetProfile === 'string' ? targetProfile.trim() : '',
+    id
+  ])
+}
+
+// A small registry keyed by exact owner + session that guarantees one window
+// per chat. Legacy callers without an owner retain the bare session-id key:
 // opening a session that already has a live window focuses it instead of
 // spawning a duplicate, and a window removes itself from the registry when it
 // closes. The actual BrowserWindow construction is injected (the `factory`) so
@@ -188,5 +213,6 @@ export {
   createSessionWindowRegistry,
   instanceWindowBounds,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
+  SESSION_WINDOW_MIN_WIDTH,
+  sessionWindowRegistryKey
 }

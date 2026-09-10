@@ -28,6 +28,7 @@ import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
+import { sessionOwnerRouteFromRow } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
@@ -313,6 +314,7 @@ function SidebarSessionRowImpl({
         onDelete={onDelete}
         onPin={onPin}
         onToggleUnread={onToggleUnread}
+        ownerRoute={sessionOwnerRouteFromRow(session)}
         pinned={isPinned}
         profile={session.profile}
         sessionId={session.id}
@@ -342,6 +344,7 @@ function SidebarSessionRowImpl({
       onDelete={onDelete}
       onPin={onPin}
       onToggleUnread={onToggleUnread}
+      ownerRoute={sessionOwnerRouteFromRow(session)}
       pinned={isPinned}
       profile={session.profile}
       sessionId={session.id}
@@ -389,7 +392,15 @@ function SidebarSessionRowImpl({
           // no macOS snap-back, Esc aborts instantly). Sub-threshold releases
           // stay ordinary clicks, so resume / pin / open-in-window are
           // untouched.
-          startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
+          startSessionDrag(
+            {
+              id: session.id,
+              ownerRoute: sessionOwnerRouteFromRow(session),
+              profile: session.profile || 'default',
+              title
+            },
+            event
+          )
           dragHandleProps?.onPointerDown?.(event)
         }}
         // Hovering a row from another profile (the all-profiles view) telegraphs
@@ -422,7 +433,10 @@ function SidebarSessionRowImpl({
           // Middle-click = open in a new tab (browser muscle memory).
           {...middleClickHandlers(() => {
             triggerHaptic('selection')
-            openSession(session.id, () => undefined, 'tab')
+            openSession(session.id, () => undefined, 'tab', {
+              ownerRoute: sessionOwnerRouteFromRow(session),
+              workspaceMode: 'sessions'
+            })
           })}
           onClick={event => {
             // Modifier-click gestures on a row (see `resolveSessionRowClick`):
@@ -452,9 +466,15 @@ function SidebarSessionRowImpl({
             } else if (action === 'pin') {
               onPin()
             } else if (action === 'newTab') {
-              openSession(session.id, () => undefined, 'tab')
+              openSession(session.id, () => undefined, 'tab', {
+                ownerRoute: sessionOwnerRouteFromRow(session),
+                workspaceMode: 'sessions'
+              })
             } else {
-              openSession(session.id, () => undefined, 'window')
+              openSession(session.id, () => undefined, 'window', {
+                ownerRoute: sessionOwnerRouteFromRow(session),
+                workspaceMode: 'sessions'
+              })
             }
           }}
         >

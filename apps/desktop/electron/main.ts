@@ -361,7 +361,8 @@ import {
   createSessionWindowRegistry,
   instanceWindowBounds,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
+  SESSION_WINDOW_MIN_WIDTH,
+  sessionWindowRegistryKey
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
@@ -8164,6 +8165,7 @@ interface GatewayFileSavePayload {
   path?: unknown
   profile?: unknown
   suggestedName?: unknown
+  targetProfile?: unknown
 }
 
 async function gatedFileAuth(connection: GatewayFileConnection) {
@@ -8200,9 +8202,11 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
   const fallbackName = path.basename(filePath) || suggested || 'download'
   const ctx = { suggested, fallbackName }
 
+  const targetProfile = String(payload.targetProfile ?? '').trim() || profile
+
   const requestPaths = gatewayFileRequestPaths(
     filePath,
-    requestPath => gatewayFileRequestPath(connection, connectionId, profile, requestPath),
+    requestPath => gatewayFileRequestPath(connection, connectionId, targetProfile, requestPath),
     payload.sessionId
   )
 
@@ -13454,10 +13458,18 @@ function focusWindow(win) {
 }
 
 function spawnSecondaryWindow({
+  connectionId,
   sessionId,
   profile,
+  targetProfile,
   watch
-}: { sessionId?: string; profile?: null | string; watch?: boolean } = {}) {
+}: {
+  connectionId?: null | string
+  sessionId?: string
+  profile?: null | string
+  targetProfile?: null | string
+  watch?: boolean
+} = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -13519,8 +13531,10 @@ function spawnSecondaryWindow({
     win,
     buildSessionWindowUrl(sessionId, {
       devServer: DEV_SERVER,
+      connectionId,
       profile,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
+      targetProfile,
       watch
     }),
     'Session window'
@@ -13530,8 +13544,15 @@ function spawnSecondaryWindow({
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { profile = null, watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, profile, watch }))
+function createSessionWindow(
+  sessionId,
+  { connectionId = null, profile = null, targetProfile = null, watch = false } = {}
+) {
+  const registryKey = sessionWindowRegistryKey(sessionId, { connectionId, profile, targetProfile })
+
+  return sessionWindows.openOrFocus(registryKey, () =>
+    spawnSecondaryWindow({ connectionId, sessionId, profile, targetProfile, watch })
+  )
 }
 
 // Popped-out in-app Browser: same webview + address bar as a docked Browser
@@ -15055,7 +15076,9 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   }
 
   createSessionWindow(sessionId.trim(), {
+    connectionId: typeof opts?.connectionId === 'string' ? opts.connectionId : null,
     profile: typeof opts?.profile === 'string' ? opts.profile : null,
+    targetProfile: typeof opts?.targetProfile === 'string' ? opts.targetProfile : null,
     watch: opts?.watch === true
   })
 

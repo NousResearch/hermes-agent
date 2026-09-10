@@ -136,6 +136,12 @@ function buildTileView(storedSessionId: string): SessionView {
 
   const $messages = computed($state, state => state?.messages ?? NO_MESSAGES)
 
+  const $ownerRoute = computed(
+    [$sessionTiles, $sessions, $cronSessions, $messagingSessions],
+    (tiles, sessionRows, cronRows, messagingRows) =>
+      tileOwnerRoute(tiles, [...sessionRows, ...cronRows, ...messagingRows], storedSessionId)
+  )
+
   return {
     kind: 'tile',
     $awaitingResponse: computed($state, state => Boolean(state?.awaitingResponse)),
@@ -146,6 +152,7 @@ function buildTileView(storedSessionId: string): SessionView {
     $messages,
     $messagesEmpty: computed($messages, messages => messages.length === 0),
     $model: computed($state, state => state?.model ?? ''),
+    $ownerRoute,
     $provider: computed($state, state => state?.provider ?? ''),
     $reasoningEffort: computed($state, state => state?.reasoningEffort ?? ''),
     $runtimeId,

@@ -7,6 +7,7 @@ import {
   $activeSessionId,
   $awaitingResponse,
   $busy,
+  $connection,
   $currentCwd,
   $currentFastMode,
   $currentModel,
@@ -14,8 +15,10 @@ import {
   $currentReasoningEffort,
   $messages,
   $selectedStoredSessionId,
-  $turnStartedAt
+  $turnStartedAt,
+  getSessionOwnerHint
 } from '@/store/session'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { $sessionStates } from '@/store/session-states'
 
 import { lastVisibleMessageIsUser } from './thread-loading'
@@ -55,6 +58,7 @@ export interface SessionView {
   $turnStartedAt: ReadableAtom<number | null>
   $cwd: ReadableAtom<string>
   $model: ReadableAtom<string>
+  $ownerRoute: ReadableAtom<SessionOwnerRoute | undefined>
   $provider: ReadableAtom<string>
   $fast: ReadableAtom<boolean>
   $reasoningEffort: ReadableAtom<string>
@@ -92,6 +96,24 @@ const $primaryBusy = computed([$primaryState, $busy, $selectedStoredSessionId], 
   state ? state.busy : selected ? false : draftBusy
 )
 
+const $primaryOwnerRoute = computed([$selectedStoredSessionId, $connection], (storedId, connection) => {
+  if (!storedId || !connection?.connectionId) {
+    return undefined
+  }
+
+  const scope = {
+    connectionId: connection.connectionId,
+    profile: connection.profile || 'default'
+  }
+
+  return (
+    getSessionOwnerHint(storedId, scope) ?? {
+      ...scope,
+      mode: connection.mode
+    }
+  )
+})
+
 export const PRIMARY_SESSION_VIEW: SessionView = {
   kind: 'primary',
   $awaitingResponse: primaryField<boolean>(state => state.awaitingResponse, $awaitingResponse),
@@ -102,6 +124,7 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $messages: $primaryMessages,
   $messagesEmpty: computed($primaryMessages, messages => messages.length === 0),
   $model: primaryField<string>(state => state.model, $currentModel),
+  $ownerRoute: $primaryOwnerRoute,
   $provider: primaryField<string>(state => state.provider, $currentProvider),
   $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
   $runtimeId: $activeSessionId,

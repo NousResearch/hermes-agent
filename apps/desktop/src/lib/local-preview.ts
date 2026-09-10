@@ -2,6 +2,7 @@ import DOMPurify from 'dompurify'
 
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import type { PreviewTarget } from '@/store/preview'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
 const IMAGE_EXTENSIONS = new Set(['.bmp', '.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp'])
@@ -178,7 +179,11 @@ export async function openPreviewTargetInBrowser(target: PreviewTarget): Promise
   await bridge.openPreviewInBrowser(pathToFileUrl(filePath))
 }
 
-export function localPreviewTarget(rawTarget: string, cwd?: string | null): PreviewTarget | null {
+export function localPreviewTarget(
+  rawTarget: string,
+  cwd?: string | null,
+  ownerRoute?: SessionOwnerRoute
+): PreviewTarget | null {
   const raw = rawTarget.trim().replace(/^`|`$/g, '')
 
   if (!raw) {
@@ -205,24 +210,28 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   const isHtml = HTML_EXTENSIONS.has(ext)
   const isImage = IMAGE_EXTENSIONS.has(ext)
   const isPdf = PDF_EXTENSIONS.has(ext)
+  const remoteOwner = ownerRoute ? isDesktopFsRemoteMode(ownerRoute) : false
 
   return {
     kind: 'file',
     label: basename(path),
     language: LANGUAGE_BY_EXT[ext] || 'text',
+    ownerRoute,
     path,
     // Renderer fallback can't stat/sniff without reading; assume text unless
     // image/html/pdf extension says otherwise. LocalFilePreview still guards
     // binary/large files when readFileText/readFileDataUrl returns metadata.
     previewKind: isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : 'text',
-    source: raw,
+    source:
+      remoteOwner && ownerRoute ? `gateway:${ownerRoute.connectionId}:${ownerRoute.profile}:${raw}` : raw,
+    transient: remoteOwner ? true : undefined,
     url: pathToFileUrl(path)
   }
 }
 
 async function enrichPreviewTarget(target: PreviewTarget | null): Promise<PreviewTarget | null> {
   if (
-    !isDesktopFsRemoteMode() ||
+    !isDesktopFsRemoteMode(target?.ownerRoute) ||
     !target ||
     target.kind !== 'file' ||
     target.previewKind === 'image' ||
@@ -233,7 +242,11 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
   if (target.previewKind === 'html') {
     try {
-      const dataUrl = validatedRemoteHtmlDataUrl(await readDesktopFileDataUrl(target.path || target.source))
+      const dataUrl = validatedRemoteHtmlDataUrl(
+        target.ownerRoute
+          ? await readDesktopFileDataUrl(target.path || target.source, target.ownerRoute)
+          : await readDesktopFileDataUrl(target.path || target.source)
+      )
 
       return dataUrl ? { ...target, dataUrl } : { ...target, renderMode: 'source', transient: true }
     } catch {
@@ -242,7 +255,9 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
   }
 
   try {
-    const result = await readDesktopFileText(target.path || target.source)
+    const result = target.ownerRoute
+      ? await readDesktopFileText(target.path || target.source, target.ownerRoute)
+      : await readDesktopFileText(target.path || target.source)
 
     return {
       ...target,
@@ -259,18 +274,23 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
 export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
-  cwd?: string | null
+  cwd?: string | null,
+  ownerRoute?: SessionOwnerRoute
 ): Promise<PreviewTarget | null> {
+  if (ownerRoute && isDesktopFsRemoteMode(ownerRoute)) {
+    return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd, ownerRoute))
+  }
+
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 
     if (normalized) {
-      return enrichPreviewTarget(normalized)
+      return enrichPreviewTarget(ownerRoute ? { ...normalized, ownerRoute } : normalized)
     }
   } catch {
     // Running Electron may still have the old HTML-only preview IPC. Fall
     // through to renderer-side local classification so text/images still open.
   }
 
-  return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
+  return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd, ownerRoute))
 }

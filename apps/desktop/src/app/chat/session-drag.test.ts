@@ -61,8 +61,13 @@ function mountStackedTabs() {
 
 /** Press on `source`, drag to (x, y), release. The drag session flushes its
  *  pending move synchronously on release, so no frame wait is needed. */
-function dragTo(source: HTMLElement, x: number, y: number) {
-  startSessionDrag({ id: 'dragged', profile: 'default', title: 'Dragged chat' }, {
+function dragTo(
+  source: HTMLElement,
+  x: number,
+  y: number,
+  ownerRoute?: { connectionId: string; profile: string; targetProfile?: string }
+) {
+  startSessionDrag({ id: 'dragged', ownerRoute, profile: 'default', title: 'Dragged chat' }, {
     button: 0,
     clientX: 0,
     clientY: 0,
@@ -99,6 +104,18 @@ describe('session drop targeting across stacked tabs', () => {
 
     expect(openSessionTile).toHaveBeenCalledWith('dragged', 'right', 'session-tile:visible', undefined)
     expect(requestComposerInsertRefs).not.toHaveBeenCalled()
+  })
+
+  it('carries an exact sidebar owner route into a new tile', () => {
+    const row = mountStackedTabs()
+    const ownerRoute = { connectionId: 'source-b', profile: 'desktop-alias', targetProfile: 'worker' }
+
+    dragTo(row, 980, 400, ownerRoute)
+
+    expect(openSessionTile).toHaveBeenCalledWith('dragged', 'right', 'session-tile:visible', undefined, {
+      ownerRoute,
+      workspaceMode: 'sessions'
+    })
   })
 
   it('commits nothing over a zone that hosts no chat surface', () => {

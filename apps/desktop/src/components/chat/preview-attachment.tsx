@@ -5,28 +5,68 @@ import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { Download, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
-import { downloadGatewayMediaFile } from '@/lib/media'
+import {
+  downloadGatewayMediaFile,
+  gatewayMediaOriginIsRemote,
+  mediaGatewayStreamUrl,
+  mediaKind
+} from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
-import { $previewTabSources, closePreviewForSource, openPreview, type PreviewRecordSource } from '@/store/preview'
+import {
+  $previewTabSources,
+  closePreviewForSource,
+  openPreview,
+  type PreviewRecordSource,
+  type PreviewTarget
+} from '@/store/preview'
 
 export function PreviewAttachment({ source = 'manual', target }: { source?: PreviewRecordSource; target: string }) {
   const { t } = useI18n()
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
-  const cwd = useStore(useSessionView().$cwd)
+  const view = useSessionView()
+  const cwd = useStore(view.$cwd)
+  const owner = useStore(view.$ownerRoute)
+  const storedId = useStore(view.$storedId)
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [downloaded, setDownloaded] = useState(false)
   const cwdRef = useRef(cwd)
   const mountedRef = useRef(false)
+  const previewSourceRef = useRef('')
   const requestTokenRef = useRef(0)
   const targetRef = useRef(target)
   const name = previewName(target)
-  const isActive = openSources.includes(target)
+
+  const ownerOrigin = {
+    connectionId: owner?.connectionId,
+    mode: owner?.mode,
+    profile: owner?.profile,
+    sessionId: storedId || undefined,
+    targetProfile: owner?.targetProfile
+  }
+
+  const remote = gatewayMediaOriginIsRemote(ownerOrigin)
+
+  const previewSource = remote && owner?.connectionId
+    ? [
+        'gateway',
+        owner.connectionId,
+        owner.profile || 'default',
+        owner.targetProfile || '',
+        storedId || '',
+        target
+      ]
+        .map(part => encodeURIComponent(part))
+        .join(':')
+    : target
+
+  const isActive = openSources.includes(previewSource)
 
   cwdRef.current = cwd
+  previewSourceRef.current = previewSource
   targetRef.current = target
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
@@ -43,7 +83,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
   useEffect(() => {
     requestTokenRef.current += 1
     setOpening(false)
-  }, [cwd, target])
+  }, [cwd, previewSource, target])
 
   async function togglePreview() {
     if (opening) {
@@ -51,7 +91,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
     }
 
     if (isActive) {
-      closePreviewForSource(target)
+      closePreviewForSource(previewSource)
 
       return
     }
@@ -59,15 +99,34 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
     const requestToken = ++requestTokenRef.current
     const requestTarget = target
     const requestCwd = cwd
+    const requestSource = previewSource
 
     setOpening(true)
 
     try {
-      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined)
+      const kind = mediaKind(requestTarget)
+
+      let preview: PreviewTarget | null
+
+      if (remote && (kind === 'audio' || kind === 'video')) {
+        preview = {
+          kind: 'url',
+          label: name,
+          source: previewSource,
+          url: mediaGatewayStreamUrl(requestTarget, ownerOrigin)
+        }
+      } else {
+        preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined, owner)
+
+        if (remote && preview?.kind === 'file') {
+          preview = { ...preview, source: previewSource, url: previewSource }
+        }
+      }
 
       if (
         !mountedRef.current ||
         requestTokenRef.current !== requestToken ||
+        previewSourceRef.current !== requestSource ||
         targetRef.current !== requestTarget ||
         cwdRef.current !== requestCwd
       ) {
@@ -83,6 +142,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
       if (
         !mountedRef.current ||
         requestTokenRef.current !== requestToken ||
+        previewSourceRef.current !== requestSource ||
         targetRef.current !== requestTarget ||
         cwdRef.current !== requestCwd
       ) {
@@ -108,7 +168,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
       // Works in both modes: the Electron main process fetches the bytes
       // through the session's backend connection (local gateway or remote)
       // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target)
+      const result = await downloadGatewayMediaFile(target, ownerOrigin)
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

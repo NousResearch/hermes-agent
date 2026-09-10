@@ -1,4 +1,5 @@
 import { notifyError } from './notifications'
+import type { SessionOwnerRoute } from './session-request-router'
 
 // Window flag set by the Electron main process when it opens a standalone
 // session window (see electron/main.ts buildSessionWindowUrl). It rides in the
@@ -141,6 +142,24 @@ export function windowProfileOverride(): null | string {
   }
 }
 
+export function windowConnectionOverride(search = typeof window === 'undefined' ? '' : window.location.search): null | string {
+  try {
+    return new URLSearchParams(search).get('connectionId')?.trim() || null
+  } catch {
+    return null
+  }
+}
+
+export function windowTargetProfileOverride(
+  search = typeof window === 'undefined' ? '' : window.location.search
+): null | string {
+  try {
+    return new URLSearchParams(search).get('targetProfile')?.trim() || null
+  } catch {
+    return null
+  }
+}
+
 // True when running inside the Electron desktop shell (the preload bridge is
 // present). The "open in new window" affordance is desktop-only.
 export function canOpenSessionWindow(): boolean {
@@ -194,7 +213,10 @@ async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage:
 // #82285): the session's stamped owner wins, and an unstamped/uncached id —
 // a brand-new subagent child — inherits the profile the user is looking at
 // (#82768, #61286).
-export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
+export async function openSessionInNewWindow(
+  sessionId: string,
+  opts?: { ownerRoute?: SessionOwnerRoute; watch?: boolean }
+): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }
@@ -206,10 +228,18 @@ export async function openSessionInNewWindow(sessionId: string, opts?: { watch?:
     import('./session')
   ])
 
-  const profile = normalizeProfileKey(rememberedSessionProfile($sessions.get(), sessionId, $activeGatewayProfile.get()))
+  const profile = normalizeProfileKey(
+    opts?.ownerRoute?.profile ?? rememberedSessionProfile($sessions.get(), sessionId, $activeGatewayProfile.get())
+  )
 
   await runWindowOpen(
-    () => window.hermesDesktop.openSessionWindow(sessionId, { ...opts, profile }),
+    () =>
+      window.hermesDesktop.openSessionWindow(sessionId, {
+        connectionId: opts?.ownerRoute?.connectionId,
+        profile,
+        targetProfile: opts?.ownerRoute?.targetProfile,
+        watch: opts?.watch
+      }),
     'Could not open chat in a new window'
   )
 }

@@ -458,8 +458,8 @@ export const ja = defineLocale({
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
       tipsTitle: 'アプリ内ヒント',
       tipsDesc:
-        'アプリの一部を指す小さな吹き出し。待機中にときどき、また役に立つときは Hermes からも表示します。閉じたヒントは二度と表示されません。',
-      tipsReset: (count: number) => `閉じた${count}件のヒントを元に戻す`,
+        'アプリの一部を指す小さな吹き出し。待機中にときどき、また役に立つときは Hermes からも表示します。各ヒントは一度だけ表示されます。',
+      tipsReset: (count: number) => `${count}件のヒントをもう一度表示`,
       toursTitle: 'ガイドツアー',
       toursDesc: '画面を暗くして各ステップを強調しながら、Hermes がアプリを案内します。',
       composerPopoutTitle: 'フローティング入力欄',

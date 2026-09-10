@@ -635,8 +635,8 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Closing one retires it for good.',
-      tipsReset: (count: number) => `Bring back ${count} closed ${count === 1 ? 'tip' : 'tips'}`,
+        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Each tip appears once.',
+      tipsReset: (count: number) => `Show ${count} ${count === 1 ? 'tip' : 'tips'} again`,
       toursTitle: 'Guided Tours',
       toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
       composerPopoutTitle: 'Floating Composer',

@@ -137,6 +137,21 @@ test('ensureLoginShellPath is single-flight — concurrent callers share one she
   assert.equal(env.PATH, '/opt/homebrew/bin:/usr/bin')
 })
 
+test('applyLoginShellPath force-settles when a hung grandchild keeps the execFile callback from firing', async () => {
+  const env: any = { SHELL: '/bin/zsh', PATH: '/usr/bin' }
+  // Simulates a probe whose shell spawns a daemon (e.g. gitstatusd) that
+  // keeps stdout open: execFile's callback never fires.
+  const execFileFn = () => ({ pid: 424242, stdin: { end() {} } })
+
+  const start = Date.now()
+  const result = await applyLoginShellPath({ env, platform: 'linux', execFileFn, timeoutMs: 20 })
+  const elapsed = Date.now() - start
+
+  assert.equal(result.applied, false)
+  assert.equal(result.reason, 'unresolved')
+  assert.ok(elapsed < 4000, `expected the probe to force-settle well under the test timeout, took ${elapsed}ms`)
+})
+
 test('ensureLoginShellPath never rejects', async () => {
   const execFileFn = () => {
     throw new Error('spawn EACCES')

@@ -56,6 +56,23 @@ def make_client(transport):
     )
 
 
+@pytest.mark.parametrize("page", [None, {}, {"items": {}}, {"items": [None]},
+                                  {"items": [], "nextCursor": 1}, {"items": [], "error": "bad"}])
+def test_connector_list_rejects_bad_pages_instead_of_reporting_empty(page):
+    with pytest.raises(ToolGatewayError):
+        make_client(FakeTransport(FakeResponse(200, page))).list_connectors()
+
+
+def test_connector_list_preserves_pages_and_refuses_truncated_catalog():
+    rows = [{"connector": "gmail", "future": {"label": "Mail"}}]
+    client = make_client(FakeTransport(FakeResponse(200, {"items": rows, "nextCursor": "next"}),
+                                       FakeResponse(200, {"items": []})))
+    assert client.list_connectors() == rows
+    client = make_client(FakeTransport(*[FakeResponse(200, {"items": rows, "nextCursor": "more"}) for _ in range(20)]))
+    with pytest.raises(ToolGatewayError, match="pagination incomplete"):
+        client.list_connectors()
+
+
 def execute_envelope(results):
     errors = sum(1 for r in results if r.get("error"))
     return {

@@ -104,7 +104,17 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     ``direct_messages_topic_id`` when supported."""
     thread_id = getattr(source, "thread_id", None)
     platform = _platform_name(getattr(source, "platform", None))
-    metadata = {"thread_id": thread_id} if thread_id is not None else {}
+    # Feishu SDK populates message.thread_id with the reply chain root_id for both
+    # group and DM chats. Appending it to reply metadata causes every bot response to
+    # be nested into a subtopic. Skip thread_id for feishu group/dm — feishu has no
+    # real subtopic concept for these chat types, regular replies should stay in the
+    # main chat.
+    if thread_id is not None and not (
+        platform == "feishu" and getattr(source, "chat_type", None) in {"group", "dm"}
+    ):
+        metadata = {"thread_id": thread_id}
+    else:
+        metadata = {}
     # Slack workspace identity is routing state: carry it so a multi-workspace Socket Mode
     # gateway never falls back to its primary WebClient.
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
@@ -156,8 +166,13 @@ def _reply_anchor_for_event(event) -> str | None:
         if getattr(source, "chat_type", None) != "dm":
             return None
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
-    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
-        return getattr(event, "reply_to_message_id", None)
+    if platform == "feishu":
+        # Feishu reply API nests the response under the replied-to message even
+        # without an explicit thread_id (it auto-uses root_id). That collapses the
+        # bot's response into a subtopic in the UI. Return None to skip reply
+        # semantics for feishu group/dm — let the bot post to chat_id directly.
+        if getattr(source, "chat_type", None) in {"group", "dm"}:
+            return None
     return getattr(event, "message_id", None)
 
 

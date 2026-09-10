@@ -677,7 +677,11 @@ def build_session_key(
         parts.append(chat_id)
     # DMs put the participant before the thread; groups/threads put it after.
     user_part = [str(participant_id)] if isolate_user and participant_id else []
-    thread_part = [thread_id] if thread_id else []
+    # Feishu SDK populates thread_id with reply-chain root_id for both group and DM
+    # chats. Including it in the session key causes session fork on every reply,
+    # dropping prior conversation context. Skip feishu thread_id for group/dm.
+    is_feishu_chat = source.platform == Platform.FEISHU and source.chat_type in {"group", "dm"}
+    thread_part = [thread_id] if thread_id and not is_feishu_chat else []
     parts += user_part + thread_part if is_dm else thread_part + user_part
     return ":".join(str(part) for part in parts)
 

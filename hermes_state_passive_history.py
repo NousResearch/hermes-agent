@@ -137,7 +137,7 @@ def _validated_messages(messages: Any) -> List[Dict[str, str]]:
     for message in messages:
         if not isinstance(message, dict) or set(message) != _ROW_KEYS:
             raise ValueError("each passive message must carry exactly 'role' and 'content'")
-        if message["role"] not in _ALLOWED_ROLES:
+        if not isinstance(message["role"], str) or message["role"] not in _ALLOWED_ROLES:
             raise ValueError("passive history accepts only finalized 'user' or 'assistant' rows")
         rows.append({"role": message["role"], "content": _validated_content(message["content"])})
     if len(rows) == 2 and tuple(row["role"] for row in rows) != _ORDERED_PAIR_ROLES:
@@ -184,12 +184,14 @@ class SessionPassiveHistoryMixin:
                 config = json.loads(config)
             except json.JSONDecodeError:
                 return False
-        return not (isinstance(config, dict) and config.get("_reset_from") is not None)
+        return not (isinstance(config, dict)
+                    and config.get("_reset_from") == child.get("parent_session_id"))
 
     def _passive_continuation_children(self, conn, parent_session_id: str) -> List[Dict[str, Any]]:
         rows = conn.execute(
             f"SELECT id, parent_session_id, source, model_config, ended_at, end_reason FROM sessions "
             f"WHERE parent_session_id = ?{self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias='')}"
+            "AND (ended_at IS NULL OR end_reason = 'compression') "
             "ORDER BY started_at ASC, id ASC",
             (parent_session_id, parent_session_id, parent_session_id)).fetchall()
         return [child for child in (dict(row) for row in rows)
@@ -202,7 +204,7 @@ class SessionPassiveHistoryMixin:
             raise PassiveHistoryTargetError(f"Session {session_id!r} does not exist")
         return self._session_turn_lease_key_on_conn(conn, session_id)
 
-    def _resolve_passive_history_tip(self, conn, conversation_id: str) -> str:
+    def _resolve_passive_history_tip(self, conn, conversation_id: str, *, requested_session_id: str) -> str:
         """The live segment a NEW event must land on, following compression edges only.
 
         Zero or several eligible continuations, a cycle, an over-deep chain, a missing row or a tip
@@ -229,11 +231,25 @@ class SessionPassiveHistoryMixin:
         else:
             raise PassiveHistoryTargetError(
                 f"Conversation {conversation_id!r} compression lineage is too deep to resolve")
+        if requested_session_id not in seen:
+            raise PassiveHistoryTargetError(
+                "Requested session is not on the live compression lineage")
         if current["ended_at"] is not None:
             raise PassiveHistoryTargetError(
                 f"Session {str(current['id'])!r} is closed ({current['end_reason']!r}); "
                 "passive history never reopens a conversation")
         return str(current["id"])
+
+    def get_passive_history_tip(self, session_id: str) -> str:
+        """Resolve the same strict segment for admitted readers and passive writers.
+
+        Admission holds the conversation turn lease across this read and the history load.
+        Generic resume helpers may choose a preferred child or hide read failures.
+        """
+        with self._read_ctx() as conn:
+            conversation_id = self._passive_conversation_id(conn, session_id)
+            return self._resolve_passive_history_tip(
+                conn, conversation_id, requested_session_id=session_id)
 
     def _verify_passive_receipt(self, conn, receipt, *, producer: str, event_id: str) -> None:
         """Prove a stored receipt still describes its original commit, or retire the identity.
@@ -326,7 +342,8 @@ class SessionPassiveHistoryMixin:
                     revision=int(receipt["id"]), replayed=True)
 
             conversation_id = self._passive_conversation_id(conn, session_id)
-            tip = self._resolve_passive_history_tip(conn, conversation_id)
+            tip = self._resolve_passive_history_tip(
+                conn, conversation_id, requested_session_id=session_id)
             try:
                 self._check_transcript_write_guards(conn, tip, None, reject_active_turn_lease=True)
             except SessionTurnLeaseLostError as exc:

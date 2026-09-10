@@ -228,6 +228,14 @@ receipt in a single write transaction. Notes:
   (`get_passive_history_watermark()` reads `MAX(id)` for the conversation). The next canonical turn
   compares it with the marker it last loaded, so an already-cached idle agent refreshes its history
   exactly when external history changed and otherwise keeps the ordinary prompt-cache path.
+  Admission resolves the same strict compression successor as insertion, including a compressed
+  branch or reset conversation whose continuation inherits its earlier origin metadata. A closed
+  orphan is not a live successor; ambiguous live continuations are refused.
+- A finalized assistant-only event can follow a completed assistant reply. During model replay,
+  sequence repair presents that new event as attributed external-assistant transcript context in a
+  user message, preserving the completed reply and its `api_content` bytes. Raw canonical rows keep
+  their original roles and text. Existing repair combines only the unanswered suffix as necessary;
+  the context projection keeps persistence markers and never inserts another canonical utterance.
 - System/tool roles, tool fields, reasoning sidecars, multimodal structures, empty content, invalid
   Unicode and content over 64 KiB UTF-8 are rejected before anything is written. The table itself
   holds no transcript, tool arguments or credentials.
@@ -293,6 +301,10 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 31 | Additive `passive_history_commits` receipt table + `(conversation_id, id)` index for passive conversation history. `CREATE TABLE/INDEX IF NOT EXISTS` only: no backfill, no transcript rewrite, no FTS rebuild. Older code ignores the table; rollback keeps canonical messages and prior receipts, and never deletes a persisted user turn |
 
 Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
+
+Drain and restart host processes when upgrading or rolling back passive-history support. Mixed
+old/new cached agents are not supported for next-turn visibility. Rollback disables the new callers
+and leaves both canonical messages and the additive receipt table intact.
 
 Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to handle the column-already-exists case (idempotent). The version number is bumped after each successful migration block.
 

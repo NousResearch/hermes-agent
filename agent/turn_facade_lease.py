@@ -255,12 +255,11 @@ def _refresh_admitted_history(agent, db, session_id: str, task_context, admissio
         return
     if waited:
         agent._emit_status("Session is free; loading the latest transcript...")
+    if changed:
+        latest_session_id = db.get_passive_history_tip(session_id)
+    else:
         # The holder may have compressed/rotated the session while we waited.
         latest_session_id = db.resolve_resume_session_id(session_id)
-    else:
-        # Strict compression tip only: resolve_resume_session_id also prefers children and swallows
-        # errors, which must never decide where external history is read from.
-        latest_session_id = db.get_compression_tip(session_id)
     if latest_session_id:
         agent.session_id = latest_session_id
         task_context["session_id"] = latest_session_id

@@ -10,6 +10,7 @@ that saving history starts zero execution.
 from __future__ import annotations
 
 import sqlite3
+from copy import deepcopy
 
 import pytest
 
@@ -185,6 +186,7 @@ def test_reload_failure_releases_the_lease_and_the_next_turn_retries(
     conversation, zero_execution, monkeypatch
 ):
     host, ingress = conversation
+    seed = _seed(host)
     receipt = ingress.append_passive_messages("conv", messages=[dict(SPOKEN)], **IDENTITY)
     agent = _agent_with_db(host, session_id="conv")
     turns = _recorder(monkeypatch, [])
@@ -193,6 +195,8 @@ def test_reload_failure_releases_the_lease_and_the_next_turn_retries(
     failures = {"n": 1}
 
     def flaky_load(session_id, **kwargs):
+        with host._read_ctx() as conn:
+            assert conn.execute("SELECT 1 FROM session_turn_leases").fetchone() is not None
         if failures["n"]:
             failures["n"] -= 1
             raise sqlite3.OperationalError("database is locked")
@@ -201,24 +205,88 @@ def test_reload_failure_releases_the_lease_and_the_next_turn_retries(
     monkeypatch.setattr(host, "get_messages_as_conversation", flaky_load)
 
     with pytest.raises(sqlite3.OperationalError):
-        AIAgent.run_conversation(agent, "and confirm it", conversation_history=_seed(host))
+        AIAgent.run_conversation(agent, "and confirm it", conversation_history=seed)
 
     assert turns == []
     assert not hasattr(agent, "_passive_history_watermark")
     with host._read_ctx() as conn:
         assert conn.execute("SELECT 1 FROM session_turn_leases").fetchone() is None
 
-    AIAgent.run_conversation(agent, "and confirm it", conversation_history=_seed(host))
+    AIAgent.run_conversation(agent, "and confirm it", conversation_history=seed)
 
     assert len(turns) == 1
     assert [m["content"] for m in turns[0]["history"]].count(SPOKEN["content"]) == 1
     assert agent._passive_history_watermark == ("conv", receipt.revision)
 
 
+@pytest.mark.parametrize("marker", ["_branched_from", "_delegate_from", "_reset_from"])
+def test_compressed_child_loads_its_own_live_segment(conversation, monkeypatch, marker):
+    host, ingress = conversation
+    host.create_session("child", source="test", parent_session_id="conv",
+                        model_config={marker: "conv"})
+    host.append_messages_batch("child", [dict(OLD_USER), dict(OLD_ASSISTANT)])
+    seed = _seed(host, "child")
+    host.end_session("child", "compression")
+    host.create_session("child-tip", source="test", parent_session_id="child",
+                        model_config={marker: "conv"})
+    host.append_message("child-tip", "user", "child summary")
+    receipt = ingress.append_passive_messages("child", messages=[dict(SPOKEN)], **IDENTITY)
+    agent = _agent_with_db(host, session_id="child")
+    turns = _recorder(monkeypatch, [])
+
+    AIAgent.run_conversation(agent, "continue", conversation_history=seed)
+
+    assert agent.session_id == turns[0]["session_id"] == receipt.session_id == "child-tip"
+    assert SPOKEN["content"] in turns[0]["history"][-1]["content"]
+    assert agent._passive_history_watermark == ("child", receipt.revision)
+    assert host.get_messages("conv") == ingress.get_messages("conv")
+
+
+@pytest.mark.parametrize("role", ["user", "assistant"])
+def test_external_suffix_preserves_cached_payloads(conversation, zero_execution, monkeypatch, role):
+    host, ingress = conversation
+    # Both user and assistant payload sidecars may differ from the display text.
+    host.clear_messages("conv")
+    host.append_messages_batch("conv", [
+        {**OLD_USER, "api_content": "  original user wire bytes\n"},
+        {**OLD_ASSISTANT, "api_content": "  original assistant wire bytes\n"},
+    ])
+    seed = _seed(host)
+    before = deepcopy(seed)
+    agent = _agent_with_db(host, session_id="conv")
+    agent._cached_system_prompt = "the established system prompt\n"
+    turns = _recorder(monkeypatch, [])
+    external = {"role": role, "content": "externally finalized text"}
+    ingress.append_passive_messages("conv", messages=[external], **IDENTITY)
+
+    AIAgent.run_conversation(agent, "continue", conversation_history=seed)
+
+    history = turns[0]["history"]
+    assert history[:len(seed)] == before
+    assert seed == before
+    assert agent._cached_system_prompt == "the established system prompt\n"
+    assert sum(m["content"].count(external["content"]) for m in history) == 1
+    assert all(a["role"] != b["role"] for a, b in zip(history, history[1:]))
+    assert all(m.get(_DB_PERSISTED_MARKER) for m in history)
+    assert host.get_messages("conv")[-1]["role"] == role
+    assert host.get_messages("conv")[-1]["content"] == external["content"]
+    # A copied replay must not flush the attributed context as another canonical utterance.
+    assert agent._flush_messages_to_session_db(deepcopy(history))
+    assert len(host.get_messages("conv")) == 3
+    if role == "assistant":
+        assert "External assistant transcript" in history[-1]["content"]
+    # Loading again with a new passive event preserves the same completed prefix.
+    ingress.append_passive_messages("conv", messages=[dict(SPOKEN)],
+                                   **{**IDENTITY, "event_id": "evt-2"})
+    AIAgent.run_conversation(agent, "continue again", conversation_history=history)
+    assert turns[1]["history"][:len(seed)] == before
+    assert sum(m["content"].count(external["content"]) for m in turns[1]["history"]) == 1
+
+
 def test_passive_commit_during_a_live_turn_is_refused_without_touching_history(
     conversation, zero_execution, monkeypatch
 ):
-    """AC-19's delayed-persistence arm: the active writer wins, the caller retries later."""
+    """Delayed persistence: the active writer wins, the caller retries later."""
     host, ingress = conversation
     agent = _agent_with_db(host, session_id="conv")
     observed = {}

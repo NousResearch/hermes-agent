@@ -551,7 +551,32 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     return merged, repairs
 
 
+def _project_passive_assistant_continuations(messages: List[Dict]) -> Tuple[List[Dict], int]:
+    """Quote an external assistant continuation without rewriting a completed assistant turn.
+
+    A singleton external reply can follow a cached assistant payload. Merging the two
+    invalidates that payload's api_content. Present only the later transcript as attributed
+    context at the next admission instead; raw storage keeps its original assistant role.
+    Existing user-sequence repair can join this context to the next unanswered user input.
+    """
+    projected: List[Dict] = []
+    repairs = 0
+    for msg in messages:
+        if (projected and projected[-1].get("role") == "assistant"
+                and msg.get("role") == "assistant"
+                and msg.get("display_kind") == "passive_conversation"
+                and not msg.get("tool_calls")):
+            msg = dict(msg)
+            text = msg.pop("api_content", None) or msg.get("content", "")
+            msg["role"] = "user"
+            msg["content"] = f"[External assistant transcript]\n{text}"
+            repairs += 1
+        projected.append(msg)
+    return projected, repairs
+
+
 _SEQUENCE_REPAIR_PASSES = (
+    _project_passive_assistant_continuations,
     _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
     _merge_consecutive_users,
 )

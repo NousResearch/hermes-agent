@@ -10,11 +10,13 @@ first commit rather than copy it.
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 
 import pytest
 
 from hermes_state import SessionDB
+from hermes_state_errors import SessionTurnLeaseLostError
 from hermes_state_passive_history import (
     PassiveHistoryBusyError,
     PassiveHistoryConflictError,
@@ -160,6 +162,7 @@ def test_concurrent_equal_retry_commits_exactly_once(store):
 def test_equal_id_different_payload_conflicts_without_copying(store, overrides):
     writer, peer = store
     original = _append(writer, "conv", messages=[USER])
+    overrides = dict(overrides)
     messages = overrides.pop("messages", [USER])
 
     with pytest.raises(PassiveHistoryConflictError):
@@ -193,9 +196,10 @@ def test_active_turn_lease_returns_retryable_busy_and_writes_nothing(store):
 def test_stale_lease_holder_is_reclaimed_rather_than_blocking(store):
     """The guard's own reclamation rule is preserved: a dead holder must not wedge history."""
     writer, peer = store
-    # pid=1 is not a live local Hermes process: reclaimable by the same rule as acquisition,
-    # so this asserts the fence without depending on a TTL elapsing.
-    assert peer.try_acquire_session_turn_lease("conv", "pid=1:turn=stale", ttl_seconds=300)
+    holder = f"pid={os.getpid()}:turn=stale"
+    assert peer.try_acquire_session_turn_lease("conv", holder, ttl_seconds=300)
+    peer._execute_write(lambda conn: conn.execute(
+        "UPDATE session_turn_leases SET expires_at = 0 WHERE conversation_id = 'conv'"))
 
     receipt = _append(writer, "conv", messages=[USER])
 
@@ -204,6 +208,8 @@ def test_stale_lease_holder_is_reclaimed_rather_than_blocking(store):
     with writer._read_ctx() as conn:
         assert conn.execute(
             "SELECT 1 FROM session_turn_leases WHERE conversation_id = 'conv'").fetchone() is None
+    with pytest.raises(SessionTurnLeaseLostError):
+        peer.append_message("conv", "assistant", "late stale result", turn_lease_holder=holder)
 
 
 def test_receipt_insert_failure_rolls_back_rows_counters_and_watermark(store, monkeypatch):
@@ -225,6 +231,80 @@ def test_receipt_insert_failure_rolls_back_rows_counters_and_watermark(store, mo
     assert peer.search_messages("ABC123") == []
 
 
+@pytest.mark.parametrize("phase", ["after-receipt-insert", "lost-commit-response"])
+def test_failure_boundaries_preserve_atomicity_and_retry_identity(store, monkeypatch, phase):
+    writer, peer = store
+    committed = []
+    if phase == "after-receipt-insert":
+        insert = writer._insert_passive_receipt
+
+        def fail_after_insert(conn, **kwargs):
+            insert(conn, **kwargs)
+            raise sqlite3.OperationalError("injected after receipt insertion")
+
+        monkeypatch.setattr(writer, "_insert_passive_receipt", fail_after_insert)
+    else:
+        write = writer._execute_write
+
+        def lose_response(operation, **kwargs):
+            committed.append(write(operation, **kwargs))
+            raise ConnectionError("injected lost response after commit")
+
+        monkeypatch.setattr(writer, "_execute_write", lose_response)
+
+    with pytest.raises((sqlite3.OperationalError, ConnectionError)):
+        _append(writer, "conv", messages=[USER, ASSISTANT])
+
+    expected = 1 if committed else 0
+    assert len(_receipt_rows(peer)) == expected
+    assert peer.get_session("conv")["message_count"] == expected * 2
+    assert len(peer.search_messages("ABC123")) == expected
+    retry = _append(peer, "conv", messages=[USER, ASSISTANT])
+    assert retry.replayed is bool(committed)
+    if committed:
+        assert (retry.message_ids, retry.revision) == (committed[0].message_ids, committed[0].revision)
+    assert len(_receipt_rows(peer)) == 1
+    assert peer.get_session("conv")["message_count"] == 2
+
+
+@pytest.mark.parametrize("change", ["content", "provenance", "reused-row-id"])
+def test_receipts_cannot_acknowledge_replaced_rows(store, change):
+    writer, peer = store
+    original = _append(writer, "conv", messages=[USER])
+    row_id = original.message_ids[0]
+
+    def replace(conn):
+        if change == "reused-row-id":
+            conn.execute("DELETE FROM messages WHERE id = ?", (row_id,))
+            conn.execute("INSERT INTO messages (id, session_id, role, content, timestamp) "
+                         "VALUES (?, 'conv', 'user', ?, 0)", (row_id, USER["content"]))
+        elif change == "provenance":
+            conn.execute("UPDATE messages SET display_metadata = '{}' WHERE id = ?", (row_id,))
+        else:
+            conn.execute("UPDATE messages SET content = 'different stored text' WHERE id = ?", (row_id,))
+
+    writer._execute_write(replace)
+    before = _rows(peer, "conv")
+    with pytest.raises(PassiveHistoryRetiredError):
+        _append(peer, "conv", messages=[USER])
+    assert _rows(peer, "conv") == before
+    assert len(_receipt_rows(peer)) == 1
+
+
+def test_event_identity_is_profile_local_but_cannot_retarget_within_a_store(store, tmp_path):
+    writer, peer = store
+    original = _append(writer, "conv", messages=[USER])
+    writer.create_session("other", source="test")
+    with pytest.raises(PassiveHistoryConflictError):
+        _append(peer, "other", messages=[USER])
+    with SessionDB(tmp_path / "other-profile.db") as profile:
+        profile.create_session("conv", source="test")
+        separate = _append(profile, "conv", messages=[ASSISTANT])
+        assert not separate.replayed
+        assert _rows(profile, "conv") == [("assistant", ASSISTANT["content"], "passive_conversation")]
+    assert _append(peer, "conv", messages=[USER]).message_ids == original.message_ids
+
+
 def test_compression_successor_replay_returns_the_original_receipt(store):
     """Continuation lineage is the same conversation; the committed segment stays original."""
     writer, peer = store
@@ -244,6 +324,25 @@ def test_compression_successor_replay_returns_the_original_receipt(store):
     assert fresh.session_id == "conv-2" and fresh.conversation_id == "conv"
     assert fresh.revision > original.revision
     assert peer.get_passive_history_watermark("conv-2").revision == fresh.revision
+
+
+@pytest.mark.parametrize("kind", ["branch", "delegate", "reset", "closed-orphan"])
+def test_only_live_compression_edges_select_the_target(store, kind):
+    writer, peer = store
+    marker = {"branch": "_branched_from", "delegate": "_delegate_from", "reset": "_reset_from"}
+    config = {marker[kind]: "conv"} if kind in marker else {}
+    writer.create_session("child", source="test", parent_session_id="conv", model_config=config)
+    writer.end_session("child", "compression")
+    writer.create_session("child-tip", source="test", parent_session_id="child", model_config=config)
+    if kind == "closed-orphan":
+        writer.create_session("orphan", source="test", parent_session_id="child")
+        writer.end_session("orphan", "cli_close")
+
+    receipt = _append(peer, "child", messages=[USER])
+
+    assert (receipt.conversation_id, receipt.session_id) == ("child", "child-tip")
+    assert _append(writer, "child-tip", messages=[USER]).message_ids == receipt.message_ids
+    assert _rows(writer, "child") == _rows(writer, "conv") == []
 
 
 def test_in_place_compaction_retry_keeps_the_original_identity(store):
@@ -316,6 +415,14 @@ def test_deleted_content_retires_the_identity_instead_of_replaying_it(store, des
         ),
         pytest.param(
             "conv", lambda db: db.end_session("conv", "compression"), id="missing-continuation"),
+        pytest.param(
+            "orphan",
+            lambda db: (db.end_session("conv", "compression"),
+                        db.create_session("live", source="test", parent_session_id="conv"),
+                        db.create_session("orphan", source="test", parent_session_id="conv"),
+                        db.end_session("orphan", "cli_close")),
+            id="closed-orphan-is-not-an-attachment",
+        ),
     ],
 )
 def test_unresolvable_targets_fail_closed(store, session_id, prepare):
@@ -327,6 +434,16 @@ def test_unresolvable_targets_fail_closed(store, session_id, prepare):
 
     assert _receipt_rows(peer) == []
     assert _rows(peer, "conv") == []
+
+
+def test_missing_receipt_storage_is_an_error_not_an_empty_generation(store):
+    writer, peer = store
+    writer._execute_write(lambda conn: conn.execute("DROP TABLE passive_history_commits"))
+    with pytest.raises(sqlite3.OperationalError):
+        peer.get_passive_history_watermark("conv")
+    with pytest.raises(sqlite3.OperationalError):
+        _append(peer, "conv", messages=[USER])
+    assert _rows(writer, "conv") == []
 
 
 def test_watermark_reads_the_conversation_lineage_and_never_invents_a_session(store):
@@ -348,6 +465,7 @@ def test_watermark_reads_the_conversation_lineage_and_never_invents_a_session(st
     [
         pytest.param({"messages": [{"role": "system", "content": "be nice"}]}, id="system-role"),
         pytest.param({"messages": [{"role": "tool", "content": "{}"}]}, id="tool-role"),
+        pytest.param({"messages": [{"role": [], "content": "hi"}]}, id="non-string-role"),
         pytest.param(
             {"messages": [{"role": "user", "content": "hi", "tool_calls": []}]}, id="tool-fields"),
         pytest.param(

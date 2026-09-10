@@ -870,8 +870,9 @@ def _drop_passive_history_table(path: Path) -> None:
         conn.close()
 
 
+@pytest.mark.parametrize("retire_second", [False, True])
 def test_recovery_preserves_passive_history_receipts_and_their_dedupe_authority(
-    tmp_path: Path,
+    tmp_path: Path, retire_second: bool,
 ) -> None:
     """Receipt ids ARE the external-history revision, so salvage must copy them verbatim."""
 
@@ -879,6 +880,9 @@ def test_recovery_preserves_passive_history_receipts_and_their_dedupe_authority(
     output = tmp_path / "recovered.db"
     _make_source(source)
     first, second = _commit_passive_history(source)
+    if retire_second:
+        with SessionDB(db_path=source) as db:
+            db.clear_messages("recovery-session-1")
 
     inspection = inspect_session_database(source, work_dir=tmp_path)
     assert inspection["tables"]["passive_history_commits"]["rows"] == 2
@@ -902,6 +906,14 @@ def test_recovery_preserves_passive_history_receipts_and_their_dedupe_authority(
         assert replay.revision == first.revision
         assert [m["content"] for m in recovered.get_messages("recovery-session-0")][-2:] == [
             PASSIVE_MESSAGES[0]["content"], PASSIVE_MESSAGES[1]["content"]]
+        if retire_second:
+            from hermes_state_passive_history import PassiveHistoryRetiredError
+
+            with pytest.raises(PassiveHistoryRetiredError):
+                recovered.append_passive_messages(
+                    "recovery-session-1", messages=[dict(PASSIVE_MESSAGES[0])],
+                    producer="talk.voice", event_id="evt-2", origin_turn_id="origin-2")
+            assert recovered.get_messages("recovery-session-1") == []
     finally:
         recovered.close()
 

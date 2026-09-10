@@ -2147,6 +2147,8 @@ export const en: Translations = {
     skillsLabel: 'Skills',
     notSet: 'Not set',
     soulDesc: 'The system prompt and persona instructions baked into this profile.',
+    soulMissing:
+      'No SOUL.md file exists for this profile yet. Add instructions below and save to create one. Personality presets in config.yaml are managed separately.',
     soulOptional: 'optional',
     soulPlaceholder: mode => `The system prompt / persona for this profile.\nLeave blank to keep the ${mode} default.`,
     soulPlaceholderCloned: 'cloned',

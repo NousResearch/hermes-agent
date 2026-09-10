@@ -1724,6 +1724,7 @@ export const zhHant = defineLocale({
     skillsLabel: '技能',
     notSet: '未設定',
     soulDesc: '內建於此設定檔的系統提示詞與角色指令。',
+    soulMissing: '此設定檔尚無 SOUL.md 檔案。在下方輸入指令並儲存即可建立。config.yaml 中的人格預設需另外管理。',
     soulOptional: '選填',
     soulPlaceholder: mode => `此設定檔的系統提示詞 / 角色說明。\n留空則保留${mode}預設值。`,
     soulPlaceholderCloned: '複製的',

@@ -2311,6 +2311,7 @@ export const zh: Translations = {
     skillsLabel: '技能',
     notSet: '未设置',
     soulDesc: '内置于此配置档案的系统提示词与人格指令。',
+    soulMissing: '此配置档案尚无 SOUL.md 文件。在下方输入指令并保存即可创建。config.yaml 中的人格预设需单独管理。',
     soulOptional: '可选',
     soulPlaceholder: mode => `此配置档案的系统提示词 / 人格说明。\n留空则保留${mode}默认值。`,
     soulPlaceholderCloned: '克隆的',

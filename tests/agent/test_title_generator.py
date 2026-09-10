@@ -598,3 +598,55 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestCliModelSwitchNoteNotTitleable:
+    """Regression: the CLI/gateway ``/model`` note must never become the title.
+
+    ``cli._pending_model_switch_note`` (hermes_cli/cli_model_switch_mixin.py,
+    mirrored in gateway/slash_commands_model.py) is injected with
+    ``role="user"`` for the same reason as the gateway marker above, so titling
+    has to recognise it too. Seen in the wild: with the LLM titler failing, a
+    session's ``derived`` title became
+    "[Note: model was just switched from muse-spark-1.3-contributor to…", which
+    is also what the status bar renders in its session-title slot.
+    """
+
+    NOTE = (
+        "[Note: model was just switched from muse-spark-1.3-contributor to "
+        "deepseek-v4-flash via OpenCode Go. Adjust your self-identification "
+        "accordingly.]"
+    )
+
+    def test_note_is_not_titleable(self):
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message(self.NOTE) is False
+
+    def test_guard_covers_the_one_turn_variant(self):
+        """``--once`` adds a sentence mid-note; the prefix must still match."""
+        from agent.title_generator import is_titleable_user_message
+
+        one_turn = (
+            "[Note: model was just switched from gpt-6-astra to glm-5 via "
+            "OpenCode Go. This override applies to the next turn only. "
+            "Adjust your self-identification accordingly.]"
+        )
+        assert is_titleable_user_message(one_turn) is False
+
+    def test_unrelated_note_bracket_text_still_titleable(self):
+        """The guard is narrow: real user text starting "[Note:" still titles."""
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message("[Note: mine] why does the poller stall?") is True
+
+    def test_instant_title_skips_note_uses_real_message(self):
+        from agent.title_generator import apply_instant_title
+
+        db = MagicMock()
+        db.get_session_title_source.return_value = None
+
+        assert apply_instant_title(db, "sess-1", self.NOTE) is None
+        assert apply_instant_title(db, "sess-1", "how do i queue a tg group?") == (
+            "how do i queue a tg group?"
+        )

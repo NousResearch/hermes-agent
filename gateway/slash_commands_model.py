@@ -742,7 +742,17 @@ class GatewayModelCommandsMixin:
         mode = "fast" if self._service_tier == "priority" else (self._service_tier or "normal")
         status = {"fast": t("gateway.fast.status_fast"), "normal": t("gateway.fast.status_normal")}.get(mode, mode)
 
+        profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_home = self._resolve_profile_home_for_source(event.source)
+
         async def _on_fast_choice(_chat_id: str, value: str) -> str:
+            if profile_home is not None:
+                from gateway.run import _profile_runtime_scope
+
+                # Picker callbacks run after the command's profile scope exits.
+                with _profile_runtime_scope(profile_home):
+                    return self._apply_fast_selection(session_key, value, persist=persist_global)
             return self._apply_fast_selection(session_key, value, persist=persist_global)
 
         picker_sent = await self._try_send_choice_picker(

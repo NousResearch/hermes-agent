@@ -3,6 +3,7 @@
 import sys
 import threading
 import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +12,7 @@ import yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
+from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
@@ -104,6 +106,15 @@ def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
+class _PickerAdapter:
+    def __init__(self):
+        self.calls = []
+
+    async def send_choice_picker(self, **kwargs):
+        self.calls.append(kwargs)
+        return SendResult(success=True, message_id="m1")
+
+
 def test_turn_route_injects_priority_processing_without_changing_runtime():
     runner = _make_runner()
     runner._service_tier = "priority"
@@ -149,6 +160,118 @@ async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_typed_fast_global_persists_to_originating_profile(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    default_home = tmp_path / "default"
+    named_home = tmp_path / "profiles" / "work"
+    default_home.mkdir(parents=True)
+    named_home.mkdir(parents=True)
+    (default_home / "config.yaml").write_text(
+        "agent:\n  service_tier: normal\n", encoding="utf-8"
+    )
+    (named_home / "config.yaml").write_text(
+        "agent:\n  service_tier: normal\n", encoding="utf-8"
+    )
+    runner = _make_runner()
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner._resolve_profile_home_for_source = lambda _source: named_home
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4"
+    )
+    event = _make_event("/fast fast --global")
+    event.source.profile = "work"
+
+    with gateway_run._profile_runtime_scope(named_home):
+        response = await runner._handle_fast_command(event)
+
+    default_config = yaml.safe_load(
+        (default_home / "config.yaml").read_text(encoding="utf-8")
+    )
+    named_config = yaml.safe_load(
+        (named_home / "config.yaml").read_text(encoding="utf-8")
+    )
+    assert default_config["agent"]["service_tier"] == "normal"
+    assert named_config["agent"]["service_tier"] == "fast"
+    assert "FAST" in response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("choice", ["fast", "normal", "auto", "cold"])
+@pytest.mark.parametrize("persist,save_succeeds", [(True, True), (True, False), (False, True)])
+async def test_fast_global_picker_persists_to_originating_profile(
+    monkeypatch, tmp_path, choice, persist, save_succeeds
+):
+    """A delayed picker tap must not fall back to the default profile."""
+    from agent.secret_scope import set_multiplex_active
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    default_home = tmp_path / "default"
+    named_home = tmp_path / "profiles" / "work"
+    default_home.mkdir(parents=True)
+    named_home.mkdir(parents=True)
+    (default_home / "config.yaml").write_text(
+        "agent:\n  service_tier: normal\n", encoding="utf-8"
+    )
+    (named_home / "config.yaml").write_text(
+        "agent:\n  service_tier: normal\n", encoding="utf-8"
+    )
+
+    adapter = _PickerAdapter()
+    runner = _make_runner()
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner._resolve_profile_home_for_source = lambda _source: named_home
+    runner._adapter_for_source = lambda _source: adapter
+    runner._thread_metadata_for_source = lambda _source, anchor=None: {}
+    runner._reply_anchor_for_event = lambda _event: None
+    event = _make_event("/fast --global" if persist else "/fast")
+    event.source.profile = "work"
+    session_key = runner._session_key_for_source(event.source)
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4"
+    )
+    if not save_succeeds:
+        def fail_write(*args, **kwargs):
+            raise OSError("config is read-only")
+
+        monkeypatch.setattr("gateway.slash_commands_model.atomic_config_write", fail_write)
+
+    set_multiplex_active(True)
+    try:
+        with gateway_run._profile_runtime_scope(named_home):
+            runner._set_session_service_tier_override(session_key, None)
+            await runner._handle_fast_command(event)
+        on_choice = adapter.calls[0]["on_choice_selected"]
+        reply = await on_choice(event.source.chat_id, choice)
+        assert gateway_run._gateway_config_home() == default_home
+        with gateway_run._profile_runtime_scope(named_home):
+            if persist and save_succeeds:
+                assert session_key not in runner._session_service_tier_overrides
+            else:
+                expected_tier = {"fast": "priority", "normal": None}.get(choice, choice)
+                assert runner._session_service_tier_overrides[session_key] == expected_tier
+    finally:
+        set_multiplex_active(False)
+
+    default_config = yaml.safe_load(
+        (default_home / "config.yaml").read_text(encoding="utf-8")
+    )
+    named_config = yaml.safe_load(
+        (named_home / "config.yaml").read_text(encoding="utf-8")
+    )
+    assert default_config["agent"]["service_tier"] == "normal"
+    assert named_config["agent"]["service_tier"] == (
+        choice if persist and save_succeeds else "normal"
+    )
+    assert ("saved" in reply.lower()) == (persist and save_succeeds)
+
+
+@pytest.mark.asyncio
 async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path):
     """A session /fast normal wins over agent.service_tier: fast in config."""
     runner = _make_runner()
@@ -173,5 +296,3 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key=session_key) is None
     # A different session still gets the config default.
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
-
-

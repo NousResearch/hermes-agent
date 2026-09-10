@@ -951,12 +951,15 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+| [`transform_tool_result`](/user-guide/features/hooks#transform_tool_result) | After `post_tool_call`, before the result is appended to the conversation | `tool_name: str, args: dict, result: str, task_id: str, ...` | first `str` returned replaces the tool result |
+| [`transform_terminal_output`](/user-guide/features/hooks#transform_terminal_output) | After a foreground terminal command is captured, before final output limiting | `command: str, output: str, returncode: int, task_id: str, env_type: str` | first `str` returned replaces the output |
+| [`transform_llm_output`](/user-guide/features/hooks#transform_llm_output) | Before `post_llm_call` and final delivery | `response_text: str, session_id: str, model: str, platform: str` | first non-empty `str` returned replaces the response |
 | [`gateway_platform_event`](/user-guide/features/hooks#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, `pre_tool_call`, which can return a block/approve directive, and the three `transform_*` hooks, whose first string return value replaces the tool result, terminal output, or final response.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 

@@ -195,7 +195,7 @@ Prompts use dot-notation to access nested fields in the webhook payload:
 
 - `{pull_request.title}` resolves to `payload["pull_request"]["title"]`
 - `{repository.full_name}` resolves to `payload["repository"]["full_name"]`
-- `{__raw__}` — special token that dumps the **entire payload** as indented JSON (truncated at 4000 characters). Useful for monitoring alerts or generic webhooks where the agent needs the full context.
+- `{__raw__}` — special token that dumps the **entire payload** as indented JSON (truncated at 4000 characters). Useful for monitoring alerts or generic webhooks where the agent needs the full context. This is the only whole-payload token: `{payload}` is not special and, like any other missing key, is left in the prompt as the literal text `{payload}`. Fields are addressed from the top level of the JSON body, so a wrapper such as `{"alerts": [...]}` is reached with `{alerts}`.
 - Missing keys are left as the literal `{key}` string (no error)
 - Nested dicts and lists are JSON-serialized and truncated at 2000 characters
 

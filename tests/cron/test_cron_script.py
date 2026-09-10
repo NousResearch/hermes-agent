@@ -8,6 +8,7 @@ Tests cover:
 """
 
 import json
+import locale
 import os
 import re
 import subprocess
@@ -320,8 +321,11 @@ class TestRunJobScript:
         assert captured["argv"] == [sys.executable, str(script.resolve())]
         assert captured["kwargs"]["text"] is True
         assert "creationflags" not in captured["kwargs"]
+        # The locale codec stays in charge (a script writing text in its own locale must decode
+        # correctly), but undecodable bytes must not fail a run that exited 0 — hence
+        # errors="replace" on POSIX too, mirroring the Windows branch.
         assert "encoding" not in captured["kwargs"]
-        assert "errors" not in captured["kwargs"]
+        assert captured["kwargs"]["errors"] == "replace"
 
     def test_non_overlay_branch_keeps_plain_argv(self, cron_env, monkeypatch):
         """When the Windows uv-venv overlay is NOT active, the invocation must
@@ -381,27 +385,38 @@ class TestRunJobScript:
         assert "backup done 🎉 日次" == output
 
     def test_invalid_utf8_stdout_does_not_raise(self, cron_env):
-        """Truncated/invalid UTF-8 in script stdout must never escape as an
-        exception (#47393) — a raised UnicodeDecodeError higher up would
-        silently drop the whole delivery (#42384). The run may fail, but it
-        must fail as a (False, message) result the scheduler can deliver.
+        """Truncated/invalid UTF-8 in script stdout must not fail a run that exited 0 (#47393).
+
+        The raised UnicodeDecodeError used to be turned into a (False, message) result: a job
+        that collected its data fine was reported as FAILED and paged the user — the failure
+        alert itself was the bug. The output must also survive (no silent drop, #42384):
+        undecodable bytes become U+FFFD, the exit code alone decides success.
         """
         from cron.scheduler_script import _run_job_script
 
         script = cron_env / "scripts" / "bad_bytes.py"
         # b'\xe6\x97' is the first two bytes of a three-byte CJK sequence —
         # a truncated write, exactly the shape reported in #47393.
+        bad_bytes = b"partial \xe6\x97"
         script.write_text(
             "import sys\n"
-            "sys.stdout.buffer.write(b'partial \\xe6\\x97')\n",
+            f"sys.stdout.buffer.write({bad_bytes!r})\n",
             encoding="utf-8",
         )
 
         success, output = _run_job_script("bad_bytes.py")  # must not raise
 
-        assert isinstance(success, bool)
-        assert isinstance(output, str)
-        assert output  # a message is always produced, never a silent drop
+        # Exit code 0 → the run succeeded, however mangled the log line was.
+        assert success is True
+        assert "partial" in output  # decodable text survives verbatim
+        # Whether the bytes degrade to U+FFFD depends on the host locale: POSIX deliberately
+        # keeps the locale codec (see test below), and every byte is legal in a single-byte
+        # codec such as ISO-8859-1. Assert the replacement only when the active codec really
+        # cannot decode the bytes, so this test is honest under a non-UTF-8 locale.
+        try:
+            bad_bytes.decode(locale.getpreferredencoding(False))
+        except UnicodeDecodeError:
+            assert "\ufffd" in output
 
 
 class TestBuildJobPromptWithScript:

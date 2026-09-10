@@ -134,6 +134,20 @@ def check_monitor(job: dict) -> MonitorOutcome:
     if not ok:
         return MonitorOutcome(ok=False, error=output)
 
+    # Exact-byte change detection is impossible on lossy text: the runner decodes with
+    # errors="replace", so two DIFFERENT undecodable byte streams collapse into the same U+FFFD
+    # text and hash identically — a real change would be silently suppressed forever. A lossy
+    # comparison is rejected like any other source failure (see module docstring): ERROR, never a
+    # change, stored hash untouched. Covers monitor_url bodies too (also decoded with replace).
+    if "\ufffd" in output:
+        return MonitorOutcome(
+            ok=False,
+            error=(
+                "Monitor source produced undecodable bytes (shown as U+FFFD); exact-byte "
+                "change detection would be lossy, so this tick is treated as a source error."
+            ),
+        )
+
     new_hash = hash_monitor_output(output)
     raw_state = job.get("monitor_state")
     last_hash = raw_state.get("last_output_hash") if isinstance(raw_state, dict) else None

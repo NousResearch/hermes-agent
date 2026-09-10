@@ -50,13 +50,18 @@ def _handoff_source() -> str:
     fixture runs a synthetic PowerShell step through ``Invoke-HermesStep`` to
     prove the drain cannot deadlock (#90455) -- so they are not update steps
     and the "must drive python.exe" rule does not apply to them. Each exits
-    before any marker/venv/desktop machinery runs.
+    before any venv/desktop machinery runs.
 
     Scoped here rather than allow-listing a target, so the rule stays absolute
     for every real step. The non-greedy match ends at the first closing brace
-    in column 0; the blocks' own braces are all indented.
+    at the opening statement's indentation; inner braces are deeper.
     """
-    return re.sub(r"\nif \(\$SelfTest\w+\) \{.*?\n\}\n", "\n", _read(), flags=re.S)
+    return re.sub(
+        r"\n(?P<indent> *)if \(\$SelfTest\w+\) \{.*?\n(?P=indent)\}\n",
+        "\n",
+        _read(),
+        flags=re.S,
+    )
 
 
 def test_invoke_hermes_step_calls_drive_python_not_the_shim() -> None:

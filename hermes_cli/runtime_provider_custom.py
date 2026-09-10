@@ -62,6 +62,7 @@ def _lift_model_capabilities(entry: Dict[str, Any], model: Optional[str], result
         result["capabilities"] = capabilities
 
 
+
 def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
     """``max_output_tokens`` or ``max_tokens`` on a provider entry pins its own output limit;
     gateway/CLI map it onto ``AIAgent.max_tokens`` only when top-level ``model.max_tokens`` is
@@ -91,9 +92,10 @@ def _lift_common_custom_fields(entry: Dict[str, Any], result: Dict[str, Any], *,
     if isinstance(extra_body, dict):
         result["extra_body"] = dict(extra_body)
     _lift_extra_headers(entry, result)
+    _lift_max_output_tokens(entry, result)
     if api_mode:
         result["api_mode"] = api_mode
-    _lift_max_output_tokens(entry, result)
+
     _lift_model_capabilities(entry, None, result)
 
 
@@ -377,8 +379,10 @@ def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model:
     if model_name:
         result["model"] = model_name
     _lift_model_capabilities(custom_provider, model_name, result)
+
     if isinstance(custom_provider.get("max_output_tokens"), int):
         result["max_output_tokens"] = custom_provider["max_output_tokens"]
+
     if custom_provider.get("extra_headers"):
         result["extra_headers"] = dict(custom_provider["extra_headers"])
     request_overrides = _custom_provider_request_overrides(custom_provider)

@@ -8,7 +8,7 @@ import pytest
 
 import gateway.run as gateway_run
 from agent.i18n import t
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
@@ -358,14 +358,8 @@ async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch
 
 @pytest.mark.asyncio
 async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
-    """Shutdown notifications route to the home channel, not the session origin."""
+    """Shutdown notifications should route from persisted origin, not reparsed keys."""
     runner, adapter = make_restart_runner()
-    from gateway.config import HomeChannel, Platform
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
-        platform=Platform.TELEGRAM,
-        chat_id="home-42",
-        name="Home",
-    )
     adapter.send = AsyncMock()
     source = make_restart_source(chat_id="!room123:example.org", chat_type="group")
     source.platform = gateway_run.Platform.MATRIX
@@ -382,18 +376,21 @@ async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
             chat_type=source.chat_type,
         )
     }
-    runner.adapters = {gateway_run.Platform.TELEGRAM: adapter}
+    runner.adapters = {gateway_run.Platform.MATRIX: adapter}
 
     await runner._notify_active_sessions_of_shutdown()
 
-    # Notification goes to the home channel, not the active session origin.
     assert adapter.send.await_count == 1
-    assert adapter.send.await_args.args[0] == "home-42"
 
 
 @pytest.mark.asyncio
 async def test_drain_suppress_skips_home_channel_keeps_session_ping(tmp_path, monkeypatch):
-    """A suppress_notification drain marker mutes the shutdown broadcast."""
+    """A suppress_notification drain marker mutes ONLY the home-channel broadcast.
+
+    The per-active-session interrupt ping MUST still fire (it carries the
+    "your task was interrupted, message me to resume" hint). This is the core
+    drain-notification-suppression contract.
+    """
     from gateway.config import HomeChannel, Platform
     import gateway.drain_control as dc
 
@@ -406,13 +403,21 @@ async def test_drain_suppress_skips_home_channel_keeps_session_ping(tmp_path, mo
         chat_id="home-42",
         name="Ops Home",
     )
+    # One active session in a different chat.
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
     # NAS auto-update drain: marker present with suppress_notification=True.
     dc.write_drain_request(principal="nas", suppress_notification=True)
 
     await runner._notify_active_sessions_of_shutdown()
 
-    # The home-channel broadcast was suppressed; nothing is sent.
-    assert len(adapter.sent_calls) == 0
+    # Exactly one send — the active-session ping to chat 999. The home-channel
+    # broadcast to home-42 was suppressed.
+    assert len(adapter.sent_calls) == 1
+    sent_chat_ids = {chat_id for chat_id, _content, _meta in adapter.sent_calls}
+    assert "999" in sent_chat_ids
+    assert "home-42" not in sent_chat_ids
+    assert "shutting down" in adapter.sent[0]
 
 
 

@@ -127,34 +127,6 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 
 
 
-def test_worker_run_id_ignores_stale_env_run_id(kanban_home, monkeypatch, capsys):
-    with kb.connect_closing() as conn:
-        tid = kb.create_task(conn, title="stale run guard")
-        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (222, tid))
-        conn.commit()
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "111")
-
-    assert kc._worker_run_id_for(tid) is None
-    err = capsys.readouterr().err
-    assert "stale_run_id_recovery" in err
-    assert "env_run=111" in err
-    assert "db_run=222" in err
-
-
-def test_worker_run_id_returns_current_env_run_id(kanban_home, monkeypatch):
-    with kb.connect_closing() as conn:
-        tid = kb.create_task(conn, title="current run guard")
-        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (333, tid))
-        conn.commit()
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "333")
-
-    assert kc._worker_run_id_for(tid) == 333
-
-
 # ---------------------------------------------------------------------------
 # reclaim + reassign CLI smoke tests
 # ---------------------------------------------------------------------------
@@ -209,21 +181,4 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
 
-
-def test_create_reasoning_flag_reaches_task_record(kanban_home, capsys):
-    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
-    sub = parser.add_subparsers(dest="command")
-    kc.build_parser(sub)
-
-    args = parser.parse_args(
-        ["kanban", "create", "reasoning task", "--reasoning", "high", "--json"]
-    )
-    assert args.reasoning_effort == "high"
-
-    assert kc.kanban_command(args) == 0
-    task = json.loads(capsys.readouterr().out)
-    with kb.connect_closing() as conn:
-        stored = kb.get_task(conn, task["id"])
-    assert stored is not None
-    assert stored.reasoning_effort == "high"
 

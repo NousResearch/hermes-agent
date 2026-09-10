@@ -2,6 +2,8 @@
 
 import io
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -484,62 +486,17 @@ def test_clarify_batch_timeout_keeps_locked_answers(capture):
     assert any(m["params"]["type"] == "clarify.expire" for m in messages)
 
 
-def test_clarify_batch_cancel_preserves_staged_answers(server):
-    """A batch cancel carries staged answers and an explicit cancellation flag."""
+def test_clarify_batch_cancel_all_returns_empty(server):
+    """A respond without question_id cancels the whole batch (Esc path)."""
     thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
 
-    response = server.handle_request({
-        "id": "cancel", "method": "clarify.respond",
-        "params": {
-            "request_id": rid,
-            "answers": {"q0": "kept"},
-            "cancelled": True,
-        },
-    })
-
-    assert response["result"] == {"status": "cancelled"}
-    thread.join(timeout=5)
-    assert json.loads(box["answer"]) == {
-        "answers": {"q0": "kept"},
-        "cancelled": True,
-    }
-
-
-def test_clarify_batch_accepts_one_atomic_submit(server):
-    """All staged answers can be confirmed in one final RPC."""
-    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
-
-    response = server.handle_request({
-        "id": "submit", "method": "clarify.respond",
-        "params": {
-            "request_id": rid,
-            "answers": {"q0": "alpha", "q1": "beta"},
-        },
-    })
-
-    assert response["result"] == {"status": "ok", "remaining": []}
-    thread.join(timeout=5)
-    assert json.loads(box["answer"]) == {
-        "answers": {"q0": "alpha", "q1": "beta"},
-    }
-
-
-def test_clarify_batch_rejects_non_string_atomic_answers(server):
-    thread, box, rid = _drain_batch_block(server, ["q0"])
-
-    bad = server.handle_request({
-        "id": "bad", "method": "clarify.respond",
-        "params": {"request_id": rid, "answers": {"q0": {"nested": True}}},
-    })
-
-    assert bad["error"]["code"] == 4002
-    assert thread.is_alive()
     server.handle_request({
-        "id": "ok", "method": "clarify.respond",
-        "params": {"request_id": rid, "answers": {"q0": "safe"}},
+        "id": "cancel", "method": "clarify.respond",
+        "params": {"request_id": rid, "answer": ""},
     })
+
     thread.join(timeout=5)
-    assert json.loads(box["answer"])["answers"] == {"q0": "safe"}
+    assert box["answer"] == ""
 
 
 def test_clarify_batch_late_question_respond_is_idempotent(server):
@@ -572,11 +529,6 @@ def test_clarify_block_helper_builds_batch_payload(capture):
             "qid": "q0", "id": "approach", "question": "Which?",
             "choices": ["a (Recommended)", "b"], "choices_offered": ["a", "b"],
             "multi_select": False,
-            "header": "Approach",
-            "options": [
-                {"label": "a", "description": "Fast", "recommended": True},
-                {"label": "b", "description": None, "recommended": False},
-            ],
         },
     ]
 
@@ -605,11 +557,7 @@ def test_clarify_block_helper_builds_batch_payload(capture):
     request = messages[0]["params"]
     assert request["type"] == "clarify.request"
     sent = request["payload"]["questions"][0]
-    assert set(sent) == {
-        "qid", "question", "choices", "multi_select", "header", "options",
-    }
-    assert sent["header"] == "Approach"
-    assert sent["options"][0]["description"] == "Fast"
+    assert set(sent) == {"qid", "question", "choices", "multi_select"}
     assert "id" not in sent and "choices_offered" not in sent
 
 
@@ -1116,6 +1064,100 @@ def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     # 4 sessions, cap 2 -> evict 2. Only detached+idle+built are eligible, oldest
     # first; the running one and the live-transport one are exempt.
     assert evicted == ["old_detached", "new_detached"]
+
+
+@pytest.mark.parametrize("closed_transport", [False, True])
+def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_path, closed_transport):
+    """A detached lane cannot keep its lease forever if initial timer setup was lost."""
+    from hermes_cli.active_sessions import (
+        active_session_registry_snapshot,
+        try_acquire_active_session,
+    )
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    sid = "detached-without-reaper"
+    sibling_sid = "live-sibling"
+    orphan_lease, message = try_acquire_active_session(
+        session_id=sid,
+        surface="desktop",
+        config={},
+        registry_home=home,
+        track_liveness=True,
+    )
+    assert orphan_lease is not None and message is None
+    sibling_lease, message = try_acquire_active_session(
+        session_id=sibling_sid,
+        surface="desktop",
+        config={},
+        registry_home=home,
+        track_liveness=True,
+    )
+    assert sibling_lease is not None and message is None
+
+    def _session(session_key, lease, transport):
+        return {
+            "active_session_lease": lease,
+            "created_at": time.time(),
+            "history": [],
+            "history_lock": threading.Lock(),
+            "last_active": time.time(),
+            "session_key": session_key,
+            "source": "tui",
+            "transport": transport,
+        }
+
+    server._sessions.clear()
+    class ClosedTransport:
+        _closed = True
+
+    dead_transport = ClosedTransport() if closed_transport else server._detached_ws_transport
+    server._sessions.update({
+        sid: _session(sid, orphan_lease, dead_transport),
+        sibling_sid: _session(sibling_sid, sibling_lease, object()),
+    })
+    server._pending_ws_reaps.clear()
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.05)
+    monkeypatch.setattr(server, "_SESSION_TTL_S", 3600.0)
+    monkeypatch.setattr(server, "_flush_dirty_sessions", lambda: 0)
+    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
+
+    server._reap_idle_sessions()
+
+    deadline = time.monotonic() + 2.0
+    while (sid in server._sessions or not orphan_lease.released) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert sid not in server._sessions
+    assert orphan_lease.released is True
+    assert sibling_sid in server._sessions
+    assert [entry["session_id"] for entry in active_session_registry_snapshot(home)] == [sibling_sid]
+
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(repo_root), env.get("PYTHONPATH", "")) if part
+    )
+    successor = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from hermes_cli.active_sessions import try_acquire_active_session; "
+                f"lease, refusal = try_acquire_active_session(session_id={sid!r}, surface='desktop', "
+                "config={}, track_liveness=True); "
+                "assert lease is not None and refusal is None, refusal; lease.release()"
+            ),
+        ],
+        cwd=repo_root,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert successor.returncode == 0, successor.stderr
+    assert [entry["session_id"] for entry in active_session_registry_snapshot(home)] == [sibling_sid]
 
 
 def test_sync_session_key_after_compress_reanchors_active_session_lease(

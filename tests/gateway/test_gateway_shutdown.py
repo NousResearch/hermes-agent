@@ -6,7 +6,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -223,7 +223,6 @@ def test_post_interrupt_grace_tolerates_duck_typed_runner():
 
 @pytest.mark.asyncio
 async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
-    """An in-chat /restart skips ALL shutdown notifications (home + sessions)."""
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")
     session_key = build_session_key(source)
@@ -241,8 +240,11 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
 
     await runner._notify_active_sessions_of_shutdown()
 
-    # The user who issued /restart already knows; no broadcast to home channel.
-    assert len(adapter.sent_calls) == 0
+    assert len(adapter.sent_calls) == 1
+    chat_id, message, metadata = adapter.sent_calls[0]
+    assert chat_id == source.chat_id
+    assert "Gateway restarting" in message
+    assert metadata["telegram_reply_to_message_id"] == "restart-command"
 
 
 @pytest.mark.asyncio

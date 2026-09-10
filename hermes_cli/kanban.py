@@ -736,6 +736,7 @@ def _cmd_comment(args: argparse.Namespace) -> int:
 def _cmd_attach(args: argparse.Namespace) -> int:
     """Attach a local file via the shared ``store_attachment_bytes`` path (same 25 MB cap and name
     sanitisation as the dashboard upload and agent tool)."""
+    _worker_run_id_for(args.task_id)
     import mimetypes
 
     src = Path(args.path).expanduser()
@@ -783,8 +784,14 @@ def _cmd_attach_rm(args: argparse.Namespace) -> int:
 
 
 def _worker_run_id_for(task_id: str) -> Optional[int]:
+    # COMBINE (upstream #worker-scope): a dispatcher-spawned worker may only
+    # mutate its own task; an env-scoped worker naming another task is refused
+    # rather than silently dropping run scope (descendant-scope contract).
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if env_tid and env_tid != task_id:
+        raise ValueError(f"worker is scoped to task {env_tid}; refusing to mutate {task_id}")
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id or not raw:
+    if env_tid != task_id or not raw:
         return None
     try:
         return int(raw)
@@ -928,6 +935,8 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
 
 
 def _cmd_unblock(args: argparse.Namespace) -> int:
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return _err("kanban unblock is orchestrator-only; workers must hand off their assigned task")
     ids, rc = _require_ids(args)
     if rc:
         return rc

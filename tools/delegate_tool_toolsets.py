@@ -112,26 +112,3 @@ def _resolve_child_toolsets(
         dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"])
     )
     return child_toolsets, child_disabled_toolsets
-
-# ── KENSEI CUSTOM — MCP toolset preservation (ported) ──
-
-def _preserve_parent_mcp_toolsets(
-    child_toolsets: List[str], parent_toolsets: set[str]
-) -> List[str]:
-    """Append any parent MCP toolsets that are missing from a narrowed child."""
-    preserved = list(child_toolsets)
-    for toolset_name in sorted(parent_toolsets):
-        if _is_mcp_toolset_name(toolset_name) and toolset_name not in preserved:
-            preserved.append(toolset_name)
-    return preserved
-
-
-DEFAULT_MAX_ITERATIONS = 250
-# Hard per-summary character ceiling layered on top of the dynamic
-# headroom budget (see _apply_summary_budget). Belt-and-suspenders for
-# models that ignore the "be concise" instruction. 0 disables the ceiling.
-DEFAULT_MAX_SUMMARY_CHARS = 24000
-# Fraction of the parent's *remaining* context headroom that the whole batch
-# of subagent summaries is allowed to consume. The per-summary budget is this
-# slice divided across the batch, so N children can't collectively blow the
-# parent's window (the compression/429 death-spiral in issue/PR #9126).

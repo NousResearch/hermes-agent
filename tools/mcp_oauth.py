@@ -295,6 +295,10 @@ class HermesTokenStorage:
         ``fixup(data)`` may rewrite the raw dict before validation."""
         data = _read_json(path)
         cls = _sdk_class(sdk_name) if data is not None else None
+        if (cls is not None and sdk_name == "OAuthMetadata" and isinstance(data, dict)
+                and data.get("device_authorization_endpoint")):
+            from tools.mcp_oauth_device import DeviceOAuthMetadata
+            cls = DeviceOAuthMetadata
         if cls is None:
             return None
         if fixup is not None:
@@ -302,7 +306,13 @@ class HermesTokenStorage:
         try:
             return cls.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
-            logger.warning("Corrupt %s at %s -- ignoring: %s", label, path, exc)
+            # A pydantic ValidationError's str() echoes the raw input (the token material); log
+            # only which fields failed.
+            detail = exc
+            if hasattr(exc, "errors"):  # pydantic ValidationError
+                detail = "validation failed for " + ", ".join(
+                    ".".join(map(str, e.get("loc", ()))) for e in exc.errors(include_input=False))
+            logger.warning("Corrupt %s at %s -- ignoring: %s", label, path, detail)
             return None
 
     def _rebase_expires_in(self, data: dict) -> None:

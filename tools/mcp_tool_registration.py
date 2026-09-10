@@ -3,7 +3,9 @@ include/exclude filtering, trust-tier metadata capture, utility-tool selection, 
 resolution and the schema-cache write-through. Both entry points (``_register_server_tools``
 live, ``_register_from_cache_sync`` lazy) build ``_Candidate`` records for ``_register_candidates``."""
 
+import json
 import logging
+import threading
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
@@ -20,6 +22,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from tools.mcp_tool import MCPServerTask
 
 logger = logging.getLogger("tools.mcp_tool")
+_SCOPE_REFRESH_LOCKS = tuple(threading.RLock() for _ in range(16))
 
 _UTILITY_ORIGIN_PREFIX = "generated utility "
 # Utility tool key -> handler factory; each takes (server_name, tool_timeout).
@@ -27,135 +30,6 @@ _UTILITY_HANDLER_FACTORIES = {
     "list_resources": _make_list_resources_handler, "read_resource": _make_read_resource_handler,
     "list_prompts": _make_list_prompts_handler, "get_prompt": _make_get_prompt_handler}
 
-
-
-
-# ── KENSEI CUSTOM — sanitize_tool_metadata plugin hook (ported) ──
-
-def _apply_sanitize_hook(
-    server_name: str,
-    tool: dict,
-    fallback: dict,
-) -> Optional[dict]:
-    """Run the ``sanitize_tool_metadata`` plugin hook over one MCP tool.
-
-    Invoked at the tool-metadata pipeline immediately after the ``tools/list``
-    handshake (and on schema-cache registration), before the tool is exposed to
-    approval dialogs or model context. ``tool`` is a dict shaped like an MCP
-    ``tools/list`` entry: ``{"name", "description", "inputSchema"}``.
-
-    ``fallback`` is the original tool dict. If a plugin sanitizes it, the
-    sanitized version is returned; if every plugin quarantines it, the tool is
-    dropped from the pipeline (caller must handle a ``None`` return). If no
-    plugin handles the tool (or one raises), the original is returned.
-
-    Returns ``None`` when the tool must be quarantined (never registered).
-    """
-    from hermes_cli.plugins import invoke_hook, has_hook
-
-    if not has_hook("sanitize_tool_metadata"):
-        return fallback
-
-    try:
-        results = invoke_hook("sanitize_tool_metadata", tool=tool, server_name=server_name)
-    except Exception as exc:
-        # Fail-safe: a broken hook must not block discovery. The shipping
-        # plugin already fails closed internally, so reaching here is an
-        # unexpected core/plugin defect — fall back to the original tool and
-        # let the existing description scan / core checks still apply.
-        logger.warning(
-            "MCP server '%s': sanitize_tool_metadata hook raised: %s; "
-            "delivering tool unchanged",
-            server_name, exc,
-        )
-        return fallback
-
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        if "quarantine" in result:
-            reason = result.get("quarantine") or "unspecified"
-            logger.warning(
-                "MCP server '%s': quarantining tool '%s' (%s)",
-                server_name, tool.get("name"), reason,
-            )
-            return None
-        if "tool" in result and isinstance(result.get("tool"), dict):
-            return result["tool"]
-    return fallback
-
-
-
-# Safety cap on nextCursor pagination loops so a misbehaving server that
-# returns a cursor forever cannot spin discovery indefinitely. 50 pages at
-# the common 50-100 items/page covers thousands of tools/resources/prompts.
-_MCP_LIST_MAX_PAGES = 50
-
-
-async def _paginate_full_list(list_method, items_attr: str, server_name: str,
-                              cache_meta_out: Optional[dict] = None):
-    """Drain a paginated MCP ``list_*`` call by following ``nextCursor``.
-
-    The MCP spec allows servers to paginate ``tools/list``,
-    ``resources/list``, and ``prompts/list`` responses via an opaque
-    ``nextCursor`` token. The Python SDK's ``ClientSession.list_*`` methods
-    fetch exactly one page per call, so a client that never passes the
-    cursor back silently sees only the first page — on a paginated server
-    every tool/resource/prompt past page 1 would be invisible to the agent.
-
-    Args:
-        list_method: Bound ``session.list_tools`` / ``list_resources`` /
-            ``list_prompts`` coroutine function.
-        items_attr: Result attribute holding the page's items
-            (``"tools"``, ``"resources"``, or ``"prompts"``).
-        server_name: For log messages.
-        cache_meta_out: Optional dict that receives the first page's
-            SEP-2549 cache hints (``ttl_ms``, ``cache_scope``) when the
-            server provides them (2026-07-28 servers MUST; earlier ones
-            won't). Callers use ``ttl_ms`` to bound the schema cache.
-
-    Returns:
-        Combined list of items across all pages. Callers must hold the
-        server's ``_rpc_lock`` for the duration so pages come from a
-        consistent snapshot.
-    """
-    items: list = []
-    cursor = None
-    for _ in range(_MCP_LIST_MAX_PAGES):
-        if not cursor:
-            result = await list_method()
-        else:
-            # Cursor continuation differs by SDK generation: mcp 1.x
-            # accepts ``cursor=``, mcp 2.0 takes ``params=`` (a
-            # PaginatedRequestParams). Try modern first, fall back.
-            try:
-                _params_cls = getattr(_mcp_types(), "PaginatedRequestParams", None)
-                if _params_cls is not None:
-                    result = await list_method(params=_params_cls(cursor=cursor))
-                else:
-                    result = await list_method(cursor=cursor)
-            except TypeError:
-                result = await list_method(cursor=cursor)
-        if cache_meta_out is not None and not items:
-            _ttl = mcp_field(result, "ttl_ms", "ttlMs")
-            _scope = mcp_field(result, "cache_scope", "cacheScope")
-            if _ttl is not None:
-                cache_meta_out["ttl_ms"] = _ttl
-            if _scope is not None:
-                cache_meta_out["cache_scope"] = _scope
-        items.extend(getattr(result, items_attr, None) or [])
-        cursor = mcp_field(result, "next_cursor", "nextCursor")
-        # Per the MCP spec the cursor is an opaque string; anything else
-        # (including mock objects in tests) means "no more pages".
-        if not isinstance(cursor, str) or not cursor:
-            break
-    else:
-        logger.warning(
-            "MCP server '%s': %s pagination exceeded %d pages; "
-            "truncating at %d items",
-            server_name, items_attr, _MCP_LIST_MAX_PAGES, len(items),
-        )
-    return items
 
 def _normalize_server_trust(value: Any) -> str:
     """Config ``trust`` -> tier. None -> ``full`` (compat default); unrecognized -> ``untrusted`` (fail closed)."""
@@ -197,6 +71,51 @@ def _forget_mcp_tool_server(tool_name: str) -> None:
         _core._mcp_tool_server_names.pop(tool_name, None)
 
 
+def _deregister_mcp_tool_all_scopes(server_name: str, tool_name: str) -> None:
+    """Deregister one server tool from every profile overlay that owns it."""
+    from tools.registry import registry
+
+    with _core._lock:
+        scopes = set(_core._server_tool_scopes.get(server_name, ()))
+        if not scopes:
+            scopes = {_core._server_registry_scope(server_name)}
+    for scope in scopes:
+        registry.deregister(tool_name, scope=scope)
+    _forget_mcp_tool_server(tool_name)
+    _restore_server_toolset_alias(server_name)
+
+
+def _restore_server_toolset_alias(server_name: str) -> None:
+    """Keep the process-global alias while any profile still owns this server's tools."""
+    from tools.registry import registry
+
+    with _core._lock:
+        server = _core._servers.get(server_name)
+        scopes = set(_core._server_tool_scopes.get(server_name, ()))
+        tool_names = list(getattr(server, "_registered_tool_names", ()) if server is not None else ())
+    if any(
+        registry.snapshot_registration(tool_name, scope=scope) is not None
+        for scope in scopes for tool_name in tool_names
+    ):
+        registry.register_toolset_alias(server_name, f"mcp-{server_name}")
+
+
+def _remove_server_scope(server_name: str, scope: str) -> None:
+    """Remove one profile's MCP overlay for a shared live connection."""
+    from tools.registry import registry
+
+    for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}"):
+        registry.deregister(tool_name, scope=scope)
+    with _core._lock:
+        scopes = set(_core._server_tool_scopes.get(server_name, ()))
+        scopes.discard(scope)
+        if scopes:
+            _core._server_tool_scopes[server_name] = scopes
+        else:
+            _core._server_tool_scopes.pop(server_name, None)
+    _restore_server_toolset_alias(server_name)
+
+
 def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: dict) -> List[dict]:
     """Utility schemas allowed by config (``tools.resources``/``tools.prompts``) and advertised
     capabilities. ``initialize_result.capabilities`` is the truth (sub-object non-None iff the
@@ -228,6 +147,25 @@ def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: d
 
 def _existing_tool_names() -> List[str]:
     """Tool names for all connected servers plus lazy (cache-registered) servers, whose tools live only in the registry."""
+    scope = _core._mcp_registry_scope()
+    if scope is not None:
+        from tools.registry import registry
+
+        with _core._lock:
+            server_names = [
+                name for name in _core._servers
+                if _core._server_visible_in_scope(name, scope)
+            ]
+            server_names.extend(
+                name for name in _core._lazy_server_tool_names
+                if name not in _core._servers
+            )
+        return sorted({
+            tool_name
+            for server_name in server_names
+            for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}")
+        })
+
     names: List[str] = []
     for server in _core._servers.values():
         names.extend(server._registered_tool_names if hasattr(server, "_registered_tool_names")
@@ -361,6 +299,7 @@ def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: C
     from tools.registry import registry
     toolset_name = f"mcp-{name}"
     registered: List[str] = []
+    scope_value = scope()
     for c in candidates:
         existing_toolset = registry.get_toolset_for_tool(c.registry_name)
         if existing_toolset and existing_toolset != toolset_name:  # foreign owner: skip, preserve it
@@ -377,9 +316,12 @@ def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: C
             continue
         registry.register(
             name=c.registry_name, toolset=toolset_name, schema=c.schema, handler=c.handler, check_fn=check_fn,
-            is_async=False, description=c.schema.get("description") or "", scope=scope())
+            is_async=False, description=c.schema.get("description") or "", scope=scope_value)
         if registry.get_toolset_for_tool(c.registry_name) == toolset_name:
             _track_mcp_tool_server(c.registry_name, name)
+            if scope_value is not None:
+                with _core._lock:
+                    _core._server_tool_scopes.setdefault(name, set()).add(scope_value)
             registered.append(c.registry_name)
         elif not lazy:
             logger.error("MCP server '%s': registration of %s as '%s' was rejected by the registry; "
@@ -435,6 +377,91 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     return registered
 
 
+def _server_enabled(config: dict) -> bool:
+    return _parse_boolish(config.get("enabled", True), default=True)
+
+
+def _connection_identity(config: dict) -> tuple:
+    """What makes one live connection reusable for another profile: the route fingerprint PLUS
+    everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
+    the schema cache survives a token rotation). Two profiles pointing at the same URL with different
+    headers/env/auth are two identities; borrowing across them would call tools as the other user."""
+    from tools.mcp_schema_cache import config_fingerprint
+
+    def _frozen(value):
+        return json.dumps(value or {}, sort_keys=True, default=str)
+
+    return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
+            (config.get("auth") or "").lower().strip())
+
+
+def _same_server_route(server: Any, config: dict) -> bool:
+    return _connection_identity(getattr(server, "_config", {}) or {}) == _connection_identity(config)
+
+
+def register_connected_into_current_scope(servers: dict) -> int:
+    """Serialize shared-scope reconciliation and registration for one discovery pass."""
+    scope = _core._mcp_registry_scope()
+    if scope is None:
+        return 0
+    with _SCOPE_REFRESH_LOCKS[hash(scope) % len(_SCOPE_REFRESH_LOCKS)]:
+        return _register_connected_into_current_scope(servers)
+
+
+def _register_connected_into_current_scope(servers: dict) -> int:
+    """Heal the current profile's MCP overlay from already-connected shared servers.
+
+    A shared live connection remains owned by the profile that opened it, but a profile with the
+    same route must still receive its callable tool entries. The current profile's config is the
+    allowlist, and route fingerprints prevent borrowing a differently-authenticated connection.
+    Missing or changed config entries remove only this profile's overlay.
+    """
+    from tools.registry import registry
+
+    scope = _core._mcp_registry_scope()
+    if scope is None:
+        return 0
+
+    with _core._lock:
+        stale = []
+        for name, scopes in _core._server_tool_scopes.items():
+            if scope not in scopes:
+                continue
+            server = _core._servers.get(name)
+            config = servers.get(name)
+            if (config is None or not _server_enabled(config) or server is None
+                    or getattr(server, "session", None) is None or not _same_server_route(server, config)):
+                stale.append(name)
+    for name in stale:
+        _remove_server_scope(name, scope)
+
+    registered_servers = 0
+    for name, config in servers.items():
+        if not _server_enabled(config):
+            continue
+        with _core._lock:
+            server = _core._servers.get(name)
+        if server is None or getattr(server, "session", None) is None or not _same_server_route(server, config):
+            continue
+        # Visibility for this profile: the owner keeps teardown, this scope sees the connection.
+        with _core._lock:
+            _core._server_tool_scopes.setdefault(name, set()).add(scope)
+        if registry.get_tool_names_for_toolset(f"mcp-{name}"):
+            continue
+        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
+        candidates += _utility_candidates(
+            name, _select_utility_schemas(name, server, config), server.tool_timeout)
+        names = _register_candidates(
+            name, _resolve_name_collisions(name, candidates),
+            check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False)
+        if names:
+            registered_servers += 1
+            with _core._lock:
+                server._registered_tool_names = sorted(
+                    set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
+    return registered_servers
+
+
 def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]:
     """Lazy startup: register from a cached manifest with no child process (first real call goes
     through ``_ensure_lazy_server_connected``). Trust metadata is recorded first so the
@@ -458,3 +485,68 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             _core._lazy_server_tool_names[name] = list(registered)
         logger.info("MCP server '%s' (lazy): registered %d tool(s) from schema cache", name, len(registered))
     return registered
+
+
+# ── KENSEI CUSTOM — sanitize_tool_metadata plugin hook (ported) ──
+
+def _apply_sanitize_hook(
+    server_name: str,
+    tool: dict,
+    fallback: dict,
+) -> Optional[dict]:
+    """Run the ``sanitize_tool_metadata`` plugin hook over one MCP tool.
+
+    Invoked at the tool-metadata pipeline immediately after the ``tools/list``
+    handshake (and on schema-cache registration), before the tool is exposed to
+    approval dialogs or model context. ``tool`` is a dict shaped like an MCP
+    ``tools/list`` entry: ``{"name", "description", "inputSchema"}``.
+
+    ``fallback`` is the original tool dict. If a plugin sanitizes it, the
+    sanitized version is returned; if every plugin quarantines it, the tool is
+    dropped from the pipeline (caller must handle a ``None`` return). If no
+    plugin handles the tool (or one raises), the original is returned.
+
+    Returns ``None`` when the tool must be quarantined (never registered).
+    """
+    from hermes_cli.plugins import invoke_hook, has_hook
+
+    if not has_hook("sanitize_tool_metadata"):
+        return fallback
+
+    try:
+        results = invoke_hook("sanitize_tool_metadata", tool=tool, server_name=server_name)
+    except Exception as exc:
+        # Fail-safe: a broken hook must not block discovery. The shipping
+        # plugin already fails closed internally, so reaching here is an
+        # unexpected core/plugin defect — fall back to the original tool and
+        # let the existing description scan / core checks still apply.
+        logger.warning(
+            "MCP server '%s': sanitize_tool_metadata hook raised: %s; "
+            "delivering tool unchanged",
+            server_name, exc,
+        )
+        return fallback
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if "quarantine" in result:
+            reason = result.get("quarantine") or "unspecified"
+            logger.warning(
+                "MCP server '%s': quarantining tool '%s' (%s)",
+                server_name, tool.get("name"), reason,
+            )
+            return None
+        if "tool" in result and isinstance(result.get("tool"), dict):
+            return result["tool"]
+    return fallback
+
+
+
+# Safety cap on nextCursor pagination loops so a misbehaving server that
+# returns a cursor forever cannot spin discovery indefinitely. 50 pages at
+# the common 50-100 items/page covers thousands of tools/resources/prompts.
+_MCP_LIST_MAX_PAGES = 50
+
+
+# ── END KENSEI CUSTOM ──

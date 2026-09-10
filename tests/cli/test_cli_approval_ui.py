@@ -23,8 +23,6 @@ def _make_cli_stub():
     cli._approval_state = None
     cli._approval_deadline = 0
     cli._approval_lock = threading.Lock()
-    cli._auq_state = None
-    cli._auq_deadline = 0
     cli._sudo_state = None
     cli._sudo_deadline = 0
     cli._modal_input_snapshot = None
@@ -277,8 +275,6 @@ def _make_real_paint_cli_stub():
     cli._approval_state = None
     cli._approval_deadline = 0
     cli._approval_lock = threading.Lock()
-    cli._auq_state = None
-    cli._auq_deadline = 0
     cli._sudo_state = None
     cli._sudo_deadline = 0
     cli._clarify_state = None
@@ -523,8 +519,6 @@ class TestClearOverlaysForInterrupt:
         cli = _make_cli_stub()
         # Attributes the helper touches that the base stub doesn't set.
         cli._clarify_state = None
-        cli._auq_state = None
-        cli._auq_deadline = 0
         cli._clarify_freetext = False
         cli._secret_state = None
         cli._secret_deadline = 0

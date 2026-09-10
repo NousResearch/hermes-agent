@@ -1,7 +1,10 @@
-"""Phase 1 RED contract for provider_routing.models.<model-id>.
+"""``provider_routing.models.<id>`` overlays the flat OpenRouter routing for the CURRENT agent.model.
 
-These tests exercise the existing provider-preference and transport seams. They intentionally run
-against the frozen Kensei baseline before the upstream per-model overlay is implemented.
+Kensei regression extensions kept alongside the upstream contract tests: partial
+overlay semantics, delegated target-profile scoping (no parent-rule leak), target
+profile_runtime_scope switching, fallback re-resolution, and the OpenRouter
+transport boundary. The Phase-1 RED-contract docstring predates the upstream
+implementation and is superseded by this merged header.
 """
 from types import SimpleNamespace
 
@@ -169,3 +172,23 @@ def test_direct_and_nous_portal_requests_do_not_receive_openrouter_preferences()
             provider_preferences={"only": ["openai"]},
         )
         assert "provider" not in kwargs.get("extra_body", {})
+
+
+# ---------------------------------------------------------------------------
+# Upstream contract tests (ead7e91d)
+# ---------------------------------------------------------------------------
+
+def test_per_model_entry_overlays_flat_routing_for_that_model_only(routing_cfg):
+    assert cch._provider_preferences_for_agent(_agent("openai/gpt-6-astra")) == {"only": ["openai"], "sort": "price"}
+    # A per-model key wins over the flat one; unset keys fall through.
+    assert cch._provider_preferences_for_agent(_agent("anthropic/claude-fable-5.1")) == {
+        "only": ["anthropic"], "sort": "throughput"}
+    # Unlisted model keeps the flat behaviour; no pin leaks across models.
+    assert cch._provider_preferences_for_agent(_agent("moonshotai/kimi-k2.6")) == {"sort": "price"}
+
+
+def test_per_model_match_is_spelling_tolerant_and_follows_model_switch(routing_cfg):
+    agent = _agent("openrouter/openai/gpt-6-astra", providers_allowed=["together"])
+    assert cch._provider_preferences_for_agent(agent)["only"] == ["openai"]
+    agent.model = "claude-fable-5-1"
+    assert cch._provider_preferences_for_agent(agent)["only"] == ["anthropic"]

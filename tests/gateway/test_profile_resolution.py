@@ -10,7 +10,8 @@ from gateway.session import SessionSource, build_session_key
 from gateway.run import GatewayRunner
 from gateway.profile_routing import ProfileRoute, ProfileRouteRejected
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent
 
 
 @pytest.fixture

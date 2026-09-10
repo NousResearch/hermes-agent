@@ -207,6 +207,10 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         shutil.rmtree(previous, ignore_errors=True)
         moved_aside = live_root.exists()
         if moved_aside:
+            # A Desktop may have reopened during the long packaging step.
+            stopped = _stop_desktop_processes_locking_build(desktop_dir)
+            if stopped:
+                logger.info("stopped desktop processes before staged app promotion: %s", stopped)
             os.rename(live_root, previous)
         try:
             os.rename(staged_root, live_root)
@@ -669,11 +673,15 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
         # Wait for the handles (and thus the file locks) to actually release.
         with contextlib.suppress(Exception):
             _, alive = psutil.wait_procs(victims, timeout=5)
+            killed = []
             for proc in alive:
                 try:
                     proc.kill()
+                    killed.append(proc)
                 except Exception:
                     continue
+            if killed:
+                psutil.wait_procs(killed, timeout=5)
     return stopped
 
 

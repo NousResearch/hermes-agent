@@ -360,13 +360,19 @@ def _reap_orphaned_browser_sessions():
 
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []
-    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*"):
+    # The shared real-profile attach daemon is named, not ``<prefix>_<hex>``; list it explicitly.
+    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
+                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
         socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
     if not socket_dirs:
         return
 
     with _bt._cleanup_lock:
         tracked_names = {info.get("session_name") for info in _bt._active_sessions.values() if info.get("session_name")}
+    # Browsing on the shared real-profile daemon runs through per-task ``rp_*`` sessions
+    # (``--cdp``), so its own dir never shows activity; the idle escape hatch would misfire
+    # under a live user. Owner liveness alone gates it — a dead owner still gets reaped.
+    tracked_names.add(_bt._REAL_PROFILE_SESSION)
 
     reaped = 0
     for socket_dir in socket_dirs:

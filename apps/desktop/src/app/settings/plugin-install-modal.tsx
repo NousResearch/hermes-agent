@@ -15,6 +15,7 @@ import {
   DialogTitle,
   preventCloseButtonAutoFocus
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
@@ -26,6 +27,7 @@ import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
+  openPluginInstallRequest,
   type PluginInstallRequest
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profileScope } from '@/store/profile'
@@ -47,6 +49,7 @@ export function PluginInstallModal() {
   const activeProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
 
+  const [repoInput, setRepoInput] = useState('')
   const [phase, setPhase] = useState<ProbePhase>('idle')
   const [probe, setProbe] = useState<ProbeResult | null>(null)
   const [installAgent, setInstallAgent] = useState(true)
@@ -58,6 +61,7 @@ export function PluginInstallModal() {
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
+    setRepoInput('')
     setPhase('idle')
     setProbe(null)
     setInstallAgent(true)
@@ -142,7 +146,9 @@ export function PluginInstallModal() {
       return
     }
 
-    void runProbe(request)
+    if (request.repo) {
+      void runProbe(request)
+    }
   }, [request, resetState, runProbe])
 
   const profileLabel = activeProfile || profileScope || 'default'
@@ -258,13 +264,39 @@ export function PluginInstallModal() {
       }}
       open={open}
     >
-      <DialogContent className="max-w-lg" onOpenAutoFocus={preventCloseButtonAutoFocus}>
+      <DialogContent className="max-w-lg" onOpenAutoFocus={request?.repo ? preventCloseButtonAutoFocus : undefined}>
         <DialogHeader>
           <DialogTitle>{m.title}</DialogTitle>
           <DialogDescription>{m.description}</DialogDescription>
         </DialogHeader>
 
-        {request && (
+        {request && !request.repo && (
+          <form
+            className="space-y-3"
+            id="plugin-repository-form"
+            onSubmit={event => {
+              event.preventDefault()
+              const repo = repoInput.trim()
+
+              if (repo) {
+                openPluginInstallRequest({ ...request, repo })
+              }
+            }}
+          >
+            <label className="block space-y-1">
+              <span>{m.repoLabel}</span>
+              <Input
+                autoFocus
+                onChange={event => setRepoInput(event.target.value)}
+                placeholder={m.repoPlaceholder}
+                spellCheck={false}
+                value={repoInput}
+              />
+            </label>
+          </form>
+        )}
+
+        {request?.repo && (
           <div className="space-y-4">
             <div>
               <div className="mb-1 text-[length:var(--conversation-caption-font-size)] font-medium text-foreground">
@@ -403,9 +435,15 @@ export function PluginInstallModal() {
           <Button disabled={busy} onClick={handleClose} variant="outline">
             {t.common.cancel}
           </Button>
-          <Button disabled={busy || phase !== 'ready' || !probe?.ok} onClick={() => void handleInstall()}>
-            {installing ? m.installing : m.install}
-          </Button>
+          {request && !request.repo ? (
+            <Button disabled={!repoInput.trim()} form="plugin-repository-form" type="submit">
+              {m.reviewRepository}
+            </Button>
+          ) : (
+            <Button disabled={busy || phase !== 'ready' || !probe?.ok} onClick={() => void handleInstall()}>
+              {installing ? m.installing : m.install}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

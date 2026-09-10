@@ -6,7 +6,6 @@ import pytest
 
 from agent import web_search_registry
 from agent.web_search_provider import WebSearchProvider
-from tests.content_trust_helpers import loads_fenced_json
 from tools import web_tools
 
 
@@ -64,7 +63,7 @@ def extract_provider(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_web_extract_dispatches_urls_from_search_result_objects(extract_provider):
-    result = loads_fenced_json(await web_tools.web_extract_tool([
+    result = json.loads(await web_tools.web_extract_tool([
         {"url": "https://example.com/a", "title": "A"},
         {"href": "https://example.org/b"},
     ]))
@@ -84,7 +83,7 @@ def test_web_extract_registry_dispatch_accepts_search_result_objects(
         "urls": [{"url": "https://example.net/from-registry", "title": "R"}],
     })
     assert isinstance(raw, str)
-    result = loads_fenced_json(raw)
+    result = json.loads(raw)
 
     assert extract_provider.received_urls == ["https://example.net/from-registry"]
     assert result["results"][0]["url"] == "https://example.net/from-registry"

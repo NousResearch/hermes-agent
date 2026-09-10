@@ -15,7 +15,7 @@ from typing import List
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 

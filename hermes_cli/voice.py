@@ -32,9 +32,6 @@ _VOICE_NAMED_KEYS = {
 # the CLI's copy/exit/clear bindings also claim ``a-c``/``a-d``/``a-l`` (hermes-ink reports Alt as
 # ``key.meta``), mirroring the TUI's darwin-only reservation — alt is reserved on darwin only.
 _VOICE_RESERVED_CHARS = frozenset({"c", "d", "l"})
-# ``ctrl+l`` (clear screen), or ``ctrl+t`` (todo tray) would be advertised
-# in /voice status but never fire push-to-talk — the same blocklist the TUI parser uses.
-_VOICE_RESERVED_CTRL_CHARS = frozenset({"c", "d", "l", "t"})
 
 # On macOS the classic CLI's prompt_toolkit bindings for copy / exit / clear also claim ``a-c`` / ``a-d`` /
 # ``a-l`` via the action-modifier lookup, and hermes-ink reports Alt as ``key.meta`` on many terminals.

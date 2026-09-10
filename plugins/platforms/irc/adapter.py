@@ -16,7 +16,8 @@ import time
 from typing import Any, Dict, List, Optional
 
 from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret
-from gateway.platforms.base import BasePlatformAdapter, SendResult, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
 

@@ -111,20 +111,12 @@ def test_early_recovery_module_is_stdlib_only(tmp_path):
             import builtins
             import sys
 
-            # Frozen importlib helpers are implementation details rather than
-            # entries in sys.stdlib_module_names, but importing a stdlib module
-            # legitimately reaches them on Python 3.13.
-            STDLIB = set(sys.stdlib_module_names) | {
-                "hermes_cli", "_bootstrap", "_bootstrap_external",
-            }
+            STDLIB = set(sys.stdlib_module_names) | {"hermes_cli"}
             real_import = builtins.__import__
 
             def guard(name, *args, **kwargs):
                 top = name.split(".")[0]
-                # Relative imports such as ``from . import _compiler`` pass
-                # an empty name to __import__; they are still stdlib imports.
-                level = args[1] if len(args) > 1 else kwargs.get("level", 0)
-                if top not in STDLIB and not level:
+                if top not in STDLIB:
                     raise ImportError(f"non-stdlib import blocked: {name}")
                 return real_import(name, *args, **kwargs)
 

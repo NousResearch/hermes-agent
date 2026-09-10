@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
+from hermes_cli.fallback_config import get_fallback_chain
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -30,6 +30,14 @@ def _cfg() -> dict:
     """The ``delegation`` section, read through the origin so tests can patch it."""
     from tools.delegate_tool import _load_config
     return _load_config()
+
+
+def _get_synthesis_enabled() -> bool:
+    return is_truthy_value(_cfg().get("synthesis_enabled", True))
+
+
+def _get_verify_enabled() -> bool:
+    return is_truthy_value(_cfg().get("verify_enabled", True))
 
 
 # ── Subagent approval callbacks ─────────────────────────────────────────────
@@ -279,11 +287,11 @@ def _require_pinned_command(command: Optional[str], message: str) -> None:
     if command and not _shutil.which(command):
         raise ValueError(message)
 
-def _credential_bundle(model, provider, base_url, api_key, api_mode, request_overrides, max_output_tokens, **extra) -> dict:
+def _credential_bundle(model, provider, base_url, api_key, api_mode, request_overrides, **extra) -> dict:
     """The child credential dict every branch of ``_resolve_delegation_credentials`` returns."""
     return {
         "model": model, "provider": provider, "base_url": base_url, "api_key": api_key, "api_mode": api_mode,
-        "request_overrides": request_overrides, "max_output_tokens": max_output_tokens, **extra,
+        "request_overrides": request_overrides, **extra,
     }
 
 def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
@@ -307,15 +315,14 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     if v["api_mode"] in _EXPLICIT_API_MODES:
         api_mode = v["api_mode"]
 
-    # provider configured ALONGSIDE base_url: pull that provider's request personality (request_overrides /
-    # max_output_tokens) onto the explicit endpoint. Best-effort — a resolution failure only skips the overrides.
-    request_overrides = max_output_tokens = None
+    # Preserve the configured provider's request personality on an explicit endpoint.
+    request_overrides = None
     if v["provider"]:
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider
             runtime = resolve_runtime_provider(requested=v["provider"], target_model=v["model"])
             request_overrides = dict(runtime.get("request_overrides") or {}) or None
-            max_output_tokens = runtime.get("max_output_tokens")
+
         except Exception as exc:
             logger.debug(
                 "delegation.base_url: runtime resolution for provider '%s' failed; proceeding without request_overrides: %s",
@@ -324,7 +331,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     # api_key None → inherited from parent in _build_child_agent
     return _credential_bundle(
         v["model"], provider, v["base_url"], v["api_key"], api_mode,
-        _merge_request_overrides(request_overrides, explicit_request_overrides), max_output_tokens,
+        _merge_request_overrides(request_overrides, explicit_request_overrides),
     )
 
 def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
@@ -360,7 +367,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
         runtime.get("base_url"), api_key, runtime.get("api_mode"),
         _merge_request_overrides(runtime.get("request_overrides"), explicit_request_overrides) or {},
-        runtime.get("max_output_tokens"), command=pinned_command, args=list(runtime.get("args") or []),
+        command=pinned_command, args=list(runtime.get("args") or []),
     )
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -380,7 +387,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         # Pure inherit; explicit request_overrides still merge OVER the parent's.
         return _credential_bundle(
             values["model"], None, None, None, None,
-            _merge_request_overrides(getattr(parent_agent, "request_overrides", None), explicit_request_overrides), None,
+            _merge_request_overrides(getattr(parent_agent, "request_overrides", None), explicit_request_overrides),
         )
     return _runtime_provider_credentials(values, explicit_request_overrides)
 
@@ -414,12 +421,32 @@ _ROUTING_FILTER_DEFAULTS = (
 
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
+
+def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[List[Dict[str, Any]]]:
+    """Fallback chain for a child, owned by the same config block as its route.
+
+    Pinned children (provider, endpoint or model override) never borrow the parent chain;
+    unpinned children inherit it when ``fallback_providers`` is absent/null. An explicit ``[]``
+    disables fallback either way. Malformed entries are dropped by the canonical normalizer.
+    """
+    default = None if pinned else (getattr(parent_agent, "_fallback_chain", None) or None)
+    declared = routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None
+    if declared is None:
+        return default
+    if declared == []:
+        return None
+    normalized = get_fallback_chain({"fallback_providers": declared})
+    if not normalized:
+        logger.warning("delegation fallback_providers has no usable routes; using the %s default",
+                       "pinned" if pinned else "inherited")
+    return normalized or default
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
-    override_max_tokens: Optional[int], override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
-    override_fallback_model: Any = None,
-    isolate_profile_credentials: bool = False,
+    override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    routing_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -428,11 +455,7 @@ def _resolve_child_runtime(
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = (
-        override_base_url
-        if override_base_url is not None
-        else (None if isolate_profile_credentials else _inherit_parent_base_url(parent_agent, parent_agent.base_url))
-    )
+    effective_base_url = override_base_url or _inherit_parent_base_url(parent_agent, parent_agent.base_url)
     # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
     # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
     # same-provider inheritance would pin the child on the wrong wire — re-derive.
@@ -492,51 +515,54 @@ def _resolve_child_runtime(
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     kwargs: Dict[str, Any] = {
-        "model": effective_model,
-        "base_url": effective_base_url,
-        "api_key": override_api_key if override_api_key is not None else (None if isolate_profile_credentials else parent_api_key),
+        "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
         "provider": effective_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
-        # Inherit the parent's fallback chain EXCEPT under a pinned provider: a mid-run 429/auth failure must not
-        # silently reroute the quiet child onto the parent's fallbacks. Predictability > liveness for explicit pins.
-        "fallback_model": override_fallback_model if override_fallback_model is not None else (
-            None if override_provider else (getattr(parent_agent, "_fallback_chain", None) or None)
-        ),
+        # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
+        # model never borrows the parent's chain; an explicitly declared child chain still remains available.
+        "fallback_model": _resolve_child_fallback_chain(
+            parent_agent, delegation_cfg if routing_cfg is None else routing_cfg,
+            pinned=bool(override_provider or override_base_url or model)),
         "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
         **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},
     }
     if not override_provider:
         kwargs["provider_data_collection"] = kwargs["provider_data_collection"] or ""
-    child_max_tokens = override_max_tokens if override_max_tokens is not None else getattr(parent_agent, "max_tokens", None)
+    child_max_tokens = getattr(parent_agent, "max_tokens", None)
     if isinstance(child_max_tokens, int):
         kwargs["max_tokens"] = child_max_tokens
     return kwargs
 
 
-# ── KENSEI CUSTOM — fork delegation config knobs (ported post-refactor) ──
+# ── KENSEI CUSTOM — profile model config normaliser (ported) ──
+def _profile_model_cfg(profile_cfg: dict) -> dict:
+    """Normalise a profile's ``model`` config block to dict form.
 
-_CONTINUATION_QUOTE_CAP = 4000
+    Two conventions exist in the fleet: the canonical nested dict
+    (``model: {default: ..., provider: ...}``) and a legacy flat string
+    (``model: deepseek-v4-flash`` with top-level ``provider`` /
+    ``base_url``). Both delegation paths must tolerate the flat form —
+    ``str.get()`` would AttributeError and abort profile delegation
+    outright for the 33 sub-profiles that still use it.
+    """
+    raw = (profile_cfg or {}).get("model") or {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        flat = {"default": raw.strip()}
+        for key in ("provider", "base_url", "api_key"):
+            val = (profile_cfg or {}).get(key)
+            if isinstance(val, str) and val.strip():
+                flat[key] = val
+        return flat
+    return {}
+# ── END KENSEI CUSTOM ──
 
 
-_DELEGATION_FALLBACK_MAX_TRIES = 3
-_DELEGATION_FALLBACK_ADVANCE_ON_429 = True
-_DELEGATION_FALLBACK_ADVANCE_ON_4XX = True
-
-# Default per-slot retry/advance policy for delegation fallback resolution.
-# 429/4xx burns one try and advances to the next provider/slot immediately.
-_DEFAULT_DELEGATION_RETRY_MAX_TRIES = 3
-_DEFAULT_DELEGATION_ADVANCE_ON_429 = True
-_DEFAULT_DELEGATION_ADVANCE_ON_4XX = True
-
-# KENSEI: registry-backed fallback for delegations (direct fix, 2026-09-04).
-# Children inherit the parent chain, but parents with no chain (e.g. an
-# ad-hoc CLI session) spawn children with an empty chain — a quota/429
-# failure then kills the child outright even though the route-registry
-# holds a governed Main → FB → Codex → local chain for its profile.
-# _registry_surface_chain resolves that chain so every profile delegation
+# ── KENSEI CUSTOM — registry-backed delegation fallback chain (ported) ──
 # fails over exactly like its surface. Fail-closed: any load/validation
 # error returns None and the child keeps the previous (possibly empty)
 # chain — never a loud spawn failure, never a logged credential (chain
@@ -620,229 +646,4 @@ def _registry_surface_chain(profile_name: str | None) -> Any:
     except Exception as exc:
         logger.debug("Delegation fallback: registry chain resolve failed: %s", exc)
         return None
-
-
-def _get_synthesis_enabled() -> bool:
-    """Read delegation.synthesis_enabled config flag (default: True)."""
-    return is_truthy_value(_load_config().get("synthesis_enabled", True))
-
-
-def _get_verify_enabled() -> bool:
-    """Read delegation.verify_enabled config flag (default: True)."""
-    return is_truthy_value(_load_config().get("verify_enabled", True))
-
-
-def _get_continue_on_truncation_enabled() -> bool:
-    """Kill switch for truncation auto-continue (default on).
-
-    Set delegation.continue_on_truncation: false in config.yaml to keep
-    cut-but-summarized results as-is without the extra turn.
-    """
-    try:
-        return is_truthy_value(_load_config().get("continue_on_truncation", True))
-    except Exception:
-        return True
-
-
-# Depth/cycle/budget guards for nested delegation.
-# - Depth: parent depth + 1 must be < max_spawn_depth.
-# - Cycle: walk _delegate_parent_ref weakref chain; reject if ancestor is child.
-# - Budget: child's remaining parent iteration budget is split by task_count; 0 means no child work.
-_MIN_SPAWN_DEPTH = 1
-# No upper ceiling on spawn depth — like max_concurrent_children, depth has a
-# floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
-# stays flat (MAX_DEPTH = 1); raising the config knob is an explicit opt-in.
-
-
-# ---------------------------------------------------------------------------
-# Runtime state: pause flag + active subagent registry
-#
-# Consumed by the TUI observability layer (overlay/control surface) and the
-# gateway RPCs `delegation.pause`, `delegation.status`, `subagent.interrupt`.
-# Kept module-level so they span every delegate_task invocation in the
-# process, including nested orchestrator -> worker chains.
-# ---------------------------------------------------------------------------
-
-_spawn_pause_lock = threading.Lock()
-_spawn_paused: bool = False
-
-_active_subagents_lock = threading.Lock()
-# subagent_id -> mutable record tracking the live child agent.  Stays only
-# for the lifetime of the run; _run_single_child is the owner.
-_active_subagents: Dict[str, Dict[str, Any]] = {}
-
-# subagent_id -> {goal, delegation_id, parent_session_id} retained AFTER the
-# child finishes (bounded FIFO). Child-started background processes routinely
-# outlive the child itself (its npm ci with notify_on_complete=true finishes
-# after the child's summary was delivered); their completion notifications
-# reach the parent conversation via the shared completion_queue and need
-# delegation attribution even though the live registry entry is gone.
-_RECENT_SUBAGENTS_CAP = 200
-_recent_subagents: Dict[str, Dict[str, Any]] = {}
-
-
-# Terminal child statuses that mean "the subagent did NOT deliver a usable
-# result". Shared by the CLI spinner echo, the gateway failure notice, and
-# the parent-facing failure summary so every surface agrees on what counts
-# as a failure.
-SUBAGENT_FAILURE_STATUSES = frozenset({"failed", "error", "timeout"})
-
-
-def _profile_model_cfg(profile_cfg: dict) -> dict:
-    """Normalise a profile's ``model`` config block to dict form.
-
-    Two conventions exist in the fleet: the canonical nested dict
-    (``model: {default: ..., provider: ...}``) and a legacy flat string
-    (``model: deepseek-v4-flash`` with top-level ``provider`` /
-    ``base_url``). Both delegation paths must tolerate the flat form —
-    ``str.get()`` would AttributeError and abort profile delegation
-    outright for the 33 sub-profiles that still use it.
-    """
-    raw = (profile_cfg or {}).get("model") or {}
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str) and raw.strip():
-        flat = {"default": raw.strip()}
-        for key in ("provider", "base_url", "api_key"):
-            val = (profile_cfg or {}).get(key)
-            if isinstance(val, str) and val.strip():
-                flat[key] = val
-        return flat
-    return {}
-
-
-# ── KENSEI CUSTOM — delegation governance helpers (ported) ──
-
-def _record_delegation_event(
-    event_type: str,
-    *,
-    parent_agent: Any,
-    child: Any,
-    child_subagent_id: Optional[str] = None,
-    child_role: Optional[str] = None,
-    child_profile: Optional[str] = None,
-    parent_subagent_id: Optional[str] = None,
-    result: Optional[Dict[str, Any]] = None,
-) -> None:
-    """Record a sanitized delegation lifecycle event without affecting the run.
-
-    This is deliberately a side-channel at the existing start/finalization
-    choke points.  It never receives or persists the child goal, summary, tool
-    arguments, tool results, prompts, or credentials.
-    """
-    try:
-        from hermes_cli.profile_activity_ledger import record_event_if_enabled
-
-        child_id = _lifecycle_metadata_value(
-            child_subagent_id or getattr(child, "_subagent_id", None)
-        )
-        child_session_id = _lifecycle_metadata_value(getattr(child, "session_id", None))
-        if not child_id and not child_session_id:
-            return
-        child_key = str(child_id or child_session_id)
-        parent_session_id = _lifecycle_metadata_value(getattr(parent_agent, "session_id", None))
-        parent_turn_id = _lifecycle_metadata_value(getattr(parent_agent, "_current_turn_id", "") or "")
-        parent_id = _lifecycle_metadata_value(parent_subagent_id)
-        role = _lifecycle_metadata_value(child_role or getattr(child, "_delegate_role", None))
-        specialist_profile = _lifecycle_metadata_value(
-            child_profile or getattr(child, "_delegate_profile", None)
-        )
-        model = _lifecycle_metadata_value(getattr(child, "model", None))
-        provider = _lifecycle_metadata_value(getattr(child, "provider", None))
-        payload: Dict[str, Any] = {
-            "child_subagent_id": child_id,
-            "child_session_id": child_session_id,
-            "child_role": role,
-            "model": model,
-            "provider": provider,
-            "parent_session_id": parent_session_id,
-            "parent_turn_id": parent_turn_id,
-            "parent_subagent_id": parent_id,
-        }
-        if specialist_profile is not None:
-            payload["child_profile"] = specialist_profile
-        if event_type == "delegation.started":
-            payload["status"] = "started"
-        elif event_type == "delegation.finished":
-            result = result if isinstance(result, dict) else {}
-            tokens = result.get("tokens") if isinstance(result.get("tokens"), dict) else {}
-            tool_trace = result.get("tool_trace") if isinstance(result.get("tool_trace"), list) else []
-            tool_names = sorted(
-                {
-                    str(item.get("tool"))[:256]
-                    for item in tool_trace
-                    if isinstance(item, dict) and item.get("tool")
-                }
-            )
-            raw_cost = result.get("cost_usd", result.get("_child_cost_usd", 0.0))
-            cost = raw_cost if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool) else 0.0
-            duration = result.get("duration_seconds", 0.0)
-            duration_ms = int(float(duration) * 1000) if isinstance(duration, (int, float)) else 0
-            payload.update(
-                {
-                    "status": _lifecycle_metadata_value(result.get("status")) or "unknown",
-                    "exit_reason": _lifecycle_metadata_value(result.get("exit_reason")) or "unknown",
-                    "duration_ms": max(0, duration_ms),
-                    "api_calls": int(result.get("api_calls", 0)) if isinstance(result.get("api_calls"), (int, float)) else 0,
-                    "token_counts": {
-                        "input": int(tokens.get("input", 0)) if isinstance(tokens.get("input"), (int, float)) else 0,
-                        "output": int(tokens.get("output", 0)) if isinstance(tokens.get("output"), (int, float)) else 0,
-                    },
-                    "cost_usd": round(float(cost), 6),
-                    "tool_count": len(tool_trace),
-                    "tool_names": tool_names,
-                }
-            )
-        else:
-            return
-        record_event_if_enabled(
-            source="delegate_tool",
-            actor_profile=os.environ.get("HERMES_PROFILE") or "unknown",
-            target_profile=str(specialist_profile or role) if (specialist_profile or role) else None,
-            event_type=event_type,
-            object_type="delegation",
-            object_id=child_key,
-            summary="Delegation lifecycle event",
-            payload=payload,
-            event_id=f"delegation:{child_key}:{event_type}",
-        )
-    except Exception:
-        # Governance telemetry is fail-safe and must never break delegation.
-        logger.debug("delegation lifecycle ledger write failed", exc_info=True)
-
-
-def _lifecycle_metadata_value(value: Any, *, max_length: int = 256) -> str | int | float | None:
-    """Return only bounded scalar metadata suitable for the activity ledger."""
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, (int, float)):
-        return value
-    if isinstance(value, str):
-        value = value.strip()
-        if value and "\n" not in value and "\r" not in value:
-            return value[:max_length]
-    return None
-
-
-def _sanitize_tool_input_summary(summary: Any) -> Dict[str, Any]:
-    if not isinstance(summary, dict):
-        return {"argument_keys": [], "targets": {}}
-    keys = summary.get("argument_keys")
-    safe_keys = (
-        [str(key)[:128] for key in keys[:64]]
-        if isinstance(keys, list)
-        else []
-    )
-    targets = summary.get("targets")
-    safe_targets: Dict[str, Any] = {}
-    if isinstance(targets, dict):
-        for raw_key, value in targets.items():
-            key = str(raw_key).lower()
-            if key not in _TOOL_INPUT_TARGET_KEYS:
-                continue
-            cleaned = _sanitize_tool_target(key, value)
-            if cleaned is not None:
-                safe_targets[key] = cleaned
-    return {"argument_keys": safe_keys, "targets": safe_targets}
-
-
+# ── END KENSEI CUSTOM ──

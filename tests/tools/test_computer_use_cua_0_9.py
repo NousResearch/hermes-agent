@@ -387,3 +387,4 @@ def test_persistent_focus_has_a_separate_approval_scope():
     assert seen == ["click", "bring_to_front"]
     assert result["error"] == "denied by user"
     assert result["action"] == "bring_to_front"
+

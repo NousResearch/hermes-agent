@@ -67,8 +67,6 @@ def _make_cli():
     cli_obj._clarify_state = None
     cli_obj._sudo_state = None
     cli_obj._secret_state = None
-    cli_obj._auq_state = None
-    cli_obj._auq_deadline = 0
     cli_obj._slash_confirm_state = None
     return cli_obj
 

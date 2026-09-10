@@ -4,15 +4,6 @@ import json
 from unittest.mock import patch, MagicMock
 import pytest
 
-from tests.content_trust_helpers import loads_fenced_json
-
-
-def _loads_extract_result(value: str):
-    """Extract results are fenced; early backend errors are typed plain JSON."""
-    if "<<<UNTRUSTED_DOCUMENT>>>" in value:
-        return loads_fenced_json(value)
-    return json.loads(value)
-
 
 @pytest.fixture(autouse=True)
 def _ensure_redaction_enabled(monkeypatch):
@@ -141,7 +132,7 @@ class TestWebExtractSecretExfil:
             "https://example.com/blog?session=summer",
         ):
             result = await web_extract_tool(urls=[url])
-            parsed = _loads_extract_result(result)
+            parsed = json.loads(result)
             # Not blocked by the credential-query guard (may fail for other
             # reasons like a missing backend, but never with this specific
             # error string).
@@ -153,7 +144,7 @@ class TestWebExtractSecretExfil:
         from tools.web_tools import web_extract_tool
         # This will fail due to no API key, but should NOT be blocked by secret check
         result = await web_extract_tool(urls=["https://example.com"])
-        parsed = _loads_extract_result(result)
+        parsed = json.loads(result)
         # Should fail for API/config reason, not secret blocking
         assert "API key" not in parsed.get("error", "") or "Blocked" not in parsed.get("error", "")
 
@@ -203,7 +194,7 @@ class TestWebExtractSecretExfil:
         finally:
             web_search_registry._reset_for_tests()
 
-        parsed = loads_fenced_json(result)
+        parsed = json.loads(result)
         assert parsed["results"][0]["url"] == "https://wttr.in/K%C3%B6ln"
 
 

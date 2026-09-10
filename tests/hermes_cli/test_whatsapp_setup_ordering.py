@@ -33,10 +33,6 @@ def isolated_home(tmp_path, monkeypatch):
     for key in list(os.environ):
         if key.startswith("WHATSAPP_"):
             monkeypatch.delenv(key, raising=False)
-    # Invalidate the module-level dotenv cache so load_env() re-reads
-    # from the isolated HERMES_HOME, not a prior test's .env path.
-    from hermes_cli import config as _cfg
-    _cfg.invalidate_env_cache()
     return hermes
 
 
@@ -115,17 +111,6 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     monkeypatch.setattr("builtins.input", fake_input)
     monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
-    # Isolate the bridge dir to the temp HERMES_HOME so the test doesn't
-    # depend on the install tree's scripts/whatsapp-bridge/bridge.js
-    # (which may be absent in stripped-down checkouts). Pre-create a
-    # minimal bridge.js so the bridge-script-exists check passes.
-    bridge_dir = isolated_home / "scripts" / "whatsapp-bridge"
-    bridge_dir.mkdir(parents=True)
-    (bridge_dir / "bridge.js").write_text("// stub")
-    monkeypatch.setattr(
-        "gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir",
-        lambda: bridge_dir,
-    )
     # Skip the bridge npm install — we're testing setup-ordering, not bridge
     # bootstrapping.  Pretend node_modules exists (Path.exists -> True for that
     # specific check is hard to scope, so instead pretend npm install would

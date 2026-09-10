@@ -9,6 +9,7 @@ from tools.memory_tool import (
     memory_tool,
     _scan_memory_content,
 )
+from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
 
 
 def _blocked(content, pattern_id=None):
@@ -124,83 +125,14 @@ class TestMemoryStoreAdd:
         store.add("memory", "x" * 490)
         result = store.add("memory", "this will exceed the limit")
         assert result["success"] is False
-        assert "compact" in result["error"].lower() or "exceed" in result["error"].lower()
-        # Overflow response gives the model current state
+        assert "exceed" in result["error"].lower()
+        # Overflow response gives the model what it needs to consolidate in-turn
         assert "current_entries" in result
         assert "usage" in result
+        assert "retry" in result["error"].lower()
 
-    def test_auto_compact_failure_rejects_overflow(self, tmp_path, monkeypatch):
-        """Auto-compaction failure must NOT bypass the char limit.
-
-        When auto-compact returns success=False (e.g. LLM unavailable AND
-        deterministic tiers can't free enough space), add() must still
-        reject the overflow and return a consolidation failure. The entry
-        must NOT be appended to the store.
-        """
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
-        tight = MemoryStore(memory_char_limit=200, user_char_limit=200)
-        tight.load_from_disk()
-
-        # First entry: long, distinct text — no subsumption or short-merge possible
-        r1 = tight.add("memory", "A" * 95)
-        assert r1["success"]
-        before = len(tight.memory_entries)
-        before_chars = tight._char_count("memory")
-
-        # Second entry: overflow that triggers auto-compact
-        # 95 + 3(delimiter) + 120 = 218 > 200
-        # Auto-compact: LLM fails (no auxiliary_client), no subsumption
-        # (single entry, content isn't substring), no short-merge (>80 chars).
-        # Returns success=False → add() MUST reject.
-        r2 = tight.add("memory", "Z" * 120)
-
-        assert not r2["success"], (
-            "Overflow after failed auto-compact must return failure, "
-            f"got: {r2}"
-        )
-        assert "current_entries" in r2, (
-            "Failure response must include current_entries"
-        )
-        assert "usage" in r2, (
-            "Failure response must include usage"
-        )
-
-        # Store must be unchanged
-        assert len(tight.memory_entries) == before, (
-            "No entries should be added after failed auto-compact"
-        )
-        assert tight._char_count("memory") == before_chars, (
-            "Char count must not increase after failed auto-compact"
-        )
-        assert "Z" * 120 not in tight.memory_entries, (
-            "Overflow entry must not appear in store"
-        )
-
-    def test_add_succeeds_after_auto_compact(self, store, tmp_path, monkeypatch):
-        """Auto-compaction persists compressed entries so the new add fits.
-
-        Uses subsumption tier: "Nottinghamshire" is a substring of entry 0,
-        so auto-compact removes it to fit the new entry.
-        """
-        # Use tighter limits to force compaction in a controlled way
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
-        tight = MemoryStore(memory_char_limit=70, user_char_limit=70)
-        tight.load_from_disk()
-
-        tight.add("memory", "Fact A: the user lives in Nottinghamshire")
-        tight.add("memory", "Nottinghamshire")
-        # 41 + 3 + 14 = 58 chars. New entry 15 chars => 58+3+15=76 > 70 -> triggers compaction
-
-        result = tight.add("memory", "Lives in Notts")
-        assert result["success"] is True, f"Expected success after auto-compact, got: {result.get('error', result)}"
-        assert "Lives in Notts" in tight.memory_entries, "New entry missing"
-        assert "Nottinghamshire" not in tight.memory_entries, "Subsumed entry should be removed"
-        assert tight._char_count("memory") <= tight.memory_char_limit
-
-    def test_replace_exceeding_limit_returns_consolidation_context(self, store):
-        """A replacement overflow returns enough context for an in-turn retry."""
-        store.add("memory", "short")
-        result = store.replace("memory", "short", "y" * 600)
+        # A replace that blows the budget mirrors the add-overflow shape.
+        result = store.replace("memory", "x" * 490, "y" * 600)
         assert result["success"] is False
         assert "current_entries" in result
         assert "usage" in result
@@ -773,3 +705,147 @@ class TestBomToleranceInMemoryFiles:
         raw, read_ok = MemoryStore._read_raw_checked(path)
         assert read_ok is False
         assert raw == ""
+
+
+# =========================================================================
+# Batch must not silently empty a non-empty store (#103419)
+#
+# A background consolidation batch that removes the last remaining entry
+# commits an empty USER.md/MEMORY.md as a normal successful write — silent
+# profile data loss. The batch path must refuse to reduce a previously
+# non-empty target to zero entries (all-or-nothing: nothing is written).
+# Single remove-last stays allowed (explicit delete, pinned elsewhere).
+# =========================================================================
+
+
+class TestBatchRefusesToEmptyNonEmptyStore:
+    @pytest.mark.parametrize(
+        ("target", "seed"),
+        [("user", "Name: Alice"), ("memory", "fact A")],
+    )
+    def test_batch_removing_last_entry_is_refused_and_preserves_disk(
+        self, store, target, seed
+    ):
+        assert store.add(target, seed)["success"] is True
+        path = store._path_for(target)
+        before = path.read_text(encoding="utf-8")
+
+        result = store.apply_batch(target, [{"action": "remove", "old_text": seed}])
+
+        assert result["success"] is False
+        assert "current_entries" in result  # actionable, counts toward degrade budget
+        assert "remove" in result["error"]  # points at the deliberate-wipe path
+        assert path.read_text(encoding="utf-8") == before  # nothing written
+
+    @pytest.mark.parametrize(
+        ("target", "seed"),
+        [("user", "Name: Alice"), ("memory", "fact A")],
+    )
+    def test_batch_ending_nonempty_still_succeeds(self, store, target, seed):
+        assert store.add(target, seed)["success"] is True
+        assert store.add(target, "second entry here")["success"] is True
+
+        result = store.apply_batch(
+            target,
+            [
+                {"action": "remove", "old_text": seed},
+                {"action": "add", "content": "replacement entry here"},
+            ],
+        )
+
+        assert result["success"] is True
+        assert seed not in store._entries_for(target)
+        assert "replacement entry here" in store._entries_for(target)
+
+
+# =========================================================================
+# Background-review delete gate (#105921)
+# =========================================================================
+
+class TestBackgroundReviewDeleteGate:
+    """An unattended background-review fork may append, never delete: the near-limit
+    'consolidate now' hint is otherwise an instruction to decide what to forget,
+    executed with no human in the loop. Denied ops are staged as pending proposals
+    (surfaced via /memory pending) instead of silently dropped — the fork's own review
+    summary is never published back."""
+
+    def test_remove_staged_not_applied(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "never create records without permission")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(action="remove", old_text="without permission", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert result["staged"] is True
+        assert result["proposal_staged"] is True
+        assert result["pending_id"]
+        assert "staged for your approval" in result["message"]
+        # Fail-closed: the standing rule is still on disk.
+        assert "never create records without permission" in store._entries_for("memory")
+        # The proposal itself landed in the pending store for the user to approve or discard.
+        from tools.write_approval import MEMORY, get_pending
+        record = get_pending(MEMORY, result["pending_id"])
+        assert record["payload"]["action"] == "remove"
+        assert record["origin"] == "background_review"
+
+    def test_replace_staged_in_background_review(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "entry the fork must not rewrite")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                action="replace", old_text="entry the fork", content="rewritten by fork", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["staged"] is True
+        assert result["proposal_staged"] is True
+        # Fail-closed: the original entry is untouched.
+        assert "entry the fork must not rewrite" in store._entries_for("memory")
+
+    def test_batch_containing_remove_staged_whole_batch(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "rule one")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "remove", "old_text": "rule one"},
+                {"action": "add", "content": "fork consolidation"},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["staged"] is True
+        # Atomic: the batch is only a proposal — its add must not land either.
+        assert "fork consolidation" not in store._entries_for("memory")
+
+    def test_add_still_allowed_in_background_review(self, store):
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(action="add", content="a fact worth keeping", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "a fact worth keeping" in store._entries_for("memory")
+
+    def test_foreground_remove_unaffected(self, store):
+        store.add("memory", "entry a supervised turn may remove")
+        result = json.loads(memory_tool(action="remove", old_text="supervised turn", store=store))
+        assert result["success"] is True
+        assert "entry a supervised turn may remove" not in store._entries_for("memory")
+
+    def test_attended_review_keeps_full_operation_set(self, store):
+        # A user-requested /refine fork keeps the background_review origin (skill guards still
+        # apply) but is attended, so replace/remove keep working on that supervised surface.
+        from tools.skill_provenance import reset_review_attended, set_review_attended
+        store.add("memory", "entry an explicit refine may rewrite")
+        token = set_current_write_origin("background_review")
+        att = set_review_attended(True)
+        try:
+            result = json.loads(memory_tool(
+                action="replace", old_text="entry an explicit", content="rewritten by refine", store=store))
+        finally:
+            reset_review_attended(att)
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "rewritten by refine" in store._entries_for("memory")

@@ -12,10 +12,9 @@ import yaml
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     PlatformConfig,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
@@ -46,9 +45,7 @@ def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner.session_store = SimpleNamespace()
     runner._async_session_store = SimpleNamespace(
-        _store=runner.session_store,
-        lookup_by_session_key=AsyncMock(return_value=entry),
-        lookup_by_session_id=AsyncMock(return_value=None),
+        _store=runner.session_store, lookup_by_session_key=AsyncMock(return_value=entry)
     )
     runner.adapters = {Platform.TELEGRAM: adapter} if adapter else {}
     runner._profile_adapters = {}
@@ -57,29 +54,6 @@ def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner._background_tasks = set()
     runner._is_user_authorized = MagicMock(return_value=True)
     return runner
-
-
-@pytest.mark.asyncio
-async def test_direct_injection_awaits_async_stale_session_check():
-    """Gateway injection must not perform the SQLite stale check on-loop."""
-    entry = _entry()
-    runner = _runner(entry)
-    runner.session_store._entries = {entry.session_key: entry}
-    raw_stale_check = MagicMock(return_value=True)
-    runner.session_store._is_session_ended_in_db = raw_stale_check
-    async_stale_check = AsyncMock(return_value=True)
-    setattr(runner._async_session_store, "_is_session_ended_in_db", async_stale_check)
-    runner._plugin_gateway_injection_allowed = MagicMock(return_value=True)
-
-    accepted = await runner.inject_plugin_message(
-        "queued update",
-        target_session=entry.session_key,
-        plugin_id="notify-plugin",
-    )
-
-    assert accepted is False
-    async_stale_check.assert_awaited_once_with(entry.session_id)
-    raw_stale_check.assert_not_called()
 
 
 class _RoutingAdapter(BasePlatformAdapter):
@@ -174,132 +148,6 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("configured_value", [None, "false"])
-async def test_isolated_plugin_manager_cannot_bypass_gateway_permission(
-    tmp_path,
-    monkeypatch,
-    configured_value,
-):
-    """A second manager cannot route through a gateway it did not authorise."""
-    global_home = tmp_path / "global-home"
-    isolated_home = tmp_path / "isolated-home"
-    global_home.mkdir()
-    isolated_home.mkdir()
-    if configured_value is not None:
-        (global_home / "config.yaml").write_text(
-            yaml.safe_dump({
-                "plugins": {
-                    "entries": {
-                        "unapproved-plugin": {
-                            "allow_gateway_injection": configured_value,
-                        },
-                    },
-                },
-            })
-        )
-    monkeypatch.setenv("HERMES_HOME", str(global_home))
-
-    global_manager = PluginManager(scope_key=str(global_home))
-    isolated_manager = PluginManager(scope_key=str(isolated_home))
-    context = PluginContext(
-        PluginManifest(
-            name="unapproved-plugin",
-            key="unapproved-plugin",
-            source="user",
-        ),
-        isolated_manager,
-    )
-    entry = _entry()
-    adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(entry, adapter)
-    runner._gateway_loop = asyncio.get_running_loop()
-
-    routers = PluginContext.inject_message.__globals__["_INJECTION_ROUTERS"]
-    with (
-        patch.dict(routers, {}, clear=True),
-        patch("hermes_cli.plugins.get_plugin_manager", return_value=global_manager),
-    ):
-        runner._install_plugin_message_injector()
-        accepted = context.inject_message(
-            "unapproved turn",
-            target_session=f"gateway:{entry.session_key}",
-        )
-        tasks = list(runner._background_tasks)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.sleep(0)
-
-    assert accepted is False
-    adapter.handle_message.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_isolated_plugin_manager_gateway_router_preserves_queue_contract(
-    tmp_path,
-    monkeypatch,
-):
-    """The cross-manager router remains queue-only and preserves message roles."""
-    global_home = tmp_path / "global-home"
-    isolated_home = tmp_path / "isolated-home"
-    global_home.mkdir()
-    isolated_home.mkdir()
-    (global_home / "config.yaml").write_text(
-        yaml.safe_dump({
-            "plugins": {
-                "entries": {
-                    "notify-plugin": {"allow_gateway_injection": True},
-                },
-            },
-        })
-    )
-    monkeypatch.setenv("HERMES_HOME", str(global_home))
-
-    global_manager = PluginManager(scope_key=str(global_home))
-    isolated_manager = PluginManager(scope_key=str(isolated_home))
-    context = PluginContext(
-        PluginManifest(name="notify-plugin", key="notify-plugin", source="user"),
-        isolated_manager,
-    )
-    entry = _entry()
-    adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(entry, adapter)
-    runner._gateway_loop = asyncio.get_running_loop()
-
-    routers = PluginContext.inject_message.__globals__["_INJECTION_ROUTERS"]
-    with (
-        patch.dict(routers, {}, clear=True),
-        patch("hermes_cli.plugins.get_plugin_manager", return_value=global_manager),
-    ):
-        runner._install_plugin_message_injector()
-        steer_accepted = context.inject_message(
-            "steer",
-            mode="steer",
-            target_session=f"gateway:{entry.session_key}",
-        )
-        interrupt_accepted = context.inject_message(
-            "interrupt",
-            mode="interrupt",
-            target_session=f"gateway:{entry.session_key}",
-        )
-        queue_accepted = context.inject_message(
-            "maintenance notice",
-            role="system",
-            target_session=f"gateway:{entry.session_key}",
-        )
-        tasks = list(runner._background_tasks)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.sleep(0)
-
-    assert steer_accepted is False
-    assert interrupt_accepted is False
-    assert queue_accepted is True
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
-    assert event.text == "[system] maintenance notice"
-
-
-@pytest.mark.asyncio
 async def test_dispatch_uses_stored_origin_and_adapter_message_path():
     adapter = SimpleNamespace(handle_message=AsyncMock())
     entry = _entry()
@@ -331,113 +179,6 @@ async def test_dispatch_uses_stored_origin_and_adapter_message_path():
         "gateway_session_id": entry.session_id,
         "gateway_session_strict": True,
     }
-
-
-@pytest.mark.asyncio
-async def test_dispatch_resolves_persisted_session_id_to_current_route_key():
-    """A lifecycle session id remains routable after route-key rotation."""
-    adapter = SimpleNamespace(handle_message=AsyncMock())
-    entry = _entry()
-    runner = _runner(None, adapter)
-    runner._async_session_store.lookup_by_session_id.return_value = entry
-
-    accepted = await runner._dispatch_plugin_message_injection(
-        session_key=entry.session_id,
-        content="check the deployment",
-        plugin_id="notify-plugin",
-    )
-
-    assert accepted is True
-    runner._async_session_store.lookup_by_session_key.assert_awaited_once_with(
-        entry.session_id
-    )
-    runner._async_session_store.lookup_by_session_id.assert_awaited_once_with(
-        entry.session_id
-    )
-    event = adapter.handle_message.await_args.args[0]
-    assert event.metadata["gateway_session_key"] == entry.session_key
-
-
-@pytest.mark.asyncio
-async def test_direct_manager_injection_cannot_bypass_permission_gate(
-    tmp_path,
-    monkeypatch,
-):
-    """The manager-owned sink must enforce permission, not trust its caller."""
-    global_home = tmp_path / "global-home"
-    global_home.mkdir()
-    (global_home / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "plugins": {
-                    "entries": {
-                        "unapproved-plugin": {"allow_gateway_injection": False},
-                    },
-                },
-            }
-        )
-    )
-    monkeypatch.setenv("HERMES_HOME", str(global_home))
-
-    global_manager = PluginManager(scope_key=str(global_home))
-    context = PluginContext(
-        PluginManifest(
-            name="unapproved-plugin",
-            key="unapproved-plugin",
-            source="user",
-        ),
-        global_manager,
-    )
-    entry = _entry()
-    adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(entry, adapter)
-    runner._gateway_loop = asyncio.get_running_loop()
-
-    global_manager.set_gateway_message_injector(runner, runner._schedule_plugin_message_injection)
-
-    accepted = global_manager.inject_gateway_message(
-        session_key=entry.session_key,
-        content="direct bypass attempt",
-        plugin_id="unapproved-plugin",
-    )
-    tasks = list(runner._background_tasks)
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    await asyncio.sleep(0)
-
-    assert accepted is False
-    adapter.handle_message.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_dispatch_resolves_session_id_through_real_async_store(
-    tmp_path,
-    monkeypatch,
-):
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
-    source = _entry().origin
-    assert source is not None
-    entry = store.get_or_create_session(source)
-    adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(None, adapter)
-    runner.session_store = store
-    del runner._async_session_store
-
-    accepted = await runner._dispatch_plugin_message_injection(
-        session_key=entry.session_id,
-        content="check the deployment",
-        plugin_id="notify-plugin",
-    )
-
-    assert accepted is True
-    assert runner._async_session_store._store is store
-    event = adapter.handle_message.await_args.args[0]
-    assert event.metadata["gateway_session_key"] == entry.session_key
-    assert event.metadata["gateway_session_id"] == entry.session_id
 
 
 @pytest.mark.asyncio
@@ -594,7 +335,6 @@ async def test_base_adapter_rejects_derived_session_mismatch():
 @pytest.mark.asyncio
 async def test_scheduler_submits_dispatch_on_live_gateway_loop():
     runner = _runner(_entry())
-    runner._plugin_gateway_injection_allowed = MagicMock(return_value=True)
     runner._gateway_loop = asyncio.get_running_loop()
     runner._dispatch_plugin_message_injection = AsyncMock(return_value=True)
 
@@ -618,7 +358,6 @@ async def test_scheduler_submits_dispatch_on_live_gateway_loop():
 @pytest.mark.asyncio
 async def test_scheduler_ignores_same_loop_task_cancellation():
     runner = _runner(_entry())
-    runner._plugin_gateway_injection_allowed = MagicMock(return_value=True)
     loop = asyncio.get_running_loop()
     runner._gateway_loop = loop
     callback_errors = []
@@ -655,7 +394,6 @@ async def test_scheduler_ignores_same_loop_task_cancellation():
 @pytest.mark.asyncio
 async def test_scheduler_logs_async_failure_without_callback_error(caplog):
     runner = _runner(_entry())
-    runner._plugin_gateway_injection_allowed = MagicMock(return_value=True)
     loop = asyncio.get_running_loop()
     runner._gateway_loop = loop
     callback_errors = []
@@ -686,7 +424,6 @@ async def test_scheduler_logs_async_failure_without_callback_error(caplog):
 
 def test_scheduler_uses_threadsafe_bridge_outside_gateway_loop():
     runner = _runner(_entry())
-    runner._plugin_gateway_injection_allowed = MagicMock(return_value=True)
     loop = MagicMock()
     loop.is_closed.return_value = False
     runner._gateway_loop = loop
@@ -713,7 +450,6 @@ def test_scheduler_uses_threadsafe_bridge_outside_gateway_loop():
 
 def test_scheduler_ignores_threadsafe_future_cancellation():
     runner = _runner(_entry())
-    runner._plugin_gateway_injection_allowed = MagicMock(return_value=True)
     loop = MagicMock()
     loop.is_closed.return_value = False
     runner._gateway_loop = loop

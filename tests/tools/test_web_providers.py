@@ -13,7 +13,6 @@ from typing import Any, Dict, List
 
 import pytest
 
-from tests.content_trust_helpers import loads_fenced_json
 from tests.tools.conftest import register_all_web_providers
 
 
@@ -374,7 +373,7 @@ class TestDispatchersTriggerPluginDiscovery:
             # Sanity: registry IS empty before the tool call.
             assert web_search_registry.get_provider("firecrawl") is None
 
-            result = loads_fenced_json(asyncio.run(
+            result = json.loads(asyncio.run(
                 web_tools.web_extract_tool(
                     ["https://example.com"],
                 )
@@ -441,7 +440,7 @@ class TestDispatchersTriggerPluginDiscovery:
             )
             assert web_search_registry.get_provider("brave-free") is None
 
-            result = loads_fenced_json(web_tools.web_search_tool("hello", limit=1))
+            result = json.loads(web_tools.web_search_tool("hello", limit=1))
             assert mock_hook.called, (
                 "web_search_tool must call _ensure_web_plugins_loaded() "
                 "before resolving the registry"
@@ -522,7 +521,7 @@ class TestDisabledPluginDiagnostic:
             self._patch_manager(monkeypatch, {
                 "web/firecrawl": self._FakeLoaded(False, "disabled via config"),
             })
-            result = loads_fenced_json(web_tools.web_search_tool("hello", limit=1))
+            result = json.loads(web_tools.web_search_tool("hello", limit=1))
             err = result["error"]
             assert "disabled" in err
             assert "web/firecrawl" in err

@@ -146,7 +146,7 @@ class SessionPersistenceMixin:
         into the ROOT store until the stale-route self-heal drops a live conversation.
 
         Background work runs unscoped while operating on every profile's keys out of the single process-wide
-        ``_entries`` dict — ``_session_expiry_watcher`` is the clearest case — so it reads and writes the
+        ``_entries`` dict — ``_session_housekeeping_watcher`` is the clearest case — so it reads and writes the
         ROOT store for rows that actually live under ``profiles/<name>/state.db``. The two writers then
         drift apart on the same logical session until the routing index disagrees with the row and the
         #54878 self-heal drops a live conversation (#66887).

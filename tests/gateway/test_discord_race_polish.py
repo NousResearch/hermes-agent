@@ -64,34 +64,15 @@ async def test_concurrent_joins_do_not_double_connect():
     channel.connect = lambda: slow_connect(channel)
 
     from plugins.platforms.discord import adapter as discord_mod
-    # Track scheduled coros so we can await them cleanly after the join
-    # calls return. The fake ensure_future must close the passed coroutine
-    # before returning an inert completed task — otherwise the adapter's
-    # _voice_listen_loop / _voice_timeout_handler coroutines are left
-    # unawaited and surface as RuntimeWarnings /
-    # PytestUnraisableExceptionWarnings when warnings are errors.
-    scheduled_tasks: list[asyncio.Future] = []
-
-    def _ensure_future(coro):
-        coro.close()
-        task = asyncio.create_task(asyncio.sleep(0))
-        scheduled_tasks.append(task)
-        return task
-
     with patch.object(discord_mod, "VoiceReceiver",
                       MagicMock(return_value=MagicMock(start=lambda: None))):
         with patch.object(discord_mod.asyncio, "ensure_future",
-                          _ensure_future):
+                          lambda _c: asyncio.create_task(asyncio.sleep(0))):
             t1 = asyncio.create_task(adapter.join_voice_channel(channel))
             t2 = asyncio.create_task(adapter.join_voice_channel(channel))
             await asyncio.sleep(0.05)
             release.set()
             r1, r2 = await asyncio.gather(t1, t2)
-            # Drain the inert placeholder tasks so nothing is left pending.
-            # The adapter may cancel the timeout placeholder via
-            # _reset_voice_timeout, so tolerate CancelledError.
-            if scheduled_tasks:
-                await asyncio.gather(*scheduled_tasks, return_exceptions=True)
 
     assert connect_count[0] == 1, (
         f"expected 1 channel.connect() call, got {connect_count[0]} — "

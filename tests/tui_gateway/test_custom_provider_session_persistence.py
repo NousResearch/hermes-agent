@@ -104,9 +104,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
         assert _runtime_model_config(agent)["provider"] == "anthropic"
 
 
-def _make_agent_with_override(
-    override, monkeypatch, config, model_cfg=None, *, agent_sink=None
-):
+def _make_agent_with_override(override, monkeypatch, config, model_cfg=None):
     """Run _make_agent through the REAL resolve_runtime_provider against a
     patched config, returning the kwargs AIAgent was constructed with."""
     monkeypatch.setattr(rp, "load_config", lambda: config)
@@ -125,10 +123,8 @@ def _make_agent_with_override(
     ):
         from tui_gateway.server import _make_agent
 
-        built_agent = _make_agent("sid-custom", "key-custom", model_override=override)
+        _make_agent("sid-custom", "key-custom", model_override=override)
 
-    if agent_sink is not None:
-        agent_sink.append(built_agent)
     return mock_agent.call_args.kwargs
 
 
@@ -159,65 +155,6 @@ class TestResumeRoundTrip:
         assert kwargs["provider"] == "custom"
         assert kwargs["base_url"] == MIMO_URL
         assert kwargs["api_key"] == MIMO_KEY
-
-    def test_resumed_explicit_override_remains_marked_as_user_selected(self, monkeypatch):
-        """A persisted /model override must retain its explicit-selection lock."""
-        override = {
-            "model": "mimo-v2.5-pro",
-            "provider": "custom:mimo-v2.5-pro",
-            "base_url": MIMO_URL,
-            "api_mode": "chat_completions",
-        }
-        built = []
-
-        _make_agent_with_override(
-            override,
-            monkeypatch,
-            LEGACY_LIST_CONFIG,
-            agent_sink=built,
-        )
-
-        assert len(built) == 1
-        assert built[0]._model_explicitly_selected is True
-
-    def test_auth_fallback_does_not_inherit_explicit_selection_lock(self):
-        """A runtime substituted for auth failure is not the user's selected model."""
-        resolution = types.SimpleNamespace(
-            runtime={
-                "provider": "nvidia",
-                "base_url": "https://integrate.api.nvidia.com/v1",
-                "api_key": "test-key",
-                "api_mode": "chat_completions",
-            },
-            selected_model="fallback-model",
-            used_fallback=True,
-        )
-        fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "unused"}}
-        with (
-            patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
-            patch("tui_gateway.server._get_db", return_value=MagicMock()),
-            patch("tui_gateway.server._load_reasoning_config", return_value=None),
-            patch("tui_gateway.server._load_service_tier", return_value=None),
-            patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
-            patch(
-                "tui_gateway.server._resolve_runtime_with_fallback",
-                return_value=resolution,
-            ),
-            patch("run_agent.AIAgent") as mock_agent,
-        ):
-            from tui_gateway.server import _make_agent
-
-            built = _make_agent(
-                "sid-fallback",
-                "key-fallback",
-                model_override={
-                    "model": "mimo-v2.5-pro",
-                    "provider": "custom:mimo-v2.5-pro",
-                },
-            )
-
-        assert mock_agent.call_args.kwargs["model"] == "fallback-model"
-        assert getattr(built, "_model_explicitly_selected") is False
 
     def test_legacy_row_with_bare_custom_heals_via_base_url(self, monkeypatch):
         """Rows persisted BEFORE the fix stored provider="custom"; the

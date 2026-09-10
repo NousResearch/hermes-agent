@@ -43,6 +43,7 @@ _FULLWIDTH_PIPE = "\uff5c"
 
 _TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
+_VIDEO_PART_TYPES = {"video", "video_url", "input_video"}
 _OUTPUT_TEXT_TYPES = {"output_text", "text"}
 _ASSISTANT_IMAGE_PLACEHOLDER = "[Assistant image omitted during replay]"
 _INCOMPLETE_STATUSES = {"queued", "in_progress", "incomplete"}
@@ -181,7 +182,13 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
 def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> List[Dict[str, Any]]:
     """Chat-style multimodal content → Responses API input parts ([] if not a list). Text is
     ``input_text`` (user) / ``output_text`` (assistant) — the API rejects the wrong type per role;
-    ``input_image`` is only legal on user messages (see :func:`_input_image_part`)."""
+    ``input_image`` is only legal on user messages (see :func:`_input_image_part`). Unsupported
+    video parts fail closed instead of silently turning a video request into a text-only request."""
+    for part in _as_list(content):
+        if isinstance(part, dict) and (ptype := _part_type(part)) in _VIDEO_PART_TYPES:
+            raise ValueError(
+                f"Codex Responses does not support {ptype} input; use a video-capable provider."
+            )
     text_type = _text_type_for(role)
     converted: List[Dict[str, Any]] = []
     for kind, payload in _iter_content_parts(_as_list(content)):
@@ -541,16 +548,10 @@ def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
     )
 
 
-def estimate_native_responses_preflight_tokens(
-    agent: Any, messages: List[Dict[str, Any]], *, system_prompt: str = "", tools: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[int]:
-    """Estimate tokens for the checkpoint-pruned Responses payload (the full transcript overstates a natively compacted
-    session and fires local compression needlessly). None when native compaction is not proven eligible or conversion fails.
-
-    Automatic preflight previously counted the full durable transcript. On a natively compacted Codex
-    session that overstates the wire by several times and fires local compression against history the main
-    request will never send (#96155).
-    """
+def _native_responses_replay_items(
+    agent: Any, messages: List[Dict[str, Any]]
+) -> Optional[List[Dict[str, Any]]]:
+    """Build the native-compaction-eligible wire items, or ``None`` when ineligible."""
     if getattr(agent, "api_mode", None) != "codex_responses" or not isinstance(messages, list):
         return None
     route = classify_responses_route(agent)._asdict()
@@ -565,7 +566,37 @@ def estimate_native_responses_preflight_tokens(
             native_compaction_eligible=True,
         )
     except Exception:
-        logger.debug("native Responses preflight conversion failed; falling back to generic estimate", exc_info=True)
+        logger.debug(
+            "native Responses replay conversion failed; using the generic fallback",
+            exc_info=True,
+        )
+        return None
+    return items
+
+
+def has_replayable_native_compaction_checkpoint(
+    agent: Any, messages: List[Dict[str, Any]]
+) -> bool:
+    """Whether the current route would replay a persisted native checkpoint."""
+    items = _native_responses_replay_items(agent, messages)
+    if items is None:
+        return False
+    from agent.native_compaction import has_compaction_checkpoint
+    return has_compaction_checkpoint(items)
+
+
+def estimate_native_responses_preflight_tokens(
+    agent: Any, messages: List[Dict[str, Any]], *, system_prompt: str = "", tools: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[int]:
+    """Estimate tokens for the checkpoint-pruned Responses payload (the full transcript overstates a natively compacted
+    session and fires local compression needlessly). None when native compaction is not proven eligible or conversion fails.
+
+    Automatic preflight previously counted the full durable transcript. On a natively compacted Codex
+    session that overstates the wire by several times and fires local compression against history the main
+    request will never send (#96155).
+    """
+    items = _native_responses_replay_items(agent, messages)
+    if items is None:
         return None
     from agent.model_metadata import estimate_request_tokens_rough
     return estimate_request_tokens_rough(items, system_prompt=system_prompt or "", tools=tools)

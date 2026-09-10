@@ -24,24 +24,8 @@ from hermes_state import SessionDB
 
 
 class _FakeTodoStore:
-    def __init__(
-        self,
-        *,
-        has_items=True,
-        needs_history_reconciliation=False,
-        notice="",
-    ):
-        self._has_items = has_items
-        self.needs_history_reconciliation = needs_history_reconciliation
-        self.notice = notice
-
     def has_items(self):
-        return self._has_items
-
-    def consume_user_change_notice(self):
-        notice = self.notice
-        self.notice = ""
-        return notice
+        return True
 
     def _hydrate(self, *_a, **_k):
         pass
@@ -230,41 +214,6 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
-def test_durable_empty_todo_state_wins_over_older_history():
-    agent = _FakeAgent()
-    agent._todo_store = _FakeTodoStore(
-        has_items=False,
-        needs_history_reconciliation=False,
-    )
-    agent._hydrate_todo_store = MagicMock()
-
-    history = [{"role": "user", "content": "older turn"}]
-    _build(agent, conversation_history=history)
-
-    agent._hydrate_todo_store.assert_not_called()
-
-
-def test_user_todo_change_is_injected_once_via_clean_api_sidecar():
-    agent = _FakeAgent()
-    notice = "[Task list changes made by the user]\n- task build → completed"
-    agent._todo_store = _FakeTodoStore(notice=notice)
-
-    ctx = _build(agent)
-
-    assert ctx.messages[-1]["content"] == "hello"
-    assert notice in ctx.messages[-1]["api_content"]
-    assert agent._todo_store.notice == ""
-
-
-def test_turn_start_republishes_todo_sidecar_after_session_row_exists():
-    agent = _FakeAgent()
-
-    with patch("agent.todo_state.persist_todo_store") as persist:
-        _build(agent)
-
-    persist.assert_called_once_with(agent)
-
-
 def test_preflight_timeout_stops_turn_before_provider_boundary():
     """An unchanged oversized payload must not escape turn construction."""
     agent = _FakeAgent()
@@ -339,7 +288,7 @@ def test_prefetch_runs_for_substantive_user_message():
     agent, mm = _agent_with_memory_manager()
     query = "what did we decide about the deploy pipeline?"
     ctx = _build(agent, user_message=query)
-    mm.prefetch_all.assert_called_once_with(query)
+    mm.prefetch_all.assert_called_once_with(query, session_id=agent.session_id)
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
 
 

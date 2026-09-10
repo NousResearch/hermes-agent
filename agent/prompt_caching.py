@@ -286,8 +286,6 @@ def apply_anthropic_cache_control(
     accumulate past 4 markers. Only messages that already carry a marker pay the copy cost — a shallow
     top-level copy suffices because :func:`strip_anthropic_cache_control` is copy-on-write on content parts
     — and the rest of the copy-on-write contract is unchanged (#90971).
-        Shallow copy of the message list with selective deep copies of only
-        the messages that receive cache-control markers.
     """
     if not api_messages:
         return api_messages

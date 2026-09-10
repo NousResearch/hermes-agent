@@ -857,6 +857,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # migration idempotent.
     cols = _column_names(conn, "tasks")
 
+    # KENSEI COMBINE: last_ping_event_id (independent ping cursor) added after
+    # v1 — legacy DBs get it via ADD COLUMN so notifier pings checkpoint cleanly.
+    if "last_ping_event_id" not in _column_names(conn, "kanban_notify_subs"):
+        _add_column_if_missing(conn, "kanban_notify_subs", "last_ping_event_id",
+                               "INTEGER NOT NULL DEFAULT 0")
+
     # Legacy renames via ADD-then-copy rather than ``RENAME COLUMN``: very old
     # DBs may lack the legacy column entirely (RENAME raises "no such column"),
     # and RENAME reparses the whole schema, failing if views/triggers reference
@@ -991,7 +997,7 @@ def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:
     write_txn serializes against concurrent dispatchers, and the per-row
     UPDATE uses ``current_run_id IS NULL`` as a CAS guard so a racing claim
     can't produce an orphaned row."""
-    with write_txn(conn):
+    with write_txn(conn, internal=True):
         inflight = conn.execute(
             "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
             "       max_runtime_seconds, last_heartbeat_at, started_at "
@@ -1215,7 +1221,7 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
+def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False, internal: bool = False):
     """IMMEDIATE write transaction; a claim CAS inside is atomic — at most one
     concurrent writer succeeds.
 
@@ -1232,7 +1238,12 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     (``complete_task`` & co.) must never run under an open outer transaction,
     since those side effects would fire while the outer txn can still roll back.
     """
-    _kb._assert_not_delegated_child_mutation()
+    if not internal:
+        # Schema/maintenance migrations pass internal=True: they are system-internal
+        # (idempotent backfills on connect), not user mutations, and must not be
+        # blocked by the delegate-child guard — otherwise a delegate descendant
+        # cannot even READ a board that still needs migration.
+        _kb._assert_not_delegated_child_mutation()
     nested = getattr(conn, "in_transaction", False)
     _lock_handle = None
     if not nested:

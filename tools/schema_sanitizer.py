@@ -1,7 +1,9 @@
 """Sanitize tool JSON schemas for strict LLM backends. llama.cpp's grammar converter fails on
 ``{"type": "object"}`` without ``properties``, bare-string schemas and ``type`` arrays; Anthropic
 rejects nullable ``anyOf`` at the top of ``input_schema``; Fireworks rejects ``default`` beside
-``$ref``; Codex rejects top-level combinators. Walks a deep copy and fixes only those shapes."""
+``$ref``; Codex rejects top-level combinators. Walks a deep copy and fixes only those shapes.
+Legacy boolean ``required`` flags are removed from schema positions, lifting property-level
+``true`` flags into the parent's required-name list; literal defaults/consts are not schemas."""
 
 from __future__ import annotations
 
@@ -214,6 +216,11 @@ def collapse_const_unions(schema: Any) -> Any:
 _BARE_TYPE_NAMES = frozenset({"object", "string", "number", "integer", "boolean", "array", "null"})
 # Values that are NOT schemas (recursing would treat a required name like "path" as a bare schema).
 _NON_SCHEMA_LIST_KEYS = frozenset({"required", "enum", "examples", "dependentRequired"})
+_SCHEMA_MAP_KEYS = frozenset({"properties", "$defs", "definitions", "patternProperties", "dependentSchemas"})
+_SCHEMA_CHILD_KEYS = frozenset({
+    "items", "additionalItems", "additionalProperties", "unevaluatedItems", "unevaluatedProperties",
+    "contains", "propertyNames", "not", "if", "then", "else", "anyOf", "oneOf", "allOf", "prefixItems",
+})
 
 
 def _normalize_type_array(value: list, out: dict) -> None:
@@ -274,21 +281,36 @@ def _sanitize_node(node: Any, path: str) -> Any:
         # anomalyco/opencode#31877.
         if key == "type" and isinstance(value, list):
             _normalize_type_array(value, out)
-        elif key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+        elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
             renames = prop_renames if key == "properties" else {}
             out[key] = {
                 renames.get(k, k): _sanitize_node(v, f"{path}.{key}.{renames.get(k, k)}")
                 for k, v in value.items()}
+        elif key == "dependencies" and isinstance(value, dict):
+            out[key] = {k: _sanitize_node(v, f"{path}.{key}.{k}") if isinstance(v, dict)
+                        else copy.deepcopy(v) for k, v in value.items()}
         elif key in {"items", "additionalProperties"}:
             # Bool ``additionalProperties`` is valid; bool ``items`` is non-standard but preserved.
             out[key] = value if isinstance(value, bool) else _sanitize_node(value, f"{path}.{key}")
         elif key in _NON_SCHEMA_LIST_KEYS:
+            if key == "required" and isinstance(value, bool):
+                continue  # Legacy property flags are lifted by the parent below.
             if key == "required" and prop_renames and isinstance(value, list):
                 out[key] = [prop_renames.get(r, r) if isinstance(r, str) else r for r in value]
             else:
                 out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
-        else:  # anyOf/oneOf/allOf and any other nested schema recurse (lists index the path)
-            out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
+        elif key in _SCHEMA_CHILD_KEYS:
+            out[key] = _sanitize_node(value, f"{path}.{key}")
+        else:
+            # Defaults, consts and extension metadata are literal data, not schemas.
+            out[key] = copy.deepcopy(value)
+    if isinstance(props_in, dict):
+        lifted = [prop_renames.get(k, k) for k, v in props_in.items()
+                  if isinstance(v, dict) and v.get("required") is True]
+        if lifted:
+            required = out.get("required", [])
+            required = required if isinstance(required, list) else []
+            out["required"] = required + [key for key in lifted if key not in required]
     if out.get("type") == "object":
         if not isinstance(out.get("properties"), dict):
             out["properties"] = {}

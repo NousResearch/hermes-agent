@@ -21,8 +21,11 @@ from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from gateway.platforms.base import (BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-                                    cache_document_from_bytes, cache_image_from_bytes)
+from gateway.platforms.base import (
+    BasePlatformAdapter, SendResult,
+    cache_document_from_bytes, cache_image_from_bytes,
+)
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
@@ -141,7 +144,18 @@ def _open_smtp(host: str, port: int, security: str, ctx: ssl.SSLContext, smtp_cl
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID: 163/NetEase require it after LOGIN (else every UID command
-    returns ``BYE Unsafe Login``); other servers may reject it, so failures are swallowed."""
+    returns ``BYE Unsafe Login``); other servers may reject it, so failures are swallowed.
+
+    Sent only when the server advertises ``ID`` (RFC 2971 requires advertising it): a server
+    without the extension can answer an untagged ``* BYE Unknown command.`` and close the
+    connection, which imaplib cannot surface here — the failure appears one command later
+    as a misleading SELECT error and the adapter retries forever (Purelymail, #39856).
+    ``imap.capabilities`` is populated by imaplib at connect, so the check is free."""
+    if "ID" not in imap.capabilities:
+        logger.debug(
+            "[Email] Server does not advertise IMAP ID capability; skipping ID"
+        )
+        return
     try:
         try:
             from hermes_cli import __version__ as _hermes_version

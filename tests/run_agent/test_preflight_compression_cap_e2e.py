@@ -102,6 +102,9 @@ def test_preflight_runs_fourth_compaction_pass_at_cap_six(monkeypatch, tmp_path)
     # makes material (~10% > the 5% progress floor) headway.
     compressor = agent.context_compressor
     compressor.threshold_tokens = 50_000
+    # This is the attempt-cap invariant, not first-request deferral: the provider
+    # is already known to omit usage, so its heuristic fallback may compact.
+    compressor.note_usage_less_response()
 
     estimate_state = {"tokens": 1_000_000.0, "calls": 0}
 

@@ -14,7 +14,9 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import _sanitize_messages_surrogates
-from agent.model_metadata import anchored_context_tokens
+# KENSEI CUSTOM: anchored_context_tokens re-homed to agent.usage_anchor by upstream ead7e91d
+# (fork's model_metadata copy still carries the def, but the merged tree's canonical home is usage_anchor).
+from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
 
@@ -245,6 +247,9 @@ def assemble_api_request(
     # Usage-anchored override: real prompt_tokens (incl. system + tool schemas) +
     # delta estimate replaces the whole-history heuristic when the anchor is fresh.
     _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    # KENSEI CUSTOM: flag whether the pressure figure came from the real usage anchor —
+    # read by turn_preflight_gate.py / turn_context_compaction.py to skip preflight deferral.
+    agent._request_pressure_anchored = _anchored_pressure is not None
     if _anchored_pressure is not None:
         request_pressure_tokens = _anchored_pressure
     else:

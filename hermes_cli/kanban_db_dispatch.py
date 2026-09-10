@@ -5089,10 +5089,25 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
 
+    # KENSEI COMBINE: the orchestrator's own HERMES_KANBAN_TASK (a worker spawning
+    # sub-workers) must not make the dispatcher child look like a delegate
+    # descendant — delegated_child_subprocess_env scrubs on env-TASK presence.
+    # Strip dispatcher identity from the base so the scrub never fires here; the
+    # child's scope is granted explicitly below.
+    import os as _os
+    _base_env = {k: v for k, v in _os.environ.items() if k not in (
+        "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
+        "HERMES_KANBAN_WORKSPACE", "HERMES_DELEGATED_CHILD_CONTEXT")}
     env = build_subprocess_env(
+        base=_base_env,
         scrub_secrets=is_multiplex_active(),
         inherit_profile_home=True,
     )
+    # delegated_child_subprocess_env consults the spawner's os.environ; with a
+    # worker-parent that carries HERMES_KANBAN_TASK it mislabels this dispatcher
+    # child as a delegate descendant and injects the marker. Undo it: the
+    # dispatcher child's scope is granted explicitly below.
+    env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP

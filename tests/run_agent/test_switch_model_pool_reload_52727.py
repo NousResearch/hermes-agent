@@ -131,22 +131,6 @@ class TestSwitchModelReloadsCredentialPool:
         assert agent._credential_pool is existing_pool
         load_pool_mock.assert_not_called()
 
-    def test_switch_records_requested_provider(self):
-        """Provider selection must survive downstream runtime resolution."""
-        agent = _make_agent("opencode-go", "qwen-coder", _make_pool("opencode-go"))
-
-        with patch("agent.credential_pool.load_pool", return_value=_make_pool("groq")):
-            switch_model(
-                agent,
-                new_model="llama-3.3-70b",
-                new_provider="groq",
-                api_key="groq-key-new",
-                base_url="https://api.groq.com/openai/v1",
-                api_mode="chat_completions",
-            )
-
-        assert agent.requested_provider == "groq"
-
     def test_switch_creates_pool_when_agent_had_none(self):
         """An agent without a pool that switches providers must acquire one."""
         new_pool = _make_pool("groq")

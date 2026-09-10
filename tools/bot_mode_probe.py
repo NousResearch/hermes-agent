@@ -3,8 +3,9 @@
 When any profile carries ``ui_meta['hermes-bots']`` in profile.yaml (Bot-Mode-managed),
 a bot's canonical "Bot Chat" session — ONLY that session (agent/system_prompt.py enforces
 the ``BOT_CHAT_TITLE`` gate) — gets a "Messaging other agents" section. Silent (``""``)
-when no profile is managed, when SOUL.md already carries the heading (legacy plugin text
-must never double up), or on any error. Cached per (process, home) so compression rebuilds
+when no profile is managed or on any error. Older desktop builds appended a frozen copy of
+the section to SOUL.md; ``strip_legacy_protocol`` drops it at load time so the live roster
+here is the only copy any session sees. Cached per (process, home) so compression rebuilds
 produce identical bytes. Toggle: ``agent.bot_mode_protocol``. Also hosts path/roster
 helpers shared by ``bot_mode_dm`` and ``bot_relay``.
 """
@@ -12,10 +13,18 @@ helpers shared by ``bot_mode_dm`` and ``bot_relay``.
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
+# The legacy section through the next H2 heading (or EOF), plus the blank lines before it.
+_LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.S)
+
+
+def strip_legacy_protocol(text: str) -> str:
+    """SOUL text without the plugin-era "## Messaging other agents" section (idempotent)."""
+    return _LEGACY_PROTOCOL_RE.sub("\n", text).strip() + "\n" if _PROTOCOL_HEADING in text else text
 
 # The only session title that receives the protocol section. Must match the
 # desktop plugin's createCanonicalChat title and the `-c "Bot Chat"` resume target.
@@ -105,11 +114,6 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
     return _swallow(lambda: _any_managed(_hermes_root(_resolve_home(home))), False)
 
 
-def _soul_has_protocol(profile_dir: Path) -> bool:
-    soul = profile_dir / "SOUL.md"
-    return _swallow(lambda: soul.is_file() and _PROTOCOL_HEADING in soul.read_text(encoding="utf-8", errors="replace"), False)
-
-
 def _role_line(*parts: str) -> str:
     """'title — description' from the non-empty parts (either may be absent)."""
     return " — ".join(p for p in parts if p)
@@ -190,9 +194,6 @@ def _build_section(home: Path) -> str:
     root = _hermes_root(home)
     me = _profile_name(home)
     if not _any_managed(root):
-        return ""
-    # An older plugin build may have appended the protocol to SOUL.md — never double it.
-    if _soul_has_protocol(home if me == "default" else root / "profiles" / me):
         return ""
 
     roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
@@ -333,13 +334,11 @@ def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike |
 
 
 def stored_bot_chat_prompt_needs_upgrade(stored_prompt: str, home: str | os.PathLike | None = None) -> bool:
-    """True when a Bot Chat session's stored prompt PREDATES the epoch mechanism. Legacy
-    prompts carry neither section nor stamp, so the staleness check (stamped only) would strand
-    them forever. The caller must only ask for sessions titled "Bot Chat"; we rebuild only when
-    the probe would actually emit a section — a SOUL.md carrying the legacy protocol yields an
-    empty section, and rebuilding would mint another unstamped prompt and loop. Fails closed."""
-    text = stored_prompt or ""
-    if _EPOCH_PREFIX in text or _PROTOCOL_HEADING in text:
+    """True when a Bot Chat session's stored prompt PREDATES the epoch mechanism (no stamp —
+    including SOUL-era prompts whose frozen roster rode in from SOUL.md). The caller must only
+    ask for sessions titled "Bot Chat"; we rebuild only when the probe would actually emit a
+    section, and every rebuilt prompt is stamped so this fires once. Fails closed."""
+    if _EPOCH_PREFIX in (stored_prompt or ""):
         return False
     return _swallow(lambda: bool(get_bot_mode_protocol_section(home)), False)
 

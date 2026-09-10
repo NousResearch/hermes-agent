@@ -143,10 +143,11 @@ def _cancel_silent_request(
 
     worker = threading.Thread(target=_worker, daemon=True)
     worker.start()
-    assert started.wait(timeout=1), "request never entered its silent transport"
+    # Thread start-up on a loaded CI runner can exceed 1 s; the bound is only "eventually entered the transport".
+    assert started.wait(timeout=5), "request never entered its silent transport"
     cancelled_at = time.monotonic()
     cancel_event.set()
-    worker.join(timeout=1)
+    worker.join(timeout=5)
     elapsed = time.monotonic() - cancelled_at
     assert not worker.is_alive(), "explicit cancellation did not wake the silent request"
     return result["exc"], elapsed

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 from gateway.session import SessionSource
 
 
@@ -223,7 +223,8 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
 
 
 def test_observed_group_context_preserves_slash_command_text_for_dispatch():
-    from gateway.platforms.base import MessageEvent, MessageType, Platform, SessionSource
+    from gateway.platforms.base import Platform, SessionSource
+    from gateway.platforms.event import MessageEvent, MessageType
 
     adapter = _make_adapter(
         require_mention=True,

@@ -165,7 +165,7 @@ class TestTelegramExecApproval:
         )
 
         assert result.success is True
-        assert "markdownv2" in repr(sent["parse_mode"]).lower().replace("_", "")  # robust to enum, str, or MagicMock parse_mode
+        assert "MARKDOWN_V2" in repr(sent["parse_mode"])
         assert "Fix \\[issue\\]\\_1" in sent["text"]
         assert "alpha\\_beta" in sent["text"]
 
@@ -234,7 +234,7 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         edit_kwargs = query.edit_message_text.call_args[1]
-        assert "markdownv2" in repr(edit_kwargs["parse_mode"]).lower().replace("_", "")  # robust to enum, str, or MagicMock parse_mode
+        assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
         assert "Alice\\_Bob" in edit_kwargs["text"]
         assert "Approved once" in edit_kwargs["text"]
 

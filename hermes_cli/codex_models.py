@@ -39,16 +39,10 @@ DEFAULT_CODEX_MODELS: List[str] = [
 # unsupported — that was wrong; restored here. Keep it in the curated fallback so Pro users still see Spark
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
-    # Preserve Kensei's cross-variant fallback: a current 5.6 sibling proves
-    # the Codex family is available even before every sibling reaches a stale
-    # account-level catalog.
-    ("gpt-5.6-sol", ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-sol-pro", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-terra", ("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-terra-pro", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-luna", ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-luna-pro", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.5", ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
+    ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
     ("gpt-5.4-mini", ("gpt-5.3-codex",)),
     ("gpt-5.4", ("gpt-5.3-codex",)),
     # Spark surfaces whenever a compatible template is present; the backend (not Hermes)
@@ -97,6 +91,14 @@ def _add_context_variants(model_ids: List[str]) -> List[str]:
 def _finalize_codex_models(model_ids: List[str]) -> List[str]:
     """Forward-compat synthesis + large-context variant synthesis."""
     return _add_context_variants(_add_forward_compat_models(model_ids))
+
+
+def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
+    """Astra is account-gated: only the live account-scoped catalog may advertise it. A stale
+    ``models_cache.json`` or a ``config.toml`` default is a compatibility hint, not entitlement."""
+    from agent.reasoning_effort import is_astra_model
+
+    return [model for model in model_ids if not is_astra_model(model)]
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
@@ -202,6 +204,6 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
         if api_models:
             return _finalize_codex_models(api_models)
     default_model = _read_default_model(codex_home)
-    return _finalize_codex_models(_dedupe([
+    return _finalize_codex_models(_drop_undiscovered_astra(_dedupe([
         *([default_model] if default_model else []), *_read_cache_models(codex_home),
-        *DEFAULT_CODEX_MODELS]))
+        *DEFAULT_CODEX_MODELS])))

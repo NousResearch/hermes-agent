@@ -97,3 +97,31 @@ def test_install_psutil_android_compat_uses_patched_tree(tmp_path):
     assert captured["env"] == {"HERMES_TEST": "1"}
     assert REPLACEMENT in str(captured["common_py"])
 
+
+def test_install_psutil_android_script_uses_patched_tree(tmp_path, monkeypatch, capsys):
+    """Standalone installer script should reuse the same safe patched tree."""
+    archive = tmp_path / "psutil.tar.gz"
+    _build_psutil_archive(archive, malicious_symlink=False)
+
+    import scripts.install_psutil_android as installer
+
+    def fake_urlretrieve(url: str, dest: Path):
+        assert url == PSUTIL_URL
+        shutil.copyfile(archive, dest)
+        return str(dest), None
+
+    def fake_subprocess_run(cmd: list[str]):
+        src_root = Path(cmd[-1])
+        patched = (src_root / "psutil" / "_common.py").read_text(encoding="utf-8")
+        assert REPLACEMENT in patched
+        return type("RunResult", (), {"returncode": 0})()
+
+    monkeypatch.setattr(installer.sys, "argv", ["install_psutil_android.py"])
+    monkeypatch.setattr(installer, "_resolve_install_cmd", lambda *_args: ["python", "-m", "pip"])
+
+    with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
+         patch.object(installer.subprocess, "run", side_effect=fake_subprocess_run):
+        assert installer.main() == 0
+
+    captured = capsys.readouterr()
+    assert "psutil installed via Android compatibility shim" in captured.out

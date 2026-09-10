@@ -1048,33 +1048,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
 
 
 class TestGitHubTokenCheck:
-    """Tests for GitHub token / gh auth detection in doctor.
-
-    These tests mock the expensive non-GitHub probes so run_doctor()
-    completes in milliseconds instead of ~21s each under the parallel
-    per-file runner's 300s cap.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _stub_expensive_probes(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
-        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-        # Stub provider checks and network probes.
-        monkeypatch.setattr(doctor_mod, "_has_provider_env_config", lambda *a, **kw: False)
-        monkeypatch.setitem(sys.modules, "model_tools", types.SimpleNamespace(
-            check_tool_availability=lambda *a, **kw: ([], []),
-            TOOLSET_REQUIREMENTS={},
-        ))
-        from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
-        import httpx
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: SimpleNamespace(status_code=200))
+    """Tests for GitHub token / gh auth detection in doctor."""
 
     @staticmethod
     def _isolate_home(monkeypatch, home):
@@ -1768,3 +1742,19 @@ def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "Lightpanda selected but binary not found" in out
+
+
+def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
+    """`docker info` needs the /info endpoint, which socket proxies commonly block, so doctor reported
+    "daemon not running" against a working DOCKER_HOST (#72927). `docker version` (/version) is what the
+    backend itself probes with."""
+    from hermes_cli import doctor_tools
+
+    calls: list = []
+    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(doctor_tools, "_run_ok", lambda cmd, timeout, **kw: calls.append(cmd) or True)
+    monkeypatch.setattr(doctor_tools, "_require", lambda *a, **k: None)
+
+    doctor_tools._check_docker_backend("docker", False, [])
+
+    assert calls and calls[0][:2] == ["docker", "version"]

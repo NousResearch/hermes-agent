@@ -9,7 +9,7 @@ def test_format_banner_version_label_on_upstream_main():
     with patch.object(
         banner,
         "get_git_banner_state",
-        return_value={"upstream": "b2f477a3", "local": "b2f477a3", "ahead": 0, "behind": 0},
+        return_value={"upstream": "b2f477a3", "local": "b2f477a3", "ahead": 0},
     ):
         value = banner.format_banner_version_label()
 
@@ -17,34 +17,16 @@ def test_format_banner_version_label_on_upstream_main():
     assert "local" not in value
 
 
-def test_format_banner_version_label_keeps_behind_count_off_title():
-    from hermes_cli import banner
-
-    with patch.object(
-        banner,
-        "get_git_banner_state",
-        return_value={"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3, "behind": 5},
-    ):
-        value = banner.format_banner_version_label()
-
-    assert "(+3 carried commits)" in value
-    assert "behind" not in value
-
-
-def test_get_git_banner_state_reads_nous_upstream_and_head(tmp_path):
+def test_get_git_banner_state_reads_origin_and_head(tmp_path):
     from hermes_cli import banner
 
     repo_dir = tmp_path / "repo"
     (repo_dir / ".git").mkdir(parents=True)
 
     results = {
-        ("git", "remote", "get-url", "upstream"): MagicMock(
-            returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n"
-        ),
-        ("git", "rev-parse", "--short=8", "upstream/main"): MagicMock(returncode=0, stdout="b2f477a3\n"),
+        ("git", "rev-parse", "--short=8", "origin/main"): MagicMock(returncode=0, stdout="b2f477a3\n"),
         ("git", "rev-parse", "--short=8", "HEAD"): MagicMock(returncode=0, stdout="af8aad31\n"),
-        ("git", "rev-list", "--count", "upstream/main..HEAD"): MagicMock(returncode=0, stdout="3\n"),
-        ("git", "rev-list", "--count", "HEAD..upstream/main"): MagicMock(returncode=0, stdout="5\n"),
+        ("git", "rev-list", "--count", "origin/main..HEAD"): MagicMock(returncode=0, stdout="3\n"),
     }
 
     def fake_run(cmd, **kwargs):
@@ -56,42 +38,7 @@ def test_get_git_banner_state_reads_nous_upstream_and_head(tmp_path):
     with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         state = banner.get_git_banner_state(repo_dir)
 
-    assert state == {"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3, "behind": 5}
-
-
-def test_get_git_banner_state_does_not_fall_back_to_fork_ref(tmp_path):
-    from hermes_cli import banner
-
-    repo_dir = tmp_path / "repo"
-    (repo_dir / ".git").mkdir(parents=True)
-    commands = []
-    results = {
-        ("git", "remote", "get-url", "upstream"): MagicMock(
-            returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n"
-        ),
-        ("git", "rev-parse", "--short=8", "upstream/main"): MagicMock(
-            returncode=1, stdout=""
-        ),
-        ("git", "rev-parse", "--short=8", "HEAD"): MagicMock(
-            returncode=0, stdout="af8aad31\n"
-        ),
-    }
-
-    def fake_run(cmd, **kwargs):
-        commands.append(tuple(cmd))
-        key = tuple(cmd)
-        if key not in results:
-            raise AssertionError(f"unexpected command: {cmd}")
-        return results[key]
-
-    with (
-        patch("hermes_cli.banner.subprocess.run", side_effect=fake_run),
-        patch("hermes_cli.build_info.get_build_sha", return_value=None),
-    ):
-        state = banner.get_git_banner_state(repo_dir)
-
-    assert state is None
-    assert ("git", "rev-parse", "--short=8", "origin/main") not in commands
+    assert state == {"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
 
 
 def test_check_via_local_git_ssh_fastpath_ahead_not_behind(tmp_path):
@@ -108,7 +55,7 @@ def test_check_via_local_git_ssh_fastpath_ahead_not_behind(tmp_path):
     repo_dir = tmp_path / "repo"
     (repo_dir / ".git").mkdir(parents=True)
 
-    def fake_git_stdout(args, *, cwd, timeout=5):
+    def fake_git_stdout(args, *, cwd, timeout=5, network=False):
         if args == ["remote", "get-url", "origin"]:
             return "git@github.com:NousResearch/hermes-agent.git"
         if args == ["rev-parse", "HEAD"]:
@@ -135,7 +82,7 @@ def test_check_via_local_git_ssh_fastpath_genuinely_behind(tmp_path):
     repo_dir = tmp_path / "repo"
     (repo_dir / ".git").mkdir(parents=True)
 
-    def fake_git_stdout(args, *, cwd, timeout=5):
+    def fake_git_stdout(args, *, cwd, timeout=5, network=False):
         if args == ["remote", "get-url", "origin"]:
             return "git@github.com:NousResearch/hermes-agent.git"
         if args == ["rev-parse", "HEAD"]:
@@ -163,7 +110,7 @@ def test_check_via_local_git_ssh_fastpath_offline_keeps_sentinel(tmp_path):
     repo_dir = tmp_path / "repo"
     (repo_dir / ".git").mkdir(parents=True)
 
-    def fake_git_stdout(args, *, cwd, timeout=5):
+    def fake_git_stdout(args, *, cwd, timeout=5, network=False):
         if args == ["remote", "get-url", "origin"]:
             return "git@github.com:NousResearch/hermes-agent.git"
         if args == ["rev-parse", "HEAD"]:
@@ -179,3 +126,73 @@ def test_check_via_local_git_ssh_fastpath_offline_keeps_sentinel(tmp_path):
         behind = banner._check_via_local_git(repo_dir)
 
     assert behind == banner.UPDATE_AVAILABLE_NO_COUNT
+
+
+def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, monkeypatch):
+    """#104591: the origin-URL probe must run under the fetch's config-isolated env.
+
+    A global ``url.<https>.insteadOf`` rewrite makes a plain ``git remote get-url origin``
+    report HTTPS for an SSH origin, so the SSH-avoiding fast path is skipped — while the
+    fetch itself drops global config (``GIT_CONFIG_GLOBAL=/dev/null``), dials the raw SSH
+    origin, and its host-key prompt opens /dev/tty and steals the CLI's keystrokes. With the
+    probe under the same isolated env both sides observe the raw SSH URL and the HTTPS
+    ls-remote fast path runs instead — no fetch, no ssh child.
+    """
+    import os
+    import subprocess
+
+    from hermes_cli import banner
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    # Config-isolated setup so the developer's own global git config can't leak in.
+    setup_env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    setup_cmds = [
+        ["git", "init", "-q"],
+        # Pinned identity: with global/system config nulled, CI runners whose bare
+        # hostname makes git's auto-detected ident "user@host.(none)" reject the commit.
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "--allow-empty", "-q", "-m", "init"],
+        ["git", "remote", "add", "origin", "git@github.com:NousResearch/hermes-agent.git"],
+        ["git", "rev-parse", "HEAD"],
+    ]
+    head_sha = None
+    for argv in setup_cmds:
+        done = subprocess.run(
+            argv, cwd=repo_dir, env=setup_env, check=True, capture_output=True, text=True)
+        if argv[1] == "rev-parse":
+            head_sha = done.stdout.strip()
+    assert head_sha
+
+    # Global config (visible only without GIT_CONFIG_GLOBAL isolation) rewrites SSH to HTTPS.
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text(
+        '[url "https://github.com/"]\n\tinsteadOf = git@github.com:\n', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Git for Windows resolves global config here too
+
+    calls = []
+    real_run = banner.subprocess.run
+
+    def spy_run(args, **kwargs):
+        calls.append((list(args), kwargs))
+        if args[1] == "ls-remote":
+            return MagicMock(returncode=0, stdout=f"{head_sha}\trefs/heads/main\n")
+        if args[1] == "fetch":
+            return MagicMock(returncode=1, stdout="")
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(banner.subprocess, "run", spy_run)
+
+    behind = banner._check_via_local_git(repo_dir)
+
+    # Same upstream tip as HEAD: the SSH fast path concludes "not behind".
+    assert behind == 0
+    assert not any(args[1] == "fetch" for args, _ in calls), (
+        "insteadOf rewrite must not smuggle the check into the fetch branch")
+    probe = next(
+        (kwargs for args, kwargs in calls if args[1:3] == ["remote", "get-url"]), None)
+    assert probe is not None
+    assert probe["env"]["GIT_CONFIG_GLOBAL"] == os.devnull, (
+        "the origin-URL probe must observe the URL the isolated fetch will dial")

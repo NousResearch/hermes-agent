@@ -428,7 +428,8 @@ class TestGetLastInitError:
         """When SessionDB() raises, the cause is preserved for slash commands.
 
         Simulates a filesystem where BOTH WAL and DELETE journal modes fail —
-        e.g. a read-only mount where no ``PRAGMA journal_mode=X`` works.  The
+        e.g. a read-only mount where no ``PRAGMA journal_mode=X`` works (the
+        read-only mode probe still succeeds, as on a real mount).  The
         fallback tries DELETE and also gets rejected; the exception bubbles
         out of ``SessionDB.__init__`` and the cause is captured.
         """
@@ -437,7 +438,7 @@ class TestGetLastInitError:
 
         class _BothPragmasFailConnection(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-                if "journal_mode" in sql.lower():
+                if "journal_mode=" in sql.lower().replace(" ", ""):
                     raise sqlite3.OperationalError(
                         "locking protocol: read-only filesystem"
                     )

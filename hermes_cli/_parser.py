@@ -73,7 +73,9 @@ Examples:
     hermes auth add <provider>    Add a pooled credential
     hermes auth list              List pooled credentials
     hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
-    hermes auth reset <provider>  Clear exhaustion status for a provider
+    hermes auth reset <p> [t]     Clear exhaustion status for a provider, or one credential
+    hermes auth priority <p> <t> <n>  Move a pooled credential to priority n (0 = tried first)
+    hermes auth refresh <p> [t]   Refresh a pooled OAuth credential and clear its cooldown
     hermes model                  Select default model
     hermes fallback [list]        Show fallback provider chain
     hermes fallback add           Add a fallback provider (same picker as `hermes model`)
@@ -93,9 +95,6 @@ Examples:
     hermes logs errors            View errors.log
     hermes logs --since 1h        Lines from the last hour
     hermes debug share             Upload debug report for support
-    hermes validate-config         Validate configuration (exit non-zero on warnings)
-    hermes doctor                  Check configuration and dependencies with optional fixes
-    hermes security [audit]        Supply-chain vulnerability scan
     hermes console                Open the safe Hermes command console
     hermes update                 Update to latest version
     hermes dashboard              Start web UI dashboard (port 9119)

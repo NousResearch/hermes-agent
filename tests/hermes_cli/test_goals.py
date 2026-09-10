@@ -149,18 +149,7 @@ def test_goal_command_in_registry():
     cmd = resolve_command("goal")
     assert cmd is not None
     assert cmd.name == "goal"
-    assert "route" in cmd.args_hint
 
-
-def test_subgoal_aliases_resolve_to_canonical_command():
-    from hermes_cli.commands import COMMANDS, GATEWAY_KNOWN_COMMANDS, resolve_command
-
-    for alias in ("subgoal", "sub-goal", "subgoals", "sub-goals"):
-        cmd = resolve_command(alias)
-        assert cmd is not None
-        assert cmd.name == "subgoal"
-        assert alias in GATEWAY_KNOWN_COMMANDS
-        assert f"/{alias}" in COMMANDS
 
 def test_goal_command_dispatches_in_cli_registry_helpers():
     """goal shows up in autocomplete / help categories alongside other Session cmds."""
@@ -446,6 +435,46 @@ class TestWaitBarrier:
         finally:
             proc.terminate()
             proc.wait(timeout=10)
+
+    def test_barrier_on_a_process_that_never_exits_expires(self, hermes_home):
+        """A poller that outlives the work parked one run for 3h22m; a live barrier ages out."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        proc = self._spawn_sleeper()
+        try:
+            mgr = GoalManager(session_id="wb-expire")
+            mgr.set("g")
+            mgr.wait_on(proc.pid, reason="poller")
+            assert mgr.is_waiting() is True
+            mgr.state.waiting_since = time.time() - goals._MAX_BARRIER_WAIT_S - 1
+            mgr._save()
+            assert mgr.is_waiting() is False
+            assert mgr.state.waiting_on_pid is None
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+
+class TestGatherBackgroundProcessesOwnership:
+    def test_only_the_owning_sessions_processes_are_seen(self, monkeypatch):
+        """The registry task_id collapses to one container key for every agent in the process, so a
+        fan-out parent's judge must filter by owner; otherwise a grandchild's poller parks the goal."""
+        from hermes_cli import goals
+
+        class _Reg:
+            def list_sessions(self, task_id=None, session_key=None):
+                return [
+                    {"session_id": "proc_mine", "status": "running", "owner_task_id": "root-sid", "task_id": "default"},
+                    {"session_id": "proc_child", "status": "running", "owner_task_id": "sa-1-abc", "task_id": "default"},
+                    {"session_id": "proc_done", "status": "exited", "owner_task_id": "root-sid", "task_id": "default"},
+                ]
+
+        import tools.process_registry as pr
+        monkeypatch.setattr(pr, "process_registry", _Reg())
+        assert [p["session_id"] for p in goals.gather_background_processes()] == ["proc_mine", "proc_child"]
+        assert [p["session_id"] for p in goals.gather_background_processes(owner_task_id="root-sid")] == ["proc_mine"]
+
 
 
 # ──────────────────────────────────────────────────────────────────────

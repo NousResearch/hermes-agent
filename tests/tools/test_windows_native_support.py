@@ -23,27 +23,6 @@ from unittest.mock import MagicMock
 import pytest
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _prevent_tui_gateway_update_prefetch_thread():
-    """Prevent the daemon update-check thread from starting when
-    tui_gateway.entry is imported by any test in this module.
-
-    Importing tui_gateway.entry → tui_gateway.server runs
-    prefetch_update_check() at import time, which starts a daemon thread
-    calling check_for_updates() → subprocess.run (internally Popen).
-    That thread's git subprocess calls race with the
-    TestGatewayRunRestartWatcherOuterPopenFallback tests, which mock
-    subprocess.Popen globally — the thread's calls pollute the mock's
-    call list.  Patch prefetch_update_check to a no-op before any test
-    runs so the thread never starts.
-    """
-    import hermes_cli.banner as _banner
-    mp = pytest.MonkeyPatch()
-    mp.setattr(_banner, "prefetch_update_check", lambda: None)
-    yield
-    mp.undo()
-
-
 # ---------------------------------------------------------------------------
 # configure_windows_stdio
 # ---------------------------------------------------------------------------

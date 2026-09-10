@@ -25,12 +25,7 @@ from hermes_state import SessionDB
 
 @pytest.fixture()
 def hermes_home(tmp_path, monkeypatch):
-    # The live-state-db guard treats ``<root>/.hermes`` as a production root
-    # and refuses to open its state.db under pytest. Use a non-``.hermes``
-    # home so the hermetic guard accepts the redirect. The conftest autouse
-    # fixture already uses ``hermes_test`` in the same tmp_path, so pick a
-    # distinct name.
-    home = tmp_path / "undo_hermes"
+    home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))

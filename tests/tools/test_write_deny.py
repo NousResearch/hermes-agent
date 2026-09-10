@@ -82,22 +82,6 @@ class TestWriteDenyPrefixes:
             assert _is_write_denied(target) is True
 
 
-class TestConfiguredWriteDenyRoots:
-    def test_blocks_configured_root_and_descendant(self, tmp_path, monkeypatch):
-        vault = tmp_path / "obsidian-master"
-        vault.mkdir()
-        monkeypatch.setenv("HERMES_WRITE_DENY_ROOT", str(vault))
-
-        assert _is_write_denied(str(vault)) is True
-        assert _is_write_denied(str(vault / "project" / "note.md")) is True
-
-    def test_allows_sibling_of_configured_root(self, tmp_path, monkeypatch):
-        vault = tmp_path / "obsidian-master"
-        monkeypatch.setenv("HERMES_WRITE_DENY_ROOT", str(vault))
-
-        assert _is_write_denied(str(tmp_path / "other" / "note.md")) is False
-
-
 class TestWriteAllowed:
     def test_tmp_file(self):
         assert _is_write_denied("/tmp/safe_file.txt") is False

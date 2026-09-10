@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -28,6 +28,18 @@ def _make_source() -> SessionSource:
 
 def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
+
+
+def _make_voice_event(text: str = "voice_message_1.ogg") -> MessageEvent:
+    source = _make_source()
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.VOICE,
+        source=source,
+        message_id="m1",
+        media_urls=["/tmp/voice_message_1.ogg"],
+        media_types=["audio/ogg"],
+    )
 
 
 def _make_runner():

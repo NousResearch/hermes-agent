@@ -13,6 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
+from tools.async_delegation import _new_delegation_id, record_unit_child
 from tools.delegate_tool_child_run import _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _clean_error_text, _print_completion_line, _quiet, format_batch_tag,
@@ -43,6 +44,9 @@ class _Batch:
     origin_owner_transport: Any
     origin_owner_session_record: Any
     overall_start: float
+    # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
+    group: Optional[str] = None
+    unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
     # KENSEI CUSTOM — verify/synthesis primitive inputs (defaults keep upstream callsites working)
     verify: bool = False
     verify_rubric: Optional[str] = None
@@ -50,13 +54,6 @@ class _Batch:
     synthesis_prompt: Optional[str] = None
     profile: Optional[str] = None
     profile_content: Optional[Dict[str, Any]] = None
-    max_iterations: Optional[int] = None
-    # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
-    group: Optional[str] = None
-    # The async registry row this unit runs under (``<call_id>-k`` for split
-    # calls). Carried so detached per-child persistence and failure notices
-    # land on the unit's own durable row for crash recovery.
-    unit_id: Optional[str] = None
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -104,48 +101,6 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
         with _quiet("Spinner update_text failed: %s"):
             spinner_ref.update_text(f"🔀 {'[' + tag + '] ' if tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining")
 
-
-def _record_child_completion(batch: _Batch, entry: Dict[str, Any]) -> None:
-    """Persist one finished child on the unit's own durable row.
-
-    Split calls persist one async row per unit (``<call_id>-k``); the unit id
-    is fixed on the carved-out ``_Batch`` before its runner can start, so a
-    crash before the join loses only children that had not finished. The sync
-    path has no unit row: ``unit_id`` is None and this is a no-op (nothing
-    durable to recover until the unit is dispatched).
-    """
-    unit_id = batch.unit_id or batch.live_deleg_id
-    if not unit_id:
-        return
-    with _quiet("Child partial persistence failed", exc_info=True):
-        from tools.async_delegation import record_unit_child
-        record_unit_child(unit_id, dict(entry))
-
-
-def _maybe_emit_failure_notice(batch: _Batch, entry: Dict[str, Any], remaining: int) -> None:
-    """Emit one interim notice for a failed child of a still-running detached unit.
-
-    Separate from the unit's final durable result (which still arrives once):
-    a sibling still running means the parent would otherwise learn of the
-    failure only when the slowest sibling finishes. Sync runs and the final
-    child of a unit emit nothing here.
-    """
-    if batch.unit_id is None:
-        return
-    if remaining <= 0:
-        return
-    if entry.get("status") not in SUBAGENT_FAILURE_STATUSES:
-        return
-    with _quiet("task failure notice failed", exc_info=True):
-        from tools.async_delegation import push_task_failure_notice
-        _i = entry.get("task_index", -1)
-        _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
-        push_task_failure_notice(
-            batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})},
-            n_tasks=len(batch.task_list),
-        )
-
-
 def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
     completion line printed per child). Polls futures with a short ``wait()`` timeout instead of ``as_completed()``
@@ -183,16 +138,20 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
             for future in done:
                 entry = _entry_of(future, futures[future])
                 results.append(entry)
-                remaining = n_here - len(results)
-                # Detached unit: a crash before the join must not lose children
-                # that already finished; a still-running sibling means a failed
-                # child is surfaced NOW via an interim notice, not when the
-                # slowest sibling finishes. Sync runs record nothing here
-                # (no durable unit row) and emit no notices.
                 if not honor_parent_interrupt and batch.unit_id:
-                    _record_child_completion(batch, entry)
-                    _maybe_emit_failure_notice(batch, entry, remaining)
-                _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, remaining)
+                    # Detached unit: a crash before the join must not lose children that already finished.
+                    record_unit_child(batch.unit_id, entry)
+                _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
+                if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
+                        and len(results) < n_here):
+                    # Detached unit, a sibling is still running: tell the parent NOW, not when the last one finishes.
+                    # Non-durable and separate from the unit's final result (which is still delivered once).
+                    with _quiet("task failure notice failed", exc_info=True):
+                        from tools.async_delegation import push_task_failure_notice
+                        _i = entry.get("task_index", -1)
+                        _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
+                        push_task_failure_notice(
+                            batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
     results.sort(key=lambda r: r["task_index"])  # match input order
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
@@ -203,21 +162,15 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     from tools.delegation_live_log import update_manifest_statuses
     results: list = []
     if len(batch.children) == 1:
-        entry = batch.run_child(*batch.children[0])
-        results.append(entry)
-        # Single-child detached unit: the same crash window applies as in
-        # the parallel path. Sync runs carry no unit id (no durable row).
-        if not honor_parent_interrupt and batch.unit_id:
-            _record_child_completion(batch, entry)
+        results.append(batch.run_child(*batch.children[0]))
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
-
     # ── KENSEI CUSTOM — verify/synthesis primitives (ported) ──
     # Runs the fork's skeptic-verify (single task) and batch-synthesis primitives after
-    # finalize; results/enriched fields ride in `combined` via the closure below.
-    combined_extra = None
+    # finalize; enriched fields ride in `combined` below.
+    _kensei_extra = None
     try:
         from tools.delegate_tool_primitives import run_kensei_primitives
         _kensei_extra = run_kensei_primitives(
@@ -225,12 +178,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
             batch=batch,
             parent_agent=batch.parent_agent,
         )
-        if _kensei_extra:
-            combined_extra = _kensei_extra
-    except Exception as _kp_exc:
+    except Exception as _kp_exc:  # noqa: BLE001 — primitives must never break delegation
         from tools import delegate_tool_progress as _dtp  # KENSEI CUSTOM
         with _dtp._quiet("KENSEI verify/synthesis primitives failed", exc_info=True):
-            combined_extra = None
+            _kensei_extra = None
     # ── END KENSEI CUSTOM ──
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:
@@ -243,20 +194,20 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     update_manifest_statuses(batch.live_deleg_id, results)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    # ── KENSEI CUSTOM — primitive enrichment rides in `combined` (verify/synthesis) ──
+    if _kensei_extra:
+        combined.update(_kensei_extra)
+    # ── END KENSEI CUSTOM ──
+    # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
+    from tools.process_registry_notifications import _process_accounting_lines
+    process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
+    if process_notes:
+        combined["process_notes"] = process_notes
     unit_paths = [batch.live_paths[i] for (i, _, _) in batch.children if i < len(batch.live_paths)]
     if unit_paths:
         combined["live_transcripts"] = unit_paths
-    elif batch.live_paths:
-        combined["live_transcripts"] = list(batch.live_paths)
     if batch.group is not None:
         combined["group"] = batch.group
-    # ── KENSEI CUSTOM — surface verify/synthesis outputs in the response ──
-    if combined_extra:
-        if combined_extra.get("synthesis") is not None:
-            combined["synthesis"] = combined_extra["synthesis"]
-        if combined_extra.get("missing_tasks"):
-            combined["missing_tasks"] = combined_extra["missing_tasks"]
-    # ── END KENSEI CUSTOM ──
     return combined
 
 _SYNC_FALLBACK_NOTES = {
@@ -466,7 +417,6 @@ def _dispatch_background(batch: _Batch) -> str:
         # One unit keeps the live-transcript directory's id so the returned delegation_id matches
         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
-        from tools.async_delegation import _new_delegation_id
         unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
@@ -494,9 +444,6 @@ def _run_batch(batch: _Batch, background: bool) -> str:
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)
 
-
-# ── KENSEI CUSTOM — fork dispatch helpers (ported) ──
-
 def _split_child_budget(effective_max_iter: int, task_count: int) -> int:
     """Split a delegation iteration budget across batch children.
 
@@ -512,80 +459,31 @@ def _split_child_budget(effective_max_iter: int, task_count: int) -> int:
     return max(1, _cap // _n)
 
 
+
 def _check_delegation_cycle(parent_agent, profile_name: str | None) -> None:
-    """Reject repeated profiles and malformed ancestry metadata."""
+    """Reject a spawn that would recurse into its own ancestor profile.
+
+    Walks the _delegate_parent_ref chain (cap 8 hops); if the requested
+    profile name matches any ancestor's stamped profile, raises ValueError
+    loudly (same posture as pinned-transport preflight #80450) instead of
+    building a child that recurses until budgets die. Profile-less
+    (inherit-model) children carry no name and skip the check.
+    """
     if not profile_name:
         return
-    want = str(profile_name).strip().lower()
-    if not want:
+    _want = str(profile_name).strip().lower()
+    if not _want:
         return
-    current = parent_agent
-    seen: set[int] = set()
-    for _ in range(8):
-        if current is None:
+    _cur = parent_agent
+    for hop in range(8):
+        _current_profile = getattr(_cur, "_delegate_profile_name", None)
+        if _current_profile and str(_current_profile).strip().lower() == _want:
+            raise ValueError(f"Delegation cycle rejected: profile '{profile_name}' is already in this spawn chain.")
+        _ref = getattr(_cur, "_delegate_parent_ref", None)
+        if _ref is not None and not callable(_ref):
+            raise ValueError("Delegation cycle check failed: malformed ancestry metadata")
+        _ancestor = _ref() if callable(_ref) else None
+        if _ancestor is None:
             return
-        current_id = id(current)
-        if current_id in seen:
-            raise ValueError("Delegation cycle rejected: malformed ancestry metadata")
-        seen.add(current_id)
-        ancestor_profile = getattr(current, "_delegate_profile_name", None)
-        if ancestor_profile and str(ancestor_profile).strip().lower() == want:
-            raise ValueError(
-                f"Delegation cycle rejected: profile '{profile_name}' is "
-                "already in this spawn chain. A profile may not delegate "
-                "to itself — route the sub-task to a different profile."
-            )
-        ref = getattr(current, "_delegate_parent_ref", None)
-        if ref is None:
-            return
-        if not callable(ref):
-            raise ValueError("Delegation cycle rejected: malformed ancestry metadata")
-        current = ref()
-        if current is None:
-            raise ValueError("Delegation cycle rejected: malformed ancestry metadata")
-    raise ValueError("Delegation cycle rejected: ancestry exceeds the 8-hop safety bound")
-
-# KENSEI: delegation fidelity helpers (direct fix, 2026-09-04).
-# 1) Receipts — every child summary must carry verifiable handles.
-# 2) Nested default schema — nested spawns get a shape even when the
-#    caller supplies none, so the existing validate + one-retry path
-#    always has a contract to enforce.
-# 3) Truncation auto-continue — one bounded extra turn carrying forward
-#    what was already established, instead of dropping the cut work.
-
-# Heuristic receipt signals: absolute paths, diff stats, commit hashes,
-# or an explicit no-files statement. Documented as heuristic — the flag
-# is advisory (parent-visible), never a spawn blocker.
-
-
-def _handle_delegate_dispatch(args, **kw):
-    """Dispatch wrapper with trace logging to diagnose verify=False in gateway."""
-    import logging
-    _dl = logging.getLogger("tools.delegate_tool")
-    _dl.info(
-        "delegate_task dispatch: raw args keys=%s verify=%s synthesize=%s",
-        sorted(args.keys()), args.get("verify"), args.get("synthesize"),
-    )
-    return delegate_task(
-        goal=args.get("goal"),
-        context=args.get("context"),
-        tasks=_strip_model_hidden_task_fields(args.get("tasks")),
-        max_iterations=args.get("max_iterations"),
-        role=args.get("role"),
-        background=_model_background_value(args, kw.get("parent_agent")),
-        # ── KENSEI CUSTOM ──
-        synthesize=args.get("synthesize"),
-        synthesis_prompt=args.get("synthesis_prompt"),
-        verify=args.get("verify"),
-        verify_rubric=args.get("verify_rubric"),
-        profile=args.get("profile"),
-        profile_content=args.get("profile_content"),
-        # ── END KENSEI CUSTOM ──
-        output_schema=args.get("output_schema"),
-        action=args.get("action"),
-        subagent_id=args.get("subagent_id"),
-        message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
-    )
-
-
+        _cur = _ancestor
+    raise ValueError("Delegation cycle check failed: ancestry exceeds 8-hop limit")

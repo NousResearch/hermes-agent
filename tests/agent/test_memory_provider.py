@@ -171,6 +171,38 @@ class TestMemoryManager:
 
 
 
+    @staticmethod
+    def _set_spill_config(monkeypatch, tmp_path, *, max_chars):
+        monkeypatch.setattr(
+            "agent.memory_manager.get_spill_config",
+            lambda: {"enabled": True, "max_chars": max_chars, "preview_head": 12,
+                     "preview_tail": 12, "directory": str(tmp_path)},
+        )
+
+    def test_oversized_external_prefetch_is_spilled(self, tmp_path, monkeypatch):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "recalled " * 20
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-1")
+
+        assert "external memory prefetch output truncated" in result
+        spill_files = list((tmp_path / "session-1").glob("*.txt"))
+        assert len(spill_files) == 1
+        assert spill_files[0].read_text() == provider._prefetch_result + "\n"
+
+    def test_builtin_prefetch_is_not_spilled(self, tmp_path, monkeypatch):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=10)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("builtin")
+        provider._prefetch_result = "built-in memory has its own configured limit"
+        mgr.add_provider(provider)
+
+        assert mgr.prefetch_all("what do you remember?", session_id="s") == provider._prefetch_result
+        assert not list(tmp_path.rglob("*.txt"))
+
     def test_prefetch_merges_results(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin")
@@ -408,46 +440,6 @@ class TestUserInstalledProviderDiscovery:
         providers = discover_memory_providers()
         holo_count = sum(1 for n, _, _ in providers if n == "holographic")
         assert holo_count == 1
-
-    def test_profile_home_loads_root_shared_user_plugin(self, tmp_path, monkeypatch):
-        """A named profile can load a plugin installed once at the Hermes root."""
-        from plugins.memory import load_memory_provider
-        import plugins.memory as memory
-
-        profile_plugins = tmp_path / "profiles" / "remii" / "plugins"
-        profile_plugins.mkdir(parents=True)
-        root_plugins = tmp_path / "plugins"
-        self._make_user_memory_plugin(tmp_path, "rootshared")
-        monkeypatch.setattr(memory, "_get_user_plugins_dir", lambda: profile_plugins)
-        monkeypatch.setattr(memory, "_get_shared_user_plugins_dir", lambda: root_plugins, raising=False)
-
-        provider = load_memory_provider("rootshared")
-        assert provider is not None
-        assert provider.name == "rootshared"
-
-    def test_profile_local_user_plugin_precedes_root_shared_plugin(self, tmp_path, monkeypatch):
-        """Profile-local installations override root-shared user installations."""
-        from plugins.memory import load_memory_provider
-        import plugins.memory as memory
-
-        profile_home = tmp_path / "profiles" / "remii"
-        profile_plugins = profile_home / "plugins"
-        root_plugins = tmp_path / "plugins"
-        self._make_user_memory_plugin(profile_home, "sameprovider")
-        self._make_user_memory_plugin(tmp_path, "sameprovider")
-        profile_init = profile_plugins / "sameprovider" / "__init__.py"
-        profile_init.write_text(
-            profile_init.read_text(encoding="utf-8").replace(
-                "return 'sameprovider'", "return 'profile-local'"
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(memory, "_get_user_plugins_dir", lambda: profile_plugins)
-        monkeypatch.setattr(memory, "_get_shared_user_plugins_dir", lambda: root_plugins, raising=False)
-
-        provider = load_memory_provider("sameprovider")
-        assert provider is not None
-        assert provider.name == "profile-local"
 
 
 

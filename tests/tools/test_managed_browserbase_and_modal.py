@@ -96,14 +96,13 @@ def _install_fake_tools_package():
     sys.modules["tools.environments"] = env_package
 
     agent_package = types.ModuleType("agent")
-    agent_package.__path__ = []  # type: ignore[attr-defined]
+    agent_package.__path__ = [str(REPO_ROOT / "agent")]  # type: ignore[attr-defined]
     sys.modules["agent"] = agent_package
     sys.modules["agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",
     )
-    # The fake `agent` package has an empty __path__, so every real
-    # agent.* submodule that production code imports needs an explicit
-    # stand-in here. tools.browser_tool imports redact_cdp_url;
+    # Keep unrelated imports real; only replace the collaborators this fixture
+    # isolates. tools.browser_tool imports redact_cdp_url;
     # hermes_cli.auth (imported transitively by nous_account /
     # tool_backend_helpers) imports sanitize_borrowed_credential_payload.
     sys.modules["agent.redact"] = types.SimpleNamespace(
@@ -112,26 +111,9 @@ def _install_fake_tools_package():
     sys.modules["agent.credential_persistence"] = types.SimpleNamespace(
         sanitize_borrowed_credential_payload=lambda entry, provider_id=None: entry,
     )
-    sys.modules["agent.secret_scope"] = types.SimpleNamespace(
-        get_secret=lambda name, default=None: os.environ.get(name, default),
-    )
-
-    # ``browser_tool`` and ``hermes_cli.auth`` import these helpers even in
-    # this deliberately fake-agent fixture. Load them by path while retaining
-    # the fake parent package so the fixture remains isolated.
-    for _helper in ("redact", "credential_persistence"):
-        _helper_spec = spec_from_file_location(
-            f"agent.{_helper}", REPO_ROOT / "agent" / f"{_helper}.py"
-        )
-        assert _helper_spec and _helper_spec.loader
-        _helper_module = module_from_spec(_helper_spec)
-        sys.modules[f"agent.{_helper}"] = _helper_module
-        setattr(agent_package, _helper, _helper_module)
-        _helper_spec.loader.exec_module(_helper_module)
 
     # Stubs for the browser-provider plugin layer introduced in PR #25214.
-    # The fake `agent` package has an empty __path__ so real submodules
-    # aren't reachable; we install just enough stand-ins to satisfy
+    # Install just enough stand-ins to isolate
     # ``tools.browser_tool``'s top-level imports. The actual lifecycle
     # tests instantiate the real plugin classes via _load_tool_module
     # below, so the stubs only need to satisfy import + isinstance.

@@ -32,6 +32,7 @@ from agent.context_engine import automatic_compaction_status_message, sanitize_m
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
+from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
 
@@ -1696,13 +1697,16 @@ def _lower_threshold_to_aux_context(
 ) -> None:
     """Lower the live threshold to the aux model's window and tell the user how to fix config.
     The summariser sends one user prompt (no system/tools), so threshold == aux_context is safe.
-    tail_token_budget and threshold_percent are kept in lockstep (as update_model does) or the 1.5x tail
-    ceiling exceeds the trigger and re-fires."""
+    Retention is recalibrated through its selected policy: lean is window-relative;
+    only legacy follows the lowered threshold."""
     compressor = agent.context_compressor
     old_threshold = compressor.threshold_tokens
     new_threshold = compressor.threshold_tokens = aux_context
     summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
-    if isinstance(summary_target_ratio, (int, float)):
+    if getattr(compressor, "tail_mode", None) == "lean":
+        # Keep the window-relative policy owned by the compressor property.
+        compressor._tail_token_budget = None
+    elif isinstance(summary_target_ratio, (int, float)):
         compressor.tail_token_budget = int(new_threshold * summary_target_ratio)
     main_ctx = compressor.context_length
     if main_ctx:
@@ -1930,8 +1934,8 @@ def _steer_markers() -> Tuple[str, str]:
 
 def _message_contains_busy_steer(message: Any) -> bool:
     """Return whether *message* carries a busy-steer marker.
-    Steer follow-ups live as markers inside ``role=tool`` results, so they carry user intent that
-    ``_is_real_user_message`` alone would miss."""
+    Steer follow-ups are now their own ``role=user`` rows (caught by ``_is_real_user_message``); in
+    transcripts persisted before that they ride inside ``role=tool`` results, so those still count."""
     text = _message_text(message)
     if not text:
         return False
@@ -3114,8 +3118,7 @@ def _finish_compaction_boundary(
     compressor.awaiting_real_usage_after_compression = True
     # Transcript rewritten: invalidate the usage anchor's base snapshot explicitly
     # (its structural check would fail closed anyway); estimate until re-anchored.
-    agent._usage_anchor = None
-    agent._turn_base_usage_anchor = None
+    set_usage_anchor(agent, None)
     # Arm the effectiveness verdict only after a completed rewrite crosses the
     # boundary so later usage isn't charged to an attempt that changed nothing.
     if compression_made_progress:
@@ -3812,7 +3815,7 @@ def _compress_context_via_codex_app_server(
         # An empty usage report must consume the pending verdict, not leave deferral
         # armed until a later turn; minimal test engines may lack update_from_response.
         if hasattr(agent.context_compressor, "update_from_response"):
-            _record_codex_app_server_usage(agent, result)
+            _record_codex_app_server_usage(agent, result, messages=messages)
     _reset_read_dedup_caches(task_id, skills=False)
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,

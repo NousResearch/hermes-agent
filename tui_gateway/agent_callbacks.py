@@ -4,6 +4,7 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 
 from __future__ import annotations
 
+import contextlib
 import threading
 
 from .method_ctx import bind_module
@@ -75,21 +76,6 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             _child_mirrors.pop(child_key, None)
 
 
-def _normalise_auq_callback_result(questions: list, result: object) -> dict:
-    """Normalise the return value of ``ask_user_questions_callback``.
-
-    The TUI renderer responds with a ``{index: label}`` dict on success.
-    On timeout or interruption, ``_block`` returns an empty string (or
-    ``None``); translate that into a per-question skipped dict so the tool
-    layer receives a well-formed dict instead of erroring on a non-dict.
-
-    KENSEI CUSTOM — see skill ``agent-modes``.  Must survive upstream merges.
-    """
-    if isinstance(result, dict):
-        return result
-    return {i: "__skipped__" for i in range(len(questions))}
-
-
 def _agent_cbs(sid: str) -> dict:
     def _read_block(event: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): blocking bridge like clarify; the preview
@@ -118,19 +104,6 @@ def _agent_cbs(sid: str) -> dict:
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
         "read_terminal_callback": _read_block("terminal.read.request", 30),
-        # ── KENSEI CUSTOM: ask_user_questions callback (plan/UltraPlan/recon) ──
-        # Multi-question batched prompt (mode system); TUI renders the
-        # AskUserQuestionsTool overlay and answers ask_user_questions.respond
-        # with a {index: label} dict.  Coexists with upstream read_terminal.
-        # See skill `agent-modes`.  Must survive upstream merges.
-        "ask_user_questions_callback": lambda questions: _normalise_auq_callback_result(
-            questions,
-            _block(
-                "ask_user_questions.request", sid,
-                {"questions": questions},
-                timeout=_clarify_timeout_seconds(),
-            ),
-        ),
         "read_preview_callback": _read_block("preview.read.request", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
         "drive_preview_callback": lambda payload: _block("preview.act.request", sid, dict(payload), timeout=45),
@@ -384,7 +357,53 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
         "status_callback": lambda kind, text=None: progress(text if text is not None else kind)}
 
 
+def _rebuild_session_agent(sid: str, session: dict, **kwargs):
+    """Prepare and install a replacement on the session's profile, then transfer DB ownership.
+
+    An unscoped _make_agent defaults to the launch store: named-profile Bot Chat turns then disappear
+    from the profile's replay even though they were successfully written to another database (#104079).
+    """
+    old_agent = session.get("agent")
+    profile_home = session.get("profile_home")
+    session_db = getattr(old_agent, "_session_db", None)
+    # No live agent to inherit from (rebuild before the deferred build ran): open the profile's store the
+    # same FAIL-CLOSED way _start_agent_build does rather than letting _make_agent reach for the launch db.
+    opened = session_db is None and bool(profile_home)
+    scopes = _bind_build_profile_scopes(profile_home) if profile_home else None
+    try:
+        # Resolve fallible config before allocating a replacement or moving its handle.
+        config_model_seen = _config_model_target()
+        if opened:
+            session_db = _open_profile_session_db(profile_home)
+        agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
+    except BaseException:
+        if opened and session_db is not None:
+            with contextlib.suppress(Exception):
+                session_db.close()
+        raise
+    finally:
+        if scopes is not None:
+            _release_build_profile_scopes(scopes)
+    # Only a DEDICATED handle carries ownership; the shared launch handle outlives every agent and
+    # _transfer_db_to_agent refuses it.
+    with _sessions_lock:
+        session.update(agent=agent, config_model_seen=config_model_seen)
+        owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
+        if owned and _transfer_db_to_agent(agent, session_db):
+            if old_agent is not None:
+                old_agent._owns_session_db = False
+        elif opened:
+            with contextlib.suppress(Exception):
+                session_db.close()
+    return agent
+
+
 def _reset_session_agent(sid: str, session: dict) -> dict:
+    updates = dict(
+        attached_images=[], queued_prompt=None,
+        _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
+        edit_snapshots={}, image_counter=0, running=False, show_reasoning=_load_show_reasoning(),
+        tool_progress_mode=_load_tool_progress_mode(), tool_started_at={})
     tokens = _set_session_context(session["session_key"])
     try:
         # /new is a full conversation boundary: session-scoped runtime overrides (/model,
@@ -392,18 +411,13 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         # resurrect them. Global process state is never touched (see _apply_model_switch).
         for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
             session.pop(k, None)
-        new_agent = _make_agent(
-            sid, session["session_key"], session_id=session["session_key"],
+        new_agent = _rebuild_session_agent(
+            sid, session, session_id=session["session_key"],
             platform_override=_session_source(session),
             context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
     finally:
         _clear_session_context(tokens)
-    session.update(
-        agent=new_agent, config_model_seen=_config_model_target(), attached_images=[],
-        queued_prompt=None,
-        _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
-        edit_snapshots={}, image_counter=0, running=False, show_reasoning=_load_show_reasoning(),
-        tool_progress_mode=_load_tool_progress_mode(), tool_started_at={})
+    session.update(updates)
     session.pop("queued_prompts", None)
     with session["history_lock"]:
         session["history"] = []
@@ -417,3 +431,19 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
+
+
+def _normalise_auq_callback_result(questions: list, result: object) -> dict:
+    """Normalise the return value of ``ask_user_questions_callback``.
+
+    The TUI renderer responds with a ``{index: label}`` dict on success.
+    On timeout or interruption, ``_block`` returns an empty string (or
+    ``None``); translate that into a per-question skipped dict so the tool
+    layer receives a well-formed dict instead of erroring on a non-dict.
+
+    KENSEI CUSTOM — see skill ``agent-modes``.  Must survive upstream merges.
+    """
+    if isinstance(result, dict):
+        return result
+    return {i: "__skipped__" for i in range(len(questions))}
+

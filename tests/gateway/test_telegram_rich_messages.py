@@ -554,10 +554,7 @@ async def test_dm_topic_table_stream_uses_send_rich_message():
 
     adapter._bot.send_message_draft.assert_awaited()
     draft_kwargs = adapter._bot.send_message_draft.call_args.kwargs
-    # The stream display cleaner trims outer whitespace while preserving the
-    # raw Markdown table.  A terminal newline is not part of Telegram's rich
-    # rendering contract; the pipes and rows are.
-    assert draft_kwargs["text"].rstrip() == TOPIC_TABLE.rstrip()
+    assert draft_kwargs["text"] == TOPIC_TABLE
     assert draft_kwargs["message_thread_id"] == 20189
     rich_endpoints = [call.args[0] for call in adapter._bot.do_api_request.await_args_list]
     # Invariant, not a frozen call list: the persistent final goes through
@@ -811,7 +808,7 @@ def _reply_message_with_rich_blocks(
 async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     """A reply to a rich-sent message resolves the original text via the index."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
     from gateway import rich_sent_store
 
     adapter = _make_adapter()

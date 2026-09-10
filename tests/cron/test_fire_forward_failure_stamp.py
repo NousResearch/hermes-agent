@@ -69,7 +69,7 @@ class TestNoteFireForwardFailure:
 
     def test_failed_run_keeps_stamp(self, tmp_cron_dir):
         """An agent-level failure is not proof the fire hand-off healed —
-        only success clears (mirrors preflight_alerted / drift_alerted)."""
+        only success clears (mirrors preflight_alerted)."""
         job = create_job(prompt="Daily invoice triage", schedule="every 1h")
         note_fire_forward_failure(job["id"], "gateway unreachable")
 

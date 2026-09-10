@@ -127,7 +127,6 @@ class TestMakeRunEnvHomeInjection:
         real_home.mkdir()
         monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
         monkeypatch.setenv("HOME", str(real_home))
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
@@ -146,7 +145,6 @@ class TestMakeRunEnvHomeInjection:
         monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
         monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
         monkeypatch.setenv("HOME", str(real_home))
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
@@ -196,7 +194,6 @@ class TestSanitizeSubprocessEnvHomeInjection:
         real_home.mkdir()
         monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
 
         base_env = {"HOME": str(real_home), "PATH": "/usr/bin", "USER": "root"}
         from tools.environments.local import _sanitize_subprocess_env
@@ -214,7 +211,6 @@ class TestSanitizeSubprocessEnvHomeInjection:
         monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
         monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
 
         base_env = {"HOME": str(real_home), "PATH": "/usr/bin", "USER": "root"}
         from tools.environments.local import _sanitize_subprocess_env

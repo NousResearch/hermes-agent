@@ -189,6 +189,18 @@ _PII_SAFE_PLATFORMS = frozenset({
 })
 
 
+def _should_redact_pii(platform: Platform, enabled: bool) -> bool:
+    """Keep model-visible identifiers usable on platforms requiring raw mentions."""
+    if not enabled or platform in _PII_SAFE_PLATFORMS:
+        return enabled
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform.value)
+        return bool(entry and entry.pii_safe)
+    except Exception:
+        return False
+
+
 def _slack_tools_loaded() -> bool:
     """True iff the agent will actually have Slack tools this session.
 
@@ -357,13 +369,7 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     user/chat IDs become deterministic hashes for the LLM only; routing keeps the originals.
     """
     src = context.source
-    if redact_pii and src.platform not in _PII_SAFE_PLATFORMS:
-        try:
-            from gateway.platform_registry import platform_registry
-            entry = platform_registry.get(src.platform.value)
-            redact_pii = bool(entry and entry.pii_safe)
-        except Exception:
-            redact_pii = False
+    redact_pii = _should_redact_pii(src.platform, redact_pii)
 
     def _chat_label(chat_id: str) -> str:
         return _hash_chat_id(chat_id) if redact_pii else chat_id

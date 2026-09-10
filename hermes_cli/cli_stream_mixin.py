@@ -209,6 +209,10 @@ class CLIStreamMixin:
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
         from cli import ChatConsole, _accent_hex
+        from tools.process_registry_notifications import SubagentNotification
+        if isinstance(user_input, SubagentNotification):
+            ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]")
+            return
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
         if "\n" in text:

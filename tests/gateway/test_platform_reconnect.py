@@ -895,12 +895,9 @@ class TestVoiceInputCallbackWiring:
     def _make_discord_voice_adapter():
         """A minimal Discord adapter stub with voice attributes."""
         adapter = MagicMock()
-        adapter.platform = Platform.DISCORD
         adapter._voice_input_callback = None
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
-        adapter._auto_join_user_id = None
-        adapter._auto_join_text_channel_id = None
         adapter.connect = AsyncMock(return_value=True)
         adapter.disconnect = AsyncMock()
         return adapter

@@ -145,654 +145,9 @@ def _custom_provider_ssl_context(base_url: str):
 
 
 # Process-lifetime picker lists refreshed from the live catalogs (see fetch_*_models).
-    ("google/gemini-3-pro-preview",            ""),
-    ("qwen/qwen3.7-max",                       ""),
-    ("qwen/qwen3.7-plus",                      ""),
-    ("qwen/qwen3.6-35b-a3b",                   ""),
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
-
-def _codex_curated_models() -> list[str]:
-    """Derive the openai-codex curated list from codex_models.py.
-
-    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis.
-    This keeps the gateway /model picker in sync with the CLI `hermes model`
-    flow without maintaining a separate static list.
-    """
-    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _finalize_codex_models
-    return _finalize_codex_models(list(DEFAULT_CODEX_MODELS))
-
-
-# Static fallback for xAI when the models.dev disk cache is empty (fresh
-# install, offline first run, etc.). Mirrors the xAI-direct model IDs from
-# $HERMES_HOME/models_dev_cache.json as of 2026-04-28. Whenever xAI renames
-# or retires a model, the disk cache picks it up on the next refresh and the
-# fallback here only matters until that refresh lands.
-#
-# Models retired by xAI on May 15, 2026 are excluded — see
-# https://docs.x.ai/developers/migration/may-15-retirement
-# (grok-4, grok-4-0709, grok-4-fast{,-reasoning,-non-reasoning},
-#  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
-_XAI_STATIC_FALLBACK: list[str] = [
-    "grok-4.6",
-    "grok-build-0.1",
-    "grok-4.5",
-    "grok-4.3",
-    "grok-4.20-0309-reasoning",
-    "grok-4.20-0309-non-reasoning",
-    "grok-4.20-multi-agent-0309",
-]
-
-# Callable via xAI OAuth but omitted from models.dev and /v1/models listings.
-_XAI_CURATED_EXTRAS: list[str] = [
-    "grok-4.6",  # GA 2026-08 — kept until the models.dev disk cache refreshes
-    "grok-4.5",  # GA 2026-07 — kept until the models.dev disk cache refreshes
-    "grok-composer-2.5-fast",
-]
-
-
-_XAI_TOP_MODEL = "grok-4.6"
-
-
-def _xai_promote_top(ids: list[str]) -> list[str]:
-    """Pin the headline xAI model to the top of the curated list."""
-    if _XAI_TOP_MODEL in ids:
-        return [_XAI_TOP_MODEL] + [m for m in ids if m != _XAI_TOP_MODEL]
-    return ids
-
-
-def _xai_merge_curated_extras(ids: list[str]) -> list[str]:
-    """Append Hermes-curated xAI models that are missing from models.dev."""
-    out = list(ids)
-    for extra in _XAI_CURATED_EXTRAS:
-        if extra in out:
-            continue
-        # Keep the headline model pinned; slot extras immediately after it.
-        insert_at = 1 if out and out[0] == _XAI_TOP_MODEL else len(out)
-        out.insert(insert_at, extra)
-    return out
-
-
-def _xai_finalize_catalog(ids: list[str]) -> list[str]:
-    return _xai_promote_top(_xai_merge_curated_extras(ids))
-
-
-def _xai_curated_models() -> list[str]:
-    """Offline curated floor for xAI / xAI OAuth pickers.
-
-    Reads $HERMES_HOME/models_dev_cache.json directly (no network). Falls
-    back to ``_XAI_STATIC_FALLBACK`` when the cache is empty or unreadable.
-    """
-    try:
-        from agent.models_dev import _load_disk_cache
-        data = _load_disk_cache()
-        xai = data.get("xai") if isinstance(data, dict) else None
-        models = xai.get("models") if isinstance(xai, dict) else None
-        if isinstance(models, dict) and models:
-            ids = [mid for mid in models.keys() if isinstance(mid, str)]
-            if ids:
-                return _xai_finalize_catalog(sorted(ids))
-    except Exception:
-        # Any failure (missing file, malformed JSON, import error)
-        # falls through to the static list.
-        pass
-    return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
-
-
-_PROVIDER_MODELS: dict[str, list[str]] = {
-    "moa": ["default"],
-    "nous": [
-        # Anthropic
-        "anthropic/claude-fable-5.1",
-        "anthropic/claude-fable-5",
-        "anthropic/claude-opus-5",
-        "anthropic/claude-opus-4.8",
-        "anthropic/claude-sonnet-5",
-        "anthropic/claude-haiku-4.5",
-        # OpenAI
-        "openai/gpt-5.6-sol",
-        "openai/gpt-5.6-sol-pro",
-        "openai/gpt-5.6-terra",
-        "openai/gpt-5.6-terra-pro",
-        "openai/gpt-5.6-luna",
-        "openai/gpt-5.6-luna-pro",
-        "openai/gpt-5.5",
-        "openai/gpt-5.5-pro",
-        "openai/gpt-5.4-mini",
-        # Google
-        "google/gemini-3-pro-preview",
-        "google/gemini-3.1-pro-preview",
-        "google/gemini-3.8-flash",
-        "google/gemini-3.7-flash",
-        # xAI
-        "x-ai/grok-4.6",
-        # DeepSeek
-        "deepseek/deepseek-v4-pro",
-        "deepseek/deepseek-v4-pro-0813",
-        "deepseek/deepseek-v4-flash",
-        "deepseek/deepseek-v4-flash-0731",
-        # Qwen
-        "qwen/qwen3.8-max",
-        "qwen/qwen3.8-flash",
-        "qwen/qwen3.7-max",
-        "qwen/qwen3.7-plus",
-        "qwen/qwen3.6-35b-a3b",
-        # MoonshotAI
-        "moonshotai/kimi-k3",
-        # MiniMax
-        "minimax/minimax-m3",
-        # Z-AI
-        "z-ai/glm-5.3",
-        "z-ai/glm-5.3-flash",
-        "z-ai/glm-5.2",
-        # Xiaomi
-        "xiaomi/mimo-v2.5-pro",
-        # Tencent
-        "tencent/hy4-preview",
-        "tencent/hy3",
-        # StepFun
-        "stepfun/step-3.7-flash",
-        # NVIDIA
-        "nvidia/nemotron-3-super-120b-a12b",
-        # Sakana
-        "sakana/fugu-ultra",
-    ],
-    # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
-    # provider_model_ids fallback when /v1/models is unavailable.
-    "openai": [
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
-    ],
-    "openai-api": [
-        "gpt-5.6-sol",
-        "gpt-5.6-sol-pro",
-        "gpt-5.6-terra",
-        "gpt-5.6-terra-pro",
-        "gpt-5.6-luna",
-        "gpt-5.6-luna-pro",
-        "gpt-5.5",
-        "gpt-5.5-pro",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.4-nano",
-        "gpt-5-mini",
-        "gpt-5.3-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
-    ],
-    "openai-codex": _codex_curated_models(),
-    "xai-oauth": _xai_curated_models(),
-    "copilot-acp": [
-        "copilot-acp",
-    ],
-    "copilot": [
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "claude-sonnet-4.6",
-        "claude-sonnet-5",
-        "claude-sonnet-4",
-        "claude-sonnet-4.5",
-        "claude-haiku-4.5",
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
-    ],
-    "gemini": [
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite-preview",
-    ],
-    "zai": [
-        "glm-5.3",
-        "glm-5.3-flash",
-        "glm-5.2",
-        "glm-5.1",
-        "glm-5",
-        "glm-5v-turbo",
-        "glm-5-turbo",
-        "glm-4.7",
-        "glm-4.5",
-        "glm-4.5-flash",
-    ],
-    "xai": _xai_curated_models(),
-    "nvidia": [
-        # NVIDIA flagship reasoning models
-        "nvidia/nemotron-3-ultra-550b-a55b",
-        "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3.5-lightning-30b-a3b",
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-        # Third-party agentic models hosted on build.nvidia.com
-        # (map to OpenRouter defaults — users get familiar picks on NIM)
-        "z-ai/glm-5.3",
-        "z-ai/glm-5.2",
-        "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m3",
-    ],
-    "kimi-coding": [
-        "kimi-k3",
-        "kimi-k2.7-code",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "kimi-for-coding",
-        "kimi-for-coding-highspeed",
-        "kimi-k2-thinking",
-        "kimi-k2-thinking-turbo",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
-    ],
-    "kimi-coding-cn": [
-        "kimi-k3",
-        "kimi-k2.7-code",
-        "kimi-k2.7-code-highspeed",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "kimi-k2-thinking",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
-    ],
-    "stepfun": [
-        "step-3.5-flash",
-        "step-3.5-flash-2603",
-    ],
-    "moonshot": [
-        "kimi-k3",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "kimi-k2-thinking",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
-    ],
-    "minimax": [
-        "MiniMax-M3",
-        "MiniMax-M2.7",
-        "MiniMax-M2.5",
-        "MiniMax-M2.1",
-        "MiniMax-M2",
-    ],
-    "minimax-oauth": [
-        "MiniMax-M3",
-        "MiniMax-M2.7",
-        "MiniMax-M2.7-highspeed",
-    ],
-    "minimax-cn": [
-        "MiniMax-M3",
-        "MiniMax-M2.7",
-        "MiniMax-M2.5",
-        "MiniMax-M2.1",
-        "MiniMax-M2",
-    ],
-    "anthropic": [
-        "claude-fable-5",
-        "claude-sonnet-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-sonnet-4-6",
-        "claude-opus-4-5-20251101",
-        "claude-sonnet-4-5-20250929",
-        "claude-opus-4-20250514",
-        "claude-sonnet-4-20250514",
-        "claude-haiku-4-5-20251001",
-    ],
-    "deepseek": [
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-    ],
-    "xiaomi": [
-        "mimo-v2.5-pro",
-        "mimo-v2.5",
-        "mimo-v2-pro",
-        "mimo-v2-omni",
-        "mimo-v2-flash",
-    ],
-    "tencent-tokenhub": [
-        "hy4-preview",
-        "hy3",
-        "hy3-preview",
-    ],
-    "tencent-tokenplan": [
-        "hy4-preview",
-        "hy3",
-        "hy3-preview",
-    ],
-    "arcee": [
-        "trinity-large-thinking",
-        "trinity-large-preview",
-        "trinity-mini",
-    ],
-    "gmi": [
-        "zai-org/GLM-5.1-FP8",
-        "deepseek-ai/DeepSeek-V3.2",
-        "moonshotai/Kimi-K2.5",
-        "google/gemini-3.1-flash-lite-preview",
-        "anthropic/claude-sonnet-5",
-        "anthropic/claude-sonnet-4.6",
-        "openai/gpt-5.4",
-    ],
-    # Synced against https://opencode.ai/docs/zen/ + live GET /zen/v1/models
-    # (2026-08-20). Zen/Go are _LIVE_FIRST_PICKER_PROVIDERS, so this list is a
-    # discovery floor — live entries lead in the picker and stale curated
-    # names never pollute the top.
-    "opencode-zen": [
-        "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
-        "kimi-k3",
-        "kimi-k2.5",
-        "kimi-k2.6",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.5-pro",
-        "gpt-5.4-pro",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.4-nano",
-        "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
-        "gpt-5.2",
-        "gpt-5.2-codex",
-        "gpt-5.1",
-        "gpt-5.1-codex",
-        "gpt-5.1-codex-max",
-        "gpt-5.1-codex-mini",
-        "gpt-5",
-        "gpt-5-codex",
-        "gpt-5-nano",
-        "claude-fable-5",
-        "claude-opus-5",
-        "claude-sonnet-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-opus-4-5",
-        "claude-sonnet-4-6",
-        "claude-sonnet-4-5",
-        "claude-sonnet-4",
-        "claude-haiku-4-5",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-pro",
-        "gemini-3-flash",
-        "grok-4.6",
-        "grok-4.5",
-        "grok-build-0.1",
-        "muse-spark-1.2",
-        "minimax-m3",
-        "minimax-m2.7",
-        "minimax-m2.5",
-        "glm-5.3",
-        "glm-5.3-flash",
-        "glm-5.2",
-        "glm-5.1",
-        "glm-5",
-        "kimi-k2.7-code",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-        "deepseek-v4-flash-free",
-        "qwen3.6-plus",
-        "qwen3.5-plus",
-        "big-pickle",
-        "mimo-v2.5-free",
-        "hy3-free",
-        "laguna-s-2.1-free",
-        "nemotron-3-ultra-free",
-        "nemotron-3.5-lightning-free",
-        "muse-spark-1.2-contributor-free",
-        "muse-spark-1.3-contributor-free",
-    ],
-    # OpenCode free tier — keyless (no OpenCode account needed). This is the
-    # OFFLINE FLOOR only: provider_model_ids("opencode-free") revalidates live
-    # against GET /zen/v1/models (keyless) and filters to the anonymous free
-    # tier, so a relay-delisted model stops appearing in the picker and a
-    # newly-live one becomes selectable without a release. This floor keeps the
-    # picker populated when the relay is unreachable. Note: this floor may lag
-    # the live relay — that is intentional; the live revalidation is the
-    # source of truth when reachable. Known-delisted models are REMOVED from
-    # the floor (x-preview-f-free delisted 2026-08-26 — offline fallback must
-    # not offer a model that 401s). deepseek-v4-flash-free and mimo-v2.5-free
-    # are back on the live list.
-    "opencode-free": [
-        "deepseek-v4-flash-free",
-        "hy3-free",
-        "mimo-v2.5-free",
-        "laguna-s-2.1-free",
-        "nemotron-3-ultra-free",
-        "nemotron-3.5-lightning-free",
-        "muse-spark-1.2-contributor-free",
-        "muse-spark-1.3-contributor-free",
-    ],
-    # Synced against https://opencode.ai/docs/go/ + live GET /zen/go/v1/models
-    # (2026-08-20).
-    "opencode-go": [
-        "kimi-k3",
-        "kimi-k2.7-code",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "gpt-5.6-luna",
-        "grok-4.5",
-        "glm-5.3",
-        "glm-5.3-flash",
-        "glm-5.2",
-        "glm-5.1",
-        "glm-5",
-        "mimo-v2.5-pro",
-        "mimo-v2.5",
-        "mimo-v2-pro",
-        "mimo-v2-omni",
-        "minimax-m3",
-        "minimax-m2.7",
-        "minimax-m2.5",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-        "qwen3.8-max",
-        "qwen3.7-max",
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3.5-plus",
-        "hy3",
-        "hy3-preview",
-        "muse-spark-1.2-contributor",
-        "muse-spark-1.3-contributor",
-        # Go-subscription twin of the Zen keyless Ox Alpha (live go/v1
-        # catalog 2026-08-21; NOT keyless — Go relay requires a Go key).
-        "ox-alpha-free",
-    ],
-    "kilocode": [
-        "anthropic/claude-opus-4.6",
-        "anthropic/claude-sonnet-4.6",
-        "openai/gpt-5.4",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3-flash-preview",
-    ],
-    # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
-    # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
-    # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
-    # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
-    # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
-    "alibaba": [
-        # Qwen 千问系列 (DashScope / Qwen Cloud)
-        "qwen3.8-max",
-        "qwen3.7-max",
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3.6-flash",
-        "kimi-k2.5",
-        "qwen3.5-plus",
-        "qwen3-coder-plus",
-        "qwen3-coder-next",
-        # Third-party models available on coding-intl / DashScope
-        "glm-5.2",
-        "glm-5",
-        "glm-4.7",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash-0731",
-        "MiniMax-M2.5",
-    ],
-    # Alibaba DashScope (China) — same platform as alibaba, domestic endpoint
-    # (dashscope.aliyuncs.com); same catalog as the international tier.
-    "alibaba-cn": [
-        "qwen3.8-max",
-        "qwen3.7-max",
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3.6-flash",
-        "kimi-k2.5",
-        "qwen3.5-plus",
-        "qwen3-coder-plus",
-        "qwen3-coder-next",
-        "glm-5.2",
-        "glm-5",
-        "glm-4.7",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash-0731",
-        "MiniMax-M2.5",
-    ],
-    # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
-    # separate provider ID with its own base_url_env_var.
-    "alibaba-coding-plan": [
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3.5-plus",
-        "qwen3-max-2026-01-23",
-        "qwen3-coder-plus",
-        "qwen3-coder-next",
-        "kimi-k2.5",
-        "glm-5",
-        "glm-4.7",
-        "MiniMax-M2.5",
-    ],
-    # Alibaba Coding Plan (China) — domestic coding endpoint
-    # (coding.dashscope.aliyuncs.com); same catalog as the international tier.
-    "alibaba-coding-plan-cn": [
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3.5-plus",
-        "qwen3-max-2026-01-23",
-        "qwen3-coder-plus",
-        "qwen3-coder-next",
-        "kimi-k2.5",
-        "glm-5",
-        "glm-4.7",
-        "MiniMax-M2.5",
-    ],
-    # Alibaba Token Plan (Personal Edition) — dedicated token-plan endpoint
-    # (token-plan.ap-southeast-1.maas.aliyuncs.com), key tier `sk-sp-...`.
-    # Catalog verified against a live Token Plan subscription (2026-08-03).
-    "alibaba-token-plan": [
-        "qwen3.8-max-preview",
-        "qwen3.7-max",
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3.6-flash",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-        "deepseek-v3.2",
-        "kimi-k2.7-code",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "glm-5.2",
-        "glm-5.1",
-        "glm-5",
-    ],
-    # Alibaba Token Plan (China) — domestic token-plan endpoint
-    # (token-plan.cn-beijing.maas.aliyuncs.com); same catalog as intl.
-    "alibaba-token-plan-cn": [
-        "qwen3.8-max-preview",
-        "qwen3.7-max",
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3.6-flash",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-        "deepseek-v3.2",
-        "kimi-k2.7-code",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "glm-5.2",
-        "glm-5.1",
-        "glm-5",
-    ],
-    # Curated HF model list — only agentic models that map to OpenRouter defaults.
-    "huggingface": [
-        "moonshotai/Kimi-K2.5",
-        "Qwen/Qwen3.5-397B-A17B",
-        "Qwen/Qwen3.5-35B-A3B",
-        "deepseek-ai/DeepSeek-V3.2",
-        "MiniMaxAI/MiniMax-M2.5",
-        "zai-org/GLM-5",
-        "XiaomiMiMo/MiMo-V2-Flash",
-        "moonshotai/Kimi-K2-Thinking",
-        "moonshotai/Kimi-K2.6",
-    ],
-    # AWS Bedrock — static fallback list used when dynamic discovery is
-    # unavailable (no boto3, no credentials, or API error).  The agent
-    # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
-    # Use inference profile IDs (us.*) since most models require them.
-    "bedrock": [
-        "us.anthropic.claude-sonnet-5",
-        "us.anthropic.claude-sonnet-4-6",
-        "us.anthropic.claude-opus-4-6-v1",
-        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "openai.gpt-5.5",
-        "openai.gpt-5.6-sol",
-        "openai.gpt-5.6-terra",
-        "openai.gpt-5.6-luna",
-        "us.amazon.nova-pro-v1:0",
-        "us.amazon.nova-lite-v1:0",
-        "us.amazon.nova-micro-v1:0",
-        "deepseek.v3.2",
-        "us.meta.llama4-maverick-17b-instruct-v1:0",
-        "us.meta.llama4-scout-17b-instruct-v1:0",
-    ],
-    # Azure Foundry: user-provided endpoint and model.
-    # Empty list because models depend on the endpoint configuration.
-    "azure-foundry": [],
-    # Google Vertex AI — static curated list.  Vertex's OpenAI-compatible
-    # endpoint has no /models listing route, so without this entry the
-    # /model picker only ever shows the currently-configured model.
-    # Model IDs use the "google/" publisher prefix Vertex's openapi
-    # endpoint expects (see hermes_cli/model_setup_flows.py).
-    "vertex": [
-        "google/gemini-3.1-pro-preview",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3.5-flash",
-        "google/gemini-3-flash-preview",
-        "google/gemini-3.1-flash-lite-preview",
-    ],
-    "novita": [
-        "moonshotai/kimi-k2.5",
-        "minimax/minimax-m2.7",
-        "zai-org/glm-5",
-        "deepseek/deepseek-v3-0324",
-        "deepseek/deepseek-r1-0528",
-        "qwen/qwen3-235b-a22b-fp8",
-    ],
-}
-
-# Vercel AI Gateway: derive the bare-model-id catalog from the curated
-# ``VERCEL_AI_GATEWAY_MODELS`` snapshot so both the picker (tuples with descriptions)
-# and the static fallback catalog (bare ids) stay in sync from a single
-# source of truth.
-_PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
 
 # ---------------------------------------------------------------------------
 # Nous Portal free-model helpers — the Portal models endpoint is the source of truth for what is
@@ -1083,7 +438,7 @@ _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
 
 
-from agent.reasoning_effort import clamp_effort as _clamp_effort
+from agent.reasoning_effort import clamp_effort as _clamp_effort, is_astra_model
 
 
 def clamp_reasoning_effort_to_supported(
@@ -1848,7 +1203,11 @@ def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     curated = list(_PROVIDER_MODELS.get(normalized, []))
     # Curated order, only models the account has access to; an account serving none of them (rare)
     # falls back to curated so the picker still offers sane defaults.
-    return [m for m in curated if m.lower() in live_lower] or curated or live
+    discovered = [m for m in curated if m.lower() in live_lower]
+    # Astra is intentionally absent from offline/static catalogs: the official API's
+    # account-scoped /models response is the only source that may advertise it.
+    discovered.extend(m for m in live if is_astra_model(m))
+    return discovered or curated or live
 
 
 def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
@@ -2156,6 +1515,11 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
     return requested if requested == "ollama" else (normalize_provider(provider) or (provider or ""))
 
 
+def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
+    """Astra names cannot confer API/OAuth entitlement through picker state."""
+    return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and is_astra_model(model)
+
+
 def cached_provider_model_ids(
     provider: Optional[str], *, force_refresh: bool = False,
     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> list[str]:
@@ -2200,9 +1564,11 @@ def cached_provider_model_ids(
         if same_creds and isinstance(entry.get("models"), list) and entry["models"]:
             return list(entry["models"])
         return []
-    # Live returned nothing: a stale same-fingerprint entry beats an empty result.
+    # Live returned nothing: a stale same-fingerprint entry beats an empty result — minus account-gated
+    # models, which only a successful discovery may advertise (the entry itself is untouched, so the
+    # next successful fetch restores them).
     if _cache_entry_valid(entry, fp):
-        return list(entry["models"])
+        return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
     return []
 
 
@@ -2946,13 +2312,15 @@ def fetch_api_models(
 
 
 def _custom_endpoint_fingerprint(
-    api_key: Optional[str], api_mode: Optional[str], headers: Optional[dict[str, str]]) -> str:
+    api_key: Any, api_mode: Optional[str], headers: Optional[dict[str, str]]) -> str:
     """Custom endpoints have no ``PROVIDER_REGISTRY`` slug, so hash exactly what callers pass to
     :func:`fetch_api_models`: a rotated ``api_key``, changed ``api_mode`` or edited ``extra_headers``
     each bust the cache entry. blake2b for the same CodeQL rationale as ``_credential_fingerprint``."""
     import hashlib
 
-    blob = "|".join((api_key or "", api_mode or "", json.dumps(headers or {}, sort_keys=True)))
+    from agent.command_token_source import CommandTokenSource
+    identity = api_key.cache_identity if isinstance(api_key, CommandTokenSource) else api_key
+    blob = "|".join((identity or "", api_mode or "", json.dumps(headers or {}, sort_keys=True)))
     return hashlib.blake2b(blob.encode("utf-8", errors="replace"), digest_size=8).hexdigest()
 
 
@@ -2971,51 +2339,71 @@ def _cache_entry_valid(
 
 
 def cached_fetch_api_models(
-    api_key: Optional[str], base_url: Optional[str], *, timeout: float = 5.0,
+    api_key: Any, base_url: Optional[str], *, timeout: float = 5.0,
     api_mode: Optional[str] = None, headers: Optional[dict[str, str]] = None,
     force_refresh: bool = False, cache_only: bool = False,
+    fetch_models=None,
     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> Optional[list[str]]:
     """Disk-cached :func:`fetch_api_models` for custom endpoints. ``cache_only`` callers (GUI picker
     opens that must not block on a stopped local endpoint) still get a warm catalog instead of
-    collapsing to the config-declared subset."""
+    collapsing to the config-declared subset. ``fetch_models`` supplies native-aware discovery
+    without minting a command token before cache admission."""
+    from hermes_cli.model_switch_providers import _NativePickerModelList
+
+    def _catalog(entry):
+        return (_NativePickerModelList if entry.get("native_catalog") else list)(entry["models"])
+
+    def _entry(live, at=None):
+        return {**_cache_entry(fp, live, at), "native_catalog": isinstance(live, _NativePickerModelList)}
+
     def _live():
-        return fetch_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers)
+        if fetch_models is not None:
+            return fetch_models()
+        from agent.command_token_source import materialize_probe_api_key
+        return fetch_api_models(materialize_probe_api_key(api_key), base_url, timeout=timeout, api_mode=api_mode, headers=headers)
 
     normalized_url = str(base_url or "").strip().rstrip("/").lower()
     if not normalized_url:  # nothing to key the cache on
         return None if cache_only else _live()
 
-    cache_key = f"custom:{normalized_url}"
+    # Key on URL AND credential fingerprint: N ``custom_providers`` rows can share one proxy URL
+    # with distinct keys (#106184). A URL-only key let the last probe overwrite its siblings'
+    # slot, so every other same-URL row failed the fingerprint check, got an empty catalog and
+    # vanished from the no-probe pickers.
     fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+    cache_key = f"custom:{normalized_url}#{fp}"
     cache = _load_provider_models_cache()
     entry = cache.get(cache_key)
     now = time.time()
-    valid = not force_refresh and _cache_entry_valid(entry, fp)
-
-    if cache_only:
-        # Same trust window as the SWR tier below, minus the revalidation.
-        return list(entry["models"]) if valid and now - entry["at"] < _PROVIDER_MODELS_STALE_SERVE_MAX else None
+    valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True)
 
     if valid:
         age = now - entry["at"]
         if age < ttl_seconds:
-            return list(entry["models"])
+            return _catalog(entry)
         if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
-            # Stale-while-revalidate: serve now, refresh off-thread for the next open.
+            # Stale-while-revalidate: serve now, refresh off-thread for the next open. cache_only
+            # opens (GUI pickers that must not block on a stopped local server) take the same
+            # non-blocking refresh: without it a locally loaded model stayed invisible for the
+            # whole 7-day stale window unless the user found "Refresh Models" (#71169 class).
             def _refresh_custom():
                 live = _live()
-                return _cache_entry(fp, live) if live else None
+                return _entry(live) if live or isinstance(live, _NativePickerModelList) else None
 
             _spawn_swr_refresh(cache_key, _refresh_custom)
-            return list(entry["models"])
+            return _catalog(entry)
+
+    if cache_only:
+        return None
 
     live = _live()
-    if live:
-        _store_cache_entry(cache_key, _cache_entry(fp, live, now), cache)
-        return list(live)
+    if live or isinstance(live, _NativePickerModelList):
+        stored = _entry(live, now)
+        _store_cache_entry(cache_key, stored, cache)
+        return _catalog(stored)
     # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it.
-    if _cache_entry_valid(entry, fp):
-        return list(entry["models"])
+    if _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True):
+        return _catalog(entry)
     return live
 
 

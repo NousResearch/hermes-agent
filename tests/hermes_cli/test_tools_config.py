@@ -1129,6 +1129,37 @@ def test_agent_disabled_toolsets_python_literal_string_form_still_wins():
     assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
 
 
+def test_disabled_composite_debugging_prunes_constituent_platform_toolsets():
+    """#97015: ``agent.disabled_toolsets: [debugging]`` must hide member
+    toolsets on ``hermes tools --summary``, not only strip them at runtime."""
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": ["debugging"]},
+    }
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" not in enabled
+    assert "file" not in enabled
+    assert "web" not in enabled
+
+
+def test_disabled_composite_display_matches_runtime_tool_selection():
+    """Display/runtime parity: a toolset is listed as enabled iff the agent keeps
+    at least one of its tools after the runtime's tool-level subtraction."""
+    from model_tools import _select_tool_names
+    from toolsets import resolve_toolset
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": ["debugging"]},
+    }
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    runtime = _select_tool_names(sorted(enabled), ["debugging"], quiet_mode=True)
+
+    for name in ("terminal", "file", "web", "vision", "skills"):
+        assert (name in enabled) == bool(set(resolve_toolset(name)) & runtime), name
+
+
 @_requires_recently_shipped
 def test_platforms_whose_composite_excludes_it_are_left_narrow():
     """Parity is the justification, so don't widen a deliberately small

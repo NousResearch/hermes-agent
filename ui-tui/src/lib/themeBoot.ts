@@ -207,3 +207,13 @@ export const bootSeededPin: boolean = seedBootEnvironment(boot, process.env).see
 
 /** The cached theme for the first frame, or null on first launch. */
 export const bootTheme: Theme | null = boot?.theme ?? null
+
+/**
+ * The full boot-cache snapshot (theme + cached background + config pin) for
+ * the boot-cache bridge in createGatewayEventHandler: while no gateway skin
+ * has arrived, probe-driven theme re-resolves prefer this over the skinless
+ * default so a skinned session never repaints through the default identity
+ * palette mid-boot. Null on first launch (nothing cached — the default is
+ * the only theme that has ever described this terminal).
+ */
+export const bootThemeSnapshot: BootTheme | null = boot

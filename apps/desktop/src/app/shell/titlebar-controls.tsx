@@ -25,7 +25,7 @@ import {
 } from '@/store/layout'
 import { $unreadSessionCount } from '@/store/session-dot-state'
 
-import { appViewForPath, isOverlayView } from '../routes'
+import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
 import {
   TITLEBAR_ICON_BADGE_SCALE,
@@ -235,31 +235,43 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     }
   ]
 
-  // While a full-screen overlay (settings, command center, …) is open it should
-  // visually own the window. These control clusters are `fixed` at a higher
-  // z-index than the overlay card, so they'd otherwise bleed over it — hide them
-  // and let the overlay's own chrome (close button, drag region) take over.
-  if (isOverlayView(appViewForPath(location.pathname))) {
+  const view = appViewForPath(location.pathname)
+
+  // Overlays own the window. These clusters are `fixed` at a higher z-index
+  // than the overlay card, so they'd otherwise bleed over it — hide them (and
+  // the nested titleBar slots) and let the overlay's own chrome take over.
+  if (isOverlayView(view)) {
     return null
+  }
+
+  const titlebarSlots = (
+    <>
+      <Slot area="titleBar.left" />
+      <Slot area="titleBar.center" />
+      <Slot area="titleBar.right" />
+    </>
+  )
+  const leftClusterClass = cn(
+    titlebarToolClusterClass,
+    'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
+  )
+
+  // Contributed full-context plugin pages (`extension`) own the titlebar band.
+  // Hide the app's tool clusters but keep plugin slots in the same fixed
+  // position so `titleBar.center` (e.g. kanban's board switcher) stays mounted.
+  if (hidesFixedTitlebarClusters(view)) {
+    return <div className={leftClusterClass}>{titlebarSlots}</div>
   }
 
   const visibleLeftTools = [sidebarTool, ...systemTools, ...leftTools, ...tools].filter(tool => !tool.hidden)
 
   return (
     <>
-      <div
-        aria-label={t.shell.windowControls}
-        className={cn(
-          titlebarToolClusterClass,
-          'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
-        )}
-      >
+      <div aria-label={t.shell.windowControls} className={leftClusterClass}>
         {visibleLeftTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
-        <Slot area="titleBar.left" />
-        <Slot area="titleBar.center" />
-        <Slot area="titleBar.right" />
+        {titlebarSlots}
       </div>
 
       <div

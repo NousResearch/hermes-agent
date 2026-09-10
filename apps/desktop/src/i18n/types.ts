@@ -407,7 +407,7 @@ export interface Translations {
         includesHeading: string
         agentLabel: string
         desktopLabel: string
-        agentTargetLocal: (profile: string) => string
+        agentTargetLocal: (profile: string, dir: string) => string
         agentTargetRemote: (profile: string) => string
         catalogPinned: (name: string, sha: string) => string
         reviewedHeading: string
@@ -417,6 +417,7 @@ export interface Translations {
         missingEnvAction: string
         alreadyInstalled: (name: string) => string
         desktopTarget: string
+        desktopTargetFromPackage: string
         desktopOnlyNote: string
         insecureWarning: string
         securityHeading: string
@@ -427,6 +428,10 @@ export interface Translations {
         gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
+        pinToCommit: string
+        pinToCommitPlaceholder: string
+        pinToCommitHint: string
+        pinToCommitInvalid: string
         install: string
         installing: string
         probing: string
@@ -1319,6 +1324,21 @@ export interface Translations {
     plugins: {
       agentTitle: string
       agentBlurb: string
+      pageBlurb: string
+      halfDesktop: string
+      halfDesktopHint: string
+      halfAgent: string
+      halfAgentIn: (profile: string) => string
+      defaultProfile: string
+      kindAgent: string
+      kindDesktop: string
+      kindBoth: string
+      installAgentHere: string
+      installAgentHereTip: (profile: string) => string
+      installAgentHereNoOrigin: string
+      desktopHalfPending: string
+      desktopHalfPendingTip: string
+      emptyAll: string
       empty: string
       emptyHint: string
       loadFailed: string
@@ -1331,6 +1351,8 @@ export interface Translations {
       catalogHint: string
       alreadyInstalled: (name: string) => string
       catalogProvenance: (sha: string) => string
+      pinnedProvenance: (sha: string) => string
+      pinnedBadge: (sha: string) => string
       tierOfficial: string
       tierCommunity: string
       updateToPin: (sha: string) => string

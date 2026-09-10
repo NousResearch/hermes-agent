@@ -42,6 +42,7 @@ test('listen binds a loopback listener and wait resolves with the redirect param
     code: null | string
     error: null | string
     state: null | string
+    iss: null | string
   }>
 
   const res = await fetch(`${redirectUri}?code=abc123&state=st-1`)
@@ -53,10 +54,33 @@ test('listen binds a loopback listener and wait resolves with the redirect param
 
   assert.equal(result.code, 'abc123')
   assert.equal(result.state, 'st-1')
+  assert.equal(result.iss, null)
   assert.equal(result.error, null)
 
   // Listener is one-shot: the port must be closed after the callback.
   await assert.rejects(fetch(`${redirectUri}?code=again&state=st-1`))
+})
+
+test('preserves RFC 9207 iss query parameter when present', async () => {
+  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+
+  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{
+    code: null | string
+    error: null | string
+    state: null | string
+    iss: null | string
+  }>
+
+  const res = await fetch(`${redirectUri}?code=auth-code-1&state=st-2&iss=https%3A%2F%2Fauth.example.com`)
+
+  assert.equal(res.status, 200)
+
+  const result = await waitPromise
+
+  assert.equal(result.code, 'auth-code-1')
+  assert.equal(result.state, 'st-2')
+  assert.equal(result.iss, 'https://auth.example.com')
+  assert.equal(result.error, null)
 })
 
 test('non-callback noise (favicon) does not settle the listener', async () => {

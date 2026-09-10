@@ -12,11 +12,14 @@ from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 def validate_local_lineage(conn, receipt):
     from hermes_state_compression import _CHAIN_STEP_SQL
     from gateway.session_local_recovery import local_identity
-    if receipt['session_id'] != local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']):
+    if ('legacy_session_id' not in receipt and
+            receipt['session_id'] != local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id'])):
         raise RuntimeStoreError('storage_unavailable')
-    lineage = receipt.get('lineage', [receipt['session_id']])
+    from hermes_state_local_migration import legacy_lineage_root
+    root = legacy_lineage_root(conn, receipt)
+    lineage = receipt.get('lineage', [root])
     if (not isinstance(lineage, list) or not lineage or len(set(lineage)) != len(lineage)
-            or lineage[0] != receipt['session_id'] or lineage[-1] != receipt['entry']['session_id']):
+            or lineage[0] != root or lineage[-1] != receipt['entry']['session_id']):
         raise RuntimeStoreError('storage_unavailable')
     for parent_id, child_id in zip(lineage, lineage[1:]):
         parent = conn.execute('SELECT end_reason FROM sessions WHERE id=?', (parent_id,)).fetchone()
@@ -50,12 +53,16 @@ def local_physical_target(conn, session_id):
 def advance_local_target(conn, parent_session_id, child_session_id, *, entry=None):
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (parent_session_id,)).fetchone()
     logical_id = parent['chat_id'] if parent else None
-    if not logical_id or not logical_id.startswith('local-'):
+    if not logical_id:
         return
     key = POLICY_PREFIX + logical_id
     raw = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
     if raw is None:
-        raise RuntimeStoreError('storage_unavailable')
+        from hermes_state_local_migration import LEGACY_PREFIX
+        legacy = conn.execute('SELECT 1 FROM state_meta WHERE key=?', (LEGACY_PREFIX + logical_id,)).fetchone()
+        if logical_id.startswith('local-') or legacy:
+            raise RuntimeStoreError('storage_unavailable')
+        return
     try:
         receipt = json.loads(raw[0])
         if (receipt['session_id'] != logical_id or receipt['entry']['session_id'] != parent_session_id

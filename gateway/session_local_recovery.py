@@ -23,7 +23,8 @@ def restore_local_session(authority, sid):
     try:
         if receipt['profile_id'] != authority.profile_id:
             raise RuntimeStoreError('profile_mismatch')
-        chat_id = local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id'])
+        chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
+                   local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
         if receipt['session_id'] != sid or sid != chat_id:
             raise ValueError('identity mismatch')
         source = SessionSource(platform=Platform.LOCAL, chat_id=chat_id,

@@ -29,10 +29,10 @@ def _target(authority, actor):
         raise RuntimeStoreError('not_found')
     tip = authority.db.get_compression_tip(row['id'])
     target = authority.db.get_session(tip)
-    if target is None or not str(target.get('chat_id') or '').startswith('local-'):
-        # A legacy transcript needs an owner-side binding migration, not a new agent.
-        raise RuntimeStoreError('runtime_coordination_required')
-    ref = SessionRef(authority.profile_id, target['chat_id'])
+    if target is None:
+        raise RuntimeStoreError('not_found')
+    from gateway.session_local_migration import resolve_local_target
+    ref = resolve_local_target(authority, actor, target['id'])
     authority.authorize(actor, ref, 'session:submit')
     live = authority.sessions[ref.session_id]
     entry = authority.runner.session_store.lookup_by_session_key(live.route)
@@ -104,11 +104,15 @@ async def _migrate(authority, actor, home, root):
         owner = record['owner']
         if owner['profile_home'] != str(home):
             continue
+        if authority.db.get_compression_tip(owner['session_id']) != entry.session_id:
+            continue
+        from hermes_cli.active_sessions import active_session_liveness_guard
+        with active_session_liveness_guard(owner['session_id'], registry_home=home) as active:
+            if active:
+                raise RuntimeStoreError('runtime_coordination_required')
         if record['status'] == 'claimed':
             record.update(status='ambiguous', reason='unknown_execution')
             _write(path, record)
-            continue
-        if authority.db.get_compression_tip(owner['session_id']) != entry.session_id:
             continue
         await _admit(authority, actor, home, root, _delivery_id(record['delivery_id']),
                      record['message'], ref, live, entry, legacy=record)
@@ -130,10 +134,16 @@ async def recover_bot_deliveries(authority):
         if row is None:
             return
         target = authority.db.get_session(authority.db.get_compression_tip(row['id']))
-        if target is None or not str(target.get('chat_id') or '').startswith('local-'):
-            return  # Historical binding migration belongs to the session owner.
+        if target is None:
+            return
+        from hermes_state_local import POLICY_PREFIX
+        with authority.db._read_ctx() as conn:
+            bound = conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                (POLICY_PREFIX + (target.get('chat_id') or target['id']),)).fetchone()
+        if not bound:
+            return  # Unowned history requires a native ticket, never the first remote sender.
         actor = Principal(target['user_id'], authority.profile_id,
-                          frozenset({'session:submit'}), 'bot-owner-recovery')
+                          frozenset({'session:submit', 'session:read'}), 'bot-owner-recovery')
         await _migrate(authority, actor, home, root)
 
 
@@ -161,8 +171,14 @@ async def deliver(connection, params):
         raise RuntimeStoreError('invalid_params')
     authority._require_admission_open()
     with _locked(home) as root:
-        await _migrate(authority, actor, home, root)
         path = root / f'{key}.json'
+        record = _read(path)
+        if record is not None and record.get('admission_id'):
+            if record['message'] != message or record['principal_id'] != actor.subject:
+                raise RuntimeStoreError('admission_conflict')
+            authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
+            return _result(authority, record)
+        await _migrate(authority, actor, home, root)
         record = _read(path)
         if record is not None and record.get('admission_id'):
             if record['message'] != message or record['principal_id'] != actor.subject:

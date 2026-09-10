@@ -57,7 +57,12 @@ class SessionAuthority:
             row = self.db.get_session(ref.session_id)
             if row is None:
                 raise RuntimeStoreError('not_found')
-            if str(row.get('chat_id') or '').startswith('local-'):
+            from hermes_state_local import POLICY_PREFIX
+            with self.db._read_ctx() as conn:
+                from hermes_state_local_migration import LEGACY_PREFIX
+                local = conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
+                    (POLICY_PREFIX + ref.session_id, LEGACY_PREFIX + ref.session_id)).fetchone()
+            if local or str(row.get('chat_id') or '').startswith('local-'):
                 from gateway.session_local_recovery import restore_local_session
                 restore_local_session(self, ref.session_id)
             else:

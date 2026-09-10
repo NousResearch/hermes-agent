@@ -6,7 +6,6 @@ applies the classic CLI rule (``hermes_cli.main._resolve_session_by_name_or_id``
 """
 from __future__ import annotations
 
-from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -21,13 +20,13 @@ def resolve_titled_session(authority, actor, name, *, missing_ok=False):
     row = db.get_session(name)
     sid = row['id'] if row else db.resolve_session_by_title(name)
     tip = db.get_session(db.get_compression_tip(sid) or sid) if sid else None
-    if tip is None or not str(tip.get('chat_id') or '').startswith('local-'):
+    if tip is None:
         if missing_ok:
             return None
         raise RuntimeStoreError('not_found')
-    ref = SessionRef(authority.profile_id, tip['chat_id'])
     try:
-        authority.authorize(actor, ref, 'session:read')
+        from gateway.session_local_migration import resolve_local_target
+        ref = resolve_local_target(authority, actor, tip['id'])
     except RuntimeStoreError as exc:
         if exc.reason == 'permission_denied':
             raise RuntimeStoreError('not_found') from None

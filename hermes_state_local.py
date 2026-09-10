@@ -26,15 +26,20 @@ def commit_local_session(db, *, epoch, receipt):
             if not same:
                 raise RuntimeStoreError('invalid_params')
             return saved
-        if conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone():
+        if ('legacy_session_id' not in receipt and
+                conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone()):
             raise RuntimeStoreError('storage_unavailable')
         if conn.execute("SELECT 1 FROM gateway_routing WHERE scope='' AND session_key=?", (route,)).fetchone():
             raise RuntimeStoreError('admission_conflict')
+        if 'legacy_session_id' in receipt:
+            from hermes_state_local_migration import bind_legacy_target
+            bind_legacy_target(db, conn, receipt)
         policy, entry = receipt['policy'], receipt['entry']
         from datetime import datetime
         started = datetime.fromisoformat(entry['created_at']).timestamp()
         conn.execute('''INSERT INTO sessions(id,source,user_id,session_key,chat_id,chat_type,
-            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,'dm',?,?,?,?,?)''',
+            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,'dm',?,?,?,?,?)
+            ON CONFLICT(id) DO NOTHING''',
             (sid, policy['source'], receipt['principal_id'], route, entry['origin']['chat_id'],
              policy['model'], policy['cwd'], db._own_profile_name(), _json(entry['origin']), started))
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",

@@ -2622,6 +2622,7 @@ class GatewayTurnMixin:
         progress_mode = _env_tp if _env_tp and not _tool_progress_configured else (_resolved_tp or _env_tp or "all")
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        progress_card = bool(resolve_display_setting(user_config, platform_key, "progress_card"))
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
 
@@ -2686,21 +2687,21 @@ class GatewayTurnMixin:
         return self._RunAgentDisplay(
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
-            progress_mode=progress_mode, progress_grouping=progress_grouping,
+            progress_mode=progress_mode, progress_grouping=progress_grouping, progress_card=progress_card,
             _display_surface_mode=_display_surface_mode,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
-            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
+            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards or progress_card,
             _generic_status_phrase=_generic_status_phrase,
         )
 
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
-        "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
+        "progress_grouping", "progress_card", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
     )
@@ -3722,6 +3723,20 @@ class GatewayTurnMixin:
         turn_ctx._progress_metadata, turn_ctx._progress_reply_to, _status_thread_metadata = (
             self._run_agent_progress_threading(source, event_message_id, _native_slack_task_cards)
         )
+        if turn_ctx.progress_card:
+            turn_ctx._progress_metadata = dict(turn_ctx._progress_metadata or {})
+            turn_ctx._progress_card_state = {
+                "status": "running", "stages": ["正在执行任务"], "tools": [], "tool_count": 0,
+            }
+            turn_ctx._progress_metadata.update({
+                "_interim_send": True,
+                "_progress_send": True,
+                "_progress_card": True,
+                "_progress_card_state": turn_ctx._progress_card_state,
+            })
+            _status_thread_metadata = dict(_status_thread_metadata or {})
+            _status_thread_metadata["_progress_card"] = True
+            _status_thread_metadata["_progress_card_state"] = turn_ctx._progress_card_state
         # Bridges: sync step/event/status callbacks → async hooks.emit and adapter.send.
         turn_ctx._loop_for_step = asyncio.get_running_loop()
         turn_ctx._hooks_ref = self.hooks
@@ -3865,6 +3880,14 @@ class GatewayTurnMixin:
 
             # Interrupted OR queued message (/queue)?
             result = turn_ctx.result_holder[0]
+            if turn_ctx._progress_card_state is not None:
+                outcome = result if isinstance(result, dict) else response if isinstance(response, dict) else {}
+                turn_ctx._progress_card_state["status"] = (
+                    "failed" if outcome.get("failed") or outcome.get("error")
+                    else "stopped" if outcome.get("interrupted") or outcome.get("stopped")
+                    else "failed" if outcome.get("completed") is False
+                    else "completed"
+                )
             adapter = self._adapter_for_source(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)

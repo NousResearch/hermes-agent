@@ -470,6 +470,7 @@ class TestSegmentBreakOnToolBoundary:
         consumer.finish()
         await task
 
+
         # The fallback should send the post-tool response via
         # _send_fallback_final.
         await consumer._send_fallback_final(post_tool_response)
@@ -1487,4 +1488,3 @@ class TestFlushPendingSync:
 
         consumer.finish()
         await task
-

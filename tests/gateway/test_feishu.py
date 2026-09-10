@@ -288,6 +288,107 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
 
+    @staticmethod
+    def _progress_metadata():
+        state = {
+            "status": "running",
+            "stages": ["理解需求", "核对更新协议"],
+            "tools": ["🔍 搜索 SDK", "💻 运行定向测试"],
+            "tool_count": 2,
+        }
+        return {
+            "_interim_send": True,
+            "_progress_send": True,
+            "_progress_card": True,
+            "_progress_card_state": state,
+        }
+
+    @staticmethod
+    def _success(message_id="om_progress"):
+        return SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id=message_id),
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_progress_card_delivery_contract(self):
+        from gateway.config import PlatformConfig
+        from gateway.display_config import resolve_display_setting
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        patch_message = Mock(return_value=self._success())
+        update_message = Mock(return_value=self._success())
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(
+                patch=patch_message, update=update_message,
+            )))
+        )
+        adapter._feishu_send_with_retry = AsyncMock(side_effect=[
+            self._success("om_plain"), self._success("om_progress"), self._success("om_final"),
+        ])
+        metadata = self._progress_metadata()
+
+        plain = asyncio.run(adapter.send("oc_chat", "默认进度"))
+        sent = asyncio.run(adapter.send("oc_chat", "fallback", metadata=metadata))
+        metadata["_progress_card_state"]["status"] = "completed"
+        edited = asyncio.run(adapter.edit_message(
+            "oc_chat", sent.message_id, "fallback", finalize=True, metadata=metadata,
+        ))
+        ordinary_edited = asyncio.run(adapter.edit_message("oc_chat", "om_text", "普通更新"))
+        patch_message.return_value = SimpleNamespace(success=lambda: False, code=230099, msg="invalid card")
+        failed_patch = asyncio.run(adapter.edit_message(
+            "oc_chat", sent.message_id, "fallback", metadata=metadata,
+        ))
+        final = asyncio.run(adapter.send("oc_chat", "最终答案"))
+
+        self.assertFalse(resolve_display_setting({}, "feishu", "progress_card"))
+        self.assertTrue(plain.success and sent.success and edited.success and ordinary_edited.success and final.success)
+        self.assertFalse(failed_patch.success)
+        calls = adapter._feishu_send_with_retry.await_args_list
+        self.assertEqual([call.kwargs["msg_type"] for call in calls], ["text", "interactive", "text"])
+        card = json.loads(calls[1].kwargs["payload"])
+        self.assertEqual(card["schema"], "2.0")
+        self.assertNotIn("header", card)
+        self.assertIn("任务进行中", card["body"]["elements"][0]["content"])
+        self.assertIn("理解需求", card["body"]["elements"][1]["content"])
+        panel = card["body"]["elements"][2]
+        self.assertEqual(panel["tag"], "collapsible_panel")
+        self.assertFalse(panel["expanded"])
+        self.assertEqual(panel["header"]["title"]["content"], "已调用 2 次工具")
+        self.assertIn("运行定向测试", panel["elements"][0]["content"])
+        self.assertEqual(edited.message_id, "om_progress")
+        request = patch_message.call_args_list[0].args[0]
+        self.assertEqual(request.message_id, "om_progress")
+        patched_card = json.loads(request.request_body.content)
+        self.assertIn("任务已完成", patched_card["body"]["elements"][0]["content"])
+        self.assertEqual(update_message.call_count, 1)
+        self.assertEqual(update_message.call_args.args[0].request_body.msg_type, "text")
+
+    def test_progress_card_structured_state_never_promotes_tool_content_to_stage(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        metadata = self._progress_metadata()
+        metadata["_progress_card_state"].update({
+            "stages": [],
+            "tools": ["💻 terminal: first command"],
+            "tool_count": 1,
+        })
+        card = json.loads(FeishuAdapter._build_progress_card_payload(
+            "正在执行任务\n已调用 1 次工具\n💻 terminal: first command",
+            metadata=metadata,
+        ))
+
+        stage = card["body"]["elements"][1]["content"]
+        panel = card["body"]["elements"][2]
+        self.assertEqual(stage, "● 正在执行任务")
+        self.assertNotIn("terminal", stage)
+        self.assertIn("terminal: first command", panel["elements"][0]["content"])
+
+        metadata["_progress_card_state"]["status"] = "failed"
+        failed_card = json.loads(FeishuAdapter._build_progress_card_payload("ignored", metadata=metadata))
+        self.assertIn("任务执行失败", failed_card["body"]["elements"][0]["content"])
+
 
 class TestAdapterModule(unittest.TestCase):
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):
@@ -2523,5 +2624,3 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
-

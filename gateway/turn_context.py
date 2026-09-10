@@ -21,6 +21,7 @@ class TurnContext:
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
+    progress_card: bool = False
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
@@ -35,6 +36,7 @@ class TurnContext:
     _cleanup_progress: bool = False
     _cleanup_msg_ids: List[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None
+    _progress_card_state: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
     message: Optional[str] = None  # the only rebindable field
     # turn parameters / config snapshots (read-only in run_sync)

@@ -326,4 +326,3 @@ class TestLiveStatusSetting:
 
         assert resolve_display_setting({}, "slack", "live_status") == "full"
 
-

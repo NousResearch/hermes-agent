@@ -1297,11 +1297,16 @@ display:
       tool_progress: verbose  # 在 Telegram 上详细进度
     slack:
       tool_progress: 'off'    # 在共享 Slack 工作区中保持安静
+    feishu:
+      tool_progress: all
+      progress_card: true     # 可见阶段 + 折叠工具摘要，默认 false
 ```
 
 没有覆盖的平台回退到全局 `tool_progress` 值。有效平台键：`telegram`、`discord`、`slack`、`signal`、`whatsapp`、`matrix`、`mattermost`、`email`、`sms`、`homeassistant`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`。旧版 `display.tool_progress_overrides` 键仍可加载以向后兼容，但已弃用，并在首次加载时迁移到 `display.platforms`。
 
 `interim_assistant_messages` 仅限 gateway。启用后，Hermes 将已完成的轮次中 assistant 更新作为单独的聊天消息发送。这与 `tool_progress` 无关，不需要 gateway 流式传输。
+
+在飞书中设置 `display.platforms.feishu.progress_card: true` 后，Gateway 会用同一条交互卡片消息展示进度：主面板直接显示经过裁剪的可见 commentary 阶段，底部“已调用 N 次工具”折叠区展示裁剪后的工具摘要。卡片不读取或展示模型隐藏思维链；最终答案仍作为独立普通消息发送。交互卡片更新使用飞书 PATCH 接口；更新失败时保留原卡片，不新发重复进度。若卡片在创建前被明确拒绝，则仅回退一次到普通 text/post 进度消息。
 
 ## 隐私
 

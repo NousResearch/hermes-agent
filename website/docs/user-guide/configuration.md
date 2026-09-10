@@ -2162,6 +2162,9 @@ display:
       tool_progress: verbose  # detailed progress on Telegram
     slack:
       tool_progress: 'off'    # quiet in shared Slack workspace
+    feishu:
+      tool_progress: all
+      progress_card: true     # visible stages + collapsed tool summaries; default false
 ```
 
 From the CLI, use the canonical path — `hermes config set display.platforms.telegram.streaming false`. The shorthand `hermes config set platforms.telegram.streaming false` is accepted too: because per-platform *display* settings (`streaming`, `show_reasoning`, `tool_progress`, …) are only ever read from `display.platforms`, `config set`/`get`/`unset` redirect that shorthand to the canonical key and print a note. Connection keys under the top-level `platforms.<name>` block (`token`, `enabled`, `reply_to_mode`, `extra`) are not redirected.
@@ -2173,6 +2176,8 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
 `show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
+
+On Feishu, `display.platforms.feishu.progress_card: true` keeps one interactive progress message: visible, shortened commentary stages appear above a collapsed “Tools called N times” panel containing trimmed tool summaries. Hidden reasoning is never included, and the final answer remains a separate ordinary message. Interactive updates use Feishu's card PATCH API; if an update fails, Hermes leaves the existing card in place instead of risking a duplicate. A card rejected before creation falls back once to the ordinary text/post progress message.
 
 ## Privacy
 

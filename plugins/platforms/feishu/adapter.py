@@ -64,7 +64,7 @@ _LARK_SDK_IMPORTS = (
         "CreateFileRequest", "CreateFileRequestBody", "CreateImageRequest", "CreateImageRequestBody",
         "CreateMessageRequest", "CreateMessageRequestBody", "GetChatRequest", "GetMessageRequest",
         "GetMessageResourceRequest", "P2ImMessageMessageReadV1", "ReplyMessageRequest", "ReplyMessageRequestBody",
-        "UpdateMessageRequest", "UpdateMessageRequestBody",
+        "PatchMessageRequest", "PatchMessageRequestBody", "UpdateMessageRequest", "UpdateMessageRequestBody",
     )),
     ("lark_oapi.core", ("AccessTokenType", "HttpMethod")),
     ("lark_oapi.core.const", ("FEISHU_DOMAIN", "LARK_DOMAIN")),
@@ -1197,8 +1197,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    REQUIRES_PROGRESS_FINALIZE = True
 
     MAX_MESSAGE_LENGTH = 8000
+    # Card JSON adds structural overhead around the markdown body. Keep the
+    # existing message budget while leaving room for the Card 2.0 envelope.
+    PROGRESS_CARD_TEXT_LIMIT = 6000
     CHAT_LOCK_MAX_SIZE: int = 1000  # distinct chat IDs kept in _chat_locks before LRU eviction
     _SPLIT_THRESHOLD = 4000  # chunk near Feishu's ~4096-char client split → continuation almost certain
 
@@ -1562,6 +1566,35 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+        card_state = (metadata or {}).get("_progress_card_state")
+        if isinstance(card_state, dict) and card_state.get("delivery_aborted"):
+            return SendResult(success=False, error="Progress card delivery was aborted after an uncertain failure")
+        if self._uses_progress_card(metadata):
+            try:
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="interactive",
+                    payload=self._build_progress_card_payload(formatted, metadata=metadata),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                result = self._finalize_send_result(response, "progress card send failed")
+                if result.success:
+                    return result
+                if isinstance(card_state, dict):
+                    card_state["delivery_mode"] = "plain"
+                logger.warning(
+                    "[Feishu] Progress card send rejected (code=%s); falling back to ordinary message",
+                    getattr(response, "code", "unknown"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[Feishu] Progress card send failed (%s); aborting progress delivery to avoid duplicates",
+                    type(exc).__name__,
+                )
+                if isinstance(card_state, dict):
+                    card_state["delivery_aborted"] = True
+                return SendResult(success=False, error=str(exc))
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # Decide markdown-vs-text once for the whole message: a chunk of a long
         # markdown reply may be plain prose that fails the per-chunk regex and would
@@ -1606,7 +1639,10 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
-    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+    async def edit_message(
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -1619,7 +1655,27 @@ class FeishuAdapter(BasePlatformAdapter):
             response = await self._run_blocking(self._client.im.v1.message.update, request)
             return self._finalize_send_result(response, "update failed")
 
+        async def _patch_card(payload: str) -> SendResult:
+            body = self._build_patch_message_body(content=payload)
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            response = await self._run_blocking(self._client.im.v1.message.patch, request)
+            return self._finalize_send_result(response, "card patch failed")
+
         try:
+            if self._uses_progress_card(metadata):
+                try:
+                    result = await _patch_card(
+                        self._build_progress_card_payload(content, finalize=finalize, metadata=metadata),
+                    )
+                    if result.success:
+                        result.message_id = message_id
+                    return result
+                except Exception as exc:
+                    logger.warning(
+                        "[Feishu] Progress card update failed (%s); preserving the original card",
+                        type(exc).__name__,
+                    )
+                    return SendResult(success=False, error=str(exc))
             msg_type, payload = self._build_outbound_payload(content)
             result = await _update(msg_type, payload)
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
@@ -1633,6 +1689,57 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _uses_progress_card(metadata: Optional[Dict[str, Any]]) -> bool:
+        return bool(
+            metadata
+            and metadata.get("_interim_send") is True
+            and metadata.get("_progress_send") is True
+            and metadata.get("_progress_card") is True
+            and (metadata.get("_progress_card_state") or {}).get("delivery_mode") != "plain"
+        )
+
+    @classmethod
+    def _build_progress_card_payload(
+        cls, content: str, *, finalize: bool = False, metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        if len(content) > cls.PROGRESS_CARD_TEXT_LIMIT:
+            content = content[: cls.PROGRESS_CARD_TEXT_LIMIT - 1].rstrip() + "…"
+        structured_state = (metadata or {}).get("_progress_card_state")
+        state = structured_state if isinstance(structured_state, dict) else {}
+        status = state.get("status") or ("completed" if finalize else "running")
+        status_text = {
+            "running": "⏳ 任务进行中", "completed": "✓ 任务已完成",
+            "failed": "⚠ 任务执行失败", "stopped": "• 任务已终止",
+        }.get(status, "⏳ 任务进行中")
+        stages = (
+            state.get("stages") or ["正在执行任务"]
+            if isinstance(structured_state, dict)
+            else ([content] if content.strip() else [])
+        )
+        stage_lines = [
+            f"{'✓' if status == 'completed' or index < len(stages) - 1 else '●'} {stage}"
+            for index, stage in enumerate(stages)
+        ] or ["● 正在执行任务"]
+        tools = state.get("tools") or []
+        tool_count = int(state.get("tool_count") or 0)
+        elements = [
+            {"tag": "markdown", "content": f"**{status_text}**"},
+            {"tag": "markdown", "content": "\n".join(stage_lines)},
+        ]
+        if tool_count:
+            elements.append({
+                "tag": "collapsible_panel", "expanded": False,
+                "header": {"title": {"tag": "plain_text", "content": f"已调用 {tool_count} 次工具"}},
+                "elements": [{"tag": "markdown", "content": "\n".join(f"</> {tool}" for tool in tools)}],
+            })
+        card = {
+            "schema": "2.0",
+            "config": {"width_mode": "fill"},
+            "body": {"elements": elements},
+        }
+        return json.dumps(card, ensure_ascii=False)
 
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
@@ -3836,6 +3943,14 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_update_message_request(message_id: str, request_body: Any) -> Any:
         return _sdk_build(UpdateMessageRequest, message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        return _sdk_build(PatchMessageRequestBody, content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        return _sdk_build(PatchMessageRequest, message_id=message_id, request_body=request_body)
 
     @staticmethod
     def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:

@@ -133,6 +133,8 @@ class SmallLimitProgressAdapter(ProgressCaptureAdapter):
 
 
 class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
+    REQUIRES_PROGRESS_FINALIZE = True
+
     async def edit_message(
         self, chat_id, message_id, content, *, finalize: bool = False, metadata=None
     ) -> SendResult:
@@ -142,6 +144,7 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
                 "message_id": message_id,
                 "content": content,
                 "metadata": metadata,
+                "finalize": finalize,
             }
         )
         return SendResult(success=True, message_id=message_id)
@@ -456,6 +459,57 @@ class DelayedInterimAgent:
         }
 
 
+class CardProgressAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.interim_assistant_callback("理解用户问题")
+        self.tool_progress_callback("tool.started", "terminal", "first command", {})
+        time.sleep(0.4)
+        self.interim_assistant_callback("核对更新协议")
+        self.tool_progress_callback("tool.started", "browser_navigate", "https://example.com", {})
+        time.sleep(0.4)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class FailedCardProgressAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.tool_progress_callback("tool.started", "terminal", "failing command", {})
+        time.sleep(0.4)
+        return {
+            "final_response": "failed", "messages": [], "api_calls": 1,
+            "completed": False, "failed": True,
+        }
+
+
+class StoppedCardProgressAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.tool_progress_callback("tool.started", "terminal", "interrupted command", {})
+        time.sleep(0.4)
+        return {
+            "final_response": "stopped", "messages": [], "api_calls": 1,
+            "completed": False, "interrupted": True,
+        }
+
+
+class RepeatedCardToolAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.tool_progress_callback("tool.started", "terminal", "first command", {})
+        self.tool_progress_callback("tool.started", "terminal", "second command", {})
+        time.sleep(0.4)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -479,6 +533,143 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_feishu_progress_metadata_marks_card_lane_and_finalizes(monkeypatch, tmp_path):
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "display": {
+                    "platforms": {
+                        "feishu": {
+                            "tool_progress": "all",
+                            "progress_card": True,
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = CardProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = MetadataEditProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    source = SessionSource(platform=Platform.FEISHU, chat_id="oc_chat", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu-card",
+        session_key="agent:main:feishu:dm:oc_chat",
+        event_message_id="om_user",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    metadata = adapter.sent[0]["metadata"]
+    assert metadata["_interim_send"] is True
+    assert metadata["_progress_send"] is True
+    assert metadata["_progress_card"] is True
+    assert metadata["_progress_card_state"]["stages"] == [
+        "正在执行任务", "理解用户问题", "核对更新协议",
+    ]
+    assert metadata["_progress_card_state"]["tool_count"] == 2
+    assert len(metadata["_progress_card_state"]["tools"]) == 2
+    assert metadata["_progress_card_state"]["status"] == "completed"
+    assert len(adapter.sent) == 1
+    assert adapter.edits
+    assert adapter.edits[-1]["message_id"] == "progress-1"
+    assert adapter.edits[-1]["finalize"] is True
+
+    fake_run_agent.AIAgent = FailedCardProgressAgent
+    failed_adapter = MetadataEditProgressCaptureAdapter(platform=Platform.FEISHU)
+    failed_runner = _make_runner(failed_adapter)
+    failed_result = await failed_runner._run_agent(
+        message="fail",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu-card-failed",
+        session_key="agent:main:feishu:dm:oc_chat:failed",
+        event_message_id="om_user_2",
+    )
+    assert failed_result["failed"] is True
+    failed_state = failed_adapter.sent[0]["metadata"]["_progress_card_state"]
+    assert failed_state["status"] == "failed"
+    assert failed_adapter.edits[-1]["finalize"] is False
+
+    fake_run_agent.AIAgent = StoppedCardProgressAgent
+    stopped_adapter = MetadataEditProgressCaptureAdapter(platform=Platform.FEISHU)
+    stopped_runner = _make_runner(stopped_adapter)
+    stopped_result = await stopped_runner._run_agent(
+        message="stop",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu-card-stopped",
+        session_key="agent:main:feishu:dm:oc_chat:stopped",
+        event_message_id="om_user_3",
+    )
+    assert stopped_result["interrupted"] is True
+    stopped_state = stopped_adapter.sent[0]["metadata"]["_progress_card_state"]
+    assert stopped_state["status"] == "stopped"
+
+
+@pytest.mark.parametrize("tool_progress", ["off", "log", "new"])
+@pytest.mark.asyncio
+async def test_feishu_progress_card_counts_every_tool_start(monkeypatch, tmp_path, tool_progress):
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({
+            "display": {"platforms": {"feishu": {
+                "tool_progress": tool_progress, "progress_card": True,
+            }}},
+        }),
+        encoding="utf-8",
+    )
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = RepeatedCardToolAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = MetadataEditProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.FEISHU, chat_id="oc_chat", chat_type="dm"),
+        session_id=f"sess-feishu-card-{tool_progress}",
+        session_key=f"agent:main:feishu:dm:oc_chat:{tool_progress}",
+        event_message_id="om_user",
+    )
+
+    assert result["final_response"] == "done"
+    state = adapter.sent[0]["metadata"]["_progress_card_state"]
+    assert state["tool_count"] == 2
+    assert state["stages"] == ["正在执行任务"]
+    assert len(state["tools"]) == (0 if tool_progress in {"off", "log"} else 1)
 
 
 @pytest.mark.asyncio

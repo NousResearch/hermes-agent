@@ -111,6 +111,12 @@ class TurnRunner:
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
             return
+        if (
+            ctx._progress_card_state is not None
+            and event_type == "tool.started"
+            and tool_name != "_thinking"
+        ):
+            ctx.progress_queue.put({"type": "tool.started"})
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
             return
@@ -253,7 +259,10 @@ class TurnRunner:
                 code = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
             elif code is None:
                 code = f"{emoji} {tool_name}: \"{preview}\"" if preview else f"{emoji} {tool_name}..."
-            ctx.progress_queue.put(code)
+            ctx.progress_queue.put(
+                {"type": "tool.summary", "summary": code}
+                if ctx._progress_card_state is not None else code
+            )
             return None
         if code is not None:
             return code
@@ -275,6 +284,9 @@ class TurnRunner:
         ctx = self._ctx
         sc = self._stream_consumer()
         native = sc is not None and getattr(sc, "accepts_tool_progress", False)
+        if ctx._progress_card_state is not None:
+            ctx.progress_queue.put({"type": "tool.summary", "summary": msg})
+            return
         if msg == ctx.last_progress_msg[0]:
             ctx.repeat_count[0] += 1
             if native:
@@ -471,6 +483,7 @@ class TurnRunner:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        _edit_accepts_finalize: bool
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -494,12 +507,16 @@ class TurnRunner:
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
             # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
+            _edit_accepts_finalize=_accepts_keyword(adapter.edit_message, "finalize"),
         )
 
-    async def _edit_progress_message(self, st, message_id: str, content: str):
+    async def _edit_progress_message(self, st, message_id: str, content: str, *, finalize: bool = False):
         ctx = self._ctx
         kwargs = {"chat_id": ctx.source.chat_id, "message_id": message_id, "content": content}
-        if getattr(st.adapter, "REQUIRES_EDIT_FINALIZE", False):
+        if st._edit_accepts_finalize and (
+            getattr(st.adapter, "REQUIRES_EDIT_FINALIZE", False)
+            or (finalize and getattr(st.adapter, "REQUIRES_PROGRESS_FINALIZE", False))
+        ):
             kwargs["finalize"] = True
         if st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
@@ -566,11 +583,33 @@ class TurnRunner:
     def _reset_progress_bubble(self, st) -> None:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
+        if self._ctx._progress_card_state is not None:
+            return
         st.progress_msg_id, st.progress_lines = None, []
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick."""
+        state = self._ctx._progress_card_state
+        if state is not None and isinstance(raw, dict):
+            summary = re.sub(r"\s+", " ", str(raw.get("summary") or "")).strip()
+            if len(summary) > 240:
+                summary = summary[:237].rstrip() + "..."
+            if raw.get("type") == "stage" and summary:
+                if not state["stages"] or state["stages"][-1] != summary:
+                    state["stages"].append(summary)
+                    state["stages"] = state["stages"][-6:]
+            elif raw.get("type") == "tool.started":
+                state["tool_count"] += 1
+            elif raw.get("type") == "tool.summary":
+                if summary:
+                    state["tools"].append(summary)
+                    state["tools"] = state["tools"][-8:]
+            rendered = "\n".join([
+                *state["stages"], f"已调用 {state['tool_count']} 次工具", *state["tools"],
+            ])
+            st.progress_lines[:] = [rendered]
+            return rendered
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
@@ -580,10 +619,12 @@ class TurnRunner:
         st.progress_lines.append(raw)
         return raw
 
-    async def _flush_progress_edit(self, st) -> None:
+    async def _flush_progress_edit(self, st, *, finalize: bool = False) -> None:
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             with suppress(Exception):
-                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                await self._edit_progress_message(
+                    st, st.progress_msg_id, self._progress_text(st.progress_lines), finalize=finalize
+                )
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
@@ -602,7 +643,9 @@ class TurnRunner:
         # Final edit with all remaining tools (only if editing works)
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             await self._roll_progress_overflow_if_needed(st)
-        await self._flush_progress_edit(st)
+        await self._flush_progress_edit(
+            st, finalize=bool(ctx._progress_card_state and ctx._progress_card_state.get("status") == "completed")
+        )
 
     async def _progress_restore_typing(self, st) -> None:
         ctx = self._ctx
@@ -616,9 +659,16 @@ class TurnRunner:
         Transient network errors (ConnectError, timeouts) must not disable editing; only permanent
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
+        card_state = self._ctx._progress_card_state
+        if card_state is not None and card_state.get("update_failed"):
+            return True
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
             if result.success:
+                return True
+            if card_state is not None:
+                card_state["update_failed"] = True
+                logger.warning("[%s] Progress card update failed; preserving the original card", st.adapter.name)
                 return True
             if getattr(result, "retryable", False):
                 logger.debug("[%s] Transient edit failure — keeping can_edit=True", st.adapter.name)
@@ -890,10 +940,14 @@ class TurnRunner:
                 if not already_streamed:
                     stts.on_delta(text)
                     stts.on_delta(None)
-            if stream_consumer is not None:
+            if ctx._progress_card_state is not None and not already_streamed and str(text or "").strip():
+                ctx.progress_queue.put({"type": "stage", "summary": text})
+            elif stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
-                self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
+                self._send_status_text(
+                    text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error"
+                )
 
         return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages
 

@@ -72,9 +72,10 @@ async def config_get(connection, ref, params):
                 'mtime': lambda: {'mtime': (home / 'config.yaml').stat().st_mtime
                                  if (home / 'config.yaml').exists() else 0,
                                  # Frozen tool policy is not a live MCP reload request.
-                                 'mcp_rev': hashlib.sha256((policy.config_json if policy else
-                                     json.dumps({k: cfg.get(k) for k in ('mcp', 'mcp_servers', 'tools')},
-                                                sort_keys=True)).encode()).hexdigest()[:12]},
+                                 'mcp_rev': hashlib.sha256(json.dumps({
+                                     k: (policy.config() if policy else cfg).get(k)
+                                     for k in ('mcp', 'mcp_servers', 'tools')},
+                                     sort_keys=True).encode()).hexdigest()[:12]},
                 'reasoning': lambda: _reasoning(agent, policy, cfg),
                 'fast': lambda: {'value': 'fast' if (getattr(agent, 'service_tier', None) or
                     (policy.config() if policy else cfg).get('agent', {}).get('service_tier'))

@@ -21,6 +21,7 @@ def test_client_config_projection_keeps_session_policy_and_secrets_private(tmp_p
                 config.update(voice={'record_key': 'ctrl+r', 'submit_mode': 'draft', 'api_key': 'PRIVATE_VOICE'},
                               paste_collapse_threshold=12)
                 config['display'].update(tui_theme='light', bell_on_complete=True)
+                config['approvals'] = {'mode': 'manual'}
                 (home / 'config.yaml').write_text(yaml.safe_dump(config))
                 before = (home / 'config.yaml').read_bytes()
                 full = await rpc(ws, 'config.get', key='full', session_id=sid)
@@ -29,7 +30,15 @@ def test_client_config_projection_keeps_session_policy_and_secrets_private(tmp_p
                 assert full['result']['config']['display']['bell_on_complete'] is True
                 mtime = (await rpc(ws, 'config.get', key='mtime', session_id=sid))['result']
                 assert mtime['mtime'] > 0 and mtime['mcp_rev']
+                config['mcp_servers'] = {'later': {'command': 'not-started'}}
+                (home / 'config.yaml').write_text(yaml.safe_dump(config))
+                before = (home / 'config.yaml').read_bytes()
+                assert (await rpc(ws, 'config.get', key='mtime', session_id=sid))['result']['mcp_rev'] == mtime['mcp_rev']
+                assert (await rpc(ws, 'config.get', key='full'))['result']['config']['voice']['record_key'] == 'ctrl+r'
                 assert (await rpc(ws, 'config.get', key='reasoning', session_id=sid))['result']['value'] == 'low'
+                assert (await rpc(ws, 'config.get', key='project', session_id=sid, cwd=str(home)))['result']['cwd'] == str(home)
+                assert (await rpc(ws, 'config.get', key='approvals.mode'))['result']['value'] == 'manual'
+                assert (await rpc(ws, 'config.get', key='theme'))['result']['value'] == 'light'
                 assert (await rpc(ws, 'config.set', key='busy', session_id=sid, value='queue'))['result']['value'] == 'queue'
                 assert (await rpc(ws, 'config.get', key='busy', session_id=sid))['result']['value'] == 'queue'
                 for method, params, reason in [

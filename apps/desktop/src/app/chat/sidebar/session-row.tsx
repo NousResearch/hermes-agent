@@ -175,6 +175,19 @@ function SidebarSessionRowImpl({
   // those branches should repaint.
   const prKey = sessionPrKey(session)
   const pr = useStoreSelector($pullRequestsByBranch, prs => (rowMeta.includes('pr') && prKey ? prs[prKey] : undefined))
+
+  // The project this row belongs to, when the Show menu asked for it. Only the
+  // one-line row: the card already names the same thing in its header (below),
+  // so rendering it here too would say it twice. The SAME resolver the header
+  // and the session tint read, so a row can never name a workspace the card
+  // disagrees with — and a chat with no project resolves to null and simply
+  // takes no room, rather than paying for an empty chip. A selector, not
+  // useStore($projects): the atom republishes with fresh identity on every
+  // tree poll, and only a row whose own label changed should repaint.
+  const projectLabel = useStoreSelector($projects, projects =>
+    !card && rowMeta.includes('project') ? sessionProjectLabel(session, projects) : null
+  )
+
   // Open in a pane, but not the focused one. A selector rather than a prop:
   // it reaches all four row render paths at once, the set only changes when a
   // tile opens or closes, and the boolean bails every unaffected row out.
@@ -199,6 +212,21 @@ function SidebarSessionRowImpl({
   // thing. Chips used to render in the body instead, which left them stranded
   // to the left of the kebab's own column: never flush right, never swapping.
   const trailing: { key: string; node: React.ReactNode }[] = []
+
+  if (projectLabel) {
+    // Broadest context first, and capped so a long project name narrows itself
+    // instead of eating the title — the tip only opens once it actually has to.
+    trailing.push({
+      key: 'project',
+      node: (
+        <OverflowTip label={projectLabel}>
+          <span className="max-w-20 shrink-0 truncate text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+            {projectLabel}
+          </span>
+        </OverflowTip>
+      )
+    })
+  }
 
   if ((showProfile || pinnedProfile) && hasProfileTag) {
     trailing.push({ key: 'profile', node: <ProfileTag profile={session.profile} /> })

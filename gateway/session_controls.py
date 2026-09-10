@@ -44,7 +44,7 @@ class AuthorityConnection:
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
                     'kanban.run': self.kanban_run,
                     'cron.submit': self.cron_submit, 'cron.status': self.cron_status,
-                    'cron.cancel': self.cron_cancel,
+                    'cron.cancel': self.cron_cancel, 'cron.recover': self.cron_recover,
                     'worker.register': self.worker_register, 'worker.adopt': self.worker_adopt,
                     'worker.persist': self.worker_persist,
                     'setup.status': self.setup_status, 'setup.runtime_check': self.setup_runtime_check,
@@ -55,6 +55,13 @@ class AuthorityConnection:
                     'approval.respond': self.respond, 'clarify.respond': self.respond_clarify}
         from gateway.session_busy_controls import handlers as busy_handlers
         handlers.update(busy_handlers(self))
+        from gateway.session_config import handlers as config_handlers
+        handlers.update(config_handlers(self))
+        from gateway.session_ancillary import handlers as ancillary_handlers
+        handlers.update(ancillary_handlers(self))
+        from gateway.session_images import attach_bytes
+        from functools import partial
+        handlers['image.attach_bytes'] = partial(attach_bytes, self)
         try:
             from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
             if method in GROUP_METHODS or method == 'profiles.list':
@@ -78,6 +85,10 @@ class AuthorityConnection:
     async def kanban_run(self, ref, params):
         from gateway.session_kanban import run_task
         return await run_task(self, params)
+
+    async def cron_recover(self, ref, params):
+        from gateway.session_cron import rpc
+        return await rpc(self, 'recover', params)
 
     async def cron_submit(self, ref, params):
         from gateway.session_cron import rpc

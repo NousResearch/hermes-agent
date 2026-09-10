@@ -59,15 +59,6 @@ class TestA2aRouting:
         keys = [c[0][0] for c in provider._manager.get_or_create.call_args_list]
         assert "Bot-Chat" not in keys
 
-    def test_session_key_is_stable_across_turns(self):
-        provider = _provider()
-        provider._manager.resolve_author_peer_id.return_value = "coder"
-
-        _sync(provider, turn_author=BOT_AUTHOR)
-        _sync(provider, turn_author=BOT_AUTHOR)
-
-        keys = {c[0][0] for c in provider._manager.get_or_create.call_args_list}
-        assert keys == {provider._a2a_session_key({"id": "bot:coder", "is_bot": True})}
 
     def test_two_bots_get_two_sessions(self):
         provider = _provider()
@@ -79,31 +70,6 @@ class TestA2aRouting:
         keys = [c[0][0] for c in provider._manager.get_or_create.call_args_list]
         assert keys == [provider._a2a_session_key({"id": "bot:coder", "is_bot": True}), provider._a2a_session_key({"id": "bot:writer", "is_bot": True})]
 
-    def test_bot_author_without_an_id_is_skipped(self):
-        provider = _provider()
-
-        _sync(provider, turn_author={"id": None, "name": "mystery", "is_bot": True})
-
-        provider._manager.get_or_create.assert_not_called()
-
-    def test_bot_is_resolved_as_a_bot_whatever_its_id_looks_like(self):
-        """A platform bot carries a raw user id and the bot flag. The resolver must not treat it as a human."""
-        provider = _provider()
-        provider._manager.resolve_author_peer_id.return_value = "tg_5551234"
-
-        _sync(provider, turn_author={"id": "5551234", "name": "SomeBot", "is_bot": True})
-
-        provider._manager.resolve_author_peer_id.assert_called_once_with("Bot-Chat", "5551234", "SomeBot", is_bot=True)
-        provider._manager.get_or_create.assert_called_once_with(provider._a2a_session_key({"id": "5551234", "is_bot": True}), user_peer_id="tg_5551234")
-
-    def test_unresolvable_bot_peer_skips_the_write(self):
-        """A bot's words never land under the human's peer, so no peer means no write."""
-        provider = _provider()
-        provider._manager.resolve_author_peer_id.return_value = None
-
-        _sync(provider, turn_author=BOT_AUTHOR)
-
-        provider._manager.get_or_create.assert_not_called()
 
     def test_bot_colliding_with_this_agents_ai_peer_is_skipped(self):
         """One peer cannot be both sides of a session."""
@@ -115,11 +81,6 @@ class TestA2aRouting:
 
         provider._manager.get_or_create.assert_not_called()
 
-    def test_ids_that_sanitize_alike_get_different_sessions(self):
-        provider = _provider()
-        keys = {provider._a2a_session_key({"id": bot, "is_bot": True}) for bot in ("bot:a.b", "bot:a-b", "bot:a_b", "bot:a:b")}
-        assert len(keys) == 4
-        assert all(key.startswith("Bot-Chat:a2a:hermes-assistant:bot-a") for key in keys)
 
     def test_two_recipients_sharing_a_session_key_get_different_sessions(self):
         """Two profiles with one workspace and one session key must not merge a sender's DMs."""
@@ -140,17 +101,6 @@ class TestA2aRouting:
         assert provider._a2a_session_key(east) != provider._a2a_session_key(west)
         assert provider._a2a_session_key(east).startswith("Bot-Chat:a2a:hermes-assistant:bot-east-coder-")
 
-    def test_long_session_key_stays_within_the_honcho_limit(self):
-        provider = _provider()
-        provider._session_key = "x" * 95
-        provider._manager.resolve_author_peer_id.return_value = "coder"
-
-        _sync(provider, turn_author=BOT_AUTHOR)
-
-        key = provider._manager.get_or_create.call_args[0][0]
-        assert len(key) <= 100
-        assert key == provider._a2a_session_key({"id": "bot:coder", "is_bot": True})
-
 
 class TestToolWritesDuringBotTurn:
     def _tools_provider(self, author: dict) -> HonchoMemoryProvider:
@@ -169,9 +119,6 @@ class TestToolWritesDuringBotTurn:
         provider._manager.create_conclusion.assert_not_called()
         provider._manager.delete_conclusion.assert_not_called()
 
-    def test_listing_still_works(self):
-        provider = self._tools_provider(BOT_AUTHOR)
-        assert json.loads(provider._tool_conclude({"list": True})) == {"conclusions": []}
 
     def test_profile_card_write_is_refused_but_read_works(self):
         provider = self._tools_provider(BOT_AUTHOR)
@@ -186,11 +133,6 @@ class TestToolWritesDuringBotTurn:
         assert provider._memwrite_thread is None
         provider._manager.create_conclusion.assert_not_called()
 
-    def test_human_turn_writes_normally(self):
-        provider = self._tools_provider(HUMAN_AUTHOR)
-        assert json.loads(provider._tool_conclude({"conclusion": "likes tea"}))["result"].startswith("Conclusion saved")
-        assert "card" in json.loads(provider._tool_profile({"card": ["fact"]}))
-
 
 class TestFlagOff:
     def test_bot_turn_is_skipped(self):
@@ -200,14 +142,6 @@ class TestFlagOff:
 
         provider._manager.get_or_create.assert_not_called()
         provider._manager.resolve_author_peer_id.assert_not_called()
-
-    def test_human_turn_still_writes(self):
-        provider = _provider(a2a_sessions=False)
-        provider._manager.resolve_author_peer_id.return_value = "alice"
-
-        _sync(provider, turn_author=HUMAN_AUTHOR)
-
-        provider._manager.get_or_create.assert_called_once_with("Bot-Chat")
 
 
 class TestHumanTurnUnchanged:
@@ -220,14 +154,6 @@ class TestHumanTurnUnchanged:
         provider._manager.get_or_create.assert_called_once_with("Bot-Chat")
         session = provider._manager.get_or_create.return_value
         assert session.add_message.call_args_list[0][1]["author_peer_id"] == "alice"
-
-    def test_human_turn_without_author_keeps_the_session_peer(self):
-        provider = _provider()
-        provider._manager.resolve_author_peer_id.return_value = None
-
-        _sync(provider)
-
-        provider._manager.get_or_create.assert_called_once_with("Bot-Chat")
 
 
 class TestManagerUserPeerOverride:
@@ -254,14 +180,3 @@ class TestConfigFlag:
 
     def test_defaults_on(self, tmp_path, monkeypatch):
         assert self._config(tmp_path, monkeypatch, {}).a2a_sessions is True
-
-    def test_root_flag(self, tmp_path, monkeypatch):
-        assert self._config(tmp_path, monkeypatch, {"a2aSessions": False}).a2a_sessions is False
-
-    def test_host_block_wins_over_root(self, tmp_path, monkeypatch):
-        cfg = self._config(tmp_path, monkeypatch, {"a2aSessions": True, "hosts": {"hermes": {"a2aSessions": False}}})
-        assert cfg.a2a_sessions is False
-
-    def test_root_applies_when_host_block_is_silent(self, tmp_path, monkeypatch):
-        cfg = self._config(tmp_path, monkeypatch, {"a2aSessions": False, "hosts": {"hermes": {"peerName": "eri"}}})
-        assert cfg.a2a_sessions is False

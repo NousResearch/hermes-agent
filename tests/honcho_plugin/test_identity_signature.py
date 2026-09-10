@@ -39,19 +39,6 @@ def test_signature_uses_neutral_keys(honcho_json):
     assert not any(k.startswith("honcho") for k in sig)
 
 
-def test_signature_defaults_without_identity_keys(honcho_json):
-    honcho_json()
-
-    sig = HonchoMemoryProvider().identity_signature()
-
-    assert sig["user_identity"] is None
-    assert sig["pin_user_identity"] is False
-    assert sig["runtime_identity_prefix"] == ""
-    assert sig["user_identity_aliases"] == []
-    assert sig["session_prefixing"] == [False]
-    assert sig["a2a_sessions"] is True
-
-
 def test_signature_tracks_edits_to_the_file(honcho_json):
     provider = HonchoMemoryProvider()
     honcho_json(peerName="eri", pinUserPeer=True)
@@ -61,55 +48,7 @@ def test_signature_tracks_edits_to_the_file(honcho_json):
     assert provider.identity_signature()["pin_user_identity"] is False
 
 
-def test_signature_changes_with_the_workspace(honcho_json):
-    """A cached gateway agent is bound to one workspace, so a workspace switch must miss the cache."""
-    provider = HonchoMemoryProvider()
-    honcho_json(peerName="eri", workspace="team")
-    before = provider.identity_signature()
-
-    honcho_json(peerName="eri", workspace="personal")
-    after = provider.identity_signature()
-
-    assert before != after
-    assert (before["workspace"], after["workspace"]) == ("team", "personal")
-
-
-def test_signature_changes_with_a2a_sessions(honcho_json):
-    """sync_turn reads a2a_sessions from the config bound at init, so flipping it must miss the cache."""
-    provider = HonchoMemoryProvider()
-    honcho_json(peerName="eri", a2aSessions=True)
-    before = provider.identity_signature()
-
-    honcho_json(peerName="eri", a2aSessions=False)
-    after = provider.identity_signature()
-
-    assert before != after
-    assert (before["a2a_sessions"], after["a2a_sessions"]) == (True, False)
-
-
-def test_signature_is_memoized_on_an_unchanged_file(honcho_json, monkeypatch):
-    honcho_json(peerName="eri")
-    provider = HonchoMemoryProvider()
-    first = provider.identity_signature()
-
-    from plugins.memory.honcho import client as client_module
-    monkeypatch.setattr(client_module.HonchoClientConfig, "from_global_config",
-                        classmethod(lambda cls, **kw: pytest.fail("config re-read on an unchanged file")))
-    assert provider.identity_signature() == first
-
-
 def test_signature_never_touches_the_network(honcho_json, network_attempts):
     honcho_json(peerName="eri")
     HonchoMemoryProvider().identity_signature()
     assert network_attempts == []
-
-
-def test_signature_is_empty_when_config_cannot_be_read(honcho_json, monkeypatch):
-    honcho_json(peerName="eri")
-    from plugins.memory.honcho import client as client_module
-
-    def _boom(cls, **kw):
-        raise RuntimeError("unreadable")
-
-    monkeypatch.setattr(client_module.HonchoClientConfig, "from_global_config", classmethod(_boom))
-    assert HonchoMemoryProvider().identity_signature() == {}

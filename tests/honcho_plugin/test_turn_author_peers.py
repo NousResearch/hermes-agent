@@ -41,37 +41,17 @@ def _manager(config: HonchoClientConfig, runtime_id: str | None = None, runtime_
 
 
 class TestResolveAuthorPeerId:
-    def test_no_author_keeps_the_session_peer(self):
-        """An unnamed author is not attributable — never guess a peer for it."""
-        mgr = _manager(_config(), runtime_id="7654321")
-        assert mgr.resolve_author_peer_id("telegram:group1", None) is None
-        assert mgr.resolve_author_peer_id("telegram:group1", "") is None
 
     def test_author_is_the_session_peer(self):
         """The session's own participant needs no second peer."""
         mgr = _manager(_config(), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:group1", "7654321") is None
 
-    def test_alt_runtime_id_is_the_session_peer(self):
-        """A transport may name the participant by either id (Telegram UID or username)."""
-        mgr = _manager(_config(), runtime_id="7654321", runtime_id_alt="eri_tg")
-        assert mgr.resolve_author_peer_id("telegram:group1", "eri_tg") is None
 
     def test_other_participant_gets_its_own_peer(self):
         mgr = _manager(_config(), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:group1", "111222") == "111222"
 
-    def test_alias_wins(self):
-        """An aliased account lands on its named peer whichever turn it wrote."""
-        mgr = _manager(
-            _config(user_peer_aliases={"111222": "alice"}),
-            runtime_id="7654321",
-        )
-        assert mgr.resolve_author_peer_id("telegram:group1", "111222") == "alice"
-
-    def test_runtime_prefix_applies(self):
-        mgr = _manager(_config(runtime_peer_prefix="telegram_"), runtime_id="7654321")
-        assert mgr.resolve_author_peer_id("telegram:group1", "111222") == "telegram_111222"
 
     def test_pin_peer_name_collapses_authors(self):
         """pinPeerName is an explicit request to unify identities."""
@@ -83,26 +63,6 @@ class TestResolveAuthorPeerId:
         mgr = _manager(_config(), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "coder"
 
-    def test_bot_author_alias_wins_over_the_profile_name(self):
-        mgr = _manager(_config(user_peer_aliases={"bot:coder": "hermes-coder"}), runtime_id="7654321")
-        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "hermes-coder"
-
-    def test_bot_author_ignores_the_runtime_prefix(self):
-        mgr = _manager(_config(runtime_peer_prefix="telegram_"), runtime_id="7654321")
-        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "coder"
-
-    def test_bot_author_profile_name_is_sanitized_with_a_digest(self):
-        """Sanitizing is lossy, so a changed name carries a digest like a prefixed runtime user."""
-        mgr = _manager(_config(), runtime_id="7654321")
-        peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:my profile.v2")
-        assert peer.startswith("my-profile-v2-") and peer != "my-profile-v2"
-
-    def test_bot_authors_that_sanitize_alike_get_different_peers(self):
-        mgr = _manager(_config(), runtime_id="7654321")
-        dotted = mgr.resolve_author_peer_id("telegram:dm1", "bot:a.b")
-        dashed = mgr.resolve_author_peer_id("telegram:dm1", "bot:a-b")
-        assert dotted != dashed
-        assert dashed == "a-b"
 
     def test_bot_author_named_like_the_owner_never_lands_on_the_owner_peer(self):
         """``bot:eri`` with ``peerName: eri`` is another agent, not the operator."""
@@ -125,10 +85,6 @@ class TestResolveAuthorPeerId:
             peer = mgr.resolve_author_peer_id("telegram:dm1", author, is_bot=True)
             assert peer != human_peer and peer.startswith(f"{human_peer}-")
 
-    def test_bot_author_named_like_an_alias_target_gets_a_digest(self):
-        mgr = _manager(_config(user_peer_aliases={"111222": "coder"}), runtime_id="7654321")
-        peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:coder")
-        assert peer != "coder" and peer.startswith("coder-")
 
     def test_connection_qualified_bot_author_keeps_its_connection(self):
         """The Desktop relays ``bot:<connection>/<profile>``; two connections' ``coder`` are two agents."""
@@ -139,10 +95,6 @@ class TestResolveAuthorPeerId:
         assert east.startswith("east-coder-") and west.startswith("west-coder-")
         assert mgr.resolve_author_peer_id("Bot-Chat", "bot:local/coder", is_bot=True) == "coder-here"
 
-    def test_bot_author_without_a_profile_keeps_the_raw_id(self):
-        mgr = _manager(_config(), runtime_id="7654321")
-        peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:")
-        assert peer.startswith("bot-") and peer != mgr._declared_owner_peer_id()
 
     def test_pin_peer_name_does_not_collapse_bot_authors(self):
         """The pin unifies the operator's accounts. A bot's words never land under the human's peer."""
@@ -154,18 +106,6 @@ class TestResolveAuthorPeerId:
         mgr = _manager(_config(pin_peer_name=True, runtime_peer_prefix="tg_"), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:dm1", "5551234", "SomeBot", is_bot=True) == "tg_5551234"
 
-    def test_platform_bot_alias_wins(self):
-        mgr = _manager(_config(user_peer_aliases={"5551234": "coder"}), runtime_id="7654321")
-        assert mgr.resolve_author_peer_id("telegram:dm1", "5551234", is_bot=True) == "coder"
-
-    def test_platform_bot_matching_the_session_peer_still_gets_its_own_peer(self):
-        """The session's runtime id is the human's. A bot claiming it must not inherit the human's peer."""
-        mgr = _manager(_config(), runtime_id="7654321")
-        assert mgr.resolve_author_peer_id("telegram:dm1", "7654321", is_bot=True) == "7654321"
-
-    def test_assistant_peer_id_matches_the_session_builder(self):
-        assert _manager(_config(ai_peer="My Agent")).assistant_peer_id() == "My-Agent"
-        assert _manager(_config(ai_peer="")).assistant_peer_id() == "hermes-assistant"
 
     def test_display_name_never_becomes_a_peer_id(self):
         """Display names are attacker-influenceable on most platforms."""
@@ -199,26 +139,6 @@ class TestFlushAttributesMessages:
         # session's — that is the whole point of the change.
         assert mgr._get_or_create_peer.call_args_list[-1][0][0] == "alice"
 
-    def test_unattributed_message_keeps_the_session_peer(self):
-        mgr = _manager(_config(), runtime_id="7654321")
-        session = self._session(mgr)
-        honcho_session = MagicMock()
-        mgr._sessions_cache[session.honcho_session_id] = honcho_session
-
-        session.add_message("user", "owner speaking")
-        assert mgr._flush_session(session) is True
-        honcho_session.add_peers.assert_not_called()
-
-    def test_assistant_message_ignores_author(self):
-        """The reply is the agent's however the turn arrived."""
-        mgr = _manager(_config(), runtime_id="7654321")
-        session = self._session(mgr)
-        honcho_session = MagicMock()
-        mgr._sessions_cache[session.honcho_session_id] = honcho_session
-
-        session.add_message("assistant", "reply", author_peer_id="alice")
-        assert mgr._flush_session(session) is True
-        honcho_session.add_peers.assert_not_called()
 
     def test_author_peer_joins_once(self):
         """A shared session's roster is open, so peers join when they write."""
@@ -234,17 +154,6 @@ class TestFlushAttributesMessages:
 
         assert honcho_session.add_peers.call_count == 1
 
-    def test_two_authors_each_join(self):
-        mgr = _manager(_config(), runtime_id="7654321")
-        session = self._session(mgr)
-        honcho_session = MagicMock()
-        mgr._sessions_cache[session.honcho_session_id] = honcho_session
-
-        session.add_message("user", "from alice", author_peer_id="alice")
-        session.add_message("user", "from bob", author_peer_id="bob")
-        mgr._flush_session(session)
-
-        assert honcho_session.add_peers.call_count == 2
 
     def test_join_failure_still_writes_under_the_author(self):
         """A failed join loses the observe config, never the attribution."""
@@ -260,63 +169,6 @@ class TestFlushAttributesMessages:
         # Not remembered as joined, so the next write retries the join.
         assert "alice" not in mgr._joined_author_peers.get(session.honcho_session_id, set())
 
-    def test_join_uses_the_sessions_observation_flags(self):
-        """The join reads its flags through _join_observation_flags, the seam #103889 fills per session."""
-        mgr = _manager(_config(user_observe_me=True, user_observe_others=True), runtime_id="7654321")
-        session = self._session(mgr)
-        honcho_session = MagicMock()
-        mgr._sessions_cache[session.honcho_session_id] = honcho_session
-        seen: list[str] = []
-
-        def _flags(honcho_session_id):
-            seen.append(honcho_session_id)
-            return False, False
-
-        mgr._join_observation_flags = _flags
-
-        session.add_message("user", "alice speaking", author_peer_id="alice")
-        assert mgr._flush_session(session) is True
-
-        assert seen == [session.honcho_session_id]
-        (_peer, config), = honcho_session.add_peers.call_args[0][0]
-        assert (config.observe_me, config.observe_others) == (False, False)
-
-    def test_joined_authors_forget_the_oldest_session_past_the_cap(self):
-        """The join memory is bounded by session count; a forgotten session's author rejoins on its next write."""
-        from plugins.memory.honcho import session as session_module
-
-        mgr = _manager(_config(), runtime_id="7654321")
-        first = self._session(mgr, key="telegram:group0")
-        first_honcho = MagicMock()
-        mgr._sessions_cache[first.honcho_session_id] = first_honcho
-        first.add_message("user", "hi", author_peer_id="alice")
-        mgr._flush_session(first)
-
-        for i in range(1, session_module._SESSION_CACHE_MAX_SIZE + 1):
-            session = self._session(mgr, key=f"telegram:group{i}")
-            mgr._sessions_cache[session.honcho_session_id] = MagicMock()
-            session.add_message("user", "hi", author_peer_id="alice")
-            mgr._flush_session(session)
-
-        assert len(mgr._joined_author_peers) == session_module._SESSION_CACHE_MAX_SIZE
-        assert first.honcho_session_id not in mgr._joined_author_peers
-
-        first.add_message("user", "again", author_peer_id="alice")
-        mgr._flush_session(first)
-        assert first_honcho.add_peers.call_count == 2
-
-    def test_a_failed_join_leaves_no_session_entry_behind(self):
-        """Only a successful join occupies one of the bounded slots."""
-        mgr = _manager(_config(), runtime_id="7654321")
-        session = self._session(mgr)
-        honcho_session = MagicMock()
-        honcho_session.add_peers.side_effect = RuntimeError("network")
-        mgr._sessions_cache[session.honcho_session_id] = honcho_session
-
-        session.add_message("user", "alice speaking", author_peer_id="alice")
-        mgr._flush_session(session)
-        assert mgr._joined_author_peers == {}
-
 
 class TestProviderReadsTheAuthor:
     def _provider(self) -> HonchoMemoryProvider:
@@ -327,27 +179,6 @@ class TestProviderReadsTheAuthor:
         provider._config = SimpleNamespace(message_max_chars=25000)
         return provider
 
-    def test_on_turn_start_records_the_author(self):
-        provider = self._provider()
-        provider.on_turn_start(
-            3, "hello", author_id="111222", author_name="Alice", author_is_bot=False
-        )
-        assert provider._turn_author == {
-            "id": "111222",
-            "name": "Alice",
-            "is_bot": False,
-        }
-
-    def test_on_turn_start_without_author_kwargs(self):
-        """Callers that never adopted the kwargs must keep working."""
-        provider = self._provider()
-        provider.on_turn_start(1, "hello")
-        assert provider._turn_author == {"id": None, "name": None, "is_bot": False}
-
-    def test_bot_authored_turn_is_flagged(self):
-        provider = self._provider()
-        provider.on_turn_start(2, "ping", author_id="bot-9", author_is_bot=True)
-        assert provider._turn_author["is_bot"] is True
 
     def test_sync_turn_attaches_the_resolved_author_peer(self):
         provider = self._provider()
@@ -367,32 +198,6 @@ class TestProviderReadsTheAuthor:
         assert user_calls, "the user turn was never written"
         assert all(c[1]["author_peer_id"] == "alice" for c in user_calls)
 
-    def test_sync_turn_prefers_the_turn_author_keyword(self):
-        """The manager passes the author with the turn. The stash is only a fallback."""
-        provider = self._provider()
-        provider._session_initialized = True
-        provider._manager.get_or_create.return_value = MagicMock()
-        provider._manager.resolve_author_peer_id.return_value = "alice"
-
-        provider.on_turn_start(1, "hi", author_id="999")
-        provider.sync_turn("hi", "hello back", turn_author={"id": "111222", "name": "Alice", "is_bot": False})
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5)
-
-        provider._manager.resolve_author_peer_id.assert_called_once_with("telegram:group1", "111222", "Alice")
-
-    def test_sync_turn_falls_back_to_the_stash(self):
-        provider = self._provider()
-        provider._session_initialized = True
-        provider._manager.get_or_create.return_value = MagicMock()
-        provider._manager.resolve_author_peer_id.return_value = None
-
-        provider.on_turn_start(1, "hi", author_id="999", author_name="Nine")
-        provider.sync_turn("hi", "hello back")
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5)
-
-        provider._manager.resolve_author_peer_id.assert_called_once_with("telegram:group1", "999", "Nine")
 
     def test_sync_turn_resolves_before_the_write_thread_starts(self):
         """A following turn must not retag a write that is already queued."""

@@ -31,7 +31,7 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import { $projectTree, isHomeProjectId, moveSessionToHome, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -157,13 +157,28 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+  const showHome = Boolean(currentProjectId) && !isHomeProjectId(currentProjectId)
 
-  if (targets.length === 0) {
+  if (!showHome && targets.length === 0) {
     return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
   }
 
   return (
     <>
+      {showHome && (
+        <kit.Item
+          key="__home__"
+          onSelect={() => {
+            triggerHaptic('selection')
+            moveSessionToHome(sessionId, profile)
+              .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(p.home) }))
+              .catch(err => notifyError(err, p.moveFailed))
+          }}
+        >
+          {p.home}
+        </kit.Item>
+      )}
+      {showHome && targets.length > 0 && <kit.Separator />}
       {targets.map(node => (
         <kit.Item
           key={node.id}

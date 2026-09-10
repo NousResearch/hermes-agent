@@ -410,6 +410,15 @@ class GatewaySlashCommandsMixin(
             logger.warning("continue dispatch failed: %s", exc)
             return "Continue is unavailable. No action taken."
 
+    async def _handle_recover_command(self, event: MessageEvent) -> str:
+        """Handle the canonical state-normalizing Kanban /recover adapter."""
+        from hermes_cli.kanban_recover import run_recover_slash_rendered
+        try:
+            return await asyncio.to_thread(run_recover_slash_rendered, event.get_command_args())
+        except Exception as exc:
+            logger.warning("recover dispatch failed: %s", exc)
+            return "Recover is unavailable. No action taken."
+
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
         source has no platform/chat to route back to."""

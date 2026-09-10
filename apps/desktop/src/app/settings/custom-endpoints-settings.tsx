@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -76,6 +76,7 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
 }
 
 export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+  const mounted = useRef(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -90,8 +91,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     setEndpoints(data.endpoints)
   }
 
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle guard drops stale async completions; it does not mirror an atom
   useEffect(() => {
     let cancelled = false
+    mounted.current = true
 
     async function load() {
       try {
@@ -121,6 +124,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     return () => {
       cancelled = true
+      mounted.current = false
     }
   }, [])
 
@@ -128,6 +132,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     try {
       setSaving(true)
       const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
+
+      if (!mounted.current) {
+        return
+      }
+
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 
@@ -144,9 +153,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       onConfigSaved?.()
       notify({ kind: 'success', message: 'Custom endpoint saved.' })
     } catch (err) {
-      notifyError(err, 'Save failed')
+      if (mounted.current) {
+        notifyError(err, 'Save failed')
+      }
     } finally {
-      setSaving(false)
+      if (mounted.current) {
+        setSaving(false)
+      }
     }
   }
 

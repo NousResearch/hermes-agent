@@ -2077,12 +2077,14 @@ def _prepend_codex_reserve_entry(agent) -> None:
         return
     from hermes_cli.codex_models import CODEX_RESERVE_MODEL
     reserve_entry = {"provider": "openai-codex", "model": CODEX_RESERVE_MODEL}
+    chain = getattr(agent, "_fallback_chain", None) or []
     if not any(
         (e.get("provider") or "").strip().lower() == "openai-codex"
         and (e.get("model") or "").strip() == CODEX_RESERVE_MODEL
-        for e in agent._fallback_chain
+        for e in chain
     ):
-        agent._fallback_chain.insert(0, reserve_entry)
+        chain.insert(0, reserve_entry)
+        agent._fallback_chain = chain
 
 
 def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:

@@ -4536,8 +4536,9 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
         # allow_cooldown only for the Luna Reserve model: gpt-reserve shares the
         # credential with the benched regular allowance.
+        from hermes_cli.codex_models import CODEX_RESERVE_MODEL
         codex_token = _read_codex_access_token(
-            allow_cooldown=(model or "").strip().lower() == "gpt-reserve"
+            allow_cooldown=(model or "").strip().lower() == CODEX_RESERVE_MODEL
         )
         if not codex_token:
             logger.warning(no_token_msg)

@@ -696,7 +696,15 @@ def test_startup_probe_exception_fails_open_without_crash_or_warning(caplog):
         _memory_manager=_ExplodingManager(),
     )
 
-    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.DEBUG, logger="agent.conversation_compression"):
         _warn_checkpoint_required_without_capable_provider(agent)
 
-    assert "compression.checkpoint_required" not in _warn_text(caplog)
+    warnings = "\n".join(
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    )
+    debugs = "\n".join(
+        r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG
+    )
+    assert "compression.checkpoint_required" not in warnings
+    assert "probe exploded" in debugs
+    assert "capability probe failed" in debugs

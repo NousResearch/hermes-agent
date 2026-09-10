@@ -1292,6 +1292,8 @@ def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
 
     Capability-probe exceptions are suppressed so a broken provider cannot crash
     agent construction — same fail-open style as the micro-compact warning.
+    Probe failures log at DEBUG so a flaky probe can be diagnosed without
+    refusing init or emitting the incapable-provider WARNING.
     """
     if getattr(agent, "compression_checkpoint_required", False) is not True:
         return
@@ -1302,7 +1304,12 @@ def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
             try:
                 if bool(supports_checkpoint(PRE_COMPRESS_CHECKPOINT_API_VERSION)):
                     return
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "checkpoint-required capability probe failed; init continues: %s",
+                    exc,
+                    exc_info=True,
+                )
                 return
     logger.warning(
         "compression.checkpoint_required is enabled but the active memory "

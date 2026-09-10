@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import time as _time
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Union
 
 from mem0.configs.llms.base import BaseLlmConfig
@@ -14,6 +16,37 @@ from mem0.llms.openai import OpenAILLM
 # BaseLlmConfig fields copied into OpenAIConfig; the last two may be absent on older mem0.
 _COPIED_FIELDS = ("model", "temperature", "api_key", "max_tokens", "top_p", "top_k", "enable_vision", "vision_details", "http_client_proxies")
 _OPTIONAL_FIELDS = ("reasoning_effort", "is_reasoning_model")
+
+# OpenRouter-style routers report 402 (in-flight or credit budget exhausted) plus
+# transient 429/5xx; retry with backoff instead of failing the memory append.
+# Some 402s remedy with "wait for in-flight requests to settle" — honor
+# Retry-After (capped) exactly as the provider asks.
+_RETRYABLE_STATUS_CODES = {402, 408, 409, 429, 500, 502, 503, 504}
+# Transport-class failures carry no HTTP status; retry those, but never mask
+# local programmer errors (TypeError/ValueError carry no status either).
+_TRANSPORT_ERROR_NAMES = frozenset({
+    "APIConnectionError", "APITimeoutError", "ConnectError", "ConnectionError",
+    "ReadTimeout", "RemoteProtocolError",
+})
+_MAX_RETRY_ATTEMPTS = 3
+_MAX_RETRY_WAIT_SECS = 120
+
+
+def _retry_wait_seconds(exc: Exception) -> float:
+    """Extract Retry-After (seconds or HTTP-date) from an OpenAI status error."""
+    try:
+        resp = getattr(exc, "response", None)
+        headers = getattr(resp, "headers", {}) if resp is not None else {}
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        if not raw:
+            return 5.0
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            parsed = datetime.strptime(str(raw), "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
+            return max(1.0, (parsed - datetime.now(timezone.utc)).total_seconds())
+    except Exception:
+        return 5.0
 
 
 class DirectOpenAILLM(OpenAILLM):
@@ -53,7 +86,30 @@ class DirectOpenAILLM(OpenAILLM):
             params["response_format"] = response_format
         if tools:
             params["tools"], params["tool_choice"] = tools, tool_choice
-        response = self.client.chat.completions.create(**params)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                response = self.client.chat.completions.create(**params)
+                break
+            except Exception as exc:
+                status = getattr(exc, "status_code", None)
+                if status in _RETRYABLE_STATUS_CODES:
+                    is_retryable = True
+                elif status is None:
+                    # Transport-class failures have no HTTP status; retry those,
+                    # but never mask local programmer errors (no status either).
+                    is_retryable = type(exc).__name__ in _TRANSPORT_ERROR_NAMES
+                else:
+                    is_retryable = False
+                if not is_retryable or attempt > _MAX_RETRY_ATTEMPTS:
+                    raise
+                wait = min(_retry_wait_seconds(exc), _MAX_RETRY_WAIT_SECS)
+                logging.warning(
+                    "Mem0 OpenAI call failed (attempt %d/%d, status=%s); retrying in %.0fs",
+                    attempt, _MAX_RETRY_ATTEMPTS, status, wait,
+                )
+                _time.sleep(wait)
         parsed_response = self._parse_response(response, tools)
         if self.config.response_callback:
             try:

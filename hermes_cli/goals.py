@@ -49,9 +49,12 @@ DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 # on concrete evidence instead of a vibe check.
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
 DEFAULT_GATE_MAX_RETRIES = 3
-# Longest a pid/session wait barrier may hold the loop before judging resumes. Timed barriers
-# (``waiting_until``) carry their own deadline and are exempt.
-_MAX_BARRIER_WAIT_S = 30 * 60
+# Default longest a pid/session wait barrier may hold the loop before judging resumes. Timed
+# barriers (``waiting_until``) carry their own deadline and are exempt. Overridable per profile
+# via ``goals.max_barrier_wait_seconds`` (see ``_barrier_wait_cap_seconds``). Kept at minutes, not
+# the half hour that repeatedly parked an orchestrator on stalled subagents: each 30-min park was
+# a full stall, and they compounded into hours of dead wall-clock across a long run.
+_MAX_BARRIER_WAIT_S = 10 * 60
 # Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
 _GATE_OUTPUT_TAIL_CHARS = 3000
 
@@ -740,6 +743,22 @@ def _goal_judge_setting(key: str, default, cast):
     return default
 
 
+def _barrier_wait_cap_seconds() -> float:
+    """Barrier self-heal cap: ``goals.max_barrier_wait_seconds`` (default ``_MAX_BARRIER_WAIT_S``).
+    A non-positive/garbage value falls back to the default rather than pinning the loop forever.
+    ``load_config()`` is cached on (mtime, size) so this is cheap."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("goals") or {}).get("max_barrier_wait_seconds", _MAX_BARRIER_WAIT_S)
+        cap = float(raw)
+        if cap > 0:
+            return cap
+    except Exception:
+        pass
+    return float(_MAX_BARRIER_WAIT_S)
+
+
 def _goal_judge_max_tokens() -> int:
     return _goal_judge_setting("max_tokens", DEFAULT_JUDGE_MAX_TOKENS, int)
 
@@ -1395,9 +1414,10 @@ class GoalManager:
                     still = False
         else:
             return False
-        if still and s.waiting_since and s.waiting_until == 0.0 and time.time() - s.waiting_since > _MAX_BARRIER_WAIT_S:
+        cap = _barrier_wait_cap_seconds() if s.waiting_until == 0.0 else 0.0
+        if still and cap and s.waiting_since and time.time() - s.waiting_since > cap:
             logger.info("goal %s: wait barrier on %s exceeded %ds; resuming judging",
-                        self.session_id, s.waiting_on_session or s.waiting_on_pid, _MAX_BARRIER_WAIT_S)
+                        self.session_id, s.waiting_on_session or s.waiting_on_pid, int(cap))
             still = False
         if not still:
             self.stop_waiting()

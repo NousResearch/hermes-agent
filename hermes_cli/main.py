@@ -140,6 +140,7 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    ignore_rules: bool = False,
     resume: object = None,
 ) -> None:
     try:
@@ -152,6 +153,7 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            ignore_rules=ignore_rules,
             resume=resume,
         )
     except KeyboardInterrupt:
@@ -179,6 +181,11 @@ def _run_and_exit_oneshot(
         # finalization, where the native SIGABRT occurs.
         # The hard exit is the safety boundary for #43055.
         _exit_after_oneshot(rc)
+
+
+def _oneshot_ignore_rules(args) -> bool:
+    """Map CLI isolation flags onto the one-shot skip contract."""
+    return bool(getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False))
 
 
 def _set_process_title() -> None:
@@ -2912,6 +2919,7 @@ def _run_oneshot_from_args(args) -> None:
         toolsets=getattr(args, "toolsets", None),
         skills=getattr(args, "skills", None),
         usage_file=getattr(args, "usage_file", None),
+        ignore_rules=_oneshot_ignore_rules(args),
         resume=getattr(args, "resume", None),
     )
 

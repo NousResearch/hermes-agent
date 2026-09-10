@@ -234,6 +234,20 @@ test('unsigned OAuth is a terminal reauth failure; needsOauthLogin alone is not'
   assert.equal(isReauthRequiredError(new Error('Could not reach the remote Hermes gateway')), false)
 })
 
+test('unsigned OAuth still classifies as reauth when only the message survives', () => {
+  // startHermes latches on isReauthRequiredError. If a wrapper (IPC, pool
+  // catch) copies the message onto a plain Error, the flag is gone — without
+  // a message fallback the boot is treated as transient and retries forever.
+  const wrapped = new Error(
+    'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+      'Open Settings → Gateway and click "Sign in", or switch back to Local.'
+  )
+
+  assert.equal((wrapped as any).isReauthRequired, undefined)
+  assert.equal(isReauthRequiredError(wrapped), true)
+  assert.equal(isReauthRequiredError(new Error('Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.')), true)
+})
+
 test('a credentialed 403 is also a terminal reauth failure', async () => {
   await assert.rejects(
     waitForHermesReady('https://gateway.example', {

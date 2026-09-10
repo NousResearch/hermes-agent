@@ -83,6 +83,19 @@ test('unsigned OAuth latches and is never auto-retried; needsOauthLogin alone st
   assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth: ticketHint }), true)
 })
 
+test('a message-only unsigned OAuth Error still latches and is not auto-retried', () => {
+  // Same composition startHermes uses, but the Error lost isReauthRequired.
+  const wrapped = new Error(
+    'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+      'Open Settings → Gateway and click "Sign in", or switch back to Local.'
+  )
+  const isReauth = isReauthRequiredError(wrapped)
+
+  assert.equal(isReauth, true)
+  assert.equal(shouldLatchRemoteReauthFailure({ attemptedRemote: true, isReauth }), true)
+  assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth }), false)
+})
+
 test('local failures are never auto-retried by the remote self-heal loop', () => {
   assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: false, isReauth: false }), false)
   assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: false, isReauth: true }), false)

@@ -270,6 +270,8 @@ class GatewayModelCommandsMixin:
             if not hasattr(self, "_pending_one_turn_model_restores"):
                 self._pending_one_turn_model_restores = {}
             snapshot = ctx.restore_snapshot or {"had_override": False, "override": None}
+            snapshot = dict(snapshot)
+            snapshot["run_generation"] = self._session_state(ctx.session_key).persistent.run_generation
             self._pending_one_turn_model_restores[ctx.session_key] = snapshot
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)

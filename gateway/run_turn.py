@@ -496,6 +496,10 @@ class GatewayTurnMixin:
             raise
         if _lease_token is not None:
             _lease_state = self._session_state(_quick_key).turn
+            old_token = _lease_state.lease_token
+            if old_token is not None and _lease_state.lease_generation != run_generation:
+                with suppress(Exception):
+                    _lease_registry.release(old_token)
             _lease_state.lease_token = _lease_token
             _lease_state.lease_generation = run_generation
 

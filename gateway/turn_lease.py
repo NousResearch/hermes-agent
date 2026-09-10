@@ -153,6 +153,7 @@ class SessionTurnLeaseRegistry:
                 token.session_id, new_session_id, token.owner_key, token.generation,
                 *_holder_desc(existing.holder), new_session_id)
             return False
+        self._leases.pop(token.session_id, None)
         self._leases[new_session_id] = lease
         lease.last_used = time.time()
         token.session_id = new_session_id

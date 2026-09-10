@@ -915,6 +915,7 @@ class GatewayInboundMixin:
             event.text = moa_payload
             _moa_state = self._session_state(_quick_key)
             event._moa_restore_override = _moa_state.conversation.model_override
+            event._moa_run_generation = _moa_state.persistent.run_generation
             _moa_state.conversation.model_override = {
                 "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
                 "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
@@ -1299,8 +1300,8 @@ class GatewayInboundMixin:
         finally:
             # MoA one-shot restore must run on EVERY exit path (success, exception, interrupt):
             # the restore data lives on the per-turn event and would leak permanently otherwise.
-            self._restore_moa_one_shot(event, _quick_key)
-            self._restore_pending_one_turn_model_override(_quick_key)
+            self._restore_moa_one_shot(event, _quick_key, _run_generation)
+            self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
             # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
             # recovery pass.
             await self._clear_durable_active_turn(event)
@@ -1313,17 +1314,20 @@ class GatewayInboundMixin:
             # the lease its own turn acquired, never a newer turn's.
             self._release_turn_lease(_quick_key, _run_generation)
 
-    def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
+    def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str, run_generation: int | None = None) -> None:
         """Revert a ``/moa <prompt>`` one-shot model override after its turn (called from the
         message-handling ``finally``). ``_moa_restore_override`` holds the prior per-session
         override (``None`` = clear the MoA override outright)."""
         if not getattr(event, "_moa_disable_after_turn", False):
             return
+        owner_generation = getattr(event, "_moa_run_generation", run_generation)
+        if run_generation is not None and owner_generation != run_generation:
+            return
         with suppress(Exception):
             self._session_state(quick_key).conversation.model_override = getattr(event, "_moa_restore_override", None)
             self._evict_cached_agent(quick_key)
 
-    def _restore_pending_one_turn_model_override(self, session_key: str) -> None:
+    def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
         """Restore a per-session model override after ``/model --once`` runs."""
         if not session_key:
             return
@@ -1332,7 +1336,7 @@ class GatewayInboundMixin:
             snapshot = _otr_state.conversation.one_turn_restore if _otr_state else None
             if _otr_state is not None:
                 _otr_state.conversation.one_turn_restore = None
-            if snapshot:
+            if snapshot and (run_generation is None or snapshot.get("run_generation") == run_generation):
                 self._restore_session_model_override(session_key, snapshot)
         except Exception:
             logger.debug("Failed to restore one-turn model override", exc_info=True)

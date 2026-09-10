@@ -169,7 +169,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
-import { createEventDeduper } from './event-dedupe'
+import { createAmbientClaimArbiter } from './event-dedupe'
 import {
   buildTerminalScript,
   resolveTerminalLaunch,
@@ -16799,9 +16799,10 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   return handleHermesApiRequest(request).finally(releaseProfileDeletion)
 })
 
-// Main serializes cross-window ambient claims.
-const claimedAmbientCue = createEventDeduper()
-ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
+// Main serializes cross-window ambient claims (see event-dedupe.ts for why a
+// spoken reply holds its claim far longer than a beep).
+const ownsAmbientCue = createAmbientClaimArbiter()
+ipcMain.handle('hermes:ambient:claim', (_event, key) => ownsAmbientCue(String(key ?? '')))
 
 registerNativeNotifications({ getMainWindow: () => mainWindow, focusWindow })
 

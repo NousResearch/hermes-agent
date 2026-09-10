@@ -270,9 +270,38 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
                             source=source, cwd=record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(), compensate=True)
             record["pending_title"] = None
+            # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
+            record["_branch_seed_persisted"] = True
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
+
+
+def _seed_row(record: dict) -> None:
+    """Persist a parentless seeded session NOW, for the reason ``_seed_branch_row`` gives: seeded content is
+    intent, not an abandoned draft, and the renderer's post-create hydration reads the DB. The client's title
+    lands with the row so a restart before the first prompt keeps it. Best-effort — the first-prompt path is
+    the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
+    ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
+    key = record.get("session_key")
+    try:
+        if _ensure_session_db_row(record) is False:
+            return
+        _persist_branch_seed(record)
+    except Exception:
+        logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
+    if not record.get("_branch_seed_persisted"):
+        with contextlib.suppress(Exception), _session_db(record) as db:
+            if db is not None:
+                db.delete_session(key)
+        return
+    try:
+        if title := record.get("pending_title"):
+            with _session_db(record) as db:
+                if db is not None and db.set_session_title(key, title):
+                    record["pending_title"] = None
+    except Exception:
+        logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
 def _create_overrides(params: dict) -> tuple:
@@ -317,6 +346,7 @@ def _(rid, params: dict) -> dict:
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
+            "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
             "cwd": _completion_cwd(params), "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
             "create_reasoning_override": create_reasoning_override,
@@ -329,7 +359,7 @@ def _(rid, params: dict) -> dict:
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport}
         _register_session_cwd(_sessions[sid])
-    # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded branch children.
+    # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
     # empty session behind for every launch the user never typed into. The row is now created lazily on the
@@ -342,16 +372,21 @@ def _(rid, params: dict) -> dict:
     # optimistic row vanishes on restart. Persisting up front also means a restart keeps the branch (both
     # reports lost it) and the title lands in the parent's lineage instead of falling back to a
     # message-preview name. Title mirrors the TUI /branch naming.
+    # The same holds for a seeded session WITHOUT a parent (a client opening a chat with its first turns
+    # already written): the transcript exists only in memory, so a restart before the first prompt lost it
+    # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
     if parent_session_id and history:
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+    elif history:
+        _seed_row(_sessions[sid])
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
+    messages = _history_to_messages(history)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
-        "session_id": sid, "stored_session_id": key, "message_count": len(history),
-        "messages": _history_to_messages(history),
+        "session_id": sid, "stored_session_id": key, "message_count": len(messages), "messages": messages,
         # Reflect the override now so the client doesn't clobber its sticky pick.
         "info": {"model": override.get("model") if override else _resolve_model(),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
@@ -532,10 +567,10 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
                 _rebind_live_transport(live_sid, live, transport)
         else:
             _cancel_ws_orphan_reap(live_sid)
-    history = live.get("history") or []
+    messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
-        "message_count": len(history), "messages": ctx.messages(history),
+        "message_count": len(messages), "messages": messages,
         "info": {"model": _resolve_model(), "lazy": True, "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
 
 

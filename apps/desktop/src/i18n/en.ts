@@ -439,7 +439,8 @@ export const en: Translations = {
       archivedChats: 'Archived Chats',
       about: 'About',
       billing: 'Billing',
-      notifications: 'Notifications'
+      notifications: 'Notifications',
+      vault: 'Passwords & Logins'
     },
     plugins: {
       title: 'Desktop plugins',
@@ -507,6 +508,81 @@ export const en: Translations = {
         agentFailed: 'Agent plugin install failed',
         desktopFailed: 'Desktop plugin install failed',
         missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`
+      }
+    },
+    vault: {
+      title: 'Passwords & Logins',
+      blurb:
+        'Say "log into GitHub" and the agent signs in for you. The first time it meets a sign-in page it asks you for the login right there; after that it just works. Passwords are encrypted on this machine and filled straight into the page — the model never sees them.',
+      count: n => `${n} saved`,
+      loadFailed: 'Could not load vault items',
+      empty: 'Nothing saved yet',
+      emptyDesc:
+        "You don't have to add anything here. Ask the agent to sign into a site and it will ask you for the login once, on the spot. Use Add if you prefer to enter one ahead of time.",
+      add: 'Add',
+      addTitle: 'Add a login, card or address',
+      addDescription: 'Stored encrypted on this machine. The agent never sees the password.',
+      added: 'Saved.',
+      adding: 'Saving…',
+      addConfirm: 'Save',
+      kindField: 'Kind',
+      kinds: { login: 'Login', payment: 'Payment card', address: 'Address' },
+      labelField: 'Label',
+      labelPlaceholder: 'e.g. GitHub work account',
+      labelRequired: 'A label is required.',
+      originField: 'Site origin',
+      originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
+      originInvalid: 'Enter a valid URL like https://example.com.',
+      identifierTypeField: 'Identifier type',
+      identifierTypes: { email: 'Email', phone: 'Phone', username: 'Username' },
+      identifierField: 'Identifier',
+      identifierShown: identifier => identifier,
+      passwordField: 'Password',
+      loginFieldsRequired: 'Identifier and password are required.',
+      cardNumberField: 'Card number',
+      cardNameField: 'Name on card',
+      expMonthField: 'Exp. month',
+      expYearField: 'Exp. year',
+      cvcField: 'CVC',
+      postalField: 'Postal code',
+      addressLine1Field: 'Address line 1',
+      addressLine2Field: 'Address line 2',
+      cityField: 'City',
+      stateField: 'State / region',
+      countryField: 'Country',
+      optional: '(optional)',
+      createdOn: date => `Added ${date}`,
+      deleteAction: 'Remove saved item',
+      otpField: 'Authenticator key',
+      otpPlaceholder: 'Base32 secret or otpauth:// link',
+      otpHint: 'The "setup key" the site shows when you enable 2FA. With it saved, Hermes generates the codes itself.',
+      twoFactorBadge: '2FA auto',
+      deleteTitle: 'Delete this item?',
+      deleteDescription: label => `"${label}" will be removed. This cannot be undone.`,
+      deleteConfirm: 'Delete',
+      sources: {
+        title: 'Password managers',
+        blurb:
+          'Installed password managers are picked up automatically. The agent asks you to unlock one the first time it needs a login from it (once per session); only a session token stays in memory, and the agent never sees your master password or any login.',
+        toggleFailed: 'Could not update password manager',
+        notInstalled: name =>
+          `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
+        disabledDesc: 'Detected but turned off for Hermes.',
+        lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
+        unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',
+        statusLocked: 'Locked',
+        statusNotDetected: 'Not detected',
+        statusOff: 'Off',
+        statusUnlocked: 'Unlocked',
+        unlock: 'Unlock',
+        unlocking: 'Unlocking…',
+        lock: 'Lock',
+        unlocked: name => `${name} unlocked for this session.`,
+        unlockTitle: name => `Unlock ${name}`,
+        unlockDescription:
+          'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
+        masterPasswordPlaceholder: 'Master password'
       }
     },
     notifications: {
@@ -635,8 +711,8 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Closing one retires it for good.',
-      tipsReset: (count: number) => `Bring back ${count} closed ${count === 1 ? 'tip' : 'tips'}`,
+        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Each tip appears once.',
+      tipsReset: (count: number) => `Show ${count} ${count === 1 ? 'tip' : 'tips'} again`,
       toursTitle: 'Guided Tours',
       toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
       composerPopoutTitle: 'Floating Composer',
@@ -3818,7 +3894,32 @@ export const en: Translations = {
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',
-    secretPlaceholder: 'secret value'
+    secretPlaceholder: 'secret value',
+    vaultUnlockSendFailed: 'Could not send master password',
+    vaultUnlockTitle: name => `Unlock ${name}`,
+    vaultUnlockDesc: name =>
+      `The agent wants to sign into a site with a login saved in ${name}. Enter your master password to unlock it for this session — it goes straight to ${name} on this machine and is never stored or shown to the agent.`,
+    vaultUnlockPlaceholder: 'Master password',
+    vaultUnlockKeepLocked: 'Keep locked',
+    vaultUnlockConfirm: 'Unlock',
+    vaultSaveSendFailed: 'Could not save the login',
+    vaultSaveTitle: site => `Save your ${site} login?`,
+    vaultSaveDesc: origin =>
+      `Hermes reached a sign-in page at ${origin} and has no login for it. Enter it once here; it is encrypted on this machine and filled into the page without the model ever seeing the password.`,
+    vaultSaveIdentifierLabel: 'Email or username',
+    vaultSaveIdentifierPlaceholder: 'you@example.com',
+    vaultSavePasswordPlaceholder: 'Password',
+    vaultSaveFootnote: 'Manage saved logins in Settings → Passwords & Logins.',
+    vaultSaveDecline: "Don't save",
+    vaultSaveConfirm: 'Save & sign in',
+    vaultCodeSendFailed: 'Could not send the code',
+    vaultCodeTitle: site => `Verification code for ${site}`,
+    vaultCodeDesc: site =>
+      `${site} is asking for a one-time code (text message, email or authenticator app). Enter it here and Hermes types it into the page; the model never sees it.`,
+    vaultCodeLabel: 'Code',
+    vaultCodeFootnote: 'Tip: save the authenticator key with this login in Settings → Passwords & Logins and Hermes enters codes for you.',
+    vaultCodeSkip: 'Skip',
+    vaultCodeConfirm: 'Enter code'
   },
 
   desktop: {

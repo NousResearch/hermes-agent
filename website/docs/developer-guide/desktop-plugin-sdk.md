@@ -676,6 +676,57 @@ formatters `relativeTime` / `fmtDateTime` / `fmtDayTime` / `coarseElapsed`,
 `useI18n` (localized copy — your plugin stays translatable), and
 `evaluateRuntimeReadiness`.
 
+### Shared model picker (`ModelCatalogMenu`)
+
+Use `ModelCatalogMenu` when a plugin needs to choose a Hermes model. It is the
+same searchable, provider-grouped picker used by the chat composer, including
+collapsed `-fast` model families, keyboard selection, and per-model
+thinking/effort/fast controls. The menu owns presentation and navigation; a
+`ModelMenuController` decides what a selection means for your surface.
+
+```javascript
+import {
+  ModelCatalogMenu,
+  ModelMenuCloseContext
+} from '@hermes/plugin-sdk'
+
+const controller = {
+  current: { provider, model, effort, fast },
+  presetFor: () => ({}),
+  select: (nextModel, nextProvider) => {
+    setProvider(nextProvider)
+    setModel(nextModel)
+  },
+  applyPreset: (preset, row) => {
+    setProvider(row.provider)
+    setModel(row.model)
+    setEffort(preset.effort ?? '')
+    setFast(preset.fast ?? false)
+  },
+  setOptions: (patch, row) => {
+    if (row.isActive) {
+      if (patch.effort !== undefined) setEffort(patch.effort)
+      if (patch.fast !== undefined) setFast(patch.fast)
+    }
+  }
+}
+
+jsx(ModelMenuCloseContext.Provider, {
+  value: closeMenu,
+  children: jsx(ModelCatalogMenu, { controller })
+})
+```
+
+`current` is a `ModelChoice` (`provider`, `model`, `effort`, `fast`). `select`
+commits a model row and may return `false` to abort a failed switch.
+`presetFor` supplies remembered settings for a row, `applyPreset` applies that
+preset after selection, and `setOptions` handles a single effort/fast edit.
+
+A surface bound to a live session should pass that `sessionId` to
+`ModelCatalogMenu`, because a session's model catalog can differ from the
+profile-global catalog. Detached surfaces such as per-task overrides omit it.
+The bundled Kanban model override is an in-tree example of that detached pattern.
+
 **Style with theme variables, never hardcoded colors.** Panes already sit on the
 app's editor background — leave the background alone and use vars for everything
 else: `var(--ui-text-secondary)`, `var(--ui-text-tertiary)`,
@@ -897,6 +948,7 @@ not treat this pipeline as a trust boundary.
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
+| Model picker | `ModelCatalogMenu`, `ModelChoice`, `ModelMenuCloseContext`, `ModelMenuController` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `contrastRatio`, `readableOn`, `normalizeHex`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |

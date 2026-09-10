@@ -15,22 +15,18 @@ from pathlib import Path
 import pytest
 
 import hermes_state
-from hermes_state import (
-    DeletedWalGenerationError,
-    SessionDB,
-    classify_persistence_error,
-    iter_deleted_sqlite_sidecar_holders,
-    refuse_deleted_wal_generation,
-)
+import hermes_state_wal
+from hermes_state import DeletedWalGenerationError, SessionDB, classify_persistence_error, refuse_deleted_wal_generation
+from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
 
 
 @pytest.fixture
 def force_wal(monkeypatch):
     """Pin WAL so this host's vulnerable SQLite still matches production topology."""
     monkeypatch.setattr(
-        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+        hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
     )
-    monkeypatch.setattr(hermes_state, "resolve_journal_mode", lambda: "wal")
+    monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: "wal")
 
 
 def _make_db(path: Path, session_id: str, content: str) -> SessionDB:
@@ -87,9 +83,9 @@ def test_clean_open_and_second_open_still_work(tmp_path, force_wal):
 
 
 def test_delete_journal_two_writers_still_work(tmp_path, monkeypatch):
-    monkeypatch.setattr(hermes_state, "resolve_journal_mode", lambda: "delete")
+    monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: "delete")
     monkeypatch.setattr(
-        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+        hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
     )
     path = tmp_path / "state.db"
     a = _make_db(path, "s", "from-a")

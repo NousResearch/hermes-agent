@@ -21,6 +21,7 @@ import os
 import pytest
 
 from hermes_state import SessionDB
+from hermes_cli import model_switch_providers
 
 
 IDLE_S = 6 * 3600
@@ -134,7 +135,7 @@ class TestEntryAndWsWiring:
         monkeypatch.setattr(entry.sys, "stdin", io.StringIO(""))
 
         import hermes_cli.model_switch as ms
-        monkeypatch.setattr(ms, "prewarm_picker_cache_async", lambda: None)
+        monkeypatch.setattr(model_switch_providers, "prewarm_picker_cache_async", lambda: None)
 
         entry.main()
         assert started["n"] == 1

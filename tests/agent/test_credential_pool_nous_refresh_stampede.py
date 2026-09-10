@@ -20,6 +20,7 @@ import json
 import logging
 
 import hermes_cli.auth as auth_mod
+import hermes_cli.auth_nous as auth_nous
 from agent.credential_pool import CredentialPool, PooledCredential
 
 from tests.hermes_cli.test_auth_nous_provider import _invoke_jwt, _setup_nous_auth
@@ -54,6 +55,7 @@ def test_forced_refresh_adopts_peer_rotation_instead_of_reposting(tmp_path, monk
         }
 
     monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+    monkeypatch.setattr(auth_nous, "_refresh_access_token", _fake_refresh_access_token)
 
     creds = auth_mod.resolve_nous_runtime_credentials(
         force_refresh=True, stale_access_token=failed_token
@@ -94,6 +96,7 @@ def test_lock_timeout_during_nous_refresh_does_not_bench_entry(monkeypatch, capl
         raise TimeoutError("Timed out waiting for auth store lock")
 
     monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _busy)
+    monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials", _busy)
 
     result = pool._refresh_entry_impl(entry, force=True)
 
@@ -124,6 +127,7 @@ def test_agent_401_refresh_passes_failed_bearer_as_stale_hint(monkeypatch):
         return {"api_key": "fresh", "base_url": agent.base_url}
 
     monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _fake_resolve)
+    monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials", _fake_resolve)
 
     assert agent._try_refresh_nous_client_credentials(force=True) is True
     assert seen["force_refresh"] is True

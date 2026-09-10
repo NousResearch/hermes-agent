@@ -247,6 +247,19 @@ nous:
 
 `auto` is for when the Portal serves the same model from more than one upstream. A session starts on chat, Hermes reads which upstream answered the first call, and switches that session to native only when the upstream is one where native is known to be clean (the switch happens between calls, so no in-flight response and no warm cache is lost). Today no upstream is cleared, so `auto` behaves exactly like `chat`; it exists so the flip can be made from a measurement rather than a config change.
 
+### Restricting the picker to configured providers
+
+By default, the model picker shows the full provider universe — every canonical provider Hermes knows about, with "paste KEY to activate" affordances for the ones you haven't configured yet. This is useful for discovering new providers, but if you only have a few API keys it means scrolling past dozens of unconfigured entries every time you open `/model`.
+
+Set `model.picker_explicit_only: true` to restrict every picker (CLI, TUI, dashboard) to only the providers you've explicitly configured:
+
+```yaml
+model:
+  picker_explicit_only: true
+```
+
+Only providers with a saved API key, a custom entry, or your current active provider will appear. Ambient/auto-seeded credentials (e.g. GitHub CLI → Copilot) are hidden.
+
 ## When does it take effect?
 
 - **CLI** (`hermes chat`): next `hermes chat` invocation.

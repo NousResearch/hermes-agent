@@ -40,22 +40,49 @@ it is not permission to replay a command with external effects.
   automatically. Recovering an old job requires its own verified ownership and
   source evidence; running the command again is not recovery.
 
-Keep the renderer fix (`e00f7f01212f7807d783b9d6190352ddb7862879`) and the
-command-persistence change together on a source-controlled maintenance branch.
-Build the Desktop renderer and Python backend from that integrated source.
-Updating only the installed application bundle is not a durable maintenance
-strategy: a later release without these commits can replace the customized UI
-or stop displaying the saved events.
+Keep the renderer and command-persistence changes together as ordinary source
+commits. They contain no FT-specific routing, machine paths, or release hashes.
+They belong in the normal Hermes source and Desktop build, not a plugin that
+rewrites core files or a patched application archive.
 
-Before an upstream update, merge/rebase the maintained changes in an isolated
-checkout, resolve actual conflicts, and run the focused checks below. Publish
-the reviewed change upstream or retain a maintained build until its release
-contains the fix. Do not reapply a binary patch automatically or disable
-updates. Local commits and tests do not mean the installed application or the
-upstream release has been updated.
+Until the upstream release includes them, use a maintained branch rather than
+putting local commits on `main`. The updater's same-branch divergence recovery
+can reset `main` to `origin/main`. Configure the existing updater instead:
+
+```yaml
+updates:
+  parked_branch_strategy: update_in_place
+  non_interactive_local_changes: stash
+```
+
+With the source checkout on a maintained branch, normal `hermes update` and the
+Desktop Update action merge official changes into that branch, retaining its
+local commits. The existing Desktop update flow rebuilds from the resulting
+source and replaces the installed App. No separate binary patcher or custom
+update daemon is needed. Keep the Desktop update target on `main`: it identifies
+the upstream branch to merge, not the local maintenance branch.
+
+Uncommitted files on an unmerged maintained branch use the existing autostash
+without a branch switch. CLI updates normally restore that stash; Desktop's
+`--keep-stash` retains it for explicit restoration. Committed report fixes are
+not part of the stash and remain active. An actual merge conflict aborts the
+merge, retains local commits and the stash, and reports failure. Explicit
+`--switch-branch`, disabled auto-switch, and dirty branches whose commits are
+already fully upstream keep their existing refusal/switch behavior.
+An already conflicted index is refused before autostash, preserving the
+unfinished merge or rebase for the user to resolve.
+
+When all local patches are already upstream, a clean maintained branch returns
+to the normal upstream branch automatically. Upstream acceptance remains an
+external step, not something a local verification can establish. Before that
+point, resolve real conflicts in an isolated checkout and run the focused checks
+below. Do not disable updates or automatically edit a downloaded App archive.
 
 ## Focused verification
 
+- Updates: `tests/hermes_cli/test_update_parked_branch_guard.py` uses real Git
+  repositories for consecutive upstream upgrades, local commit retention,
+  tracked/untracked edit recovery, and pre-existing or new conflict refusal.
 - Database: `tests/hermes_state/test_command_display_events.py` exercises
   immutable ownership, concurrent writes, paging, compaction, branch isolation,
   read-only compatibility, deletion, and unchanged model history.

@@ -825,8 +825,13 @@ def _apply_parked_branch_guard(
     """
     if current_branch == branch or current_branch == "HEAD":
         return False, False, None
+    _in_place_configured = False
+    with _best_effort('Could not read updates.parked_branch_strategy: %s'):
+        _in_place_configured = (
+            _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
     switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
-        git_cmd, _m().PROJECT_ROOT, current_branch, branch)
+        git_cmd, _m().PROJECT_ROOT, current_branch, branch,
+        **({"allow_dirty_in_place": True} if _in_place_configured and not switch_branch else {}))
     if not switch_safe:
         _m()._print_parked_branch_skip_warning(
             git_cmd, _m().PROJECT_ROOT, current_branch, branch, switch_block_reason)
@@ -837,10 +842,6 @@ def _apply_parked_branch_guard(
     if not switch_block_reason.startswith("unmerged:"):
         print(f"  ⚠ Checkout was parked on '{current_branch}' (fully merged) — switching back to {branch}...")
         return True, False, switch_block_reason
-    _in_place_configured = False
-    with _best_effort('Could not read updates.parked_branch_strategy: %s'):
-        _in_place_configured = (
-            _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
     if not _in_place_configured or switch_branch:
         _m()._print_parked_branch_kept_notice(
             current_branch, branch, switch_block_reason.split(":", 1)[1])

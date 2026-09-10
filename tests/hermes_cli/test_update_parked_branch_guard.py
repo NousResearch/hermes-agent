@@ -615,3 +615,168 @@ def test_update_on_main_fast_path_unchanged(repo_pair, monkeypatch, capsys):
     head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
     remote = _git(repo_pair, "rev-parse", "origin/main").stdout.strip()
     assert head == remote
+
+
+@pytest.fixture
+def maintained_checkout(repo_pair, monkeypatch):
+    """Exercise checkout/stash/pull directly, without the updater's host lifecycle."""
+    import hermes_cli.config as hermes_config
+
+    config = {"updates": {"parked_branch_strategy": "update_in_place"}}
+    monkeypatch.setattr(hermes_config, "load_config", lambda: config)
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo_pair)
+    # This tiny Git fixture has no installed agent to import-check. Git and
+    # stash restoration, including restored-file syntax checks, stay real.
+    monkeypatch.setattr(update_cmd, "_critical_module_import_failures", lambda *a, **k: {})
+    return repo_pair, config
+
+
+@pytest.mark.parametrize("keep_stash", [False, True], ids=["cli-restore", "desktop-keep"])
+def test_maintained_branch_survives_consecutive_dirty_updates(
+    maintained_checkout, keep_stash
+):
+    repo, _ = maintained_checkout
+    origin = repo.parent / "origin"
+    committed = "committed local feature\n"
+    (repo / "feature.txt").write_text(committed)
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-qm", "maintained local feature")
+    feature_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    retained = []
+
+    for revision in (1, 2):
+        upstream = f"upstream revision {revision}\n"
+        (origin / "upstream.txt").write_text(upstream)
+        _git(origin, "add", "upstream.txt")
+        _git(origin, "commit", "-qm", f"upstream update {revision}")
+        _git(repo, "fetch", "-q", "origin", "main")
+        tracked = f"{committed}tracked draft {revision}\n"
+        untracked = f"untracked draft {revision}\n"
+        (repo / "feature.txt").write_text(tracked)
+        (repo / "scratch.txt").write_text(untracked)
+
+        plan = update_cmd._prepare_checkout_for_update(
+            GIT, "main", "old-feature", is_fork=False, assume_yes=True,
+            gateway_mode=False, gw_input_fn=None, switch_branch=False,
+            _windows_gateway_resume=None,
+        )
+        assert plan.in_place_update and not plan.parked_branch_switched
+        assert plan.commit_count > 0
+        stash = plan.auto_stash_ref
+        assert stash == _git(repo, "rev-parse", "refs/stash").stdout.strip()
+        assert _git(repo, "show", f"{stash}:feature.txt").stdout == tracked
+        assert _git(repo, "show", f"{stash}^3:scratch.txt").stdout == untracked
+        assert not _git(repo, "status", "--porcelain").stdout
+
+        pre_pull_sha = update_cmd._pull_updates(
+            GIT, "main", stash, prompt_for_restore=plan.prompt_for_restore,
+            gw_input_fn=None, discard_local_changes=False, keep_stash=keep_stash,
+        )
+        post_pull_sha = update_cmd._verify_head_after_pull(
+            GIT, "main", pre_pull_sha, in_place_update=plan.in_place_update,
+            _windows_gateway_resume=None,
+        )
+        assert post_pull_sha == _git(repo, "rev-parse", "HEAD").stdout.strip()
+        assert post_pull_sha != pre_pull_sha
+
+        assert _git(repo, "branch", "--show-current").stdout.strip() == "old-feature"
+        _git(repo, "merge-base", "--is-ancestor", feature_sha, "HEAD")
+        _git(repo, "merge-base", "--is-ancestor", "origin/main", "HEAD")
+        assert _git(repo, "show", "HEAD:feature.txt").stdout == committed
+        assert (repo / "upstream.txt").read_text() == upstream
+        assert (repo / "a.txt").read_text() == "two\n"
+        assert (repo / "b.txt").read_text() == "three\n"
+        if keep_stash:
+            retained.insert(0, stash)
+            assert (repo / "feature.txt").read_text() == committed
+            assert not (repo / "scratch.txt").exists()
+            assert not _git(repo, "status", "--porcelain").stdout
+        else:
+            assert (repo / "feature.txt").read_text() == tracked
+            assert (repo / "scratch.txt").read_text() == untracked
+        assert _git(repo, "stash", "list", "--format=%H").stdout.splitlines() == retained
+
+    if keep_stash:
+        # The second update must not consume or overwrite the first saved edits.
+        _git(repo, "stash", "apply", retained[-1])
+        assert (repo / "feature.txt").read_text() == f"{committed}tracked draft 1\n"
+        assert (repo / "scratch.txt").read_text() == "untracked draft 1\n"
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["conflict-cli", "conflict-desktop", "explicit-switch", "opt-out",
+     "fully-merged", "cherry-equivalent", "default-strategy", "pre-existing-conflict"],
+)
+def test_maintained_update_failure_preserves_branch_and_edits(
+    maintained_checkout, case, capsys
+):
+    repo, config = maintained_checkout
+    conflict = case.startswith("conflict-")
+    pre_existing_conflict = case == "pre-existing-conflict"
+    if case == "cherry-equivalent":
+        _git(repo, "cherry-pick", "origin/main~1")
+        _git(repo, "commit", "--amend", "-qm", "same upstream patch, local metadata")
+        cherry = _git(repo, "cherry", "origin/main").stdout.splitlines()
+        assert cherry and all(line.startswith("-") for line in cherry)
+    elif case != "fully-merged":
+        (repo / "feature.txt").write_text("committed feature\n")
+        if conflict or pre_existing_conflict:
+            (repo / "a.txt").write_text("conflicting committed feature\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-qm", "local feature")
+    if case == "opt-out":
+        config["updates"]["auto_switch_parked_branch"] = False
+    elif case == "default-strategy":
+        config["updates"].pop("parked_branch_strategy")
+
+    before_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    before_files = {p.name: p.read_bytes() for p in repo.glob("*.txt")}
+    dirty = "uncommitted tracked edits\n"
+    scratch = "untracked work to recover\n"
+    if pre_existing_conflict:
+        assert _git(repo, "merge", "--no-edit", "origin/main", check=False).returncode != 0
+        assert _git(repo, "ls-files", "--unmerged").stdout
+        dirty = (repo / "a.txt").read_text()
+    else:
+        (repo / "a.txt").write_text(dirty)
+    (repo / "scratch.txt").write_text(scratch)
+    before_status = _git(repo, "status", "--porcelain").stdout
+    before_index = _git(repo, "ls-files", "--stage").stdout
+    before_merge_head = _git(repo, "rev-parse", "--verify", "MERGE_HEAD", check=False).stdout
+
+    with pytest.raises(SystemExit) as exc_info:
+        plan = update_cmd._prepare_checkout_for_update(
+            GIT, "main", "old-feature", is_fork=False, assume_yes=True,
+            gateway_mode=False, gw_input_fn=None, switch_branch=case == "explicit-switch",
+            _windows_gateway_resume=None,
+        )
+        assert conflict, "unsafe checkout reached the pull phase"
+        assert plan.in_place_update and plan.auto_stash_ref
+        update_cmd._pull_updates(
+            GIT, "main", plan.auto_stash_ref, prompt_for_restore=plan.prompt_for_restore,
+            gw_input_fn=None, discard_local_changes=False, keep_stash=case == "conflict-desktop",
+        )
+
+    assert exc_info.value.code == 1
+    assert _git(repo, "branch", "--show-current").stdout.strip() == "old-feature"
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before_head
+    assert _git(repo, "ls-files", "--stage").stdout == before_index
+    assert _git(repo, "rev-parse", "--verify", "MERGE_HEAD", check=False).stdout == before_merge_head
+    out = capsys.readouterr().out
+    if conflict:
+        assert "Merge conflict" in out
+        assert "Local changes preserved in stash" in out
+        assert {p.name: p.read_bytes() for p in repo.glob("*.txt")} == before_files
+        assert not _git(repo, "status", "--porcelain").stdout
+        assert _git(repo, "rev-parse", "--verify", "MERGE_HEAD", check=False).returncode != 0
+        assert _git(repo, "stash", "list", "--format=%H").stdout.splitlines() == [plan.auto_stash_ref]
+        _git(repo, "stash", "apply", plan.auto_stash_ref)
+    else:
+        assert "CODE UPDATE SKIPPED" in out
+        assert not _git(repo, "stash", "list").stdout
+        if pre_existing_conflict:
+            assert "unresolved conflicts" in out
+    assert (repo / "a.txt").read_text() == dirty
+    assert (repo / "scratch.txt").read_text() == scratch
+    assert _git(repo, "status", "--porcelain").stdout == before_status

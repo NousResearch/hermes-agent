@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -5293,6 +5294,35 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
     expect(
       calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
     ).toBeDefined()
+  })
+})
+
+describe('usePromptActions cancelRun', () => {
+  afterEach(() => {
+    cleanup()
+    $compactingSessions.set({})
+    vi.restoreAllMocks()
+  })
+
+  it('clears a stuck compaction overlay so Stop dismisses "Summarizing thread"', async () => {
+    // A hung compaction never emits message.start/complete/error, so the
+    // per-session compacting flag (and its overlay) sticks. Stop is the user's
+    // only recourse and must clear it.
+    setSessionCompacting(RUNTIME_SESSION_ID, true)
+    expect($compactingSessions.get()[RUNTIME_SESSION_ID]).toBe(true)
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.cancelRun()
+
+    expect($compactingSessions.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
   })
 })
 

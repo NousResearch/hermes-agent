@@ -14,6 +14,7 @@ import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { clearClarifyRequest } from '@/store/clarify'
+import { setSessionCompacting } from '@/store/compaction'
 import {
   $composerAttachments,
   type ComposerAttachment,
@@ -702,6 +703,11 @@ export function usePromptActions({
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
     setSessionDraftingTool(sessionId, '')
+    // Auto-compaction sets a per-session flag that only clears on message.start
+    // / message.complete / error. A hung compaction emits none of those, so the
+    // "Summarizing thread" overlay sticks and Stop is the user's only recourse —
+    // clear it here too so cancelling actually dismisses the panel.
+    setSessionCompacting(sessionId, false)
     // Stop ends the turn, so the gateway is no longer blocked on any prompt it
     // raised. Drop this session's pending clarify / approval / sudo / secret so
     // a dead panel (and the sidebar "needs input" dot) can't linger and accept

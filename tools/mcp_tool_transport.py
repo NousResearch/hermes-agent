@@ -10,7 +10,7 @@ from typing import Dict, Optional, Set
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
-from tools.mcp_windows import mcp_http_route
+from tools.mcp_windows import effective_mcp_network, mcp_http_route
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
@@ -257,7 +257,7 @@ class MCPServerTransportMixin:
 
     async def _preflight_content_type(self, url: str, *, headers: Optional[dict] = None,
                                       ssl_verify: bool = True, client_cert=None, timeout: float = 5.0,
-                                      network: str = "auto") -> None:
+                                      network: str = "local") -> None:
         """Probe *url* before the SDK connects: a plain web page would make the SDK sit out the full
         ``connect_timeout`` before an opaque ``CancelledError``; this raises NonMcpEndpointError within
         ``timeout``. Allow-list based: only a 2xx with a definite non-MCP content type is rejected, and
@@ -416,7 +416,7 @@ class MCPServerTransportMixin:
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = _core.LATEST_HANDSHAKE_VERSION
         connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
-        async with mcp_http_route(url, network=config.get("network", "auto"),
+        async with mcp_http_route(url, network=effective_mcp_network(config),
                                   connect_timeout=float(connect_timeout)) as route:
             common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
                       self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))

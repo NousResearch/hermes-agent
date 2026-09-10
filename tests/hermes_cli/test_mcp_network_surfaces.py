@@ -43,6 +43,9 @@ def test_cli_add_configure_and_runtime_loader_preserve_network_and_sse(monkeypat
     assert seen[0]["network"] == "windows"
     assert seen[0]["transport"] == "sse"
     assert read_config(home)["unity"]["network"] == "windows"
+    mcp_config.mcp_command(parse("add", "new-default", "--url", "http://localhost:8080/mcp"))
+    assert seen[-1]["network"] == "auto"
+    assert read_config(home)["new-default"]["network"] == "auto"
     mcp_config.mcp_command(parse("configure", "unity", "--network", "local"))
     from tools.mcp_tool_config import _load_mcp_config
     loaded = _load_mcp_config()["unity"]
@@ -113,9 +116,19 @@ def test_rest_create_list_and_bulk_save_preserve_network_and_transport(client, h
     rows = client.get("/api/mcp/servers").json()["servers"]
     row = next(row for row in rows if row["name"] == "unity")
     assert row["network"] == "windows" and row["transport"] == "sse"
-    response = client.put("/api/mcp/servers", json={"servers": {"unity": {**saved, "network": "local"}}})
+    response = client.post("/api/mcp/servers", json={"name": "new-default", "url": "http://localhost:8080/mcp"})
     assert response.status_code == 200, response.text
-    assert read_config(home)["unity"]["network"] == "local"
+    assert read_config(home)["new-default"]["network"] == "auto"
+    response = client.put("/api/mcp/servers", json={"servers": {
+        "unity": {**saved, "network": "local"},
+        "legacy": {"url": "http://localhost:8081/mcp"},
+    }})
+    assert response.status_code == 200, response.text
+    replaced = read_config(home)
+    assert replaced["unity"]["network"] == "local"
+    assert "network" not in replaced["legacy"]
+    rows = client.get("/api/mcp/servers").json()["servers"]
+    assert next(row for row in rows if row["name"] == "legacy")["network"] == "local"
     before = (home / "config.yaml").read_bytes()
     bad = client.post("/api/mcp/servers", json={**body, "name": "bad", "network": "typo"})
     assert bad.status_code == 422
@@ -130,10 +143,12 @@ def test_profile_builder_uses_same_contract_without_touching_foreground_profile(
     before = (home / "config.yaml").read_bytes()
     target = home / "profiles" / "unity"
     target.mkdir(parents=True)
-    count = _write_profile_mcp_servers(target, [MCPServerCreate(name="unity", url="http://localhost:8080/sse", transport="sse", network="windows")])
+    count = _write_profile_mcp_servers(target, [
+        MCPServerCreate(name="unity", url="http://localhost:8080/sse", transport="sse"),
+    ])
     assert count == 1
     saved = read_config(target)["unity"]
-    assert saved["network"] == "windows" and saved["transport"] == "sse"
+    assert saved["network"] == "auto" and saved["transport"] == "sse"
     assert (home / "config.yaml").read_bytes() == before
 
 
@@ -148,6 +163,17 @@ def test_catalog_cli_reinstall_and_api_keep_or_override_network(monkeypatch, hom
     entry = catalog_entry()
     monkeypatch.setattr(mcp_catalog, "get_entry", lambda name: entry)
     monkeypatch.setattr(mcp_catalog, "_apply_tool_selection", lambda *_a, **_kw: None)
+
+    # Fresh installs explicitly persist the new-entry automatic choice.
+    mcp_catalog.install_entry(entry)
+    assert read_config(home)[entry.name]["network"] == "auto"
+
+    # Reinstalling a pre-feature entry without the field preserves omission/local.
+    legacy = {"url": entry.transport.url, "enabled": True}
+    assert mcp_config._save_mcp_server(entry.name, legacy)
+    mcp_catalog.install_entry(entry)
+    assert "network" not in read_config(home)[entry.name]
+
     mcp_config.mcp_command(parse("install", entry.name, "--network", "windows"))
     assert read_config(home)[entry.name]["network"] == "windows"
     mcp_catalog.install_entry(entry)
@@ -181,6 +207,8 @@ def test_import_keeps_routing_and_sse_but_does_not_import_bearer_tokens():
     assert translated == {"url": "http://localhost:8080/sse", "network": "windows", "transport": "sse", "headers": {"X-Project": "scene"}}
     assert stripped == ["mcp_servers.unity.headers.Authorization"]
     assert "fixture-secret" not in json.dumps(translated)
+    legacy, _ = _translate_mcp_server("legacy", {"url": "http://localhost:8080/mcp"})
+    assert "network" not in legacy
 
 
 def test_disk_schema_cache_cannot_replay_another_networks_tools():
@@ -190,7 +218,8 @@ def test_disk_schema_cache_cannot_replay_another_networks_tools():
     cache.write_cache_entry("unity", fp, tools=[{"name": "linux_only", "inputSchema": {}}], utility_tools=[])
     assert cache.get_cached_entry("unity", fp) is not None
     assert cache.get_cached_entry("unity", cache.config_fingerprint({**cfg, "network": "windows"})) is None
-    assert cache.config_fingerprint({"url": cfg["url"]}) == cache.config_fingerprint({"url": cfg["url"], "network": "auto"})
+    assert cache.config_fingerprint({"url": cfg["url"]}) == cache.config_fingerprint({"url": cfg["url"], "network": "local"})
+    assert cache.config_fingerprint({"url": cfg["url"]}) != cache.config_fingerprint({"url": cfg["url"], "network": "auto"})
 
 
 @pytest.mark.parametrize("kind", ["http", "sse"])
@@ -202,4 +231,4 @@ def test_acp_session_servers_keep_transport_and_auth_headers(kind):
     config = _mcp_server_config(server)
     assert config["headers"] == {"X-Project": "scene"}
     assert config.get("transport", "http") == kind
-    assert config.get("network", "auto") == "auto"
+    assert config["network"] == "local"

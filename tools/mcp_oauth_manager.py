@@ -286,6 +286,8 @@ class MCPOAuthManager:
         # Cache immutable routing settings, not a connection's Unix socket.
         http_config = {k: v for k, v in (http_config or {}).items()
                        if k in {"network", "ssl_verify", "client_cert", "client_key"}}
+        from tools.mcp_windows import effective_mcp_network
+        http_config["network"] = effective_mcp_network(http_config)
         key = self._key(server_name)
         with self._entries_lock:
             entry = self._entries.get(key)

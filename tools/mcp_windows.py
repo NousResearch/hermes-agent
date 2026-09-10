@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -249,13 +250,26 @@ async def _local_endpoint_available(host: str, port: int) -> bool:
     return True
 
 
+def effective_mcp_network(config: Mapping[str, object]) -> str:
+    """Return the authorized network namespace for one MCP config.
+
+    ``network`` did not exist before the WSL bridge. Its omission therefore
+    preserves the historical backend-local meaning of ``localhost``. Crossing
+    into Windows requires an explicitly persisted ``auto`` or ``windows``. New
+    setup surfaces that choose automatic routing write ``network: auto`` rather
+    than retroactively widening legacy entries.
+    """
+    network = config.get("network", "local")
+    if not isinstance(network, str) or network not in {"auto", "local", "windows"}:
+        raise InvalidMcpNetworkError("MCP network must be auto, local, or windows")
+    return network
+
+
 def validate_mcp_network_config(config: dict) -> None:
     """Validate explicit routing intent without opening sockets or loading the SDK."""
     if "network" not in config:
         return
-    network = config["network"]
-    if not isinstance(network, str) or network not in {"auto", "local", "windows"}:
-        raise InvalidMcpNetworkError("MCP network must be auto, local, or windows")
+    network = effective_mcp_network(config)
     if not config.get("url"):
         raise InvalidMcpNetworkError("MCP network is only supported for HTTP/SSE servers, not stdio")
     # Environment placeholders are resolved by the runtime loader, which also
@@ -283,7 +297,7 @@ async def mcp_http_client(httpx, server_name: str, config: dict, **client_kwargs
 
     verify = config.get("ssl_verify", True)
     cert = _resolve_client_cert(server_name, config)
-    async with mcp_http_route(config["url"], network=config.get("network", "auto")) as route:
+    async with mcp_http_route(config["url"], network=effective_mcp_network(config)) as route:
         options = route.client_options(httpx, verify=verify, cert=cert) if route else {}
         async with httpx.AsyncClient(
             **client_kwargs, verify=verify, **({"cert": cert} if cert is not None else {}), **options
@@ -291,7 +305,7 @@ async def mcp_http_client(httpx, server_name: str, config: dict, **client_kwargs
             yield client
 
 
-def validate_mcp_network(url: str, network: str = "auto") -> None:
+def validate_mcp_network(url: str, network: str = "local") -> None:
     """Reject unfulfillable explicit targets before any optional preflight."""
     if not isinstance(network, str) or network not in {"auto", "local", "windows"}:
         raise InvalidMcpNetworkError("MCP network must be auto, local, or windows")
@@ -304,10 +318,12 @@ def validate_mcp_network(url: str, network: str = "auto") -> None:
 
 
 @contextlib.asynccontextmanager
-async def mcp_http_route(url: str, *, network: str = "auto", connect_timeout: float = 10.0):
-    """Default: WSL-local first, Windows loopback only if no local TCP listener.
+async def mcp_http_route(url: str, *, network: str = "local", connect_timeout: float = 10.0):
+    """Route one explicitly qualified MCP endpoint.
 
-    ``local`` disables bridging. ``windows`` selects the Windows listener even
+    Omitted routing is ``local`` for legacy/fail-closed compatibility. Explicit
+    ``auto`` tries WSL-local first and bridges only when it is unreachable;
+    ``windows`` selects the Windows listener even
     when a WSL process uses the same port. Non-WSL auto/local routes are no-ops;
     an explicit Windows target is also a no-op on native Windows, never on an
     unrelated Linux/macOS/remote machine. Non-loopback URLs are never bridged.

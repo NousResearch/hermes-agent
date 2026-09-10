@@ -315,9 +315,17 @@ Then run `hermes mcp login googledrive` — with the pre-registered client, Herm
 
 When the Hermes **backend** runs in WSL and an HTTP MCP server runs on Windows
 (for example, in Unity), the same `localhost` URL can name different machines.
-Hermes tries the WSL-local listener first. If no local TCP listener is reachable,
-it automatically reaches Windows loopback through Windows interop. Native Windows,
-macOS, ordinary Linux, and non-loopback URLs retain their normal direct connection.
+The OS namespace is therefore part of the endpoint identity: a missing WSL
+listener is not permission to send requests or credentials to a Windows process
+on the same port.
+
+Existing/raw entries with no `network` field keep the historical backend-local
+meaning of `localhost` and fail closed. New URL entries created through the CLI,
+dashboard or typed Desktop API persist `network: auto` explicitly. With that
+explicit choice, Hermes tries the WSL-local listener first and reaches Windows
+loopback through Windows interop only when no local TCP listener is reachable.
+Native Windows, macOS, ordinary Linux, and non-loopback URLs retain their normal
+direct connection.
 
 Keep the server's original URL. For example, when Unity displays
 `http://localhost:8080/mcp`, paste that URL into Desktop's MCP editor or use:
@@ -330,10 +338,11 @@ mcp_servers:
 ```
 
 `network: windows` selects Windows explicitly, including when an unrelated WSL
-service occupies the same port. Omit it (or use `auto`) for local-first detection;
-use `local` to prohibit crossing into Windows. The setting also works with
-`transport: sse`. The MCP tool probe and runtime connection use the same routing.
-Changing `network` invalidates Desktop's cached probe result.
+service occupies the same port. Explicit `network: auto` enables local-first
+fallback; `network: local`, or omitting the field in a legacy/raw config, prohibits
+crossing into Windows. The setting also works with `transport: sse`. The MCP tool
+probe and runtime connection use the same routing. Changing `network` invalidates
+Desktop's cached probe result.
 
 The bridge uses Windows PowerShell via WSL interop and a private Unix socket. It
 opens **no TCP listening port** and changes no Windows firewall rules. It preserves
@@ -368,10 +377,12 @@ hermes mcp install <catalog-entry> --network windows
 
 The MCP picker has a **Network target (HTTP/SSE)** action for configured URL
 servers. The dashboard Add Server and Profile Builder forms expose both the
-network target and HTTP/SSE protocol. Desktop's MCP JSON editor/importer accepts
-the same `network` and `transport` fields. The structured create/bulk-save APIs
-and HTTP catalog install API preserve these choices; catalog reinstall retains
-an existing network choice unless explicitly overridden.
+network target and HTTP/SSE protocol. New structured URL creation saves its
+selected target explicitly (`auto` in the default form state). Desktop's MCP JSON
+editor/importer accepts the same `network` and `transport` fields. Raw bulk-save
+and import preserve an omitted legacy field as local; they do not silently migrate
+it to `auto`. Catalog reinstall retains an existing choice or legacy omission
+unless explicitly overridden; a fresh HTTP catalog install saves `auto`.
 
 Browser OAuth requests use the session route. Device-code login and cold-start
 OAuth metadata discovery also use the configured route and TLS settings, with
@@ -381,11 +392,12 @@ providers and the on-disk tool-schema cache are invalidated when network intent
 changes; existing prompt/tool snapshots still follow the normal new-session or
 explicit MCP reload policy.
 
-ACP-supplied HTTP and SSE servers use automatic routing, and SSE remains SSE.
+ACP-supplied HTTP and SSE servers remain backend-local, and SSE remains SSE.
 ACP's standard server description does not provide Hermes' explicit `network`
-selector. Set explicit targets in Hermes' own profile configuration instead.
-Import from supported other-agent JSON configurations preserves explicit network
-and HTTP/SSE fields without importing literal credentials.
+selector, so it cannot authorize a cross-namespace retarget. Set `auto` or
+`windows` explicitly in Hermes' own profile configuration instead. Import from
+supported other-agent JSON configurations preserves explicit network and HTTP/SSE
+fields without importing literal credentials; omission remains local.
 
 Invalid network names, explicit Windows targeting of non-loopback URLs, and
 network options on stdio entries are rejected rather than silently ignored.

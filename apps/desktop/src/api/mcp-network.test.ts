@@ -15,6 +15,10 @@ describe('MCP network intent at the Desktop API boundary', () => {
     const config = { url: 'http://localhost:8080/sse', network: 'windows' as const, transport: 'sse' as const }
     await addMcpServer({ name: 'unity', ...config }, scope)
     expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ ...scope, body: { name: 'unity', ...config } }))
+    await addMcpServer({ name: 'new-default', url: 'http://localhost:8080/mcp' }, scope)
+    expect(api).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ...scope, body: { name: 'new-default', url: 'http://localhost:8080/mcp', network: 'auto' } })
+    )
     await saveMcpServers({ unity: config }, scope)
     expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ ...scope, body: { servers: { unity: config } } }))
     await installMcpCatalogEntry('unity', {}, scope, 'windows')
@@ -27,6 +31,7 @@ describe('MCP network intent at the Desktop API boundary', () => {
     const imported = parseMcpImport(
       JSON.stringify({ mcpServers: { unity: { type: 'sse', network: 'windows', url: 'http://localhost:8080/sse' } } })
     )
+
     expect(imported).toEqual([
       { name: 'unity', config: { transport: 'sse', network: 'windows', url: 'http://localhost:8080/sse' } }
     ])

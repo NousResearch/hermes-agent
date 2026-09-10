@@ -615,7 +615,11 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True, network: Optional
     from tools.mcp_windows import InvalidMcpNetworkError, validate_mcp_network_config
 
     if network is None and entry.transport.type == "http":
-        network = (installed_servers().get(entry.name) or {}).get("network")
+        existing = installed_servers().get(entry.name)
+        # A fresh catalog install is a new user choice and may opt into auto.
+        # Reinstalling a legacy entry with no field must preserve its historical
+        # backend-local authority rather than silently crossing namespaces.
+        network = "auto" if existing is None else existing.get("network")
     if network is not None:
         try:
             validate_mcp_network_config({"url": entry.transport.url, "network": network})

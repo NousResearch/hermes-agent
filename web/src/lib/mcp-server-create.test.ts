@@ -18,6 +18,7 @@ describe("buildMcpServerCreate", () => {
     expect(server).toEqual({
       name: "Linear",
       url: "https://mcp.linear.app/mcp",
+      network: "auto",
       auth: "header",
       bearer_token: "Bearer secret-token",
     });
@@ -34,6 +35,7 @@ describe("buildMcpServerCreate", () => {
     ).toEqual({
       name: "oauth",
       url: "https://example.com/mcp",
+      network: "auto",
       auth: "oauth",
     });
 
@@ -46,6 +48,7 @@ describe("buildMcpServerCreate", () => {
     ).toEqual({
       name: "public",
       url: "https://example.com/mcp",
+      network: "auto",
     });
   });
 

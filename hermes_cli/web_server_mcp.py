@@ -12,6 +12,7 @@ if TYPE_CHECKING:  # pragma: no cover - annotation only
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 from hermes_cli.config import redact_key
 from hermes_cli.web_models import MCPServerCreate
+from tools.mcp_windows import effective_mcp_network
 
 
 def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, Any], Optional[str]]:
@@ -68,7 +69,11 @@ def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, 
         if not url:
             raise ValueError("HTTP/SSE transport requires a URL")
         server_config["transport"] = body.transport
-    if body.network is not None:
+    if url:
+        # This endpoint creates a new entry, so persist its default choice. Raw
+        # map replacement remains lossless and keeps legacy omission local.
+        server_config["network"] = body.network or "auto"
+    elif body.network is not None:
         server_config["network"] = body.network
     issues = _mcp_entry_issues(name, server_config)
     if issues:
@@ -96,7 +101,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "name": name,
         "transport": transport,
-        **({"network": cfg.get("network", "auto")} if cfg.get("url") else {}),
+        **({"network": effective_mcp_network(cfg)} if cfg.get("url") else {}),
         "url": cfg.get("url"),
         "command": cfg.get("command"),
         "args": list(cfg.get("args") or []),

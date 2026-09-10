@@ -208,23 +208,19 @@ async def test_bridge_preserves_origin_tls_streaming_and_never_captures_another_
 @pytest.mark.linux_only
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["http", "sse"])
-async def test_real_mcp_probe_and_runtime_use_the_same_windows_route(monkeypatch, transport):
+@pytest.mark.parametrize("network", ["auto", "windows"])
+async def test_real_mcp_probe_and_runtime_use_the_same_windows_route(monkeypatch, transport, network):
     pytest.importorskip("mcp")
     from tools.mcp_tool import MCPServerTask
-    from tools import mcp_tool_transport
 
     with _endpoint(sse=transport == "sse") as (port, requests):
+        monkeypatch.setattr(mcp_windows, "is_wsl", lambda: True)
         monkeypatch.setattr(mcp_windows, "_windows_tunnel_command",
                             lambda *_: [sys.executable, "-u", "-c", _BYTE_BRIDGE, str(port)])
-        # Substitute the environment-selection boundary, NOT the transport.
-        # On unpatched main the real MCP connection still tries localhost:1
-        # and fails; merely adding the helper does not make this test pass.
-        monkeypatch.setattr(mcp_tool_transport, "mcp_http_route",
-                            lambda url, **kw: mcp_windows.windows_loopback_route(url), raising=False)
         task = MCPServerTask("windows-fixture")
         path = "/sse" if transport == "sse" else "/mcp"
         config = {"url": f"http://localhost:1{path}", "transport": transport, "protocol": "legacy",
-                  "headers": {"Authorization": "Bearer fixture"}, "connect_timeout": 3}
+                  "network": network, "headers": {"Authorization": "Bearer fixture"}, "connect_timeout": 3}
         try:
             await asyncio.wait_for(task.start(config), timeout=10)
             assert [tool.name for tool in task._tools] == ["unity_ping"]
@@ -243,6 +239,63 @@ async def test_real_mcp_probe_and_runtime_use_the_same_windows_route(monkeypatch
             assert all(headers.get("Authorization") == "Bearer fixture" for _, _, headers in requests)
         finally:
             await task.shutdown()
+
+
+@pytest.mark.linux_only
+@pytest.mark.asyncio
+async def test_legacy_omission_never_opens_windows_bridge_or_sends_authorization(monkeypatch):
+    """A stopped WSL server cannot transfer authority to a Windows canary.
+
+    The canary is the substituted Windows namespace at the same advertised
+    endpoint. If a bridge is opened, its byte relay reaches this HTTP server and
+    records the secret-bearing request. Omitted ``network`` must do neither.
+    """
+    pytest.importorskip("mcp")
+    from tools.mcp_tool import MCPServerTask
+
+    bridge_calls = []
+    with _endpoint() as (canary_port, canary_requests):
+        monkeypatch.setattr(mcp_windows, "is_wsl", lambda: True)
+
+        def windows_canary(host, advertised_port):
+            bridge_calls.append((host, advertised_port))
+            return [sys.executable, "-u", "-c", _BYTE_BRIDGE, str(canary_port)]
+
+        monkeypatch.setattr(mcp_windows, "_windows_tunnel_command", windows_canary)
+        task = MCPServerTask("legacy-local")
+        config = {"url": "http://localhost:1/mcp",
+                  "headers": {"Authorization": "Bearer must-not-cross"},
+                  "connect_timeout": 0.2}
+        assert await task._prepare_run(config)
+        assert bridge_calls == []
+        assert canary_requests == []
+
+
+@pytest.mark.linux_only
+@pytest.mark.asyncio
+@pytest.mark.parametrize("network", ["auto", "windows"])
+async def test_explicit_cross_namespace_choice_reaches_authorized_canary(monkeypatch, network):
+    """Positive control for the same preflight path and Authorization header."""
+    pytest.importorskip("mcp")
+    from tools.mcp_tool import MCPServerTask
+
+    bridge_calls = []
+    with _endpoint() as (canary_port, canary_requests):
+        monkeypatch.setattr(mcp_windows, "is_wsl", lambda: True)
+
+        def windows_canary(host, advertised_port):
+            bridge_calls.append((host, advertised_port))
+            return [sys.executable, "-u", "-c", _BYTE_BRIDGE, str(canary_port)]
+
+        monkeypatch.setattr(mcp_windows, "_windows_tunnel_command", windows_canary)
+        task = MCPServerTask("explicit-crossing")
+        config = {"url": "http://localhost:1/mcp", "network": network,
+                  "headers": {"Authorization": "Bearer allowed-to-cross"},
+                  "connect_timeout": 2}
+        assert await task._prepare_run(config)
+        assert bridge_calls == [("localhost", 1)]
+        assert canary_requests
+        assert canary_requests[0][2]["Authorization"] == "Bearer allowed-to-cross"
 
 
 @pytest.mark.windows_only

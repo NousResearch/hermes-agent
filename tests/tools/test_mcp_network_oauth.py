@@ -38,7 +38,8 @@ finally:
 
 @pytest.mark.linux_only
 @pytest.mark.asyncio
-async def test_cli_device_login_and_cold_refresh_share_windows_routing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("network", ["auto", "windows"])
+async def test_cli_device_login_and_cold_refresh_share_windows_routing(tmp_path, monkeypatch, network):
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from hermes_cli.mcp_config import _reauth_oauth_server
     from tools import mcp_windows
@@ -48,7 +49,7 @@ async def test_cli_device_login_and_cold_refresh_share_windows_routing(tmp_path,
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     token = set_hermes_home_override(tmp_path)
     monkeypatch.setattr(mcp_windows, "is_wsl", lambda: True)
-    cfg = {"url": "http://localhost:1/mcp", "auth": "oauth", "protocol": "legacy", "network": "windows",
+    cfg = {"url": "http://localhost:1/mcp", "auth": "oauth", "protocol": "legacy", "network": network,
            "oauth": {"flow": "device", "cimd": False, "timeout": 15, "scope": "fixture.read"}}
     task = None
     try:
@@ -82,12 +83,46 @@ async def test_cli_device_login_and_cold_refresh_share_windows_routing(tmp_path,
         reset_hermes_home_override(token)
 
 
+@pytest.mark.linux_only
+@pytest.mark.asyncio
+async def test_legacy_omitted_network_device_oauth_sends_nothing_to_windows_canary(tmp_path, monkeypatch):
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli.mcp_config import _reauth_oauth_server
+    from tools import mcp_windows
+    from tools.mcp_oauth_manager import get_manager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token = set_hermes_home_override(tmp_path)
+    monkeypatch.setattr(mcp_windows, "is_wsl", lambda: True)
+    cfg = {"url": "http://localhost:1/mcp", "auth": "oauth", "protocol": "legacy",
+           "oauth": {"flow": "device", "cimd": False, "timeout": 3, "scope": "fixture.read"}}
+    bridge_calls = []
+    try:
+        with oauth_fixture("legacy-network", advertised_base="http://localhost:1") as (direct, wire):
+            canary_port = urlsplit(direct).port
+
+            def windows_canary(host, advertised_port):
+                bridge_calls.append((host, advertised_port))
+                return [sys.executable, "-u", "-c", _BYTE_RELAY, str(canary_port)]
+
+            monkeypatch.setattr(mcp_windows, "_windows_tunnel_command", windows_canary)
+            assert not await asyncio.wait_for(
+                asyncio.to_thread(_reauth_oauth_server, "legacy-network-fixture", cfg, flow="device"),
+                timeout=15,
+            )
+            assert bridge_calls == []
+            assert wire == []
+    finally:
+        get_manager().remove("legacy-network-fixture")
+        reset_hermes_home_override(token)
+
+
 def test_oauth_provider_cache_is_rebuilt_for_network_and_tls_not_unrelated_fields(tmp_path, monkeypatch):
     from tools.mcp_oauth_manager import MCPOAuthManager
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     manager = MCPOAuthManager()
     monkeypatch.setattr(manager, "_build_provider", lambda *_: type("FixtureProvider", (), {})())
-    first = manager.get_or_build_provider("fixture", "http://localhost/mcp", {}, http_config={"network": "local"})
+    first = manager.get_or_build_provider("fixture", "http://localhost/mcp", {}, http_config={})
     same = manager.get_or_build_provider("fixture", "http://localhost/mcp", {}, http_config={"network": "local", "enabled": False})
     other = manager.get_or_build_provider("fixture", "http://localhost/mcp", {}, http_config={"network": "windows"})
     tls = manager.get_or_build_provider("fixture", "http://localhost/mcp", {}, http_config={"network": "windows", "ssl_verify": False})

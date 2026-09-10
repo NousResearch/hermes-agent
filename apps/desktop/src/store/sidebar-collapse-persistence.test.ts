@@ -62,3 +62,36 @@ describe('sidebar collapse persistence', () => {
     expect(s2.leftCollapsed()).toBe(true)
   })
 })
+
+describe('minimized sidebar recovery', () => {
+  it.each([false, true])('restores Bots through the shared toggle with flipped=%s', async flipped => {
+    window.localStorage.clear()
+    vi.resetModules()
+    const { layout, tree, bind } = await loadStores()
+    const { group, split, findGroup } = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+
+    const disposers = [
+      registry.register({ area: 'panes', id: 'sessions', title: 'Sessions', data: { placement: 'left' } }),
+      registry.register({ area: 'panes', id: 'bots', title: 'Bots', data: { placement: 'left' } }),
+      registry.register({ area: 'panes', id: 'workspace', title: 'Main', data: { placement: 'main' } })
+    ]
+
+    try {
+      const sidebar = group(['sessions', 'bots'], { active: 'bots', id: 'sidebar', minimized: true })
+      const main = group(['workspace'])
+      tree.$layoutTree.set(split('row', flipped ? [main, sidebar] : [sidebar, main]))
+      bind()
+      layout.toggleSidebarOpen()
+      expect(layout.$sidebarOpen.get()).toBe(true)
+      expect(findGroup(tree.$layoutTree.get()!, 'sidebar')).toMatchObject({ active: 'bots', minimized: false })
+      layout.toggleSidebarOpen()
+      expect(layout.$sidebarOpen.get()).toBe(false)
+      tree.setTreeGroupMinimized('sidebar', true)
+      layout.setSidebarOpen(true)
+      expect(findGroup(tree.$layoutTree.get()!, 'sidebar')).toMatchObject({ active: 'bots', minimized: false })
+    } finally {
+      disposers.forEach(dispose => dispose())
+    }
+  })
+})

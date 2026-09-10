@@ -26,7 +26,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProfileRoute } from './types'
 
-const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
+const { botMetaMock, clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
+  botMetaMock: {} as Record<string, { title?: string }>,
   clearBotAttentionMock: vi.fn(),
   hostMock: {
     onEvent: vi.fn(),
@@ -48,6 +49,19 @@ vi.mock('@hermes/plugin-sdk', () => ({ host: hostMock, LruCache: UnboundedCache 
 
 vi.mock('./data', () => ({
   botHandle: (name: string) => (name === 'default' ? 'hermes' : name),
+  botMentionTag: (profile: {
+    name: string
+    remoteSource?: boolean
+    ui_meta?: Record<string, { title?: string }>
+  }) =>
+    String(
+      profile.ui_meta?.['hermes-bots']?.title ||
+        (!profile.remoteSource && botMetaMock[profile.name]?.title) ||
+        (profile.name === 'default' ? 'hermes' : profile.name)
+    )
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, ''),
   clearBotAttention: clearBotAttentionMock,
   noteBotAttention: noteBotAttentionMock
 }))
@@ -128,6 +142,11 @@ async function pushAndSettle(times = 1) {
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
+
+  for (const key of Object.keys(botMetaMock)) {
+    delete botMetaMock[key]
+  }
+
   hostMock.onEvent = vi.fn(() => vi.fn())
   hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
   hostMock.requestProfile = vi.fn(async () => ({}))
@@ -434,6 +453,56 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
+  it('publishes a remote default under its Bot Mode title handle', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return {
+          profiles: [
+            call.connectionId === 'a'
+              ? { name: 'ops' }
+              : { name: 'default', ui_meta: { 'hermes-bots': { title: 'CoS Bot' } } }
+          ]
+        }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pushedToA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')
+
+    expect(pushedToA?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'b', handle: 'cos-bot', profile: 'default', title: 'CoS Bot' })
+    ])
+    stopBotRelay()
+  })
+
+  it('does not borrow local legacy metadata for an untitled remote default', async () => {
+    botMetaMock.default = { title: 'Local Custom' }
+
+    const calls = respondWith(call =>
+      call.method === 'profiles.list'
+        ? { profiles: [{ name: call.connectionId === 'a' ? 'ops' : 'default' }] }
+        : {}
+    )
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pushedToA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')
+
+    expect(pushedToA?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'b', handle: 'hermes', profile: 'default' })
+    ])
+    stopBotRelay()
+  })
+
   it('drops the cached rows of a connection that genuinely disconnected', async () => {
     const calls = respondWith(call =>
       call.method === 'profiles.list' ? { profiles: [{ name: call.connectionId }] } : {}
@@ -473,8 +542,10 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
 
 describe('the drain loop wires drain → deliver → reply', () => {
   const envelope = {
+    from_handle: 'hermes',
+    from_profile: 'default',
     id: 'env-1',
-    message: 'status?',
+    message: 'Message from 🤖 hermes (@hermes): status?',
     target_connection: 'b',
     target_profile: 'ops'
   }
@@ -499,7 +570,7 @@ describe('the drain loop wires drain → deliver → reply', () => {
 
     expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
       connectionId: 'b',
-      params: { message: 'status?', profile: 'ops' }
+      params: { message: 'Message from 🤖 hermes (@hermes@a): status?', profile: 'ops' }
     })
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',
@@ -507,6 +578,30 @@ describe('the drain loop wires drain → deliver → reply', () => {
     })
     // A delivered background DM is this bot's "good turn".
     expect(clearBotAttentionMock).toHaveBeenCalledWith('b::ops')
+
+    stopBotRelay()
+  })
+
+  it('does not rewrite a marker outside the expected sender stamp', async () => {
+    const displayName = 'x'.repeat(220)
+    const message = `Message from 🤖 ${displayName} (@hermes): status?`
+
+    const calls = respondWith(call =>
+      call.method === 'bot_relay.outbox.drain'
+        ? {
+            envelopes: call.connectionId === 'a' ? [{ ...envelope, message }] : []
+          }
+        : call.method === 'bot_relay.deliver'
+          ? { reply: 'all green' }
+          : {}
+    )
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')?.params.message).toBe(message)
 
     stopBotRelay()
   })

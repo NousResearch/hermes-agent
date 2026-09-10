@@ -155,13 +155,22 @@ def read_remote_roster(root: Path | str) -> list[dict]:
         return []
 
 
+def _target_aliases(row: dict) -> set[str]:
+    """Case-folded callable aliases for one normalized remote roster row."""
+    profile = str(row.get("profile") or "").lower()
+    aliases = {profile, str(row.get("handle") or "").lower()}
+    if profile == "default":
+        aliases.add("hermes")
+    return aliases
+
+
 def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
     """Matched row for a bare handle/profile (unique across connections) or
     ``<handle|profile>@<connection-id>``; ``"ambiguous"`` for a bare form on several connections; None otherwise."""
     want, at, conn = (p.strip() for p in str(raw_target or "").strip().lstrip("@").partition("@"))
     if not want or (at and not conn):
         return None
-    matches = [row for row in roster if want.lower() in (row["handle"].lower(), row["profile"].lower())
+    matches = [row for row in roster if want.lower() in _target_aliases(row)
                and (not conn or row["connection_id"].lower() == conn.lower())]
     if not matches:
         return None
@@ -169,11 +178,13 @@ def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
 
 
 def remote_target_forms(roster: list[dict]) -> list[str]:
-    """Target strings: bare handle when unique across connections, else
-    ``handle@connection`` (mirrors ``resolve_remote_target``)."""
-    handles = [row["handle"].lower() for row in roster]
-    return [f"{row['handle']}@{row['connection_id']}" if handles.count(h) > 1 else row["handle"]
-            for row, h in zip(roster, handles)]
+    """Unambiguous target strings for agents on other connections.
+
+    A handle unique within the remote roster can still collide with a profile
+    on this gateway (most importantly every gateway's ``@hermes`` default), so
+    remote forms always carry their connection id.
+    """
+    return [f"{row['handle']}@{row['connection_id']}" for row in roster]
 
 
 def _envelope_ttl_seconds() -> int:

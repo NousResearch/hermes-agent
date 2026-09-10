@@ -86,7 +86,7 @@ const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
 // turn runs on it, but they are NOT the human speaking — render them as a
 // compact attributed timeline notice instead of a user bubble.
 export const AGENT_MESSAGE_RE =
-  /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/u
+  /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})(?:@[a-z0-9][a-z0-9_-]{0,63})?\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/iu
 
 // sender handle -> avatar data URL. Module-level so a chat full of notices
 // from one bot resolves once. Hits are cached for the window's lifetime;

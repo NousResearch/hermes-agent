@@ -81,8 +81,8 @@ def message_agent_tool_schema() -> dict:
                 "the right recipient; targets: a teammate name (e.g. 'researcher'), "
                 "'<peer>/<agent>' for an agent on a registered peer gateway "
                 "(e.g. 'spark/researcher', or just '<peer>' for the peer's main agent), "
-                "or an agent on another connected machine from your roster (use "
-                "'<handle>@<connection>' if the same handle exists on several)."
+                "or an agent on another connected machine from your roster (always use "
+                "the exact '<handle>@<connection>' target shown there)."
             ),
             "parameters": {
                 "type": "object",
@@ -92,7 +92,9 @@ def message_agent_tool_schema() -> dict:
                         "description": (
                             "Who to message: a teammate profile name from your roster "
                             "('researcher', 'hermes' for the default agent), or "
-                            "'<peer>' / '<peer>/<agent>' for a registered peer gateway."
+                            "'<peer>' / '<peer>/<agent>' for a registered peer gateway, "
+                            "or the exact '<handle>@<connection>' shown for an agent on "
+                            "another connected machine."
                         ),
                     },
                     "message": {
@@ -258,7 +260,8 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
     try:
         from tools.bot_mode_probe import _handle
         from tools.bot_relay import (
-            EnvelopeRefusedError, enqueue_envelope, read_remote_roster, resolve_remote_target, waiter_command,
+            EnvelopeRefusedError, _target_aliases, enqueue_envelope, read_remote_roster,
+            remote_target_forms, resolve_remote_target, waiter_command,
         )
 
         roster = read_remote_roster(root)
@@ -267,7 +270,7 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             return None
         if match == "ambiguous":
             want = raw_target.strip().lstrip("@").lower()
-            forms = ", ".join(f"{r['handle']}@{r['connection_id']}" for r in roster if r["handle"].lower() == want)
+            forms = ", ".join(remote_target_forms([r for r in roster if want in _target_aliases(r)]))
             return _err(f"'{raw_target}' exists on several connected machines — disambiguate with one of: {forms}.")
         try:
             envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me, sender_handle=_handle(me))

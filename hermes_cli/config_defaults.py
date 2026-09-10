@@ -1707,6 +1707,8 @@ DEFAULT_CONFIG = {
         "continue_command": False,
         # Canonical /recover normalization adapter. Disabled until explicitly enabled.
         "recover_command": False,
+        # Canonical /close-task lifecycle adapter. Disabled until explicitly enabled.
+        "close_task_command": False,
         # Auto-subscribe the originating gateway/TUI session to completion + block events when
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.

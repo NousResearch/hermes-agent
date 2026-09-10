@@ -1859,6 +1859,11 @@ class CLICommandsMixin:
         from hermes_cli.kanban_recover import run_recover_slash_rendered
         print(run_recover_slash_rendered(cmd))
 
+    def _handle_close_task_command(self, cmd: str):
+        """Handle the feature-gated canonical /close-task lifecycle adapter."""
+        from hermes_cli.kanban_close_task import run_close_task_slash_rendered
+        print(run_close_task_slash_rendered(cmd))
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the
         write-approval review subcommands (pending/approve/reject/diff/mode)."""

@@ -46,7 +46,8 @@ class TestConfigCheck:
             config_mod.ConfigIssue(
                 "error",
                 "local_runtime.tensor_placement must be 'host' or 'auto', got 'invalid'",
-                "Set local_runtime.tensor_placement to host or auto",
+                "Set local_runtime.tensor_placement to host or auto\n"
+                "Then restart the local runtime so the new placement takes effect",
             )
         ])
 
@@ -54,6 +55,8 @@ class TestConfigCheck:
         output = capsys.readouterr().out
         assert "Config structure issues" in output
         assert "local_runtime.tensor_placement" in output
+        # Multi-line hints must render in full — the second line carries the fix steps.
+        assert "Then restart the local runtime so the new placement takes effect" in output
 
 
     def test_invalid_tensor_placement_is_reported(self):

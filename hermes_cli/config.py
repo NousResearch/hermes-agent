@@ -3740,7 +3740,12 @@ def _cmd_config_check(args):
             print(color(f"    {marker} {issue.message}",
                         Colors.RED if issue.severity == "error" else Colors.YELLOW))
             if issue.hint:
-                print(f"      → {issue.hint.splitlines()[0]}")
+                # Print every hint line: multi-line hints are legal and truncating them
+                # silently hides the actionable half of the guidance.
+                hint_lines = issue.hint.splitlines()
+                print(f"      → {hint_lines[0]}")
+                for extra_line in hint_lines[1:]:
+                    print(f"        {extra_line}")
 
     print()
 

@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 COT_TEXT_MAX = 1200
 COT_TOOL_OUTPUT_MAX = 1200
 COT_FLUSH_INTERVAL_SECONDS = 0.6
+COT_REQUEST_TIMEOUT_SECONDS = 15.0
 
 
 def _tool_icon(name: str) -> str:
@@ -145,19 +146,22 @@ class FeishuCOTClient:
         self, method: str, path: str, body: dict | None, token: str = ""
     ) -> dict:
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=10)
+            self._http_client = httpx.AsyncClient(timeout=COT_REQUEST_TIMEOUT_SECONDS)
         headers = {"Content-Type": "application/json; charset=utf-8"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         try:
-            response = await self._http_client.request(
-                method, self._base_url + path, json=body, headers=headers
+            response = await asyncio.wait_for(
+                self._http_client.request(
+                    method, self._base_url + path, json=body, headers=headers
+                ),
+                timeout=COT_REQUEST_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             payload = response.json()
         except httpx.HTTPStatusError as exc:
             raise FeishuCOTError(exc.response.status_code) from None
-        except (httpx.RequestError, ValueError):
+        except (httpx.RequestError, TimeoutError, ValueError):
             raise FeishuCOTError() from None
         if not isinstance(payload, dict):
             raise FeishuCOTError(response.status_code)
@@ -249,7 +253,14 @@ class FeishuCOTClient:
 
     async def close(self) -> None:
         self._closing = True
+        tasks = list(self._flush_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         for run in list(self._active_runs):
+            with run._event_lock:
+                run._disabled = True
+                run._events.clear()
             run.finish("error")
         deadline = asyncio.get_running_loop().time() + 3.0
         while self._finalizer_tasks:
@@ -371,17 +382,14 @@ class FeishuCOTRun:
             if not events:
                 return
             try:
-                await asyncio.wait_for(
-                    self._client.request_json(
-                        "PUT",
-                        "/open-apis/im/v1/message_cot",
-                        {
-                            "cot_id": self.cot_id,
-                            "message_id": self.message_id,
-                            "events": events,
-                        },
-                    ),
-                    timeout=1.0,
+                await self._client.request_json(
+                    "PUT",
+                    "/open-apis/im/v1/message_cot",
+                    {
+                        "cot_id": self.cot_id,
+                        "message_id": self.message_id,
+                        "events": events,
+                    },
                 )
             except Exception as exc:
                 self._client._log_failure("update", exc)
@@ -535,6 +543,6 @@ class FeishuCOTRun:
             f"?message_id={quote(self.message_id, safe='')}&reason={api_reason}"
         )
         try:
-            await asyncio.wait_for(self._client.request_json("POST", path), timeout=1.0)
+            await self._client.request_json("POST", path)
         except Exception as exc:
             self._client._log_failure("complete", exc)

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
-import { Download, MonitorPlay } from '@/lib/icons'
+import { Download, ExternalLink, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
@@ -125,6 +125,37 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
     }
   }
 
+  async function openInSystem() {
+    if (opening) {
+      return
+    }
+
+    setOpening(true)
+
+    try {
+      // Resolve the raw target the same way the preview pipeline does (the
+      // Electron main process normalizes `file://` URLs and absolute paths);
+      // then hand a `file://` URL to the OS file association via openExternal.
+      const preview = await normalizeOrLocalPreviewTarget(target, cwd || undefined)
+
+      if (!preview || preview.kind !== 'file' || !preview.path) {
+        throw new Error(`Could not resolve file path: ${target}`)
+      }
+
+      const fileUrl = `file://${preview.path.startsWith('/') ? '' : '/'}${preview.path.replace(/\\/g, '/')}`
+
+      await window.hermesDesktop?.openExternal(fileUrl)
+    } catch (error) {
+      if (mountedRef.current) {
+        notifyError(error, t.fileMenu.downloadFailed)
+      }
+    } finally {
+      if (mountedRef.current) {
+        setOpening(false)
+      }
+    }
+  }
+
   return (
     <div className="flex w-full max-w-160 items-center gap-2 rounded-lg border border-(--ui-stroke-tertiary) bg-card/55 px-2.5 py-1.5 text-sm">
       <span className="grid size-6 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground/85">
@@ -133,6 +164,17 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
       <span className="min-w-0 flex-1 truncate text-[0.78rem] font-medium text-foreground/90" title={target}>
         {name}
       </span>
+      <button
+        aria-label={t.fileMenu.openInSystem}
+        className="flex shrink-0 items-center gap-1 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
+        disabled={opening}
+        onClick={() => void openInSystem()}
+        title={t.fileMenu.openInSystem}
+        type="button"
+      >
+        <ExternalLink className="size-3" />
+        {t.fileMenu.openInSystem}
+      </button>
       <button
         aria-label={t.fileMenu.download}
         className="flex shrink-0 items-center gap-1 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"

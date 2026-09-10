@@ -29,9 +29,9 @@ describe('markdown documents delivered via MEDIA', () => {
 
     // PreviewAttachment renders an "open preview" toggle button; the old
     // MediaAttachment 'file' fallback rendered a bare "Open ..." anchor.
-    // Two buttons now: Download + Open preview (maintainer-requested).
+    // Three buttons now: Open in system app + Download + Open preview.
     const buttons = await screen.findAllByRole('button')
-    expect(buttons.length).toBe(2)
+    expect(buttons.length).toBe(3)
     expect(screen.getByText('Download')).toBeTruthy()
     expect(screen.queryByText(/^Loading /)).toBeNull()
     expect(screen.getByText('report.md')).toBeTruthy()
@@ -48,7 +48,7 @@ describe('markdown documents delivered via MEDIA', () => {
     render(<MarkdownTextContent isRunning={false} text={`[archive.zip](${href})`} />)
 
     const buttons = await screen.findAllByRole('button')
-    expect(buttons.length).toBe(2)
+    expect(buttons.length).toBe(3)
     expect(screen.getByText('Download')).toBeTruthy()
     expect(screen.getByText('archive.zip')).toBeTruthy()
     expect(screen.queryByText(/^Open archive/)).toBeNull()
@@ -60,7 +60,7 @@ describe('markdown documents delivered via MEDIA', () => {
     render(<MarkdownTextContent isRunning={false} text={`[report.pdf](${href})`} />)
 
     const buttons = await screen.findAllByRole('button')
-    expect(buttons.length).toBe(2)
+    expect(buttons.length).toBe(3)
     expect(screen.getByText('report.pdf')).toBeTruthy()
   })
 })

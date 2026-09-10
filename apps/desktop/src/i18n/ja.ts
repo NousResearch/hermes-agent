@@ -85,6 +85,7 @@ export const ja = defineLocale({
     revealInSidebar: 'ファイルツリーで表示',
     copyPath: 'パスをコピー',
     copyRelativePath: '相対パスをコピー',
+    openInSystem: 'システムアプリで開く',
     download: 'ダウンロード',
     downloadSaved: '保存しました',
     downloadFailed: 'ダウンロードに失敗しました',

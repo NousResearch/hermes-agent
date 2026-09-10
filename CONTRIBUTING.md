@@ -942,6 +942,10 @@ refactor/description   # Code restructuring
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
+### Fork PR checks
+
+Pull requests from a fork or a first-time contributor may show **“Awaiting approval from a maintainer before running”** before their GitHub Actions jobs start. This is a repository permission gate, not necessarily a problem with the patch. While waiting, complete the local checks above, exercise the changed path manually when applicable, and include the exact commands and platforms tested in the PR description. A maintainer must approve the workflow run before checks that execute fork-provided code can start.
+
 ### PR description
 
 Include:

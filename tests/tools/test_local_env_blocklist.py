@@ -976,8 +976,11 @@ class TestPythonpathSelectiveStrip:
             captured["env"] = kwargs.get("env", {})
             captured["staging"] = os.path.dirname(cmd[1])
             proc = MagicMock()
-            proc.stdout.read.return_value = b""
-            proc.stderr.read.return_value = b""
+            # Kernel readers use read1(); real empty streams reach EOF instead
+            # of leaving truthy MagicMocks spinning in background reader threads.
+            from io import BytesIO
+            proc.stdout = BytesIO()
+            proc.stderr = BytesIO()
             proc.wait.return_value = 0
             proc.returncode = 0
             proc.poll.return_value = 0

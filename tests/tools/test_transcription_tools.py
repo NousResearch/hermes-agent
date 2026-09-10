@@ -438,6 +438,78 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
+    def test_cuda_lib_error_during_segment_iteration_retries_on_cpu(self, tmp_path):
+        """A CUDA-lib failure raised while ITERATING lazy segments must trigger the CPU retry.
+
+        Regression: faster-whisper segments are generators, so dlopen-on-first-use
+        failures (e.g. missing libcublas) surface in _join_confident_segments —
+        after the guarded transcribe() call returned — and every voice message failed.
+        """
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        def poisoned_segments():
+            raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+            yield  # pragma: no cover — makes this a generator
+
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (poisoned_segments(), mock_info)
+
+        cpu_segment = MagicMock()
+        cpu_segment.text = "hi"
+        cpu_segment.no_speech_prob = 0.0
+        cpu_segment.avg_logprob = 0.0
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([cpu_segment], mock_info)
+
+        mock_whisper_cls = MagicMock(return_value=cuda_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._replace_cached_model_on_cpu",
+                   return_value=cpu_model) as mock_replace:
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hi"
+        mock_replace.assert_called_once_with("base")
+
+    def test_non_cuda_error_during_iteration_does_not_retry_on_cpu(self, tmp_path):
+        """A genuine (non-CUDA) failure mid-iteration must surface, not silently use CPU."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        def bad_segments():
+            raise ValueError("boom")
+            yield  # pragma: no cover — makes this a generator
+
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = (bad_segments(), mock_info)
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._replace_cached_model_on_cpu") as mock_replace:
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is False
+        assert "boom" in result["error"]
+        mock_replace.assert_not_called()
+
 
 # ============================================================================
 # Model auto-correction

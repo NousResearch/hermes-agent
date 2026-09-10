@@ -191,6 +191,27 @@ async function relayConnections(): Promise<RelayConnection[]> {
       }
     }
 
+    // Live enumeration is advisory: a healthy registered remote can disappear
+    // from profileRoutes after a transient roster probe. Seed its default route
+    // from Electron's credential-free registry so requestProfile can dial it
+    // and profiles.list can recover the authoritative agent inventory.
+    if (typeof host.connections === 'function') {
+      const registered = await host.connections()
+
+      for (const connection of Array.isArray(registered) ? registered : []) {
+        const id = String(connection?.id || '')
+
+        if (id && !byConnection.has(id)) {
+          byConnection.set(id, {
+            connectionId: id,
+            mode: connection.kind === 'local' ? 'local' : 'remote',
+            profile: 'default',
+            targetProfile: 'default'
+          })
+        }
+      }
+    }
+
     return [...byConnection.entries()].map(([id, route]) => ({
       id,
       route
@@ -396,16 +417,28 @@ async function drainRelayOutboxes() {
           continue
         }
 
-        // A registered remote gateway can recover after the last fleet
-        // enumeration. Activate the exact requested agent once and refresh
-        // routes before declaring the machine disconnected.
-        if (!target && targetConnectionId && targetProfile && typeof host.ensureAgent === 'function') {
+        // A registered gateway may be healthy even when the last fleet
+        // enumeration omitted it. Route directly through Electron's registry:
+        // requestProfile resolves the descriptor and dials the exact backend
+        // without stealing the user's foreground profile/session.
+        if (!target && targetConnectionId && targetProfile && typeof host.connections === 'function') {
           try {
-            await host.ensureAgent(targetConnectionId, targetProfile)
-            connections = await relayConnections()
-            syncRelayRetention(connections)
-            byId = new Map(connections.map(connection => [connection.id, connection]))
-            target = byId.get(targetConnectionId)
+            const registered = await host.connections()
+            const connection = Array.isArray(registered)
+              ? registered.find(row => String(row?.id || '') === targetConnectionId)
+              : undefined
+
+            if (connection) {
+              target = {
+                id: targetConnectionId,
+                route: {
+                  connectionId: targetConnectionId,
+                  mode: connection.kind === 'local' ? 'local' : 'remote',
+                  profile: targetProfile,
+                  targetProfile
+                }
+              }
+            }
           } catch {
             // Preserve the existing explicit disconnected reply below.
           }

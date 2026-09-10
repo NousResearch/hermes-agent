@@ -311,6 +311,7 @@ describe('relay-route socket retention (#93594)', () => {
     await pushAndSettle()
 
     hostMock.profileRoutes = vi.fn(async () => [route('a'), route('c')])
+    hostMock.connections = vi.fn(async () => [{ id: 'a' }, { id: 'c' }])
     await pushAndSettle()
 
     expect(pins.filter(pin => pin.released).map(pin => pin.route.connectionId)).toEqual(['b'])
@@ -451,6 +452,7 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
 
     // 'b' leaves the registry and 'c' arrives: b's agents must not linger.
     hostMock.profileRoutes = vi.fn(async () => [route('a'), route('c')])
+    hostMock.connections = vi.fn(async () => [{ id: 'a' }, { id: 'c' }])
     calls.length = 0
     await vi.advanceTimersByTimeAsync(60_000)
 
@@ -517,11 +519,9 @@ describe('the drain loop wires drain → deliver → reply', () => {
     stopBotRelay()
   })
 
-  it('reactivates a recovered registered gateway before reporting it disconnected', async () => {
+  it('delivers through a registered gateway omitted by live enumeration', async () => {
     hostMock.profileRoutes = vi.fn(async () => [route('a')])
-    hostMock.ensureAgent = vi.fn(async () => {
-      hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
-    })
+    hostMock.connections = vi.fn(async () => [{ id: 'a', kind: 'local' }, { id: 'b', kind: 'remote' }])
 
     const calls = respondWith(call => {
       if (call.method === 'bot_relay.outbox.drain') {
@@ -540,7 +540,7 @@ describe('the drain loop wires drain → deliver → reply', () => {
     startBotRelay()
     await pushAndSettle()
 
-    expect(hostMock.ensureAgent).toHaveBeenCalledWith('b', 'ops')
+    expect(hostMock.ensureAgent).not.toHaveBeenCalled()
     expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
       connectionId: 'b',
       params: { message: 'status?', profile: 'ops' }

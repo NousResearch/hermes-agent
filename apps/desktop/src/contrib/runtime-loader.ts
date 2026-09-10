@@ -149,7 +149,7 @@ export async function loadRuntimePlugin(
     // is skipped — but VISIBLY: a silent skip left the stale folder
     // undiscoverable while (on shells without the bundled twin) the same
     // folder actively breaks the feature it shadows. The inventory row
-    // carries the file path so Settings → Plugins can reveal it for deletion.
+    // carries the file path so Capabilities → Plugins can reveal it for deletion.
     if ($pluginRecords.get()[plugin.id]?.kind === 'bundled') {
       console.info(`[plugins] ${origin} skipped — "${plugin.id}" already ships bundled with the app`)
       publishPlugin({
@@ -261,7 +261,7 @@ async function diskRoots(): Promise<DiskRoot[]> {
   if (unified) {
     // Opt-in by default: `~/.hermes/plugins` is installed-but-inert until the
     // user allowlists the Python half (plugins.enabled), so the desktop half
-    // matches that posture — inventoried in Settings → Plugins, off until
+    // matches that posture — inventoried in Capabilities → Plugins, off until
     // toggled. The standalone desktop-plugins door keeps its default-on trust.
     roots.push({ defaultEnabled: false, dir: unified, entrySegments: ['desktop', 'plugin.js'] })
   }

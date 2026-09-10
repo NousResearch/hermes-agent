@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 from gateway.run import GatewayRunner
 from tests.gateway.test_telegram_group_gating import (
     _dm_message, _group_message, _group_voice_message, _make_adapter,

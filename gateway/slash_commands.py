@@ -21,13 +21,14 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply, MessageEvent
+from gateway.platforms.base import EphemeralReply
+from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
-from gateway.slash_commands_status import GatewayStatusCommandsMixin
+from gateway.slash_commands_status import HISTORY_UNREADABLE, GatewayStatusCommandsMixin
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
 
@@ -397,7 +398,7 @@ class GatewaySlashCommandsMixin(
                     # keys the participant on ``user_id_alt or user_id``, so a replayed wake rebuilds
                     # the same session key only when the alt id survives the round-trip.
                     user_id_alt=_field("user_id_alt"),
-                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                    notifier_profile=_field("profile") or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
                     # Subscribing from chat: deliver the passive message and wake the destination agent.
                     delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
             finally:
@@ -1174,8 +1175,8 @@ class GatewaySlashCommandsMixin(
         """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
         protect privacy; ``hermes debug share`` from the CLI does full uploads."""
         from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
-                                      _capture_dump, _schedule_auto_delete, collect_debug_report,
-                                      upload_to_pastebin)
+                                      _capture_dump, _is_dpaste_url, _schedule_auto_delete,
+                                      collect_debug_report, upload_to_pastebin)
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()
@@ -1184,11 +1185,15 @@ class GatewaySlashCommandsMixin(
                 urls = {"Report": upload_to_pastebin(report)}
             except Exception as exc:
                 return t("gateway.debug.upload_failed", error=exc)
-            _schedule_auto_delete(list(urls.values()))  # auto-deletion after 6 hours
+            _schedule_auto_delete(list(urls.values()))  # paste.rs only; dpaste.com has no delete
             label_width = max(len(k) for k in urls)
+            # The 6-hour line is only true for paste.rs; the privacy notice above already states
+            # the dpaste.com fallback retention, so drop the line rather than contradict it.
+            auto_delete = [] if any(map(_is_dpaste_url, urls.values())) else [
+                t("gateway.debug.auto_delete")]
             return "\n".join([_GATEWAY_PRIVACY_NOTICE, "", t("gateway.debug.header"), "",
                               *(f"`{label:<{label_width}}`  {url}" for label, url in urls.items()),
-                              "", t("gateway.debug.auto_delete"), t("gateway.debug.full_logs_hint"),
+                              "", *auto_delete, t("gateway.debug.full_logs_hint"),
                               t("gateway.debug.share_hint")])
 
         # _run_in_executor_with_context, not a bare hop: this collects the profile's logs/config off
@@ -1252,7 +1257,7 @@ import hashlib  # noqa: F401,E402
 
 _PLUGIN_COMPAT_LAZY = {
     'HISTORY_UNREADABLE': ('gateway.slash_commands_status', 'HISTORY_UNREADABLE'),
-    'MessageType': ('gateway.platforms.base', 'MessageType'),
+    'MessageType': ('gateway.platforms.event', 'MessageType'),
     'SessionSource': ('gateway.session', 'SessionSource'),
     'base_url_host_matches': ('utils', 'base_url_host_matches'),
     'build_session_key': ('gateway.session', 'build_session_key'),

@@ -38,7 +38,8 @@ from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie, clear_session_cookies, clear_sso_attempt_cookie, detect_https,
     parse_pkce_payload, read_pkce_cookie, read_session_cookies, set_pkce_cookie,
     set_session_cookies)
-from hermes_cli.dashboard_auth.login_page import render_login_html
+from hermes_cli.dashboard_auth.login_page import (
+    render_login_html, render_native_provider_choice_html)
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age, client_ip as _client_ip, is_safe_next_path, scan_session_providers)
 
@@ -228,14 +229,11 @@ def _validate_loopback_redirect_uri(raw: str) -> str:
 
 def _select_native_provider(provider: str):
     """Resolve the provider for a native authorize request. An empty ``provider`` auto-selects
-    the single brokerable (non-password) session provider — so an OIDC+basic deployment does not
-    fail with "Unknown provider"; with none, a lone password provider is still returned so the
-    caller emits a 400 rather than 404."""
+    the ONLY interactive session provider (password providers included — native sign-in brokers
+    them via ``/login``); with several the caller renders a chooser instead of guessing."""
     if provider:
         return get_provider(provider)
-    sess_providers = list_session_providers()
-    native_eligible = [pp for pp in sess_providers if not getattr(pp, "supports_password", False)]
-    candidates = native_eligible or sess_providers
+    candidates = list_session_providers()
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -253,6 +251,19 @@ async def auth_native_authorize(
         raise _http(400, "code_challenge required")
     _validate_loopback_redirect_uri(redirect_uri)
     p = _select_native_provider(provider)
+    if p is None and not provider:
+        candidates = list_session_providers()
+        if len(candidates) > 1:
+            # Render the chooser BEFORE allocating broker state or setting a cookie: every link
+            # re-enters this same validated route with an explicit provider.
+            return HTMLResponse(
+                render_native_provider_choice_html(
+                    providers=candidates,
+                    authorize_path=f"{_prefix(request)}/auth/native/authorize",
+                    code_challenge=code_challenge,
+                    code_challenge_method=code_challenge_method,
+                    redirect_uri=redirect_uri, state=state),
+                headers=_NO_STORE)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
     if not getattr(p, "supports_session", True):

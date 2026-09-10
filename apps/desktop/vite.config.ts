@@ -118,6 +118,12 @@ export default defineConfig(({ command }) => ({
     postcss: { plugins: [] }
   },
   build: {
+    // Renderer CSS targets the bundled Chromium (Electron 40 ≈ Chrome 132), not
+    // the web-default baseline. Without this, LightningCSS downlevels modern
+    // selectors — e.g. `table:dir(rtl)` compiles to a `:lang()` list that
+    // never matches (no lang attribute is ever set) — silently breaking
+    // RTL table alignment. Chrome 132 supports :dir() natively.
+    cssTarget: 'chrome132',
     // The renderer intentionally ships FEW chunks (not one, not thousands):
     //   · `codeSplitting: false` (the old setup) inlines every `lazy()` /
     //     dynamic import into the entry, so heavyweight lazy-only deps

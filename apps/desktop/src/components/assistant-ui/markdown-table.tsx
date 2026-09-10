@@ -164,6 +164,7 @@ export function ResizableMarkdownTable({ children, className, ...props }: Compon
         onDoubleClick={onDoubleClick}
         onPointerDown={onPointerDown}
         ref={tableRef}
+        dir="auto"
         {...props}
       >
         {widths && (
@@ -183,7 +184,7 @@ export function ResizableMarkdownTh({ children, className, ...props }: Component
   return (
     <th
       className={cn(
-        'relative px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
+        'relative px-2.5 py-1.5 text-start align-middle text-[0.75rem] font-medium text-muted-foreground',
         // The trailing column has no seam: its right edge is the table's edge,
         // and there is nothing on the far side to trade width with.
         '[&:last-child_[data-md-col-handle]]:hidden',

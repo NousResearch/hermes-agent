@@ -193,27 +193,6 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     .filter(Boolean)
     .join(' · ')
 
-  const warm = () => {
-    // Multi-source row: pre-dial the agent's own source when supported.
-    if (bot.sourceScoped && typeof host.warmAgent === 'function') {
-      try {
-        host.warmAgent(bot.connectionId, bot.name)
-      } catch {
-        /* warm is best-effort */
-      }
-      return
-    }
-
-    if (typeof host.warmProfile !== 'function') {
-      return
-    }
-    try {
-      host.warmProfile(bot.name)
-    } catch {
-      /* warm is best-effort */
-    }
-  }
-
   // Rows and Active Now share the exact-owner open path; only that path may
   // activate a source and resolve the canonical Bot Chat.
   const open = () => void openRosterBot(bot)
@@ -247,7 +226,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         event.dataTransfer.effectAllowed = 'move'
         $draggingBot.set(rosterKey)
       }}
-      onPointerEnter={warm}
+
     >
       <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
         <BotFace

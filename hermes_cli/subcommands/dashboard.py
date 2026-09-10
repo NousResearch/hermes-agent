@@ -74,7 +74,9 @@ def build_serve_parser(
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable) -> None:
+    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable,
+    cmd_dashboard_service: Callable,
+) -> None:
     """Attach ``dashboard`` (browser UI) and ``serve`` (headless backend the desktop spawns)."""
     dashboard_parser = subparsers.add_parser(
         "dashboard", help="Start the web UI dashboard",
@@ -123,3 +125,43 @@ def build_dashboard_parser(
             "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
             "testing against a staging/preview portal.")
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    # `service` — macOS LaunchAgent lifecycle for the dashboard (issue #44106)
+    service_parser = dashboard_subparsers.add_parser(
+        "service",
+        help="Manage the macOS dashboard LaunchAgent service",
+        description="Install, start, stop, restart, check status, or uninstall the "
+            "macOS LaunchAgent that supervises `hermes dashboard`.")
+    service_subparsers = service_parser.add_subparsers(
+        dest="dashboard_service_command", required=True)
+
+    # install
+    service_install_parser = service_subparsers.add_parser(
+        "install", help="Install the dashboard LaunchAgent")
+    service_install_parser.add_argument(
+        "--host", default="127.0.0.1", help="Host to bind (default 127.0.0.1)")
+    service_install_parser.add_argument(
+        "--port", type=int, default=9119, help="Port (default 9119)")
+    service_install_parser.add_argument(
+        "--skip-build", action="store_true",
+        help="Pass --skip-build through to the dashboard server")
+    service_install_parser.add_argument(
+        "--force", action="store_true", help="Reinstall even if plist exists")
+    service_install_parser.set_defaults(func=cmd_dashboard_service)
+
+    # start
+    service_start_parser = service_subparsers.add_parser(
+        "start", help="Start the dashboard service")
+    service_start_parser.add_argument(
+        "--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
+    service_start_parser.add_argument(
+        "--port", type=int, default=9119, help="Port (default 9119)")
+    service_start_parser.add_argument(
+        "--skip-build", action="store_true", help="Pass --skip-build through")
+    service_start_parser.set_defaults(func=cmd_dashboard_service)
+
+    # stop / restart / status / uninstall (zero-arg)
+    for verb in ("stop", "restart", "status", "uninstall"):
+        v_parser = service_subparsers.add_parser(
+            verb, help=f"{verb.capitalize()} the dashboard service")
+        v_parser.set_defaults(func=cmd_dashboard_service)

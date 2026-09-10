@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_cli.gateway import is_macos
+
 # Cmdline substrings identifying the long-lived server (``serve`` = the headless name Desktop
 # spawns; reaped on update for the same reason).
 _DASHBOARD_PATTERNS = tuple(
@@ -335,6 +337,13 @@ def _kill_stale_dashboard_processes(
         already_restarted_units = set(already_restarted_units or ()) | {
             str(_dash_unit).removesuffix(".service")}
     exclude = _exclude_pids_from_env()
+    # --- LaunchAgent service-managed dashboard kickstart (#44106 req 5-6) ---
+    # Exact mapping from our plists (not argv heuristics); only on macOS.
+    managed_pids: dict[int, str] | None = None
+    if is_macos():
+        from hermes_cli.dashboard_service import find_service_managed_dashboard_pids
+        managed_pids = find_service_managed_dashboard_pids()
+    kickstarted_labels: set[str] = set()
     if restart_managed:
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
@@ -363,6 +372,52 @@ def _kill_stale_dashboard_processes(
                     not in already_restarted_units]
             if not pids:
                 return _empty_result()
+    # --- Kickstart service-managed LaunchAgent dashboards (req 5) ---
+    # For every scanned pid that maps to our label: supervised restart first.
+    if restart_managed and managed_pids and is_macos():
+        uid_str = str(os.getuid())  # windows-footgun: ok — POSIX launchd (macOS) helper, inside is_macos() gate
+        for pid in pids:
+            label = managed_pids.get(pid)
+            if label is None:
+                continue
+            # Restart managed service: kickstart from fresh code.
+            domain_cmd = f"gui/{uid_str}/{label}"
+            try:
+                subprocess.run(
+                    ["launchctl", "kickstart", "-k", domain_cmd],
+                    check=True, timeout=30,
+                    capture_output=True, text=True,
+                )
+                print(f"✓ kickstarted {label} (PID {pid})")
+                kickstarted_labels.add(label)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                # Req 6 hint exactly: show command + explanation.
+                print(
+                    f"✗ kickstart failed for {label} (PID {pid}); "
+                    f"run manually: launchctl kickstart -k gui/$(id -u)/{label} "
+                    f"(launchd will respawn via KeepAlive; raw kill is the fallback)"
+                )
+    # After kickstart: exclude successful labels' pids from the kill list; on
+    # failure the pid stays in pids so the ordinary kill proceeds (fallback).
+    # The exclusion for systemd filter (already_restarted_units) must include
+    # our kickstarted labels; since Python can't rebind the parameter, we
+    # inject into the existing mutable set (the parameter is mutable by design:
+    # `set[str] | None`).
+    if restart_managed and managed_pids:
+        excluded_pids = {pid for pid, lbl in managed_pids.items() if lbl in kickstarted_labels}
+        pids = [pid for pid in pids if pid not in excluded_pids]
+        if not pids:
+            return _empty_result()
+        # Kickstarted pids already removed from kill list; caller never reads
+        # already_restarted_units after this — no set update needed.
+    # Non-restart (--stop) KeepAlive hint: if a scanned pid maps to our label.
+    if not restart_managed:
+        for pid in pids:
+            label = managed_pids.get(pid) if managed_pids else None
+            if label is not None:
+                print(
+                    f"managed by launchd job {label}; KeepAlive will respawn it — use: hermes dashboard service stop"
+                )
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []

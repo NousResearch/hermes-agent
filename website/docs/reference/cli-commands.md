@@ -1742,6 +1742,35 @@ hermes dashboard --port 8080 --no-open
 worker dashboard
 ```
 
+### `hermes dashboard service`
+
+First-class macOS LaunchAgent management for the dashboard (per-profile label `ai.hermes.dashboard[-<profile>]`). The gateway stays a separate service. Use these commands to install, start, stop, restart, check, or remove the supervised LaunchAgent.
+
+| Verb | Description |
+|---|---|
+| `install` | Write the LaunchAgent plist and bootstrap it. |
+| `start` | Kickstart (or self-heal) the service. |
+| `stop` | Stop the supervised service. |
+| `restart` | Restart (`launchctl kickstart -k`). |
+| `status` | Launchd state + `/api/status` HTTP probe. |
+| `uninstall` | Boot out and remove the plist (namespace-guarded). |
+
+Install flags:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--host` | `127.0.0.1` | Bind address for the dashboard server. |
+| `--port` | `9119` | Port for the dashboard server. |
+| `--skip-build` | off | Pass `--skip-build` through to the dashboard. |
+| `--force` | off | Reinstall even if a plist already exists. |
+
+`start` accepts `--host`, `--port`, and `--skip-build`. The other verbs take no flags.
+
+```bash
+hermes dashboard service install --host 0.0.0.0 --port 9119
+hermes dashboard service status
+```
+
 ## `hermes profile`
 
 ```bash

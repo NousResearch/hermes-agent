@@ -76,6 +76,26 @@ bundles, configuration/runtime changes, lifecycle commands, and approval/secret
 slash shortcuts are not exposed. Existing generation-bound approval and interrupt
 RPCs remain separate. Catalog discovery is broader than this reviewed execution set.
 
+## Shared authority busy input and corrections
+
+`config.get({session_id, key: "busy"})` projects the session's frozen busy-input
+preference. `config.set({session_id, key: "busy", value})` accepts `interrupt`,
+`steer`, or `queue` and changes only that live session's preference, shared by its
+viewers until owner restart. Neither operation changes profile settings or the
+cached agent/system prompt. Other config keys are not handled by this adapter.
+
+`session.steer` and `session.redirect` require `session_id`, `text`, and the current
+`execution_generation`, plus authenticated session-control rights. Optional
+`profile` must match the authority. Controls target the existing running agent:
+steer uses the ordinary correction drain; redirect cancels an active model request
+and continues the same turn (or steers at a tool boundary). They never create a
+queued admission or silently fall back to a new turn. `queued` (steer) and
+`redirected` acknowledge runtime acceptance, not crash-durable delivery; do not
+automatically retry an ambiguous reply. `rejected` means the runtime missed the
+active correction window, while `stale_generation` rejects settled/replaced work.
+Managed-worker corrections currently return `unsupported_control`; normal durable
+queue submission and Stop remain separate controls.
+
 ## Shared authority setup readiness
 
 Authenticated local clients can call `setup.status` and `setup.runtime_check` before

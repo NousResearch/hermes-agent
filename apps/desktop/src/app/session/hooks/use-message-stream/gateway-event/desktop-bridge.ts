@@ -3,6 +3,7 @@ import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-term
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
+import { sessionIsOnScreen } from '@/lib/preview-visibility'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { $gateway } from '@/store/gateway'
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
@@ -45,7 +46,7 @@ const loadPreviewEngine = () => {
  *  (terminal/preview/window), agent terminal streaming, pane reveal, and
  *  message reactions. */
 export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
-  const { event, payload, isActiveEvent } = ctx
+  const { event, payload, isActiveEvent, sessionId } = ctx
 
   if (event.type === 'terminal.read.request') {
     // read_terminal tool: serialize the renderer's xterm buffer and answer
@@ -89,10 +90,13 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'preview.act.request') {
     // drive_preview tool: click/type/scroll/press inside the guest page, or
     // drive the pane's history. Dynamic import keeps the injected engine off
-    // the boot path. Active session only: a background turn must never reach
-    // into the page the user is working in (desktop AGENTS.md: offer, don't
-    // hijack).
+    // the boot path. Visible session only (focused runtime, primary, or an
+    // on-screen tile) — same predicate as preview.open/close. A hidden
+    // background turn must never reach into the page the user is working in
+    // (desktop AGENTS.md: offer, don't hijack). `isActiveEvent` is the
+    // primary-session flag and is too narrow for a focused tile.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const previewVisible = !!sessionId && sessionIsOnScreen(sessionId)
 
     if (requestId) {
       const answer = (result: unknown) =>
@@ -101,7 +105,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
           text: result ? JSON.stringify(result) : ''
         })
 
-      if (isActiveEvent) {
+      if (previewVisible) {
         void loadPreviewEngine()
           .then(run =>
             run({

@@ -495,3 +495,73 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+# ── pre_llm_call source-metadata kwargs (issue #79214) ───────────────────────
+#
+# The pre_llm_call hook now forwards chat_id / chat_name / user_name /
+# chat_type alongside the long-standing platform / sender_id. Plugins that
+# inject per-channel context (public-safe mode in groups, attribution,
+# presence) depend on these reaching the hook. Assert the forward happens and
+# defaults to "" when the agent carries no source (CLI/local runs).
+
+
+def _captured_pre_llm_call(agent, **overrides):
+    calls = []
+
+    def _fake_invoke_hook(hook_name, **kwargs):
+        if hook_name == "pre_llm_call":
+            calls.append(kwargs)
+        return []
+
+    with patch(
+        "hermes_cli.lifecycle.invoke_hook", side_effect=_fake_invoke_hook
+    ):
+        _build(agent, **overrides)
+    return calls
+
+
+def test_pre_llm_call_receives_source_metadata_when_present():
+    agent = _FakeAgent()
+    agent._chat_id = "100000001"
+    agent._chat_name = "Test Chat"
+    agent._user_name = "testuser"
+    agent._chat_type = "group"
+
+    calls = _captured_pre_llm_call(agent)
+    assert calls, "pre_llm_call hook was not invoked"
+    kwargs = calls[0]
+    assert kwargs["chat_id"] == "100000001"
+    assert kwargs["chat_name"] == "Test Chat"
+    assert kwargs["user_name"] == "testuser"
+    assert kwargs["chat_type"] == "group"
+    # Existing fields still forwarded unchanged.
+    assert kwargs["sender_id"] == ""
+    assert kwargs["platform"] == "cli"
+
+
+def test_pre_llm_call_source_metadata_defaults_empty():
+    agent = _FakeAgent()
+    # No source attributes set → must not crash, must default to "".
+    calls = _captured_pre_llm_call(agent)
+    assert calls, "pre_llm_call hook was not invoked"
+    kwargs = calls[0]
+    assert kwargs["chat_id"] == ""
+    assert kwargs["chat_name"] == ""
+    assert kwargs["user_name"] == ""
+    assert kwargs["chat_type"] == ""
+
+
+def test_pre_llm_call_source_metadata_distinguishes_dm_vs_group():
+    dm_agent = _FakeAgent()
+    dm_agent._chat_id = "100000001"
+    dm_agent._chat_type = "dm"
+    dm_calls = _captured_pre_llm_call(dm_agent)
+    assert dm_calls[0]["chat_type"] == "dm"
+
+    group_agent = _FakeAgent()
+    group_agent._chat_id = "-100200300"
+    group_agent._chat_type = "group"
+    group_calls = _captured_pre_llm_call(group_agent)
+    assert group_calls[0]["chat_type"] == "group"
+    assert group_calls[0]["chat_id"] == "-100200300"

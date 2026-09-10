@@ -216,6 +216,13 @@ Consumers observe the mode rather than diffing session ids:
 
 Set `in_place: false` to restore the legacy rotating path, where each compaction commits a new session id linked to the previous one via `parent_session_id`.
 
+Canonical `/compress` uses the session's frozen `compression.in_place` and
+`min_tail_user_messages` settings too. In-place mode soft-archives the current physical
+transcript; rotating mode publishes a successor. Both keep the logical admission owner
+and previously issued input IDs unchanged, and commit the transcript, generation,
+revision and retry receipt together. Safe-mode sessions use code defaults rather than
+profile compression settings.
+
 ### Auxiliary feasibility and tail retention
 
 A smaller auxiliary compression model can lower the live compression trigger without

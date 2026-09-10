@@ -8,6 +8,8 @@ from hermes_state_runtime import RuntimeStoreError
 async def prepare_compress(authority, live, payload, prepared):
     from gateway.session_policy import restore_policy, policy_scope
     from agent.context_compressor import ContextCompressor
+    from agent.agent_init import _parse_config_int
+    from utils import is_truthy_value
     snapshot = prepared['snapshot']
     policy = restore_policy(snapshot['receipt']['policy'])
     config = policy.config(authority)
@@ -25,6 +27,7 @@ async def prepare_compress(authority, live, payload, prepared):
                 api_key=runtime.get('api_key') or '', provider=runtime.get('provider') or '',
                 api_mode=runtime.get('api_mode') or '', quiet_mode=True, abort_on_summary_failure=True,
                 protect_first_n=options.get('protect_first_n', 3), protect_last_n=options.get('protect_last_n', 20),
+                min_tail_user_messages=max(1, _parse_config_int(options.get('min_tail_user_messages', 1), 1)),
                 custom_providers=config.get('custom_providers'))
             compressed = compressor.compress(json.loads(json.dumps(messages)), force=True,
                                                focus_topic=payload.get('focus'))
@@ -32,4 +35,4 @@ async def prepare_compress(authority, live, payload, prepared):
                 raise RuntimeStoreError('nothing_to_compress')
             return compressed
     compressed = await asyncio.to_thread(summarize)
-    return dict(prepared, messages=compressed)
+    return dict(prepared, messages=compressed, in_place=is_truthy_value(options.get('in_place'), default=True))

@@ -7,6 +7,8 @@ from pathlib import Path
 import sqlite3
 import threading
 
+import pytest
+
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
 
 
@@ -63,7 +65,8 @@ class OverflowModel(BaseHTTPRequestHandler):
             pass
 
 
-def test_automatic_worker_rotation_retains_retry_identity_and_fifo(tmp_path):
+@pytest.mark.parametrize('ending', ['finish', 'kill'])
+def test_automatic_worker_rotation_retains_retry_identity_and_fifo(tmp_path, ending):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700)
@@ -94,7 +97,9 @@ def test_automatic_worker_rotation_retains_retry_identity_and_fifo(tmp_path):
             db.row_factory = sqlite3.Row
             return [dict(row) for row in db.execute(sql, args)]
 
-    async def exercise(desc):
+    replay_params = {}
+
+    async def exercise(desc, owner):
         async with websocket(home, desc) as ws:
             async def call(method, **params):
                 result = await rpc(ws, method, **params)
@@ -129,14 +134,50 @@ def test_automatic_worker_rotation_retains_retry_identity_and_fifo(tmp_path):
                                   ('admission-worker:' + accepted['admission_id'],))[0]
                     assert worker['session_id'] == children[0]['id'] != sid
                     assert sum(request.get('model') == 'summary' for request in peer.requests) == 1
+                    replay_params.update(params)
+                    if ending == 'kill':
+                        owner.kill()
+                        await asyncio.to_thread(owner.wait, 10)
+                        return
+                    peer.release.set()
+                    async with asyncio.timeout(45):
+                        while rows("SELECT status FROM session_admissions WHERE request_id='follower'")[0]['status'] != 'terminal':
+                            await asyncio.sleep(.03)
+                    assert rows("SELECT status FROM session_admissions WHERE status!='terminal'") == []
+                    assert rows("SELECT status FROM worker_executions WHERE status!='terminal'") == []
+                    snapshot = await call('session.resume', session_id=sid)
+                    assert 'FOLLOWER' in json.dumps(snapshot['messages'])
+                    replay = await call('session.events.since', session_id=sid,
+                                        replay_epoch=snapshot['replay_epoch'], last_sequence=0)
+                    completed = [e for e in replay['events'] if e['type'] == 'message.complete']
+                    assert any(e['admission_id'] == follower['admission_id'] for e in completed)
+                    assert (await call('prompt.submit', **params))['admission_id'] == accepted['admission_id']
                     return
                 finally:
                     peer.release.set()
             raise AssertionError('automatic compression did not publish')
 
     try:
-        with daemon(root, home, env, barrier=False) as (_, desc):
-            asyncio.run(exercise(desc))
+        with daemon(root, home, env, barrier=False) as (owner, desc):
+            asyncio.run(exercise(desc, owner))
+        if ending == 'kill':
+            requests_before = len(peer.requests)
+
+            async def recovered(desc):
+                async with websocket(home, desc) as ws:
+                    resumed = await rpc(ws, 'session.resume', session_id=replay_params['session_id'])
+                    assert 'result' in resumed, resumed
+                    retried = await rpc(ws, 'prompt.submit', **replay_params)
+                    assert retried.get('result', {}).get('status') == 'unknown', retried
+                    pending = rows("SELECT request_id,target_session_id,status FROM session_admissions WHERE status!='terminal'")
+                    assert pending == [
+                        {'request_id': replay_params['input_id'], 'target_session_id': replay_params['session_id'], 'status': 'unknown'},
+                        {'request_id': 'follower', 'target_session_id': replay_params['session_id'], 'status': 'queued'}]
+                    assert len(peer.requests) == requests_before
+                    print(json.dumps({'restart_pending': pending, 'inference_requests': requests_before}))
+
+            with daemon(root, home, env, barrier=False) as (_, desc):
+                asyncio.run(recovered(desc))
     finally:
         peer.release.set()
         peer.shutdown()

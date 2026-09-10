@@ -12,8 +12,10 @@ import pytest
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
 
 
-@pytest.mark.parametrize('mode', ['normal', 'managed', 'safe'])
-@pytest.mark.parametrize('invariant', ['finish', 'reset', 'rewind'])
+@pytest.mark.parametrize(('mode', 'invariant'), [
+    (mode, invariant) for mode in ('normal', 'managed', 'safe')
+    for invariant in ('finish', 'reset', 'rewind')
+] + [('managed', 'initialization')])
 def test_worker_lineage_and_settlement(tmp_path, mode, invariant):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -29,6 +31,10 @@ def test_worker_lineage_and_settlement(tmp_path, mode, invariant):
         'gateway': {'multiplex_profiles': False, 'managed_workers': mode == 'managed'},
         'model': {'provider': 'custom', 'default': 'lineage', 'base_url': url},
         'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': []}}))
+    if invariant == 'initialization':
+        config = json.loads((home / 'config.yaml').read_text())
+        config['model']['context_length'] = 32000
+        (home / 'config.yaml').write_text(json.dumps(config))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
@@ -61,6 +67,15 @@ def test_worker_lineage_and_settlement(tmp_path, mode, invariant):
                                  safe_mode=mode == 'safe', ignore_user_config=mode == 'safe')
             sid = created['session_id']
             first = await call(ws, 'prompt.submit', session_id=sid, input_id='before', text='BEFORE_RESET')
+            if invariant == 'initialization':
+                async with asyncio.timeout(30):
+                    while query('SELECT status FROM session_admissions') != [('unknown',)]:
+                        await asyncio.sleep(.02)
+                assert peer.requests == []
+                errors = (home / 'logs/errors.log').read_text()
+                assert 'Managed worker lost: managed_worker_failed' in errors
+                assert 'invalid_worker_frame' not in errors
+                return
             snap = await settled(ws, sid, 'before')
             if invariant == 'finish':
                 replay = await call(ws, 'session.events.since', session_id=sid,

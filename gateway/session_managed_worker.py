@@ -198,6 +198,8 @@ async def execute_managed(authority, ref, row, policy):
             with authority.sessions[ref.session_id].event_stream.lock:
                 if _prompt_frame(authority, ref, row, worker, frame):
                     continue
+            if frame == {'type': 'error', 'reason': 'managed_worker_failed'}:
+                raise RuntimeStoreError('managed_worker_failed')
             kind = frame.get('type')
             if kind == 'ready' and set(frame) == {'type', 'pid'} and frame['pid'] == scope['pid']:
                 continue

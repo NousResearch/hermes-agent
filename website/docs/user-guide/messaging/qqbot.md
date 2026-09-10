@@ -8,6 +8,7 @@ The QQ Bot adapter uses the [Official QQ Bot API](https://bot.q.qq.com/wiki/deve
 
 - Receive messages via a persistent **WebSocket** connection to the QQ Gateway
 - Send text and markdown replies via the **REST API**
+- Show inline keyboard buttons for command approvals and update prompts
 - Download and process images, voice messages, and file attachments
 - Transcribe voice messages using Tencent's built-in ASR or a configurable STT provider
 
@@ -82,6 +83,23 @@ platforms:
         apiKey: "your-stt-key"
         model: "glm-asr"
 ```
+
+## Inline Approvals and Update Prompts
+
+QQ Bot supports inline keyboards in private C2C chats and group chats. When Hermes needs a dangerous-command approval, QQ users get a three-button prompt:
+
+- **允许一次** — approve once
+- **始终允许** — always approve this command pattern
+- **拒绝** — deny
+
+The buttons are mutually exclusive. When a user clicks one, QQ sends an `INTERACTION_CREATE` event to the gateway, Hermes acknowledges the interaction, and the pending approval is resolved without requiring the user to type `/approve` or `/deny`.
+
+Gateway update prompts also use inline buttons:
+
+- **确认** — yes
+- **取消** — no
+
+QQ guild/channel chats do not support inline keyboards through this adapter. For dangerous-command approvals in guild chats, use the normal text commands (`/approve`, `/approve always`, or `/deny`) when prompted.
 
 ## Voice Messages (STT)
 

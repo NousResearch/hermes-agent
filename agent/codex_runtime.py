@@ -589,7 +589,9 @@ class _CodexResponseAssembler:
 
     has_tool_calls = first_delta_fired = saw_terminal = False
     next_output_sequence = 0
-    active_message_phase: str | None = None
+    # Message items can interleave (commentary deltas continue after a final/function_call item is announced),
+    # so each message keeps its own state keyed by item_id/output_index instead of one active phase.
+    active_message_state: Dict[str, Any] | None = None
     # Reasoning summary parts carry no separator; a summary_index change is where the blank line belongs.
     active_summary_index: Any = None
     terminal_status: str = "completed"
@@ -604,7 +606,8 @@ class _CodexResponseAssembler:
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
         # back in stream order.
         self.output_indexes, self.output_sequences = [], []
-        self.text_deltas, self.commentary_text_deltas = [], []
+        self.text_deltas: List[str] = []
+        self.message_states_by_alias: Dict[tuple[str, Any], Dict[str, Any]] = {}
         # pending_function_calls: announced-but-unconfirmed function calls keyed by item id. announced_output_order:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
         self.pending_function_calls: Dict[str, Dict[str, Any]] = {}
@@ -613,12 +616,59 @@ class _CodexResponseAssembler:
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
 
+    @staticmethod
+    def _message_aliases(event: Any, item: Any = None) -> List[tuple[str, Any]]:
+        """Keys that tie an event to a message item: ``item_id`` (event or item id) and ``output_index``."""
+        aliases: List[tuple[str, Any]] = []
+        item_id = _event_field(event, "item_id", None)
+        if item_id is None and item is not None:
+            item_id = _event_field(item, "id", None)
+        if item_id is not None:
+            aliases.append(("item_id", item_id))
+        output_index = _event_field(event, "output_index", None)
+        if output_index is not None:
+            aliases.append(("output_index", output_index))
+        return aliases
+
+    def _message_state(self, event: Any, *, item: Any = None, phase: str | None = None,
+                       create: bool = False) -> Dict[str, Any] | None:
+        """Resolve (or create) the message state for ``event``; unaliased events fall back to the active one."""
+        aliases = self._message_aliases(event, item)
+        state = next((self.message_states_by_alias[alias] for alias in aliases
+                      if alias in self.message_states_by_alias), None)
+        if state is None and not aliases:
+            state = self.active_message_state
+        if state is None and create:
+            state = {"phase": phase, "deltas": []}
+        if state is not None:
+            if phase:
+                state["phase"] = phase
+            for alias in aliases:
+                self.message_states_by_alias[alias] = state
+        return state
+
+    def _flush_commentary_state(self, state: Dict[str, Any] | None, item: Any = None) -> None:
+        """Deliver a commentary message once (streamed deltas, else the completed item text)."""
+        if state is None or state.get("phase") != "commentary":
+            return
+        text = "".join(state.get("deltas") or []).strip() or (_output_text_of(item) if item is not None else "")
+        if text and self.on_commentary_message is not None:
+            self._safe(self.on_commentary_message, "on_commentary_message", text)
+        state["deltas"] = []
+        state["phase"] = "delivered"
+
     def _on_item_added(self, event: Any, event_type: str) -> None:
         item = _event_field(event, "item")
         item_type = _event_field(item, "type", "")
-        self.active_message_phase = _message_phase(item) if item_type == "message" else None
-        if self.active_message_phase == "commentary":
-            self.commentary_text_deltas = []
+        # An aliased item can still receive routed deltas for an earlier message, so it leaves the active
+        # state alone; without aliases a still-open commentary is flushed now (before any following tool item).
+        aliased = bool(self._message_aliases(event, item))
+        if not aliased:
+            self._flush_commentary_state(self.active_message_state)
+        if item_type == "message":
+            self.active_message_state = self._message_state(event, item=item, phase=_message_phase(item), create=True)
+        elif not aliased and (self.active_message_state or {}).get("phase") != "analysis":
+            self.active_message_state = None
         # Record first-observed ordering for EVERY announced item; .done must reuse it or a mixed
         # announced/pending stream without output_index values reorders the calls.
         item_id = str(_event_field(item, "id", ""))
@@ -638,14 +688,22 @@ class _CodexResponseAssembler:
         delta_text = _event_field(event, "delta", "")
         if not delta_text:
             return
+        aliases = self._message_aliases(event)
+        state = self._message_state(event)
+        phase = state.get("phase") if state is not None else None
+        # An aliased delta that matches no registered message item must never become visible final text:
+        # providers mix item_id/output_index shapes, so the safe destination is the private reasoning rail.
+        if state is None and aliases and self.active_message_state is not None:
+            self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
+            return
         # Harmony commentary/analysis text is mid-turn narration, never the final answer: route to the
         # reasoning callback, keep only the item for replay.
-        if self.active_message_phase == "commentary":
-            self.commentary_text_deltas.append(delta_text)
+        if state is not None and phase == "commentary":
+            state["deltas"].append(delta_text)
             # Legacy fallback when no first-class commentary consumer is installed.
             if self.on_commentary_message is None:
                 self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
-        elif self.active_message_phase == "analysis":
+        elif phase == "analysis":
             self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
         else:
             self.text_deltas.append(delta_text)
@@ -695,11 +753,10 @@ class _CodexResponseAssembler:
         self.output_sequences.append(announced_sequence)
         # Confirmed by the authoritative done event; never settle it twice.
         self.pending_function_calls.pop(done_id, None)
-        if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:
-            commentary_text = "".join(self.commentary_text_deltas).strip() or _output_text_of(done_item)
-            if commentary_text:
-                self._safe(self.on_commentary_message, "on_commentary_message", commentary_text)
-            self.commentary_text_deltas = []
+        done_phase = _message_phase(done_item)
+        state = self._message_state(event, item=done_item, phase=done_phase, create=done_phase == "commentary")
+        if done_phase == "commentary":
+            self._flush_commentary_state(state, done_item)
 
     def _on_terminal(self, event: Any, event_type: str) -> bool:
         self.saw_terminal = True
@@ -1014,7 +1071,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             except RuntimeError:
                 # "No terminal response"; Relay may still hold a finalizer-assembled response.
                 if event_stream is not None and event_stream.final_response is not None:
-                    return event_stream.final_response
+                    concrete = event_stream.final_response
+                    # A concrete (non-iterable) response bypassed the assembler, so its completed commentary
+                    # items were never delivered; surface them before passing the response through unchanged.
+                    if on_commentary_message is not None:
+                        for item in getattr(concrete, "output", None) or []:
+                            if _message_phase(item) == "commentary" and (text := _output_text_of(item)):
+                                on_commentary_message(text)
+                    return concrete
                 raise
             except _APIConnectionError as exc:
                 _log_failure(exc)

@@ -378,3 +378,57 @@ class TestSecretScopeAcrossExecutorThreads:
         finally:
             pool.shutdown(wait=True)
             ss.reset_secret_scope(token)
+
+
+class TestMultiplexContext:
+    """A task can run under multiplex semantics without flipping the process flag: the desktop
+    backend ticks sibling profiles' cron jobs from a process whose own turns stay single-profile."""
+
+    def test_context_turns_multiplex_on_for_the_task_only(self):
+        assert ss.is_multiplex_active() is False
+        token = ss.set_multiplex_context(True)
+        try:
+            assert ss.is_multiplex_active() is True
+        finally:
+            ss.reset_multiplex_context(token)
+        assert ss.is_multiplex_active() is False
+
+    def test_context_propagates_through_copy_context_like_the_pool_dispatch(self):
+        import contextvars
+        import threading
+
+        token = ss.set_multiplex_context(True)
+        try:
+            ctx = contextvars.copy_context()  # what cron's _submit_with_guard hands the worker
+        finally:
+            ss.reset_multiplex_context(token)
+        seen = {}
+        worker = threading.Thread(target=lambda: seen.update(v=ctx.run(ss.is_multiplex_active)))
+        worker.start()
+        worker.join()
+        assert seen["v"] is True
+        assert ss.is_multiplex_active() is False  # the caller's own context is untouched
+
+    def test_scoped_miss_under_context_never_reads_the_process_env(self, monkeypatch):
+        monkeypatch.setenv("LAUNCH_ONLY_TOKEN", "launch-token")
+        token = ss.set_multiplex_context(True)
+        scope_token = ss.set_secret_scope({"ROUTED_KEY": "routed"})
+        try:
+            assert ss.get_secret("ROUTED_KEY") == "routed"
+            assert ss.get_secret("LAUNCH_ONLY_TOKEN") is None
+        finally:
+            ss.reset_secret_scope(scope_token)
+            ss.reset_multiplex_context(token)
+        assert ss.get_secret("LAUNCH_ONLY_TOKEN") == "launch-token"  # single-profile semantics resume
+
+    def test_refresh_installed_secret_scope_folds_in_values_learned_after_the_freeze(self, tmp_path):
+        (tmp_path / ".env").write_text("EARLY_KEY=early\n", encoding="utf-8")
+        scope_token = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+        try:
+            (tmp_path / ".env").write_text("EARLY_KEY=early\nLATE_KEY=late\n", encoding="utf-8")
+            assert ss.get_secret("LATE_KEY") is None
+            assert ss.refresh_installed_secret_scope(tmp_path) is True
+            assert ss.get_secret("LATE_KEY") == "late"
+        finally:
+            ss.reset_secret_scope(scope_token)
+        assert ss.refresh_installed_secret_scope(tmp_path) is False  # nothing installed

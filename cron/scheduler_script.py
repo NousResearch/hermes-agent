@@ -349,7 +349,16 @@ def _run_job_script(
                 # reader threads on non-UTF-8 Windows (#45099).
                 "encoding": "utf-8",
                 "errors": "replace"}
-        env = build_subprocess_env()
+        # A routed profile's script (desktop multi-profile ticker, multiplex gateway) must see ITS
+        # profile's .env + vault values — the process env holds the launch profile's. Overlay the
+        # installed scope onto the base BEFORE sanitizing, so the same scrub / passthrough rules
+        # apply to those values as to any other; the parent process is never mutated.
+        from agent.secret_scope import current_secret_scope
+        base = dict(os.environ)
+        scope = current_secret_scope()
+        if scope:
+            base.update(scope)
+        env = build_subprocess_env(base=base)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

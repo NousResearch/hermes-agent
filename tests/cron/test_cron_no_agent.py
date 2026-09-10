@@ -368,3 +368,30 @@ def test_agent_job_provider_classification_unchanged(error, expected):
 
     job = {"name": "daily-digest", "no_agent": False}
     assert expected in _summarize_cron_failure_for_delivery(job, error)
+
+
+def test_a_routed_profile_script_receives_its_own_profile_env(hermes_env, monkeypatch):
+    """A no_agent script fired for a SIBLING profile sees that profile's .env values — via the
+    installed scope, never by copying them into the parent's os.environ (#107692 review)."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+
+    monkeypatch.setenv("CUSTOM_CRON_VALUE", "launch")
+    monkeypatch.delenv("ROUTED_ONLY_VALUE", raising=False)
+    script = hermes_env / "scripts" / "probe_env.sh"
+    script.write_text('#!/bin/bash\necho "${CUSTOM_CRON_VALUE}|${ROUTED_ONLY_VALUE}"\n')
+
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope(
+        {"CUSTOM_CRON_VALUE": "routed", "ROUTED_ONLY_VALUE": "routed-only"})
+    try:
+        ok, output = _run_job_script("probe_env.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+
+    assert ok, output
+    assert output.strip() == "routed|routed-only"
+    assert os.environ["CUSTOM_CRON_VALUE"] == "launch"  # the parent process was not mutated

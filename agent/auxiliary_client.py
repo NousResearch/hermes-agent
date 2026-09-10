@@ -3887,6 +3887,25 @@ def _try_main_agent_model_fallback(
     so a hung aux model says nothing about the main model's health. Returns (client, model, label) or (None, None, "")."""
     main_provider = (_read_main_provider() or "").strip()
     main_model = (_read_main_model() or "").strip()
+    if main_provider.lower() == "custom":
+        try:
+            from hermes_cli.runtime_provider import (
+                _get_named_custom_provider,
+                canonical_custom_identity,
+            )
+
+            named_provider = canonical_custom_identity(
+                base_url=_read_main_base_url(), model=main_model
+            )
+            named_entry = (
+                _get_named_custom_provider(named_provider)
+                if named_provider
+                else None
+            )
+            if named_entry and named_entry.get("api_mode") == "codex_responses":
+                main_provider = named_provider
+        except Exception:
+            pass
     if main_provider.lower() == "moa":
         # MoA virtual provider: fall back to the preset's aggregator (the acting model).
         _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)

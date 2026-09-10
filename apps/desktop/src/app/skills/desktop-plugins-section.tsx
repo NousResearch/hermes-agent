@@ -118,10 +118,7 @@ export function PluginListRow({
   id?: string
 }) {
   return (
-    <div
-      className="flex items-start gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2 last:border-b-0"
-      id={id}
-    >
+    <div className="flex items-start gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2 last:border-b-0" id={id}>
       {icon}
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
@@ -189,9 +186,7 @@ function DesktopPluginRow({
             <Tip label={p.agentHalfMissingTip}>
               <Button
                 className="h-5 px-1.5 text-[0.65rem]"
-                onClick={() =>
-                  void repairAgentHalf(record, unifiedPackageName(record.file) ?? record.name, profile)
-                }
+                onClick={() => void repairAgentHalf(record, unifiedPackageName(record.file) ?? record.name, profile)}
                 size="xs"
                 variant="outline"
               >

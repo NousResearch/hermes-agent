@@ -55,7 +55,14 @@ describe('DesktopPluginsSection', () => {
       }
     })
     $agentPlugins.set([
-      { description: '', key: 'pixel-overlay', name: 'pixel-overlay', source: 'user', status: 'enabled', version: '1.0.0' }
+      {
+        description: '',
+        key: 'pixel-overlay',
+        name: 'pixel-overlay',
+        source: 'user',
+        status: 'enabled',
+        version: '1.0.0'
+      }
     ])
 
     render(<DesktopPluginsSection profile={null} />)

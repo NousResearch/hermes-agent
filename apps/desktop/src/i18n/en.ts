@@ -443,7 +443,8 @@ export const en: Translations = {
     },
     plugins: {
       title: 'Desktop plugins',
-      blurb: 'Extend this app — bundled or dropped into the desktop-plugins folder. Same for every profile; toggles apply live.',
+      blurb:
+        'Extend this app — bundled or dropped into the desktop-plugins folder. Same for every profile; toggles apply live.',
       count: n => `${n} installed`,
       openFolder: 'Open plugins folder',
       rescan: 'Rescan',
@@ -1504,7 +1505,8 @@ export const en: Translations = {
     tabPlugins: 'Plugins',
     plugins: {
       agentTitle: 'Agent plugins',
-      agentBlurb: 'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
+      agentBlurb:
+        'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
       empty: 'No agent plugins installed for this profile.',
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
       loadFailed: 'Could not load agent plugins',

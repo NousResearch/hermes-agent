@@ -1,6 +1,7 @@
 """Runtime tests for tool-call loop guardrails."""
 
 import json
+import os
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -454,3 +455,59 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_guardrail_halt_nudges_kanban_worker_to_terminal_tool_instead_of_halting():
+    """A guardrail halt must not leave a Kanban worker in a clean protocol violation."""
+    agent = _make_agent("web_search", "kanban_complete", config=_hard_stop_config())
+    same_args = {"query": "same"}
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
+        )
+        for i in range(1, 4)
+    ]
+    responses.extend(
+        [
+            _mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    _mock_tool_call(
+                        "kanban_complete",
+                        json.dumps({"summary": "done"}),
+                        "c-complete",
+                    )
+                ],
+            ),
+            _mock_response(content="Task finished.", finish_reason="stop", tool_calls=None),
+        ]
+    )
+    agent.client.chat.completions.create.side_effect = responses
+
+    calls = []
+
+    def fake_handle(name, args, task_id, **kwargs):
+        del args, task_id, kwargs
+        calls.append(name)
+        if name == "web_search":
+            return json.dumps({"error": "boom"})
+        assert name == "kanban_complete"
+        return json.dumps({"ok": True})
+
+    with (
+        patch.dict(os.environ, {"HERMES_KANBAN_TASK": "task-123"}, clear=False),
+        patch("model_tools.handle_function_call", side_effect=fake_handle) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do the kanban task")
+
+    assert mock_hfc.call_count == 3
+    assert calls == ["web_search", "web_search", "kanban_complete"]
+    assert result["turn_exit_reason"] != "guardrail_halt"
+    assert result["final_response"] == "Task finished."
+    assert getattr(agent, "_kanban_stop_nudges", 0) == 1

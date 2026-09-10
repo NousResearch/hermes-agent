@@ -3547,9 +3547,10 @@ class GatewayRunner(
             # (tirith disabled AND no auxiliary.approval model) can only gate dangerous commands /
             # execute_code scripts via live in-chat approval.
             _appr_cfg = _load_full_config()
-            _appr_mode = str(
-                cfg_get(_appr_cfg, "approvals", "mode", default="manual") or "manual"
-            ).strip().lower()
+            from tools.approval import _normalize_approval_mode
+            _appr_mode = _normalize_approval_mode(
+                cfg_get(_appr_cfg, "approvals", "mode", default="manual")
+            )
             _tirith_on = bool(cfg_get(_appr_cfg, "security", "tirith_enabled", default=True))
             _aux_approval = cfg_get(_appr_cfg, "auxiliary", "approval", default=None)
             if _appr_mode == "manual" and not _tirith_on and not _aux_approval:

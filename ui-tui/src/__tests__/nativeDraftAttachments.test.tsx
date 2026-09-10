@@ -67,7 +67,7 @@ async function mount(realSubmit = false, tty = false) {
     const submitRef = useRef(() => {})
     const slashRef = useRef<any>(() => false)
     const slashFlightRef = useRef(0)
-    composer = useComposerState({ gw: gw as any, submitRef, sys: vi.fn() })
+    composer = useComposerState({ gw: gw as any, submitRef, sys })
     submission = useSubmission({ composerActions: composer.actions, composerRefs: composer.refs, composerState: composer.state,
       gw: gw as any, submitRef, slashRef, sys, appendMessage, setLastUserMsg })
     session = useSessionLifecycle({ composerActions: composer.actions, gw, rpc: gw.request,
@@ -107,6 +107,133 @@ async function mount(realSubmit = false, tty = false) {
 }
 
 describe('automatic native draft attachments', () => {
+  it.each(['path', 'clipboard', 'drop', 'empty paste'])(
+    'rejects an excess native image via %s without evicting admitted metadata', async mode => {
+      const h = await mount()
+      let image = 0
+      h.gw.request.mockImplementation((method: string) => {
+        if (method === 'image.attach' || method === 'clipboard.paste') {
+          const path = `/native/${++image}.png`
+
+          return Promise.resolve({ attached: true, name: `${image}.png`, path })
+        }
+
+        if (method === 'input.detect_drop') {
+          return Promise.resolve({ matched: true, is_image: true, path: '/native/excess.png', text: '[User attached image: excess.png]' })
+        }
+
+        return Promise.resolve({ items: [] })
+      })
+
+      for (let i = 0; i < 32; i++) {
+        h.composer().actions.attachImagePath(`/native/${i + 1}.png`)
+        await settle()
+      }
+
+      h.stdin.send(' leftRIGHT', '\x1b[D', '\x1b[D', '\x1b[D', '\x1b[D', '\x1b[D')
+      await settle()
+      const admitted = [...h.composer().refs.tokensRef.current]
+      const draft = h.composer().state.input
+      expect(admitted).toHaveLength(32)
+
+      if (mode === 'path') { h.composer().actions.attachImagePath('/native/excess.png') }
+      else if (mode === 'clipboard') { h.composer().actions.attachClipboardImage() }
+      else { h.stdin.send(`\x1b[200~${mode === 'drop' ? '/native/excess.png' : ''}\x1b[201~`) }
+
+      await settle()
+      expect(h.composer().refs.tokensRef.current).toEqual(admitted)
+      expect(h.composer().state.input).toBe(draft)
+      expect(h.sys).toHaveBeenCalledWith(expect.stringMatching(/32.*image|image.*32/i))
+      expect(h.gw.request.mock.calls.filter(([method]) => method === 'image.detach')).toEqual([])
+      expect(image).toBe(32)
+
+      if (mode === 'drop') {
+        expect(h.gw.request.mock.calls.filter(([method]) => method === 'input.detect_drop')).toEqual([
+          ['input.detect_drop', { session_id: 'runtime-a', text: '/native/excess.png', attach_image: false }]
+        ])
+      }
+
+      h.stdin.send('!')
+      await settle()
+      expect(h.composer().state.input).toBe(`${draft.slice(0, -5)}!RIGHT`)
+
+      if (mode === 'drop') {
+        const generic = deferred()
+        h.gw.request.mockImplementation((method: string) => method === 'input.detect_drop' ? generic.promise : Promise.resolve({}))
+        h.stdin.send('\x1b[200~/notes.txt\x1b[201~')
+        await settle()
+        generic.resolve({ matched: true, is_image: false, text: '[User attached file: /notes.txt]' })
+        await settle()
+        expect(h.composer().state.input).toContain('[User attached file: /notes.txt]')
+        expect(h.composer().refs.tokensRef.current).toEqual(admitted)
+      } else {
+        h.stdin.send('\x01', '\x0b')
+        await settle()
+        h.composer().actions.attachClipboardImage()
+        await settle()
+        expect(h.composer().refs.tokensRef.current.map(token => token.path)).toEqual(['/native/33.png'])
+      }
+    }
+  )
+
+  it.each(['complete', 'fail'])('reserves native slots through racing %s completions without losing live input', async outcome => {
+    const h = await mount()
+    let image = 0
+    h.gw.request.mockImplementation((method: string) => {
+      if (method === 'image.attach') {return Promise.resolve({ name: 'seed.png', path: `/native/${++image}.png` })}
+
+      return Promise.resolve({ items: [] })
+    })
+
+    for (let i = 0; i < 30; i++) {
+      h.composer().actions.attachImagePath(`/native/${i}.png`)
+      await settle()
+    }
+
+    const first = deferred()
+    const second = deferred()
+    h.gw.request.mockImplementation((method: string, params?: any) => {
+      if (method === 'image.attach') {
+        return params.path === '/first.png' ? first.promise : outcome === 'fail' ? Promise.reject(new Error('try detector')) : second.promise
+      }
+
+      if (method === 'input.detect_drop') {return second.promise}
+
+      if (method === 'clipboard.paste') {return Promise.resolve({ attached: true, path: '/retry.png' })}
+
+      return Promise.resolve({ items: [] })
+    })
+    h.composer().actions.attachImagePath('/first.png')
+    h.stdin.send('\x1b[200~/second.png\x1b[201~')
+    await settle()
+    h.composer().actions.attachClipboardImage()
+    await settle()
+    expect(h.gw.request.mock.calls.filter(([method]) => method === 'clipboard.paste')).toEqual([])
+    h.stdin.send(' caption')
+    await settle()
+    second.resolve({ name: 'second.png', path: '/second.png', matched: true, is_image: true, remainder: 'drop-caption' })
+    await settle()
+
+    if (outcome === 'complete') {first.resolve({ name: 'first.png', path: '/first.png' })}
+    else {first.reject(new Error('image unavailable'))}
+
+    await settle()
+
+    if (outcome === 'fail') {
+      h.composer().actions.attachClipboardImage()
+      await settle()
+    }
+
+    const tokens = h.composer().refs.tokensRef.current
+    expect(tokens).toHaveLength(32)
+    expect(tokens.slice(-2).map(token => token.path)).toEqual(['/second.png', outcome === 'complete' ? '/first.png' : '/retry.png'])
+    expect(h.composer().state.input).toContain('caption')
+    expect(h.composer().state.input).toContain('drop-caption')
+
+    for (const token of tokens) {expect(h.composer().state.input).toContain(token.label)}
+    expect(h.gw.request.mock.calls.filter(([method]) => method === 'image.detach')).toEqual([])
+  })
+
   it('does not trim admitted images when adding paste/legacy tokens and can retry after freeing capacity', async () => {
     const h = await mount(true)
     const paths = Array.from({ length: 32 }, (_, i) => `/staged/image-${i}.png`)

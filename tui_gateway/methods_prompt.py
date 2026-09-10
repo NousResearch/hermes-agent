@@ -894,10 +894,12 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"matched": False})
         drop_path, remainder = dropped["path"], dropped["remainder"]
         if dropped["is_image"]:
-            session.setdefault("attached_images", []).append(str(drop_path))
+            # Capacity-limited clients can classify without queuing a hidden image.
+            if params.get("attach_image") is not False:
+                session.setdefault("attached_images", []).append(str(drop_path))
             return _ok(rid, {
                 "matched": True, "is_image": True, "path": str(drop_path),
-                "count": len(session["attached_images"]),
+                "count": len(session.get("attached_images", [])), "remainder": remainder,
                 "text": remainder or f"[User attached image: {drop_path.name}]",
                 **_image_meta(drop_path)})
         text = f"[User attached file: {drop_path}]" + (f"\n{remainder}" if remainder else "")

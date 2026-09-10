@@ -19,6 +19,9 @@ import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
 
+pytestmark = pytest.mark.usefixtures("isolated_update_runtime")
+
+
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""
     calls = {"n": 0}
@@ -101,32 +104,10 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_run_pre_update_backup", lambda *a, **k: None
     )
-    monkeypatch.setattr(
-        hermes_main, "_pause_windows_gateways_for_update", lambda: None
-    )
-    monkeypatch.setattr(
-        hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
-    )
     # Short-circuit the long tail: dependency install + desktop build.
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
-    # Gateway restart path (called after a successful update).
-    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
-    # Keep the (now surfaced — #78574) gateway auto-restart phase away from
-    # this machine's real gateways: discovery returns nothing, systemd is
-    # unsupported, so the phase is a clean no-op for both snapshots.
-    import hermes_cli.gateway as hermes_gateway
-
-    monkeypatch.setattr(
-        hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
-    )
-    monkeypatch.setattr(
-        hermes_gateway, "supports_systemd_services", lambda: False
-    )
-    monkeypatch.setattr(
-        hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
-    )
 
 
 def test_update_success_when_head_moves(monkeypatch, tmp_path, capsys):

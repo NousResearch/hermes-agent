@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-05T09:33:43Z",
+  "updated_at": "2026-09-10T19:26:09Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -134,10 +134,6 @@
         },
         {
           "id": "qwen/qwen3.8-max-0902",
-          "description": ""
-        },
-        {
-          "id": "qwen/qwen3.8-flash",
           "description": ""
         },
         {
@@ -339,9 +335,6 @@
         },
         {
           "id": "qwen/qwen3.8-max-0902"
-        },
-        {
-          "id": "qwen/qwen3.8-flash"
         },
         {
           "id": "qwen/qwen3.8-flash"

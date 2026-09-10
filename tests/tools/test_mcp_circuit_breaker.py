@@ -97,6 +97,20 @@ def _cleanup(mcp_tool_module, name: str) -> None:
         mcp_tool_module._server_breaker_opened_at.pop(name, None)
 
 
+def test_application_error_resets_circuit_breaker(monkeypatch):
+    """A returned MCP application error proves transport health, not an outage."""
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _record_call_outcome
+
+    resets = []
+    monkeypatch.setattr(mcp_tool, "_reset_server_error", resets.append)
+    monkeypatch.setattr(mcp_tool, "_bump_server_error", lambda _: pytest.fail("application error tripped breaker"))
+
+    result = '{"error": "application failure"}'
+    assert _record_call_outcome("srv", result) == result
+    assert resets == ["srv"]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------

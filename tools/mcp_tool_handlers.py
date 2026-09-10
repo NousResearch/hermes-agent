@@ -102,8 +102,8 @@ def _result_is_error(result) -> bool:
 
 
 def _record_call_outcome(server_name: str, result) -> Any:
-    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike."""
-    (_core._bump_server_error if _result_is_error(result) else _core._reset_server_error)(server_name)
+    """A completed tools/call round-trip proves transport health; application-level errors do not trip breaker."""
+    _core._reset_server_error(server_name)
     return result
 
 

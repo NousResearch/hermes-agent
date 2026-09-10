@@ -1,8 +1,8 @@
 """Item 1 regression — the run_agent._compress_context fallback shim must be loud.
 
 Before the fix, _compress_context wrapped the imports of _DB_PERSISTED_MARKER
-(agent.context_compressor) and _messages_match_scoped_identity
-(agent.conversation_compression) in a try/except that silently defined local
+(agent.context_compressor) and the scoped-identity stamping helper
+(agent.conversation_compression._stamp_scoped_twins) in a try/except that silently defined local
 fallbacks (a hard-coded ``"_db_persisted"`` literal and a local copy of the
 identity helper) with NO logging. If the canonical constant/helper is renamed
 or removed upstream, the import raises, the fallback silently keeps stamping
@@ -17,7 +17,7 @@ The ``already_present`` outcome is load-bearing: it keeps compress_context
 from touching the deleted module-global name (which would raise NameError on
 BOTH pre- and post-fix code and make the test non-discriminating), because the
 stamp block at conversation_compression.py:3834-3859 — the ONLY in-module use
-of _messages_match_scoped_identity — is skipped for already_present.
+of _stamp_scoped_twins — is skipped for already_present.
 """
 
 import os
@@ -50,7 +50,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
     compressor = MagicMock()
     # A real user row in the stub return makes _ensure_compressed_has_user_turn
     # return `already_present`, so the in-module stamp block (the only user of
-    # _messages_match_scoped_identity inside compress_context) is skipped and
+    # _stamp_scoped_twins inside compress_context) is skipped and
     # the deleted name is referenced ONLY by the run_agent shim import.
     compressor.compress.return_value = [
         {"role": "user", "content": "real user row"},
@@ -91,7 +91,7 @@ class TestCompressContextFallbackShim:
         # stamp block). Pre-fix the except branch silently defines a fallback;
         # post-fix the unconditional import must raise ImportError.
         monkeypatch.delattr(
-            conversation_compression, "_messages_match_scoped_identity"
+            conversation_compression, "_stamp_scoped_twins"
         )
         with pytest.raises(ImportError):
             agent._compress_context(

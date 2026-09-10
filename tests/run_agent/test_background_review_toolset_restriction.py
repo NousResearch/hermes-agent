@@ -127,15 +127,141 @@ def test_background_review_installs_thread_local_whitelist():
     assert "skill_manage" in whitelist
     assert "skill_view" in whitelist
     assert "skills_list" in whitelist
-    # dangerous tools must NOT be in the whitelist
+    # read-only file tools are allowed too (#61521): the model reaches for
+    # read_file to inspect a skill before patching; denying it caused a
+    # per-review denial storm that starved the self-improvement loop.
+    assert "read_file" in whitelist
+    assert "search_files" in whitelist
+    # write/dangerous tools must NOT be in the whitelist
+    assert "write_file" not in whitelist
+    assert "patch" not in whitelist
     assert "terminal" not in whitelist
     assert "send_message" not in whitelist
     assert "delegate_task" not in whitelist
     assert "web_search" not in whitelist
     assert "execute_code" not in whitelist
+    # The deny message must name the correct substitutes so a single denial
+    # redirects the model instead of a 142-denial storm (#61521).
+    deny = captured.get("deny_msg_fmt") or ""
+    assert "skill_manage" in deny
+    assert "skill_view" in deny
 
 
+def test_read_file_registers_background_review_read_mark(tmp_path):
+    """read_file inside a review fork must satisfy the read-before-write guard.
+
+    The whitelist now allows read_file; without this mark, the model would
+    read SKILL.md via read_file and still get "content has not been loaded
+    in this review turn" on the follow-up skill_manage patch (#61521).
+    """
+    from tools.file_tools import read_file_tool
+    from tools.skill_manager_guards import (
+        _background_review_has_read,
+        _reset_background_review_read_marks,
+    )
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    target = tmp_path / "SKILL.md"
+    target.write_text("---\nname: t\n---\nbody\n")
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        _reset_background_review_read_marks()
+        assert not _background_review_has_read(target)
+        out = read_file_tool(str(target), task_id="bg-review-test")
+        assert "body" in out
+        assert _background_review_has_read(target), (
+            "full read_file inside a review fork must register with the "
+            "read-before-write guard"
+        )
+
+        # A partial read must NOT satisfy the guard.
+        _reset_background_review_read_marks()
+        read_file_tool(str(target), offset=2, task_id="bg-review-test2")
+        assert not _background_review_has_read(target)
+    finally:
+        reset_current_write_origin(token)
 
 
+def test_read_file_outside_review_does_not_mark(tmp_path):
+    """Foreground reads must not populate the review-fork read set."""
+    from tools.file_tools import read_file_tool
+    from tools.skill_manager_guards import (
+        _background_review_has_read,
+        _reset_background_review_read_marks,
+    )
+
+    target = tmp_path / "SKILL.md"
+    target.write_text("content\n")
+    _reset_background_review_read_marks()
+    read_file_tool(str(target), task_id="fg-test")
+    assert not _background_review_has_read(target)
+
+
+def test_background_review_whitelist_includes_configured_extra_tools(
+    tmp_path, monkeypatch
+):
+    """A profile may opt a specific proposal tool into background review.
+
+    The review fork inherits the parent's full tool schema for cache parity,
+    but runtime dispatch remains denied unless the tool is also present in the
+    thread-local whitelist.  This config hook lets profiles grant a narrowly
+    scoped, human-gated proposal tool without enabling unrelated side effects.
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "auxiliary:\n"
+        "  background_review:\n"
+        "    extra_tools:\n"
+        "      - propose_shared_memory\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import run_agent
+    from hermes_cli import config as config_module
+    from hermes_cli import plugins as _plugins
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    captured = {}
+
+    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+        captured["whitelist"] = set(whitelist)
+
+    def _capture_run_conversation(self, *, user_message, **kwargs):
+        captured["review_prompt"] = user_message
+        return {"final_response": "Nothing to save."}
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(
+             run_agent.AIAgent,
+             "run_conversation",
+             _capture_run_conversation,
+         ), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", lambda self: None), \
+         patch.object(run_agent.AIAgent, "close", lambda self: None), \
+         patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert "propose_shared_memory" in captured["whitelist"]
+    assert "terminal" not in captured["whitelist"]
+    assert "propose_shared_memory" in captured["review_prompt"]
 
 

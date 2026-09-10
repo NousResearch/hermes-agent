@@ -220,6 +220,27 @@ describe('the hand-rolled rAF path (older shells)', () => {
 })
 
 describe('the SDK budgeted-loop path', () => {
+  it('paints a thinking gaze and eases back without a discontinuity', async () => {
+    const { captured } = captureLoop()
+    const { startFaceClock } = await loadClock()
+    const face = mountFace()
+    face.innerHTML = '<ellipse data-hb-el="1"/><circle data-hb-dot="1"/>'
+    face.setAttribute('data-hb-mood', 'think')
+    startFaceClock()
+    captured.draw!(1000)
+    observer!.emit([{ isIntersecting: true, target: face }])
+    captured.draw!(2000)
+    const eye = face.querySelector('ellipse')!
+    const gaze = eye.getAttribute('cy')
+    expect(Number(face.querySelector('circle')!.getAttribute('opacity'))).toBeGreaterThan(0)
+    face.setAttribute('data-hb-mood', 'idle')
+    captured.draw!(2067)
+    expect(eye.getAttribute('cy')).toBe(gaze)
+    captured.draw!(2667)
+    expect(Number(eye.getAttribute('cy'))).toBeCloseTo(17.2)
+    expect(Number(face.querySelector('circle')!.getAttribute('opacity'))).toBe(0)
+  })
+
   interface CapturedLoop {
     draw: (now: number) => void
     idleWhen: () => boolean

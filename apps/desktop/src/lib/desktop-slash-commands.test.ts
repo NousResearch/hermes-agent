@@ -49,7 +49,8 @@ const REGISTRY_CATALOG = registryCatalog(
     '/agents': null,
     '/steer': 'text',
     '/stop': null,
-    '/background': 'text',
+    '/bg': 'text',
+    '/btw': 'text',
     '/debug': null,
     '/goal': 'mixed',
     '/personality': 'options',
@@ -61,7 +62,7 @@ const REGISTRY_CATALOG = registryCatalog(
     '/loop': 'mixed',
     '/lcm': 'text'
   },
-  { '/tasks': '/agents', '/bg': '/background', '/q': '/queue', '/proactive': '/loop' }
+  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
 )
 
 describe('desktop slash command curation', () => {
@@ -93,9 +94,11 @@ describe('desktop slash command curation', () => {
   it('treats registry and plugin commands as exec when the catalog says so', () => {
     expect(resolveDesktopCommand('/refine')?.argumentMode).toBe('text')
     expect(isDesktopSlashSuggestion('/refine')).toBe(true)
-    expect(isDesktopSlashSuggestion('/bg')).toBe(false)
-    expect(isDesktopSlashCommand('/background')).toBe(true)
-    expect(desktopSlashCommandArgumentMode('/background')).toBe('text')
+    expect(isDesktopSlashSuggestion('/background')).toBe(false)
+    expect(isDesktopSlashCommand('/bg')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/bg')).toBe('text')
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/btw')).toBe('text')
     expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
     expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
   })
@@ -176,6 +179,13 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/wake')).toBeNull()
   })
 
+  it('routes /stop through the desktop action that cancels the active turn', () => {
+    expect(resolveDesktopCommand('/stop')?.surface).toEqual({ kind: 'action', action: 'stop' })
+    expect(isDesktopSlashSuggestion('/stop')).toBe(true)
+    expect(isDesktopSlashCommand('/stop')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/stop')).toBeNull()
+  })
+
   it('treats /browser as an executable action command (local-gateway connect)', () => {
     // /browser used to be terminal-only; it now resolves to a desktop action
     // handler that routes browser.manage RPC when the gateway is local.
@@ -223,14 +233,15 @@ describe('desktop slash command curation', () => {
   })
 
   it('keeps commands with richer CLI semantics on the slash worker', () => {
-    for (const name of ['/agents', '/steer', '/stop', '/usage']) {
+    for (const name of ['/agents', '/steer', '/usage']) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
   })
 
   it('still routes commands without dedicated RPCs through exec()', () => {
+    // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
     const execNames = [
-      '/background',
+      '/bg',
       '/debug',
       '/goal',
       '/personality',
@@ -245,6 +256,13 @@ describe('desktop slash command curation', () => {
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
+  })
+
+  it('routes /btw to the prompt.btw side-question action', () => {
+    expect(resolveDesktopCommand('/btw')?.surface).toEqual({ kind: 'action', action: 'btw' })
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(isDesktopSlashSuggestion('/btw')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/btw')).toBeNull()
   })
 
   it('distinguishes free prose from finite slash option lists', () => {

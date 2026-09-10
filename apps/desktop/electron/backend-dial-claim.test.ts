@@ -126,10 +126,10 @@ describe('main.ts wiring for #90812', () => {
   it('routes the profile-scoped dial IPC through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection', ")
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
+    const body = mainSource.slice(handlerStart, handlerStart + 1200)
 
     expect(body).toContain('backendDialClaims.run(')
-    expect(body).toContain('ensureBackend(profile)')
+    expect(body).toContain('ensureBackend(profile, { spawnPriority })')
   })
 
   it('routes the registry-scoped dial IPC through the claim keyed by backendScopeKey(connectionId, profile)', () => {
@@ -137,8 +137,9 @@ describe('main.ts wiring for #90812', () => {
     expect(handlerStart).toBeGreaterThan(-1)
     const body = mainSource.slice(handlerStart, handlerStart + 1_200)
 
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(id, profile)')
-    expect(body).toContain('ensureRegistryBackend(id, profile)')
+    expect(body).toContain('const scopeKey = backendScopeKey(id, profile)')
+    expect(body).toContain('backendDialClaims.run(scopeKey, ')
+    expect(body).toContain("ensureRegistryBackend(id, profile, '', { spawnPriority })")
   })
 
   // The four IPC/probe surfaces below call ensureRegistryBackend()/ensureBackend()

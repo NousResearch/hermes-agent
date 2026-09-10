@@ -15,7 +15,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from agent.turn_context import TurnContext, build_turn_context
+from agent.turn_context import (
+    PreflightCompressionTimedOut,
+    TurnContext,
+    build_turn_context,
+)
 from hermes_state import SessionDB
 
 
@@ -210,6 +214,44 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_preflight_timeout_stops_turn_before_provider_boundary():
+    """An unchanged oversized payload must not escape turn construction."""
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    agent.max_compression_attempts = 3
+    agent.context_compressor = types.SimpleNamespace(
+        protect_first_n=2,
+        protect_last_n=2,
+        threshold_tokens=1_000,
+        context_length=4_000,
+        summary_target_ratio=0.3,
+        last_prompt_tokens=0,
+        should_compress=lambda tokens=None: True,
+        should_compress_info=lambda tokens=None: (True, None),
+        get_active_compression_failure_cooldown=lambda: None,
+    )
+
+    def stalled_compression(messages, *_args, **_kwargs):
+        agent._last_compression_timed_out = True
+        return messages, "SYSTEM"
+
+    agent._compress_context = MagicMock(side_effect=stalled_compression)
+    oversized_history = [
+        {"role": "assistant", "content": "x" * 8_000},
+    ]
+    provider_call = MagicMock()
+
+    def run_turn():
+        context = _build(agent, conversation_history=oversized_history)
+        provider_call(context.messages)
+
+    with pytest.raises(PreflightCompressionTimedOut, match="provider call was not sent"):
+        run_turn()
+
+    agent._compress_context.assert_called_once()
+    provider_call.assert_not_called()
+
+
 def test_user_message_preserves_platform_event_timestamp():
     agent = _FakeAgent()
 
@@ -246,7 +288,7 @@ def test_prefetch_runs_for_substantive_user_message():
     agent, mm = _agent_with_memory_manager()
     query = "what did we decide about the deploy pipeline?"
     ctx = _build(agent, user_message=query)
-    mm.prefetch_all.assert_called_once_with(query)
+    mm.prefetch_all.assert_called_once_with(query, session_id=agent.session_id)
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
 
 
@@ -404,7 +446,8 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     new_def = {"type": "function", "function": {"name": "mcp_x_tool", "description": "", "parameters": {}}}
 
     import model_tools
-    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
+    import tools.mcp_tool  # noqa: F401 — the prologue's import-cost gate requires it in sys.modules
+    with patch("tools.mcp_tool_discovery.has_registered_mcp_tools", return_value=True), \
          patch.object(model_tools, "get_tool_definitions", return_value=[new_def]):
         _build(agent)
 

@@ -203,7 +203,7 @@ describe('scanDiskPlugins (#66899)', () => {
     try {
       await discoverRuntimePlugins()
 
-      // Inventoried for Settings → Plugins, but the root's opt-in posture wins:
+      // Inventoried for Capabilities → Plugins, but the root's opt-in posture wins:
       // ~/.hermes/plugins stays installed-but-inert until the user toggles it.
       expect($pluginRecords.get().uni).toMatchObject({ kind: 'disk', status: 'disabled' })
       expect(register).not.toHaveBeenCalled()

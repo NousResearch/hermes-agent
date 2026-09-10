@@ -1,21 +1,25 @@
 ---
 name: grill-me
 description: "Adversarial plan interview before implementation."
-version: 1.0.0
-author: "Rafael Zendron (rafaumeu)"
+version: 2.0.0
+author: "Rafael Zendron (rafaumeu) + Matt Pocock (mattpocock/skills, grilling) + Hermes Agent"
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [planning, adversarial, interview, decision-tree, pre-implementation, review, alignment]
-    related_skills: [plan, requesting-code-review, subagent-driven-development, test-driven-development]
+    related_skills: [requesting-code-review, subagent-driven-development, test-driven-development]
 ---
 
-# Grill-Me Skill
+# Grill Me
 
 Stress-tests a plan through structured adversarial questioning before any
-code is written. One question per turn, each with a recommendation, resolving
-the full decision tree until the plan is watertight.
+code is written. Models the plan as a **design tree** — every decision
+branches into the decisions that hang off it — and interviews the user in
+rounds until every branch is resolved and nothing is silently assumed.
+
+Combines the phase discipline of the original with the frontier-rounds
+mechanic from mattpocock/skills' `grilling`.
 
 ## When to Use
 
@@ -31,73 +35,83 @@ tasks.
 
 None. The skill works on any plan or raw idea.
 
-## How to Run
+## Core Mechanic: Frontier Rounds
 
-The agent loads the skill and enters interview mode. No special setup needed.
+Map the plan as a design tree. The **frontier** is every decision whose
+prerequisites are already settled — the questions you can ask NOW without
+guessing at answers you haven't heard yet.
 
-## Quick Reference
+Work in **rounds**: ask the whole current frontier in one message, numbered,
+each question carrying your recommended answer. Then wait. A question whose
+answer depends on another question still open in this round belongs to a
+LATER round, not this one.
 
-| Rule | Detail |
-|------|--------|
-| One question per turn | Never fire a list |
-| Recommendation included | State your recommendation before waiting |
-| Explore codebase first | Use `search_files`, `read_file`, `terminal` |
-| No code during grill | Alignment only — code after explicit green light |
+Format each round like so:
 
-## Procedure
+```
+❓ Q1 — <question title>: <question body, options if relevant>
+➡️ Recommendation: <your recommended answer + one-line why>
 
-### Phase 1 — Understanding (2-4 questions)
+❓ Q2 — <question title>: <question body>
+➡️ Recommendation: <...>
+```
 
-Establish the real goal and boundaries.
+Each answer reshapes the tree: settled decisions push the frontier outward
+and unblock dependent questions. Recompute the frontier and ask the next
+round.
 
-- What is the ACTUAL objective?
-- What is explicitly IN and OUT of scope?
-- What are the constraints? (time, tech, team, budget)
-- Who are the users?
+**Facts are your job; decisions are the user's.** When a frontier question
+needs a fact from the environment (codebase, filesystem, config, docs), find
+it yourself with `search_files` / `read_file` / `terminal` — or dispatch a
+subagent via `delegate_task` for a heavy exploration. Never ask the user for
+anything you could look up. Don't block on an exploration: only the questions
+downstream of it wait; ask the rest of the frontier now.
 
-### Phase 2 — Technical Decisions (4-8 questions)
+## Question Coverage (work these branches into the tree)
 
-For each architectural decision:
+**Understanding** — the real goal and boundaries:
+- What is the ACTUAL objective? What is explicitly IN and OUT of scope?
+- What are the constraints (time, tech, team, budget)? Who are the users?
 
-- "Why this approach and not X?"
-- "What happens if Y fails?"
-- "What's the worst case?"
-- "How would you roll back?"
+**Technical decisions** — for each architectural choice:
+- "Why this approach and not X?" / "What happens if Y fails?"
+- "What's the worst case?" / "How would you roll back?"
+- Cross-reference the existing codebase; if the project already has a
+  pattern for this, call it out.
 
-Cross-reference with the existing codebase using `search_files` and
-`read_file`. If the project already has a pattern, call it out.
+**Edge cases:**
+- "What happens if the user does Z?" / "What if dependency X goes down?"
+- "What if volume is 100x expected?" / "What are the security implications?"
 
-### Phase 3 — Edge Cases (2-4 questions)
-
-- "What happens if the user does Z?"
-- "What if dependency X goes down?"
-- "What if volume is 100x expected?"
-- "What security implications does this have?"
-
-### Phase 4 — Synthesis
-
-When the decision tree is resolved:
+## Synthesis (when the frontier is empty)
 
 1. Summarize ALL decisions in bullet points
-2. List anything left open
-3. List what is explicitly OUT of scope
-4. Ask: "Aligned? Should I start implementing, or adjust anything?"
+2. List anything left open, and what is explicitly OUT of scope
+3. Ask: "Aligned? Should I start implementing, or adjust anything?"
+
+Do not act on the plan until the user confirms shared understanding.
 
 ## Pitfalls
 
-1. **Asking all questions at once.** One question, one answer, always.
-2. **Skipping the codebase.** Find the answer in code using Hermes tools instead of asking the user.
-3. **Accepting "I don't know" as final.** Suggest options, explain trade-offs, make a recommendation.
-4. **Writing code during the grill.** Alignment only — resist the urge.
-5. **Being too agreeable.** Your job is to find problems. If everything looks fine, look harder.
-6. **Not adapting to the user's language.** Interview in whatever language the user speaks.
+1. **Asking questions out of dependency order.** A question that depends on
+   an unanswered question is a guess wearing a question mark. Keep it for a
+   later round.
+2. **Skipping the codebase.** Find facts in code with Hermes tools instead of
+   asking the user.
+3. **Accepting "I don't know" as final.** Suggest options, explain
+   trade-offs, make a recommendation.
+4. **Writing code during the interrogation.** Alignment only — code after the
+   explicit green light.
+5. **Being too agreeable.** Your job is to find problems. If everything looks
+   fine, look harder.
+6. **Not adapting to the user's language.** Interview in whatever language
+   the user speaks.
 
 ## Verification
 
-- [ ] Asked exactly one question per turn
+- [ ] Every question in a round had all its prerequisites already settled
 - [ ] Provided a recommendation with each question
-- [ ] Explored the codebase when relevant (used `search_files` / `read_file`)
-- [ ] Covered all four phases before synthesizing
-- [ ] Produced a clear summary of all decisions
+- [ ] Explored the codebase for facts instead of asking the user
+- [ ] Frontier empty (no branch silently assumed) before synthesizing
+- [ ] Produced a clear summary of all decisions and open items
 - [ ] Confirmed user alignment before stopping
-- [ ] Suggested next skill (`plan`, `subagent-driven-development`, or `requesting-code-review`)

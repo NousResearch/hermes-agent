@@ -201,7 +201,13 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
     )
 
     assert result["session_id"] == "request-session"
-    assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    # Plus the Hermes extras _finish_turn_result always attaches; FakeAgent has
+    # no cache/cost/context_compressor attrs, so they coerce to 0.
+    assert usage == {
+        "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+        "cache_read_tokens": 0, "cache_write_tokens": 0, "estimated_cost": 0,
+        "last_prompt_tokens": 0, "threshold_tokens": 0,
+    }
     assert observed == {"registered": True, "task_id": "request-session"}
     assert "run_steer_test" not in adapter._active_run_agents
 

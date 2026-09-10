@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
@@ -620,11 +620,26 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
 
 _USAGE_TOKEN_KEYS = ("input_tokens", "output_tokens", "total_tokens")
 
+# Hermes extras carried alongside the OpenAI-standard trio. A gateway-backed
+# WebUI session builds no in-process agent/ContextCompressor of its own, so
+# these keys on the finish-chunk usage block are its only channel for them.
+# Unknown keys inside `usage` are ignored by OpenAI SDK clients, so this is
+# additive for every non-Hermes consumer.
+_USAGE_EXTRA_KEYS = (
+    "cache_read_tokens", "cache_write_tokens", "estimated_cost",
+    "last_prompt_tokens", "threshold_tokens",
+)
 
-def _chat_usage_payload(usage: Dict[str, Any]) -> Dict[str, int]:
-    """OpenAI Chat Completions ``usage`` block (prompt/completion/total) from the agent's usage."""
+
+def _chat_usage_payload(usage: Dict[str, Any]) -> Dict[str, Union[int, float]]:
+    """OpenAI Chat Completions ``usage`` block (prompt/completion/total) from the agent's usage,
+    plus the Hermes extras (cache/cost split, compressor's real prompt size) when present."""
     values = (usage.get(key, 0) for key in _USAGE_TOKEN_KEYS)
-    return dict(zip(("prompt_tokens", "completion_tokens", "total_tokens"), values))
+    payload = dict(zip(("prompt_tokens", "completion_tokens", "total_tokens"), values))
+    for key in _USAGE_EXTRA_KEYS:
+        if key in usage:
+            payload[key] = usage[key]
+    return payload
 
 
 def _responses_usage_payload(usage: Dict[str, Any]) -> Dict[str, int]:
@@ -3594,9 +3609,30 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, agent: Any, result: Any, session_id: Optional[str], *, route, requested_runtime, route_source,
         confirmed_runtime_lock: bool) -> tuple:
         """Attach usage, effective session id, ``_compressed`` and runtime metadata to a finished turn."""
+        # Coerce rather than trust-and-`or 0`: a test double's unset attribute is a
+        # MagicMock, which is truthy, so `getattr(...) or 0` passes it straight
+        # through and `max(0, mock)` then blows up with a TypeError.
+        def _usage_num(value: Any) -> Union[int, float]:
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
         usage = {"input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                  "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0}
+                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                 # The three above are summed over every API call in the turn - a
+                 # billing total. A gateway-backed WebUI client has no other view
+                 # of context size, and using that total as its ring's numerator
+                 # over-reports on any tool turn (doubles on 2 calls, etc). The
+                 # compressor's last_prompt_tokens is the single most recent real
+                 # prompt, refreshed by conversation_loop's update_from_response();
+                 # threshold_tokens is the window it will actually compact at. -1
+                 # is the compressor's post-compaction sentinel, so clamp to 0.
+                 "cache_read_tokens": _usage_num(getattr(agent, "session_cache_read_tokens", 0)),
+                 "cache_write_tokens": _usage_num(getattr(agent, "session_cache_write_tokens", 0)),
+                 "estimated_cost": _usage_num(getattr(agent, "session_estimated_cost_usd", 0)),
+                 "last_prompt_tokens": max(0, _usage_num(
+                     getattr(getattr(agent, "context_compressor", None), "last_prompt_tokens", 0))),
+                 "threshold_tokens": max(0, _usage_num(
+                     getattr(getattr(agent, "context_compressor", None), "threshold_tokens", 0)))}
         # Effective session id lets callers track compression-triggered rotations.
         # (#16938)
         _eff_sid = getattr(agent, "session_id", session_id)

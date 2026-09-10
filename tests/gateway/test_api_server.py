@@ -381,7 +381,15 @@ class TestAgentExecution:
         # here doesn't set an explicit session_id string so the guard skips
         # the annotation — header will fall back to the provided session_id.
         assert result["final_response"] == "ok"
-        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        # The three billing counters this test sets explicitly, plus the Hermes
+        # extras _finish_turn_result now always attaches. mock_agent has no
+        # explicit cache/cost/context_compressor attrs, so those coerce to 0 -
+        # this is exactly the MagicMock-attribute case _usage_num() guards.
+        assert usage == {
+            "input_tokens": 1, "output_tokens": 2, "total_tokens": 3,
+            "cache_read_tokens": 0, "cache_write_tokens": 0, "estimated_cost": 0,
+            "last_prompt_tokens": 0, "threshold_tokens": 0,
+        }
         create_kwargs = mock_create_agent.call_args.kwargs
         assert create_kwargs["requested_model"] == "MiniMax-M3"
         assert create_kwargs["requested_provider"] == "minimax"

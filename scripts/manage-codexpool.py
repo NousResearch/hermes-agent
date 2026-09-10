@@ -13,14 +13,20 @@ import shutil
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/root/.hermes/hermes-agent")
+HERMES_DIR = Path.home() / ".hermes"
+sys.path.insert(0, str(HERMES_DIR / "hermes-agent"))
 try:
     from agent.account_usage import _fetch_codex_account_usage
 except ImportError:
     _fetch_codex_account_usage = None
 
-AUTH = Path("/root/.hermes/profiles/codexpool/auth.json")
-DEFAULT_ORDER = ["leo", "nocobase", "zeo", "neo", "llgap"]
+AUTH = HERMES_DIR / "profiles/codexpool/auth.json"
+if not AUTH.exists():
+    _hpvt_auth = HERMES_DIR / "profiles/hpvt/auth.json"
+    if _hpvt_auth.exists():
+        AUTH = _hpvt_auth
+DEFAULT_ORDER_5 = ["nocobase", "zeo", "leo", "neo", "llgap"]
+DEFAULT_ORDER_3 = ["zeo", "leo", "nocobase"]
 
 
 def load():
@@ -106,7 +112,15 @@ def main():
         return
 
     if args[0] == "reorder":
-        order = args[1].split(",") if len(args) > 1 else DEFAULT_ORDER
+        if len(args) > 1:
+            order = args[1].split(",")
+        else:
+            _, pool = load()
+            labels = {e.get("label") for e in pool}
+            if labels == set(DEFAULT_ORDER_3):
+                order = DEFAULT_ORDER_3
+            else:
+                order = DEFAULT_ORDER_5
         order = [x.strip() for x in order]
         reorder(order)
         return

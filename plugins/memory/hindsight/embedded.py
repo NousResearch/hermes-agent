@@ -160,6 +160,18 @@ def _validate_profile_env_permissions(profile_env: Path) -> None:
             )
 
 
+def _embedded_profile_env_is_current(config: dict[str, Any]) -> bool:
+    """Whether the on-disk profile env already carries the plugin's intended values.
+
+    Compares ONLY the keys the plugin owns. ``hindsight-embed`` appends its own runtime keys
+    (``HINDSIGHT_API_PORT``) to the same file, so an equality check on the whole mapping is
+    permanently unequal and SIGTERMs a healthy daemon on every session start, producing 500s
+    for the rest of the window. NousResearch/hermes-agent#82943.
+    """
+    on_disk = _load_simple_env(_embedded_profile_env_path(config))
+    return all(on_disk.get(key) == value for key, value in _build_embedded_profile_env(config).items())
+
+
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> Path:
     """Write the profile env file; never leave a plaintext key in a file whose
     permissions could not be verified."""

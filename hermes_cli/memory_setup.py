@@ -38,7 +38,9 @@ def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
             cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
             # "local" is a legacy alias for "local_embedded"
             if cfg.get("mode", "") in {"local", "local_embedded"}:
-                deps.append("hindsight-all")
+                # hindsight-all's transitive fastmcp<4 caps mcp<2.0 against Hermes' mcp==2.0.0 pin;
+                # the floor keeps the resolver on the only branch that can coexist (#95855).
+                deps.extend(["hindsight-all", "fastmcp>=4.0.0,<5"])
         except Exception:
             pass
     return deps

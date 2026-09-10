@@ -15,6 +15,12 @@ _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
 _MIN_CLIENT_VERSION = "0.6.1"
+# local_embedded pulls the full daemon stack. hindsight-all -> hindsight-api-slim -> fastmcp>=3.2.0,
+# and fastmcp<4 caps mcp<2.0 while Hermes pins mcp==2.0.0 for its own MCP client — the resolver picks
+# fastmcp 3.x, `import hindsight` dies on `mcp.server.lowlevel.server.request_ctx`, and the provider
+# goes unavailable after every update. fastmcp 4.x requires mcp>=2.0.0, so it is the only branch that
+# can coexist; hindsight-api-slim has no upper bound and accepts it. NousResearch/hermes-agent#95855.
+_LOCAL_EMBEDDED_DEPS = ("hindsight-all", "fastmcp>=4.0.0,<5")
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # ``metadata.source`` on retained memories is OPT-IN (AGENTS.md forbids

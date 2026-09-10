@@ -50,6 +50,9 @@ async def execute_admission(authority, ref, row):
     is_api = live.source.platform == Platform.API_SERVER
     prepared = prepare_api_execution(authority, ref, row['payload']) if is_api else None
     if is_api:
+        if isinstance(event.text, list):
+            event.text = '\n'.join(part['text'] for part in event.text if part.get('type') == 'text')
+        event.allow_gateway_control = False
         event.internal = True  # trust comes from the private binding and preclaim, never client JSON
     api_token = api_execution.set(prepared)
     captured = {}

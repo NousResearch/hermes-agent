@@ -81,6 +81,10 @@ def admit_api_turn(adapter, **kwargs):
     if adapter._ensure_session_db() is not authority.db:
         raise RuntimeStoreError('profile_mismatch')
     sid = kwargs.get('session_id') or uuid.uuid4().hex
+    declared_key = kwargs.get('gateway_session_key') if kwargs.get('bind_declared_conversation') else None
+    if declared_key:
+        from gateway.session_api import declared_api_session
+        sid = declared_api_session(authority.db, declared_key) or sid
     authority._require_admission_open()
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
     # Route credentials remain in the server's configuration, never admission JSON.
@@ -101,7 +105,7 @@ def admit_api_turn(adapter, **kwargs):
         check_api_settings(adapter, settings)
         from gateway.session_contract import SessionRef
         return authority, SessionRef(authority.profile_id, sid), row
-    ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"))
+    ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
     check_api_turn(authority, ref, payload)
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
                               session_id=sid, request_id=request_id, payload=payload)
@@ -181,7 +185,8 @@ def prepare_api_execution(authority, ref, payload):
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (_SETTINGS_PREFIX + ref.session_id, _json(settings)))
         authority.db._execute_write(write)
-    return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None}
+    return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
+            'content': payload['text']}
 
 
 def publish_api_event(authority, session_id, event_type, payload):

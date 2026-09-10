@@ -53,6 +53,24 @@ curl http://localhost:8642/v1/chat/completions \
 
 Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI integration guide](/user-guide/messaging/open-webui) for step-by-step instructions.
 
+## Conversation and terminal-result semantics
+
+API requests use the gateway's durable admission queue. Structured image content stays
+structured through execution; it is not interpreted as a gateway slash command.
+
+- `/v1/runs` and `/v1/responses` retain the conversation declared by
+  `X-Hermes-Session-Key`. An explicit session or response chain takes precedence and
+  does not transfer its conversation identity to a different header.
+- A nonempty `/v1/runs` `conversation_history` is authoritative, even with an explicit
+  `session_id`. Otherwise session continuation loads history when the turn executes,
+  after earlier queued work finishes.
+- Runs polling and SSE agree on `cancelled` or `failed`. Responses uses the same
+  terminal status and `response.cancelled` / `response.failed` events, including when
+  diagnostic text is present. Chat Completions reports `finish_reason: "cancelled"`
+  for interrupted turns and `"error"` for failures, not a successful `"stop"`.
+- Session-chat replies include `status`; their streams report matching terminal run
+  events. An assistant finalization frame is not itself proof of successful execution.
+
 ## Endpoints
 
 ### POST /v1/chat/completions

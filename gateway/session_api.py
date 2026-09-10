@@ -9,9 +9,17 @@ from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 _BINDING_PREFIX = 'gateway.api.binding.v1.'
+_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
 
-def bind_api_session(authority, session_id, *, hosted_dispatch=None):
+def declared_api_session(db, key):
+    with db._read_ctx() as conn:
+        row = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                           (_DECLARED_PREFIX + key,)).fetchone()
+    return row[0] if row else None
+
+
+def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None):
     """Only the authenticated API edge may reserve an API source; never public RPC."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
@@ -29,7 +37,6 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None):
         if (authority.sessions[session_id].source.platform != Platform.API_SERVER
                 or authority.db.get_session(session_id)['source'] != storage_source):
             raise RuntimeStoreError('permission_denied')
-        return SessionRef(authority.profile_id, session_id)
     source = SessionSource(platform=Platform.API_SERVER, chat_id=session_id,
                            user_id='api', chat_type='dm')
     route = authority.runner.session_store._generate_session_key(source)
@@ -37,6 +44,8 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None):
     entry = SessionEntry(route, session_id, now, now, origin=source, platform=Platform.API_SERVER)
     receipt = {'profile_id': authority.profile_id, 'session_id': session_id,
                'route': route, 'entry': entry.to_dict()}
+    if declared_key:
+        receipt['declared_key'] = declared_key
     if room_identity is not None:
         receipt.update(storage_source=storage_source, room_identity=room_identity)
 
@@ -45,9 +54,19 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None):
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_BINDING_PREFIX + session_id,)).fetchone()
         if saved is not None:
-            if json.loads(saved[0]).get('storage_source', 'api_server') != storage_source:
+            binding = json.loads(saved[0])
+            if binding.get('storage_source', 'api_server') != storage_source:
                 raise RuntimeStoreError('permission_denied')
+            if declared_key and binding.get('declared_key') != declared_key:
+                raise RuntimeStoreError('admission_conflict')
             return
+        if declared_key:
+            existing_declared = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                (_DECLARED_PREFIX + declared_key,)).fetchone()
+            if existing_declared and existing_declared[0] != session_id:
+                raise RuntimeStoreError('admission_conflict')
+            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
+                         (_DECLARED_PREFIX + declared_key, session_id))
         row = conn.execute('SELECT source,session_key,title FROM sessions WHERE id=?', (session_id,)).fetchone()
         if row is not None and row['source'] != storage_source:
             raise RuntimeStoreError('permission_denied')

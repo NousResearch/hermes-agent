@@ -61,7 +61,7 @@ def _result_flags(result: Any) -> tuple:
     """``(completed, partial, failed, error)`` from an agent result dict (defaults if not a dict)."""
     if not isinstance(result, dict):
         return True, False, False, None
-    return (bool(result.get("completed", True)), bool(result.get("partial")),
+    return (bool(result.get("completed", True)) and not result.get('interrupted'), bool(result.get("partial")),
             bool(result.get("failed")), result.get("error"))
 
 
@@ -73,7 +73,17 @@ def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None) 
         return "length"
     if agent_error is not None or is_failed or (not completed and err_msg):
         return "error"
-    return "stop"
+    return 'cancelled' if not completed else 'stop'
+
+
+def _response_status(result):
+    if result.get('interrupted'):
+        return 'cancelled'
+    if result.get('failed') or result.get('error'):
+        return 'failed'
+    if result.get('completed') is False:
+        return 'incomplete'
+    return 'completed'
 
 
 def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str) -> Dict[str, Any]:
@@ -355,8 +365,11 @@ class _ResponsesStream:
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
 
     async def emit_completed(self) -> None:
-        env = self.terminal_envelope("completed", self._final_items())
         result = self.result
+        status = _response_status(result)
+        env = self.terminal_envelope(status, self._final_items(),
+            error=self._api._redact_api_error_text(result.get('error') or 'The admitted turn failed.')
+            if status == 'failed' else None)
         full_history = self.adapter._build_response_conversation_history(
             self.conversation_history, self.user_message, result, self.final_response_text)
         # Transcript substitution for result["_compressed"] happens in the history builder; only
@@ -366,7 +379,7 @@ class _ResponsesStream:
             env, history=full_history, session_id=sid if isinstance(sid, str) and sid else None)
         self.terminal_snapshot_persisted = True
         await self.write_event(
-            "response.completed", {"type": "response.completed", "response": env})
+            'response.' + status, {'type': 'response.' + status, 'response': env})
 
     async def emit_crash(self, exc: BaseException) -> None:
         error = self._api._redact_api_error_text(exc, limit=500)
@@ -917,10 +930,13 @@ class OpenAICompatRoutesMixin:
         output_start_index = self._response_messages_turn_start_index(
             conversation_history, user_message, result)
         response_data = {
-            "id": response_id, "object": "response", "status": "completed",
+            "id": response_id, "object": "response", "status": _response_status(result),
             "created_at": created_at, "model": body.get("model", self._model_name),
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}
+        if response_data['status'] == 'failed':
+            response_data['error'] = {'code': 'agent_error', 'message': _redact_api_error_text(
+                result.get('error') or 'The admitted turn failed.')}
         if store:
             self._response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,

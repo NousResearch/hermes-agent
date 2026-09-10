@@ -23,8 +23,11 @@ def run_projection(adapter, run_id):
     status = {'queued': 'queued', 'started': 'running', 'unknown': 'interrupted', 'terminal': row['outcome']}.get(row['status'])
     saved = admission_result(authority.db, row['admission_id'])
     result = saved.get('result', {}) if saved else {}
-    if row['status'] == 'terminal' and result.get('failed'):
-        status = 'failed'
+    if row['status'] == 'terminal':
+        if result.get('interrupted') or row['outcome'] == 'interrupted':
+            status = 'cancelled'
+        elif result.get('failed') or result.get('error'):
+            status = 'failed'
     pending = []
     live = authority.sessions.get(row['target_session_id'])
     if live is not None and row['status'] == 'started':

@@ -502,7 +502,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             with self._profile_scope(launch.request_profile):
                 launch.admission = admit_api_turn(self, user_message=launch.user_message,
                     conversation_history=launch.conversation_history, active_run_id=run_id,
-                    history_from_session=bool(body.get('session_id')) and not previous_response_id,
+                    history_from_session=session_history_delivery,
+                    session_history_delivery='1' if session_history_delivery else '',
+                    bind_declared_conversation=_declared_selected,
                     **launch.agent_kwargs)
         except RuntimeStoreError as exc:
             # A refused admission owns no run: drop every reservation so an exact

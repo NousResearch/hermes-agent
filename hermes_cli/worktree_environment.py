@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -79,10 +80,15 @@ def _venv_python_path(resolved_source: Path) -> Path:
 
     Native Windows virtualenvs use ``Scripts/python.exe`` rather than
     ``bin/python``; POSIX (incl. WSL) always uses the ``bin/`` layout.
+
+    Checks ``sys.platform`` (matching ``venv_bin_dir()``'s own default), not ``os.name``: Python
+    3.13's ``Path.__new__`` dispatches its concrete class from ``os.name`` at call time, so a test
+    monkeypatching ``os.name`` to simulate Windows would make ``venv_bin_dir()``'s internal
+    ``Path(venv_dir)`` reconstruction try to build a ``WindowsPath`` and crash on a real POSIX host.
     """
-    if os.name == "nt":
-        return resolved_source / "Scripts" / "python.exe"
-    return resolved_source / "bin" / "python"
+    from hermes_constants import venv_bin_dir
+    python_name = "python.exe" if sys.platform == "win32" else "python"
+    return venv_bin_dir(resolved_source) / python_name
 
 
 def bootstrap_worktree_environments(

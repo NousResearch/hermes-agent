@@ -34,11 +34,11 @@ def bind_worker_environment(env: dict[str, str], workspace: str) -> None:
         return
     env["TERMINAL_CWD"] = workspace
     env["HERMES_WRITE_SAFE_ROOT"] = workspace
-    bin_name = "Scripts" if os.name == "nt" else "bin"
+    from hermes_constants import venv_bin_dir
     python_name = "python.exe" if os.name == "nt" else "python"
     for name in (".venv", "venv"):
         venv = Path(workspace) / name
-        executable = venv / bin_name / python_name
+        executable = venv_bin_dir(venv) / python_name
         if not executable.is_file() or not os.access(executable, os.X_OK):
             continue
         # Preserve the venv spelling: resolving a Python symlink can turn it

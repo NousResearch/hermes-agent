@@ -9,6 +9,19 @@ Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
 
+# Extensionless executables are not covered by the *.sh/*.py globs below, so
+# a checkout with core.autocrlf=true (the Git-for-Windows default) silently
+# rewrites their shebang line to end in CRLF, which then fails to resolve
+# (env can't find "python3<CR>"). This is the same class of bug #46227 fixes
+# for docker/cont-init.d/* and docker/s6-rc.d/**/type — this covers the two
+# paths that bug missed: the root desktop/CLI launcher and the s6 run/finish
+# scripts, both of which broke the exact same way ("no such file or
+# directory" / ModuleNotFoundError). Pin these to LF explicitly.
+/hermes text eol=lf
+/scripts/hermes-gateway text eol=lf
+docker/s6-rc.d/**/run text eol=lf
+docker/s6-rc.d/**/finish text eol=lf
+
 # Enforce LF for all source/text files. Windows editors and tools default to
 # CRLF; without normalization a Windows contributor's edit turns into a
 # whole-file phantom diff (every line "changed" by its ending), breaks

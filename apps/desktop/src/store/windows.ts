@@ -141,6 +141,20 @@ export function windowProfileOverride(): null | string {
   }
 }
 
+// The registry connection a helper window (the HUD) was asked to boot against.
+// Profile alone is not enough once multiple gateways expose the same profile
+// names (every source has a `default`). Empty/absent preserves legacy primary
+// resolution for ordinary windows and older callers.
+export function windowConnectionIdOverride(
+  search = typeof window === 'undefined' ? '' : window.location.search
+): null | string {
+  try {
+    return new URLSearchParams(search).get('connectionId')?.trim() || null
+  } catch {
+    return null
+  }
+}
+
 // True when running inside the Electron desktop shell (the preload bridge is
 // present). The "open in new window" affordance is desktop-only.
 export function canOpenSessionWindow(): boolean {

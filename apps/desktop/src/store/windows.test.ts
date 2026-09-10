@@ -9,7 +9,8 @@ import {
   isPeerInstanceWindow,
   openBrowserInNewWindow,
   openNewWindow,
-  openSessionInNewWindow
+  openSessionInNewWindow,
+  windowConnectionIdOverride
 } from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -68,6 +69,16 @@ describe('isPeerInstanceWindow', () => {
     expect(isPeerInstanceWindow('?peer=0')).toBe(false)
     expect(isPeerInstanceWindow('?win=secondary')).toBe(false)
     expect(isPeerInstanceWindow('')).toBe(false)
+  })
+})
+
+describe('windowConnectionIdOverride', () => {
+  it('reads and trims the registry connection from a helper URL', () => {
+    expect(windowConnectionIdOverride('?win=hud&profile=default&connectionId=%20alia-linux%20')).toBe('alia-linux')
+  })
+
+  it('returns null when the helper URL has no connection override', () => {
+    expect(windowConnectionIdOverride('?win=hud&profile=default')).toBeNull()
   })
 })
 

@@ -16,8 +16,9 @@
 import { atom } from 'nanostores'
 
 import { requestComposerDraftSync } from '@/store/composer'
+import { $activeConnectionId } from '@/store/connections'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $sessions, rememberedSessionProfile } from '@/store/session'
+import { $sessions, knownSessionOwner, rememberedSessionProfile } from '@/store/session'
 import { isHudWindow } from '@/store/windows'
 
 /** Whether a HUD window is currently up. In the HUD's own renderer this is
@@ -55,20 +56,28 @@ export function openHud(sessionId?: null | string): void {
   // a cross-window storage event that lands after it has already painted.
   requestComposerDraftSync('flush')
 
-  // Which backend the HUD must boot against. The HUD is a full renderer that
-  // adopts the PRIMARY backend's profile by default, so handing it a session
-  // from a non-primary profile without saying so resolves the id against the
-  // wrong backend — the lookup misses and the HUD falls back to the default
-  // profile's last session (#82285). Same ladder the remembered-navigation key
-  // uses: the session's stamped owner wins, and a fresh/unstamped/uncached
-  // target inherits the profile the user is looking at.
+  // Which backend the HUD must boot against. A connection-tagged session owns
+  // an exact `(connectionId, profile)` route; use that before the active route.
+  // Bare/unknown sessions retain the presentation fallback for legacy chats.
+  const owner = knownSessionOwner($sessions.get(), sessionId ?? null)
+  const ownerRoute = owner && typeof owner === 'object' ? owner : null
+
   const profile = normalizeProfileKey(
-    rememberedSessionProfile($sessions.get(), sessionId ?? null, $activeGatewayProfile.get())
+    ownerRoute?.profile ??
+      (typeof owner === 'string'
+        ? owner
+        : rememberedSessionProfile($sessions.get(), sessionId ?? null, $activeGatewayProfile.get()))
   )
+
+  const connectionId = ownerRoute?.connectionId?.trim() || $activeConnectionId.get()
 
   $hudActive.set(true)
   $hudSession.set(sessionId ?? null)
-  void api.open({ sessionId: sessionId ?? null, profile })
+  void api.open({
+    sessionId: sessionId ?? null,
+    profile,
+    ...(connectionId ? { connectionId } : {})
+  })
 }
 
 /** Leave HUD mode. Callable from either window — main closes the child, the
@@ -85,7 +94,40 @@ export function closeHud(): void {
   void api.close()
 }
 
-export const toggleHud = (sessionId?: null | string) => ($hudActive.get() ? closeHud() : openHud(sessionId))
+/**
+ * Enter HUD mode, leave it, or point the open HUD at another conversation.
+ *
+ * The retarget rung is why `$hudSession` exists: asking for HUD mode from a tab
+ * the HUD is NOT on means "put this conversation in the HUD", and main already
+ * implements that (openHudWindow sends `hud:goto`, or respawns across a profile
+ * boundary). Reading `$hudActive` alone never reached it — the toggle dismissed
+ * the window instead, so the retarget path was unreachable from the UI.
+ *
+ * Two cases still dismiss, deliberately:
+ * - No target (a fresh draft with nothing selected). There is nothing to
+ *   retarget onto, and "the toggle stopped closing the HUD" is the worse bug.
+ * - Inside the HUD's own window, where the toggle is the way OUT. Its renderer
+ *   never subscribes to the state broadcast (useHudHandoff returns early there),
+ *   so `$hudSession` is always null and every target would read as a retarget —
+ *   leaving the exit keybind unable to exit.
+ */
+export function toggleHud(sessionId?: null | string): void {
+  if (!$hudActive.get()) {
+    openHud(sessionId)
+
+    return
+  }
+
+  const target = sessionId ?? null
+
+  if (!target || isHudWindow() || target === $hudSession.get()) {
+    closeHud()
+
+    return
+  }
+
+  openHud(target)
+}
 
 /** Restore the HUD's persisted geometry to its display-aware default. */
 export function resetHudLayout(): void {

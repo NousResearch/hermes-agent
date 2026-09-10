@@ -18,6 +18,17 @@ test('buildHudWindowUrl carries the handoff profile in the query before the hash
   assert.ok(url.indexOf('profile=work') < url.indexOf('#'))
 })
 
+test('buildHudWindowUrl carries the connection route alongside the profile', () => {
+  const url = buildHudWindowUrl('sess-1', {
+    devServer: 'http://localhost:5173',
+    profile: 'default',
+    connectionId: 'alia-linux'
+  })
+
+  assert.equal(url, 'http://localhost:5173/?win=hud&profile=default&connectionId=alia-linux#/sess-1')
+  assert.ok(url.indexOf('connectionId=alia-linux') < url.indexOf('#'))
+})
+
 test('buildHudWindowUrl encodes the profile and the session id', () => {
   const url = buildHudWindowUrl('a b/c', { devServer: 'http://localhost:5173', profile: 'my profile' })
 

@@ -86,7 +86,7 @@ import {
   recordSessionEventScope,
   resetTileRuntimeBindings
 } from '@/store/session-states'
-import { windowProfileOverride } from '@/store/windows'
+import { windowConnectionIdOverride, windowProfileOverride } from '@/store/windows'
 import type { RpcEvent } from '@/types/hermes'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -204,6 +204,24 @@ export function useGatewayBoot({
       setSessionsLoading(false)
 
       return () => void (cancelled = true)
+    }
+
+    // Registry-scoped helper windows (currently the HUD) must retain both
+    // dimensions of their route. Every gateway has a `default` profile, so the
+    // profile override alone can silently resolve to This device. Ordinary
+    // windows keep the legacy primary/profile resolver.
+    const helperProfileOverride = windowProfileOverride()
+    const helperConnectionIdOverride = windowConnectionIdOverride()
+
+    const resolveWindowConnection = () => {
+      if (helperConnectionIdOverride && desktop.getConnectionFor) {
+        return desktop.getConnectionFor({
+          connectionId: helperConnectionIdOverride,
+          profile: helperProfileOverride
+        })
+      }
+
+      return desktop.getConnection(helperProfileOverride ?? undefined)
     }
 
     // Store-driven switches (Sessions switcher → selectConnection) commit
@@ -332,7 +350,7 @@ export function useGatewayBoot({
         // this primary socket at a secondary profile's backend after a live swap.
         // Secondaries reconnect via reconnectSecondaryGateways().
         const conn = await withTimeout(
-          desktop.getConnection(),
+          resolveWindowConnection(),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
@@ -620,7 +638,7 @@ export function useGatewayBoot({
         // shared backend-boot budget rather than the reconnect budget because
         // ensureBackend may cold-spawn a pooled helper backend here.
         const conn = await withTimeout(
-          desktop.getConnection(windowProfileOverride() ?? undefined),
+          resolveWindowConnection(),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
@@ -1035,7 +1053,7 @@ export function useGatewayBoot({
         // rides out a full backend cold spawn, so it gets the shared 45s
         // backend-boot budget, not the 20s reconnect budget.
         const conn = await withTimeout(
-          desktop.getConnection(windowProfileOverride() ?? undefined),
+          resolveWindowConnection(),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out connecting to Hermes backend'
         )

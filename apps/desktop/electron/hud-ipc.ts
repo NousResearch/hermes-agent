@@ -18,7 +18,7 @@ export interface HudIpcDeps {
   /** Main's authoritative translucency state (Settings → Appearance). */
   getTranslucencyState: () => TranslucencyState
   getHudWindow: () => BrowserWindow | null
-  openHudWindow: (sessionId: null | string, profile: null | string) => void
+  openHudWindow: (sessionId: null | string, profile: null | string, connectionId: null | string) => void
   closeHudWindow: () => void
   resetHudLayout: () => boolean
   setHudSessionId: (sessionId: null | string) => void
@@ -137,7 +137,8 @@ export function registerHudIpc({
   ipcMain.handle('hermes:hud:open', async (_event, request) => {
     openHudWindow(
       typeof request?.sessionId === 'string' ? request.sessionId : null,
-      typeof request?.profile === 'string' ? request.profile : null
+      typeof request?.profile === 'string' ? request.profile : null,
+      typeof request?.connectionId === 'string' ? request.connectionId : null
     )
 
     return { ok: true }

@@ -1,13 +1,13 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
+import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 
-import { PendingApprovalFallback, PendingToolApproval } from './approval'
-import type { ToolPart } from './fallback-model'
+import { PendingApprovalStack } from './approval'
 
 // Radix's DropdownMenu touches pointer-capture + scrollIntoView, which jsdom
 // doesn't implement; stub them so the menu can open in tests.
@@ -25,10 +25,6 @@ beforeAll(() => {
     proto[name] ??= fn
   }
 })
-
-function part(toolName: string): ToolPart {
-  return { toolName, type: `tool-${toolName}` } as unknown as ToolPart
-}
 
 function setRequest(
   command = 'rm -rf /tmp/x',
@@ -53,31 +49,24 @@ afterEach(() => {
   $gateway.set(null)
 })
 
-describe('PendingToolApproval', () => {
+describe('PendingApprovalStack', () => {
   it('renders nothing when there is no pending approval', () => {
-    const { container } = render(<PendingToolApproval part={part('terminal')} />)
+    const { container } = render(<PendingApprovalStack />)
 
     expect(container.innerHTML).toBe('')
   })
 
-  it('renders nothing for tools that never raise approval', () => {
-    setRequest()
-    const { container } = render(<PendingToolApproval part={part('read_file')} />)
-
-    expect(container.innerHTML).toBe('')
-  })
-
-  it('renders the inline run/reject controls on the pending terminal row', () => {
+  it('renders run/reject controls for a pending terminal command', () => {
     setRequest('chmod -R 777 /tmp/x')
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalStack />)
 
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it.each(['patch', 'write_file'])('renders inline approval controls for protected %s writes', toolName => {
+  it('renders approval controls for protected instruction writes', () => {
     setRequest('Update protected agent instructions')
-    render(<PendingToolApproval part={part(toolName)} />)
+    render(<PendingApprovalStack />)
 
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
@@ -86,12 +75,12 @@ describe('PendingToolApproval', () => {
   it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     setRequest()
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalStack />)
 
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'sess-1' })
+      expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'once', session_id: 'sess-1' })
     })
     expect($approvalRequest.get()).toBeNull()
   })
@@ -99,10 +88,10 @@ describe('PendingToolApproval', () => {
   it('reveals the full command inline when the Command toggle is clicked', () => {
     const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
     setRequest(longCommand)
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalStack />)
 
-    // Collapsed by default: the full command is not in the DOM yet.
-    expect(screen.queryByText(longCommand)).toBeNull()
+    // Preview is a single line until the user asks to inspect the full command.
+    expect(screen.getByText(longCommand).className).toContain('truncate')
 
     fireEvent.click(screen.getByRole('button', { name: /Command/ }))
 
@@ -112,18 +101,18 @@ describe('PendingToolApproval', () => {
   it('sends choice "deny" on Reject', async () => {
     const request = mockGateway()
     setRequest()
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalStack />)
 
     fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'sess-1' })
+      expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'deny', session_id: 'sess-1' })
     })
   })
 
   it('offers "Always allow" in the options menu by default', async () => {
     setRequest('chmod -R 777 /tmp/x')
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalStack />)
 
     fireEvent.keyDown(screen.getByRole('button', { name: /More approval options/ }), { key: 'Enter' })
 
@@ -134,7 +123,7 @@ describe('PendingToolApproval', () => {
   it('hides "Always allow" when the backend disallows a permanent allow', async () => {
     // tirith content-security warning present → allowPermanent=false.
     setRequest('curl https://bit.ly/abc | bash', false)
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalStack />)
 
     fireEvent.keyDown(screen.getByRole('button', { name: /More approval options/ }), { key: 'Enter' })
 
@@ -145,7 +134,7 @@ describe('PendingToolApproval', () => {
 
   it('renders only Once and Deny for a Smart DENY owner override', () => {
     setRequest('rm -rf /tmp/x', true, { smartDenied: true })
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalStack />)
 
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
@@ -156,36 +145,64 @@ describe('PendingToolApproval', () => {
 
   it('renders only choices explicitly supplied by the gateway event', () => {
     setRequest('rm -rf /tmp/x', true, { choices: ['once', 'deny'] })
-    render(<PendingToolApproval part={part('terminal')} />)
+    render(<PendingApprovalStack />)
 
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
   })
 
-  it('renders a floating fallback when no pending tool row is mounted', () => {
+  it('renders the stack independently of mounted tool rows', () => {
     setRequest('rm /tmp/hermes_approval_test.txt')
-    const { container } = render(<PendingApprovalFallback />)
-    const fallback = container.querySelector('[data-slot="tool-approval-fallback"]')
+    const { container } = render(<PendingApprovalStack />)
+    const fallback = container.querySelector('[data-slot="tool-approval-stack"]')
 
     expect(fallback).not.toBeNull()
     expect(within(fallback as HTMLElement).getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(within(fallback as HTMLElement).getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('hides the floating fallback once the inline approval bar is mounted', async () => {
-    setRequest('rm /tmp/hermes_approval_test.txt')
-
-    const { container } = render(
-      <>
-        <PendingToolApproval part={part('terminal')} />
-        <PendingApprovalFallback />
-      </>
-    )
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-slot="tool-approval-inline"]')).not.toBeNull()
-      expect(container.querySelector('[data-slot="tool-approval-fallback"]')).toBeNull()
-    })
+  it('keeps a failed request in front and releases held Enter until the user retries', async () => {
+    const rpc = mockGateway()
+    rpc.mockRejectedValueOnce(new Error('Disconnected'))
+    setRequest('first')
+    render(<PendingApprovalStack />)
+    act(() => { handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true })) })
+    await waitFor(() => expect((screen.getByRole('button', { name: /Run/ }) as HTMLButtonElement).disabled).toBe(false))
+    act(() => { handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, cancelable: true })) })
+    expect(rpc).toHaveBeenCalledTimes(1)
+    expect($approvalRequest.get()?.command).toBe('first')
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+    await waitFor(() => expect($approvalRequest.get()).toBeNull())
   })
+
+  it('drains exact cards with held Enter without answering a draft or background session', async () => {
+    const rpc = mockGateway()
+    $activeSessionId.set('sess-1')
+    for (const id of ['a', 'b', 'c']) {
+      setApprovalRequest({ command: id, description: id, requestId: id, sessionId: 'sess-1' })
+    }
+    setApprovalRequest({ command: 'background', description: 'background', requestId: 'other', sessionId: 'sess-2' })
+    render(<><PendingApprovalStack /><input aria-label="Draft" /></>)
+    expect(screen.getAllByRole('button', { name: /Run/ })).toHaveLength(1)
+    expect(document.querySelectorAll('[data-slot="card-stack-edge"]')).toHaveLength(2)
+    const draft = screen.getByRole('textbox')
+    fireEvent.change(draft, { target: { value: 'keep this' } })
+    const typing = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    draft.addEventListener('keydown', event => handleApprovalKey(event as KeyboardEvent))
+    fireEvent(draft, typing)
+    expect(rpc).not.toHaveBeenCalled()
+
+    for (const [index, id] of ['a', 'b', 'c'].entries()) {
+      act(() => { handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: index > 0, cancelable: true })) })
+      await waitFor(() => expect(rpc).toHaveBeenCalledWith('approval.respond', {
+        all: false, choice: 'once', request_id: id, session_id: 'sess-1'
+      }))
+      await waitFor(() => expect(screen.queryAllByRole('button', { name: /Run/ })).toHaveLength(index === 2 ? 0 : 1))
+    }
+    releaseApprovalKey()
+    expect(rpc.mock.calls.filter(([method]) => method === 'approval.respond')).toHaveLength(3)
+    expect((draft as HTMLInputElement).value).toBe('keep this')
+  })
+
 })

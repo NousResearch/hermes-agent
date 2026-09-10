@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { CardStack } from '@/components/ui/card-stack'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
@@ -119,14 +120,16 @@ function TopCenterStack({
       aria-label={copy.region}
       className={cn(
         REGION_BASE,
-        'left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] w-[min(40rem,calc(100%-2rem))] -translate-x-1/2 flex-col'
+        'left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] w-[min(40rem,calc(100%-2rem))] -translate-x-1/2 flex-col max-h-[70vh] overflow-y-auto overscroll-contain p-1'
       )}
       role="region"
     >
-      <NotificationItem notification={latest} />
+      <CardStack count={expanded ? 1 : notifications.length} backClassName="rounded-lg border border-(--stroke-nous) bg-popover shadow-nous">
+        <NotificationItem notification={latest} />
+      </CardStack>
       {expanded && older.map(n => <NotificationItem key={n.id} notification={n} />)}
       {older.length > 0 && (
-        <div className={cn(STACK_SURFACE, 'flex min-h-8 items-center justify-between rounded-lg px-3 text-xs')}>
+        <div className="pointer-events-auto flex min-h-8 items-center justify-between px-3 text-xs">
           <Button className="-ml-2" onClick={onToggleExpanded} size="xs" type="button" variant="text">
             {expanded ? copy.hide : copy.show} {copy.more(older.length)}
           </Button>
@@ -140,8 +143,7 @@ function TopCenterStack({
   )
 }
 
-// Ambient stack: bottom-right, every toast shown at once (routine confirmations
-// rarely queue up), newest on top, no expand/clear-all chrome.
+// Ambient confirmations use the same bounded depth, rising from the corner.
 function BottomRightStack({
   copy,
   notifications
@@ -149,15 +151,35 @@ function BottomRightStack({
   copy: ReturnType<typeof useI18n>['t']['notifications']
   notifications: AppNotification[]
 }) {
+  const [expanded, setExpanded] = useState(false)
+  const [latest, ...older] = notifications
+
+  useEffect(() => {
+    if (!older.length) {
+      setExpanded(false)
+    }
+  }, [older.length])
+
   return createPortal(
     <div
       aria-label={copy.region}
-      className={cn(REGION_BASE, 'right-4 bottom-4 w-[min(24rem,calc(100%-2rem))] flex-col-reverse')}
+      className={cn(REGION_BASE, 'right-4 bottom-4 w-[min(24rem,calc(100%-2rem))] flex-col-reverse max-h-[70vh] overflow-y-auto overscroll-contain p-1')}
       role="region"
     >
-      {notifications.map(n => (
-        <NotificationItem key={n.id} notification={n} />
-      ))}
+      {older.length > 0 && (
+        <div className="pointer-events-auto flex items-center justify-between px-2 text-xs">
+          <Button onClick={() => setExpanded(value => !value)} size="xs" variant="text">
+            {expanded ? copy.hide : copy.show} {copy.more(older.length)}
+          </Button>
+          <Button onClick={() => notifications.forEach(notification => dismissNotification(notification.id))} size="xs" variant="text">
+            {copy.clearAll}
+          </Button>
+        </div>
+      )}
+      <CardStack count={expanded ? 1 : notifications.length} direction="up" backClassName="rounded-lg border border-(--stroke-nous) bg-popover shadow-nous">
+        <NotificationItem notification={latest} />
+      </CardStack>
+      {expanded && older.map(notification => <NotificationItem key={notification.id} notification={notification} />)}
     </div>,
     document.body
   )

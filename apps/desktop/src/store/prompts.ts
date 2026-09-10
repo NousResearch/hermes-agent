@@ -106,15 +106,74 @@ export interface SecretRequest extends KeyedPrompt {
   requestId: string
 }
 
-const approval = keyedPromptStore<ApprovalRequest>()
+const EMPTY_APPROVALS: ApprovalRequest[] = []
+const $approvalQueues = atom<Record<string, ApprovalRequest[]>>({})
+// A replay started before a response/reset cannot resurrect the answered card.
+let approvalRevision = 0
+const sessionApprovalRevisions = new Map<string, number>()
+const approval = {
+  $all: computed($approvalQueues, queues =>
+    Object.fromEntries(Object.entries(queues).map(([key, queue]) => [key, queue[0]]))
+  ),
+  reset() {
+    approvalRevision += 1
+    sessionApprovalRevisions.clear()
+    $approvalQueues.set({})
+  },
+  set(request: ApprovalRequest) {
+    const key = keyFor(request.sessionId)
+    const queues = $approvalQueues.get()
+    const queue = queues[key] ?? EMPTY_APPROVALS
+    const index = queue.findIndex(item => item.requestId === request.requestId)
+    const next = [...queue]
+
+    if (index < 0) {
+      next.push(request)
+    } else {
+      next[index] = request
+    }
+
+    $approvalQueues.set({ ...queues, [key]: next })
+  },
+  clear(sessionId?: string | null, requestId?: string) {
+    if (sessionId === undefined) {
+      approvalRevision += 1
+    } else {
+      const key = keyFor(sessionId)
+      sessionApprovalRevisions.set(key, (sessionApprovalRevisions.get(key) ?? 0) + 1)
+    }
+    const queues = $approvalQueues.get()
+    const next = { ...queues }
+    let changed = false
+
+    for (const [key, queue] of Object.entries(queues)) {
+      if (sessionId !== undefined && key !== keyFor(sessionId)) {
+        continue
+      }
+
+      const remaining = requestId ? queue.filter(item => item.requestId !== requestId) : EMPTY_APPROVALS
+
+      if (remaining.length === queue.length) {
+        continue
+      }
+
+      changed = true
+      if (remaining.length) {
+        next[key] = remaining
+      } else {
+        delete next[key]
+      }
+    }
+
+    if (changed) {
+      $approvalQueues.set(next)
+    }
+  }
+}
 const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
 
-// Inline approval anchors, keyed by session: a tile's inline bar mounting must
-// not suppress the PRIMARY session's floating fallback (and vice versa).
-const $approvalInlineAnchors = atom<Record<string, number>>({})
-
-export const $approvalRequest = approval.$active
+export const $approvalRequest = computed([approval.$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? null)
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
 
@@ -144,6 +203,9 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     return
   }
 
+  const revision = approvalRevision
+  const sessionRevision = sessionApprovalRevisions.get(keyFor(sessionId))
+  const previous = $approvalQueues.get()[keyFor(sessionId)]
   let rawResult: unknown
 
   try {
@@ -163,50 +225,52 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
   const result =
     rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
 
-  const pending = Array.isArray(result?.approvals) ? result.approvals[0] : undefined
-
-  if (!pending || typeof pending.request_id !== 'string') {
+  if (
+    revision !== approvalRevision ||
+    sessionRevision !== sessionApprovalRevisions.get(keyFor(sessionId)) ||
+    previous !== $approvalQueues.get()[keyFor(sessionId)]
+  ) {
     return
   }
 
-  await receiveApprovalRequest(gateway, {
-    allowPermanent: pending.allow_permanent !== false,
-    choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : undefined,
-    command: typeof pending.command === 'string' ? pending.command : '',
-    description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
-    requestId: pending.request_id,
-    sessionId,
-    smartDenied: pending.smart_denied === true
-  })
+  if (!Array.isArray(result.approvals)) {
+    return
+  }
+
+  const ids = new Set(result.approvals.map(pending => pending.request_id))
+  for (const request of previous ?? EMPTY_APPROVALS) {
+    if (request.requestId && !ids.has(request.requestId)) {
+      clearApprovalRequest(sessionId, request.requestId)
+    }
+  }
+
+  await Promise.all(result.approvals.map(pending => {
+    if (typeof pending.request_id !== 'string') {
+      return
+    }
+
+    return receiveApprovalRequest(gateway, {
+      allowPermanent: pending.allow_permanent !== false,
+      choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : undefined,
+      command: typeof pending.command === 'string' ? pending.command : '',
+      description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+      requestId: pending.request_id,
+      sessionId,
+      smartDenied: pending.smart_denied === true
+    })
+  }))
 }
 
 /** The prompt request for one specific session — the tile counterpart of the
  *  active-session `$*Request` views (same map, fixed key). */
+export const sessionApprovalRequests = (sessionId: string | null) =>
+  computed($approvalQueues, all => all[keyFor(sessionId)] ?? EMPTY_APPROVALS)
 export const sessionApprovalRequest = (sessionId: string | null) =>
   computed(approval.$all, all => all[keyFor(sessionId)] ?? null)
 export const sessionSudoRequest = (sessionId: string | null) =>
   computed(sudo.$all, all => all[keyFor(sessionId)] ?? null)
 export const sessionSecretRequest = (sessionId: string | null) =>
   computed(secret.$all, all => all[keyFor(sessionId)] ?? null)
-
-export function registerApprovalInlineAnchor(sessionId: string | null): () => void {
-  const key = keyFor(sessionId)
-
-  const bump = (delta: number) => {
-    const all = $approvalInlineAnchors.get()
-    const next = Math.max(0, (all[key] ?? 0) + delta)
-    $approvalInlineAnchors.set({ ...all, [key]: next })
-  }
-
-  bump(1)
-
-  return () => bump(-1)
-}
-
-/** True when session `sessionId` has an inline approval bar mounted, so its
- *  floating fallback should stand down. Per-session (not global). */
-export const sessionApprovalInlineVisible = (sessionId: string | null) =>
-  computed($approvalInlineAnchors, anchors => (anchors[keyFor(sessionId)] ?? 0) > 0)
 
 export const $sudoRequest = sudo.$active
 export const setSudoRequest = sudo.set
@@ -266,7 +330,6 @@ export function clearAllPrompts(sessionId?: string | null): void {
     approval.reset()
     sudo.reset()
     secret.reset()
-    $approvalInlineAnchors.set({})
 
     return
   }

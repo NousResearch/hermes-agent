@@ -179,7 +179,8 @@ export function notify(input: NotificationInput): string {
 
   window.clearTimeout(timers.get(id))
   timers.delete(id)
-  $notifications.set([notification, ...$notifications.get().filter(item => item.id !== id)].slice(0, 4))
+  // Visual depth is capped by CardStack, not by discarding queued notifications.
+  $notifications.set([notification, ...$notifications.get().filter(item => item.id !== id)])
 
   const duration = input.durationMs ?? defaultDuration(kind)
 

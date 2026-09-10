@@ -116,6 +116,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     the leader's ``session``/``always``/``deny``/timeout; a ``once`` covers only
     the leader, so the follower falls through to a fresh prompt."""
     from tools import approval as _approval
+    from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
 
     primary_key = approval_data.get("pattern_key", "")
     payload = {
@@ -130,13 +131,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         leader = next((e for e in _approval._gateway_queues.get(session_key, [])
                        if e.data.get("command") == approval_data.get("command")
                        and list(e.data.get("pattern_keys") or []) == keys), None)
-    if leader is not None:
+    if leader is not None and not preparing_terminal_approval():
         adopted = _await_coalesced_leader(session_key, leader, payload)
         if adopted is not None:
             return adopted
 
     entry = _ApprovalEntry(approval_data)
     with _approval._lock:
+        register_prepared_approval(session_key, entry)
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
     def _drop_entry() -> None:
@@ -152,6 +154,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     # Bridges sync agent thread → async gateway.
     try:
         notify_cb(dict(entry.data))
+        approval_published()
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()

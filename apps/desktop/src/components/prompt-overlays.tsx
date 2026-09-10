@@ -3,7 +3,7 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 
-import { PendingApprovalFallback } from '@/components/assistant-ui/tool/approval'
+import { PendingApprovalStack } from '@/components/assistant-ui/tool/approval'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -245,7 +245,7 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
 export function PromptOverlays({ sessionId }: { sessionId: string | null }) {
   return (
     <>
-      <PendingApprovalFallback />
+      <PendingApprovalStack />
       <SudoDialog sessionId={sessionId} />
       <SecretDialog sessionId={sessionId} />
     </>

@@ -1,13 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { useReducedMotion } from 'motion/react'
-import { useRef } from 'react'
+import { useMemo, useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { AnimatedInt } from '@/components/ui/diff-count'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $approvalRequest } from '@/store/prompts'
+import { sessionApprovalRequest } from '@/store/prompts'
 import { $threadJumpButtonVisible, $threadMessagesBelow, requestScrollToBottom } from '@/store/thread-scroll'
 
 /**
@@ -19,12 +19,7 @@ import { $threadJumpButtonVisible, $threadMessagesBelow, requestScrollToBottom }
  * away from the bottom, with an animated count of messages below the viewport.
  * Clicking re-arms sticky-bottom and pins the viewport.
  *
- * When the turn is BLOCKED on an approval, this same control morphs into an
- * "Approval needed" pill — the only response surface is the inline Run/Reject
- * bar on the parked tool row, which is always the bottom-most content, so the
- * existing scroll-to-bottom action lands the user right on it. One control, no
- * collision, no second scroll path (native scrollIntoView would scroll
- * overflow:hidden ancestors that can't scroll back and wreck the layout).
+ * Approvals occupy this same area, so this control yields while one is pending.
  *
  * Enter/exit motion lives in styles.css under `.thread-jump-button` — a
  * directional scale (contract in from 1.1, contract out to 0.9) keyed off
@@ -36,11 +31,7 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
   const visible = useStore($threadJumpButtonVisible)
   const count = useStore($threadMessagesBelow)
   const reducedMotion = useReducedMotion()
-  const request = useStore($approvalRequest)
-  // Scrolled away while an approval is pending → the inline Run/Reject bar is
-  // below the fold. Relabel so the user knows the session needs them, not just
-  // that there's more to read.
-  const approval = visible && Boolean(request)
+  const request = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   const hasShownRef = useRef(false)
 
   if (visible) {
@@ -51,7 +42,12 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
   const countLabel = t.sidebar.messageCount(count)
   const [beforeCount, afterCount] = countLabel.split(String(count))
 
-  const label = approval ? t.assistant.approval.jumpToApproval : `${t.assistant.thread.scrollToBottom} · ${countLabel}`
+  const label = `${t.assistant.thread.scrollToBottom} · ${countLabel}`
+
+  // The approval stack already occupies the floating action area.
+  if (request) {
+    return null
+  }
 
   return (
     <button
@@ -59,9 +55,7 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
       aria-label={label}
       className={cn(
         'thread-jump-button absolute left-1/2 z-20 flex h-8 items-center gap-1.5 rounded-full border bg-(--composer-fill) px-3 text-xs font-medium backdrop-blur-[0.75rem] [-webkit-backdrop-filter:blur(0.75rem)]',
-        approval
-          ? 'border-primary/40 text-primary hover:bg-primary/10'
-          : 'border-border/65 text-muted-foreground hover:text-foreground',
+        'border-border/65 text-muted-foreground hover:text-foreground',
         !visible && 'pointer-events-none'
       )}
       data-state={state}
@@ -76,15 +70,11 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
       type="button"
     >
       <Codicon name="arrow-down" size="0.875rem" />
-      {approval ? (
-        <span>{label}</span>
-      ) : (
-        <span aria-hidden className="whitespace-nowrap tabular-nums">
-          {beforeCount}
-          {!visible || reducedMotion ? count : <AnimatedInt key={sessionId} value={count} />}
-          {afterCount}
-        </span>
-      )}
+      <span aria-hidden className="whitespace-nowrap tabular-nums">
+        {beforeCount}
+        {!visible || reducedMotion ? count : <AnimatedInt key={sessionId} value={count} />}
+        {afterCount}
+      </span>
     </button>
   )
 }

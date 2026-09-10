@@ -37,6 +37,15 @@ class _ToolEngine(_StubEngine):
         ]
 
 
+def test_legacy_context_engine_placeholders_use_builtin_compressor():
+    from agent.agent_init import _select_context_engine
+
+    for legacy_name in ("default", "custom"):
+        with patch("plugins.context_engine.load_context_engine") as load_engine:
+            assert _select_context_engine({"context": {"engine": legacy_name}}) is None
+        load_engine.assert_not_called()
+
+
 def test_plugin_engine_gets_context_length_on_init():
     """Plugin context engine should have context_length set during AIAgent init."""
     engine = _StubEngine()
@@ -208,5 +217,4 @@ def test_codex_gpt55_autoraise_still_applies_to_builtin_compressor():
     assert agent.context_compressor.threshold_percent == 0.85
     # Gateway parity: the notice is stashed for replay on turn 1.
     assert agent._compression_warning and "85%" in agent._compression_warning
-
 

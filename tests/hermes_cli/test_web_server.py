@@ -2479,6 +2479,31 @@ class TestBuildSchemaFromConfig:
         assert fields["memory.provider"]["type"] == "select"
         assert _web_server_config.CONFIG_SCHEMA["memory.provider"] is not fields["memory.provider"]
 
+    def test_dynamic_merge_recomputes_context_engine_options(self, monkeypatch):
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {"context": {"engine": "lcm"}})
+        monkeypatch.setattr(
+            "plugins.context_engine.discover_context_engines",
+            lambda: [("lcm", "Long context memory", True)],
+        )
+        plugin_engine = type("PluginEngine", (), {"name": "external-engine"})()
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_context_engine", lambda: plugin_engine)
+
+        fields = _web_server_config._schema_with_dynamic_provider_options()
+
+        assert fields["context.engine"]["options"] == ["compressor", "lcm", "external-engine"]
+        assert _web_server_config.CONFIG_SCHEMA["context.engine"]["options"] == ["compressor"]
+
+    def test_context_engine_legacy_placeholders_normalize_to_compressor(self, monkeypatch):
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {"context": {"engine": "default"}})
+        monkeypatch.setattr("plugins.context_engine.discover_context_engines", lambda: [])
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_context_engine", lambda: None)
+
+        fields = _web_server_config._schema_with_dynamic_provider_options()
+
+        assert fields["context.engine"]["options"] == ["compressor"]
+
 
 
 

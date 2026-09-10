@@ -120,7 +120,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "display.resume_display": _select("How resumed sessions display history", "minimal", "full", "off"),
     "display.busy_input_mode": _select("Input behavior while agent is running", "interrupt", "queue", "steer"),
     "approvals.mode": _select("Dangerous command approval mode", "manual", "smart", "off"),
-    "context.engine": _select("Context management engine", "default", "custom"),
+    "context.engine": _select("Context management engine", "compressor"),
     "human_delay.mode": _select("Simulated typing delay mode", "off", "typing", "fixed"),
     "logging.level": _select("Log level for agent.log", "DEBUG", "INFO", "WARNING", "ERROR"),
     "agent.service_tier": _select(
@@ -324,6 +324,45 @@ def _memory_provider_schema_options(cfg: Dict[str, Any]) -> List[str]:
     return options
 
 
+def _context_engine_schema_options(cfg: Dict[str, Any]) -> List[str]:
+    """Built-in and discovered context engines, plus the configured plugin name."""
+    from plugins.context_engine import discover_context_engines
+
+    options = ["compressor"]
+    seen = {"compressor"}
+    try:
+        discovered = discover_context_engines()
+    except Exception:  # pragma: no cover - discovery must not break config schema
+        discovered = []
+    for name, _description, _available in discovered:
+        clean = name.strip() if isinstance(name, str) else ""
+        if clean and clean not in seen:
+            options.append(clean)
+            seen.add(clean)
+
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_context_engine
+
+        discover_plugins()
+        plugin_engine = get_plugin_context_engine()
+        plugin_name = getattr(plugin_engine, "name", "") if plugin_engine else ""
+        clean_plugin = plugin_name.strip() if isinstance(plugin_name, str) else ""
+        if clean_plugin and clean_plugin not in seen:
+            options.append(clean_plugin)
+            seen.add(clean_plugin)
+    except Exception:  # pragma: no cover - plugin discovery must not break config schema
+        pass
+
+    context = cfg.get("context")
+    current = context.get("engine") if isinstance(context, dict) else None
+    clean_current = current.strip() if isinstance(current, str) else ""
+    if clean_current in {"default", "custom"}:
+        clean_current = "compressor"
+    if clean_current and clean_current not in seen:
+        options.append(clean_current)
+    return options
+
+
 def _schema_select_options(key: str) -> Optional[List[str]]:
     entry = CONFIG_SCHEMA.get(key)
     options = entry.get("options") if isinstance(entry, dict) else None
@@ -358,6 +397,7 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
             merge(f"{kind}.provider", _custom_provider_options(kind, list(existing), cfg))
 
     merge("memory.provider", _memory_provider_schema_options(cfg))
+    merge("context.engine", _context_engine_schema_options(cfg))
 
     tb_options = _schema_select_options("terminal.backend")
     if tb_options is not None:

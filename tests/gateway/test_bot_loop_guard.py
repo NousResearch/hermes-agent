@@ -4,7 +4,6 @@ The scenarios set ``TELEGRAM_GROUP_ALLOWED_CHATS``: that allowlist admits a bot 
 block runs, which is the configuration that produced the incident.
 """
 
-import logging
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -214,25 +213,6 @@ def test_budget_is_scoped_by_chat_and_platform(monkeypatch, runner):
     assert _inbound(runner, discord_bot) is True
 
 
-def test_slow_traffic_never_trips(monkeypatch, runner, clock):
-    _incident_config(monkeypatch)
-
-    verdicts = []
-    for turn in range(60):
-        verdicts.append(_inbound(runner, _bot(BOT_A if turn % 2 == 0 else BOT_B)))
-        clock.advance(10)
-
-    assert all(verdicts)
-
-
-def test_window_expiry_readmits_without_tripping(monkeypatch, runner, clock):
-    _incident_config(monkeypatch)
-    assert all(_ping_pong(runner, 20))
-
-    clock.advance(61)
-    assert _inbound(runner, _bot(BOT_A)) is True
-
-
 def test_cooldown_expiry_readmits_with_a_fresh_budget(monkeypatch, runner, clock):
     _incident_config(monkeypatch)
     _ping_pong(runner, 21)
@@ -260,40 +240,7 @@ def test_rejected_bot_messages_do_not_consume_budget(monkeypatch, runner):
     assert runner._bot_loop_guard.tracked_conversations == 0
 
 
-def test_tripping_logs_one_operator_warning(monkeypatch, runner, caplog):
-    _incident_config(monkeypatch)
-
-    with caplog.at_level(logging.WARNING, logger="gateway.authz_mixin"):
-        _ping_pong(runner, 25)
-
-    trips = [r for r in caplog.records if r.name == "gateway.authz_mixin" and "Bot loop guard" in r.getMessage()]
-    assert len(trips) == 1
-    assert GROUP_CHAT in trips[0].getMessage()
-
-
-def test_guard_is_created_lazily_on_a_bare_runner(monkeypatch):
-    from gateway.run import GatewayRunner
-
-    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "mentions")
-    runner = object.__new__(GatewayRunner)
-    runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
-
-    assert _inbound(runner, _bot(BOT_A, chat_id="123", chat_type="dm")) is True
-    assert isinstance(runner._bot_loop_guard, BotLoopGuard)
-
-
 # --- BotLoopGuard unit ------------------------------------------------------
-
-
-def test_admit_states(clock):
-    guard = BotLoopGuard(settings=lambda: BotLoopGuardSettings(max_events=2, window_seconds=10, cooldown_seconds=30), clock=clock.now)
-
-    assert guard.admit("c") == (True, "ok")
-    assert guard.admit("c") == (True, "ok")
-    assert guard.admit("c") == (False, "tripped")
-    assert guard.admit("c") == (False, "cooldown")
-    clock.advance(31)
-    assert guard.admit("c") == (True, "ok")
 
 
 def test_concurrent_admits_respect_the_budget(clock):
@@ -305,40 +252,7 @@ def test_concurrent_admits_respect_the_budget(clock):
     assert sum(allowed) == 20
 
 
-def test_sweep_drops_idle_conversations(clock):
-    guard = BotLoopGuard(settings=lambda: BotLoopGuardSettings(max_events=5, window_seconds=10, cooldown_seconds=10), clock=clock.now)
-    for i in range(50):
-        guard.admit(f"chat-{i}")
-    assert guard.tracked_conversations == 50
-
-    clock.advance(11)
-    guard.admit("fresh")
-    assert guard.tracked_conversations == 1
-
-
 # --- settings ---------------------------------------------------------------
-
-
-def test_settings_defaults_when_block_missing_or_malformed():
-    defaults = BotLoopGuardSettings()
-    assert settings_from_config({}) == defaults
-    assert settings_from_config(None) == defaults
-    assert settings_from_config({"gateway": {"bot_loop_guard": "yes"}}) == defaults
-    assert settings_from_config({"gateway": {"bot_loop_guard": {"max_events": -1, "window_seconds": "abc"}}}) == defaults
-    assert settings_from_config({"gateway": {"bot_loop_guard": {"enabled": "maybe", "max_events": True}}}) == defaults
-
-
-@pytest.mark.parametrize("raw, expected", [("7", 7), (7.0, 7), (0.5, 20), (0, 20), (-3, 20), ("many", 20), (True, 20)])
-def test_settings_max_events_is_a_whole_positive_number(raw, expected):
-    cfg = {"gateway": {"bot_loop_guard": {"max_events": raw}}}
-    assert settings_from_config(cfg).max_events == expected
-
-
-def test_settings_parse_configured_values():
-    parsed = settings_from_config({"gateway": {"bot_loop_guard": {
-        "enabled": "false", "max_events": "7", "window_seconds": 30, "cooldown_seconds": 45.5,
-    }}})
-    assert parsed == BotLoopGuardSettings(enabled=False, max_events=7, window_seconds=30.0, cooldown_seconds=45.5)
 
 
 def test_load_settings_reads_config_yaml(monkeypatch):

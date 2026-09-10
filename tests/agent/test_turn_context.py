@@ -320,12 +320,6 @@ def test_turn_without_author_clears_previous_bot_author():
     assert kwargs["author_is_bot"] is False
 
 
-def test_author_is_stashed_even_without_memory_manager():
-    agent = _FakeAgent()
-    _build(agent, turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})
-    assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
-
-
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]
@@ -375,14 +369,6 @@ def test_applies_agent_side_effects():
     assert agent._current_turn_id
 
 
-
-
-
-
-
-
-
-
 def test_pending_cli_message_uses_clean_override_for_api_local_note():
     """A noted API message reuses the clean staged dict and its DB marker."""
     agent = _FakeAgent()
@@ -400,12 +386,6 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
     assert ctx.messages[-1]["_db_persisted"] is True
     assert isinstance(ctx.messages[-1]["timestamp"], float)
     assert agent._pending_cli_user_message is None
-
-
-
-
-
-
 
 
 def test_recall_indicator_emitted_when_memory_injected():

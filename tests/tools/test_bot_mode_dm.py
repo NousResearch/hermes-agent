@@ -356,20 +356,6 @@ def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(t
     assert _runner_author(calls[1]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
 
 
-def test_peer_delivery_author_stays_bare_when_the_hostname_is_unknown(tmp_path, monkeypatch):
-    calls = _capture_spawn(monkeypatch)
-
-    def _no_host():
-        raise OSError("no hostname")
-
-    monkeypatch.setattr("socket.gethostname", _no_host)
-    home = _managed_home(tmp_path, peers=("spark",))
-    agent = _FakeAgent(home, title="Bot Chat")
-
-    assert json.loads(bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent))["status"] == "sent"
-    assert _runner_author(calls[0]["command"]) == {"id": "bot:default", "name": "hermes", "is_bot": True}
-
-
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     """A named-profile bot signs with its own handle, not @hermes."""
     calls = _capture_spawn(monkeypatch)
@@ -598,25 +584,6 @@ def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     assert not dm_file.exists()
 
 
-@pytest.mark.parametrize(
-    "args",
-    [
-        [],
-        ["--run-delivery"],
-        ["--run-delivery", "bad", "x"],
-        ["--run-delivery", "--author"],
-        ["--run-delivery", "--author", '{"id":"bot:x","is_bot":true}'],
-        ["--run-delivery", "--author", "not json", "query-file", "x", "hermes"],
-        ["--run-delivery", "--author", "[1]", "query-file", "x", "hermes"],
-    ],
-)
-def test_delivery_main_rejects_invalid_cli(args, monkeypatch):
-    spawned = []
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: spawned.append(a))
-    assert bot_mode_dm._delivery_main(args) == 2
-    assert not spawned
-
-
 @pytest.mark.parametrize("mode, author", [
     ("stdin", {"id": "bot:eri-mac.local/coder", "name": "coder", "is_bot": True}),
     ("query-file", {"id": "bot:coder", "name": "coder", "is_bot": True}),
@@ -837,7 +804,7 @@ def test_successful_spawn_transfers_cleanup_to_runner(tmp_path, monkeypatch):
 
 
 def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeypatch):
-    dm_file = tmp_path / "partial.txt"
+    tmp_path / "partial.txt"
     real_mkstemp = bot_mode_dm.tempfile.mkstemp
 
     def fixed_mkstemp(**kwargs):

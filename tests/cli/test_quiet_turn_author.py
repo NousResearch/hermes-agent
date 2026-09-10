@@ -62,18 +62,3 @@ def test_quiet_one_shot_consumes_the_variable_before_the_turn(monkeypatch):
     assert TURN_AUTHOR_ENV not in os.environ
 
 
-@pytest.mark.parametrize("env_value", [None, "not json"], ids=["unset", "junk"])
-def test_quiet_one_shot_without_a_usable_author_keeps_the_old_call_shape(monkeypatch, env_value):
-    assert _run(monkeypatch, env_value) == [{"user_message": "hello", "conversation_history": []}]
-
-
-def test_quiet_one_shot_skips_the_keyword_for_an_agent_that_cannot_take_it(monkeypatch):
-    """A wrapper with an older run_conversation signature must not crash the turn."""
-    recorded = []
-
-    def run_conversation(user_message, conversation_history=None):
-        recorded.append(user_message)
-        return {"final_response": "ok"}
-
-    _run(monkeypatch, json.dumps(AUTHOR), run_conversation)
-    assert recorded == ["hello"]

@@ -146,6 +146,50 @@ def _custom_provider_ssl_context(base_url: str):
 
 # Process-lifetime picker lists refreshed from the live catalogs (see fetch_*_models).
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+
+# The in-memory ``_openrouter_catalog_cache`` is per-process, so without a disk cache every cold
+# picker open re-downloads the full ~686KB /api/v1/models catalog. The *curated* result
+# (post-filter) is persisted under the same TTL the catalog manifest uses, so both layers go
+# stale together.
+
+
+def _openrouter_catalog_disk_ttl() -> float:
+    """Same TTL as the catalog manifest this list is filtered from (honours ``model_catalog.ttl_minutes``)."""
+    from hermes_cli.model_catalog import refresh_interval_seconds
+
+    return refresh_interval_seconds()
+
+
+def _openrouter_catalog_disk_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "openrouter_curated_catalog.json"
+
+
+def _read_openrouter_catalog_disk() -> list[tuple[str, str]] | None:
+    """Fresh curated catalog from disk, or None (missing, corrupt, expired, or empty)."""
+    obj = _read_json_cache(_openrouter_catalog_disk_path())
+    if obj is None:
+        return None
+    try:
+        if time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
+            return None
+    except (TypeError, ValueError):
+        return None
+    items = obj.get("curated")
+    if not isinstance(items, list):
+        return None
+    out = [(str(it[0]), str(it[1])) for it in items if isinstance(it, (list, tuple)) and len(it) == 2]
+    return out or None
+
+
+def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
+    try:
+        _write_json_cache(
+            _openrouter_catalog_disk_path(),
+            {"fetched_at": time.time(), "curated": [list(c) for c in curated]})
+    except Exception as exc:
+        logger.debug("openrouter curated catalog disk write failed: %s", exc)
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
@@ -473,6 +517,14 @@ def fetch_openrouter_models(
     if _openrouter_catalog_cache is not None and not force_refresh:
         return list(_openrouter_catalog_cache)
 
+    # Cold process: serve from the persisted disk cache when fresh so the
+    # picker doesn't re-download the full ~686KB catalog on every open.
+    if not force_refresh:
+        disk = _read_openrouter_catalog_disk()
+        if disk:
+            _openrouter_catalog_cache = disk
+            return list(disk)
+
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.
     try:
@@ -514,6 +566,7 @@ def fetch_openrouter_models(
     if not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
     _openrouter_catalog_cache = curated
+    _write_openrouter_catalog_disk(curated)
     return list(curated)
 
 
@@ -877,28 +930,64 @@ def _resolve_provider_prefix(model_name: str) -> Optional[tuple[str, str]]:
 
 def detect_provider_for_model(
     model_name: str, current_provider: str) -> Optional[tuple[str, str]]:
-    """Auto-detect the best provider for a model name: static catalogs (bare provider name → its
-    default; direct catalog match), then the OpenRouter catalog, then a configured ``vendor/`` prefix."""
+    """Auto-detect the best provider for a model name: the current provider's live catalog, static
+    catalogs (bare provider name → its default; direct catalog match), then the OpenRouter catalog,
+    then a configured ``vendor/`` prefix.
+
+    Never hands back a provider the user holds no credentials for: an unauthenticated guess is
+    skipped and the ladder continues (``None`` = stay on the current provider). Exceptions: the user
+    NAMED the provider (``/model nous``), or there is no current provider yet (``auto``) — then the
+    first guess is returned so the credential step fails loudly instead of silently ignoring input."""
+    from hermes_cli.models_detect import current_provider_catalog_match, provider_has_credentials
+
     name = (model_name or "").strip()
     if not name:
         return None
 
+    # The current provider's LIVE catalog outranks every static guess: a model it already serves
+    # (Codex early-access ids, Portal-only slugs, Ollama Cloud models absent from _PROVIDER_MODELS)
+    # must never re-route the session to another vendor or to metered OpenRouter.
+    served = current_provider_catalog_match(name, current_provider)
+    if served is not None:
+        return (current_provider, served) if served != name else None
+
+    no_selection = (current_provider or "").strip().lower() in {"", "auto"}
+    for candidate in _detection_candidates(name, current_provider):
+        if candidate is None:
+            return None  # the current catalog owns this name
+        if no_selection or candidate[0] == current_provider or provider_has_credentials(candidate[0]):
+            return candidate
+        if _PROVIDER_ALIASES.get(name.lower(), name.lower()) == candidate[0]:
+            return candidate  # explicitly named provider: let the credential step report it
+        logger.debug("Skipping auto-switch of '%s' to %s: no credentials configured", name, candidate[0])
+    # A ``vendor/model`` prefix naming a provider the user DECLARED in ``providers:`` is a selection,
+    # not a guess — hand it back even before its key is wired up.
+    return _resolve_provider_prefix(name)
+
+
+def _detection_candidates(name: str, current_provider: str):
+    """Yield ``(provider, model)`` guesses in ladder order; ``None`` means the current provider's own
+    catalog owns the name (stop, stay)."""
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
-        return static_match
+        yield static_match
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
-        return None
+        yield None
+        return
 
     # OpenRouter catalog (exact slug, then bare model part).
     or_slug = _find_openrouter_slug(name)
     if or_slug:
-        if current_provider != "openrouter" or or_slug != name:
-            return ("openrouter", or_slug)
-        return None  # already on openrouter with matching name
+        if current_provider == "openrouter" and or_slug == name:
+            yield None  # already on openrouter with matching name
+            return
+        yield ("openrouter", or_slug)
 
     # Explicit ``vendor/model`` prefix naming a configured provider — AFTER the OpenRouter lookup so
     # aggregator-native slugs (``deepseek/deepseek-chat``) keep their routing.
-    return _resolve_provider_prefix(name)
+    prefixed = _resolve_provider_prefix(name)
+    if prefixed:
+        yield prefixed
 
 
 def _find_openrouter_slug(model_name: str) -> Optional[str]:
@@ -1932,6 +2021,9 @@ _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
 # ``-free``-suffixed slugs that are KEYED (Go-subscription) models, NOT anonymous-servable —
 # excluded from the keyless catalog despite the suffix (ox-alpha-free is Ox Alpha's Go twin).
+# The Go relay delisted ox-alpha-free (2026-09-09; GET /zen/go/v1/models omits it, POST → 401),
+# so it is gone from the opencode-go curated floor too — the exclusion stays so a stale live
+# list can never route it into the keyless catalog.
 _OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
 
 # In-process memo for _fetch_opencode_free_models(): (fetched_at, ids-or-None). Validation and
@@ -2106,6 +2198,26 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+# Negative cache: monotonic timestamp of the last fully-failed probe, keyed
+# by ``host:port`` so both URL candidates (``/v1`` + root) share one entry.
+# Without this, an unreachable endpoint (TCP blackhole — SYN draws no reply,
+# so every attempt burns its full connect timeout) makes every picker open /
+# chat turn re-pay the timeout per candidate, and the sequential stalls stack
+# past 10s while the Desktop sits on a spinner with no error (#81123). Short
+# TTL collapses the burst but still picks up recovery without a restart.
+# Mirrors _deepinfra_catalog_neg_cache.
+_probe_neg_cache: dict[str, float] = {}
+_PROBE_NEG_TTL = 60.0  # seconds
+
+
+def _probe_neg_key(base_url: str) -> Optional[str]:
+    """``host:port`` for *base_url* (both URL candidates share one entry), or None without a host."""
+    from utils import base_url_origin
+
+    _, host, port = base_url_origin(base_url)
+    return f"{host}:{port}" if host else None
+
+
 def _probe_result(
     models, probed_url, resolved_base_url, suggested_base_url=None, used_fallback=False
 ) -> dict[str, Any]:
@@ -2137,6 +2249,13 @@ def probe_api_models(
         candidates.append((alternate_base, True))
 
     tried: list[str] = []
+    _neg_key = _probe_neg_key(normalized)
+    if _neg_key is not None:
+        _neg_seen = _probe_neg_cache.get(_neg_key)
+        if _neg_seen is not None and (time.monotonic() - _neg_seen) < _PROBE_NEG_TTL:
+            return _probe_result(
+                None, normalized.rstrip("/") + "/models", normalized,
+                alternate_base if alternate_base != normalized else None)
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if urllib.parse.urlparse(normalized).hostname == "generativelanguage.googleapis.com":
         headers["X-Goog-Api-Client"] = f"hermes-agent/{_HERMES_VERSION}"
@@ -2159,16 +2278,27 @@ def probe_api_models(
     _ssl_context = _custom_provider_ssl_context(normalized)
     if _ssl_context is not None:
         _open_kwargs["ssl_context"] = _ssl_context
+    reachable = False
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         try:
             data = _get_json(url, timeout=timeout, headers=headers, **_open_kwargs)
+        except urllib.error.HTTPError:
+            # The host answered: an auth/404 failure is not unreachability, and a user fixing
+            # their key must not be served a cached "no models" for the next TTL window.
+            reachable = True
+            continue
         except Exception:
             continue
+        if _neg_key is not None:
+            _probe_neg_cache.pop(_neg_key, None)
         return _probe_result(
             [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
+
+    if _neg_key is not None and not reachable:
+        _probe_neg_cache[_neg_key] = time.monotonic()
     return _probe_result(
         None, tried[0] if tried else normalized.rstrip("/") + "/models", normalized,
         alternate_base if alternate_base != normalized else None)

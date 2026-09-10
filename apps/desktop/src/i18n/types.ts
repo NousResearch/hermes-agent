@@ -424,7 +424,6 @@ export interface Translations {
       about: string
       billing: string
       notifications: string
-      plugins: string
     }
     plugins: {
       title: string
@@ -438,19 +437,8 @@ export interface Translations {
       failed: string
       empty: string
       kinds: { bundled: string; disk: string; runtime: string }
-      agent: {
-        title: string
-        blurb: string
-        appliesTo: string
-        empty: string
-        loadFailed: string
-        portable: string
-        search: string
-        noMatches: string
-        toggleFailed: (name: string) => string
-        updateBackendToManage: string
-        sources: Record<string, string>
-      }
+      agentHalfMissing: string
+      agentHalfMissingTip: string
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -463,6 +451,13 @@ export interface Translations {
         desktopLabel: string
         agentTargetLocal: (profile: string) => string
         agentTargetRemote: (profile: string) => string
+        catalogPinned: (name: string, sha: string) => string
+        reviewedHeading: string
+        reviewedIntro: string
+        restartToApply: string
+        restartNow: string
+        missingEnvAction: string
+        alreadyInstalled: (name: string) => string
         desktopTarget: string
         desktopOnlyNote: string
         insecureWarning: string
@@ -474,6 +469,10 @@ export interface Translations {
         gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
+        pinToCommit: string
+        pinToCommitPlaceholder: string
+        pinToCommitHint: string
+        pinToCommitInvalid: string
         install: string
         installing: string
         probing: string
@@ -1362,6 +1361,30 @@ export interface Translations {
     archive: string
     skillArchivedTitle: string
     skillArchivedMessage: string
+    tabPlugins: string
+    plugins: {
+      agentTitle: string
+      agentBlurb: string
+      empty: string
+      emptyHint: string
+      loadFailed: string
+      toggleFailed: (name: string) => string
+      legacyBackend: string
+      portableBadge: string
+      catalogTitle: string
+      catalogBrowse: string
+      catalogHide: string
+      catalogHint: string
+      alreadyInstalled: (name: string) => string
+      catalogProvenance: (sha: string) => string
+      pinnedProvenance: (sha: string) => string
+      pinnedBadge: (sha: string) => string
+      tierOfficial: string
+      tierCommunity: string
+      updateToPin: (sha: string) => string
+      updateFailed: (name: string) => string
+      updated: (name: string) => string
+    }
     officialCatalog: string
     officialPill: string
     hub: {
@@ -1712,6 +1735,38 @@ export interface Translations {
     failedRevoke: (name: string) => string
     pairingLockedOut: string
     waitingSince: (minutes: number) => string
+    restartNeeded: string
+    restartNow: string
+    restarting: string
+    restartFailedManual: string
+    telegramQr: {
+      title: string
+      subtitle: string
+      quickSetup: string
+      recommended: string
+      quickHelp: string
+      createWithQr: string
+      starting: string
+      replaceWarning: string
+      scanHint: string
+      waiting: string
+      expiresIn: (remaining: string) => string
+      expired: string
+      openTelegram: string
+      ready: string
+      allowedUsers: string
+      ownerDetected: string
+      addAtLeastOne: string
+      userIdPlaceholder: string
+      add: string
+      numericOnly: string
+      saveAndRestart: string
+      applying: string
+      pairingExpired: string
+      stillWaiting: (detail: string) => string
+      savedRestarting: string
+      savedRestartFailed: (detail: string) => string
+    }
     fieldCopy: Record<string, { label?: string; help?: string; placeholder?: string }>
     platformIntro: Record<string, string>
   }
@@ -2099,8 +2154,10 @@ export interface Translations {
     noSessions: string
     noFilterMatches: string
     projects: {
+      showAllSessions: string
       sectionLabel: string
       home: string
+      autoDiscovered: string
       newButton: string
       createTitle: string
       createDesc: string
@@ -3129,7 +3186,15 @@ export interface Translations {
         streaming: string
       }
       errorRetry: string
+      /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
+      errorStartNewSession: string
       errorSwitchProvider: string
+      /** One-click recovery for an expired/revoked OAuth grant: re-runs that
+       *  provider's sign-in flow (auth layer, authKind 'oauth'). */
+      errorSignInAgain: (provider: string) => string
+      /** Explains WHY the turn failed for an OAuth 401 — the raw body
+       *  ("HTTP 401: User not found.") doesn't say "sign in again". */
+      errorOauthExpired: (provider: string) => string
       errorOpenLogs: string
       errorOpenLogsFailed: string
       errorOpenDesktopLogs: string

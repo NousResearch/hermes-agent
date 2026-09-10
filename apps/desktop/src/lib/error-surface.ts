@@ -30,6 +30,12 @@ export interface ErrorSurface {
    *  different model by the time the user clicks an action. */
   provider?: string
   model?: string
+  /** Auth layer only: how the failing provider is credentialed. `oauth` means
+   *  the fix is signing in again (expired/revoked grant); `api_key` means a
+   *  key needs replacing. Absent from older backends. */
+  authKind?: 'api_key' | 'oauth'
+  /** Auth layer only: display name of the failing provider ("Nous Portal"). */
+  providerLabel?: string
 }
 
 /** Validate a wire payload into an ErrorSurface, or null when absent/garbled. */
@@ -38,7 +44,16 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
     return null
   }
 
-  const raw = value as { code?: unknown; layer?: unknown; model?: unknown; provider?: unknown; retryable?: unknown }
+  const raw = value as {
+    auth_kind?: unknown
+    code?: unknown
+    layer?: unknown
+    model?: unknown
+    provider?: unknown
+    provider_label?: unknown
+    retryable?: unknown
+  }
+
   const layer = typeof raw.layer === 'string' ? (raw.layer as ErrorSurfaceLayer) : null
 
   if (!layer || !ERROR_SURFACE_LAYERS.includes(layer)) {
@@ -50,8 +65,19 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
     code: typeof raw.code === 'string' && raw.code ? raw.code : 'unknown',
     retryable: raw.retryable !== false,
     ...(typeof raw.provider === 'string' && raw.provider ? { provider: raw.provider } : {}),
-    ...(typeof raw.model === 'string' && raw.model ? { model: raw.model } : {})
+    ...(typeof raw.model === 'string' && raw.model ? { model: raw.model } : {}),
+    ...(raw.auth_kind === 'oauth' || raw.auth_kind === 'api_key' ? { authKind: raw.auth_kind } : {}),
+    ...(typeof raw.provider_label === 'string' && raw.provider_label ? { providerLabel: raw.provider_label } : {})
   }
+}
+
+/** True when the failed turn's provider rejected an OAuth grant — the
+ *  one-click recovery is re-running that provider's sign-in, not editing keys. */
+export function isOAuthReauthSurface(surface: ErrorSurface | null | undefined): surface is ErrorSurface & {
+  authKind: 'oauth'
+  provider: string
+} {
+  return surface?.layer === 'auth' && surface.authKind === 'oauth' && Boolean(surface.provider)
 }
 
 /** Plain-text error-details blob for the error card's "Copy error details". */

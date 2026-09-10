@@ -1085,6 +1085,7 @@ export function useGatewayBoot({
         if (conn.mode === 'remote' && isGatewayWebSocketUrl(wsUrl)) {
           stage = 'dialing'
         }
+
         await gateway.connect(wsUrl)
         stage = 'connected'
 

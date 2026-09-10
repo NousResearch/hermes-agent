@@ -77,7 +77,11 @@ export function approvalResolutionFromResult(value: unknown): ApprovalResolution
 
 function resolutionLabel(resolution: ApprovalResolution): string {
   if (resolution.status === 'approved') {
-    return resolution.choice === 'session' ? 'Approved for this session' : 'Approved once'
+    if (resolution.choice === 'session') {
+      return 'Approved for this session'
+    }
+
+    return resolution.choice === 'always' ? 'Approved always' : 'Approved once'
   }
 
   if (resolution.status === 'rejected') {

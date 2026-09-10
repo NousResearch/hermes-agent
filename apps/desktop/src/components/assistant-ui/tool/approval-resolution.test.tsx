@@ -47,18 +47,34 @@ describe('approvalResolutionFromResult', () => {
     expect(approvalResolutionFromResult({ approval: { status: 'unknown', actor: 'model' } })).toBeNull()
   })
 
-  it('renders a resolved card without actionable controls', () => {
+  it.each([
+    ['once', 'Approved once'],
+    ['session', 'Approved for this session'],
+    ['always', 'Approved always']
+  ] as const)('renders the %s approval choice label without actionable controls', (choice, label) => {
     render(
       <ApprovalResolutionCard
         resolution={{
-          approval: { status: 'approved', choice: 'once', actor: 'authenticated_user' },
+          approval: { status: 'approved', choice, actor: 'authenticated_user' },
           execution: { status: 'succeeded' }
         }}
       />
     )
 
-    expect(screen.getByText('Approved once')).toBeTruthy()
+    expect(screen.getByText(label)).toBeTruthy()
+    if (choice === 'always') {
+      expect(screen.queryByText('Approved once')).toBeNull()
+    }
     expect(screen.getByText(/Execution succeeded/)).toBeTruthy()
     expect(screen.queryAllByRole('button')).toHaveLength(0)
+  })
+
+  it.each([
+    ['rejected', 'Rejected'],
+    ['unavailable', 'Approval unavailable']
+  ] as const)('keeps the %s approval label unchanged', (status, label) => {
+    render(<ApprovalResolutionCard resolution={{ approval: { status } }} />)
+
+    expect(screen.getByText(label)).toBeTruthy()
   })
 })

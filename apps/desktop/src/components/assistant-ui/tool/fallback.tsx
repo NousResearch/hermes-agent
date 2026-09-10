@@ -530,6 +530,31 @@ function ToolEntry({ part }: ToolEntryProps) {
     </Tip>
   ) : undefined
 
+  const detailsAction =
+    toolViewMode !== 'technical' ? (
+      <Button
+        aria-label={copy.detailsAction}
+        onClick={event => {
+          event.stopPropagation()
+          setDetailsOpen(true)
+        }}
+        size="micro"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="list-tree" size="0.75rem" />
+        {copy.detailsAction}
+      </Button>
+    ) : undefined
+
+  const headerAction =
+    detailsAction || dismissAction ? (
+      <span className="flex items-center gap-0.5">
+        {detailsAction}
+        {dismissAction}
+      </span>
+    ) : undefined
+
   if (dismissed) {
     return null
   }
@@ -558,7 +583,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     >
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
-          action={dismissAction}
+          action={headerAction}
           onToggle={hasExpandableContent ? () => setToolDisclosureOpen(disclosureId, !open) : undefined}
           open={open}
           trailing={trailing}
@@ -604,18 +629,6 @@ function ToolEntry({ part }: ToolEntryProps) {
       {open && (
         <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           <div className="absolute right-4 top-1.5 z-10 flex items-center gap-0.5 opacity-5 transition-opacity group-hover/tool-block:opacity-100 focus-within:opacity-100 hover:opacity-100">
-            {toolViewMode !== 'technical' && (
-              <Button
-                aria-label={copy.detailsAction}
-                onClick={() => setDetailsOpen(true)}
-                size="micro"
-                type="button"
-                variant="ghost"
-              >
-                <Codicon name="list-tree" size="0.75rem" />
-                {copy.detailsAction}
-              </Button>
-            )}
             {copyAction.text && (
               <CopyButton
                 appearance="inline"

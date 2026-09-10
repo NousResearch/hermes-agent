@@ -51,7 +51,18 @@ describe('findTextMatches', () => {
   it('searches the full selected text beyond the inline render limit', () => {
     const text = `${'x'.repeat(25_000)}Needle${'y'.repeat(25_000)}`
 
-    expect(findTextMatches(text, 'needle')).toEqual([25_000])
+    expect(findTextMatches(text, 'needle')).toEqual([{ end: 25_006, start: 25_000 }])
+  })
+
+  it('searches past 1,000 matches without silently wrapping early', () => {
+    const matches = findTextMatches('x'.repeat(1_500), 'x')
+
+    expect(matches).toHaveLength(1_500)
+    expect(matches[1_000]).toEqual({ end: 1_001, start: 1_000 })
+  })
+
+  it('returns offsets into the original string when Unicode case folding expands', () => {
+    expect(findTextMatches('İx', 'x')).toEqual([{ end: 2, start: 1 }])
   })
 })
 
@@ -141,6 +152,24 @@ describe('ToolDetailsDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('marks the original character at a Unicode-safe search range', () => {
+    render(
+      <ToolDetailsDialog
+        inlineDiff=""
+        onOpenChange={() => undefined}
+        open
+        part={{ result: { output: 'İx' }, toolName: 'terminal', type: 'tool-call' }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'stdout' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search selected section' }), { target: { value: 'x' } })
+
+    const match = screen.getByText('x')
+    expect(match.getAttribute('data-match-offset')).toBe('1')
+    expect(match.textContent).toBe('x')
   })
 
   it('advances through a long single line without growing the mounted payload', () => {

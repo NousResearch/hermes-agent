@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -72,5 +72,26 @@ describe('tool row preview recording', () => {
     renderToolRow(node => node)
 
     expect(Object.keys($previewStatusBySession.get())).toEqual([PRIMARY_ID])
+  })
+})
+
+describe('tool details action', () => {
+  it('opens full payload details for a normal row with no expandable summary body', () => {
+    const props = {
+      args: { operations: [{ action: 'add', content: 'Remember this' }], target: 'memory' },
+      result: { current_chars: 120, message: 'Applied 1 operation(s).' },
+      toolCallId: 'call-memory',
+      toolName: 'memory'
+    } as unknown as ComponentProps<typeof ToolFallback>
+
+    const { container } = render(<ToolFallback {...props} />)
+
+    expect(container.querySelector('[data-tool-row] button[aria-expanded]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByRole('tabpanel').textContent).toContain('Remember this')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Result' }))
+    expect(screen.getByRole('tabpanel').textContent).toContain('Applied 1 operation(s).')
   })
 })

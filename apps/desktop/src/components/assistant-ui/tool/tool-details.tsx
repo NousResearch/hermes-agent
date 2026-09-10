@@ -14,7 +14,6 @@ import { cn } from '@/lib/utils'
 import { parseMaybeObject, type ToolPart } from './fallback-model'
 
 const DETAIL_WINDOW_CHARS = 20_000
-const MAX_SEARCH_MATCHES = 1_000
 
 export type ToolDetailSectionId = 'arguments' | 'command' | 'diff' | 'metadata' | 'result' | 'stderr' | 'stdout'
 
@@ -77,27 +76,22 @@ export function buildToolDetailSections(part: ToolPart, inlineDiff: string): Too
   return sections
 }
 
-export function findTextMatches(text: string, query: string): number[] {
-  const needle = query.toLocaleLowerCase()
+export interface TextMatch {
+  end: number
+  start: number
+}
 
-  if (!needle) {
+export function findTextMatches(text: string, query: string): TextMatch[] {
+  if (!query) {
     return []
   }
 
-  const haystack = text.toLocaleLowerCase()
-  const matches: number[] = []
-  let offset = 0
+  const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-  while (matches.length < MAX_SEARCH_MATCHES) {
-    const index = haystack.indexOf(needle, offset)
-
-    if (index < 0) {
-      break
-    }
-
-    matches.push(index)
-    offset = index + Math.max(needle.length, 1)
-  }
+  const matches = Array.from(text.matchAll(new RegExp(escapedQuery, 'giu')), match => ({
+    end: match.index + match[0].length,
+    start: match.index
+  }))
 
   return matches
 }
@@ -122,7 +116,8 @@ export function ToolDetailsDialog({ inlineDiff, onOpenChange, open, part }: Tool
   const selected = sections.find(item => item.id === selectedId) ?? sections[0]!
   const matches = useMemo(() => findTextMatches(selected.copyText, query), [query, selected.copyText])
   const normalizedMatch = matches.length ? Math.min(activeMatch, matches.length - 1) : 0
-  const matchOffset = matches[normalizedMatch]
+  const match = matches[normalizedMatch]
+  const matchOffset = match?.start
   const maxWindowStart = Math.max(0, selected.copyText.length - DETAIL_WINDOW_CHARS)
 
   const searchStart =
@@ -135,7 +130,7 @@ export function ToolDetailsDialog({ inlineDiff, onOpenChange, open, part }: Tool
 
   const visibleText = selected.copyText.slice(visibleStart, visibleEnd)
   const visibleMatchOffset = matchOffset === undefined ? -1 : matchOffset - visibleStart
-  const visibleMatchLength = Math.min(query.length, visibleText.length - visibleMatchOffset)
+  const visibleMatchLength = Math.min(match ? match.end - match.start : 0, visibleText.length - visibleMatchOffset)
   const hasVisibleMatch = Boolean(query && visibleMatchOffset >= 0 && visibleMatchLength > 0)
   const hasMore = !query && visibleEnd < selected.copyText.length
 

@@ -9,6 +9,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { PROFILE_SESSION_LIST_LIMIT } from './canonical-chat'
+import { $lastRoster } from './data'
 import { $groupChats } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import { backendTargetProfile, botConnectionRoute } from './routing'
@@ -151,7 +152,18 @@ function hideOwnedBotSessions() {
   const rooms = [...new Map(roomEntries.map(entry => [entry.dedupe, entry])).values()]
   const known = Promise.all(rooms.map(({ owner, id }) => hidePersistedBotSession(owner, id).catch(() => undefined)))
 
-  return known
+  // Also reconcile profile-owned canonical Bot Chat rows from the roster so
+  // they are hidden on startup and reconnect, not only when the user opens that bot.
+  const rosterBots = $lastRoster.get()
+  const canonical = Promise.all(
+    rosterBots
+      .filter(bot => bot?.canonical_session?.id)
+      .map(bot =>
+        hidePersistedBotSession(bot, String(bot.canonical_session!.id)).catch(() => undefined)
+      )
+  )
+
+  return Promise.all([known, canonical])
 }
 
 /** Reconcile durable visibility through the source's primary REST backend.

@@ -133,6 +133,12 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    watchdog_blocked: list[str] = field(default_factory=list)
+    """Task ids suspended by the watchdog this tick for confirmed stall."""
+    watchdog_restarted: list[str] = field(default_factory=list)
+    """Task ids the watchdog restarted after a repair card was resolved."""
+    watchdog_needs_operator: list[str] = field(default_factory=list)
+    """Task ids the watchdog could not repair and escalated to a human operator."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1538,6 +1544,20 @@ def dispatch_once(
             result = _locked_tick()
             # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
             _kbc._maybe_checkpoint_wal(conn, db_path)
+    # Run the worker watchdog after the dispatch lock is released so a slow
+    # watchdog tick never stalls sibling dispatchers.
+    if not result.skipped_locked and not dry_run:
+        try:
+            from hermes_cli.kanban_worker_watchdog import run_watchdog_tick, config_from_runtime_config
+            from hermes_cli.config import load_config as _load_cfg
+            _wdcfg = config_from_runtime_config(_load_cfg())
+            if _wdcfg.enabled:
+                _wd = run_watchdog_tick(conn, board=board, config=_wdcfg)
+                result.watchdog_blocked.extend(_wd.blocked)
+                result.watchdog_restarted.extend(_wd.restarted)
+                result.watchdog_needs_operator.extend(_wd.needs_operator)
+        except Exception:
+            pass
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)

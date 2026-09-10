@@ -259,8 +259,8 @@ KANBAN_GUIDANCE = (
     "state and work it. Do not pass the literal environment-variable token as a workdir. Missing files, output, or "
     "profile roster are not blockers: call `kanban_show(task_id=...)`, inspect handoffs, and make the role-owned "
     "decision before blocking with the exact absent id/path and required external capability.\n"
-    "For GitHub PR intake use host Hermes: `hermes github-pr-feedback inspect-pr --repository OWNER/REPO "
-    "--pr-number N`; paginate issue comments, review comments, and reviews; do not use raw `gh pr view`, `gh api`, or curl. "
+    "For GitHub PR intake use `gh pr view --json`, `gh api`, and `gh pr diff` to inspect the PR, paginate issue comments, "
+    "review comments, and reviews. "
     "`board-record-only`/`no-op` tasks use Kanban as source of truth: call `kanban_show`, Never search the checkout for board records, "
     "and investigate missing task output before blocking; the producer has already fixed the scope; only then block; "
     "and complete with a no-op receipt when no work exists. A capability block requires literal argv and redacted stderr.\n"
@@ -394,6 +394,15 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "calls concurrently, and batching avoids resending the whole conversation on every extra round-trip.\n"
     "Only serialize calls when a later call genuinely depends on an earlier call's result (e.g. you must "
     "read a file before you can patch it). When in doubt and the calls are independent, batch them."
+)
+
+GUARDED_EXECUTION_CONTRACT = (
+    "# Guarded execution mode\n"
+    "This session is operating under a constrained execution contract. Skill descriptions are loaded on "
+    "demand with `skill_view(name='...')` — the index above lists names only. Do not attempt to recall "
+    "skill contents from context; always reload with `skill_view` before acting on a skill. This mode "
+    "activates only when `coding_context: focus` is set, a coding workspace is detected, and the active "
+    "provider/model route matches a configured entry in `agent.guarded_prompt_mode.routes`."
 )
 
 # Execution-discipline guidance for models that abandon partial results, skip prerequisite lookups, answer

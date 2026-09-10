@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
-    PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
+    GUARDED_EXECUTION_CONTRACT, HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS,
+    KANBAN_GUIDANCE, PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
@@ -602,6 +602,51 @@ def _join_tier(parts: List[Optional[str]]) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
+def guarded_prompt_enabled(agent: Any) -> bool:
+    """Return True when guarded_prompt_mode should activate for this session.
+
+    Three conditions must all hold:
+    1. ``agent.coding_context`` is ``focus`` (toolset-collapse is intentional).
+    2. A coding workspace is detected at the current cwd.
+    3. The active provider + model pair exactly matches one entry in
+       ``agent.guarded_prompt_mode.routes``.
+
+    Route matching is case-insensitive substring: a route ``{provider: 'ollama-launch',
+    model: 'hermes-qwen3-fast'}`` matches when both substrings appear in the live values.
+    Any config error or missing field is treated as disabled (fail-open).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        agent_cfg = (cfg or {}).get("agent", {}) or {}
+        gpm = agent_cfg.get("guarded_prompt_mode") or {}
+        if not gpm.get("enabled"):
+            return False
+        routes = gpm.get("routes") or []
+        if not routes:
+            return False
+        # Condition 1: coding_context must be focus.
+        if str(agent_cfg.get("coding_context", "auto")).strip().lower() not in ("focus", "strict", "lean"):
+            return False
+        # Condition 2: a coding workspace must be active.
+        from agent.coding_context import is_coding_context
+        if not is_coding_context(platform=getattr(agent, "platform", None), config=cfg):
+            return False
+        # Condition 3: route match (case-insensitive substring on both fields).
+        provider = (getattr(agent, "provider", None) or "").lower()
+        model = (getattr(agent, "model", None) or "").lower()
+        for route in routes:
+            if not isinstance(route, dict):
+                continue
+            rp = str(route.get("provider", "")).lower()
+            rm = str(route.get("model", "")).lower()
+            if rp and rm and rp in provider and rm in model:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
     guidance and the coding brief), ``context`` (caller ``system_message``, project
@@ -633,6 +678,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     environment_hints = _pb.build_environment_hints()
     coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(agent)
     stable_parts.extend(coding_prefix_parts)
+    if guarded_prompt_enabled(agent):
+        stable_parts.append(GUARDED_EXECUTION_CONTRACT)
     post_workspace_parts = _post_workspace_parts(agent)
     # ── Context tier (project/worktree-dependent, may change between sessions) ──
     context_parts: List[str] = []

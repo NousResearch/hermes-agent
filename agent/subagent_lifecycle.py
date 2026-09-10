@@ -347,6 +347,10 @@ class SubagentLifecycleService:
             PUBLIC_CONTRACT_VERSION, subagent_id, parent_session_id, request.correlation_id, created,
             getattr(child, "provider", None), getattr(child, "model", None), getattr(child, "_delegate_role", request.role),
             int(getattr(child, "_delegate_depth", 1) or 1), self._capability(subagent_id, parent_session_id, created),
+            worker_profile=getattr(request.constitution, "profile", None) or getattr(request.job_contract, "worker_profile", None),
+            constitution=request.constitution,
+            job_contract=request.job_contract,
+            governance=request.governance,
         )
         record = _Record(handle, SubagentState.PENDING, created, agent=child)
         with _REGISTRY.lock:
@@ -511,6 +515,23 @@ class SubagentLifecycleService:
             raise SubagentLifecycleError("metadata must be JSON-serializable.") from exc
         if metadata_bytes > _MAX_METADATA_BYTES:
             raise SubagentLifecycleError("metadata exceeds 8192 bytes.")
+        # Validate workforce contracts before installing them on the child.
+        try:
+            if request.job_contract is not None:
+                request.job_contract.validate()
+                if not request.job_contract.is_active():
+                    raise SubagentLifecycleError("job_contract is expired or not yet active.")
+                if (request.constitution is not None and
+                        request.job_contract.worker_profile != request.constitution.profile):
+                    raise SubagentLifecycleError(
+                        "job_contract.worker_profile does not match constitution.profile."
+                    )
+            if request.constitution is not None:
+                request.constitution.validate()
+        except SubagentLifecycleError:
+            raise
+        except Exception as exc:
+            raise SubagentLifecycleError(f"Invalid workforce contract: {exc}") from exc
         if not request.allowed_toolsets:
             return
         from toolsets import TOOLSETS

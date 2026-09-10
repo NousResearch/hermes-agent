@@ -725,7 +725,7 @@ def resolve_progress_query(
                 return ProgressQueryResult(False, "", "no_match")
             if selection == "ambiguous":
                 response = _format_multiple_progress(conn, value)
-                from gateway.vault_reports import append_vault_context, load_live_config
+                from plugins.kanban.vault_reports import append_vault_context, load_live_config
 
                 return ProgressQueryResult(
                     True,
@@ -738,7 +738,7 @@ def resolve_progress_query(
                     "resolved_multiple",
                 )
             response = _format_progress(conn, value)
-            from gateway.vault_reports import append_vault_context, load_live_config
+            from plugins.kanban.vault_reports import append_vault_context, load_live_config
 
             return ProgressQueryResult(
                 True,

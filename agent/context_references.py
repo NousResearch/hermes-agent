@@ -176,7 +176,9 @@ def preprocess_context_references(
 ) -> ContextReferenceResult:
     """Sync wrapper; safe both without a loop (CLI) and inside a running loop (gateway)."""
     coro = preprocess_context_references_async(
-        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher, allowed_root=allowed_root
+        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher,
+        allowed_root=allowed_root, source_provenance_registry=source_provenance_registry,
+        session_id=session_id, turn_id=turn_id, request_id=request_id, policy_digest=policy_digest,
     )
     try:
         asyncio.get_running_loop()
@@ -237,6 +239,21 @@ async def preprocess_context_references_async(
         final = f"{final}\n\n--- Attached Context ---\n\n" + "\n\n".join(blocks)
     result.message = final.strip()
     result.expanded = bool(blocks or warnings)
+
+    if source_provenance_registry is not None and blocks and result.expanded:
+        try:
+            for ref, (_, block) in zip(refs, expanded):
+                if block and ref.kind in ("file", "folder"):
+                    source_provenance_registry.grant_exact_ref(
+                        ref.target,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        request_id=request_id,
+                        policy_digest=policy_digest,
+                    )
+        except Exception:
+            pass
+
     return result
 
 

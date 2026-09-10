@@ -1040,6 +1040,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         self._voice_timeout_seconds = self._load_voice_timeout()
         self._playback_timeout_seconds = self._load_playback_timeout()
+        _vaj_channel, _vaj_users, _vaj_text = self._load_voice_auto_join_config()
+        self._voice_auto_join_channel_id: int | None = _vaj_channel
+        self._voice_auto_join_user_ids: set[str] = _vaj_users
+        self._voice_auto_join_text_channel_id: int | None = _vaj_text
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
@@ -1266,12 +1270,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
                 guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
-                    return
                 if member == adapter_self._client.user:
                     # A move performed outside this adapter (for example from
                     # Discord's UI or REST API) makes discord.py replace the
@@ -1280,19 +1279,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     # reader, so it can still see websocket SPEAKING events
                     # but receives no audio packets.  Refresh the receiver
                     # after discord.py has completed its reconnect.
-                    if before.channel != after.channel and after.channel is not None:
+                    bot_guild_ids_self = set(adapter_self._voice_clients.keys())
+                    if guild_id in bot_guild_ids_self and before.channel != after.channel and after.channel is not None:
                         asyncio.ensure_future(
                             adapter_self._refresh_voice_receiver_after_forced_move(guild_id)
                         )
                     return
 
+                # Auto-join runs before the active-client guard so it fires even when
+                # the bot is not yet in any voice channel in this guild.
                 await adapter_self._auto_join_voice_for_member(member, before, after)
 
-                # Only log ordinary member state changes while the bot is in
-                # this guild. Auto-join above runs before this guard because
-                # it is how an initially disconnected bot enters the room.
+                # Only log ordinary member state changes while the bot is in this guild.
                 bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if guild_id not in bot_guild_ids:
+                if not bot_guild_ids or guild_id not in bot_guild_ids:
                     return
                 joined = before.channel is None and after.channel is not None
                 left = before.channel is not None and after.channel is None
@@ -6125,6 +6125,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             self._threads.mark(thread_id)
+        # Try specialist routing for plain text before entering the normal agent loop.
+        if msg_type == MessageType.TEXT and not recovered:
+            try:
+                if await self._maybe_answer_progress_event(event):
+                    return True
+                if await self._maybe_route_specialist_event(event):
+                    return True
+            except Exception:
+                logger.debug("[Discord] specialist routing check failed", exc_info=True)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
         if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)

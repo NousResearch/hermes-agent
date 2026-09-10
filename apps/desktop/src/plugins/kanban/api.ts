@@ -173,14 +173,15 @@ export function bindApi(
   let close: (() => void) | null = null
   let boardRefreshTimer: null | ReturnType<typeof setTimeout> = null
 
-  const scheduleBoardRefresh = () => {
+  const scheduleBoardRefresh = (slug: string) => {
     if (boardRefreshTimer !== null) {
       return
     }
 
+    const capturedSlug = slug
     boardRefreshTimer = setTimeout(() => {
       boardRefreshTimer = null
-      void queryClient.invalidateQueries({ queryKey: ['kanban', 'board', $boardSlug.get()] })
+      void queryClient.invalidateQueries({ queryKey: ['kanban', 'board', capturedSlug] })
       void queryClient.invalidateQueries({ queryKey: BOARDS_KEY })
     }, 500)
   }
@@ -188,7 +189,7 @@ export function bindApi(
   const open = (slug: string) => {
     close?.()
     close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data =>
-      onEventsFrame(slug, data, scheduleBoardRefresh)
+      onEventsFrame(slug, data, () => scheduleBoardRefresh(slug))
     )
   }
 

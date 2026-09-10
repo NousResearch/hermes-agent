@@ -489,6 +489,13 @@ class ChatCompletionsTransport(ProviderTransport):
                 extra_body = {k: v for k, v in extra_body.items() if k in ("thinking_config", "thinkingConfig")}
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
+        # Apply provider-owned safety cleanup (e.g. stripping think/reasoning from
+        # non-reasoning Ollama endpoints) after all request overrides are merged.
+        api_kwargs = profile.sanitize_request_kwargs(
+            api_kwargs,
+            supports_reasoning=params.get("supports_reasoning", False),
+            base_url=params.get("base_url"),
+        )
         return _finish_kwargs(
             api_kwargs, sanitized, params, supports_prompt_cache_key=bool(getattr(profile, "supports_prompt_cache_key", False)),
         )

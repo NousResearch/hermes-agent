@@ -34,9 +34,6 @@ def _auto_review_on_stop_enabled() -> bool:
     the old evidence-preservation behavior can opt in per worker or config.
     """
 
-    raw = os.environ.get("HERMES_KANBAN_AUTO_REVIEW_ON_STOP")
-    if raw is not None:
-        return raw.strip().lower() in {"1", "true", "yes", "on"}
     try:
         from hermes_cli.config import load_config
 
@@ -49,15 +46,14 @@ def _auto_review_on_stop_enabled() -> bool:
 def _configured_review_profile() -> str | None:
     """Return an installed independent reviewer configured for stop handoffs."""
 
-    configured = (os.environ.get("HERMES_KANBAN_REVIEWER_PROFILE") or "").strip()
-    if not configured:
-        try:
-            from hermes_cli.config import load_config
+    configured = ""
+    try:
+        from hermes_cli.config import load_config
 
-            kanban = load_config().get("kanban") or {}
-            configured = str(kanban.get("reviewer_profile") or "").strip()
-        except Exception:
-            return None
+        kanban = load_config().get("kanban") or {}
+        configured = str(kanban.get("reviewer_profile") or "").strip()
+    except Exception:
+        return None
     if not configured:
         return None
     try:

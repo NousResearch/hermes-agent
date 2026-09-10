@@ -2563,7 +2563,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._init_display_options(verbose, compact)
         self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
-        self._init_runtime_state(resume)
+        self._init_runtime_state(resume, manage_conversation_worktree=manage_conversation_worktree)
 
     def _init_display_options(self, verbose, compact):
         """Display-related config: compact/tool-progress/focus view, bells, streaming, previews, stream buffers."""
@@ -2811,7 +2811,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
-    def _init_runtime_state(self, resume):
+    def _init_runtime_state(self, resume, *, manage_conversation_worktree: bool = True):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
@@ -2830,6 +2830,19 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._resumed = bool(resume)
         self.session_id = resume or f"{self.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
+        self._conversation_worktree_binding = None
+        if manage_conversation_worktree and self._session_db is not None:
+            try:
+                from agent.conversation_worktree import ConversationWorktreeManager
+                from agent.conversation_worktree_policy import resolve_conversation_worktree_policy
+                _cw_policy = resolve_conversation_worktree_policy(CLI_CONFIG)
+                if _cw_policy.enabled:
+                    _cw_mgr = ConversationWorktreeManager(_cw_policy, self._session_db)
+                    self._conversation_worktree_binding = _cw_mgr.bind_new_root_session(
+                        self.session_id, conversation_kind="interactive"
+                    )
+            except Exception as _cw_err:
+                logger.debug("conversation_worktree setup failed: %s", _cw_err)
 
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttles UI repaints

@@ -226,7 +226,7 @@ def reclaim_worktrees(
 
     actions: List[str] = []
     for record in records:
-        if record.verdict not in {"reap", "reap-archive"}:
+        if record.verdict not in {"reap", "reap-archive", "reap-keep-branch"}:
             continue
         if dry_run:
             actions.append(f"would remove {record.name} ({record.reason})")

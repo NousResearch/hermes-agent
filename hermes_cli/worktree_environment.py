@@ -105,7 +105,12 @@ def bootstrap_worktree_environments(
                 if not source.exists():
                     continue
                 resolved_source = source.resolve(strict=True)
-                python = resolved_source / "bin" / "python"
+                import sys as _sys
+                python = (
+                    resolved_source / "Scripts" / "python.exe"
+                    if _sys.platform == "win32"
+                    else resolved_source / "bin" / "python"
+                )
                 if not resolved_source.is_dir() or not _same_repository_environment(
                     source_root, resolved_source
                 ):

@@ -69,9 +69,6 @@ HERMES_DIR = get_hermes_home().resolve()
 # scope paths with use_cron_store() instead of mutating these process-wide.
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
-LASTGOOD_FILE = CRON_DIR / "jobs.json.lastgood"
-
-
 # Heartbeat: touched every ticker loop so `hermes cron status` can tell the ticker THREAD is alive,
 # not just the gateway PROCESS; success = last tick that completed WITHOUT raising.
 # The gateway process and the (separate) ``hermes cron status`` process share it so status can tell whether
@@ -587,61 +584,6 @@ def ensure_dirs():
     _ensure_cron_dir(store.output_dir)
     _secure_dir(store.cron_dir)
     _secure_dir(store.output_dir)
-def _record_cron_activity(event_type: str, job: Dict[str, Any], **extra: Any) -> None:
-    """Best-effort Profile Activity Ledger hook for cron job changes."""
-    try:
-        from hermes_cli.profile_activity_ledger import record_event_if_enabled
-
-        job_id = str(job.get("id") or "")
-        idempotency_key = extra.pop("idempotency_key", None)
-        payload = {
-            "job_id": job_id,
-            "name": job.get("name"),
-            "schedule_display": job.get("schedule_display"),
-            "deliver": job.get("deliver"),
-            "model": job.get("model"),
-            "provider": job.get("provider"),
-            "profile": job.get("profile"),
-        }
-        severity = "error" if event_type.endswith("error") else "info"
-        correlation_id = job_id or None
-        payload.update(extra)
-        payload["severity"] = severity
-        payload["correlation_id"] = correlation_id
-        record_event_if_enabled(
-            source="cron",
-            actor_profile=job.get("profile"),
-            event_type=event_type,
-            event_id=idempotency_key,
-            summary=f"cron {event_type} for {job_id or job.get('name') or 'job'}",
-            payload=payload,
-        )
-    except Exception:
-        pass
-
-
-def _capture_job_owner_profile() -> Optional[str]:
-    """Best-effort capture of the profile that owns a cron job.
-
-    Attribution seam for governance telemetry: ``_record_cron_activity``
-    reads ``job["profile"]`` for ``actor_profile`` so per-profile failure
-    analysis (e.g. denji-self-eval-trigger's repeated_failure reason) can
-    attribute ``job_run_error`` events. The root gateway's fleet crons
-    resolve to ``"default"`` via get_active_profile_name(); that is mapped
-    to ``"root"`` so it matches the fleet's profile vocabulary. Any failure
-    here must never break job creation — return None (legacy unattributed).
-    """
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-
-        name = get_active_profile_name()
-        if not name:
-            return None
-        return "root" if name == "default" else name
-    except Exception:
-        return None
-
-
 
 
 # --- Schedule Parsing ---
@@ -1484,8 +1426,6 @@ def _save_jobs_unlocked(
             tmp_path = None
             _secure_file(jobs_file)
             _preserve_file_ownership(jobs_file, _stat_before)
-            # KENSEI CUSTOM — refresh last-good snapshot on known-good write
-            _write_lastgood(jobs)
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
             # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).
             _record_load_stamp(None)
@@ -1493,92 +1433,6 @@ def _save_jobs_unlocked(
     except BaseException:
         _unlink_quiet(tmp_path)
         raise
-def _recover_from_lastgood() -> Optional[List[Dict[str, Any]]]:
-    """Try to load jobs from the last-known-good snapshot. Returns the jobs list
-    on success, or None if no usable snapshot exists."""
-    if not LASTGOOD_FILE.exists():
-        return None
-    try:
-        with open(LASTGOOD_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception as e:  # noqa: BLE001
-        logger.error("jobs.json.lastgood is itself unreadable: %s", e)
-        return None
-    return _coerce_jobs_shape(data)
-
-
-def _write_lastgood(jobs: List[Dict[str, Any]]) -> None:
-    """Atomically refresh the last-known-good snapshot. Best-effort: a failure
-    here must never break a load/save, so all errors are swallowed (logged)."""
-    try:
-        ensure_dirs()
-        fd, tmp_path = tempfile.mkstemp(dir=str(LASTGOOD_FILE.parent), suffix='.tmp', prefix='.lastgood_')
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, LASTGOOD_FILE)
-            _secure_file(LASTGOOD_FILE)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except Exception as e:  # noqa: BLE001 - recovery snapshot is best-effort
-        logger.warning("Could not refresh jobs.json.lastgood snapshot: %s", e)
-
-
-def _self_heal(jobs: List[Dict[str, Any]]) -> None:
-    """Persist a recovered job list back to jobs.json. Guarded: a failure to
-    write must not turn a successful in-memory recovery into a hard crash, so we
-    log and continue serving the recovered jobs for this cycle."""
-    try:
-        save_jobs(jobs)
-    except Exception as e:  # noqa: BLE001 - keep serving recovered jobs in-memory
-        logger.error("Recovered jobs in-memory but failed to persist self-heal: %s", e)
-
-
-def _quarantine_corrupt_file() -> None:
-    """Preserve the corrupted jobs.json for forensics before it is overwritten
-    by a recovery write. Best-effort; never breaks the recovery path. This is
-    the cron store for an agent with shell execution, so keeping the artefact
-    that caused a recovery matters for diagnosing the offending writer."""
-    try:
-        if not JOBS_FILE.exists():
-            return
-        stamp = _hermes_now().strftime("%Y%m%d_%H%M%S")
-        dest = CRON_DIR / f"jobs.json.corrupt.{stamp}"
-        shutil.copy2(JOBS_FILE, dest)
-        _secure_file(dest)
-        logger.error("Preserved corrupted jobs.json for forensics at %s", dest)
-    except Exception as e:  # noqa: BLE001 - forensic copy is best-effort
-        logger.warning("Could not preserve corrupted jobs.json: %s", e)
-
-
-def _coerce_jobs_shape(data: Any) -> Optional[List[Dict[str, Any]]]:
-    """Return the jobs list from a parsed jobs.json payload, or None if the
-    payload is not recoverable.
-
-    Recoverable shapes: a dict carrying a ``jobs`` list, or a bare list. In
-    either case every element must be a dict; a list containing non-dict items
-    (e.g. ``[null, {...}]``) is treated as corruption (return None) so callers
-    fall back to the lastgood snapshot rather than crashing later on ``job.get``.
-    """
-    if isinstance(data, dict):
-        jobs = data.get("jobs", [])
-    elif isinstance(data, list):
-        jobs = data
-    else:
-        return None
-    if not isinstance(jobs, list):
-        return None
-    if not all(isinstance(j, dict) for j in jobs):
-        return None
-    return jobs
-
-
 
 
 def save_jobs(
@@ -1784,68 +1638,6 @@ def _normalized_inference_axes(
         _normalize_job_optional_text(job.get("model")), _normalize_base_url(job.get("base_url")),
         bool(job.get("no_agent")),
     )
-def _validate_context_from_acyclic(jobs: List[Dict[str, Any]]) -> None:
-    """Reject cycles in the prospective jobs graph before it is persisted.
-
-    References to absent jobs are ignored here: reference-existence validation
-    belongs to the caller/tool boundary, while legacy jobs may already contain
-    stale references. A stale reference still participates if that ID is added
-    to the prospective graph and would close a cycle.
-    """
-    graph = {
-        str(job["id"]): _context_from_refs(job)
-        for job in jobs
-        if job.get("id")
-    }
-    state: Dict[str, int] = {}
-    path: List[str] = []
-
-    def visit(job_id: str) -> None:
-        marker = state.get(job_id, 0)
-        if marker == 2:
-            return
-        if marker == 1:
-            cycle_start = path.index(job_id)
-            cycle = path[cycle_start:] + [job_id]
-            raise ContextFromCycleError(
-                "context_from dependency cycle: " + " -> ".join(cycle)
-            )
-
-        state[job_id] = 1
-        path.append(job_id)
-        for dependency_id in graph.get(job_id, []):
-            # A job referencing its OWN id (or the "self" sentinel) is
-            # run-to-run continuity, not a cycle — upstream's self-context
-            # feature. Skip self-references so they don't trip the cycle
-            # detector (a self-edge is a trivial 1-cycle, not a real
-            # dependency loop).
-            if dependency_id == job_id:
-                continue
-            if dependency_id in graph:
-                visit(dependency_id)
-        path.pop()
-        state[job_id] = 2
-
-    for job_id in graph:
-        if state.get(job_id, 0) == 0:
-            visit(job_id)
-
-
-def _context_from_refs(job: Dict[str, Any]) -> List[str]:
-    """Return a job's stored context dependencies in normalized list form."""
-    raw = job.get("context_from")
-    if isinstance(raw, str):
-        value = raw.strip()
-        return [value] if value else []
-    if isinstance(raw, list):
-        return [str(ref).strip() for ref in raw if str(ref).strip()]
-    return []
-
-
-class ContextFromCycleError(ValueError):
-    """Raised when a prospective cron dependency graph contains a cycle."""
-
-
 
 
 def _validate_job_mode_invariants(
@@ -1914,7 +1706,6 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
-    enabled: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1926,10 +1717,6 @@ def create_job(
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
-    if enabled is not None:  # KENSEI CUSTOM — legacy enabled= maps onto paused=
-        if not isinstance(enabled, bool):
-            raise ValueError("enabled must be a boolean.")
-        paused = not enabled
     if paused_reason is not None and not isinstance(paused_reason, str):
         raise ValueError("paused_reason must be a string.")
     if paused_reason is not None and not paused:
@@ -1974,8 +1761,6 @@ def create_job(
     job = {
         "id": job_id,
         "name": name,
-        # KENSEI CUSTOM (restored): owner-profile attribution for governance telemetry.
-        "profile": _capture_job_owner_profile(),
         "prompt": prompt_text,
         "skills": normalized_skills,
         "skill": normalized_skills[0] if normalized_skills else None,
@@ -2022,15 +1807,7 @@ def create_job(
             job[key] = value
 
     with _jobs_lock():
-        jobs = load_jobs()
-        _validate_context_from_acyclic([*jobs, job])  # KENSEI CUSTOM — cycle gate
-        jobs.append(job)
-        save_jobs(jobs)
-    _record_cron_activity(  # KENSEI CUSTOM — governance ledger
-        "job_created",
-        job,
-        idempotency_key=f"cron:{job_id}:created:{now}",
-    )
+        save_jobs(load_jobs() + [job])
     return job
 
 
@@ -2187,19 +1964,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             updated["provider_snapshot"], updated["model_snapshot"] = snapshots
         _fill_missing_next_run(updated)
         _reject_terminal_activation(job, updated, job_id)
-        # KENSEI CUSTOM — cycle gate: validate with the UPDATE APPLIED, else the
-        # new context_from edges are invisible and a cycle slips through.
-        _prospective = [*jobs]
-        _prospective[i] = updated
-        _validate_context_from_acyclic(_prospective)
         jobs[i] = updated
         save_jobs(jobs)
-        _record_cron_activity(  # KENSEI CUSTOM — governance ledger
-            "job_updated",
-            _normalize_job_record(updated),
-            updated_fields=sorted((updates or {}).keys()),
-            idempotency_key=f"cron:{job_id}:updated:{_hermes_now().isoformat()}",
-        )
         return _normalize_job_record(updated)
 
     return _with_job(job_id, apply)
@@ -2327,11 +2093,6 @@ def remove_job(job_id: str) -> bool:
         # Resolve BEFORE saving so a legacy unsafe ID fails closed without a half-applied removal.
         job_output_dir = _job_output_dir(canonical_id)
         save_jobs(jobs, removed_ids={canonical_id})
-        _record_cron_activity(  # KENSEI CUSTOM — governance ledger
-            "job_removed",
-            job,
-            idempotency_key=f"cron:{canonical_id}:removed:{_hermes_now().isoformat()}",
-        )
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         try:
@@ -2348,13 +2109,11 @@ def remove_job(job_id: str) -> bool:
 
 def _set_alert_flag(job_id: str, field: str, value: bool) -> bool:
     """Set/clear a persisted alert-dedup marker (alert exactly once until the condition heals;
-    survives restarts) and return the PRIOR value. Fields: ``preflight_alerted``,
-    ``drift_alerted``.
+    survives restarts) and return the PRIOR value. Field: ``preflight_alerted`` (blocked config).
 
     The marker records that the operator was already alerted about this job's condition, so the scheduler
     alerts exactly once and stays silent on subsequent ticks until the condition heals (same alert-once
-    shape as the dead-pin auto-pause in #73506). Fields: ``preflight_alerted`` (blocked config, T1-26) and
-    ``drift_alerted`` (#44585 drift-guard skip).
+    shape as the dead-pin auto-pause in #73506).
     """
     def apply(jobs, _i, job):
         prior = bool(job.get(field))
@@ -2377,11 +2136,6 @@ def mark_preflight_alerted(job_id: str) -> bool:
 def clear_preflight_alerted(job_id: str) -> None:
     """Clear the preflight alert-dedup marker (config validates again)."""
     _set_alert_flag(job_id, "preflight_alerted", False)
-def mark_drift_alerted(job_id: str) -> bool:
-    """Mark the job as drift-alerted; return True if it already was."""
-    return _set_alert_flag(job_id, "drift_alerted", True)
-
-
 
 
 def note_fire_forward_failure(job_id: str, detail: str) -> bool:
@@ -2415,7 +2169,6 @@ def _record_run_outcome(
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
         # the forward-failure stamp so it only describes CURRENT auto-fire health.
         job.pop("preflight_alerted", None)
-        job.pop("drift_alerted", None)
         job.pop("last_fire_error", None)
         job["failure_streak"] = 0
     else:
@@ -2505,14 +2258,6 @@ def mark_job_run(
         _record_run_outcome(job, success, error, delivery_error, status, now)
         _advance_after_run(job, now)
         save_jobs(jobs)
-        _record_cron_activity(  # KENSEI CUSTOM — governance ledger (fork 5515e074d4)
-            "job_run_ok" if success else "job_run_error",
-            _normalize_job_record(job),
-            success=success,
-            error=error,
-            delivery_error=delivery_error,
-            idempotency_key=f"cron:{job_id}:run:{now}",
-        )
         return True
 
     def locked():

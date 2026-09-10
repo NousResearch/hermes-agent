@@ -16,8 +16,6 @@ import types
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from tests.content_trust_helpers import loads_fenced_json
-
 
 class TestFirecrawlClientConfig:
     """Test suite for Firecrawl client initialization."""
@@ -471,7 +469,7 @@ class TestWebSearchSchema:
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch.object(tools.web_tools._debug, "log_call"), \
              patch.object(tools.web_tools._debug, "save"):
-            result = loads_fenced_json(tools.web_tools.web_search_tool("docs", limit=500))
+            result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))
 
         assert result == {"success": True, "data": {"web": []}}
         fake_search.assert_called_once_with("docs", 100)

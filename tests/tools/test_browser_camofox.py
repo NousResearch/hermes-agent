@@ -38,63 +38,6 @@ class TestCamofoxMode:
         assert check_camofox_available() is False
 
 
-class TestCamofoxHealthValidation:
-    """Deterministic mock tests: a bare HTTP 200 from a non-Camofox HTML
-    endpoint (e.g. Netdata) must not be accepted as available. The /health
-    response must validate as meaningful JSON with a Camofox shape.
-    """
-
-    def test_rejects_non_json_html_200(self, monkeypatch):
-        """An HTML 200 response (Netdata) must be rejected."""
-        import tools.browser_camofox as bc
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
-        # Simulate Netdata: returns HTML, .json() raises ValueError
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
-        # Reset the VNC cache so the probe runs
-        bc._vnc_url = None
-        bc._vnc_url_checked = False
-        with patch("tools.browser_camofox.requests.get", return_value=resp):
-            assert check_camofox_available() is False
-
-    def test_accepts_valid_camofox_health_json(self, monkeypatch):
-        """A valid Camofox /health JSON object is accepted."""
-        import tools.browser_camofox as bc
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.json.return_value = {"status": "ok", "vncPort": 9378}
-        bc._vnc_url = None
-        bc._vnc_url_checked = False
-        with patch("tools.browser_camofox.requests.get", return_value=resp):
-            assert check_camofox_available() is True
-
-    def test_rejects_json_array_non_object(self, monkeypatch):
-        """A JSON array is not a Camofox health object."""
-        import tools.browser_camofox as bc
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.json.return_value = [1, 2, 3]
-        bc._vnc_url = None
-        bc._vnc_url_checked = False
-        with patch("tools.browser_camofox.requests.get", return_value=resp):
-            assert check_camofox_available() is False
-
-    def test_rejects_non_200_status(self, monkeypatch):
-        """A 503 from the configured URL is rejected."""
-        import tools.browser_camofox as bc
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        resp = MagicMock()
-        resp.status_code = 503
-        resp.json.return_value = {}
-        bc._vnc_url = None
-        bc._vnc_url_checked = False
-        with patch("tools.browser_camofox.requests.get", return_value=resp):
-            assert check_camofox_available() is False
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -165,17 +108,10 @@ class TestCamofoxNavigate:
 
 
     def test_connection_error_returns_helpful_message(self, monkeypatch):
-        """When the URL points at a non-Camofox service (e.g. Netdata on
-        port 19999 that returns HTML 200), navigation must surface a clear
-        "non-Camofox endpoint" error — not a raw JSON decode syntax message.
-        """
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
-        # The error must be a clear non-Camofox message, not raw JSON
-        # decode syntax ("Expecting value: line 1 column 1").
-        assert "non-JSON" in result["error"] or "Cannot connect" in result["error"]
-        assert "Expecting value" not in result["error"]
+        assert "Cannot connect" in result["error"]
 
 
 # ---------------------------------------------------------------------------

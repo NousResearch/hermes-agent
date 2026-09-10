@@ -83,7 +83,6 @@ class TestCleanShutdownMarker:
         runner._exit_reason = None
         runner.adapters = {}
         runner.config = GatewayConfig()
-        runner._cron_stop_event = None
 
         # Mock heavy dependencies
         with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=([], False)), \

@@ -573,23 +573,3 @@ class TestStaleToolMediaLeak:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
-
-def test_base_extract_media_accepts_html_report_attachment():
-    from gateway.platforms.base import BasePlatformAdapter
-    media, cleaned = BasePlatformAdapter.extract_media(
-        "Report ready MEDIA: /tmp/kensei/report.html done"
-    )
-
-    assert media == [("/tmp/kensei/report.html", False)]
-    assert "MEDIA:" not in cleaned
-    assert "Report ready" in cleaned
-    assert "done" in cleaned
-
-
-def test_base_extract_media_accepts_htm_attachment():
-    from gateway.platforms.base import BasePlatformAdapter
-    media, cleaned = BasePlatformAdapter.extract_media("MEDIA: /tmp/report.htm")
-
-    assert media == [("/tmp/report.htm", False)]
-    assert cleaned.strip() == ""

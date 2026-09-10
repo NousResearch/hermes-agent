@@ -392,32 +392,6 @@ class TestSessionLifecycle:
         assert session["ended_at"] is None
 
 
-    def test_todo_state_roundtrip_is_session_scoped(self, db):
-        db.create_session(session_id="s1", source="cli")
-        db.create_session(session_id="s2", source="cli")
-        state = {
-            "revision": 3,
-            "todos": [{"id": "build", "content": "Build tray", "status": "completed"}],
-            "user_status_overrides": {"build": "completed"},
-        }
-
-        assert db.update_session_todo_state("s1", state) is True
-
-        assert db.get_session_todo_state("s1") == state
-        assert db.get_session_todo_state("s2") is None
-        assert db.update_session_todo_state("missing", state) is False
-
-    def test_todo_state_read_does_not_flush_unrelated_token_counters(self, db):
-        db.create_session(session_id="s1", source="cli")
-        state = {"revision": 1, "todos": []}
-        assert db.update_session_todo_state("s1", state) is True
-        db.flush_token_counts = mock.MagicMock(
-            side_effect=AssertionError("todo sidecar read must stay read-only")
-        )
-
-        assert db.get_session_todo_state("s1") == state
-        db.flush_token_counts.assert_not_called()
-
     def test_branch_resume_does_not_include_parent_messages_added_after_fork(self, db):
         """A branch owns its copied transcript, not the parent's later turns."""
         db.create_session("parent", source="tui")
@@ -942,18 +916,6 @@ class TestFTS5Search:
             traced_connections.append(read_conn)
         for conn in traced_connections:
             conn.set_trace_callback(statements.append)
-        # The context-enrichment query runs on a pooled read connection
-        # obtained via _checkout_read_conn() (the read-pool refactor
-        # 87aedbe7b6). That connection is opened lazily during the search,
-        # so trace it by wrapping the checkout seam rather than pre-borrowing
-        # (pre-borrowing would steal the pooled conn and force a new one).
-        _orig_checkout = db._checkout_read_conn
-        def _traced_checkout():
-            conn = _orig_checkout()
-            if conn is not None:
-                conn.set_trace_callback(statements.append)
-            return conn
-        db._checkout_read_conn = _traced_checkout
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)

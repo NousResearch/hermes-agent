@@ -14,12 +14,7 @@ try:
     import defusedxml.ElementTree as ET
     DEFUSEDXML_AVAILABLE = True
 except ImportError:
-    # DefusedXML is the preferred secure parser (blocks XXE / billion-laughs).
-    # When it is not installed, fall back to the stdlib parser so callbacks
-    # keep working; the stdlib parser is still used only on pre-auth request
-    # bodies behind the callback verification gate.
-    import xml.etree.ElementTree as ET  # noqa: N812
-
+    ET = None  # type: ignore[assignment]
     DEFUSEDXML_AVAILABLE = False
 
 try:

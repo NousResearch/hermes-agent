@@ -21,12 +21,6 @@ logger = logging.getLogger("cron.scheduler")
 # alert-once dedup. ``:silent`` = already alerted on a previous tick — do not deliver again.
 BLOCKED_CONFIG_MARKER = "[blocked_config]"
 BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
-# Drift-guard skip: same contract (drift_alerted bit on the job record).
-# Same alert-once contract as blocked_config: run_one_job keys off it to record last_status and the
-# ``:silent`` variant means "already alerted on a previous tick — do not deliver again" (the drift_alerted
-# bit on the job record, #73506 shape).
-DRIFT_SKIP_MARKER = "[drift_skip]"
-DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
 
 _TRANSIENT_NET_EXC_NAMES = frozenset({
     "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "NetworkError",

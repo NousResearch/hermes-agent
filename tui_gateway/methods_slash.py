@@ -13,6 +13,9 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 
 
+# ── Live-session slash output ────────────────────────────────────────
+
+# Answered from the live session ONLY when the agent lives on a compute host.
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
 
 _NO_AGENT_USAGE = "(._.) No active agent -- send a message first."
@@ -189,6 +192,10 @@ def _format_live_status_output(sid: str, session: dict, arg: str) -> str:
     if response.get("error"):
         return str(response["error"].get("message") or "status unavailable")
     return str(response.get("result", {}).get("output") or "")
+
+
+# name → (reply when there is no session, formatter(sid, session, arg) or a fixed reply).
+# A None no-session reply means the formatter handles a missing session itself.
 _LIVE_SLASH_OUTPUT = {
     "compress": ("no active session for /compress",
                  lambda sid, session, arg: _mirror_slash_side_effects(sid, session, f"/compress {arg}".strip())),
@@ -221,6 +228,13 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     if session is None and no_session_reply is not None:
         return no_session_reply
     return fmt(sid, session, arg) if callable(fmt) else fmt
+
+
+# ── Side-effect mirroring ────────────────────────────────────────────
+
+# Read-then-mutate live agent/session state that a running turn is using; rejected
+# while running (parity with session.compress / session.undo and the gateway's
+# running-agent /model guard).
 _MUTATES_WHILE_RUNNING = frozenset({"model", "personality", "prompt", "compress"})
 
 
@@ -304,6 +318,9 @@ def _mirror_reload_mcp(sid, session, agent, arg) -> None:
 def _mirror_stop(sid, session, agent, arg) -> None:
     from tools.process_registry import process_registry
     process_registry.kill_all()
+
+
+# name → mirror(sid, session, agent, arg); a falsy return means "no warning".
 _SLASH_MIRRORS = {
     "model": lambda sid, session, agent, arg: (
         _apply_model_switch(sid, session, arg).get("warning", "") if arg and agent else ""),

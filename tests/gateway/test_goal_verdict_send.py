@@ -22,14 +22,8 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 @pytest.fixture()
 def hermes_home(tmp_path, monkeypatch):
-    # The live-state-db guard treats ``<root>/.hermes`` as a production root
-    # (``_is_production_state_db`` matches files directly under a root whose
-    # basename is ``.hermes``). Use a non-``.hermes`` home so the hermetic
-    # guard accepts the redirect instead of raising. The conftest autouse
-    # fixture already uses ``hermes_test`` in the same tmp_path, so pick a
-    # distinct name to avoid an mkdir collision.
-    home = tmp_path / "goal_hermes"
-    home.mkdir(exist_ok=True)
+    home = tmp_path / ".hermes"
+    home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
 

@@ -188,12 +188,6 @@ def format_dispatch_note(result: Dict[str, Any], user_prompt: str = "") -> str:
     model = str(result.get("review_model") or "").strip()
     model_note = f" on {model}" if model else ""
     focus_note = f" (focus: {user_prompt.strip()})" if user_prompt.strip() else ""
-    if result.get("status") == "dispatched":
-        return (
-            f"⚖ Review subagent dispatched{model_note}{focus_note} — it is "
-            f"investigating the last {DEFAULT_CONTEXT_MESSAGES} messages in "
-            f"the background and its full review will re-enter this conversation when it finishes."
-        )
     # Synchronous fallback (channels that cannot route async completions).
     return (
         f"⚖ Review completed synchronously{model_note}{focus_note} — "

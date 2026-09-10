@@ -373,16 +373,7 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
 
 
 @pytest.mark.asyncio
-async def test_shutdown_notifications_use_home_channel_when_origin_missing():
-    """Fork contract: shutdown notifications NEVER go to active session channels.
-
-    The fork hard-limits lifecycle pings to configured home channels (multi-
-    Discord deployments would otherwise cascade across servers/channels on
-    every systemd restart; Discord lifecycle pings are further restricted to
-    Sahil's operator channels). An active session whose origin is missing
-    (e.g. a session store entry with origin=None) must NOT trigger a send to
-    the session channel — the home channel is the only notification target.
-    """
+async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_missing():
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="parent-42", chat_type="group", thread_id="topic-7")
     session_key = build_session_key(source)
@@ -392,10 +383,13 @@ async def test_shutdown_notifications_use_home_channel_when_origin_missing():
     runner._cache_session_source(session_key, source)
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
 
-    # No home channel configured → nothing may be sent anywhere.
     await runner._notify_active_sessions_of_shutdown()
 
-    adapter.send.assert_not_awaited()
+    adapter.send.assert_awaited_once_with(
+        "parent-42",
+        "⚠️ Gateway shutting down — Your current task will be interrupted.",
+        metadata={"thread_id": "topic-7"},
+    )
 
 
 @pytest.mark.asyncio

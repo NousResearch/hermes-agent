@@ -115,15 +115,3 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
                 "auto_continue": bool(entry.get("auto_continue", True))}
     except Exception:
         return None
-
-    except Exception:
-        return None
-
-    except Exception:
-        return None
-
-    except Exception:
-        return None
-
-    except Exception:
-        return None

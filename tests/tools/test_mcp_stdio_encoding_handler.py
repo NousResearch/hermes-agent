@@ -50,8 +50,8 @@ class TestStdioEncodingErrorHandler:
             ):
                 server = MCPServerTask("test-encoding")
                 await server.start({
-                    "command": "python3",
-                    "args": ["-V"],
+                    "command": "echo",
+                    "args": ["hello"],
                 })
 
                 call_kwargs = mock_params.call_args.kwargs
@@ -89,8 +89,8 @@ class TestStdioEncodingErrorHandler:
             ):
                 server = MCPServerTask("test-encoding")
                 await server.start({
-                    "command": "python3",
-                    "args": ["-V"],
+                    "command": "echo",
+                    "args": ["hello"],
                 })
 
                 call_kwargs = mock_params.call_args.kwargs

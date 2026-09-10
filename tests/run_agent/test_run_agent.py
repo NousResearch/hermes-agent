@@ -768,25 +768,6 @@ class TestHydrateTodoStore:
             ],
         }
 
-    def test_empty_todo_result_clears_an_older_store(self, agent):
-        agent._todo_store.write([
-            {"id": "old", "content": "Old task", "status": "pending"}
-        ])
-        history = [
-            self._assistant_todo_call("clear-1"),
-            {
-                "role": "tool",
-                "tool_call_id": "clear-1",
-                "content": '{"todos": [], "summary": {"total": 0}}',
-            },
-        ]
-
-        with patch("run_agent._set_interrupt"):
-            agent._hydrate_todo_store(history)
-
-        assert agent._todo_store.read() == []
-        assert agent._todo_store.needs_history_reconciliation is False
-
     def test_no_todo_in_history(self, agent):
         history = [
             {"role": "user", "content": "hello"},
@@ -2503,7 +2484,6 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
         ("clarify", {"question": "Continue?"}),
-        ("ask_user_questions", {"questions": [{"question": "Continue?"}]}),
         ("read_terminal", {}),
         ("desktop_preview", {"action": "read"}),
         ("drive_preview", {"action": "elements"}),
@@ -2512,7 +2492,6 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("setup_mcp", {"server": "linear", "action": "install"}),
         ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
-        ("config_set", {"key": "agent.mode", "value": "auto"}),
     )
 
     @pytest.mark.parametrize(("tool_name", "tool_args"), _CASES)
@@ -2545,10 +2524,6 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr(
             "tools.clarify_tool.clarify_tool",
-            lambda **kwargs: '{"ok":true}',
-        )
-        monkeypatch.setattr(
-            "tools.ask_user_questions_tool.ask_user_questions_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
@@ -3736,144 +3711,6 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
         assert fallback_called["called"], "Fallback should have been triggered"
         assert result["completed"] is True
-        assert result["final_response"] == "Fallback answer."
-
-    @pytest.mark.parametrize(
-        ("provider", "requested_provider"),
-        [
-            ("custom:turbohaul-local", "custom:turbohaul-local"),
-            ("custom", "custom:turbohaul-local"),
-            ("Turbohaul Local", "custom"),
-        ],
-    )
-    def test_explicit_turbohaul_empty_exhaustion_stays_local(
-        self, agent, provider, requested_provider,
-    ):
-        """An explicit turbohaul-local selection must fail locally, not use cloud fallback."""
-        self._setup_agent(agent)
-        agent.model = "qwen3.8-27b"
-        agent.provider = provider
-        agent.requested_provider = requested_provider
-        agent.base_url = "http://127.0.0.1:1234/v1"
-        agent._model_explicitly_selected = True
-        agent._fallback_chain = [
-            {"provider": "nvidia", "model": "moonshotai/kimi-k2.5"},
-        ]
-        agent._fallback_index = 0
-        agent._fallback_activated = False
-        empty_resp = _mock_response(content=None, finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [empty_resp] * 4
-
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.conversation_loop.jittered_backoff", return_value=0),
-            patch.object(agent, "_try_activate_fallback", return_value=False) as fallback,
-        ):
-            result = agent.run_conversation("answer me")
-
-        fallback.assert_not_called()
-        assert agent.model == "qwen3.8-27b"
-        assert agent.provider == provider
-        assert agent.requested_provider == requested_provider
-        assert agent._fallback_activated is False
-        assert "local model" in result["final_response"].lower()
-        assert "qwen3.8-27b" in result["final_response"]
-        assert "turbohaul-local" in result["final_response"]
-
-    def test_explicit_turbohaul_thinking_exhaustion_stays_local(self, agent):
-        """Reasoning-only exhaustion is covered by the same no-cloud lock."""
-        self._setup_agent(agent)
-        agent.model = "qwen3.8-27b"
-        agent.provider = "custom:turbohaul-local"
-        agent.requested_provider = "custom:turbohaul-local"
-        agent._model_explicitly_selected = True
-        agent._fallback_chain = [{"provider": "nvidia", "model": "fallback-model"}]
-        reasoning_only = _mock_response(
-            content="", reasoning="Still thinking without a visible answer."
-        )
-        agent.client.chat.completions.create.side_effect = [reasoning_only] * 6
-
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.conversation_loop.jittered_backoff", return_value=0),
-            patch.object(agent, "_try_activate_fallback", return_value=False) as fallback,
-        ):
-            result = agent.run_conversation("answer me")
-
-        fallback.assert_not_called()
-        assert agent.model == "qwen3.8-27b"
-        assert agent.provider == "custom:turbohaul-local"
-        assert "local model" in result["final_response"].lower()
-        assert "cloud fallback was not activated" in result["final_response"].lower()
-
-    def test_explicit_turbohaul_lock_reverse_resolves_exact_configured_base_url(self, agent):
-        """A collapsed custom identity is recovered through canonical endpoint lookup."""
-        from agent.conversation_loop import _explicit_turbohaul_local_lock
-
-        agent.provider = "custom"
-        agent.requested_provider = "custom"
-        agent.model = "qwen3.8-27b"
-        agent.base_url = "http://127.0.0.1:1234/v1/"
-        agent._model_explicitly_selected = True
-
-        with patch(
-            "hermes_cli.runtime_provider.canonical_custom_identity",
-            return_value="custom:turbohaul-local",
-        ) as canonical:
-            assert _explicit_turbohaul_local_lock(agent) is True
-
-        canonical.assert_called_once_with(
-            base_url="http://127.0.0.1:1234/v1/",
-            model="qwen3.8-27b",
-        )
-
-    @pytest.mark.parametrize(
-        ("explicitly_selected", "provider", "requested_provider"),
-        [
-            (False, "custom", "custom:turbohaul-local"),
-            (True, "custom:other-local", "custom:other-local"),
-            (True, "openrouter", "openrouter"),
-        ],
-    )
-    def test_empty_exhaustion_preserves_existing_fallback_outside_explicit_turbohaul(
-        self, agent, explicitly_selected, provider, requested_provider,
-    ):
-        """Automatic turbohaul and every non-turbohaul provider retain fallback behavior."""
-        self._setup_agent(agent)
-        agent.provider = provider
-        agent.requested_provider = requested_provider
-        agent._model_explicitly_selected = explicitly_selected
-        agent._fallback_chain = [{"provider": "nvidia", "model": "fallback-model"}]
-        agent._fallback_index = 0
-        agent._fallback_activated = False
-        empty_resp = _mock_response(content=None, finish_reason="stop")
-        content_resp = _mock_response(content="Fallback answer.", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [
-            empty_resp, empty_resp, empty_resp, empty_resp, content_resp,
-        ]
-
-        def _activate():
-            agent._fallback_activated = True
-            agent.provider = "nvidia"
-            agent.requested_provider = "nvidia"
-            agent.model = "fallback-model"
-            agent._fallback_index = 1
-            return True
-
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.conversation_loop.jittered_backoff", return_value=0),
-            patch.object(agent, "_try_activate_fallback", side_effect=_activate) as fallback,
-        ):
-            result = agent.run_conversation("answer me")
-
-        fallback.assert_called_once_with()
         assert result["final_response"] == "Fallback answer."
 
     def test_empty_response_fallback_also_empty_returns_empty(self, agent):

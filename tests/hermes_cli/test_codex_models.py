@@ -76,31 +76,6 @@ def test_setup_wizard_codex_import_resolves():
 
 
 
-def test_get_codex_model_ids_carries_all_gpt_5_6_variants_from_gpt_5_5(monkeypatch):
-    """A stale live catalog must retain Kensei's forward-compat behaviour.
-
-    Upstream's curated fallback now includes the high-effort ``-pro`` variants;
-    when only gpt-5.5 is returned by the live endpoint, all six 5.6 variants
-    must remain selectable exactly once.
-    """
-    monkeypatch.setattr(
-        "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.5"],
-    )
-
-    models = get_codex_model_ids(access_token="codex-access-token")
-
-    assert {
-        "gpt-5.6-sol",
-        "gpt-5.6-sol-pro",
-        "gpt-5.6-terra",
-        "gpt-5.6-terra-pro",
-        "gpt-5.6-luna",
-        "gpt-5.6-luna-pro",
-    }.issubset(models)
-    assert len(models) == len(set(models))
-
-
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     """Regression: gpt-5.3-codex-spark is returned by the live Codex backend
     with ``supported_in_api: false`` because it isn't in the public OpenAI

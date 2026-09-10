@@ -482,14 +482,17 @@ def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, 
     """First catalog entry for *model* (exact, case-insensitive, suffix), or None."""
     return next((entry for _mid, entry in _iter_model_entries(models, model)), None)
 
+
 def _extract_limit(entry: Any, key: str) -> Optional[int]:
     """Positive int ``entry.limit[key]`` or None (audio/image models have context=0)."""
     value = _dict_or_empty(_dict_or_empty(entry).get("limit")).get(key)
     return int(value) if isinstance(value, (int, float)) and value > 0 else None
 
+
 def _extract_context(entry: Dict[str, Any]) -> Optional[int]:
     """Context length from a models.dev model entry, or None if invalid/zero."""
     return _extract_limit(entry, "context")
+
 
 def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool = False) -> Optional[int]:
     """Context window in tokens for provider+model, or None if not found. An EXPLICIT ``model_overrides``
@@ -680,6 +683,20 @@ def get_model_capabilities(provider: str, model: str, *, allow_network: bool = F
     self-unblock path for custom/local models (#8731) and for models with wrong metadata in models.dev
     (#84482).
     """
+    models = _get_provider_models(provider, allow_network=allow_network)
+    entry = _find_model_entry(models, model) if models is not None else None
+    raw = _apply_overrides(provider, model, entry)
+    if raw is None:
+        return None
+    return ModelCapabilities(
+        supports_tools=bool(raw.get("tool_call", False)),
+        supports_vision=_entry_supports_vision(raw),
+        supports_reasoning=bool(raw.get("reasoning", False)),
+        context_window=_extract_limit(raw, "context") or 200000,
+        max_output_tokens=_extract_limit(raw, "output") or 8192,
+        model_family=raw.get("family", "") or "",
+    )
+
 
 def list_provider_models(provider: str, *, allow_network: bool = True) -> List[str]:
     """All model IDs for a provider ([] if unknown). ``allow_network`` defaults to True: the model

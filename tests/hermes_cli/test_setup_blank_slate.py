@@ -72,9 +72,8 @@ class TestBlankSlateMinimalToolsets:
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
         )
         assert names == ["patch", "process_manage", "read_file", "search_files",
-                         "skill_manage", "skill_request", "skill_view",
-                         "skills_list", "terminal", "tool_request",
-                         "vision_analyze", "write_file"]
+                         "skill_manage", "skill_view", "skills_list",
+                         "terminal", "vision_analyze", "write_file"]
 
 
 class TestBlankSlateMinimizeConfig:

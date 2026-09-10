@@ -122,49 +122,6 @@ def _session_key_or_err(rid, session, module: str, label: str):
         return None, None, _err(rid, 5030, f"{label} unavailable: {exc}")
 
 
-def _tools_mod(module: str):
-    """Deferred module import for one-liner bodies (startup budget: never import at load)."""
-    import importlib
-    return importlib.import_module(module)
-
-
-_stripped = lambda v: bool(str(v or "").strip())  # noqa: E731 — required-param predicates
-_nonempty = lambda v: not (v is None or str(v) == "")  # noqa: E731
-_NAME = (("name", _stripped),)
-_NAME_SESSION = (("name", _stripped), ("session_id", _stripped))
-
-
-def _mcp_rpc(name: str, required=_NAME):
-    """mcp.servers.* contract: profile scope, ``required`` params (default ``name``), body errors → 5024,
-    profile-resolve errors propagate to dispatch()."""
-    return _scoped_rpc(f"mcp.servers.{name}", required=required, catch_resolve=False)
-
-
-def _mcp_named_server(rid, params):
-    """(name, servers, None) for a configured server, else (name, servers, 4064 error)."""
-    name, servers = _str_arg(params, "name"), _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
-    return name, servers, None if name in servers else _err(rid, 4064, f"server '{name}' not found")
-
-
-def _busy_error(rid, session, cmd: str):
-    if session.get("running"):
-        return _err(rid, 4009, f"session busy — /interrupt the current turn before /{cmd}")
-    return None
-
-
-def _session_key_or_err(rid, session, module: str, label: str):
-    """(session_key, module, None) for the /goal and /loop managers, else (None, None, error):
-    4001 without a session/key, 5030 when ``module`` fails to import."""
-    if not session:
-        return None, None, _err(rid, 4001, "no active session")
-    if not (sid_key := session.get("session_key") or ""):
-        return None, None, _err(rid, 4001, "no session key")
-    try:
-        return sid_key, _tools_mod(module), None
-    except Exception as exc:
-        return None, None, _err(rid, 5030, f"{label} unavailable: {exc}")
-
-
 def _user_turn_indices(session):
     """(history, indices of user-originated turns) minus ephemeral scaffolding. Call under history_lock."""
     is_user = _tools_mod("agent.context_compressor").user_originated_turn_view
@@ -288,40 +245,6 @@ def _(rid, params: dict, session) -> dict:
         return _err(rid, 4044, f"no such process: {proc_id}")
     return _ok(rid, registry.kill_process(proc_id))
 
-# One-expression handlers: name → (fail_code, payload builder(params)).
-_SIMPLE_RPCS = {
-    # Session-scoped view of the background process registry (desktop status stack).
-    "process.stop": (5010, lambda params: {"killed": _tools_mod("tools.process_registry").process_registry.kill_all()}),
-    # Re-read ``~/.hermes/.env`` (CLI ``/reload`` parity); built agents keep their pool, ``/new`` resolves fresh.
-    "reload.env": (5015, lambda params: {"updated": int(_tools_mod("hermes_cli.config").reload_env())}),
-    "plugins.list": (5032, lambda params: {"plugins": [
-        {"name": n, "version": getattr(i, "version", "?"), "enabled": getattr(i, "enabled", True)}
-        for n, i in _tools_mod("hermes_cli.plugins").get_plugin_manager()._plugins.items()]}),
-    "tools.list": (5031, lambda params: {"toolsets": _toolset_rows(params, with_tools=True)}),
-    "toolsets.list": (5032, lambda params: {"toolsets": _toolset_rows(params, with_tools=False)}),
-    "agents.list": (5033, lambda params: {"processes": [
-        {"session_id": p["session_id"], "command": p["command"][:80], "status": p["status"], "uptime": p["uptime_seconds"]}
-        for p in _tools_mod("tools.process_registry").process_registry.list_sessions()]}),
-}
-for _name, (_code, _build) in _SIMPLE_RPCS.items():
-    # Look the builder up at call time: bind_module rebinds the table's lambdas onto server globals.
-    _rpc(_name, _code)(lambda rid, params, _n=_name: _ok(rid, _SIMPLE_RPCS[_n][1](params)))
-del _name, _code, _build
-_rpc("process.list", 5010, live_session=True)(
-    lambda rid, params, session: _ok(rid, {"processes": _session_processes(session)}))
-
-
-@_rpc("process.kill", live_session=True, fail_code=5010)
-def _(rid, params: dict, session) -> dict:
-    """Kill ONE background process, scoped to the caller's session (unlike process.stop's kill_all)."""
-    proc_id = str(params.get("process_id") or "")
-    if not proc_id:
-        return _err(rid, 4012, "process_id required")
-    registry = _tools_mod("tools.process_registry").process_registry
-    proc = registry.get(proc_id)
-    if proc is None or str(getattr(proc, "session_key", "") or "") != str(session.get("session_key") or ""):
-        return _err(rid, 4044, f"no such process: {proc_id}")
-    return _ok(rid, registry.kill_process(proc_id))
 
 def _mcp_reload_confirm_required() -> bool:
     """``approvals.mcp_reload_confirm`` from disk config; True (safe) on any failure."""
@@ -438,10 +361,6 @@ def _catalog_registry(cat: _Catalog) -> None:
             cat.add(name, desc, category)
 
 
-def clip(value: object, limit: int = 240) -> str:
-    return str(value)[:limit]
-
-
 def _catalog_quick_commands(cat: _Catalog) -> None:
     qcmds = _load_cfg().get("quick_commands", {}) or {}
     if not (isinstance(qcmds, dict) and qcmds):
@@ -453,7 +372,7 @@ def _catalog_quick_commands(cat: _Catalog) -> None:
         qtype = qc.get("type", "")
         default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}"}
         desc = str(qc.get("description") or default_desc.get(qtype, qtype or "quick command"))
-        cat.add(f"/{qname}", clip(desc), "User commands")
+        cat.add(f"/{qname}", desc, "User commands")
 
 
 def _catalog_plugin_commands(cat: _Catalog) -> None:
@@ -464,7 +383,7 @@ def _catalog_plugin_commands(cat: _Catalog) -> None:
         key = f"/{pname}"
         if not isinstance(info, dict) or key.lower() in cat.canon:
             continue
-        cat.add(key, clip(str(info.get("description") or "Plugin command")), "Plugin commands")
+        cat.add(key, str(info.get("description") or "Plugin command"), "Plugin commands")
         mode = info.get("argument_mode")
         if mode not in {"options", "text", "mixed"}:
             mode = "text" if str(info.get("args_hint") or "").strip() else None
@@ -475,7 +394,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
     """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
     usage, origin_of = _skill_usage_lookup()
     for k, info in sorted(_tools_mod("agent.skill_commands").scan_skill_commands().items()):
-        cat.pairs.append([k, clip(str(info.get("description", "Skill")))])
+        cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
 
@@ -526,13 +445,6 @@ def _(rid, params: dict) -> dict:
         timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,
         env=hermes_subprocess_env(inherit_credentials=True))
 
-    # Can drive the agent → needs provider credentials; tier-1 secrets still stripped.
-    return _captured_exec(
-        rid, [sys.executable, "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
-        on_result=lambda r: _ok(rid, {
-            "blocked": False, "code": r.returncode, "output": (_joined_output(r) or "(no output)")[:48_000]}),
-        timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,
-        env=hermes_subprocess_env(inherit_credentials=True))
 
 @_rpc("command.resolve", 5012)
 def _(rid, params: dict) -> dict:
@@ -544,22 +456,6 @@ def _(rid, params: dict) -> dict:
 
 # command.dispatch stages. Each takes (rid, params, session, name, arg) and
 # returns a JSON-RPC envelope, or None to fall through to the next stage.
-
-
-def _dispatch_quick(rid, params, session, name, arg):
-    qc = _load_cfg().get("quick_commands", {}).get(name)
-    if qc is None:
-        return None
-    if qc.get("type") == "exec":
-        # Sanitized env: the TUI server process holds every API key in os.environ.
-        env = _tools_mod("tools.environments.local").build_subprocess_env()
-        r = subprocess.run(qc.get("command", ""), shell=True, env=env, **_capture_run_kwargs(30))
-        output = _joined_output(r)[:4000]
-        output = _tools_mod("agent.redact").redact_sensitive_text(output) if output else output
-        if r.returncode != 0:
-            return _err(rid, 4018, output or f"quick command failed with exit code {r.returncode}")
-        return _exec_out(rid, output)
-    return _ok(rid, {"type": "alias", "target": qc.get("target", "")}) if qc.get("type") == "alias" else None
 
 
 def _dispatch_quick(rid, params, session, name, arg):
@@ -663,8 +559,6 @@ def _dispatch_skill(rid, params, session, name, arg):
 def _cmd_queue(rid, params, session, name, arg):
     return _ok(rid, {"type": "send", "message": arg}) if arg else _err(rid, 4004, "usage: /queue <prompt>")
 
-def _cmd_queue(rid, params, session, name, arg):
-    return _ok(rid, {"type": "send", "message": arg}) if arg else _err(rid, 4004, "usage: /queue <prompt>")
 
 def _prompt_builtin(module: str, fn: str, kw: str = ""):
     """/learn, /plan, /init: submit ``module.fn(arg)`` as a normal turn (the live agent does the work)."""
@@ -678,6 +572,7 @@ def _prompt_builtin(module: str, fn: str, kw: str = ""):
 _cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt")
 _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
 _cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cwd", kw="extra")
+
 
 def _cmd_moa(rid, params, session, name, arg):
     # One prompt through the default MoA preset, then restore the prior model (whole-session
@@ -773,44 +668,29 @@ def _cmd_steer(rid, params, session, name, arg):
 
 
 def _cmd_goal(rid, params, session, name, arg):
-    sid_key, goals, err = _session_key_or_err(rid, session, "hermes_cli.goals", "goals")
-    if err:
-        return err
-    try:
-        max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
-    except Exception:
-        max_turns = 20
-    mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns)
-    lower = arg.strip().lower()
-    if not lower or lower == "status":
-        return _exec_out(rid, mgr.status_line())
-    if lower == "pause":
-        state = mgr.pause(reason="user-paused")
-        return _exec_out(rid, "No goal set." if state is None else f"⏸ Goal paused: {state.goal}")
-    if lower == "resume":
-        state = mgr.resume()
-        if state is None:
-            return _exec_out(rid, "No goal to resume.")
-        # Resume must restart work: `exec` is display-only, so return a `send`; `display`
-        # keeps model-facing scaffolding out of the transcript.
-        if not (prompt := mgr.next_continuation_prompt()):
-            return _exec_out(rid, f"▶ Goal resumed: {state.goal}")
-        notice = f"▶ Goal resumed: {state.goal}\nContinuing now — taking the next step."
-        return _ok(rid, {"type": "send", "notice": notice, "message": prompt, "display": "/goal resume"})
-    if lower in {"clear", "stop", "done"}:
-        had = mgr.has_goal()
-        mgr.clear()
-        return _exec_out(rid, "✓ Goal cleared." if had else "No active goal.")
-    # Remaining text = new goal. Client renders `notice`, submits `message`; the post-turn judge takes over.
-    try:
-        state = mgr.set(arg)
-    except ValueError as exc:
-        return _err(rid, 4004, f"invalid goal: {exc}")
-    notice = (
-        f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
-        "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
-        "Controls: /goal status · /goal pause · /goal resume · /goal clear")
-    return _ok(rid, {"type": "send", "notice": notice, "message": state.goal})
+    with _session_profile_runtime_scope(session or {}):
+        sid_key, goals, err = _session_key_or_err(rid, session, "hermes_cli.goals", "goals")
+        if err:
+            return err
+        try:
+            max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
+        except Exception:
+            max_turns = 20
+        mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns)
+        from hermes_cli.goal_command import dispatch_goal_command
+        result = dispatch_goal_command(
+            mgr, arg, authorize_gate=lambda: None,
+            last_user_message=goals.last_user_message_from_db(sid_key),
+        )
+        if result.error:
+            return _err(rid, 4004, result.output)
+        if not result.prompt:
+            return _exec_out(rid, result.output)
+        payload = {"type": "send", "notice": result.output, "message": result.prompt}
+        if not result.kickoff:
+            payload["notice"] += "\nContinuing now — taking the next step."
+            payload["display"] = "/goal resume"
+        return _ok(rid, payload)
 
 
 def _cmd_loop(rid, params, session, name, arg):
@@ -1286,6 +1166,154 @@ def _(rid, params: dict) -> dict:
 
 
 @_mcp_rpc("status", required=())
+def _(rid, params: dict) -> dict:
+    """``{servers: [{name, transport, tools, connected, disabled, status}], checked_at}`` from cached
+    runtime state; never connects, probes, or starts auth. Under a multiplexer the runtime view is the
+    scoped profile's; otherwise it is shown only when ``profile`` is the launch profile."""
+    import time
+    hc = _tools_mod("hermes_constants")
+    configured = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
+                       or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
+    safe = ("name", "transport", "tools", "connected", "disabled", "status")
+    servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
+    return _ok(rid, {"servers": [{k: e[k] for k in safe if k in e} for e in servers],
+                     "checked_at": int(time.time() * 1000)})
+
+
+@_mcp_rpc("add")
+def _(rid, params: dict) -> dict:
+    """Add ``name`` from ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/
+    tools); ``bearer_token`` goes to the profile's .env (only the header template persists). Dup → 4090."""
+    mc = _tools_mod("hermes_cli.mcp_config")
+    name, preset = _str_arg(params, "name"), _str_arg(params, "preset")
+    if name in mc._get_mcp_servers():
+        return _err(rid, 4090, f"server '{name}' already exists")
+    raw_cfg = params.get("config")
+    server_config: dict = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
+    if preset:  # fills url/command/args when omitted; mutates server_config in place
+        mc._apply_mcp_preset(
+            name, preset_name=preset, url=server_config.get("url"), command=server_config.get("command"),
+            cmd_args=list(server_config.get("args") or []), server_config=server_config)
+    if not server_config.get("url") and not server_config.get("command"):
+        return _err(rid, 4063, "config must specify a 'url' (http) or 'command' (stdio), or a valid 'preset'")
+    if bearer_token := params.get("bearer_token"):
+        server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
+    if not mc._save_mcp_server(name, server_config):
+        return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
+    saved = mc._get_mcp_servers().get(name, server_config)
+    return _ok(rid, {"ok": True, "name": name, "server": _mcp_summarize_server(name, saved)})
+
+
+@_mcp_rpc("set_api_key", (*_NAME, ("value", _nonempty)))
+def _(rid, params: dict) -> dict:
+    """Secret → profile .env under ``env_var`` (default ``MCP_<NAME>_API_KEY``); config.yaml gets only
+    a ``${ENV}`` reference (Bearer header for http, ``env`` entry for stdio)."""
+    hc, mc = _tools_mod("hermes_cli.config"), _tools_mod("hermes_cli.mcp_config")
+    name, servers, err = _mcp_named_server(rid, params)
+    if err:
+        return err
+    value = params.get("value")
+    env_var = _str_arg(params, "env_var") or mc._env_key_for_server(name)
+    entry = servers[name]
+    if not isinstance(entry, dict):
+        return _err(rid, 4001, "malformed server config")
+    if entry.get("url"):
+        normalized = mc._strip_bearer_prefix(str(value))
+        if not normalized or normalized.lower() == "bearer":
+            return _err(rid, 4063, "value is not a valid credential")
+        hc.save_env_value(env_var, normalized)
+        is_default = env_var == mc._env_key_for_server(name)
+        entry["headers"] = (
+            mc._bearer_auth_headers(name) if is_default else {"Authorization": f"Bearer ${{{env_var}}}"})
+    else:
+        hc.save_env_value(env_var, str(value))
+        env_block = entry.get("env")
+        entry["env"] = env_block if isinstance(env_block, dict) else {}
+        entry["env"][env_var] = f"${{{env_var}}}"
+    cfg = hc.load_config()
+    cfg.setdefault("mcp_servers", {})[name] = entry
+    hc.save_config(cfg)
+    return _ok(rid, {"ok": True, "name": name, "env_var": env_var, "server": _mcp_summarize_server(name, entry)})
+
+
+@_mcp_rpc("test")
+def _(rid, params: dict) -> dict:
+    """Connect, list tools, disconnect → ``{ok, tools, prompts, resources, oauth_needed,
+    oauth_tokens_present}`` (``{ok: false, error, tools: []...}`` on failure). RPC pool: cold npx blocks."""
+    mc = _tools_mod("hermes_cli.mcp_config")
+    name, servers, err = _mcp_named_server(rid, params)
+    if err:
+        return err
+    cfg = servers[name]
+    # An `auth: oauth` server serving tools/list anonymously would probe OK with no
+    # token — a false green. Require a token on disk for it.
+    needs_oauth_token = cfg.get("auth") == "oauth"
+    details: dict = {}
+
+    def failure(error: str, oauth_needed: bool, tokens_present) -> dict:
+        return _ok(rid, {"ok": False, "error": error, "tools": [], "oauth_needed": oauth_needed,
+                         "oauth_tokens_present": tokens_present})
+    try:
+        tools = mc._probe_single_server(name, cfg, details=details)
+        token_present = mc._oauth_tokens_present(name) if needs_oauth_token else True
+    except Exception as exc:
+        return failure(str(exc), needs_oauth_token, mc._oauth_tokens_present(name) if needs_oauth_token else None)
+    if not token_present:
+        return failure("OAuth authentication required — no token found.", True, False)
+    return _ok(rid, {
+        "ok": True, "tools": [{"name": t, "description": d} for t, d in tools],
+        "prompts": details.get("prompts", 0), "resources": details.get("resources", 0),
+        "oauth_needed": needs_oauth_token, "oauth_tokens_present": True if needs_oauth_token else None})
+
+
+@_mcp_rpc("remove")
+def _(rid, params: dict) -> dict:
+    """Remove a server from the profile's config.yaml → ``{ok: true, removed: true}``."""
+    name = _str_arg(params, "name")
+    if not _tools_mod("hermes_cli.mcp_config")._remove_mcp_server(name):
+        return _err(rid, 4064, f"server '{name}' not found")
+    return _ok(rid, {"ok": True, "removed": True})
+
+
+@_mcp_rpc("oauth.start")
+def _(rid, params: dict) -> dict:
+    """Begin a session-backed OAuth flow → ``{ok, session_id, auth_url, flow: "pkce"}``; the client
+    opens ``auth_url`` and polls ``mcp.servers.oauth.poll``. With ``client_redirect_uri`` the CLIENT
+    hosts the loopback and relays the code via ``mcp.servers.oauth.callback`` (desktop and gateway
+    on different machines). Runs on the RPC pool (_LONG_HANDLERS)."""
+    client_redirect_uri = _str_arg(params, "client_redirect_uri") or None
+    try:
+        name, servers, err = _mcp_named_server(rid, params)
+        if err:
+            return err
+        cfg = dict(servers[name])
+        if not cfg.get("url"):
+            return _err(rid, 4001, "stdio servers authenticate via env keys, not OAuth")
+        if cfg.get("headers") and cfg.get("auth") != "oauth":
+            return _err(rid, 4001, "this server uses header/API-key auth, not OAuth")
+        cfg["auth"] = "oauth"
+        hermes_home = str(_tools_mod("hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
+        result = _tools_mod("tui_gateway.mcp_oauth_sessions").start_flow(
+            hermes_home, name, cfg, client_redirect_uri=client_redirect_uri)
+    except ValueError as e:
+        return _err(rid, 4001, str(e))
+    return _ok(rid, {"ok": True, **{k: result[k] for k in ("session_id", "auth_url", "flow")}})
+
+
+@_mcp_rpc("oauth.poll", _NAME_SESSION)
+def _(rid, params: dict) -> dict:
+    """Poll a flow → ``{ok, status: pending|approved|error, ...}``; ``approved`` persists tokens per profile."""
+    poll = _tools_mod("tui_gateway.mcp_oauth_sessions").poll_flow
+    return _ok(rid, {"ok": True, **poll(_str_arg(params, "session_id"), _str_arg(params, "name"))})
+
+
+@_mcp_rpc("oauth.cancel", _NAME_SESSION)
+def _(rid, params: dict) -> dict:
+    """Cancel a flow owned by the resolved profile, waking its callback worker."""
+    home = str(_tools_mod("hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
+    cancel = _tools_mod("tui_gateway.mcp_oauth_sessions").cancel_flow
+    return _ok(rid, cancel(_str_arg(params, "session_id"), _str_arg(params, "name"), home))
 
 
 @_mcp_rpc("oauth.callback", _NAME_SESSION)

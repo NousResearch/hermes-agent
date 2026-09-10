@@ -2496,9 +2496,6 @@ def main():
                         help="Mark as first release (no previous tag expected)")
     parser.add_argument("--output", type=str,
                         help="Write changelog to file instead of stdout")
-    parser.add_argument("--skip-semantic-gate", action="store_true",
-                        help="Skip the semantic regression release gate "
-                             "(operator override; audited by Quan)")
     args = parser.parse_args()
 
     # Determine CalVer date
@@ -2564,44 +2561,6 @@ def main():
         print(f"\n{'='*60}")
         print("  Publishing release...")
         print(f"{'='*60}")
-
-        # ── Semantic Regression Release Gate (t_f25f6039) ────────────────
-        # Run the gate before creating the tag/release. A semantic regression
-        # (judge verdict "fail") or a missing LLM judge credential fails
-        # closed and aborts the publish. The gate is skippable with
-        # --skip-semantic-gate for explicit operator override (audited by
-        # Quan), but never silently bypassed.
-        if not args.skip_semantic_gate:
-            gate_script = REPO_ROOT / "scripts" / "semantic_release_gate.py"
-            print("\n  Running semantic regression gate...")
-            if gate_script.exists():
-                try:
-                    gate_result = subprocess.run(
-                        [sys.executable, str(gate_script),
-                         "--report-dir", str(REPO_ROOT / ".semantic-gate-reports")],
-                        capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", cwd=str(REPO_ROOT), timeout=600,
-                    )
-                    print(gate_result.stdout)
-                    if gate_result.stderr:
-                        print(gate_result.stderr[-2000:], file=sys.stderr)
-                    if gate_result.returncode == 2:
-                        print("\n  ✗ RELEASE BLOCKED by semantic regression gate.")
-                        print("    Resolve the blocking scenarios, or explicitly re-run")
-                        print("    with --skip-semantic-gate (operator override, audited).")
-                        return
-                    if gate_result.returncode == 0:
-                        print("  ✓ Semantic regression gate passed.")
-                    else:
-                        print(f"\n  ✗ Semantic regression gate errored (exit "
-                              f"{gate_result.returncode}); release blocked (fail-closed).")
-                        return
-                except FileNotFoundError:
-                    pass  # fall through; gate script not present on old trees
-            else:
-                print("  ! semantic_release_gate.py not found; skipping gate.")
-        else:
-            print("\n  ⚠ --skip-semantic-gate set; semantic regression gate skipped (operator override).")
 
         # Update version files
         if args.bump:

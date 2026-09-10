@@ -2123,23 +2123,6 @@ def cmd_backup(args):
 def _print_version_info(*, check_updates: bool = True) -> None:
     # Shared with the `hermes --version` pre-import fast path.
     _startup_fast.print_fast_version_info(check_updates=check_updates)
-def cmd_feature(args):
-    """Feature pipeline management."""
-    from hermes_cli.feature import cmd_feature as _cmd_feature
-    return _cmd_feature(args)
-    # Final fallback: the running interpreter, ONLY for the uv-venv probe
-    # shape. When the install target is uv (prefix[0] is the uv binary) and
-    # the venv it declared via VIRTUAL_ENV does not actually exist (dev
-    # checkout using a different venv path, managed install, venv not yet
-    # created), the probe would otherwise be "indeterminate" forever and the
-    # lazy-refresh marker would never self-heal -- the user sees three
-    # "Import probes unavailable" warnings on every launch. The running
-    # interpreter is the one executing the probe right now, so it is a valid
-    # probe target. A pip-interpreter prefix that failed the exists() check
-    # stays indeterminate (None) -- that shape means the target venv really
-    # is missing and callers treat None as "probe cannot run".
-    if install_cmd_prefix and "uv" in Path(install_cmd_prefix[0]).name.lower():
-        return Path(sys.executable)
 
 
 def cmd_version(args):
@@ -2949,9 +2932,6 @@ def _try_fast_serve_launch() -> bool:
     if os.environ.get("HERMES_DISABLE_FAST_SERVE_LAUNCH") == "1":
         return False
 
-    # KENSEI CUSTOM (restored): upstream's serve-guard was lost in the merge — without it
-    # the fast path ran for EVERY invocation and referenced out-of-scope names. Also
-    # removed a misplaced feature-parser fragment that referenced undefined `subparsers`.
     argv = sys.argv[1:]
     if not argv or argv[0] != "serve" or "-h" in argv or "--help" in argv:
         return False

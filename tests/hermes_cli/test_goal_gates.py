@@ -91,7 +91,7 @@ def test_run_gate_keeps_diagnostics_when_a_byte_will_not_decode(tmp_path):
     script = tmp_path / "gate.py"
     script.write_text(
         "import os, sys\n"
-        "os.write(1, b'FAILED: 3 tests broken \x90\x8d rerun me\n')\n"
+        "os.write(1, b'FAILED: 3 tests broken \\x90\\x8d rerun me\\n')\n"
         "sys.exit(1)\n",
         encoding="utf-8",
     )

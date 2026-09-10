@@ -711,8 +711,6 @@ class CLIModalMixin:
             "answers": {},
             "answer_meta": {},
             "active": 0,
-            "reviewing": False,
-            "submitted": False,
             "response_queue": response_queue,
             # Flat keys mirroring the active question — filled by _clarify_batch_set_active.
             "question": "",
@@ -729,13 +727,6 @@ class CLIModalMixin:
         result = self._poll_modal_queue(response_queue, "_clarify_deadline")
         if result is not _TIMED_OUT:
             self._clarify_deadline = None
-            # KENSEI CUSTOM: cancel/timeout teardown payloads are already final
-            # results ({"answers":..., "cancelled"/"timed_out": True}) — pass
-            # through instead of re-wrapping.
-            if isinstance(result, dict) and "answers" in result and (
-                result.get("cancelled") is True or result.get("timed_out") is True
-            ):
-                return result
             return {"answers": result} if isinstance(result, dict) else result
         partial = dict(state["answers"])
         self._clarify_teardown()

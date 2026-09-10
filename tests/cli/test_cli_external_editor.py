@@ -30,8 +30,6 @@ def _make_cli(with_app=True):
     cli_obj._secret_state = None
     cli_obj._approval_state = None
     cli_obj._clarify_state = None
-    cli_obj._auq_state = None
-    cli_obj._auq_deadline = 0
     cli_obj._skip_paste_collapse = False
     return cli_obj
 

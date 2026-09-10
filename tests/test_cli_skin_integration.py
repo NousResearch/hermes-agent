@@ -11,8 +11,6 @@ def _make_cli_stub():
     cli._secret_state = None
     cli._approval_state = None
     cli._clarify_state = None
-    cli._auq_state = None
-    cli._auq_deadline = 0
     cli._clarify_freetext = False
     cli._command_running = False
     cli._agent_running = False

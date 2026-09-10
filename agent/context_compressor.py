@@ -648,18 +648,7 @@ _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES = 3
 # see _bound_summary_input). NEVER add a max_tokens wire cap on the summary call.
 _SUMMARY_INPUT_MAX_CHARS = 160_000
 
-# ── KENSEI CUSTOM — retrieval pointer (ported) ──
-# Includes a retrieval pointer so the model can recover the original via
-# session_search (role_filter='tool'). The session DB preserves full tool
-# outputs indexed by tool name + call ID; the placeholder tells the model
-# the retrieval path exists.
-_PRUNED_TOOL_PLACEHOLDER = (
-    "[Old tool output cleared to save context space. "
-    "The full original output is preserved in the session database. "
-    "Retrieve it by calling session_search with role_filter='tool' "
-    "and the tool name or a content keyword as the query.]"
-)
-# ── END KENSEI CUSTOM ──
+_PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 
 def _is_summary_stub(content: str) -> bool:

@@ -342,3 +342,4 @@ class DiscordMediaMixin:
             chat_id, file_path, caption, file_name=file_name, not_found="File not found", kind="document",
             metadata=metadata,
         )
+

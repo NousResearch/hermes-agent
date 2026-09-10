@@ -160,7 +160,7 @@ class TestCLIJudgeGate:
         fake_conn = MagicMock()
         complete_calls: list = []
 
-        def fake_connect_closing(db_path=None, *, board=None):
+        def fake_connect_closing():
             from contextlib import contextmanager
             @contextmanager
             def _cm():

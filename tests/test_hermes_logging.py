@@ -2,7 +2,6 @@
 import io
 import logging
 import os
-import shutil
 import stat
 import sys
 import threading
@@ -86,20 +85,6 @@ class TestSetupLogging:
         assert len(agent_handlers) == 1
         assert agent_handlers[0].level == logging.INFO
 
-
-    def test_missing_log_parent_during_async_drain_is_silent(self, hermes_home, capsys):
-        """Temporary-home teardown must not print listener tracebacks."""
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        logging.getLogger("test.teardown").error("before temporary home removal")
-        hermes_logging.flush_log_queue()
-
-        shutil.rmtree(hermes_home / "logs")
-        logging.getLogger("test.teardown").error("after temporary home removal")
-        hermes_logging.flush_log_queue()
-
-        stderr = capsys.readouterr().err
-        assert "Logging error" not in stderr
-        assert "FileNotFoundError" not in stderr
 
     def test_idempotent_no_duplicate_handlers(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)

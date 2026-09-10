@@ -5,7 +5,6 @@ from __future__ import annotations
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 
 import logging
-import subprocess
 import os
 import random
 import threading
@@ -106,38 +105,6 @@ CREDENTIAL_PERSIST_FAILED_REASON = "credential_persist_failed"
 # Singleton-seeded entries (device_code, claude_code) are NOT pruned because
 # ``_seed_from_singletons`` would re-create them from the same stale tokens.
 DEAD_MANUAL_PRUNE_TTL_SECONDS = 24 * 60 * 60
-
-
-# Providers proxied through the VPS's selective-tor-proxy (~/.hermes/scripts/
-# selective-tor-proxy.py, systemd unit selective-tor-proxy.service). Both
-# share the opencode.ai host (zen/v1 and zen/go/v1), so a single blocked Tor
-# exit node affects both. The proxy's own 403/429/401 auto-rotation logic
-# only fires on its plaintext-HTTP code path, which real HTTPS/CONNECT
-# traffic never exercises — so without this hook, a blocked exit node stays
-# blocked until someone manually signals the proxy.
-_TOR_PROXIED_PROVIDERS = frozenset({"opencode-zen", "opencode-go"})
-# Status codes consistent with an upstream IP/Cloudflare block rather than a
-# genuine per-credential auth failure (401 terminal cases are handled above
-# via _is_terminal_auth_failure and excluded from rotation).
-_TOR_ROTATION_STATUS_CODES = frozenset({401, 403, 429})
-
-
-def _trigger_tor_exit_rotation() -> None:
-    """Best-effort: signal selective-tor-proxy.py to rotate its Tor exit IP.
-
-    Fire-and-forget. Must never raise or block the credential pool's lock —
-    absence of the proxy (e.g. non-VPS environments) is a normal, silent no-op.
-    """
-    try:
-        result = subprocess.run(
-            ["pkill", "-USR1", "-f", "selective-tor-proxy.py"],
-            capture_output=True,
-            timeout=2,
-        )
-        if result.returncode == 0:
-            logger.info("credential pool: signalled selective-tor-proxy to rotate Tor exit IP")
-    except Exception as e:
-        logger.debug("credential pool: Tor rotation signal skipped: %s", e)
 
 AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
@@ -2068,25 +2035,6 @@ class CredentialPool(CredentialPoolAdminMixin):
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
-        failure_reason: Optional[str] = None,
-    ) -> Optional[PooledCredential]:
-        should_rotate_tor_exit = (
-            self.provider in _TOR_PROXIED_PROVIDERS
-            and status_code in _TOR_ROTATION_STATUS_CODES
-        )
-        result = self._mark_exhausted_and_rotate_locked(status_code, error_context, api_key_hint, credential_id, failure_reason)
-        if should_rotate_tor_exit:
-            # Outside the lock — this shells out to pkill and must not block
-            # other threads waiting on pool access.
-            _trigger_tor_exit_rotation()
-        return result
-
-    def _mark_exhausted_and_rotate_locked(
-        self,
-        status_code: Optional[int],
-        error_context: Optional[Dict[str, Any]],
-        api_key_hint: Optional[str],
-        credential_id: Optional[str],
         failure_reason: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:

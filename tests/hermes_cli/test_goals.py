@@ -149,18 +149,7 @@ def test_goal_command_in_registry():
     cmd = resolve_command("goal")
     assert cmd is not None
     assert cmd.name == "goal"
-    assert "route" in cmd.args_hint
 
-
-def test_subgoal_aliases_resolve_to_canonical_command():
-    from hermes_cli.commands import COMMANDS, GATEWAY_KNOWN_COMMANDS, resolve_command
-
-    for alias in ("subgoal", "sub-goal", "subgoals", "sub-goals"):
-        cmd = resolve_command(alias)
-        assert cmd is not None
-        assert cmd.name == "subgoal"
-        assert alias in GATEWAY_KNOWN_COMMANDS
-        assert f"/{alias}" in COMMANDS
 
 def test_goal_command_dispatches_in_cli_registry_helpers():
     """goal shows up in autocomplete / help categories alongside other Session cmds."""

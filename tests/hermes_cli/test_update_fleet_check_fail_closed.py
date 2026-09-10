@@ -26,7 +26,7 @@ from __future__ import annotations
 import inspect
 import types
 
-from hermes_cli.update_cmd import _fleet_probe_expected_runtimes
+from hermes_cli.main import _fleet_probe_expected_runtimes
 from hermes_cli.update_inventory import RuntimeRecord
 
 

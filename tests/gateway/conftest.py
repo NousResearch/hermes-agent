@@ -259,6 +259,18 @@ def _ensure_discord_mock() -> None:
             self.description = description
     discord_mod.SelectOption = _FakeSelectOption
 
+    # AudioSource: real class so VoiceMixer(discord.AudioSource) can subclass
+    # it cleanly in tests.  MagicMock auto-attributes would make is_opus()
+    # return a Mock instead of False, breaking 9 TestVoiceMixerCore tests.
+    class _FakeAudioSource:
+        def is_opus(self):
+            return False
+        def read(self):
+            return b"\x00" * 3840  # one silent stereo s16 frame
+        def cleanup(self):
+            pass
+    discord_mod.AudioSource = _FakeAudioSource
+
     discord_mod.ui = SimpleNamespace(
         View=_FakeView,
         Select=_FakeSelect,
@@ -312,26 +324,6 @@ def _ensure_discord_mock() -> None:
         sys.modules[name] = discord_mod
     sys.modules["discord.ext"] = ext_mod
     sys.modules["discord.ext.commands"] = commands_mod
-
-    # The adapter may already be imported (e.g. pytest's assertion rewriter or
-    # tests/e2e/conftest imports it before this mock, leaving DISCORD_AVAILABLE
-    # False and the view classes undefined). Re-run the idempotent view-class
-    # registration against the comprehensive mock so module-level ``from
-    # plugins.platforms.discord.adapter import ClarifyChoiceView`` succeeds
-    # regardless of import order.
-    try:
-        import plugins.platforms.discord.adapter as _discord_adapter_mod
-
-        _discord_adapter_mod.DISCORD_AVAILABLE = True
-        # The broken first-import state leaves the module-global ``discord``
-        # bound to None (the adapter's except-ImportError branch), so rebind it
-        # to the mock before re-running the view-class definitions.
-        _discord_adapter_mod.discord = discord_mod
-        _define = getattr(_discord_adapter_mod, "_define_discord_view_classes", None)
-        if callable(_define):
-            _define()
-    except Exception:
-        pass
 
 
 # Run at collection time — before any test file's module-level imports.

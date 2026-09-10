@@ -127,9 +127,6 @@ def get_available_skills() -> Dict[str, List[str]]:
 # === Update check ===
 
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600  # avoid repeated git fetches
-# KENSEI CUSTOM: bump _UPDATE_CHECK_CACHE_VERSION when the comparison target/meaning changes so
-# stale fork-based results cannot suppress the corrected upstream check.
-_UPDATE_CHECK_CACHE_VERSION = 2
 
 # Returned when an update is known to exist but commits can't be counted (e.g. nix builds).
 UPDATE_AVAILABLE_NO_COUNT = -1
@@ -267,22 +264,13 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind Nous upstream (or origin for plain checkouts).
-
-    Fork checkouts use ``upstream`` as the authority when that remote exists.
-    Shallow checkouts cannot produce a trustworthy count, so they compare tip
-    revisions and return ``UPDATE_AVAILABLE_NO_COUNT`` when they differ.
-    """
+    """Count commits behind origin/main in a local checkout."""
     # Probe the origin URL under the same config-isolated env as the fetch below. A plain
     # get-url applies a global url.<https>.insteadOf rewrite, so an SSH origin masquerades as
     # HTTPS, the SSH-avoiding fast path is skipped — and the fetch, whose env drops global
     # config (GIT_CONFIG_GLOBAL=/dev/null), dials the raw SSH origin; its host-key prompt opens
     # /dev/tty directly and steals the CLI's keystrokes (#104591).
-    # (Kensei's function-local noninteractive_git_env import was dead here; the shared
-    # _git_run(network=True) now applies noninteractive_git_env to this probe.)
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir, network=True)
-
-    # If origin is an official SSH remote, skip local fetch and use a remote check.
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         if not head_rev:
@@ -293,12 +281,6 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # the ancestor check, against the FRESH upstream SHA (a stale tracking ref can't fake an
         # up-to-date report).
         return _tips_behind(head_rev, _upstream_main_sha(), repo_dir)
-
-    # KENSEI CUSTOM: fork-as-trunk dual-remote update check. On a fork checkout origin is the
-    # user's fork; measure behind-ness against Nous upstream when that remote is configured.
-    # Never fall back to origin after an upstream remote has been found: that would turn a
-    # failed upstream check into a false "up to date" result.
-    remote = "upstream" if _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir) else "origin"
 
     # Installer checkouts are shallow (`git clone --depth 1`): a plain `git fetch` would unshallow
     # the repo and `rev-list --count HEAD..origin/main` would report a bogus "12492 commits
@@ -319,7 +301,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # transfers ~1,400 remote heads (3.0 s vs 0.55 s measured) and can burn the full timeout.
         # A scoped fetch still updates ``origin/main`` and FETCH_HEAD; ``--depth 1`` preserves
         # the shallow boundary.
-        fetch_args = ["fetch", remote, "main", *(["--depth", "1"] if is_shallow else []), "--quiet"]
+        fetch_args = ["fetch", "origin", "main", *(["--depth", "1"] if is_shallow else []), "--quiet"]
         return _git_ok(fetch_args, cwd=repo_dir, timeout=10, network=True)
 
     fetch_ok = _quiet(_fetch, False)  # Offline or timeout — don't use stale refs
@@ -335,9 +317,9 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         target_rev = (
             _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", f"{remote}/main"], cwd=repo_dir))
+            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir))
         return _tips_behind(head_rev, target_rev)
-    behind = _git_count(["rev-list", "--count", f"HEAD..{remote}/main"], cwd=repo_dir)
+    behind = _git_count(["rev-list", "--count", "HEAD..origin/main"], cwd=repo_dir)
     return behind if fetch_ok or (behind is not None and behind > 0) else None
 
 
@@ -351,12 +333,7 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     """Check whether a Hermes update is available.
 
     If ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream main via
-    ``git ls-remote``; otherwise count commits behind ``upstream/main`` (or ``origin/main``
-    for plain upstream checkouts) in the local checkout.
-
-    Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
-    if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
-    the check failed or doesn't apply. Cached for 6 hours.
+    ``git ls-remote``; otherwise count commits behind ``origin/main`` in the local checkout.
     """
     def _read_config_opt_out():
         from hermes_cli.config import load_config
@@ -380,8 +357,7 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     now = time.time()
     cached = _read_json(cache_file)
     if (cached is not None and now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION
-            and cached.get("schema") == _UPDATE_CHECK_CACHE_VERSION):
+            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION):
         return cached.get("behind")
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
@@ -393,8 +369,7 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     # fetch), and caching it would suppress retries for the full 6-hour window (#82166).
     if behind is not None:
         _quiet(lambda: cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION,
-                        "schema": _UPDATE_CHECK_CACHE_VERSION}), encoding="utf-8"))
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}), encoding="utf-8"))
     return behind
 
 
@@ -434,24 +409,12 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
-
-    # KENSEI CUSTOM: fork-as-trunk dual-remote banner target: a fork checkout's origin is the
-    # user's fork; prefer Nous upstream for the title whenever that remote is
-    # configured. Do not fall back to the fork's ref if the upstream tracking ref
-    # has not been fetched yet.
-    has_upstream = bool(
-        _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir)
-    )
-    target_ref = "upstream/main" if has_upstream else "origin/main"
-    upstream = _git_stdout(["rev-parse", "--short=8", target_ref], cwd=repo_dir)
-    local = _git_stdout(["rev-parse", "--short=8", "HEAD"], cwd=repo_dir)
+    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
     if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without a remote ref).
+        # Live-git lookup failed (e.g. shallow clone without origin/main).
         return _baked_banner_state()
-
-    ahead = _git_count(["rev-list", "--count", f"{target_ref}..HEAD"], cwd=repo_dir) or 0
-    behind = _git_count(["rev-list", "--count", f"HEAD..{target_ref}"], cwd=repo_dir) or 0
-    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0), "behind": max(behind, 0)}
+    ahead = _git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
+    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
 
 
 _RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
@@ -917,16 +880,6 @@ def build_welcome_banner(
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
-    # KENSEI CUSTOM: fork divergence belongs on the same operational summary line, after the
-    # command hint. Keep the title stable: it is the version/provenance label.
-    try:
-        git_state = get_git_banner_state()
-        behind = int((git_state or {}).get("behind") or 0)
-        if behind > 0:
-            word = "commit" if behind == 1 else "commits"
-            summary_parts.append(f"{behind} {word} behind")
-    except Exception:
-        pass
     # Flag the codex_app_server runtime so users understand why tool counts may not match what's
     # reachable (codex builds its own tool list inside the spawned subprocess).
     if _quiet(_codex_runtime_active, False):

@@ -71,12 +71,6 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
     else:
         _raw_default, _config_provider = (_model_config or ""), ""
     _config_model, _ = _split_model_config_default(_raw_default)
-    # KENSEI CUSTOM (restored): /new always returns ownership to config/default routing.
-    # Clear the explicit-selection lock even when the configured model is already
-    # active and no runtime client swap is required (#48055, #23131 semantics).
-    if getattr(cli, "agent", None):
-        with contextlib.suppress(Exception):
-            cli.agent._model_explicitly_selected = False
     if not _config_model or _config_model == getattr(cli, "model", None):
         return
     try:

@@ -125,83 +125,14 @@ class TestMemoryStoreAdd:
         store.add("memory", "x" * 490)
         result = store.add("memory", "this will exceed the limit")
         assert result["success"] is False
-        assert "compact" in result["error"].lower() or "exceed" in result["error"].lower()
-        # Overflow response gives the model current state
+        assert "exceed" in result["error"].lower()
+        # Overflow response gives the model what it needs to consolidate in-turn
         assert "current_entries" in result
         assert "usage" in result
+        assert "retry" in result["error"].lower()
 
-    def test_auto_compact_failure_rejects_overflow(self, tmp_path, monkeypatch):
-        """Auto-compaction failure must NOT bypass the char limit.
-
-        When auto-compact returns success=False (e.g. LLM unavailable AND
-        deterministic tiers can't free enough space), add() must still
-        reject the overflow and return a consolidation failure. The entry
-        must NOT be appended to the store.
-        """
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
-        tight = MemoryStore(memory_char_limit=200, user_char_limit=200)
-        tight.load_from_disk()
-
-        # First entry: long, distinct text — no subsumption or short-merge possible
-        r1 = tight.add("memory", "A" * 95)
-        assert r1["success"]
-        before = len(tight.memory_entries)
-        before_chars = tight._char_count("memory")
-
-        # Second entry: overflow that triggers auto-compact
-        # 95 + 3(delimiter) + 120 = 218 > 200
-        # Auto-compact: LLM fails (no auxiliary_client), no subsumption
-        # (single entry, content isn't substring), no short-merge (>80 chars).
-        # Returns success=False → add() MUST reject.
-        r2 = tight.add("memory", "Z" * 120)
-
-        assert not r2["success"], (
-            "Overflow after failed auto-compact must return failure, "
-            f"got: {r2}"
-        )
-        assert "current_entries" in r2, (
-            "Failure response must include current_entries"
-        )
-        assert "usage" in r2, (
-            "Failure response must include usage"
-        )
-
-        # Store must be unchanged
-        assert len(tight.memory_entries) == before, (
-            "No entries should be added after failed auto-compact"
-        )
-        assert tight._char_count("memory") == before_chars, (
-            "Char count must not increase after failed auto-compact"
-        )
-        assert "Z" * 120 not in tight.memory_entries, (
-            "Overflow entry must not appear in store"
-        )
-
-    def test_add_succeeds_after_auto_compact(self, store, tmp_path, monkeypatch):
-        """Auto-compaction persists compressed entries so the new add fits.
-
-        Uses subsumption tier: "Nottinghamshire" is a substring of entry 0,
-        so auto-compact removes it to fit the new entry.
-        """
-        # Use tighter limits to force compaction in a controlled way
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
-        tight = MemoryStore(memory_char_limit=70, user_char_limit=70)
-        tight.load_from_disk()
-
-        tight.add("memory", "Fact A: the user lives in Nottinghamshire")
-        tight.add("memory", "Nottinghamshire")
-        # 41 + 3 + 14 = 58 chars. New entry 15 chars => 58+3+15=76 > 70 -> triggers compaction
-
-        result = tight.add("memory", "Lives in Notts")
-        assert result["success"] is True, f"Expected success after auto-compact, got: {result.get('error', result)}"
-        assert "Lives in Notts" in tight.memory_entries, "New entry missing"
-        assert "Nottinghamshire" not in tight.memory_entries, "Subsumed entry should be removed"
-        assert tight._char_count("memory") <= tight.memory_char_limit
-
-    def test_replace_exceeding_limit_returns_consolidation_context(self, store):
-        """A replacement overflow returns enough context for an in-turn retry."""
-        store.add("memory", "short")
-        result = store.replace("memory", "short", "y" * 600)
+        # A replace that blows the budget mirrors the add-overflow shape.
+        result = store.replace("memory", "x" * 490, "y" * 600)
         assert result["success"] is False
         assert "current_entries" in result
         assert "usage" in result

@@ -24,3 +24,5 @@ def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | No
     agent._rate_limited_until = time.monotonic() + backoff_seconds
     logging.info("Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)", backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1)
     return backoff_seconds
+
+

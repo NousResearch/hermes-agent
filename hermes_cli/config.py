@@ -80,9 +80,7 @@ def _warn_config_parse_failure(
         return
     _CONFIG_PARSE_WARNED.add(key)
     from hermes_cli.config_backups import backup_config
-    # KENSEI CUSTOM: never follow a user-controlled config symlink while preserving a
-    # corrupted file. The centralized backup store owns naming, dedupe, and rotation.
-    backup_path = None if config_path.is_symlink() else backup_config(config_path, "corrupt")
+    backup_path = backup_config(config_path, "corrupt")
     msg = f"Failed to parse {config_path}: {exc}. " + _PARSE_FAILURE_FALLBACK_MSG.get(
         fallback, _PARSE_FAILURE_DEFAULTS_MSG)
     if backup_path is not None:
@@ -1037,7 +1035,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "known_builtin_toolsets",  # ditto — builtin toolsets a platform's checklist has offered
     "tool_gateway_declined_tools",  # per-tool Tool Gateway offer declines
     # Top-level forms read/bridged by gateway/config.py:
-    "session_reset", "group_sessions_per_user", "thread_sessions_per_user",
+    "group_sessions_per_user", "thread_sessions_per_user",
     "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal",
@@ -1985,55 +1983,6 @@ def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
         parent[key] = child
     return child
 
-# KENSEI CUSTOM: pipeline/council config accessors (fork task-gating features; consumed by
-# hermes_cli/kanban_db_dispatch.py and hermes_cli/council.py).
-def get_pipeline_config() -> Dict[str, Any]:
-    """Return the ``pipeline`` section from config, merged with defaults.
-
-    The pipeline config lives under ``pipeline:`` in config.yaml and controls
-    gated progression of full-pipeline tasks. ``stage_owners`` is merged
-    separately so one user override does not discard owners for other stages.
-    """
-    cfg = load_config_readonly()
-    pipeline_cfg = cfg.get("pipeline", {})
-    if not isinstance(pipeline_cfg, dict):
-        pipeline_cfg = {}
-    defaults = DEFAULT_CONFIG.get("pipeline", {})
-    merged = dict(defaults)
-    merged.update(pipeline_cfg)
-
-    if isinstance(defaults.get("stage_owners"), dict):
-        owner_defaults = dict(defaults["stage_owners"])
-        configured_owners = pipeline_cfg.get("stage_owners", {})
-        if isinstance(configured_owners, dict):
-            owner_defaults.update(configured_owners)
-        merged["stage_owners"] = owner_defaults
-    return merged
-
-
-def get_council_config() -> "CouncilConfig":
-    """Return the ``council`` section from config, merged with defaults.
-
-    Returns a CouncilConfig dataclass with panel members, chairman, token cap,
-    and timeout settings. Panel lists and chairman routes are atomic user
-    choices, so configured values replace their defaults rather than being
-    merged item-by-item.
-    """
-    from hermes_cli.council import CouncilConfig
-
-    cfg = load_config_readonly()
-    council_cfg = cfg.get("council", {})
-    if not isinstance(council_cfg, dict):
-        council_cfg = {}
-    defaults = DEFAULT_CONFIG.get("council", {})
-    merged = dict(defaults)
-    merged.update(council_cfg)
-    if "panel" in council_cfg:
-        merged["panel"] = council_cfg["panel"]
-    if "chairman" in council_cfg:
-        merged["chairman"] = council_cfg["chairman"]
-    return CouncilConfig.from_config(merged)
-
 
 def write_platform_config_field(
     platform_key: str, field_key: str, value: Any, *, raw: bool = False) -> None:
@@ -2740,6 +2689,7 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     deliberate .env edit beats a stale value inherited from the parent shell."""
     return load_env().get(key) or _scoped_environ_get(key)
 
+
 # ---- Config display ----
 
 def redact_key(key: str) -> str:
@@ -3046,12 +2996,6 @@ def resolve_cron_model_drift_defaults(
         model_config = model_config.get("default") or model_config.get("model") or model_config.get("name")
     configured_model = _model_assignment_text(model_config)
     return provider, configured_model or _model_assignment_text(env.get("HERMES_MODEL", ""))
-
-
-def cron_model_drift_guard_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
-    """Keep the spend-safety guard enabled unless explicitly disabled."""
-    cron_config = _cron_section(config)
-    return cron_config is None or cron_config.get("model_drift_guard", True) is not False
 
 
 def cron_model_drift_axes(

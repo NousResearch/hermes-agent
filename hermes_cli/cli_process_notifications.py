@@ -58,3 +58,4 @@ class CLIProcessNotificationsMixin:
         if is_seeded_query:
             user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
         return user_input, is_voice_input, is_seeded_query
+

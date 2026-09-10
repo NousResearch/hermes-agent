@@ -6,9 +6,6 @@ expose it, so operators could not request networkless Docker execution from
 config.yaml.
 """
 
-import ast
-import inspect
-
 import tools.terminal_tool as terminal_tool
 from tools.environments import docker as docker_env
 
@@ -63,14 +60,6 @@ def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
 
     assert seen == [expected, expected]  # probe, then execute_code
     assert expected["docker_network"] is False and expected["docker_extra_args"] == ["--user", "1009:1009"]
-
-
-    # Kensei static regression (kept from the Kensei lane): file_tools no
-    # longer builds its own container_config; it goes through the shared
-    # _create_configured_env, which is what carries docker_network.
-    import tools.file_tools as file_tools
-
-    assert "_create_configured_env(" in inspect.getsource(file_tools)
 
 
 def _reuse_guard_harness(

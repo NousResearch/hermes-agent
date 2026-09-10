@@ -7,9 +7,6 @@ commit history / message.complete -> goal & loop hooks -> release scopes ->
 post-turn follow-ups (queued prompt, goal continuation, notifications).
 """
 
-
-
-
 from __future__ import annotations
 
 import dataclasses

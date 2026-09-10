@@ -318,24 +318,14 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         super().emit(record)
 
     def handleError(self, record: logging.LogRecord) -> None:
-        """Suppress expected lock timeouts and removed temporary log destinations.
+        """Suppress the known Windows ``concurrent-log-handler`` lock timeout.
 
-        CLH's ``emit()`` routes its RuntimeError here, so this is the single point to
+        CLH's ``emit()`` routes that RuntimeError here, so this is the single point to
         silence it before stdlib prints to stderr (which the Desktop slash-worker
         captures into chat output).
         """
-        exc = sys.exc_info()[1]
-        if _is_windows_concurrent_log_lock_timeout(exc):
-            return
-        # A temporary HERMES_HOME can be removed while the shared QueueListener
-        # is still draining records (notably during test teardown and clean
-        # process shutdown). RotatingFileHandler reports the missing parent via
-        # handleError; do not turn an already-closed log destination into a
-        # stderr traceback. If the parent still exists, preserve the normal
-        # error path so real permission/disk failures remain visible.
-        if isinstance(exc, FileNotFoundError) and not Path(self.baseFilename).parent.exists():
-            return
-        super().handleError(record)
+        if not _is_windows_concurrent_log_lock_timeout(sys.exc_info()[1]):
+            super().handleError(record)
 
     def _open(self):
         stream = super()._open()

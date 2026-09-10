@@ -17,7 +17,8 @@ import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import EphemeralReply
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from typing import Any, Dict, Optional, Union
 
@@ -310,6 +311,7 @@ class GatewayBusySessionMixin:
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
+            event._gateway_accepted = True
             return
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
@@ -377,19 +379,6 @@ class GatewayBusySessionMixin:
             "Do not guess a reply destination when these fields are insufficient.\n\n"
             f"{text}"
         )
-
-    @staticmethod
-    def _busy_reply_to(event: MessageEvent, reply_anchor):
-        # Telegram DM topics anchor on the thread; other Telegram threads send unanchored.
-        return (
-            reply_anchor
-            if event.source.platform == Platform.TELEGRAM
-            and event.source.chat_type == "dm"
-            and event.source.thread_id
-            else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-        )
-
-
 
     @staticmethod
     def _busy_reply_to(event: MessageEvent, reply_anchor):
@@ -666,14 +655,13 @@ class GatewayBusySessionMixin:
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
-        # KENSEI re-anchor (upstream 4810074d73) — scoped to internal+control wakes only.
         if event.internal and event.allow_gateway_control:
-            _a = self._adapter_for_source(event.source)
-            adapter = _a
+            adapter = self._adapter_for_source(event.source)
             if adapter and session_key in getattr(adapter, "_pending_messages", {}):
                 self._queue_or_replace_pending_event(session_key, event)
                 return True
             return False  # base adapter queues silently behind the active turn
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -774,8 +762,6 @@ class GatewayBusySessionMixin:
         "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
         "loop", "refine", "review", "voice",
-        # ── KENSEI CUSTOM — content-engine + mode flows (ported) ──
-        "generate-image", "localgen", "mode",
     )
 
     def _command_handler_table(self, names) -> Dict[str, Any]:
@@ -960,13 +946,9 @@ class GatewayBusySessionMixin:
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't
         # race a second continuation against the current turn. wait/gate take an argument.
-        _goal_arg = (event.get_command_args() or "").strip().lower()
-        _goal_verb = _goal_arg.split(None, 1)[0] if _goal_arg else ""
-        if (
-            not _goal_arg
-            or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait"}
-            or _goal_verb in {"wait", "gate"}
-        ):
+        from hermes_cli.goal_command import is_goal_control
+
+        if is_goal_control(event.get_command_args() or ""):
             return await self._handle_goal_command(event)
         return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
 
@@ -1222,6 +1204,29 @@ class GatewayBusySessionMixin:
                 )
                 if button_result and getattr(button_result, "success", False):
                     return None  # buttons rendered — no redundant text ack
+                # P5(b): distinguish a connector egress DECLINE from a lane
+                # failure. On a decline the connector refused this destination,
+                # so returning `message` as the direct reply would deliver the
+                # very content it refused, as text, to the same chat. Suppress
+                # the fallback and tear down the registration — no card
+                # rendered, so a later reply must not be captured as an answer
+                # to an invisible prompt.
+                #
+                # Classify the STRUCTURED response (see _approval_send_outcome):
+                # a code-only decline has no marker colon in its rendered text,
+                # and an ambiguous result must not be treated as a definite
+                # refusal.
+                from gateway.relay.egress import declined_send
+
+                _confirm_err = getattr(button_result, "error", None)
+                if declined_send(button_result):
+                    logger.warning(
+                        "slash-confirm DECLINED by the connector's egress "
+                        "guard for %s on %s — suppressing the text fallback: %s",
+                        command, source.platform, _confirm_err,
+                    )
+                    _slash_confirm_mod.clear(session_key)
+                    return None
             except Exception as exc:
                 logger.debug("send_slash_confirm failed for %s on %s: %s", command, source.platform, exc)
         # Text fallback — the prompt message itself is the direct reply.

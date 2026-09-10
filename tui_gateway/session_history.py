@@ -157,6 +157,8 @@ def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
         return text
 
 
+# Opening of the crash-recovery note synthesized by _auto_continue_note; matched (not just built) for
+# rows persisted before display typing existed and for the messaging gateway's twin note.
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted mid-run"
 
 
@@ -314,7 +316,9 @@ def _fail_inflight_turn(session: dict, error: Any, error_surface: Optional[dict]
 
 
 _TURN_FAILURE_DETAIL_LIMIT = 240
+# Shortest prompt run counting as a quote-back: above shared boilerplate, below a quoted sentence.
 _TURN_PROMPT_ECHO_WINDOW = 24
+# Ceiling on the prompt we shingle (an @-expanded prompt can carry a whole file).
 _TURN_PROMPT_ECHO_MAX_PROMPT = 65536
 
 
@@ -387,4 +391,3 @@ def _turn_failure_detail(error: Any, reason: Any = None, prompt: Any = None) -> 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
-_HISTORY_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items")

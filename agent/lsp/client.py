@@ -206,9 +206,6 @@ class LSPClient:
             raise
 
     async def _spawn(self) -> None:
-        # KENSEI CUSTOM: LSP servers run with the delegated-child subprocess env
-        # (mirrors upstream's `_spawn`); keeps credential-pool / env sanitisation
-        # identical for LSP children.
         from agent.delegation_context import delegated_child_subprocess_env
         cmd = self._command
         if sys.platform == "win32" and cmd[0].lower().endswith((".cmd", ".bat")):

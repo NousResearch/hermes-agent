@@ -228,10 +228,6 @@ def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[
             continue
         _schema._scan_mcp_description(name, t.name, t.description or "")
         schema = _schema._convert_mcp_schema(name, t)
-        from tools.mcp_tool import _apply_sanitize_hook
-        schema = _apply_sanitize_hook(name, schema, fallback=schema)
-        if schema is None:
-            continue
         handler = _handlers._make_tool_handler(name, t.name, tool_timeout)
         out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler))
     return out

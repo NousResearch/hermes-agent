@@ -28,17 +28,6 @@ from generate_conformance_vectors import (  # noqa: E402
     generate,
 )
 
-# Remove the repo scripts dir from sys.path immediately after the module-level
-# import above. scripts/ contains a local ``mcp/`` namespace package (the
-# deployment-owned gmail_metadata_mcp adapter) that shadows the installed MCP
-# SDK — leaving it on the global path makes every later ``import mcp.shared`` /
-# ``import mcp.types`` during full-suite collection resolve to the shadow and
-# fail with ModuleNotFoundError.
-try:
-    sys.path.remove(str(REPO_ROOT / "scripts"))
-except ValueError:
-    pass
-
 PLATFORMS = ("discord", "slack", "telegram", "whatsapp")
 
 

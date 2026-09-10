@@ -1048,33 +1048,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
 
 
 class TestGitHubTokenCheck:
-    """Tests for GitHub token / gh auth detection in doctor.
-
-    These tests mock the expensive non-GitHub probes so run_doctor()
-    completes in milliseconds instead of ~21s each under the parallel
-    per-file runner's 300s cap.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _stub_expensive_probes(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
-        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-        # Stub provider checks and network probes.
-        monkeypatch.setattr(doctor_mod, "_has_provider_env_config", lambda *a, **kw: False)
-        monkeypatch.setitem(sys.modules, "model_tools", types.SimpleNamespace(
-            check_tool_availability=lambda *a, **kw: ([], []),
-            TOOLSET_REQUIREMENTS={},
-        ))
-        from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
-        import httpx
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: SimpleNamespace(status_code=200))
+    """Tests for GitHub token / gh auth detection in doctor."""
 
     @staticmethod
     def _isolate_home(monkeypatch, home):

@@ -234,3 +234,4 @@ class TestOpenCodeGoProactiveToolResultDowngrade:
         assert isinstance(out, str)
         assert "data:image" not in out
         assert "image_url" not in out
+

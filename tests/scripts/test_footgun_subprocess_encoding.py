@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LINTER_PATH = REPO_ROOT / "scripts" / "archive" / "check-windows-footguns.py"
+LINTER_PATH = REPO_ROOT / "scripts" / "check-windows-footguns.py"
 
 
 def _load_linter_module():
@@ -40,13 +40,7 @@ def _load_linter_module():
 
 @pytest.fixture(scope="module")
 def linter():
-    mod = _load_linter_module()
-    # The archived script derives REPO_ROOT from its own location, which now
-    # resolves to scripts/ (one level too deep) after the move to
-    # scripts/archive/. Re-point it at the real repo root so should_scan_file's
-    # relative_to(REPO_ROOT) and iter_files' root paths work correctly.
-    mod.REPO_ROOT = REPO_ROOT
-    return mod
+    return _load_linter_module()
 
 
 def _find_footgun(linter, name: str):
@@ -168,12 +162,6 @@ class TestHelpers:
 
 
 class TestFullRepoScan:
-    @pytest.mark.xfail(
-        reason="PR #60741 not merged on this branch — the rule still finds "
-               "unsuppressed subprocess(text=True) call sites. Per the test's "
-               "own contract (see comment above), xfail until PR #60741 lands.",
-        strict=False,
-    )
     def test_new_rule_find_only_known_violations(self, linter, monkeypatch):
         """Scan the full repo and assert the new rule's matches are exactly
         the set of call sites that PR #60741 fixes (or zero, if PR #60741

@@ -91,15 +91,10 @@ def test_interrupted_session_end_fires_for_normal():
     cli_mock.agent = agent
     cli_mock.session_id = "normal-session-789"
 
-    # The real path calls hermes_cli.plugins.invoke_hook (on_session_end);
-    # hermes_cli.lifecycle.invoke_hook is a thin delegate and is NOT the object
-    # the code calls, so patch the module-level plugins hook that actually
-    # fires. A normal (non-handed-off) interrupted session must emit once.
-    with patch("hermes_cli.plugins.invoke_hook") as mock_hook:
+    with patch("hermes_cli.lifecycle.invoke_hook") as mock_hook:
         cli_mod._emit_interrupted_session_end(cli_mock, reason="keyboard_interrupt")
 
     mock_hook.assert_called_once()
-    assert mock_hook.call_args.args[0] == "on_session_end"
 
 
 def test_cleanup_does_not_finalize_handed_off_session():
@@ -135,18 +130,12 @@ def test_cleanup_finalizes_normal_session():
     cli_mod._active_agent_ref = agent
 
     with (
-        patch("hermes_cli.plugins.invoke_hook") as mock_hook,
         patch("hermes_cli.lifecycle.finalize_session") as mock_finalize,
+        patch("hermes_cli.plugins.invoke_hook"),
     ):
         cli_mod._run_cleanup()
 
-    # _run_cleanup does NOT call lifecycle.finalize_session — finalization is
-    # owned by the gateway/run_agent path. On exit it fires the
-    # on_session_finalize plugin hook (guarded by _should_emit_cleanup_session_
-    # finalize, which returns True for a normal, non-handed-off session).
-    mock_finalize.assert_not_called()
-    mock_hook.assert_called_once()
-    assert mock_hook.call_args.args[0] == "on_session_finalize"
+    mock_finalize.assert_called_once()
 
 
 def test_single_query_finalize_skipped_for_handed_off():

@@ -828,19 +828,6 @@ def _has_local_edits(installed: dict) -> bool:
         return False
 
 
-def _has_local_edits(installed: dict) -> bool:
-    """True when the on-disk content no longer matches the install-time hash."""
-    from tools.skills_hub import SKILLS_DIR
-    from tools.skills_guard import content_hash
-    recorded_hash = installed.get("content_hash", "")
-    skill_path = SKILLS_DIR / installed.get("install_path", "")
-    try:
-        return (bool(recorded_hash) and skill_path.is_dir()
-                and content_hash(skill_path) != recorded_hash)
-    except OSError:
-        return False
-
-
 def do_update(name: Optional[str] = None, console: Optional[Console] = None,
               force: bool = False) -> None:
     """Update hub-installed skills. Locally edited ones are skipped unless ``force`` — the

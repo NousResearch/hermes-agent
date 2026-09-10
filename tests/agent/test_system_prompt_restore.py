@@ -16,7 +16,7 @@ instead of rebuilding).  Covers:
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -323,71 +323,23 @@ class TestSilentFailureWarnings:
 
 
     def test_db_write_failure_warns_loudly(self, caplog):
-        """update_system_prompt raising on both attempts → WARNING (was DEBUG before)."""
+        """update_system_prompt raising → WARNING (was DEBUG before)."""
         db = MagicMock()
         # No prior row (first turn)
         db.get_session.return_value = None
         db.update_system_prompt.side_effect = RuntimeError("database is locked")
         agent = _make_agent(session_db=db)
 
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"), \
-             patch("agent.conversation_loop.time.sleep") as mock_sleep:
+        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
             _restore_or_build_system_prompt(agent, None, [])
 
         # Built and assigned the cache anyway
         agent._build_system_prompt.assert_called_once()
         assert agent._cached_system_prompt == "BUILT_PROMPT"
-        # Retried once (thundering-herd recovery) before giving up
-        assert db.update_system_prompt.call_count == 2
-        # Jittered pause stays within the documented 0.3-0.5s window
-        mock_sleep.assert_called_once()
-        assert 0.3 <= mock_sleep.call_args[0][0] <= 0.5
         # Warning surfaced
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert any(
             "update_system_prompt failed" in m and "database is locked" in m
-            for m in warnings
-        ), f"Expected write-failure warning, got: {warnings}"
-
-    def test_db_write_failure_recovers_on_retry(self, caplog):
-        """update_system_prompt failing once with a lock error then succeeding →
-        no warning, and the herd-recovery retry is exercised end to end."""
-        db = MagicMock()
-        db.get_session.return_value = None
-        db.update_system_prompt.side_effect = [RuntimeError("database is locked"), None]
-        agent = _make_agent(session_db=db)
-
-        with caplog.at_level(logging.DEBUG, logger="agent.conversation_loop"), \
-             patch("agent.conversation_loop.time.sleep") as mock_sleep:
-            _restore_or_build_system_prompt(agent, None, [])
-
-        assert db.update_system_prompt.call_count == 2
-        mock_sleep.assert_called_once()
-        assert 0.3 <= mock_sleep.call_args[0][0] <= 0.5
-        records = [r.getMessage() for r in caplog.records]
-        assert not any(
-            r.levelno >= logging.WARNING and "update_system_prompt failed" in r.getMessage()
-            for r in caplog.records
-        )
-        # Recovery is logged (DEBUG) so production can tell the herd-recovery is firing
-        assert any("recovered on retry" in m for m in records)
-
-    def test_db_write_failure_non_lock_error_does_not_retry(self, caplog):
-        """A non-contention error (e.g. disk full) should not burn the extra retry."""
-        db = MagicMock()
-        db.get_session.return_value = None
-        db.update_system_prompt.side_effect = RuntimeError("disk I/O error")
-        agent = _make_agent(session_db=db)
-
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"), \
-             patch("agent.conversation_loop.time.sleep") as mock_sleep:
-            _restore_or_build_system_prompt(agent, None, [])
-
-        assert db.update_system_prompt.call_count == 1
-        mock_sleep.assert_not_called()
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any(
-            "update_system_prompt failed" in m and "disk I/O error" in m
             for m in warnings
         ), f"Expected write-failure warning, got: {warnings}"
 

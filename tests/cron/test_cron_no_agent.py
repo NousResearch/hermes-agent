@@ -255,19 +255,6 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     assert "Blocked" in output or "outside" in output
 
 
-def test_run_job_script_exports_authoritative_runtime_root(hermes_env, tmp_path):
-    from cron.scheduler import _run_job_script
-
-    runtime = tmp_path / "candidate"
-    runtime.mkdir()
-    script_path = hermes_env / "scripts" / "root.sh"
-    script_path.write_text('printf "%s" "$HERMES_AGENT_ROOT"\n')
-
-    ok, output = _run_job_script("root.sh", workdir=str(runtime))
-    assert ok is True
-    assert output == str(runtime)
-
-
 def test_run_job_script_nul_path_fails_cleanly(hermes_env):
     """Sibling of the lifecycle-guard ingestion fix: a NUL-bearing script
     value can survive to fire time (the creation-time guard treats it as

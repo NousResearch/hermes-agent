@@ -282,13 +282,6 @@ for _provider, _alias, _canonical in (
 ):
     _OFFICIAL_DOCS_PRICING[(_provider, _alias)] = _OFFICIAL_DOCS_PRICING[(_provider, _canonical)]
 del _provider, _alias, _canonical
-# Provider-emitted preview IDs alias to the same documented Gemini tiers.
-_OFFICIAL_DOCS_PRICING[("google", "gemini-3.1-pro-preview")] = (
-    _OFFICIAL_DOCS_PRICING[("google", "gemini-3.1-pro")]
-)
-_OFFICIAL_DOCS_PRICING[("google", "gemini-3.1-flash-lite-preview")] = (
-    _OFFICIAL_DOCS_PRICING[("google", "gemini-3.1-flash-lite")]
-)
 
 
 def _to_decimal(value: Any) -> Optional[Decimal]:

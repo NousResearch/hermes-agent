@@ -10323,7 +10323,6 @@ def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch
         base_url = "https://api.anthropic.com"
         api_key = "sk-temp"
         api_mode = "anthropic_messages"
-        _model_explicitly_selected = True
 
         def switch_model(self, **kwargs):
             self.model = kwargs["new_model"]
@@ -10374,7 +10373,6 @@ def test_restore_agent_model_runtime_falls_back_to_switch_model():
         base_url = "https://api.anthropic.com"
         api_key = "sk-temp"
         api_mode = "anthropic_messages"
-        _model_explicitly_selected = True
 
         def switch_model(self, **kwargs):
             self.model = kwargs["new_model"]
@@ -10399,28 +10397,6 @@ def test_restore_agent_model_runtime_falls_back_to_switch_model():
     assert agent.model == "old/model"
     assert agent.provider == "openrouter"
     assert agent.base_url == "https://openrouter.ai/api/v1"
-    assert agent._model_explicitly_selected is False
-
-
-@pytest.mark.parametrize("saved_flag", [True, False])
-def test_restore_agent_model_runtime_primary_path_restores_explicit_flag(saved_flag):
-    agent = types.SimpleNamespace(
-        _primary_runtime={},
-        _fallback_activated=False,
-        _rate_limited_until=99,
-        _model_explicitly_selected=not saved_flag,
-        _restore_primary_runtime=lambda: True,
-    )
-
-    server._restore_agent_model_runtime(
-        agent,
-        {
-            "model_explicitly_selected": saved_flag,
-            "primary_runtime": {"model": "old/model"},
-        },
-    )
-
-    assert agent._model_explicitly_selected is saved_flag
 
 
 def test_config_set_personality_rejects_unknown_name(monkeypatch):
@@ -15541,12 +15517,6 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     profile_home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seen: dict = {"msgs": []}
-    parent_todo_state = {
-        "revision": 3,
-        "todos": [{"id": "build", "content": "Build tray", "status": "completed"}],
-        "user_status_overrides": {"build": "completed"},
-        "pending_user_notices": [],
-    }
 
     class LaunchDB:
         def get_session_title(self, _key):
@@ -15578,13 +15548,6 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             seen["created"] = new_key
             seen["parent"] = kwargs.get("parent_session_id")
             seen["profile_name"] = kwargs.get("profile_name")
-
-        def get_session_todo_state(self, key):
-            return parent_todo_state if key == "parent-key" else None
-
-        def update_session_todo_state(self, key, state):
-            seen["todo_state"] = (key, state)
-            return True
 
         def append_message(self, **kwargs):
             seen["msgs"].append(kwargs)
@@ -15656,7 +15619,6 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # profile, not left NULL for aggregators to mis-tag as "default".
         assert seen.get("profile_name") == "mlperf"
         assert seen.get("title") == (seen["created"], "forked")
-        assert seen.get("todo_state") == (seen["created"], parent_todo_state)
         assert len(seen["msgs"]) == 1
         assert seen.get("launch") is None
         assert seen.get("launch_create") is None
@@ -20549,11 +20511,7 @@ def test_clarify_callback_uses_configured_timeout(monkeypatch):
     assert result == "answer"
     assert captured["event"] == "clarify.request"
     assert captured["timeout"] == 42
-    payload = captured["payload"]
-    assert payload["question"] == "Pick one"
-    assert payload["choices"] == ["a", "b"]
-    # expires_at (countdown support) rides every payload; renderers may ignore it.
-    assert isinstance(payload["expires_at"], float)
+    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
 
 
 def test_clarify_callback_multi_select_hint(monkeypatch):
@@ -20570,18 +20528,14 @@ def test_clarify_callback_multi_select_hint(monkeypatch):
     cb = server._agent_cbs("sid-1")["clarify_callback"]
 
     cb("Pick many", ["a", "b"], multi_select=True)
-    payload = captured["payload"]
-    assert payload["question"] == "Pick many"
-    assert payload["choices"] == ["a", "b"]
-    assert payload["multi_select"] is True
-    assert isinstance(payload["expires_at"], float)
+    assert captured["payload"] == {
+        "question": "Pick many",
+        "choices": ["a", "b"],
+        "multi_select": True,
+    }
 
     cb("Pick one", ["a", "b"], multi_select=False)
-    payload = captured["payload"]
-    assert payload["question"] == "Pick one"
-    assert payload["choices"] == ["a", "b"]
-    assert "multi_select" not in payload
-    assert isinstance(payload["expires_at"], float)
+    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
 
 
 @pytest.mark.parametrize(

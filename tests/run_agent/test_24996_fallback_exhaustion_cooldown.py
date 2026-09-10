@@ -26,8 +26,6 @@ def _make_agent(fallback_model=None):
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
-        # Neutralise fallback floor so test-visible chain matches fallback_model config.
-        patch("agent.agent_init.apply_fallback_floor", side_effect=lambda chain, floor, **kw: chain),
     ):
         agent = AIAgent(
             api_key="test-key",

@@ -38,11 +38,6 @@ from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
-def _notify_session_open(session_id: object, platform: object = "tui") -> bool:
-    """Public plugin lifecycle bridge used by session RPC handlers."""
-    from hermes_cli.plugins import notify_session_open
-
-    return notify_session_open(session_id, platform)
 logger = logging.getLogger(__name__)
 
 _hermes_home = get_hermes_home()
@@ -90,13 +85,16 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
-from hermes_state import _BARE_BILLING_PROVIDERS
-
+# Batch clarify accumulators: rid → {"qids": [...], "answers": {qid: answer}}. Written by
+# clarify.respond (per-question lock, update-in-place), read out by _block on resolution/timeout
+# so locked answers survive the deadline.
 _batch_clarify: dict[str, dict] = {}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
+# Shared profile UI metadata is updated concurrently by Desktop, mobile and pool RPCs; its
+# compare/check/write transaction needs its own lock, not the unrelated config cache lock.
 _profile_ui_meta_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
@@ -117,6 +115,16 @@ def _ws_orphan_setting(env_var: str, cfg_key: str, default: float) -> float:
     with contextlib.suppress(ValueError, TypeError):
         return max(0.0, float(raw) if raw is not None else default)
     return max(0.0, default)
+
+
+# When a WebSocket client (the dashboard's embedded-chat tab / desktop app) disconnects, ``tui_gateway.ws``
+# detaches the transport but intentionally leaves the session parked so a quick reconnect can reattach it
+# (see ws.py). That park is unbounded, though: a browser refresh spins up a brand-new ``session.create``
+# (new sid + a fresh _SlashWorker via _deferred_build) and never reattaches the OLD sid, so the old
+# session's slash-worker subprocess lingers forever — one leaked python process per refresh (#38591
+# fallout). After this grace window, an orphaned WS session is interrupted if it is still running, then
+# reaped once the normal turn-finalization path settles. Set to 0 to disable (park forever, pre-fix
+# behaviour).
 def _resolve_ws_orphan_reap_grace() -> float:
     """Grace before an orphaned WS session is interrupted/reaped (0 = park forever): ws.py parks a
     disconnected session for a quick reattach, but a browser refresh mints a NEW sid and never
@@ -125,12 +133,32 @@ def _resolve_ws_orphan_reap_grace() -> float:
 
 
 _WS_ORPHAN_REAP_GRACE_S = _resolve_ws_orphan_reap_grace()
+# A detached RUNNING turn is interrupted only once its activity clock (API waits, stream tokens, tool
+# heartbeats) idled this long; 600s = the turn-liveness watchdog so "wedged" means the same. 0 disables.
 _WS_ORPHAN_ACTIVITY_STALE_S = _ws_orphan_setting("HERMES_TUI_WS_ORPHAN_ACTIVITY_STALE_S", "ws_orphan_activity_stale_s", 600.0)
 _WS_ORPHAN_INTERRUPT_REAP_POLL_S = 1.0
+# Interrupt-then-reap poll budget: a turn that never settles (thread hung in a syscall) would
+# reschedule the 1s poll forever; after this many polls, log loudly and force-reap.
+# If an interrupted turn never settles (agent thread hung in a syscall, supervisor lost), each 1s poll would
+# otherwise reschedule forever — trading the old leak-one-worker bug for leak-one-session-plus-timer-chain
+# (review finding, PR #90373). After this many polls we log loudly and force-reap, mirroring the
+# pre-existing stuck-`running` safety net's role of breaking the deadlock.
 _WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS = 60
 _TURN_SETTLE_BEFORE_CLOSE_SECONDS = 5.0
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
+
+# ── Async RPC dispatch: slow handlers (seconds to minutes) would leave approval.respond and
+# session.interrupt unread in the stdin pipe, so only THESE go to a small thread pool; everything else
+# stays inline so fast-path ordering stays sane (write_json is _stdout_lock-guarded). Why each is slow:
+# billing/subscription/usage = blocking portal (+Stripe) round-trips; complete.* = git ls-files /
+# prompt_toolkit import + skill scan; model.options = credential pool + pricing + provider probe;
+# pet.* = network or PNG decode (generate = several image-model round-trips); reload.mcp /
+# mcp.servers.* = rediscovery, cold npx spawn, ~30s OAuth wait; profiles.* = skill-tree walk + state.db
+# open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.* / session.active_list =
+# Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
+# interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
+# git subprocess probes on an arbitrary (maybe slow) mount.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
@@ -156,7 +184,12 @@ atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 # this object identity cannot be supplied by RPC.
 _current_runtime_session_record: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "hermes_gateway_runtime_session_record", default=None)
+# JSON-RPC method being dispatched on this thread/task. Diagnostic only (names WHICH client
+# poll is looping in the 4001 warning); never authorization — the method string is client-supplied.
 _current_rpc_method: contextvars.ContextVar[str] = contextvars.ContextVar("hermes_gateway_rpc_method", default="")
+
+# Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr so stray print() from
+# libraries/tools becomes harmless gateway.stderr instead of corrupting the JSON protocol.
 _real_stdout = sys.stdout
 sys.stdout = sys.stderr
 
@@ -169,7 +202,14 @@ class _DropTransport:
 
     def close(self) -> None:
         pass
+
+
+# Module-level stdio transport — fallback sink when no transport is bound via contextvar or session.
+# Stream resolved through a lambda so test monkey-patches of `_real_stdout` still land.
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
+
+# Detached websocket sessions use a drop sink instead of stdio: Desktop embeds the gateway in-process
+# and captures stdout into logs, so stale frames must not fall through while a session awaits resume/reap.
 _detached_ws_transport = _DropTransport()
 
 
@@ -298,18 +338,6 @@ def _load_interim_assistant_messages() -> bool:
 
 
 def _shutdown_sessions() -> None:
-    # KENSEI CUSTOM: late-binding imports — upstream decomposition re-homed these into
-    # session_reaper / methods_voice; import lazily here (cycle-safe) and fall back to no-ops.
-    try:
-        from tui_gateway.session_reaper import _flush_sessions_before_exit
-    except Exception:
-        def _flush_sessions_before_exit(budget_s=None):  # type: ignore[misc]
-            return 0
-    try:
-        from tui_gateway.methods_voice import _release_gateway_wake_owner
-    except Exception:
-        def _release_gateway_wake_owner():  # type: ignore[misc]
-            return False
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
     for step in (_flush_sessions_before_exit, _release_gateway_wake_owner):
         with contextlib.suppress(Exception):
@@ -318,59 +346,19 @@ def _shutdown_sessions() -> None:
         sids = list(_sessions)
     for sid in sids:
         _close_session_by_id(sid, end_reason="tui_shutdown")
+
+
+# Session reaping / flushing knobs (session_reaper.py). TTL is the last-resort net for disconnect paths that
+# slip past the WS finally; hours-scale because last_active freezes during a long turn and on passive
+# viewing — running/pending/starting/live-transport are hard exemptions.
 _SESSION_TTL_S = max(0.0, env_float("HERMES_TUI_SESSION_TTL_S", float(6 * 3600)))
 _REAPER_SCAN_S = 300.0
+# Flush-on-kill budget + periodic incremental flush (piggybacks the reaper scan): a SIGTERM/SIGKILL
+# mid-update loses at most one flush interval of session state.
 _EXIT_FLUSH_BUDGET_S = max(0.0, env_float("HERMES_TUI_EXIT_FLUSH_BUDGET_S", 5.0))
 _INCREMENTAL_FLUSH_INTERVAL_S = max(0.0, env_float("HERMES_TUI_SESSION_FLUSH_INTERVAL_S", _REAPER_SCAN_S))
 
 
-def _claim_active_session_slot(
-    session_key: str,
-    *,
-    live_session_id: str,
-    surface: str = "tui",
-    profile_home: str | Path | None = None,
-) -> tuple[Any, str | None]:
-    track_liveness = str(surface or "").strip().lower() == "desktop"
-    try:
-        from hermes_cli.active_sessions import try_acquire_active_session
-
-        return try_acquire_active_session(
-            session_id=session_key,
-            surface=surface,
-            config=_load_cfg(),
-            metadata={"live_session_id": live_session_id},
-            registry_home=profile_home,
-            track_liveness=track_liveness,
-        )
-    except Exception as exc:
-        logger.warning("Failed to claim active session slot: %s", exc)
-        # Fail CLOSED regardless of surface: per-session exclusivity is a
-        # correctness guarantee (see PER_SESSION_EXCLUSIVE_SUBMIT), and a
-        # claim that errors out has NOT proven the session is unowned.
-        # Proceeding without a lease here is the silent double-writer hole
-        # flagged in the #94595 review (blocker 2).
-        return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
-def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
-    """Claim this session's cap slot on its first real turn; None when ok.
-
-    Session creation and resume deliberately do not claim a slot. Idle desktop
-    tabs and abandoned drafts are not active work and must not starve messaging
-    gateways that share the same cap. The first submitted turn claims the slot,
-    mirroring the lazy session-row contract.
-    """
-    if session.get("active_session_lease") is not None:
-        return None
-    lease, limit_message = _claim_active_session_slot(
-        str(session.get("session_key") or ""),
-        live_session_id=sid,
-        surface=_session_source(session),
-        profile_home=session.get("profile_home"),
-    )
-    if limit_message is not None:
-        return limit_message
-    session["active_session_lease"] = lease
-    return None
 def _start_idle_reaper() -> None:
     def _loop():
         while True:
@@ -479,6 +467,11 @@ def _response_profile_name(profile: str | None = None) -> str:
 
 def _db_unavailable_error(rid, *, code: int):
     return _err(rid, code, f"state.db unavailable: {_db_error or 'state.db unavailable'}")
+
+
+# ── Per-session profile scoping: the desktop's app-global remote mode points every profile at this
+# backend, so calls carry ``profile`` → open that profile's db and bind its HERMES_HOME (ContextVar
+# override) so config/skills/model/persistence resolve to it. Omitted/own profile → launch profile.
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
     if not (name := _canonical_profile_request((profile or "").strip())):
@@ -491,6 +484,10 @@ def _profile_home(profile: str | None) -> Path | None:
         return None  # already the launch profile (no override needed)
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
+
+
+# Profile homes served besides the launch home — the only extra stores the sessions watcher
+# probes. Empty on single-profile installs, so their watcher stays byte-identical.
 _served_profile_homes: set[Path] = set()
 
 
@@ -524,6 +521,10 @@ def _profile_scoped(handler):
         finally:
             reset_hermes_home_override(token)
     return wrapper
+
+
+# Placeholder ``terminal.cwd`` values (resolved to the home dir at runtime) — never an explicit
+# workspace (mirrors gateway/run.py's config bridge).
 _CWD_PLACEHOLDERS = {".", "auto", "cwd"}
 
 
@@ -591,6 +592,10 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 def _emit(event: str, sid: str, payload: dict | None = None):
     write_json(_event_frame(event, sid, payload))
+
+
+# Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
+# events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
 _live_transports: set[Transport] = set()
 _live_transports_lock = threading.Lock()
 
@@ -802,6 +807,10 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     if ready is not None and not ready.wait(timeout=timeout):
         return _err(rid, 5032, "agent initialization timed out")
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
+
+
+# The deferred prompt path waits in short slices so a cancel is honored promptly and a slow
+# build is reported to the client exactly once.
 _AGENT_BUILD_WAIT_SLICE = 5.0
 _AGENT_BUILD_SLOW_NOTICE_AFTER = 30.0
 _AGENT_BUILD_SLOW_NOTICE_KEY = "agent-build-slow"
@@ -1086,6 +1095,11 @@ def _sess_building(params, rid):
     if not err:
         _start_agent_build(params.get("session_id") or "", s)
     return (None, err) if err else (s, None)
+
+
+# ── Config I/O ────────────────────────────────────────────────────────
+
+
 _DASHBOARD_TURN_ISOLATION_DEFAULT = False
 _DASHBOARD_COMPUTE_HOST_HEARTBEAT_SECS_DEFAULT = 15
 _DASHBOARD_COMPUTE_HOST_RESPAWN_MAX_DEFAULT = 3
@@ -1225,6 +1239,13 @@ def _clear_session_context(tokens: list) -> None:
 def _enable_gateway_prompts() -> None:
     """Route approvals through gateway callbacks instead of CLI input()."""
     os.environ.update(HERMES_GATEWAY_SESSION="1", HERMES_EXEC_ASK="1", HERMES_INTERACTIVE="1")
+
+
+# ── Blocking prompt factory ──────────────────────────────────────────
+
+
+# Blocking bridges whose `*.respond` tolerates a late reply (allow_expired=True): on timeout the tool
+# returns empty, but a slow renderer could still answer and hit a raw 4009 — `.expire` tears the card down.
 _EXPIRING_REQUESTS = frozenset({
     "secret.request", "sudo.request", "clarify.request", "terminal.read.request",
     "preview.read.request", "preview.act.request", "window.read.request", "mcp.setup.request",
@@ -1294,7 +1315,12 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
                       batch_qids=[e["qid"] for e in questions])
     payload = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
     return _block("clarify.request", sid, payload, timeout=_clarify_timeout_seconds())
+
+
+# A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
+# preview tour's first action injects the engine into a live page.
 _TOUR_TIMEOUT_S = 45
+# Until a session's client has proven it answers at all, hold it to a deadline a working renderer cannot miss.
 _TOUR_PROBE_TIMEOUT_S = 10
 
 _TOUR_BRIDGE_UNAVAILABLE = json.dumps({
@@ -1339,6 +1365,11 @@ def _clear_pending(sid: str | None = None) -> None:
             if sid is None or owner_sid == sid:
                 _answers[rid] = ""
                 ev.set()
+
+
+# ── Agent factory ────────────────────────────────────────────────────
+
+
 def _env_model_seed() -> str:
     """The launch-scoped model seed (``hermes --tui -m``, hosted provisioning); "" when unset."""
     return (os.environ.get("HERMES_MODEL", "") or os.environ.get("HERMES_INFERENCE_MODEL", "")).strip()
@@ -1402,6 +1433,18 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
             provider, detected_model = detected
             return detected_model, provider
     return model, None
+
+
+# Bare billing buckets are not routable provider identities; restoring one as a session provider override
+# breaks resume. ``openrouter`` is deliberately NOT in this set (fully routable; agent_init's gate is a different set).
+# (agent_init's fail-fast gate is a DIFFERENT set that also skips "openrouter" — there it means "default
+# route, don't fail fast", not "unroutable".) ``openrouter`` is deliberately excluded here — it is a fully
+# routable provider with its own API key and base_url. Sessions that used OpenRouter store
+# ``billing_provider="openrouter"``; dropping it forces resume to the current global model (e.g. a custom
+# endpoint), which is the wrong provider for the stored model. See #57588.
+from hermes_state import _BARE_BILLING_PROVIDERS
+
+
 def _is_routable_provider(provider: str) -> bool:
     with contextlib.suppress(Exception):
         from hermes_cli.runtime_provider import is_routable_provider
@@ -1569,6 +1612,11 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
         _clear_session_context(session_tokens)
         if home_token is not None:
             reset_hermes_home_override(home_token)
+
+
+# Stable leading text of the model-switch marker (builder + dedup); only the newest marker is meaningful.
+# Only the newest marker is meaningful (it names the *currently* active model); older ones are stale and
+# would otherwise be re-sent to the provider on every turn (#65891).
 _MODEL_SWITCH_MARKER_PREFIX = "[System: The active model for this chat has changed to "
 
 
@@ -1634,6 +1682,9 @@ def _write_config_key(key_path: str, value):
 
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
 _APPROVAL_MODES = frozenset({"manual", "smart", "off"})
+
+# Appearance switches the renderer owns but the AGENT must see (each gates a tool's `check_fn`). `config.set`
+# answers 4002 for unlisted keys — a mirrored switch missing here writes nothing and its tool stays dark.
 _DISPLAY_TOGGLE_KEYS = frozenset({"display.message_reactions", "display.in_app_tips", "display.in_app_tours"})
 _BOOL_WORDS = {
     "1": True, "on": True, "true": True, "yes": True, "0": False, "off": False, "false": False, "no": False,
@@ -1941,6 +1992,12 @@ def _current_profile_name() -> str:
         from hermes_cli.profiles import get_active_profile_name
         return get_active_profile_name() or "default"
     return "default"
+
+
+# Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
+# one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
+# v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
+# v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key.
 DESKTOP_BACKEND_CONTRACT = 6
 
 
@@ -2218,6 +2275,9 @@ def _make_agent(
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
+    # Load hooks alongside the same profile config used to construct this agent.
+    from agent.shell_hooks import register_from_config
+    register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     _pr = _load_provider_routing()
@@ -2246,25 +2306,6 @@ def _make_agent(
         with _sessions_lock:
             context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(_sessions.get(sid))
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
-    # ── KENSEI CUSTOM: restore agent mode from DB on build/resume ──
-    # Re-anchored from fork methods_session.py resume paths (upstream split them);
-    # _make_agent is the one seam every resume path (cold/lazy/eager/deferred) builds
-    # through. Uses the caller's (often profile-scoped) session_db so remote/profile
-    # resume reads agent_mode from the right db. See skill `agent-modes`.
-    try:
-        mode_db = session_db if session_db is not None else _get_db()
-        db_session = mode_db.get_session(key) if hasattr(mode_db, "get_session") else None
-        if db_session:
-            saved_mode = db_session.get("agent_mode", "auto") or "auto"
-            agent.agent_mode = saved_mode
-            with _sessions_lock:
-                if sid in _sessions:
-                    _sessions[sid]["agent_mode"] = saved_mode
-            if saved_mode != "auto":
-                from hermes_cli.mode_prompts import get_mode_prompt
-                agent.ephemeral_system_prompt = get_mode_prompt(saved_mode)
-    except Exception:
-        pass
     return agent
 
 
@@ -2346,6 +2387,11 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
     if 0 <= idx < len(checkpoints):
         return checkpoints[idx].get("hash", ref)
     raise ValueError(f"Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+
+
+# ── Methods: session ─────────────────────────────────────────────────
+
+
 def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
     return {
@@ -2695,6 +2741,10 @@ def _main_runtime_from_agent(agent) -> dict | None:
         elif field == "api_key" and callable(value):
             runtime[field] = value
     return runtime or None
+
+
+# Pet helpers are fail-open throughout: a decode hiccup degrades to a static fallback rather than
+# breaking the (cosmetic) pet surface.
 _pet_payload_cache_lock = threading.Lock()
 _pet_payload_cache: dict[tuple, dict] = {}
 
@@ -2840,6 +2890,10 @@ def _pet_png_data_uri(path, *, max_px: int = 160) -> str:
     img.thumbnail((max_px, max_px), Image.LANCZOS)
     img.save(buf := io.BytesIO(), format="PNG")
     return "data:image/png;base64," + base64.standard_b64encode(buf.getvalue()).decode("ascii")
+
+
+# Cooperative cancellation for pet generation: Stop aborts the RPC, but the pool job keeps running unless
+# pet.cancel flips its token (polled between provider calls).
 _pet_cancel_lock = threading.Lock()
 _pet_cancelled: set[str] = set()
 _PET_REFERENCE_MIME_EXT = {"png": "png", "jpeg": "jpg", "jpg": "jpg", "webp": "webp", "gif": "gif"}
@@ -2888,6 +2942,12 @@ def _pet_cancel_request(token: str) -> None:
 def _pet_is_cancelled(token: str) -> bool:
     with _pet_cancel_lock:
         return token in _pet_cancelled
+
+
+# ── Spawn-tree snapshots: the TUI owns subagent state (/agents overlay; registry in tools/delegate_tool), posts
+# the final tree on turn-complete and /replay fetches by session_id + filename. Layout: spawn-trees/<sid>/<ts>.json
+
+
 def _spawn_trees_root():
     root = get_hermes_home() / "spawn-trees"
     root.mkdir(parents=True, exist_ok=True)
@@ -2898,6 +2958,12 @@ def _spawn_tree_session_dir(session_id: str):
     d = _spawn_trees_root() / ("".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown")
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+# Per-session append-only JSONL index so `spawn_tree.list` needn't read every snapshot; a cache — a lost
+# line just means list() falls back to a directory scan.
+# Read by `spawn_tree.list` so scanning doesn't require reading every full snapshot file (Copilot review on
+# #14045). One JSON object per line.
 _SPAWN_TREE_INDEX = "_index.jsonl"
 
 
@@ -2920,8 +2986,16 @@ def _read_spawn_tree_index(session_dir) -> list[dict]:
     except OSError:
         return []
     return out
+
+
+# ── Methods: prompt ──────────────────────────────────────────────────
+
+
 _GOAL_COMPRESSION_RECOVERY_ATTEMPTS = "_goal_compression_recovery_attempts"
 _GOAL_COMPRESSION_RECOVERY_LIMIT = 1
+
+# Captured at import time: tests monkeypatch threading.Thread with a synchronous stub, and the ticker only
+# exits once `stop` is set AFTER run_conversation returns — inline it would spin forever.
 _RealThread = threading.Thread
 
 
@@ -2949,6 +3023,11 @@ def _start_usage_ticker(sid: str, agent, interval: float = 1.0) -> tuple[threadi
     thread = _RealThread(target=_loop, daemon=True)
     thread.start()
     return stop, thread
+
+
+# ── Methods: respond ─────────────────────────────────────────────────
+
+
 def _respond(rid, params, key, *, allow_expired=False):
     r = params.get("request_id", "")
     question_id = str(params.get("question_id") or "")
@@ -2969,6 +3048,11 @@ def _respond(rid, params, key, *, allow_expired=False):
         _answers[r] = params.get(key, "")
         ev.set()
     return _ok(rid, {"status": "ok"})
+
+
+# ── Methods: tools & system ──────────────────────────────────────────
+
+
 def _session_processes(session: dict) -> list:
     """Background processes owned by this session (registry session_key match)."""
     # Drain completion notifications that arrived during this turn. The background poller handles
@@ -2985,9 +3069,17 @@ def _session_processes(session: dict) -> list:
             entry["output_tail"] = (proc.output_buffer or "")[-4000:]  # the 200-char list preview is too thin for the viewer
             owned.append(entry)
     return owned
+
+
+# Serialize reload.mcp (runs on the pool): overlapping shutdown+discover pairs would leave the registry half-built.
 _mcp_reload_lock = threading.Lock()
+# Bumped per SUCCESSFUL reload; a follower skips only if it advanced while it waited (a leader that threw
+# leaves it unchanged → the follower reloads itself).
 _mcp_reload_gen = 0
+# The mcp_rev the last successful reload actually LOADED (re-hashed after discovery); a follower coalesces
+# only when its requested rev matches, otherwise the config changed under the leader.
 _mcp_reload_loaded_rev = ""
+# Bounded convergence for a config edit racing a slow reload: the leader re-hashes until the hash is stable.
 _MCP_RELOAD_MAX_PASSES = 3
 
 
@@ -3020,6 +3112,9 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]", "TUI"),
     ("/sessions", "Switch between live TUI sessions", "TUI"),
 ]
+
+# Commands that queue onto _pending_input in the CLI; the slash worker has no reader for that queue, so
+# slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
     "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
     "init", "compress", "compact",
@@ -3065,6 +3160,9 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
     skills.sort(key=lambda item: (
         *(() if score_of is None else (score_of(item),)), -usage(name_of(item)), name_of(item)))
     return commands[:_SLASH_COMPLETION_LIMIT] + skills[:_SLASH_COMPLETION_LIMIT]
+
+
+# argv shapes that must not run headless in the gateway process → user hint.
 _CLI_EXEC_BLOCKED = {
     ("setup",): "`hermes setup` needs a full terminal — run it outside the TUI",
     ("gateway",): "`hermes gateway` is long-running — run it in another terminal",

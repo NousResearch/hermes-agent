@@ -20,8 +20,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-_UNSET = object()
-
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
@@ -434,120 +432,6 @@ def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _Parse
     if parse_error is None:
         name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)
     return _ParsedCall(tool_call, name, args, [], parse_error, scope_block)
-
-
-# Tools that must always be reachable regardless of toolset scope, so a
-# scoped session can discover or borrow capability instead of becoming stuck.
-_SCOPE_FENCE_ESCAPE_HATCHES = frozenset({
-    "tool_search",
-    "skill_request",
-    "tool_request",
-    "skill_view",
-    "skills_list",
-})
-
-
-def _allowed_tool_names_for_agent(agent) -> Optional[frozenset]:
-    """Resolve and cache the tool names allowed by the agent's toolset scope."""
-    enabled = getattr(agent, "enabled_toolsets", None)
-    disabled = getattr(agent, "disabled_toolsets", None)
-    key = (
-        tuple(enabled) if enabled is not None else None,
-        tuple(disabled) if disabled is not None else (),
-        bool(os.environ.get("HERMES_KANBAN_TASK")),
-    )
-
-    cached = getattr(agent, "_allowed_tool_names", _UNSET)
-    cached_key = getattr(agent, "_allowed_tool_names_key", _UNSET)
-    if cached is not _UNSET and cached_key == key:
-        return cached if cached is None or isinstance(cached, frozenset) else None
-
-    try:
-        import model_tools
-
-        names = model_tools.resolve_allowed_tool_names(
-            enabled_toolsets=enabled,
-            disabled_toolsets=disabled,
-        )
-        allowed = frozenset(names) if names is not None else None
-    except Exception:
-        allowed = None
-
-    try:
-        agent._allowed_tool_names = allowed
-        agent._allowed_tool_names_key = key
-    except Exception:
-        pass
-    return allowed
-
-
-def _tool_scope_decision(agent, function_name: str) -> Optional[str]:
-    """Return the active fence mode when ``function_name`` is out of scope."""
-    if function_name in _SCOPE_FENCE_ESCAPE_HATCHES:
-        return None
-    try:
-        from tools import tool_search as _ts
-
-        if function_name == _ts.TOOL_CALL_NAME:
-            return None
-    except Exception:
-        pass
-
-    allowed = _allowed_tool_names_for_agent(agent)
-    if allowed is None or function_name in allowed:
-        return None
-    if function_name in _tool_search_scoped_names(agent):
-        return None
-
-    try:
-        from tools.skills_tool import _current_profile
-        from tools import tool_grants
-
-        if tool_grants.has_active_grant(_current_profile(), function_name):
-            return None
-    except Exception:
-        # A broken grant lookup must not widen access.
-        pass
-
-    try:
-        from agent.skill_utils import get_tool_enforcement_mode
-
-        mode = get_tool_enforcement_mode()
-    except Exception:
-        # Remain observable rather than silently disabling the fence.
-        mode = "shadow"
-    if mode == "off":
-        return None
-    return mode
-
-
-def _record_tool_scope_event(agent, function_name: str, mode: str) -> None:
-    """Record a governance event when the runtime scope fence fires."""
-    try:
-        from hermes_cli.profile_activity_ledger import record_event_if_enabled
-        from tools.skills_tool import _current_profile
-
-        profile = _current_profile()
-        record_event_if_enabled(
-            source="tool.dispatch",
-            actor_profile=profile,
-            target_profile=profile,
-            event_type=(
-                "tool.access.blocked"
-                if mode == "enforce"
-                else "tool.access.would_block"
-            ),
-            object_type="tool",
-            object_id=function_name,
-            summary=f"{mode} dispatch of {function_name} (not in enabled toolsets)",
-            payload={
-                "enabled_toolsets": getattr(agent, "enabled_toolsets", None),
-                "disabled_toolsets": getattr(agent, "disabled_toolsets", None),
-                "kanban_task_env": bool(os.environ.get("HERMES_KANBAN_TASK")),
-            },
-        )
-    except Exception:
-        pass
 
 
 @dataclass

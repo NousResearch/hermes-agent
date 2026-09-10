@@ -59,7 +59,6 @@ def _make_runner():
     runner._restart_drain_timeout = 0.0
     runner._stop_task = None
     runner._exit_code = None
-    runner._cron_stop_event = None
     runner._update_runtime_status = MagicMock()
     runner._is_user_authorized = lambda _source: True
     runner.hooks = MagicMock()

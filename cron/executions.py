@@ -2,7 +2,7 @@
 
 The ledger records what is known about each attempt; it is not a retry queue. Interrupted attempts
 become ``unknown`` only after their exact owner process is proved gone. Terminal states are
-immutable. Also hosts the SQLite ledger helpers shared with ``cron.incidents`` / ``cron.notepad``.
+immutable.
 """
 
 from __future__ import annotations
@@ -15,8 +15,6 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
-from typing import Any, Callable, Dict, Iterator, List, Optional
-
 
 from cron.ledger import ledger_transaction, open_ledger, prepare_ledger
 from hermes_constants import get_hermes_home
@@ -31,44 +29,6 @@ HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
-
-
-# --- executions ledger --------------------------------------------------------------------------
-
-def _connect() -> sqlite3.Connection:
-    return open_ledger(EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db"))
-
-
-def prepare_ledger(
-    conn: sqlite3.Connection, *, db_label: str, synchronous_full: bool = True
-) -> None:
-    """Row factory + busy timeout + WAL (with fallback) + optional ``synchronous=FULL``."""
-    from hermes_state_wal import apply_wal_with_fallback
-
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    apply_wal_with_fallback(conn, db_label=db_label)
-    if synchronous_full:
-        conn.execute("PRAGMA synchronous=FULL")
-
-
-@contextmanager
-def ledger_transaction(
-    lock: threading.RLock,
-    connect: Callable[[], sqlite3.Connection],
-    initialize_schema: Callable[[sqlite3.Connection], None],
-) -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, always close. ``sqlite3.Connection``'s own
-    context manager does NOT close (leaks WAL/SHM fds until GC); schema init runs inside the
-    ``try`` so a PRAGMA/DDL failure after ``connect()`` still closes."""
-    with lock:
-        conn = connect()
-        try:
-            initialize_schema(conn)
-            with conn:
-                yield conn
-        finally:
-            conn.close()
 
 
 # --- executions ledger --------------------------------------------------------------------------

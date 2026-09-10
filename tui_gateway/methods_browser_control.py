@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 _registry = HandlerRegistry()
 method = _registry.method
 
-
+# Transport family stamped into every scope attached here; the broker treats it as an
+# identity field, so an API transport can never address a dashboard controller.
 _CLOUD_TRANSPORT_FAMILY = "cloud-ticket-ws"
 _ERR_FORBIDDEN = 4403  # identity / session / flag denials
 _IDENTITY_REQUIRED = "authenticated controller identity required"
@@ -214,6 +215,14 @@ def _(rid, params: dict, transport, _identity, _session_id, broker, scope, _sess
 def register(server) -> None:
     """Publish helpers/constants onto ``server`` and install handlers (rebound to its globals)."""
     bind_module(globals(), server, skip=("_",))
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+
 _PLUGIN_COMPAT_LAZY = {
     'BROWSER_CONTROL_PROTOCOL_VERSION': ('gateway.browser_control_broker', 'BROWSER_CONTROL_PROTOCOL_VERSION'),
     'browser_control_protocol_supported': ('gateway.browser_control_broker', 'browser_control_protocol_supported'),
@@ -229,3 +238,4 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     from hermes_cli.plugin_compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

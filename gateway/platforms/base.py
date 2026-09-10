@@ -15,8 +15,6 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime
-from enum import Enum
 import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
@@ -767,15 +765,24 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".azure", ".gcloud",
     "Library/Keychains")
 
+def _sqlite_files(name: str) -> tuple[str, ...]:
+    """A SQLite store plus its WAL/SHM/rollback-journal sidecars."""
+    return (name, f"{name}-wal", f"{name}-shm", f"{name}-journal")
+
+
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
-# files stay deliverable (cache subdirs are allowlisted BEFORE this). Mirrors agent/file_safety.py
-# so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
+# files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
+# agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
 # recency window); pairing/ and mcp-tokens/ (live OAuth tokens) are denied as whole trees.
 _ROOT_CREDENTIAL_PATHS = (
     ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
     "webhook_subscriptions.json", os.path.join("cache", "bws_cache.json"),
-    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens")
+    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens",
+    # Whole conversation history (every secret ever pasted into a chat) and the copied browser
+    # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
+    # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
+    "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
 
 
 def _profile_cache_roots() -> List[Path]:
@@ -795,20 +802,28 @@ def _profile_cache_roots() -> List[Path]:
     return [p / "cache" / subdir for p in profile_dirs for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
 
 
+def _kanban_root() -> Path:
+    """Kanban is root-shared across profiles by design (``kanban_db.kanban_home``)."""
+    return Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
+
+
+def _kanban_board_dirs() -> List[Path]:
+    """Every directory under ``<root>/kanban/boards`` (lax on purpose: the DENY side must catch a
+    board whatever its name; the allow side filters further)."""
+    with contextlib.suppress(OSError):
+        return [p for p in (_kanban_root() / "kanban" / "boards").iterdir() if p.is_dir()]
+    return []
+
+
 def _kanban_attachment_roots() -> List[Path]:
     """Return durable Kanban attachment roots without importing kanban_db."""
     override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
     if override:
         return [Path(override).expanduser()]
-    home_override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
-    root = Path(home_override).expanduser() if home_override else _HERMES_ROOT
-    roots = [root / "kanban" / "attachments"]
-    with contextlib.suppress(OSError):
-        board_dirs = [path for path in (root / "kanban" / "boards").iterdir()
-                      if path.is_dir() and not path.is_symlink()
-                      and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
-                      and (path / "kanban.db").is_file()]
-        roots.extend(path / "attachments" for path in board_dirs)
+    roots = [_kanban_root() / "kanban" / "attachments"]
+    roots.extend(path / "attachments" for path in _kanban_board_dirs()
+                 if not path.is_symlink() and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
+                 and (path / "kanban.db").is_file())
     return roots
 
 
@@ -832,12 +847,19 @@ def _media_delivery_recency_seconds() -> float:
     return _or_default(lambda: max(0.0, float(custom)) if custom else default, default)
 
 
+def _kanban_board_db_paths() -> List[Path]:
+    """Named-board ``kanban.db`` stores (+ sidecars): they sit beside the ATTACHMENTS dir
+    ``_kanban_attachment_roots`` allowlists and hold every task, comment and run transcript."""
+    return [board / name for board in _kanban_board_dirs() for name in _sqlite_files("kanban.db")]
+
+
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
-            *(r / rel for r in (_HERMES_HOME, _HERMES_ROOT) for rel in _ROOT_CREDENTIAL_PATHS)]
+            *(r / rel for r in (_HERMES_HOME, _HERMES_ROOT) for rel in _ROOT_CREDENTIAL_PATHS),
+            *_kanban_board_db_paths()]
 
 
 def _resolve_path(path: Path, *, strict: bool = False, expand: bool = False) -> Optional[Path]:
@@ -1109,12 +1131,26 @@ def _log_safe_path(path: str) -> str:
 
 
 def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional[str]:
-    """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning."""
+    """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning. A path the
+    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466)."""
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
-        logger.warning("Skipping unsafe %s: %s", label, _log_safe_path(raw))
+        from gateway.media_fetch import fetch_remote_media
+        safe_path = fetch_remote_media(raw)
+    if not safe_path:
+        # Say WHY: a path that does not exist on the host is the common case (a model hallucinated or
+        # a sandbox path failed to translate) and is not a security rejection.
+        reason = "not found on this host" if not _existing_regular_file(raw) else "denied by the delivery policy"
+        logger.warning("Skipping %s (%s): %s", label, reason, _log_safe_path(raw))
     return safe_path
+
+
+def _existing_regular_file(raw: str) -> bool:
+    try:
+        return Path(os.path.expanduser(raw)).is_file()
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 SUPPORTED_DOCUMENT_TYPES = {
@@ -1537,6 +1573,11 @@ class SendResult:
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
 
+
+# Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the
+# typed failure so the delivery ledger owns the wait (#91969: a 97-minute FloodWait slept verbatim
+# pinned the send coroutine and froze inbound on every platform).
+_SEND_RETRY_INLINE_WAIT_CAP_SECS = 60.0
 
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
 # bad_format (markup rejected; plain-text retry fixes), forbidden (the bot CANNOT reach the user),
@@ -2687,40 +2728,6 @@ class BasePlatformAdapter(ABC):
         """Send a document/file natively. Default: friendly failure notice."""
         return await self._send_media_fallback_notice(
             "send_document", "file", file_path, chat_id, caption, reply_to, metadata, file_name=file_name)
-    async def send_multiple_documents(
-        self,
-        chat_id: str,
-        documents: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None,
-        human_delay: float = 0.0,
-    ) -> None:
-        """Send a batch of documents (files) as native platform attachments.  # KENSEI CUSTOM (restored)
-
-        Default implementation sends each document individually through
-        ``send_document``, skipping missing files with a warning.  Override
-        in subclasses to bundle into native multi-attachment API calls
-        (e.g. Discord's 10-attachment-per-message limit).
-
-        ``documents`` is a list of ``(file_path, caption_or_alt)`` tuples —
-        the same shape used by ``send_multiple_images``.
-        """
-        for file_path, _alt in documents:
-            if not os.path.exists(file_path):
-                logger.warning("[%s] Skipping missing document: %s", self.name, file_path)
-                continue
-            if human_delay > 0:
-                await asyncio.sleep(human_delay)
-            try:
-                result = await self.send_document(
-                    chat_id=chat_id,
-                    file_path=file_path,
-                    metadata=metadata,
-                )
-                if not result.success:
-                    logger.error("[%s] Failed to send document: %s", self.name, result.error)
-            except Exception as doc_err:
-                logger.error("[%s] Error sending document: %s", self.name, doc_err, exc_info=True)
-
 
     async def _notify_media_delivery_failure(
         self, chat_id: str, media_path: str, *, is_voice: bool = False,
@@ -3069,6 +3076,16 @@ class BasePlatformAdapter(ABC):
         return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
 
     @staticmethod
+    def _is_rate_limited_error(error: Optional[str]) -> bool:
+        """Return True if the error string classifies as a rate limit / flood cap.
+
+        Single wrapper around :func:`classify_send_error` so the call sites in
+        :meth:`_send_with_retry` share one notion of "is this a rate limit" instead
+        of inline copies that could drift.
+        """
+        return classify_send_error(None, error or "") == "rate_limited"
+
+    @staticmethod
     def _is_timeout_error(error: Optional[str]) -> bool:
         """Return True for read/write timeouts — NOT retryable and NOT a plain-text
         fallback trigger, because the request may already have been delivered."""
@@ -3133,7 +3150,19 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
         error_str = result.error or ""
-        is_network = result.retryable or self._is_retryable_error(error_str)
+        # A rate-limited / flood-capped send is transient: it should back off
+        # (honoring the server's retry_after when present) rather than fall
+        # through to the plain-text fallback, which re-enters the ban and can
+        # truncate content.  Gate on the platform-neutral classifier as well so
+        # platforms that surface a rate limit without a retry_after field
+        # (e.g. Weixin raising a bare RuntimeError) get the same treatment.
+        is_rate_limited = self._is_rate_limited_error(error_str)
+        is_network = (
+            result.retryable
+            or is_rate_limited
+            or result.retry_after is not None
+            or self._is_retryable_error(error_str)
+        )
         # Timeouts: not safe to retry (may have delivered) and not a formatting error.
         if not is_network and self._is_timeout_error(error_str):
             return result
@@ -3144,6 +3173,16 @@ class BasePlatformAdapter(ABC):
                 backoff = server_retry_after
                 if backoff is None:
                     backoff = base_delay * (2 ** (attempt - 1))
+                elif backoff > _SEND_RETRY_INLINE_WAIT_CAP_SECS:
+                    # Never hold this coroutine open for a long server penalty: a 97-minute
+                    # FloodWait slept verbatim once froze inbound on every platform (#91969).
+                    # Return the typed failure; the delivery ledger redelivers after the cooldown.
+                    logger.error(
+                        "[%s] Server asked to retry after %.0fs (> %.0fs inline cap); returning "
+                        "typed failure for redelivery instead of sleeping: %s",
+                        self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
+                    )
+                    return result
                 delay = backoff + random.uniform(0, 1)
                 server_retry_after = None
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
@@ -3154,10 +3193,36 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                server_retry_after = result.retry_after  # None unless the server asked again
-                if not (result.retryable or self._is_retryable_error(error_str)):
-                    break  # non-transient now — fall through to plain-text fallback
-            else:  # retries exhausted — notify user
+                if result.retry_after is not None:
+                    server_retry_after = result.retry_after
+                # The failure kind can change between attempts (a transient error may
+                # later surface as a flood/rate-limit, or a rate-limited send may give
+                # way to a permanent formatting error). Reclassify from the refreshed
+                # error_str on every attempt so the break/continue decision below
+                # reflects the current attempt, not a stale first-send classification.
+                is_rate_limited = self._is_rate_limited_error(error_str)
+                if not (
+                    result.retryable
+                    or is_rate_limited
+                    or result.retry_after is not None
+                    or self._is_retryable_error(error_str)
+                ):
+                    break  # error switched to non-transient — fall through to plain-text fallback
+            else:
+                # All retries exhausted (loop completed without break) — notify user.
+                # If the final failure is a rate-limit / still carries a server
+                # retry_after, do NOT send the delivery-failure notice now: the notice
+                # send would land inside the same flood penalty and re-enter the ban
+                # (a fourth send at t=378 in an [0, 189, 378, 378] sequence). Return
+                # the typed failure so the delivery ledger owns redelivery after the
+                # cooldown instead — no extra sleep or request needed.
+                if self._is_rate_limited_error(error_str) or result.retry_after is not None:
+                    logger.error(
+                        "[%s] Rate-limited send exhausted retries; returning typed failure "
+                        "for redelivery (no notice sent inside active flood penalty): %s",
+                        self.name, error_str,
+                    )
+                    return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
@@ -3167,7 +3232,9 @@ class BasePlatformAdapter(ABC):
                 except Exception as notify_err:
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
-        # Non-network / post-retry formatting failure: try plain text as fallback
+        # Non-network / post-retry formatting failure: try plain text as fallback. A
+        # rate-limited error never reaches here: it classifies as network above and the
+        # loop only breaks on a non-transient, non-rate-limited error.
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await _send(f"(Response formatting failed, plain text:)\n\n{content[:3500]}")
         if not fallback_result.success:
@@ -3412,18 +3479,18 @@ class BasePlatformAdapter(ABC):
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
-        # KENSEI re-anchor (upstream 4810074d73): admission receipt for internal wakes.
         event._gateway_accepted = False
         if not self._message_handler:
             return
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
-        # Topic recovery is Telegram-DM-only; skip the executor hop for group traffic.
-        if (getattr(self, "_topic_recovery_fn", None) is not None
+        expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
+        # Explicitly routed events already name their destination; recovering a
+        # different topic would redirect them and yield before the session claim.
+        if (not expected_session_key and getattr(self, "_topic_recovery_fn", None) is not None
                 and event.source.platform == Platform.TELEGRAM and event.source.chat_type == "dm"):
             await asyncio.to_thread(self._apply_topic_recovery, event)
         session_key = self._event_session_key(event)
-        expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
@@ -3490,14 +3557,13 @@ class BasePlatformAdapter(ABC):
                 logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
         # Without a runner FIFO, do not merge a wake into an occupied human slot
         # (or collapse distinct wakes into one turn). Its caller can retry admission.
-        # KENSEI re-anchor (upstream 4810074d73).
         if event.internal and session_key in self._pending_messages:
             return
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
             logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
             merge_pending_message_event(self._pending_messages, session_key, event)
-            event._gateway_accepted = True  # KENSEI re-anchor: admission receipt
+            event._gateway_accepted = True
             return
         if self._is_queue_text_debounce_candidate(event):
             logger.debug("[%s] New text message while session %s is active — "
@@ -3509,7 +3575,7 @@ class BasePlatformAdapter(ABC):
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
             merge_pending_message_event(self._pending_messages, session_key, event,
                                         merge_text=event.message_type == MessageType.TEXT)
-            event._gateway_accepted = True  # KENSEI re-anchor: admission receipt
+            event._gateway_accepted = True
 
     @staticmethod
     def _get_human_delay() -> float:
@@ -3586,8 +3652,13 @@ class BasePlatformAdapter(ABC):
             if not await asyncio.to_thread(ledger_enabled):
                 return None
             source = event.source
+            # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
+            # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
+            _ledger_id = getattr(event, "ledger_message_id", None)
+            if _ledger_id is None:
+                _ledger_id = getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
-                session_key, str(getattr(event, "message_id", "") or ""), text_content)
+                session_key, str(_ledger_id or ""), text_content)
             await asyncio.to_thread(
                 record_obligation, obligation_id=obligation_id, session_key=session_key,
                 platform=str(getattr(source.platform, "value", source.platform)),
@@ -3605,9 +3676,11 @@ class BasePlatformAdapter(ABC):
         delivery_adapter: "BasePlatformAdapter") -> None:
         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent)."""
+        before this failure landed; atomic claiming keeps it idempotent). On a flood-control refusal
+        arm the runner's timed redelivery, so the reply goes out once the penalty has passed instead
+        of waiting for the next restart."""
         try:
-            from gateway.delivery_ledger import mark_delivered, mark_failed
+            from gateway.delivery_ledger import is_flood_error, mark_delivered, mark_failed
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
@@ -3620,6 +3693,11 @@ class BasePlatformAdapter(ABC):
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
+            elif is_flood_error(error):
+                schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
+                if callable(schedule):
+                    schedule(event.source.platform,
+                             profile=getattr(delivery_adapter, "_owner_profile", None))
         except Exception:
             logger.debug("delivery ledger update failed", exc_info=True)
 
@@ -3681,25 +3759,38 @@ class BasePlatformAdapter(ABC):
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
-    async def _send_final_text(
-        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
-        """Send the final text on the CURRENT transport (a reconnect may have replaced
-        this adapter), ledger-bracketed; the message-id owner owns the ephemeral delete."""
+    async def send_final_ledgered(
+        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
+        reply_to: Optional[str], is_ephemeral_response: bool = False,
+    ) -> "tuple[SendResult, BasePlatformAdapter]":
+        """The delivery-ledger bracket every final text goes through, on the CURRENT transport
+        (a reconnect may have replaced this adapter): record the obligation before the send,
+        send with retry, finalize from the result — so a refused final (flood control, a dead
+        transport) leaves a ledger row the boot sweep / runtime redelivery can act on. ``event``
+        supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
+        Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
+        (an ephemeral delete must go to the same transport)."""
         delivery_adapter = self._final_delivery_adapter(event.source)
         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
                     len(text_content), event.source.chat_id)
-        _obligation_id = await self._record_delivery_obligation(
+        obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content,
-            reply_to=_reply_anchor_for_event(event), metadata=metadata)
+            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        if obligation_id is not None:
+            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        return result, delivery_adapter
+
+    async def _send_final_text(
+        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
+        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
+        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
+        result, delivery_adapter = await self.send_final_ledgered(
+            event, session_key, text_content, metadata,
+            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
         record_delivery(result)
-        if _obligation_id is not None:
-            await self._finalize_delivery_obligation(_obligation_id, result, event, delivery_adapter)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
-            delivery_adapter._schedule_ephemeral_delete(
-                event.source.chat_id, result.message_id, ephemeral_ttl)
+            delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:

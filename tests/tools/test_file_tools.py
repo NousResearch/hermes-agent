@@ -16,12 +16,6 @@ from tools.file_tools import (
 
 
 class TestReadFileHandler:
-    def setup_method(self):
-        """Isolate read-handler tests from the module-level dedup cache."""
-        from tools.file_tools import _read_tracker
-
-        _read_tracker.clear()
-
     @patch("tools.file_tools._get_file_ops")
     def test_returns_file_content(self, mock_get):
         mock_ops = MagicMock()

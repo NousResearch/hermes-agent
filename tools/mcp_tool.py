@@ -701,25 +701,4 @@ def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
     from hermes_cli.plugin_compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
-# KENSEI CUSTOM — MCP metadata sanitizer hook retained for plugin consumers and tests.
-def _apply_sanitize_hook(server_name: str, tool: dict, fallback: dict) -> Optional[dict]:
-    """Allow ``sanitize_tool_metadata`` hooks to rewrite or quarantine one tool schema."""
-    from hermes_cli.plugins import invoke_hook, has_hook
-    if not has_hook("sanitize_tool_metadata"):
-        return fallback
-    try:
-        results = invoke_hook("sanitize_tool_metadata", tool=tool, server_name=server_name)
-    except Exception as exc:
-        logger.warning("MCP server '%s': sanitize_tool_metadata hook raised: %s; delivering tool unchanged", server_name, exc)
-        return fallback
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        if "quarantine" in result:
-            logger.warning("MCP server '%s': quarantining tool '%s' (%s)", server_name, tool.get("name"), result.get("quarantine") or "unspecified")
-            return None
-        if isinstance(result.get("tool"), dict):
-            return result["tool"]
-    return fallback
-
 # ---- END PLUGIN-COMPAT ----

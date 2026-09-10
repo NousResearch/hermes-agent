@@ -337,6 +337,7 @@ def _validate_context_from_refs(refs: List[Any]) -> Optional[str]:
     return None
 
 
+# Optional fields echoed by _format_job only when truthy (order = JSON key order).
 _FORMAT_JOB_OPTIONAL_KEYS = (
     "script", "reasoning_effort", "monitor_script", "monitor_url",
     "monitor_state", "no_agent", "enabled_toolsets", "workdir")

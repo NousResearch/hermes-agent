@@ -2,9 +2,6 @@
 busy-submit handling. Bodies are rebound onto server.py's globals at install time
 (method_ctx.bind_module), so they reference server.py globals bare."""
 
-
-
-
 from __future__ import annotations
 
 import contextlib

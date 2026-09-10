@@ -39,16 +39,10 @@ DEFAULT_CODEX_MODELS: List[str] = [
 # unsupported — that was wrong; restored here. Keep it in the curated fallback so Pro users still see Spark
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
-    # Preserve Kensei's cross-variant fallback: a current 5.6 sibling proves
-    # the Codex family is available even before every sibling reaches a stale
-    # account-level catalog.
-    ("gpt-5.6-sol", ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-sol-pro", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-terra", ("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-terra-pro", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-luna", ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-luna-pro", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.5", ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
+    ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
     ("gpt-5.4-mini", ("gpt-5.3-codex",)),
     ("gpt-5.4", ("gpt-5.3-codex",)),
     # Spark surfaces whenever a compatible template is present; the backend (not Hermes)

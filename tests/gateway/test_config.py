@@ -19,7 +19,6 @@ from gateway.config import (
     HomeChannel,
     Platform,
     PlatformConfig,
-    SessionResetPolicy,
     StreamingConfig,
     _apply_env_overrides,
     load_gateway_config,
@@ -168,61 +167,6 @@ class TestGetConnectedPlatforms:
         assert Platform.DINGTALK in config.get_connected_platforms()
 
 
-class TestDiscordTokenEnvOverride:
-    def test_discord_token_is_trimmed_before_storage(self, monkeypatch):
-        token = "D" * 60
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", f"  {token}  \n")
-
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        assert config.platforms[Platform.DISCORD].token == token
-
-    def test_short_discord_token_warning_uses_trimmed_length(self, monkeypatch, caplog):
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", "  short-token  ")
-        caplog.set_level(logging.WARNING)
-
-        _apply_env_overrides(GatewayConfig())
-
-        assert any("11 chars" in record.message for record in caplog.records)
-
-    def test_bot_id_prefix_is_not_flagged_as_compromised(self, monkeypatch, caplog):
-        # The prefix "MTUwNjAyNDQyMTEwNDgxMjI3NA" is the base64 of the bot
-        # user ID (1506024421104812274), which EVERY token for that bot
-        # shares. It is not a secret and cannot identify a compromised
-        # token, so it must NOT be reported as compromised (false positive).
-        token = "MTUwNjAyNDQyMTEwNDgxMjI3NA" + ("X" * 40)
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", f"  {token}  ")
-        caplog.set_level(logging.ERROR)
-
-        _apply_env_overrides(GatewayConfig())
-
-        assert not any("known compromised token" in record.message for record in caplog.records)
-
-
-class TestSessionResetPolicy:
-    def test_roundtrip(self):
-        policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120,
-                                    bg_process_max_age_hours=48)
-        d = policy.to_dict()
-        restored = SessionResetPolicy.from_dict(d)
-        assert restored.mode == "idle"
-        assert restored.at_hour == 6
-        assert restored.idle_minutes == 120
-        assert restored.bg_process_max_age_hours == 48
-
-
-    def test_from_dict_treats_null_values_as_defaults(self):
-        restored = SessionResetPolicy.from_dict(
-            {"mode": None, "at_hour": None, "idle_minutes": None,
-             "bg_process_max_age_hours": None}
-        )
-        assert restored.mode == "none"
-        assert restored.at_hour == 4
-        assert restored.idle_minutes == 1440
-        assert restored.bg_process_max_age_hours == 24
-
-
 class TestStreamingConfig:
 
 
@@ -310,58 +254,6 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
-    def test_shipped_template_does_not_enable_auto_reset(self, tmp_path, monkeypatch):
-        """A fresh install seeded from cli-config.yaml.example must not
-        auto-reset sessions.
-
-        Installers (scripts/install.sh, scripts/install.ps1,
-        docker/stage2-hook.sh, hermes doctor) copy the template verbatim to
-        ~/.hermes/config.yaml, so whatever ``session_reset.mode`` the template
-        ships becomes an EXPLICIT user setting that overrides the code
-        default. After #60194 flipped the default to "none", the template
-        still said "both" — every new install kept 24h-idle resets on
-        (Luciano's report, July 2026). This pins the invariant: template
-        seed == no auto-reset.
-        """
-        template = (
-            Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
-        )
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            template.read_text(encoding="utf-8"), encoding="utf-8"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        assert config.default_reset_policy.mode == "none"
-
-    def test_no_config_yaml_means_no_auto_reset(self, tmp_path, monkeypatch):
-        """With no config.yaml at all, sessions must never auto-reset."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        assert config.default_reset_policy.mode == "none"
-
-
-    def test_explicit_session_reset_opt_in_is_honored(self, tmp_path, monkeypatch):
-        """Users who explicitly opt in to auto-reset keep their policy."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "session_reset:\n  mode: idle\n  idle_minutes: 30\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        assert config.default_reset_policy.mode == "idle"
-        assert config.default_reset_policy.idle_minutes == 30
 
 
     def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
@@ -474,22 +366,6 @@ class TestLoadGatewayConfig:
         assert extra["websocket_heartbeat_ack_max_age_seconds"] == 75
         assert extra["websocket_max_latency_seconds"] == 30
 
-    def test_session_reset_from_nested_gateway_section(self, tmp_path, monkeypatch):
-        """``gateway.session_reset`` (nested form) must reach default_reset_policy,
-        mirroring the gateway.multiplex_profiles precedent."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(
-            "gateway:\n  session_reset:\n    mode: idle\n    idle_minutes: 30\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        assert config.default_reset_policy.mode == "idle"
-        assert config.default_reset_policy.idle_minutes == 30
 
     def test_quick_commands_from_nested_gateway_section(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -690,29 +566,6 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.unauthorized_dm_behavior == "ignore"
-
-
-    def test_present_empty_top_level_session_reset_blocks_nested_fallback(self, tmp_path, monkeypatch):
-        """Key-presence precedence: a present (even empty) top-level
-        session_reset must NOT be replaced by gateway.session_reset —
-        the fallback fires only when the top-level key is absent."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(
-            "session_reset: {}\n"
-            "gateway:\n"
-            "  session_reset:\n"
-            "    mode: idle\n"
-            "    idle_minutes: 30\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        # The nested value must not leak through the present top-level key.
-        assert config.default_reset_policy.mode != "idle"
 
 
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):

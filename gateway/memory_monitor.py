@@ -109,26 +109,3 @@ def is_running() -> bool:
     """True if the background monitor thread is alive."""
     with _lock:
         return _monitor_thread is not None and _monitor_thread.is_alive()
-
-
-def get_system_free_ram_mb() -> Optional[int]:
-    """Return free system RAM in MB (MemAvailable on Linux), or None.
-
-    Reads /proc/meminfo (Linux) — no external deps.  Returns None on
-    non-Linux platforms or if /proc/meminfo is unreadable.
-
-    Used by the kanban dispatcher for OOM-aware spawn backpressure:
-    when free RAM drops below a configured threshold, the dispatcher
-    skips new spawns to avoid compounding memory pressure.
-    """
-    try:
-        with open("/proc/meminfo", "r") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    # "MemAvailable:    1234567 kB"
-                    parts = line.split()
-                    kb = int(parts[1])
-                    return kb // 1024  # Convert KB to MB
-    except Exception:
-        pass
-    return None

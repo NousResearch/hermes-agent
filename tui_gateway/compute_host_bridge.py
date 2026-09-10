@@ -13,8 +13,10 @@ _registry = HandlerRegistry()
 
 _compute_host_supervisor = None
 _compute_host_supervisor_lock = threading.Lock()
-
-
+# Cap on how long session.compress blocks its RPC on the compute host. Must stay
+# below the desktop's SESSION_COMPRESS_TIMEOUT_MS (660s) so the client gets the
+# `pending` answer, not its own timeout; the late-ack path covers anything slower.
+# See #97948.
 _COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS = 630.0
 
 

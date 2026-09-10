@@ -181,9 +181,7 @@ class SessionRecoveryMixin:
     def _recover_session_from_db(
         self, *, session_key: str, source: SessionSource, now: datetime,
         raise_on_lookup_error: bool = False) -> Optional[SessionEntry]:
-        """Rebuild a missing session-key mapping from durable state.db data. ``None`` when no row is
-        recoverable, or when the recovered session is already overdue under the reset policy — the
-        row is then durably promoted to a reset boundary instead of resurrected."""
+        """Rebuild a missing session-key mapping from a recoverable durable row."""
         entry, migrated_legacy = self._query_recoverable_row(
             # The legacy (pre-workspace) Slack key fallback happens INSIDE _query_recoverable_session
             # (#20583/#66398 design): it performs the exact-key legacy lookup, claims the key once per
@@ -191,15 +189,6 @@ class SessionRecoveryMixin:
             session_key=session_key, source=source, now=now,
             raise_on_lookup_error=raise_on_lookup_error)
         if entry is None:
-            return None
-        reset_reason = self._should_reset(entry, source)
-        if reset_reason:
-            self._promote_session_reset(
-                session_key, entry.session_id, reset_reason,
-                log=lambda exc: logger.debug(
-                    "Gateway recovered-session reset promotion failed for %s: %s", session_key, exc,
-                ),
-            )
             return None
         self._reopen_session_row(session_key, entry.session_id)
         if migrated_legacy:
@@ -260,6 +249,11 @@ class SessionRecoveryMixin:
                 promote(session_id, reason)
             else:
                 db.end_session(session_id, reason)
+            # Stop the departed conversation's schedule in its owning profile, even when
+            # the in-memory watch still holds a pre-reset session id.
+            heartbeat_key = f"heartbeat:{session_id}"
+            if db.get_meta(heartbeat_key):
+                db.set_meta(heartbeat_key, "")
         except Exception as exc:
             log(exc)
 
@@ -335,7 +329,7 @@ class SessionRecoveryMixin:
         display_name: Optional[str], during: str = "") -> None:
         """SQLite side of a routing transition, outside ``_lock``: promote the predecessor row to an
         explicit reset boundary (with the specific reason so state.db is auditable, e.g.
-        ``resume_pending_expired`` vs plain ``session_reset``), then INSERT the new row + routing
+        ``suspended`` vs plain ``session_reset``), then INSERT the new row + routing
         peer. Both best-effort: failures are warned and self-healed by the next peer refresh."""
         if self._db_for_key(session_key) and end_session_id:
             self._promote_session_reset(

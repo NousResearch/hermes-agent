@@ -164,16 +164,13 @@ def _install_fake_openai_module(captured, transcription_response=None):
         def close(self):
             captured["close_calls"] += 1
 
-    # Production probes optional SDKs with importlib.util.find_spec before
-    # importing them. Use a real module object with a spec so the fake obeys
-    # normal import semantics instead of looking like a broken partial import.
-    fake_module = types.ModuleType("openai")
-    fake_module.__spec__ = spec_from_file_location("openai", __file__)
-    fake_module.OpenAI = FakeOpenAI
-    fake_module.APIError = Exception
-    fake_module.APIConnectionError = Exception
-    fake_module.APITimeoutError = Exception
-    fake_module.BadRequestError = Exception
+    fake_module = types.SimpleNamespace(
+        OpenAI=FakeOpenAI,
+        APIError=Exception,
+        APIConnectionError=Exception,
+        APITimeoutError=Exception,
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
     sys.modules["openai"] = fake_module
 
 

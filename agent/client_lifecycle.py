@@ -1,7 +1,8 @@
 """Tool-resource teardown, wire-client lifecycle and credential refresh for ``AIAgent``.
 
 ``ClientLifecycleMixin`` owns task cleanup, the shared primary client, per-request client caches
-(owner-thread close vs stranger-thread abort), credential rotation and route-derived default headers. Extracted from ``run_agent.py``, MRO unchanged."""
+(owner-thread close vs stranger-thread abort), credential rotation and route-derived headers.
+"""
 import logging
 import threading
 import time

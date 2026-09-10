@@ -76,21 +76,6 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             _child_mirrors.pop(child_key, None)
 
 
-def _normalise_auq_callback_result(questions: list, result: object) -> dict:
-    """Normalise the return value of ``ask_user_questions_callback``.
-
-    The TUI renderer responds with a ``{index: label}`` dict on success.
-    On timeout or interruption, ``_block`` returns an empty string (or
-    ``None``); translate that into a per-question skipped dict so the tool
-    layer receives a well-formed dict instead of erroring on a non-dict.
-
-    KENSEI CUSTOM — see skill ``agent-modes``.  Must survive upstream merges.
-    """
-    if isinstance(result, dict):
-        return result
-    return {i: "__skipped__" for i in range(len(questions))}
-
-
 def _agent_cbs(sid: str) -> dict:
     def _read_block(event: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): blocking bridge like clarify; the preview
@@ -119,19 +104,6 @@ def _agent_cbs(sid: str) -> dict:
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
         "read_terminal_callback": _read_block("terminal.read.request", 30),
-        # ── KENSEI CUSTOM: ask_user_questions callback (plan/UltraPlan/recon) ──
-        # Multi-question batched prompt (mode system); TUI renders the
-        # AskUserQuestionsTool overlay and answers ask_user_questions.respond
-        # with a {index: label} dict.  Coexists with upstream read_terminal.
-        # See skill `agent-modes`.  Must survive upstream merges.
-        "ask_user_questions_callback": lambda questions: _normalise_auq_callback_result(
-            questions,
-            _block(
-                "ask_user_questions.request", sid,
-                {"questions": questions},
-                timeout=_clarify_timeout_seconds(),
-            ),
-        ),
         "read_preview_callback": _read_block("preview.read.request", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
         "drive_preview_callback": lambda payload: _block("preview.act.request", sid, dict(payload), timeout=45),

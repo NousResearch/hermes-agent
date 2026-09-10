@@ -15,7 +15,7 @@ import logging
 from typing import Any, Optional
 
 from agent.i18n import t
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from hermes_cli.config import atomic_config_write, clear_model_endpoint_credentials
 from utils import base_url_host_matches
 

@@ -352,6 +352,10 @@ def _block_and_pause_job(
     )
     alert = f"⚠ Cron job '{job_name}' was auto-paused\n\n{reason}"
     return False, doc, alert, reason
+
+
+# Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
+# populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched  # noqa: E402
 from cron import scheduler_delivery as _delivery  # noqa: E402
 from cron import scheduler_script as _script  # noqa: E402

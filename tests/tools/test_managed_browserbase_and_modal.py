@@ -111,22 +111,6 @@ def _install_fake_tools_package():
     sys.modules["agent.credential_persistence"] = types.SimpleNamespace(
         sanitize_borrowed_credential_payload=lambda entry, provider_id=None: entry,
     )
-    sys.modules["agent.secret_scope"] = types.SimpleNamespace(
-        get_secret=lambda name, default=None: os.environ.get(name, default),
-    )
-
-    # ``browser_tool`` and ``hermes_cli.auth`` import these helpers even in
-    # this deliberately fake-agent fixture. Load them by path while retaining
-    # the fake parent package so the fixture remains isolated.
-    for _helper in ("redact", "credential_persistence"):
-        _helper_spec = spec_from_file_location(
-            f"agent.{_helper}", REPO_ROOT / "agent" / f"{_helper}.py"
-        )
-        assert _helper_spec and _helper_spec.loader
-        _helper_module = module_from_spec(_helper_spec)
-        sys.modules[f"agent.{_helper}"] = _helper_module
-        setattr(agent_package, _helper, _helper_module)
-        _helper_spec.loader.exec_module(_helper_module)
 
     # Stubs for the browser-provider plugin layer introduced in PR #25214.
     # Install just enough stand-ins to isolate

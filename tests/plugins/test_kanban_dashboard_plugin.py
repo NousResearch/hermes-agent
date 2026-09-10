@@ -71,11 +71,9 @@ def test_board_empty(client):
     r = client.get("/api/plugins/kanban/board")
     assert r.status_code == 200
     data = r.json()
-    # The board exposes curated UI columns, not every kernel workflow status.
+    # All canonical columns present (triage + the rest), each empty.
     names = [c["name"] for c in data["columns"]]
-    assert names == [
-        "backlog", "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
-    ]
+    assert set(names) == kb.VALID_STATUSES - {"archived"}
     for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])

@@ -26,8 +26,9 @@ if TYPE_CHECKING:
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
 
 _SCALAR_TYPES = (str, int, float, bool)
-from hermes_cli import kanban_db as _kb  # noqa: E402
 
+# Subscription primary key predicate; every per-row statement below binds
+# ``(task_id, platform, chat_id, thread_id or "")`` against it.
 _SUB_KEY_WHERE = "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?"
 
 
@@ -421,3 +422,8 @@ def rewind_notify_cursor(
     with _kb.write_txn(conn):
         cur = _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), old_cursor, claimed_cursor)
     return cur.rowcount > 0
+
+
+# Late-bound origin namespace (see module docstring); imported LAST so this
+# module is fully populated before ``kanban_db`` imports from it.
+from hermes_cli import kanban_db as _kb  # noqa: E402

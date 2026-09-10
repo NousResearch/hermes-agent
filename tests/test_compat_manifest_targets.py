@@ -30,13 +30,6 @@ def _entries():
     return [e for e in json.loads(MANIFEST.read_text())["entries"] if e["kind"] == "moved-lazy"]
 
 
-def test_manifest_has_one_authoritative_entry_per_facade_name():
-    """A duplicate identity would be silently replaced by load_manifest's nested mapping."""
-    entries = json.loads(MANIFEST.read_text())["entries"]
-    identities = [(entry["facade"], entry["name"]) for entry in entries]
-    assert len(identities) == len(set(identities))
-
-
 def _sibling_modules(facade: str) -> list[str]:
     pkg, _, stem = facade.rpartition(".")
     try:

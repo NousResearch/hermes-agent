@@ -141,7 +141,7 @@ class TestStdioPidTracking:
         server._elicitation = None
         server._registered_tool_names = []
 
-        config = {"command": "python3", "args": []}
+        config = {"command": "echo", "args": ["hello"]}
 
         import asyncio
 

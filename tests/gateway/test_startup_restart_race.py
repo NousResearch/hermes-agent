@@ -82,7 +82,6 @@ def make_startup_runner(tmp_path):
     runner._background_tasks = set()
     runner._failed_platforms = {}
     runner._voice_mode = {}
-    runner._cron_stop_event = None
 
     runner.hooks = MagicMock()
     runner.hooks.loaded_hooks = []
@@ -128,13 +127,6 @@ def patch_startup_side_effects(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr("agent.shell_hooks.register_from_config", lambda *args, **kwargs: None)
     monkeypatch.setattr("tools.process_registry.process_registry.recover_from_checkpoint", lambda: 0)
-    # This fake-adapter fixture has no plugins, but start() calls
-    # PlatformRegistry.plugin_entries() which materialises every deferred
-    # SDK loader (~2.46s of real import cost). That dwarfs the 2s test
-    # wait_for timeout even though the actual stop() path is ~18ms. Stub
-    # plugin_entries to short-circuit materialization for this fixture only.
-    from gateway.platform_registry import PlatformRegistry
-    monkeypatch.setattr(PlatformRegistry, "plugin_entries", lambda self: [])
 
 
 @pytest.mark.asyncio

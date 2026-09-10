@@ -43,6 +43,9 @@ export const ru: Translations = {
     expand: "Развернуть",
     general: "Общие",
     messaging: "Мессенджеры",
+    gateway: "Шлюз",
+    gatewayHint:
+      "Мессенджеры, сервер API и вебхуки настраиваются на странице «Каналы». Это общешлюзовые настройки (режим прокси/релея и глобальный список разрешений).",
     pluginLoadFailed:
       "Не удалось загрузить скрипт этого плагина. Проверьте вкладку «Сеть» (dashboard-plugins/…) и путь к плагинам на сервере.",
     pluginNotRegistered:
@@ -90,6 +93,20 @@ export const ru: Translations = {
     statusOverview: "Обзор статуса",
     system: "Система",
     webUi: "Web UI",
+    managingProfile: "Управление профилем",
+    currentProfileOption: "эта панель ({name})",
+    managingProfileBanner:
+      "Управление профилем «{name}» \u2014 конфигурация, ключи, навыки, MCP, модель и новые чаты применяются к этому профилю.",
+    memoryOomRestartBanner:
+      "Ваш агент неожиданно перезапустился, скорее всего из-за нехватки памяти. Длинные сессии и множество параллельных задач увеличивают расход памяти.",
+    memoryCriticalBanner:
+      "В агенте почти закончилась память, он может перезапуститься. Закройте неиспользуемые сессии или увеличьте объём памяти.",
+    memoryElevatedBanner: "В агенте заканчивается память.",
+    diskCriticalBanner:
+      "Диск агента почти заполнен. Новые сообщения, воспоминания и настройки могут не сохраниться.",
+    diskElevatedBanner:
+      "Диск агента заполняется. Очистите старые сессии или увеличьте хранилище.",
+    dismiss: "Скрыть",
   },
 
   status: {
@@ -100,6 +117,7 @@ export const ru: Translations = {
     activeSessions: "Активные сессии",
     connected: "Подключено",
     connectedPlatforms: "Подключённые платформы",
+    disabled: "Выключено",
     disconnected: "Отключено",
     error: "Ошибка",
     failed: "Сбой",
@@ -113,6 +131,9 @@ export const ru: Translations = {
     platformError: "ошибка",
     recentSessions: "Недавние сессии",
     restartGateway: "Перезапустить шлюз",
+    restartGatewayConfirmMessage:
+      "Это перезапустит процесс шлюза Hermes. Подключённые каналы и активные сессии затем переподключатся.",
+    restartGatewayConfirmTitle: "Перезапустить шлюз?",
     restartingGateway: "Перезапуск шлюза…",
     running: "Работает",
     runningRemote: "Работает (удалённо)",
@@ -121,6 +142,10 @@ export const ru: Translations = {
     startedInBackground: "Запущено в фоне — следите за журналами",
     stopped: "Остановлено",
     updateHermes: "Обновить Hermes",
+    updateHermesConfirmMessage:
+      "Это выполнит hermes update и перезапустит шлюз по завершении. Активные сессии до этого сохраняют свой кеш промпта.",
+    updateHermesConfirmNow: "Обновить сейчас",
+    updateHermesConfirmTitle: "Обновить Hermes?",
     updatingHermes: "Обновление Hermes…",
     waitingForOutput: "Ожидание вывода…",
   },
@@ -283,6 +308,9 @@ export const ru: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      needsHomeChannel: "сначала задайте домашний канал",
+      noneConfigured:
+        "Мессенджеры не настроены. Настройте один в разделе «Каналы», чтобы доставлять отчёты.",
     },
   },
 
@@ -293,7 +321,8 @@ export const ru: Translations = {
     nameRequired: "Имя обязательно",
     nameRule:
       "Только строчные буквы, цифры, _ и -; должно начинаться с буквы или цифры; до 64 символов.",
-    invalidName: "Недопустимое имя профиля",    cloneFrom: "Клонировать конфигурацию из профиля",
+    invalidName: "Недопустимое имя профиля",
+    cloneFrom: "Клонировать конфигурацию из профиля",
     cloneFromNone: "Нет (пусто)",
     allProfiles: "Профили",
     noProfiles: "Профили не найдены.",
@@ -316,6 +345,37 @@ export const ru: Translations = {
     created: "Создан",
     deleted: "Удалён",
     renamed: "Переименован",
+    activeProfile: "Активный профиль",
+    activeBadge: "активный",
+    setActive: "Сделать активным",
+    activeSet: "Профиль сделан активным",
+    gatewayRunning: "Шлюз запущен",
+    gatewayStopped: "Шлюз остановлен",
+    gatewayRunningWarning: "Шлюз этого профиля запущен — он будет остановлен.",
+    aliasBadge: "алиас",
+    description: "Описание",
+    descriptionPlaceholder:
+      "В чём хорош этот профиль? Используется для маршрутизации задач kanban по роли.",
+    noDescription: "Нет описания",
+    editDescription: "Изменить описание",
+    descriptionSaved: "Описание сохранено",
+    reviewBadge: "проверка",
+    autoGenerate: "Автогенерация",
+    generating: "Создание…",
+    describeFailed: "Не удалось создать описание",
+    distribution: "Распространение",
+    advancedOptions: "Дополнительные параметры",
+    cloneAll: "Клонировать всё (память, сессии, навыки, состояние)",
+    noSkillsOption: "Не загружать встроенные навыки",
+    descriptionOptional: "Описание (необязательно)",
+    modelOptional: "Модель (необязательно)",
+    modelInherit: "Унаследовать из клона / по умолчанию",
+    modelLoading: "Загрузка моделей…",
+    modelNone: "Нет аутентифицированных провайдеров — сначала задайте ключ",
+    editModel: "Изменить модель",
+    modelSaved: "Модель обновлена",
+    modelSelect: "Выберите модель",
+    actions: "Действия",
   },
 
   pluginsPage: {
@@ -377,6 +437,10 @@ export const ru: Translations = {
     setupNeeded: "Требуется настройка",
     disabledForCli: "Отключено для CLI",
     more: "+{count} ещё",
+    profileSelector: "Профиль",
+    currentProfile: "текущий ({name})",
+    managingProfile:
+      "Управление профилем «{name}» — переключения применяются к этому профилю, а не к панели.",
   },
 
   config: {
@@ -500,6 +564,12 @@ export const ru: Translations = {
   theme: {
     title: "Тема",
     switchTheme: "Сменить тему",
+    fontTitle: "Шрифт",
+    fontDefault: "По умолчанию темы",
+    fontDefaultHint: "Использовать шрифт активной темы",
+    fontSans: "Без засечек",
+    fontSerif: "С засечками",
+    fontMono: "Моноширинный",
   },
 
   achievements: {
@@ -621,11 +691,11 @@ export const ru: Translations = {
     slug: "Slug",
     slugHint: "— строчные буквы, дефисы, например atm10-server",
     confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+      "Отметить задачи как выполненные ({n})? Захваты воркеров будут освобождены, и зависимые потомки станут готовыми.",
     confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
+      "Архивировать задачи ({n})? Они исчезнут из стандартного вида доски.",
     confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
+      "Отметить задачи как заблокированные ({n})? Захваты воркеров будут освобождены.",
     displayName: "Отображаемое имя",
     displayNameHint: "(необязательно)",
     description: "Описание",
@@ -654,6 +724,9 @@ export const ru: Translations = {
     createTask: "Создать задачу в этой колонке",
     noTasks: "— нет задач —",
     unassigned: "без исполнителя",
+    needsAssignee: "Нужен исполнитель",
+    needsAssigneeHint:
+      "Зависимости выполнены, но диспетчер пропускает эту задачу, пока вы не назначите профиль.",
     untitled: "(без названия)",
     loadingDetail: "Загрузка…",
     addComment: "Добавить комментарий… (Enter — отправить)",
@@ -758,6 +831,8 @@ export const ru: Translations = {
       "Архивировать эту задачу? Она исчезнет из стандартного вида доски.",
     confirmBlocked:
       "Отметить эту задачу как заблокированную? Захват воркера будет освобождён.",
+    confirmScheduled:
+      "Переместить эту задачу в «Запланировано»? Используйте это для известных задержек по времени, а не для блокировок человеком.",
     completionSummary:
       "Сводка завершения для {label}. Сохраняется как результат задачи.",
     completionSummaryRequired:
@@ -775,5 +850,29 @@ export const ru: Translations = {
       "путь к рабочей области (необязательно, выводится из исполнителя, если не указан)",
     logTruncated: "(показаны последние 100 KB — полный журнал в ",
     logAt: ")",
+    newTaskTitle: "Новая задача — {column}",
+    taskTitleLabel: "Название",
+    assigneeLabel: "Исполнитель",
+    assigneeLabelHint: "(пусто = выберет диспетчер)",
+    skillsLabel: "Навыки",
+    skillsLabelHint: "(необязательно, через запятую)",
+    parentLabel: "Родительская задача",
+    parentLabelHint: "(ребёнок останется заблокированным, пока родитель не выполнен)",
+    create: "Создать",
+    boardSettings: "Настройки",
+    boardSettingsTitle:
+      "Настройки доски — имя, описание и каталог проекта по умолчанию, который наследуют новые задачи",
+    boardSettingsTitleFor: "Настройки доски — {name}",
+    projectDirectoryOverrideHint:
+      "Новые задачи наследуют это как рабочую область по умолчанию; каждая задача всё ещё может переопределить её в диалоге создания.",
+    saving: "Сохранение…",
+    commentHint:
+      "Комментарии достигают воркера при его следующем запуске или kanban_show() — блокировать задачу заранее не нужно.",
+    commentHintTitle:
+      "Комментарии — это канал для общения с воркером задачи. Они сразу попадают на ветку — заранее блокировать задачу не нужно. Запущенный воркер подхватит ветку при следующем kanban_show() или перезапуске; блокировка нужна только когда вы хотите, чтобы воркер ОСТАНОВИЛСЯ и ждал вашего ввода.",
+    trash: {
+      confirmTitle: "Удалить задачу?",
+      confirmManyTitle: "Удалить задачи ({n})?",
+    },
   },
 };

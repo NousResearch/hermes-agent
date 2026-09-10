@@ -2338,11 +2338,13 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
     # count that commit will have so Nix store builds can derive ``+N`` without
     # a .git directory. The corresponding SemVer tag is made at that commit.
     parent_count = int(git("rev-list", "--count", "HEAD") or "0")
-    content = re.sub(
-        r'__release_rev_count__\s*=\s*\d+',
-        f'__release_rev_count__ = {parent_count + 1}',
-        content,
+    revision = f'__release_rev_count__ = {parent_count + 1}'
+    content, replacements = re.subn(
+        r'^__release_rev_count__\s*=\s*\d+', revision, content,
+        flags=re.MULTILINE,
     )
+    if not replacements:
+        content = content.rstrip("\n") + f"\n{revision}\n"
     VERSION_FILE.write_text(content, encoding="utf-8")
 
     # Update pyproject.toml

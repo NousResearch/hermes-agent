@@ -9,13 +9,13 @@ import React from 'react'
 import { expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import { captureDestination } from '../app/submissionDestination.js'
 import { turnController } from '../app/turnController.js'
 import { $uiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { useSubmission } from '../app/useSubmission.js'
 import { canonicalEvent, canonicalResult } from '../canonicalGateway.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { loadPendingInputs } from '../lib/pendingInputs.js'
-import { captureDestination } from '../app/submissionDestination.js'
 
 // Canonical authority rows: `pending` carries the server-issued admission_id,
 // the client's input_id and the public text under `ref` destination fields.
@@ -144,6 +144,7 @@ it('deletes a server-queued row through prompt.cancel rather than local removal'
 
 it('retains disconnected input durably on its old destination without dispatching or draining', async () => {
   const h = mount()
+
   try {
     patchUiState({ gatewayConnected: false, busy: false } as any)
     const destination = captureDestination()
@@ -157,6 +158,7 @@ it('retains disconnected input durably on its old destination without dispatchin
 
 it('discards unknown execution with its generation, retaining the row on refusal', async () => {
   const h = mount()
+
   try {
     h.request.mockImplementation(async (method, params) => { h.calls.push({method, params}); throw new Error('stale_generation') })
     h.fanout([{ ...row('unknown-admission', 'unknown-input', 'interrupted input', 'unknown'), execution_generation: 7 }])
@@ -171,6 +173,7 @@ it('discards unknown execution with its generation, retaining the row on refusal
 
 it('never replays an ambiguous non-idempotent busy correction or falls back to queue', async () => {
   const h = mount('steer')
+
   try {
     h.request.mockImplementation(async (method, params) => { h.calls.push({ method, params }); throw new Error('invalid_params') })
     h.submission.dispatchSubmission('correction')
@@ -184,6 +187,24 @@ it('never replays an ambiguous non-idempotent busy correction or falls back to q
     expect(h.calls).toEqual([{ method: 'session.steer', params: first }])
     expect(first).not.toHaveProperty('submission_id')
     expect(loadPendingInputs(captureDestination())[0]).toMatchObject({ controlMethod: 'session.steer', executionGeneration: 1 })
+  } finally { h.cleanup() }
+})
+
+it('retires a generation-matched redirect acknowledgement without resetting the live turn', async () => {
+  const h = mount('interrupt')
+
+  try {
+    h.request.mockImplementation(async (method, params) => {
+      h.calls.push({method, params});
+
+ return { status: 'redirected', execution_generation: params.execution_generation } as any
+    })
+    h.submission.dispatchSubmission('redirect correction')
+    await expect.poll(() => h.calls.length).toBe(1)
+    expect(h.calls[0]).toEqual({ method: 'session.redirect', params: { session_id: 'owner', text: 'redirect correction', execution_generation: 1 } })
+    await expect.poll(() => h.queue.queueRef.current.length).toBe(0)
+    expect(loadPendingInputs(captureDestination())).toEqual([])
+    expect($uiState.get()).toMatchObject({ busy: true, status: 'running…' })
   } finally { h.cleanup() }
 })
 

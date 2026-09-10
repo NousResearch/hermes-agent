@@ -6,8 +6,8 @@ import { completionToApplyOnSubmit, looksLikeSlashCommand, parseSlashCommand } f
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
-import { asRpcResult } from '../lib/rpc.js'
 import { savePendingInput } from '../lib/pendingInputs.js'
+import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
@@ -256,10 +256,12 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (gw.isCanonical && mode !== 'queue') {
         const staged = item.settle ? item : composerActions.stage?.(item.text, item.display, destination)
+
         if (!staged) { return }
         staged.controlMethod ??= mode === 'steer' ? 'session.steer' : 'session.redirect'
         staged.executionGeneration ??= live.info?.execution_generation
         staged.attachments ??= item.attachments
+
         return send(item.text, true, item.display, value => value, {
           destination, behindTurn: true, queueItem: staged, attachments: item.attachments })
       }
@@ -327,6 +329,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         if (queued) {
           const retained = composerActions.enqueue(queued.text, queued.display, destination)
+
           if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
@@ -347,6 +350,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       if (!live.sid || live.gatewayConnected === false) {
         composerActions.pushHistory(toHistory)
         const retained = composerActions.enqueue(submission.text, submission.display, destination)
+
         if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
         composerActions.clearIn()
 

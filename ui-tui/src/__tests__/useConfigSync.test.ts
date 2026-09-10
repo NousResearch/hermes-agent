@@ -527,9 +527,11 @@ describe('syncMcpReload (revision-aware ack)', () => {
 describe('hydrateFullConfig', () => {
   it('hydrates the session busy preference instead of profile defaults and preserves it on read failure', async () => {
     patchUiState({ sid: 'owner', busyInputMode: 'queue' })
+
     const request = vi.fn(async (_method: string, params: any) =>
       params.key === 'busy' ? { value: 'steer' } : { config: { display: { busy_input_mode: 'interrupt' } } }
     )
+
     const gw = { isCanonical: true, request } as any
     const scope = { sid: 'owner', isCurrent: () => true }
     await hydrateFullConfig(gw, vi.fn(), undefined, undefined, scope)
@@ -537,7 +539,8 @@ describe('hydrateFullConfig', () => {
     expect(request).toHaveBeenCalledWith('config.get', { key: 'busy', session_id: 'owner' })
     expect($uiState.get().busyInputMode).toBe('steer')
     request.mockImplementation(async (_method, params) => {
-      if (params.key === 'busy') throw new Error('disconnected')
+      if (params.key === 'busy') {throw new Error('disconnected')}
+
       return { config: { display: { busy_input_mode: 'interrupt' } } }
     })
     await hydrateFullConfig(gw, vi.fn(), undefined, undefined, scope)
@@ -548,15 +551,18 @@ describe('hydrateFullConfig', () => {
     patchUiState({ sid: 'old', busyInputMode: 'queue' })
     let current = true
     const replies: Array<(value: any) => void> = []
+
     const gw = {
       isCanonical: true,
       request: vi.fn(() => new Promise(resolve => replies.push(resolve)))
     } as any
+
     const setBell = vi.fn()
     const pending = hydrateFullConfig(gw, setBell, undefined, undefined, { sid: 'old', isCurrent: () => current })
     current = false
     patchUiState({ sid: 'new', busyInputMode: 'interrupt' })
-    for (const reply of replies) reply({ config: { display: { busy_input_mode: 'steer' } }, value: 'steer' })
+
+    for (const reply of replies) {reply({ config: { display: { busy_input_mode: 'steer' } }, value: 'steer' })}
     await pending
     expect(setBell).not.toHaveBeenCalled()
     expect($uiState.get().busyInputMode).toBe('interrupt')

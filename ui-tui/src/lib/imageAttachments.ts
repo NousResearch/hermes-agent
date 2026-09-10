@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, open, readFile, rm, stat } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 import type { SubmissionDestination } from '../app/submissionDestination.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -70,10 +70,13 @@ async function resolveImagePath(raw: string): Promise<{ path: string; remainder:
 
 async function extractClipboardImage(path: string): Promise<boolean> {
   const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../..')
+
   const python = process.env.HERMES_PYTHON?.trim() || process.env.PYTHON?.trim() ||
     (process.platform === 'win32' ? 'python' : 'python3')
+
   const { stdout } = await promisify(execFile)(python, [join(root, 'ui-tui/scripts/clipboard_image.py'), path],
     { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 15_000, windowsHide: true })
+
   return stdout.trim() === 'true'
 }
 
@@ -83,8 +86,10 @@ export async function stageClipboardImage(
 ): Promise<StagedImage | null> {
   const directory = await mkdtemp(join(tmpdir(), 'hermes-clipboard-'))
   const path = join(directory, 'clipboard.png')
+
   try {
     if (!await extract(path)) { return null }
+
     return await stageImagePath(path, gw, destination)
   } finally { await rm(directory, { recursive: true, force: true }) }
 }

@@ -279,7 +279,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         (gw.isCanonical
           ? stageClipboardImage(gw, destination).then(image => image ? { ...image, attached: true } : null)
           : gw.request<ClipboardPasteResponse & { path?: string; mime?: string }>('clipboard.paste', { session_id: sid }))
-          .catch((error: Error) => { if (!quiet) { sys(`clipboard image failed: ${error.message}`) } return null }),
+          .catch((error: Error) => { if (!quiet) { sys(`clipboard image failed: ${error.message}`) }
+
+ return null }),
         r => {
           if (r?.attached) {
             return attachImageToken(r, value, cursor)

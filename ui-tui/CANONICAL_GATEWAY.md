@@ -30,20 +30,47 @@ legacy readiness event. Shared
 approval/clarify responses carry the actual prompt ID and generation; a resumed
 snapshot restores its pending prompt cards. Stop includes the active generation.
 
+## Input recovery and controls
+
+The disconnected view keeps its destination. Enter writes a private fsync/rename
+journal before clearing the composer; reconnect only resumes that destination.
+Discovery keeps retrying without starting a stopped daemon. Confirmed admissions
+are retired from the journal; ambiguous prompt retries preserve their original ID
+and payload. Unknown executions stay paused: select the row with Up and use
+Ctrl+X to discard it through the generation-bound authority resolver. A refused
+Discard remains visible and reports the error.
+
+Model, branch and compression use `session.mutate` with revision/generation
+preconditions and a stable request ID. The session picker reads `session.list`.
+Busy preference reads/writes are session scoped. Steer/redirect target the active
+generation; these controls are not durable prompt admissions. An ambiguous control
+reply is retained for inspection but never automatically or manually replayed;
+check the transcript before submitting a new correction. Unsupported controls do
+not silently become queued turns.
+
+Image paths, startup images and clipboard images are staged on the Ink host.
+Local-owner files go into the captured profile's private `cache/images`; explicit
+remote connections upload bytes and require an owner-readable returned path.
+Identified `prompt.submit` carries `{path,mime}` attachments, including journal
+retries. Clipboard extraction never reads a remote owner's clipboard. Image busy
+corrections are refused and retained: use queue mode for an image-bearing turn.
+
 ## Current gaps
 
 - Fresh TUI creation requires an authority advertising TUI launch-policy support;
   older CLI-only runtimes are rejected. No CLI impersonation is used.
 - Runtime descriptions and session metadata are intentionally narrow. Ink renders
   an explicit unavailable-inventory message, not fabricated tool/skill lists.
-- Most legacy rich UI RPCs (config, wake, slash execution, uploads, historical
-  pickers, metadata editing, and subagents) are not exposed by this authority yet;
-  they fail visibly. This is not complete feature parity.
+- Canonical busy controls/config projection and remote image uploads require the
+  corresponding owner handlers. Older owners reject them visibly. The model
+  chooser still requires the owner's `model.options` projection; explicit `/model`
+  uses the canonical mutation path.
+- Rich legacy RPCs outside these controls (wake, general config settings, subagent
+  panels and some slash execution) are not claimed implemented by this change.
 - A per-view session switch does not terminate the old shared session. The present
   authority removes subscriptions when the socket closes, so old subscriptions
   can remain until that detach; the renderer still filters by current session.
-- Secret/sudo and batch clarification are not claimed supported. Cold owner
-  restart recovery is outside this scoped migration.
+- Secret/sudo and batch clarification are not claimed supported.
 
 ## Native verification
 

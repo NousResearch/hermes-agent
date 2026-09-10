@@ -371,8 +371,10 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       if (server) {
         if (server.status === 'unknown') {
           patchUiState({ status: 'unknown execution — Ctrl+X to discard before retrying' })
+
           return undefined
         }
+
         cancelServerRow(server)
         const item = queueItem(editedDisplay ?? server.user)
         queue.items.push(item)

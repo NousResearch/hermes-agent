@@ -105,6 +105,7 @@ export function submitPrompt(
 
     if (item) {
       item.preparedText ??= submitText
+
       // Busy controls have no deduplication receipt: never replay after an ambiguous reply.
       if (item.controlMethod) { item.legacyAttempted = true }
       item.attachments ??= opts.attachments?.map(attachment => ({ ...attachment }))
@@ -117,7 +118,9 @@ export function submitPrompt(
 
     if (item?.controlMethod && item.attachments?.length) {
       item.settle?.(false)
+
       if (focused()) { deps.sys('busy corrections accept text only — image input retained; submit it with /queue') }
+
       return
     }
 
@@ -132,12 +135,17 @@ export function submitPrompt(
       .then(r => {
         if (item?.controlMethod) {
           const control = r as PromptSubmitResponse & { execution_generation?: number }
+
           const accepted = control.execution_generation === item.executionGeneration &&
             ['queued', 'redirected'].includes(control.status ?? '')
+
           item.settle?.(accepted)
+
           if (focused()) { deps.sys(accepted ? `correction ${control.status}` : 'correction rejected — input retained') }
+
           return
         }
+
         if (item) {
           const accepted =
             (r?.input_id ?? r?.admission_id) === item.submissionId &&

@@ -103,6 +103,7 @@ export async function mutateCanonicalSession(
 
     throw error
   }
+
   return { result, expectedGeneration: params.expected_generation as number }
 }
 
@@ -125,6 +126,7 @@ export async function runCanonicalSessionControl(
     }
 
     const { result, expectedGeneration } = mutation
+
     if (ctx.stale()) {
       return
     }

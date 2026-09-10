@@ -174,6 +174,7 @@ describe('GatewayClient websocket attach mode', () => {
     const gw = new GatewayClient(bootstrap)
     const events: any[] = []
     gw.on('event', event => events.push(event))
+
     try {
       gw.start(); gw.drain()
       await vi.advanceTimersByTimeAsync(0)

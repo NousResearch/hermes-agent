@@ -56,7 +56,11 @@ it('extracts clipboard on the client and uploads only captured bytes to a remote
   vi.stubEnv('HERMES_TUI_GATEWAY_URL', 'wss://remote.example')
   resetUiState(); patchUiState({ sid: 'owner' })
   const request = vi.fn(async () => ({ path: '/owner/cache/images/clip.png' }))
-  const extract = vi.fn(async (path: string) => { writeFileSync(path, png); return true })
+
+  const extract = vi.fn(async (path: string) => { writeFileSync(path, png);
+
+ return true })
+
   try {
     const image = await stageClipboardImage({ request } as any, captureDestination(), extract)
     expect(image).toMatchObject({ path: '/owner/cache/images/clip.png', mime: 'image/png' })

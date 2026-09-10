@@ -247,6 +247,7 @@ export const sessionCommands: SlashCommand[] = [
       if (ctx.gateway.gw.isCanonical) {
         return runCanonicalSessionControl('compress', arg, ctx)
       }
+
       ctx.gateway
         .rpc<SessionCompressResponse>('session.compress', {
           session_id: ctx.sid,
@@ -255,6 +256,7 @@ export const sessionCommands: SlashCommand[] = [
         .then(
           ctx.guarded<SessionCompressResponse>(r => {
             const current = getUiState()
+
             const authorityKeys = [
               'stored_session_id',
               'execution_epoch',
@@ -331,6 +333,7 @@ export const sessionCommands: SlashCommand[] = [
       if (ctx.gateway.gw.isCanonical) {
         return runCanonicalSessionControl('branch', arg, ctx)
       }
+
       ctx.gateway.rpc<SessionBranchResponse>('session.branch', { name: arg, session_id: ctx.sid }).then(
         ctx.guarded<SessionBranchResponse>(r => {
           if (!r.session_id) {
@@ -691,6 +694,7 @@ export const sessionCommands: SlashCommand[] = [
             if (next === 'queue' || next === 'steer' || next === 'interrupt') {
               patchUiState({ busyInputMode: next })
             }
+
             ctx.transcript.sys(`busy input mode: ${next}`)
           })
         )

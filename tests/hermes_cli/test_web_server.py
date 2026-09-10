@@ -3242,6 +3242,7 @@ class TestDenormalizeProviderSwitch:
         """ollama-local + a vendor/model slug → switch to openrouter and drop
         the stale local base_url (the issue's exact repro)."""
         from hermes_cli.web_server_config import _denormalize_config_from_web
+        from unittest.mock import patch as _patch
         from hermes_cli.config import save_config
 
         save_config({
@@ -3253,7 +3254,8 @@ class TestDenormalizeProviderSwitch:
             }
         })
 
-        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
+        with _patch("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter"):
+            result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
         model = result["model"]
         assert model["provider"] == "openrouter"
         assert model["default"] == "google/gemini-2.5-flash"
@@ -3265,14 +3267,16 @@ class TestDenormalizeProviderSwitch:
         """An explicit context-length override must persist alongside a
         provider switch."""
         from hermes_cli.web_server_config import _denormalize_config_from_web
+        from unittest.mock import patch as _patch
         from hermes_cli.config import save_config
 
         save_config({"model": {"default": "llama3.2", "provider": "ollama-local"}})
 
-        result = _denormalize_config_from_web({
-            "model": "google/gemini-2.5-flash",
-            "model_context_length": 128000,
-        })
+        with _patch("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter"):
+            result = _denormalize_config_from_web({
+                "model": "google/gemini-2.5-flash",
+                "model_context_length": 128000,
+            })
         model = result["model"]
         assert model["provider"] == "openrouter"
         assert model["context_length"] == 128000
@@ -5065,6 +5069,22 @@ class TestServeIndexMissingIndex:
         assert resp.status_code == 200
         assert "SPA-rebuilt" in resp.text
 
+    def test_index_uses_ssh_token_applied_after_spa_mount(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", "before-mount")
+        client, _dist = self._client_with_dist(
+            tmp_path, monkeypatch, write_index=True
+        )
+
+        ws._apply_ssh_session_token("after-mount")
+        resp = client.get("/chat")
+
+        assert resp.status_code == 200
+        assert 'window.__HERMES_SESSION_TOKEN__="after-mount"' in resp.text
+
 
 class TestHeadlessServeTokenPage:
     """Headless `hermes serve` must serve the Desktop token handshake page
@@ -5109,6 +5129,25 @@ class TestHeadlessServeTokenPage:
 
         assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
         assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
+
+    def test_root_uses_ssh_token_applied_after_spa_mount(self, monkeypatch):
+        import json
+        import re
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", "before-mount")
+        client, ws = self._headless_client(monkeypatch, gated=False)
+
+        ws._apply_ssh_session_token("after-mount")
+        resp = client.get("/")
+        match = re.search(
+            r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+            resp.text,
+        )
+
+        assert match, resp.text
+        assert json.loads(match.group(1)) == "after-mount"
 
     def test_root_stays_404_json_when_auth_gated(self, monkeypatch):
         client, ws = self._headless_client(monkeypatch, gated=True)

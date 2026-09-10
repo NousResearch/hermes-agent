@@ -161,7 +161,8 @@ class MCPServerRunMixin:
         # elicitation/create lets a server ask for structured input mid-call; the handler
         # routes it through Hermes' approval system.
         elicitation_config = config.get("elicitation", {})
-        self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config, owner=self)
+        self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
+                                                       call_context=lambda: self._pending_call_context)
                              if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES else None)
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "
@@ -412,8 +413,6 @@ class MCPServerRunMixin:
     def _deregister_tools(self) -> None:
         """Drop this server's tools from the registry (idempotent); on shutdown AND budget
         exhaustion, so a dead server never leaves phantom tools in the prompt."""
-        from tools.registry import registry
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
-            registry.deregister(tool_name, scope=_core._server_registry_scope(self.name))
-            _registration._forget_mcp_tool_server(tool_name)
+            _registration._deregister_mcp_tool_all_scopes(self.name, tool_name)
         self._registered_tool_names = []

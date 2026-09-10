@@ -14,7 +14,7 @@ import hmac
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Iterator, Mapping, MutableMapping
+from typing import Iterator, Mapping, MutableMapping, overload
 
 __all__ = [
     "DELEGATED_CHILD_ENV_MARKER",
@@ -62,6 +62,8 @@ KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_BOARD",
     "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_GOAL_MODE",
+    "HERMES_KANBAN_GOAL_MAX_TURNS",
     DISPATCHER_OWNERSHIP_BOOTSTRAP_ENV,
 )
 
@@ -231,16 +233,35 @@ def is_delegated_child_process_context() -> bool:
 def scrub_kanban_env(
     env: Mapping[str, str] | MutableMapping[str, str],
 ) -> dict[str, str]:
-    """Remove dispatcher-only identity and propagate delegated lineage."""
+    """Remove dispatcher-only identity and propagate delegated lineage.
+
+    The delegated marker survives later execs so descendants cannot regain worker
+    authority merely by dropping a task environment variable.
+    """
     cleaned = {key: value for key, value in env.items() if key not in KANBAN_ENV_KEYS}
     cleaned[DELEGATED_CHILD_ENV_MARKER] = "1"
     return cleaned
 
 
+@overload
+def delegated_child_subprocess_env(env: Mapping[str, str]) -> dict[str, str]: ...
+
+
+@overload
+def delegated_child_subprocess_env(env: None = None) -> dict[str, str] | None: ...
+
+
 def delegated_child_subprocess_env(
     env: Mapping[str, str] | MutableMapping[str, str] | None = None,
 ) -> dict[str, str] | None:
-    """Return a scrubbed env only when delegated lineage crosses a process."""
-    if not is_delegated_child_process_context():
+    """Carry worker/delegate descendant denial across a real process spawn.
+
+    Location and credentials are untouched; callers retain their existing secret policy.
+    """
+    if not (
+        is_delegated_child_process_context()
+        or os.environ.get("HERMES_KANBAN_TASK")
+        or (env and (env.get("HERMES_KANBAN_TASK") or env.get(DELEGATED_CHILD_ENV_MARKER)))
+    ):
         return None if env is None else dict(env)
     return scrub_kanban_env(os.environ if env is None else env)

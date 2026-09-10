@@ -89,7 +89,9 @@ class SessionContextMixin:
         ctx = self._fetch_peer_context(peer_id, search_query, target=target)
         return ctx["representation"], "\n".join(ctx["card"])
 
-    def get_prefetch_context(self, session_key: str, user_message: str | None = None) -> dict[str, str]:
+    def get_prefetch_context(
+        self, session_key: str, user_message: str | None = None, *, current_query_only: bool = False,
+    ) -> dict[str, str]:
         """Pre-fetch user + AI peer context (representation, card) plus the session summary.
         ``user_message`` is passed as search_query so Honcho returns topic-relevant conclusions.
         Stops early (returning what it has) once auth is dead."""
@@ -109,6 +111,15 @@ class SessionContextMixin:
 
         def _user() -> None:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, "user")
+            if current_query_only:
+                # The legacy fallback getters do not accept search_query. An empty
+                # or failed current-query lookup must not silently become generic recall.
+                ctx = self._authed_call("peer context fetch", lambda: self._get_or_create_peer(observer_peer_id).context(
+                    search_query=user_message, target=target_peer_id or session.user_peer_id,
+                ))
+                result["representation"] = getattr(ctx, "representation", None) or getattr(ctx, "peer_representation", None) or ""
+                result["card"] = "\n".join(self._normalize_card(getattr(ctx, "peer_card", None)))
+                return
             result["representation"], result["card"] = self._peer_context_strings(
                 observer_peer_id, search_query=user_message or None, target=target_peer_id or session.user_peer_id,
             )
@@ -125,8 +136,12 @@ class SessionContextMixin:
             try:
                 step()
             except HonchoAuthError:
+                if current_query_only:
+                    raise
                 break  # Auth is dead; the pop_auth_notice path tells the model why context is missing.
             except Exception as e:
+                if current_query_only:
+                    raise
                 logger.log(level, msg, e)
         return result
 

@@ -182,7 +182,16 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {
+                "model": {"default": "m"},
+                "agent": {"system_prompt": "CONFIG OVERLAY"},
+            },
+            resolve_ephemeral_system_prompt_from_config=lambda cfg: cfg["agent"][
+                "system_prompt"
+            ],
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -214,7 +223,33 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
+    assert captured["ephemeral_system_prompt"] == "CONFIG OVERLAY"
     assert captured["prompt"] == "recall this"
+
+
+def test_oneshot_system_prompt_precedence_and_composition(monkeypatch):
+    from hermes_cli.oneshot import _build_oneshot_system_prompt
+
+    monkeypatch.delenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", raising=False)
+
+    global_cfg = {"agent": {"system_prompt": "GLOBAL"}}
+    assert _build_oneshot_system_prompt(global_cfg) == "GLOBAL"
+    assert _build_oneshot_system_prompt(global_cfg, "SKILL") == "GLOBAL\n\nSKILL"
+
+    personality_cfg = {
+        "display": {"personality": "helpful"},
+        "agent": {
+            "system_prompt": "GLOBAL",
+            "personalities": {"helpful": "PERSONALITY"},
+        },
+    }
+    assert _build_oneshot_system_prompt(personality_cfg) == "PERSONALITY"
+
+    monkeypatch.setenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "ENV")
+    assert _build_oneshot_system_prompt(personality_cfg, "SKILL") == "ENV\n\nSKILL"
+
+    monkeypatch.delenv("HERMES_EPHEMERAL_SYSTEM_PROMPT")
+    assert _build_oneshot_system_prompt({}) is None
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):

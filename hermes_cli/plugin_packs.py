@@ -12,6 +12,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ _SECRET_KEY_RE = re.compile(r"(?i)(token|secret|passw(or)?d|api[_-]?key|private[
 # plugins.entries.<id> keys a pack may never set (consent state; allow_* gates are also refused).
 _RESERVED_ENTRY_KEYS = frozenset({"granted_capabilities", "capabilities_consent"})
 _MAX_PACK_BYTES = 1 * 1024 * 1024  # a pack is a small manifest, not a payload
+_MAX_PACK_REDIRECTS = 5
 _FETCH_TIMEOUT = 15.0
 
 
@@ -162,17 +164,54 @@ def _parse_pack_entry(item: Any, label: str) -> PackPluginEntry:
         subdir=subdir.strip("/") if isinstance(subdir, str) else None)
 
 
+# ---------------------------------------------------------------------------
+# Remote fetch
+# ---------------------------------------------------------------------------
+
+
+def _validate_pack_url(url: str) -> None:
+    """Require an HTTPS URL that passes the shared SSRF policy."""
+    from tools.url_safety import is_safe_url
+
+    if (urlparse(url).scheme or "").lower() != "https":
+        raise PackError("Pack URLs and redirects must use https://.")
+    if not is_safe_url(url):
+        raise PackError("Pack URL blocked by URL safety policy.")
+
+
+def _pack_redirect_guard(response: Any) -> None:
+    """Validate each redirect target before httpx follows it."""
+    from tools.url_safety import redirect_target_from_response
+
+    redirect_url = redirect_target_from_response(response)
+    if redirect_url:
+        _validate_pack_url(redirect_url)
+
+
 def load_pack(path_or_url: str) -> PluginPack:
     """Load a pack from a local file path or an ``https://`` URL."""
     if path_or_url.startswith("https://"):
         try:
-            import httpx
+            from tools.url_safety import create_ssrf_safe_client
 
-            resp = httpx.get(path_or_url, timeout=_FETCH_TIMEOUT, follow_redirects=True)
-            resp.raise_for_status()
-            text = resp.text
+            _validate_pack_url(path_or_url)
+            with create_ssrf_safe_client(
+                timeout=_FETCH_TIMEOUT,
+                follow_redirects=True,
+                max_redirects=_MAX_PACK_REDIRECTS,
+                event_hooks={"response": [_pack_redirect_guard]},
+            ) as client:
+                resp = client.get(path_or_url)
+                resp.raise_for_status()
+                text = resp.text
+        except PackError:
+            raise
         except Exception as exc:
-            raise PackError(f"Could not fetch pack from {path_or_url}: {exc}") from exc
+            # Do not echo a caller-supplied URL or transport exception: either
+            # may contain credentials from a userinfo/query-bearing URL.
+            raise PackError(
+                f"Could not fetch pack ({type(exc).__name__})."
+            ) from exc
         if len(text.encode("utf-8", errors="ignore")) > _MAX_PACK_BYTES:
             raise PackError("Pack payload exceeds the 1 MiB size limit.")
         return parse_pack(text, source=path_or_url)
@@ -187,6 +226,7 @@ def load_pack(path_or_url: str) -> PluginPack:
 
 
 # ── Resolution (bare index names → owner/repo) + review screen ──────────────────────────────
+
 
 @dataclass
 class ResolvedPackPlugin:

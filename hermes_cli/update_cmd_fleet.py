@@ -146,7 +146,11 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """Require current successors for every recorded runtime, not just any live row.
 
     A PID changes on restart; the stable identity is (runtime kind, profile).
-    The gateway matrix cannot vouch for serve/dashboard or unidentified runtimes.
+    The gateway matrix can vouch for gateway runtimes only, so a non-gateway runtime
+    (serve / dashboard) is checked against the receipt's own ``runtime_outcomes``
+    instead of being treated as unprovable: those runtimes are reconciled in their own
+    vocabulary by ``match_runtime_outcomes``, and their mere presence must not veto the
+    gateway obligations this function exists to discharge.
     Keep the historical receipt intact: a manual restart is not a successful update.
     """
     if not expected_sha:
@@ -158,6 +162,11 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         plan = receipt.get("plan") or {}
         runtimes = plan.get("runtimes") or []
         recorded_fleet = receipt.get("fleet") or []
+        resolved = {
+            (row.get("kind"), row.get("profile"))
+            for row in receipt.get("runtime_outcomes") or []
+            if isinstance(row, dict) and row.get("outcome") == "restarted"
+        }
         owed = set()
         entries: list[tuple[object, str | None]] = [(entry, None) for entry in runtimes]
         entries.extend((entry, "gateway") for entry in recorded_fleet)
@@ -166,8 +175,13 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
                 return False
             kind = entry.get("kind", default_kind)
             profile = entry.get("profile")
-            if kind != "gateway" or not profile or profile == "unknown":
+            if not profile or profile == "unknown":
                 return False
+            if kind != "gateway":
+                # Not the gateway matrix's business — but an unresolved one still fails closed.
+                if (kind, profile) not in resolved:
+                    return False
+                continue
             owed.add((kind, profile))
         if not owed:
             return False

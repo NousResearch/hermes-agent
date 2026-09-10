@@ -6,6 +6,7 @@ call time so imports stay one-way (both of those modules import this one lazily)
 
 import contextlib
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,10 +48,34 @@ def _iter_process_table() -> list[tuple[int, str]]:
         # pythonw.exe desktop/gateway backend during an update, where a bare wmic spawn would pop a console
         # window.
         from hermes_cli._subprocess_compat import bounded_probe_run
-        result = bounded_probe_run(
-            ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-            timeout=10, errors="ignore")
-        if result is None or result.returncode != 0 or result.stdout is None:
+        # wmic first (fast, and the LIST output the parser below already reads), but it is gone on
+        # Windows 11 and late Win 10 builds, where an unguarded spawn leaves the scan permanently
+        # empty and a forgotten dashboard never gets reaped. Fall back to Get-CimInstance shaped to
+        # the same LIST form; same query, same table as the gateway pid scan. A missing binary, a
+        # spawn failure and a timeout (result is None) all trip the fallback.
+        wmic_path = shutil.which("wmic")
+        result = None
+        if wmic_path is not None:
+            result = bounded_probe_run(
+                [wmic_path, "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                timeout=10, errors="ignore")
+        if result is None or result.returncode != 0 or not (result.stdout or ""):
+            powershell = shutil.which("powershell") or shutil.which("pwsh")
+            if powershell is None:
+                return rows
+            ps_cmd = (
+                "Get-CimInstance Win32_Process | "
+                "ForEach-Object { "
+                "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
+                "  'ProcessId=' + $_.ProcessId; "
+                "  '' "
+                "}"
+            )
+            result = bounded_probe_run(
+                [powershell, "-NoProfile", "-Command", ps_cmd], timeout=15, errors="ignore")
+            if result is None:
+                return rows
+        if result.returncode != 0 or result.stdout is None:
             return rows
         current_cmd = ""
         for line in result.stdout.split("\n"):
@@ -59,6 +84,10 @@ def _iter_process_table() -> list[tuple[int, str]]:
                 current_cmd = line[len("CommandLine=") :]
             elif line.startswith("ProcessId="):
                 _append_row(rows, line[len("ProcessId=") :], current_cmd)
+                # Reset, as the gateway's sibling parser does: a record with no CommandLine line
+                # would otherwise inherit the previous process's, and an unrelated pid would be
+                # read as a forgotten dashboard and reaped by `hermes update`.
+                current_cmd = ""
         return rows
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
     result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)

@@ -300,11 +300,20 @@ FOOTGUNS: list[Footgun] = [
     ),
     Footgun(
         name="wmic invocation without shutil.which guard",
-        # Match wmic appearing as a subprocess argument — NOT the
-        # shutil.which("wmic") guard pattern itself. Looks for wmic in a
-        # list or as first arg of subprocess.run/Popen.
+        # Match wmic as the head of an argv list, whoever is doing the
+        # spawning. Anchoring on ``subprocess.`` meant this rule matched
+        # nothing at all, and never had: at cc38282b04, the commit that added
+        # it, the tree's only wmic spawn was ``subprocess.run(`` on one line
+        # and ``["wmic", ...]`` on the next, and the scanner is line-based, so
+        # ``--all`` reported a clean tree the day the rule landed. The later
+        # move of the Windows process scans onto ``bounded_probe_run``
+        # (#87134) did not break it; it removed the last spelling that could
+        # ever have matched. A quoted literal is the whole point — the guarded
+        # form passes the ``shutil.which`` result as a variable
+        # (``[wmic_path, ...]``), which is not a match, and
+        # ``shutil.which("wmic")`` has no bracket in front of it.
         pattern=re.compile(
-            r"""(?:subprocess\.\w+\s*\(\s*\[\s*['"]wmic['"]|['"]wmic\.exe['"])"""
+            r"""(?:\[\s*['"]wmic['"]|['"]wmic\.exe['"])"""
         ),
         message=(
             "wmic was removed in Windows 10 21H1 and later. Always "
@@ -318,6 +327,11 @@ FOOTGUNS: list[Footgun] = [
             "    subprocess.run(['powershell', '-NoProfile', '-Command',\n"
             "                    'Get-CimInstance Win32_Process | ...'])"
         ),
+        # The rule's own test file spells out the shapes it must and must not catch, so every
+        # fixture in it is a match by construction. CONTRIBUTING tells contributors to run this
+        # script over their diff before opening a PR, and the CI job's --all roots exclude tests/,
+        # so without this the documented workflow failed on a file the blocking job never sees.
+        path_allowlist=("tests/scripts/test_footgun_wmic_rule",),
     ),
     Footgun(
         name="hardcoded ~/Desktop (OneDrive trap)",

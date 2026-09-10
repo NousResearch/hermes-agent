@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -653,6 +654,35 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+def _get_bot_chat_busy_retries() -> int:
+    """Extra attempts when the recipient's Bot Chat is BUSY (not when it errors).
+
+    ``cron.bot_chat_busy_retries``; default 3. Bot-chat has no durable delivery
+    queue, so without this a finding delivered while the recipient is mid-turn is
+    lost outright. 0 restores the old drop-on-busy behaviour.
+    """
+    try:
+        cfg = _sched.load_config()
+        value = int(cfg.get("cron", {}).get("bot_chat_busy_retries", 3))
+        return max(0, value)
+    except Exception:
+        return 3
+
+
+def _get_bot_chat_busy_backoff_seconds() -> float:
+    """Base seconds for exponential backoff between busy retries.
+
+    ``cron.bot_chat_busy_backoff_seconds``; default 30. Doubles per attempt, so
+    the default ladder waits 30s, 60s, 120s — sized for a recipient's agent turn.
+    """
+    try:
+        cfg = _sched.load_config()
+        value = float(cfg.get("cron", {}).get("bot_chat_busy_backoff_seconds", 30.0))
+        return value if value > 0 else 30.0
+    except Exception:
+        return 30.0
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
@@ -732,6 +762,19 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         logger.warning("Job '%s': %s", job_id, msg, **log_kwargs)
         return msg
 
+    # A live Bot Chat owner refuses a concurrent write with the typed
+    # SESSION_NOT_OWNED refusal, which means "busy, come back later" — capacity,
+    # not failure. Bot-chat is deliberately excluded from the durable delivery
+    # queue below (a bot turn costs money and must not be replayed by a second
+    # writer), so a dropped refusal loses the payload with no retry anywhere:
+    # a scheduled bot finding vanishes while the sender records a bare failure.
+    # Retrying here is the only place that recoverable refusal can be honoured.
+    # Genuine errors are NOT retried — they stay terminal and loud.
+    _CAPACITY_REFUSALS = ("SESSION_NOT_OWNED", "MAX_CONCURRENT_SESSIONS")
+
+    def _is_capacity_refusal(text: str) -> bool:
+        return any(reason in text for reason in _CAPACITY_REFUSALS)
+
     from agent.delegation_context import delegated_child_subprocess_env
     env = delegated_child_subprocess_env(os.environ)
     if profile:
@@ -754,16 +797,28 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
             "-Q", "--query-file", query_file,
         ]
-        result = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
-            creationflags=windows_hide_flags())
-        if result.returncode != 0:
+        attempts = max(1, _get_bot_chat_busy_retries() + 1)
+        backoff = _get_bot_chat_busy_backoff_seconds()
+        for attempt in range(attempts):
+            result = subprocess.run(
+                argv, capture_output=True, text=True,
+                timeout=_get_bot_chat_delivery_timeout(), env=env,
+                creationflags=windows_hide_flags())
+            if result.returncode == 0:
+                logger.info(
+                    "Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
+                return None
             tail = (result.stderr or result.stdout or "").strip()[-500:]
-            return _fail(
-                f"bot-chat delivery to profile '{profile_label}' failed (exit {result.returncode})"
-                + (f": {tail}" if tail else ""))
-        logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
-        return None
+            last_attempt = attempt == attempts - 1
+            if last_attempt or not _is_capacity_refusal(tail):
+                return _fail(
+                    f"bot-chat delivery to profile '{profile_label}' failed "
+                    f"(exit {result.returncode})" + (f": {tail}" if tail else ""))
+            delay = backoff * (2 ** attempt)
+            logger.info(
+                "Job '%s': Bot Chat of profile '%s' busy; retrying in %.1fs (%d/%d)",
+                job_id, profile_label, delay, attempt + 1, attempts - 1)
+            time.sleep(delay)
     except subprocess.TimeoutExpired:
         return _fail(
             f"bot-chat delivery to profile '{profile_label}' timed out "

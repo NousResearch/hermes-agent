@@ -184,6 +184,75 @@ def test_deliver_timeout_returns_error_string():
     assert "timed out" in err
 
 
+def test_deliver_retries_when_recipient_session_is_busy():
+    """A busy recipient is capacity, not failure: retry rather than drop the finding.
+
+    Bot-chat is excluded from the durable delivery queue, so a refusal that is
+    discarded loses the payload permanently. `SESSION_NOT_OWNED` is the typed
+    "busy, come back later" refusal a live Bot Chat owner raises while its turn
+    runs; treating it as terminal is what silently lost scheduled bot findings.
+    """
+    busy = _completed(
+        returncode=1,
+        stderr=(
+            "hermes-refusal-reason: SESSION_NOT_OWNED\n"
+            "Session 20260101_000000_abcdef already has a live owner (cli, pid 1)."
+        ),
+    )
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return busy if len(attempts) == 1 else _completed()
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 2, "a busy recipient must be retried, not dropped"
+    assert err is None
+
+
+def test_deliver_does_not_retry_a_genuine_failure():
+    """Only capacity refusals retry; a real error must stay terminal and loud."""
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return _completed(returncode=1, stderr="boom")
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 1, "a non-capacity failure must not be retried"
+    assert err is not None and "boom" in err
+
+
+def test_deliver_reports_error_when_recipient_stays_busy():
+    """Exhausted retries must surface the refusal, never report a phantom success."""
+    busy = _completed(
+        returncode=1,
+        stderr="hermes-refusal-reason: SESSION_NOT_OWNED\nSession busy.",
+    )
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return busy
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) > 1, "a persistently busy recipient must be retried"
+    assert err is not None
+    assert "SESSION_NOT_OWNED" in err or "busy" in err.lower()
+
+
 def test_deliver_message_carries_cron_attribution(tmp_path):
     """The injected turn must self-identify as scheduled output, not the user."""
     captured = {}

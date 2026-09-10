@@ -396,9 +396,16 @@ class GatewayStartupMixin:
                         row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
                     )
                 else:
+                    error = str(getattr(result, "error", "") or "send failed")
                     await asyncio.to_thread(
-                        mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
+                        mark_failed, row["obligation_id"], error
                     )
+                    if error == "send_path_degraded":
+                        from gateway.delivery_recovery import schedule_redelivery
+                        # Recovery may have swept this row while its failure write was pending.
+                        # Resolve again: the transport can also have been replaced during the await.
+                        schedule_redelivery(getattr(self, "_authorization_adapter")(
+                            Platform(row["platform"]), row.get("profile")))
         # Whatever is still waiting on a flood penalty (adopted at boot, skipped as not yet due, refused
         # again just now) gets a timer, so no flood-refused reply waits for the next restart.
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
@@ -417,13 +424,20 @@ class GatewayStartupMixin:
         else:
             # Startup rows preserve the historical default-adapter route.
             adapter = self.adapters.get(platform)
-        # A runtime claim whose reconnect vanished before dispatch is released without spending an
-        # attempt; startup claims keep their state (attempts cap + stale cutoff bound retries).
-        if adapter is None and row.get("runtime_recovery"):
+        # Health can change while resume flags are cleared after claiming. An unsent runtime claim
+        # must retain its retry budget; startup claims keep their existing recovery semantics.
+        from gateway.delivery_recovery import can_redeliver, schedule_redelivery
+        if row.get("runtime_recovery") and not can_redeliver(adapter):
             await self._release_runtime_claim_quiet(
                 row["obligation_id"], "failed to release undispatched runtime obligation %s",
                 error=row.get("last_error") or "send_path_degraded",
             )
+            if (row.get("last_error") or "send_path_degraded") == "send_path_degraded":
+                # Recovery may also precede this refund's DB write. Only transport unavailability
+                # gets this wakeup; a resume-store failure must not loop on free retry claims.
+                schedule_redelivery(getattr(self, "_authorization_adapter")(
+                    platform, row.get("profile")))
+            return None
         return adapter
 
     async def _redeliver_pending_obligations(self) -> int:

@@ -819,6 +819,50 @@ class TestBackgroundReviewDeleteGate:
         # Atomic: the batch is only a proposal — its add must not land either.
         assert "fork consolidation" not in store._entries_for("memory")
 
+    def test_opted_in_unattended_review_applies_atomic_consolidation(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config["memory"]["allow_unattended_consolidation"] = True
+        config["memory"]["write_approval"] = False
+        save_config(config)
+        store.add("memory", "stale duplicated fact")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "remove", "old_text": "stale duplicated fact"},
+                {"action": "add", "content": "concise durable fact"},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is True
+        assert result.get("staged") is not True
+        assert store._entries_for("memory") == ["concise durable fact"]
+
+    def test_general_approval_still_gates_opted_in_consolidation(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config["memory"]["allow_unattended_consolidation"] = True
+        config["memory"]["write_approval"] = True
+        save_config(config)
+        store.add("user", "stale profile fact")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                action="replace", target="user", old_text="stale profile fact",
+                content="corrected profile fact", store=store,
+            ))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["staged"] is True
+        assert "stale profile fact" in store._entries_for("user")
+        assert "corrected profile fact" not in store._entries_for("user")
+
     def test_add_still_allowed_in_background_review(self, store):
         token = set_current_write_origin("background_review")
         try:

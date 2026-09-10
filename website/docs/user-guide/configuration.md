@@ -779,9 +779,10 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write
+  allow_unattended_consolidation: false  # opt in to automatic replace/remove
 ```
 
-With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+Unattended background reviews can add entries by default, but stage replacements/removals for approval. Set `memory.allow_unattended_consolidation: true` to let them consolidate the built-in memory and user-profile stores automatically. `memory.write_approval: true` still takes precedence and stages every write. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 
 ## Context File Truncation
 

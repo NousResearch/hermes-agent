@@ -238,6 +238,7 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  allow_unattended_consolidation: false  # opt in to background replace/remove
 ```
 
 Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the
@@ -257,14 +258,27 @@ The inverse configuration advertises only `memory` and rejects `USER.md` writes.
 
 ## Controlling memory writes (`write_approval`)
 
-By default the agent saves memory freely — including from the background
-self-improvement review that runs after a turn. If you'd rather approve saves
-first, set `memory.write_approval: true`. It's a simple on/off gate applied to
-**both** foreground turns and the background review:
+By default foreground turns save freely, while an unattended background review
+may add entries but stages any replacement/removal (including a mixed batch) for
+approval. This protects existing entries even when the general approval gate is
+off. Users who accept autonomous consolidation can opt in explicitly:
+
+```yaml
+memory:
+  allow_unattended_consolidation: true
+```
+
+The opt-in applies only to the built-in `MEMORY.md` and `USER.md` stores and only
+when a memory-triggered review already has memory access. It does not grant
+memory access to skill-only reviews or alter external memory-provider retention.
+Batch writes remain atomic, and normal review notifications continue to apply.
+
+`memory.write_approval` remains the final gate for **both** foreground and
+background writes:
 
 | `write_approval` | Behaviour |
 |------------------|-----------|
-| `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
+| `false` (default) | Foreground writes flow freely. Unattended replacement/removal still requires `allow_unattended_consolidation: true`; otherwise it is staged. |
 | `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
 > To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.

@@ -80,7 +80,9 @@ def _codex_pool_only_store(*, exhausted: bool = False) -> dict:
 
 
 @pytest.fixture(autouse=True)
-def _clear_provider_env(monkeypatch):
+def _clear_provider_env(monkeypatch, tmp_path):
+    # Keep tests from importing credentials from the runner's shared Codex CLI.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     for key in (
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",

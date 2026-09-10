@@ -13,21 +13,38 @@ import * as jsxRuntime from 'react/jsx-runtime'
 
 import * as sdk from './index'
 
-const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
-} as const
+type Globals = {
+  __HERMES_PLUGIN_SDK__: typeof sdk
+  __HERMES_REACT__: typeof React
+  __HERMES_REACT_JSX__: typeof jsxRuntime
+  __HERMES_REACT_JSX_DEV__: typeof jsxDevRuntime
+}
+
+/** Read the namespace bindings at CALL time, never at module-init time. The
+ *  bundler may place this module's body BEFORE the SDK barrel's namespace
+ *  assignment in the chunk (it did in the 2026-09-10 build), so a
+ *  module-level `const GLOBALS = { __HERMES_PLUGIN_SDK__: sdk, ... }`
+ *  captures `undefined` and every plugin load then dies on
+ *  `Object.keys(undefined)`. React imports survive that ordering by luck of
+ *  placement; the SDK barrel does not. A function body defers the read past
+ *  all module bodies, making chunk layout irrelevant. */
+function globals(): Globals {
+  return {
+    __HERMES_PLUGIN_SDK__: sdk,
+    __HERMES_REACT__: React,
+    __HERMES_REACT_JSX__: jsxRuntime,
+    __HERMES_REACT_JSX_DEV__: jsxDevRuntime
+  }
+}
 
 export function installPluginSdk(): void {
-  Object.assign(globalThis, GLOBALS)
+  Object.assign(globalThis, globals())
 }
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.
  *  Export names come from the namespace itself, so the list can't drift. */
-function shimUrl(globalKey: keyof typeof GLOBALS): string {
-  const names = Object.keys(GLOBALS[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
+function shimUrl(globalKey: keyof Globals): string {
+  const names = Object.keys(globals()[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
 
   const source =
     `const m = globalThis.${globalKey};\n` +

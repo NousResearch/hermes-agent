@@ -1899,9 +1899,9 @@ DEFAULT_CONFIG = {
         "review_dispatch": True,
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
-        # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
-        # crashed) for the same task/profile. Reassignment resets the streak.
-        "failure_limit": 2,
+        # Auto-block after this many consecutive spawn_failed/timed_out/crashed attempts per task/profile.
+        "failure_limit": 2,  # reassignment resets the streak
+        "block_recurrence_limit": 2,  # same-cause block->unblock->re-block cycles before Triage; 0 = off
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

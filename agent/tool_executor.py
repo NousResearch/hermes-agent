@@ -205,24 +205,33 @@ def _kanban_session_usage(agent, tool_name: str) -> dict | None:
         return None
     session_id = str(getattr(agent, "session_id", "") or "").strip()
     session = None
+    auxiliary_usage = {}
     db = getattr(agent, "_session_db", None)
     if db is not None and session_id:
         try:
             # get_session drains this SessionDB's queued token deltas first.
             session = db.get_session(session_id)
+            auxiliary_usage = db.auxiliary_usage_totals(session_id)
         except Exception as exc:
             logger.debug("Could not read exact Kanban worker session usage: %s", exc)
     session = session if isinstance(session, dict) else {}
+    auxiliary_usage = auxiliary_usage if isinstance(auxiliary_usage, dict) else {}
+
+    def _with_auxiliary(field: str):
+        return (getattr(agent, f"session_{field}", 0) or 0) + (auxiliary_usage.get(field) or 0)
+
     return {
         "session_id": session_id or None,
-        "input_tokens": getattr(agent, "session_input_tokens", 0),
-        "output_tokens": getattr(agent, "session_output_tokens", 0),
-        "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0),
-        "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0),
-        "reasoning_tokens": getattr(agent, "session_reasoning_tokens", 0),
-        "api_call_count": getattr(agent, "session_api_calls", 0),
+        "input_tokens": _with_auxiliary("input_tokens"),
+        "output_tokens": _with_auxiliary("output_tokens"),
+        "cache_read_tokens": _with_auxiliary("cache_read_tokens"),
+        "cache_write_tokens": _with_auxiliary("cache_write_tokens"),
+        "reasoning_tokens": _with_auxiliary("reasoning_tokens"),
+        "api_call_count": (getattr(agent, "session_api_calls", 0) or 0)
+        + (auxiliary_usage.get("api_call_count") or 0),
         "turns": getattr(agent, "_user_turn_count", 0),
-        "estimated_cost_usd": getattr(agent, "session_estimated_cost_usd", 0.0),
+        "estimated_cost_usd": (getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+        + (auxiliary_usage.get("estimated_cost_usd") or 0.0),
         "actual_cost_usd": session.get("actual_cost_usd"),
         "model": getattr(agent, "model", None) or session.get("model"),
         "provider": getattr(agent, "provider", None) or session.get("billing_provider"),

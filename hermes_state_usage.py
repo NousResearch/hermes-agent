@@ -384,6 +384,20 @@ class SessionUsageMixin:
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
+    def auxiliary_usage_totals(self, session_id: str) -> Dict[str, Any]:
+        """Return persisted side-LLM usage for one session, excluding main-loop rows."""
+        self.flush_token_counts()
+        fields = (*_TOKEN_COUNTERS, "api_call_count", "estimated_cost_usd")
+        sums = ", ".join(f"COALESCE(SUM({field}), 0) AS {field}" for field in fields)
+        row = self._read_one(
+            f"SELECT {sums} FROM session_model_usage WHERE session_id = ? AND task <> ''",
+            (session_id,),
+        )
+        return {
+            **{field: int(row[field] or 0) for field in (*_TOKEN_COUNTERS, "api_call_count")},
+            "estimated_cost_usd": float(row["estimated_cost_usd"] or 0.0),
+        }
+
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
         shrink with paging. Spend prefers the billed figure over the estimate."""

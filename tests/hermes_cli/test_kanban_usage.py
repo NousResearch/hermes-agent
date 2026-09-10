@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -91,3 +93,79 @@ def test_manual_completion_keeps_usage_unrecorded(worker_task):
     assert run.input_tokens == 0
     assert run.actual_cost_usd is None
     assert run.usage_recorded_at is None
+
+
+@pytest.mark.parametrize(
+    ("auxiliary", "expected_input", "expected_calls", "expected_cost"),
+    [
+        (False, 100, 1, 1.0),
+        (True, 150, 2, 1.5),
+    ],
+)
+def test_model_tools_lifecycle_snapshot_includes_auxiliary_without_double_counting(
+    worker_task, auxiliary, expected_input, expected_calls, expected_cost,
+):
+    from agent.tool_executor import _kanban_session_usage
+    from hermes_state import SessionDB
+    import model_tools
+
+    session_id = f"worker-{'aux' if auxiliary else 'main-only'}"
+    session_db = SessionDB(Path(os.environ["HERMES_HOME"]) / "state.db")
+    session_db.create_session(session_id, source="cli", model="main-model")
+    session_db.update_token_counts(
+        session_id,
+        input_tokens=100,
+        output_tokens=10,
+        model="main-model",
+        billing_provider="main-provider",
+        estimated_cost_usd=1.0,
+        api_call_count=1,
+    )
+    if auxiliary:
+        session_db.record_auxiliary_usage(
+            session_id,
+            "compression",
+            model="aux-model",
+            billing_provider="aux-provider",
+            input_tokens=50,
+            output_tokens=5,
+            estimated_cost_usd=0.5,
+        )
+
+    agent = SimpleNamespace(
+        session_id=session_id,
+        _session_db=session_db,
+        session_input_tokens=100,
+        session_output_tokens=10,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        session_reasoning_tokens=0,
+        session_api_calls=1,
+        session_estimated_cost_usd=1.0,
+        _user_turn_count=1,
+        model="main-model",
+        provider="main-provider",
+    )
+    snapshot = _kanban_session_usage(agent, "kanban_complete")
+    response = json.loads(model_tools.handle_function_call(
+        "kanban_complete",
+        {"summary": "done"},
+        session_usage=snapshot,
+        skip_pre_tool_call_hook=True,
+        skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True,
+    ))
+    assert response["ok"] is True
+
+    with kbc.connect_closing() as conn:
+        run = kb.latest_run(conn, worker_task)
+        usage = task_usage(conn, worker_task)
+    session_db.close()
+
+    assert run.input_tokens == expected_input
+    assert run.output_tokens == (15 if auxiliary else 10)
+    assert run.api_call_count == expected_calls
+    assert run.estimated_cost_usd == pytest.approx(expected_cost)
+    assert usage["input_tokens"] == expected_input
+    assert usage["api_call_count"] == expected_calls
+    assert usage["estimated_cost_usd"] == pytest.approx(expected_cost)

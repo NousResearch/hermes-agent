@@ -138,6 +138,38 @@ class TestDeepseekCanonicalAndReasonerMapping:
         assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
 
 
+# ── DeepSeek V4.1-Flash: the live flagship id has no ``v<digit>`` infix ──
+
+class TestDeepseekV41Flash:
+    """V4.1-Flash (released 2026-09-10) is addressed as ``deepseek-flash``; the retired
+    ``deepseek-v4-flash`` / ``deepseek-v4-flash-vision-exp`` ids survive only as temporary
+    server-side compat routes.
+
+    ``_DEEPSEEK_V_SERIES_RE`` requires a ``v<digit>`` infix, so an id it cannot see falls
+    through to the blanket ``deepseek-v4-flash`` rewrite — silently putting every request on the
+    compat route and reporting a model the user never selected.
+    """
+
+    def test_v41_flash_id_survives_normalization(self):
+        assert normalize_model_for_provider("deepseek-flash", "deepseek") == "deepseek-flash"
+        assert (
+            normalize_model_for_provider("deepseek/deepseek-flash", "deepseek")
+            == "deepseek-flash"
+        )
+
+    def test_v4_flash_compat_route_is_left_alone(self):
+        assert (
+            normalize_model_for_provider("deepseek-v4-flash", "deepseek")
+            == "deepseek-v4-flash"
+        )
+
+    @pytest.mark.parametrize("alias", ["deepseek-v4.1-flash", "deepseek-v4-1-flash"])
+    def test_marketing_spelling_repaired_to_canonical(self, alias):
+        """The marketing spelling is not an API id (the API answers HTTP 400), and it would
+        otherwise ride the V-series regex through to the wire."""
+        assert normalize_model_for_provider(alias, "deepseek") == "deepseek-flash"
+
+
 # ── Regression: issue #78796 ───────────────────────────────────────────
 
 class TestIssue78796NvidiaPrefixRepair:

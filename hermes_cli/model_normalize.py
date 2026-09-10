@@ -92,8 +92,20 @@ _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
 _DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
     "deepseek-chat", "deepseek-reasoner"})
 
+# DeepSeek's newest family drops the ``v<digit>`` infix: V4.1-Flash (released 2026-09-10, addressed
+# as ``deepseek-flash``) is the live flagship, and ``deepseek-v4-flash`` survives only as a
+# temporary server-side compat route ("for compatibility, deepseek-v4-flash ... temporarily route
+# to V4.1-Flash"). The V-series regex below cannot recognise it (no ``v<digit>``), so it needs an
+# explicit entry or the normalizer silently rewrites the live id back to the compat one.
+# The marketing spelling (``deepseek-v4.1-flash``) is not a real id and 400s, so it is repaired to
+# the canonical name instead of riding the V-series regex through to the API.
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-v4-pro", "deepseek-v4-flash"})
+    "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash"})
+
+_DEEPSEEK_ALIAS_REPAIRS: dict[str, str] = {
+    "deepseek-v4.1-flash": "deepseek-flash",
+    "deepseek-v4-1-flash": "deepseek-flash",
+}
 
 # First-class V-series IDs incl. future ``deepseek-v5-*`` and dated variants
 # (``deepseek-v4-flash-20260423``): verified real model ids, NOT aliases of ``deepseek-chat``.
@@ -105,6 +117,9 @@ def _normalize_for_deepseek(model_name: str) -> str:
     through (future V-series work without a release); retired aliases and everything else become
     ``deepseek-v4-flash``."""
     bare = _strip_vendor_prefix(model_name).lower()
+    repaired = _DEEPSEEK_ALIAS_REPAIRS.get(bare)
+    if repaired:
+        return repaired
     if bare in _DEEPSEEK_CANONICAL_MODELS or _DEEPSEEK_V_SERIES_RE.match(bare):
         return bare
     return "deepseek-v4-flash"

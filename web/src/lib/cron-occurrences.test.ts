@@ -159,6 +159,55 @@ describe("enumerateOccurrences — timezone", () => {
   });
 });
 
+describe("enumerateOccurrences — 30-day window", () => {
+  const DAY_MS = 86_400_000;
+  const from = at(2026, 10, 10, 0, 0);
+  const to = from + 30 * DAY_MS;
+  const TZ = "Europe/Amsterdam";
+
+  /** The zone's local calendar date, e.g. "2026-10-10" (host-zone independent). */
+  const localDate = (ms: number): string =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date(ms));
+
+  /** The zone's local hour of an instant. */
+  const localHour = (ms: number): number =>
+    Number(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: TZ,
+        hour: "2-digit",
+        hourCycle: "h23",
+      })
+        .formatToParts(new Date(ms))
+        .find((p) => p.type === "hour")?.value,
+    );
+
+  it("keeps a daily job on its wall-clock hour across a DST transition", () => {
+    // The window spans the Europe/Amsterdam DST end (2026-10-25), so the
+    // zone's UTC offset changes mid-window. The job must still fire at 06:00
+    // local on all 30 days — no day skipped, none doubled.
+    const result = times(job({ kind: "cron", expr: "0 6 * * *" }), from, to, TZ);
+
+    expect(result).toHaveLength(30);
+    expect(result.map(localHour)).toEqual(Array(30).fill(6));
+    const dates = result.map(localDate);
+    expect(new Set(dates).size).toBe(30);
+    for (let i = 1; i < dates.length; i++) {
+      expect(Date.parse(dates[i]) - Date.parse(dates[i - 1])).toBe(DAY_MS);
+    }
+  });
+
+  it("caps a minute-frequency job into a dense lane instead of ~43k markers", () => {
+    const lane = enumerateOccurrences(
+      job({ kind: "cron", expr: "* * * * *" }),
+      from,
+      to,
+      TZ,
+    );
+    expect(lane.dense).toBe(true);
+    expect(lane.times.length).toBeLessThanOrEqual(302);
+  });
+});
+
 describe("enumerateOccurrences — backend marker fallback", () => {
   it("folds in next_run_at / last_run_at even when the matcher can't parse the expr", () => {
     // `@daily` is not modelled by the client matcher; the authoritative

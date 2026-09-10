@@ -330,7 +330,7 @@ export interface Translations {
      * until each locale carries the keys. */
     timeline?: {
       tab: string;
-      windows: { d1: string; d2: string; d7: string };
+      windows: { d1: string; d2: string; d7: string; d30: string };
       now: string;
       recenter: string;
       legendPast: string;

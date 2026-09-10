@@ -314,7 +314,7 @@ export const en: Translations = {
     },
     timeline: {
       tab: "Timeline",
-      windows: { d1: "24h", d2: "48h", d7: "7d" },
+      windows: { d1: "24h", d2: "48h", d7: "7d", d30: "30d" },
       now: "Now",
       recenter: "Recenter",
       legendPast: "Past",

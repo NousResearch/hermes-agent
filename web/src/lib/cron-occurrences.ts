@@ -9,7 +9,7 @@
  *
  * It deliberately re-derives occurrences client-side instead of asking
  * the backend for a series: the schedule grammar is small and stable
- * (see `lib/schedule.ts`), the windows are short (24h–7d), and keeping it
+ * (see `lib/schedule.ts`), the windows are short (24h–30d), and keeping it
  * local means the timeline stays responsive while panning/zooming without
  * a round-trip per frame.
  *
@@ -210,6 +210,7 @@ function makeWallClockReader(timeZone: string | null): (d: Date) => WallClock {
     hour: "2-digit",
     minute: "2-digit",
   });
+  /** The zone's UTC offset (ms) at `t`, read off the formatter. */
   const numberPart = (
     parts: Intl.DateTimeFormatPart[],
     type: string,
@@ -217,17 +218,44 @@ function makeWallClockReader(timeZone: string | null): (d: Date) => WallClock {
     const found = parts.find((p) => p.type === type);
     return found ? Number(found.value) : NaN;
   };
+  const zoneOffsetMs = (t: number): number => {
+    const parts = formatter.formatToParts(new Date(t));
+    const asUtc = Date.UTC(
+      numberPart(parts, "year"),
+      numberPart(parts, "month") - 1,
+      numberPart(parts, "day"),
+      numberPart(parts, "hour"),
+      numberPart(parts, "minute"),
+    );
+    return asUtc - t;
+  };
+  // A per-minute `formatToParts` costs ~2.7µs — over a 30-day window that is
+  // a multi-second main-thread freeze per job, so the offset is derived once
+  // per quarter-hour block and the rest of the block is read arithmetically
+  // (shifting the instant by the offset and taking UTC fields *is* the zone's
+  // wall clock). Every IANA offset is a whole number of quarter-hours and
+  // every transition lands on a 15-minute boundary, so the refresh lands
+  // exactly on a change.
+  // ponytail: a zone that shifted mid-block would misread only that block —
+  // drop BLOCK_MS to 5 minutes if such a zone ever appears.
+  const BLOCK_MS = 15 * 60_000;
+  let offsetMs = 0;
+  let blockEnd = -Infinity;
   return (d) => {
-    const parts = formatter.formatToParts(d);
-    const year = numberPart(parts, "year");
-    const month = numberPart(parts, "month");
-    const dom = numberPart(parts, "day");
-    const hour = numberPart(parts, "hour");
-    const minute = numberPart(parts, "minute");
-    // Day-of-week from the extracted wall-clock calendar date, computed in
-    // UTC so it is independent of the host's own timezone.
-    const dow = new Date(Date.UTC(year, month - 1, dom)).getUTCDay();
-    return { minute, hour, dom, month, dow, year };
+    const t = d.getTime();
+    if (t >= blockEnd) {
+      offsetMs = zoneOffsetMs(t);
+      blockEnd = (Math.floor(t / BLOCK_MS) + 1) * BLOCK_MS;
+    }
+    const local = new Date(t + offsetMs);
+    return {
+      minute: local.getUTCMinutes(),
+      hour: local.getUTCHours(),
+      dom: local.getUTCDate(),
+      month: local.getUTCMonth() + 1,
+      dow: local.getUTCDay(),
+      year: local.getUTCFullYear(),
+    };
   };
 }
 

@@ -39,7 +39,7 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 
 export interface TimelineStrings {
-  windows: { d1: string; d2: string; d7: string };
+  windows: { d1: string; d2: string; d7: string; d30: string };
   now: string;
   recenter: string;
   legendPast: string;
@@ -60,7 +60,7 @@ export interface TimelineStrings {
 }
 
 interface WindowDef {
-  key: "d1" | "d2" | "d7";
+  key: "d1" | "d2" | "d7" | "d30";
   hours: number;
   pxPerHour: number;
   tickHours: number;
@@ -70,6 +70,9 @@ const WINDOWS: WindowDef[] = [
   { key: "d1", hours: 24, pxPerHour: 62, tickHours: 3 },
   { key: "d2", hours: 48, pxPerHour: 34, tickHours: 6 },
   { key: "d7", hours: 168, pxPerHour: 12, tickHours: 24 },
+  // 30 days: 3px/h keeps the strip ~2.2k px wide (same order as 7d) so
+  // panning stays usable; daily ticks label each day.
+  { key: "d30", hours: 720, pxPerHour: 3, tickHours: 24 },
 ];
 
 const GUTTER_W = 124;
@@ -300,6 +303,7 @@ export function CronTimeline({
               { value: "d1", label: strings.windows.d1 },
               { value: "d2", label: strings.windows.d2 },
               { value: "d7", label: strings.windows.d7 },
+              { value: "d30", label: strings.windows.d30 },
             ]}
           />
           <Button
@@ -348,10 +352,15 @@ export function CronTimeline({
         <LegendDot className="bg-warning/70" ring label={strings.legendPaused} />
       </div>
 
-      {/* Timeline strip */}
+      {/* Timeline strip. Scrolls on *both* axes: horizontally across time,
+          vertically across lanes, so a long job list never pushes the detail
+          card (or the page's own filters) out of reach. The height budget
+          leaves room for the ~15rem of page chrome above the strip plus the
+          detail card below it, so the card lands on screen without a page
+          scroll; the 200px floor keeps the strip usable in a short window. */}
       <div
         ref={scrollRef}
-        className="relative overflow-x-auto overscroll-x-contain border border-border bg-card/30"
+        className="relative max-h-[max(200px,calc(100vh-30rem))] overflow-auto overscroll-contain border border-border bg-card/30"
         style={{ touchAction: "pan-x pan-y", WebkitOverflowScrolling: "touch" }}
       >
         <div

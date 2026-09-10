@@ -579,6 +579,7 @@ export default function CronPage() {
       d1: tl?.windows?.d1 ?? "24h",
       d2: tl?.windows?.d2 ?? "48h",
       d7: tl?.windows?.d7 ?? "7d",
+      d30: tl?.windows?.d30 ?? "30d",
     },
     now: tl?.now ?? "Now",
     recenter: tl?.recenter ?? "Recenter",

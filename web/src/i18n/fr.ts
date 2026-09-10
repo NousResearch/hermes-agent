@@ -286,7 +286,7 @@ export const fr: Translations = {
     },
     timeline: {
       tab: "Chronologie",
-      windows: { d1: "24 h", d2: "48 h", d7: "7 j" },
+      windows: { d1: "24 h", d2: "48 h", d7: "7 j", d30: "30 j" },
       now: "Maintenant",
       recenter: "Recentrer",
       legendPast: "Passé",

@@ -355,13 +355,15 @@ def _transcribe_mittwald(
     everything but ``whisper-1``, so no per-provider response-format handling is needed. The
     endpoint caps uploads at 10 minutes of audio, tighter than Hermes' own 25 MB ceiling.
     """
-    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, get_env_value
-    api_key = _resolve_provider_key("MITTWALD_LLM_API_KEY", "mittwald")
+    from tools.transcription_tools import _load_stt_config, get_env_value
+    from tools.tool_backend_helpers import resolve_mittwald_api_key
+    api_key = resolve_mittwald_api_key(env_getter=get_env_value)
     if not api_key:
         return _error_result("MITTWALD_LLM_API_KEY not set")
     section = _get_stt_section(_load_stt_config(), "mittwald")
     base_url = str(
-        section.get("base_url") or get_env_value("MITTWALD_BASE_URL") or MITTWALD_STT_BASE_URL
+        section.get("base_url") or get_env_value("MITTWALD_STT_BASE_URL")
+        or get_env_value("MITTWALD_BASE_URL") or MITTWALD_STT_BASE_URL
     ).strip().rstrip("/")
     return _transcribe_openai(file_path, model_name or DEFAULT_MITTWALD_STT_MODEL, api_key=api_key,
                               base_url=base_url, provider_label="mittwald", language=language, prompt=prompt)

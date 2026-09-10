@@ -199,7 +199,11 @@ _has_groq_key = _has_key("GROQ_API_KEY", "groq", needs_openai=True)
 _has_mistral_key = _has_key("MISTRAL_API_KEY", "mistral", needs_mistral=True)
 _has_elevenlabs_key = _has_key("ELEVENLABS_API_KEY", "elevenlabs")
 _has_deepinfra_key = _has_key("DEEPINFRA_API_KEY", "deepinfra", needs_openai=True)
-_has_mittwald_key = _has_key("MITTWALD_LLM_API_KEY", "mittwald", needs_openai=True)
+# Not _has_key: mittwald accepts a documented second key name, and the availability probe
+# has to agree with the handler or the alias would gate the provider off.
+def _has_mittwald_key() -> bool:
+    from tools.tool_backend_helpers import resolve_mittwald_api_key
+    return _HAS_OPENAI and bool(resolve_mittwald_api_key(env_getter=get_env_value))
 
 # Cloud providers in AUTO-DETECT priority order:
 #   name -> (explicit-selection probe, auto-detect probe, explicit warning, auto-detect log)
@@ -228,7 +232,8 @@ _CLOUD_PROVIDER_SPECS = {
                   "STT provider 'deepinfra' configured but DEEPINFRA_API_KEY not set (or openai package missing)",
                   "No local STT available, using DeepInfra Whisper API"),
     "mittwald": (_has_mittwald_key, _has_mittwald_key,
-                 "STT provider 'mittwald' configured but MITTWALD_LLM_API_KEY not set (or openai package missing)",
+                 "STT provider 'mittwald' configured but MITTWALD_LLM_API_KEY/MITTWALD_AI_API_KEY not set "
+                 "(or openai package missing)",
                  "No local STT available, using mittwald AI Hosting Whisper API")}
 
 # Explicit selections whose resolution is more than a probe + warning.

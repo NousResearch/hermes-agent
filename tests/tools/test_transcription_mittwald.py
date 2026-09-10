@@ -86,19 +86,69 @@ def test_delegates_to_openai_handler_with_mittwald_creds(monkeypatch, tmp_path, 
     assert captured["create_kwargs"]["model"] == "whisper-large-v3-turbo"
 
 
-def test_config_base_url_beats_the_default(monkeypatch, tmp_path, fake_openai):
+@pytest.mark.parametrize(("section", "env_values", "expected"), [
+    ({"base_url": "https://config.example/v1/"},
+     {"MITTWALD_STT_BASE_URL": "https://stt.example/v1", "MITTWALD_BASE_URL": "https://provider.example/v1"},
+     "https://config.example/v1"),
+    ({}, {"MITTWALD_STT_BASE_URL": "https://stt.example/v1", "MITTWALD_BASE_URL": "https://provider.example/v1"},
+     "https://stt.example/v1"),
+    ({}, {"MITTWALD_BASE_URL": "https://provider.example/v1"}, "https://provider.example/v1"),
+    ({}, {}, "https://llm.aihosting.mittwald.de/v1"),
+])
+def test_base_url_precedence(monkeypatch, tmp_path, fake_openai, section, env_values, expected):
     monkeypatch.setenv("MITTWALD_LLM_API_KEY", "test-key")
     audio = tmp_path / "speech.wav"
     audio.write_bytes(b"\x00" * 16)
     module, captured = fake_openai
-    config = {"mittwald": {"base_url": "https://proxy.example/v1/"}}
+    import tools.transcription_tools as tt
+    monkeypatch.setattr(tt, "get_env_value", lambda name: env_values.get(name))
 
     with patch.dict("sys.modules", {"openai": module}), \
-         patch("tools.transcription_tools._load_stt_config", return_value=config):
+         patch("tools.transcription_tools._load_stt_config", return_value={"mittwald": section}):
         from tools.transcription_tools import _transcribe_mittwald
         _transcribe_mittwald(str(audio), "whisper-large-v3-turbo")
 
-    assert captured["base_url"] == "https://proxy.example/v1"
+    assert captured["base_url"] == expected
+
+
+def test_ai_api_key_alias_resolves_after_the_primary(monkeypatch, tmp_path, fake_openai):
+    monkeypatch.delenv("MITTWALD_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("MITTWALD_AI_API_KEY", "alias-key")
+    audio = tmp_path / "speech.wav"
+    audio.write_bytes(b"\x00" * 16)
+    module, captured = fake_openai
+
+    with patch.dict("sys.modules", {"openai": module}), \
+         patch("tools.transcription_tools._load_stt_config", return_value={}):
+        from tools.transcription_tools import _transcribe_mittwald
+        _transcribe_mittwald(str(audio), "whisper-large-v3-turbo")
+        assert captured["api_key"] == "alias-key"
+        monkeypatch.setenv("MITTWALD_LLM_API_KEY", "primary-key")
+        _transcribe_mittwald(str(audio), "whisper-large-v3-turbo")
+
+    assert captured["api_key"] == "primary-key"
+
+
+def test_direct_client_config_uses_mittwald_response_format_only(monkeypatch):
+    import tools.transcription_tools as tt
+    from tools.voice_client_config import _resolve_stt_client_config
+
+    config = {"provider": "mittwald", "mittwald": {}}
+    monkeypatch.setenv("MITTWALD_LLM_API_KEY", "test-key")
+    monkeypatch.setattr(tt, "_load_stt_config", lambda: config)
+    monkeypatch.setattr(tt, "is_stt_enabled", lambda _config: True)
+    monkeypatch.setattr(tt, "_get_provider", lambda _config: config["provider"])
+    monkeypatch.setattr(tt, "_is_local_stt_provider", lambda *_args: False)
+    monkeypatch.setattr(tt, "_resolve_stt_language", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tt, "get_env_value", lambda _name: None)
+
+    assert _resolve_stt_client_config()["response_format"] == "json"
+
+    config["provider"] = "groq"
+    config["groq"] = {}
+    monkeypatch.setenv("GROQ_API_KEY", "groq-key")
+
+    assert "response_format" not in _resolve_stt_client_config()
 
 
 def test_language_is_sent_as_iso_639_1(monkeypatch, tmp_path, fake_openai):
@@ -150,3 +200,12 @@ def test_prompt_is_capped_like_the_other_whisper_backends():
     prompt = "x" * (max_chars + 50)
     capped = _enforce_prompt_length_limit(prompt, "mittwald")
     assert capped is not None and len(capped) == max_chars
+
+
+def test_provider_gate_accepts_the_alias_key(monkeypatch):
+    """Same contract on the STT side: the explicit-selection gate must not reject a key the
+    handler would happily use."""
+    monkeypatch.delenv("MITTWALD_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("MITTWALD_AI_API_KEY", "alias-key")
+    from tools.transcription_tools import _get_provider
+    assert _get_provider({"provider": "mittwald"}) == "mittwald"

@@ -24,11 +24,12 @@ def _provider_block(block: dict, registry: dict) -> dict:
     mem0's ``openai`` pointed at llm.aihosting.mittwald.de. mem0 would only read OPENAI_API_KEY
     from the environment, so such a provider's own key is passed inline.
     """
-    import os
+    from tools.tool_backend_helpers import resolve_mittwald_api_key, resolve_provider_secret
 
     block = dict(block)
     provider_config = dict(block.get("config", {}))
-    definition = registry.get(str(block.get("provider") or "").strip().lower(), {})
+    provider_name = str(block.get("provider") or "").strip().lower()
+    definition = registry.get(provider_name, {})
     legacy_base = provider_config.pop("api_base", None)
     canonical_key = definition.get("base_url_key")
     if legacy_base and canonical_key:
@@ -38,7 +39,10 @@ def _provider_block(block: dict, registry: dict) -> dict:
         if canonical_key and definition.get("default_url"):
             provider_config.setdefault(canonical_key, definition["default_url"])
         if definition.get("env_var") and not provider_config.get("api_key"):
-            if api_key := os.environ.get(definition["env_var"], "").strip():
+            env_var = definition["env_var"]
+            api_key = (resolve_mittwald_api_key() if env_var == "MITTWALD_LLM_API_KEY"
+                       else resolve_provider_secret(env_var, provider_name))
+            if api_key:
                 provider_config["api_key"] = api_key
     block["config"] = provider_config
     return block

@@ -96,8 +96,8 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         provider, stt_config, extra_keys=("language_code",) if provider == "elevenlabs" else ())
     section = _section(stt_config, provider)
 
-    def direct(wire: str, base_url: Any, api_key: str, model: Any) -> Dict[str, Any]:
-        return _direct(wire, provider, base_url, api_key, model, language=language)
+    def direct(wire: str, base_url: Any, api_key: str, model: Any, **extra: Any) -> Dict[str, Any]:
+        return _direct(wire, provider, base_url, api_key, model, language=language, **extra)
 
     def env_base_url(env_var: str, default: str) -> str:
         return str(section.get("base_url") or tt.get_env_value(env_var) or default).strip().rstrip("/")
@@ -142,11 +142,16 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     if provider == "mittwald":
         # Not in ``_STT_KEYED``: the base URL honours ``stt.mittwald.base_url`` and the
         # provider-wide MITTWALD_BASE_URL override, which that table's lookup skips.
-        api_key = tt._resolve_provider_key("MITTWALD_LLM_API_KEY", "mittwald")
+        from tools.tool_backend_helpers import resolve_mittwald_api_key
+        api_key = resolve_mittwald_api_key(env_getter=tt.get_env_value)
         if not api_key:
             return _relay("no credentials")
-        return direct(STT_WIRE_OPENAI, env_base_url("MITTWALD_BASE_URL", tc.MITTWALD_STT_BASE_URL), api_key,
-                      section.get("model") or tc.DEFAULT_MITTWALD_STT_MODEL)
+        base_url = str(
+            section.get("base_url") or tt.get_env_value("MITTWALD_STT_BASE_URL")
+            or tt.get_env_value("MITTWALD_BASE_URL") or tc.MITTWALD_STT_BASE_URL
+        ).strip().rstrip("/")
+        return direct(STT_WIRE_OPENAI, base_url, api_key,
+                      section.get("model") or tc.DEFAULT_MITTWALD_STT_MODEL, response_format="json")
     return _relay(f"provider {provider!r} has no client wire")
 
 
@@ -202,13 +207,15 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         return _direct(TTS_WIRE_OPENAI, "deepinfra", deepinfra_base_url(di), api_key, model,
                        voice=di.get("voice") or "af_bella", speed=None)
     if provider == "mittwald":
-        api_key = tts._resolve_provider_key("MITTWALD_LLM_API_KEY", "mittwald")
+        from tools.tool_backend_helpers import resolve_mittwald_api_key
+        api_key = resolve_mittwald_api_key(env_getter=tts.get_env_value)
         if not api_key:
             return _relay("no credentials")
         from tools.transcription_common import MITTWALD_STT_BASE_URL
         mw = _section(tts_config, "mittwald")
         return _direct(TTS_WIRE_OPENAI, "mittwald",
-                       str(mw.get("base_url") or MITTWALD_STT_BASE_URL).rstrip("/"), api_key,
+                       str(mw.get("base_url") or tts.get_env_value("MITTWALD_BASE_URL")
+                           or MITTWALD_STT_BASE_URL).rstrip("/"), api_key,
                        mw.get("model") or tts_tool_openai.DEFAULT_MITTWALD_TTS_MODEL,
                        voice=mw.get("voice") or tts_tool_openai.DEFAULT_MITTWALD_TTS_VOICE, speed=None,
                        # Word form, not ISO — the client forwards it verbatim.

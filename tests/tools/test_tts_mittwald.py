@@ -46,6 +46,7 @@ def captured_speech(monkeypatch):
 
 def test_missing_key_raises(monkeypatch, tmp_path):
     monkeypatch.delenv("MITTWALD_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("MITTWALD_AI_API_KEY", raising=False)
     from tools.tts_tool import _generate_mittwald_tts
     with pytest.raises(ValueError, match="MITTWALD_LLM_API_KEY not set"):
         _generate_mittwald_tts("hi", str(tmp_path / "out.mp3"), {})
@@ -66,6 +67,33 @@ def test_defaults_are_a_hosted_model_and_a_real_voice(tmp_path, captured_speech)
     assert kwargs["response_format"] == "mp3"
     # No language configured → no language field at all, so the server default applies.
     assert "extra_body" not in kwargs
+
+
+def test_provider_wide_base_url_uses_the_env_accessor(monkeypatch, tmp_path, captured_speech):
+    from tools import tts_tool
+    from tools.tts_tool import _generate_mittwald_tts
+
+    monkeypatch.setattr(
+        tts_tool, "get_env_value",
+        lambda name: "https://proxy.example/v1/" if name == "MITTWALD_BASE_URL" else None)
+
+    _generate_mittwald_tts("hallo", str(tmp_path / "out.mp3"), {})
+
+    assert captured_speech["base_url"] == "https://proxy.example/v1"
+
+
+def test_ai_api_key_alias_resolves_after_the_primary(monkeypatch, tmp_path, captured_speech):
+    monkeypatch.delenv("MITTWALD_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("MITTWALD_AI_API_KEY", "alias-key")
+    from tools.tts_tool import _generate_mittwald_tts
+
+    _generate_mittwald_tts("hallo", str(tmp_path / "out.mp3"), {})
+    assert captured_speech["api_key"] == "alias-key"
+
+    monkeypatch.setenv("MITTWALD_LLM_API_KEY", "primary-key")
+    _generate_mittwald_tts("hallo", str(tmp_path / "out.mp3"), {})
+
+    assert captured_speech["api_key"] == "primary-key"
 
 
 def test_iso_language_is_mapped_to_the_word_form(tmp_path, captured_speech):
@@ -146,6 +174,7 @@ class TestMittwaldWiring:
         from tools import tts_tool
 
         monkeypatch.delenv("MITTWALD_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("MITTWALD_AI_API_KEY", raising=False)
         monkeypatch.setattr(tts_tool, "_load_tts_config",
                             lambda: {"provider": "mittwald", "mittwald": {}})
         monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: object)
@@ -163,3 +192,16 @@ class TestMittwaldWiring:
         from tools.tts_tool import _NATIVE_OPUS_PROVIDERS
 
         assert "mittwald" in _NATIVE_OPUS_PROVIDERS
+
+
+def test_requirements_accept_the_alias_key(monkeypatch):
+    """The availability probe has to agree with the handler: a user who set only the alias
+    would otherwise see the provider reported as unavailable."""
+    from tools import tts_tool
+
+    monkeypatch.delenv("MITTWALD_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("MITTWALD_AI_API_KEY", "alias-key")
+    monkeypatch.setattr(tts_tool, "_load_tts_config",
+                        lambda: {"provider": "mittwald", "mittwald": {}})
+    monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: object)
+    assert tts_tool.check_tts_requirements() is True

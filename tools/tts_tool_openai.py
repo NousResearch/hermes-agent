@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     NOUS_MANAGED_PROVIDER, managed_nous_tools_enabled, nous_tool_gateway_unavailable_message,
-    read_selection, resolve_openai_audio_api_key, selection_error)
+    read_selection, resolve_mittwald_api_key, resolve_openai_audio_api_key, selection_error)
 from tools.tts_tool_delivery import _origin, _section
 from tools.tts_tool_providers import _tts_response_format_from_path
 
@@ -204,15 +204,18 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, A
 
 def _generate_mittwald_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio via mittwald AI Hosting (Qwen3-TTS), then delegate to the OpenAI-compatible handler."""
-    api_key = _origin()._resolve_provider_key("MITTWALD_LLM_API_KEY", "mittwald")
+    origin = _origin()
+    api_key = resolve_mittwald_api_key(env_getter=origin.get_env_value)
     if not api_key:
         raise ValueError("MITTWALD_LLM_API_KEY not set. Run `hermes setup` to configure, or set the env var directly.")
     mw_config = _section(tts_config, "mittwald")
     from tools.transcription_common import MITTWALD_STT_BASE_URL
-    base_url = str(mw_config.get("base_url") or MITTWALD_STT_BASE_URL).strip().rstrip("/")
+    base_url = str(
+        mw_config.get("base_url") or origin.get_env_value("MITTWALD_BASE_URL") or MITTWALD_STT_BASE_URL
+    ).strip().rstrip("/")
     language = _mittwald_tts_language(
         mw_config.get("language") or (tts_config.get("language") if isinstance(tts_config, dict) else None))
-    return _origin()._generate_openai_tts(
+    return origin._generate_openai_tts(
         text, output_path, tts_config, api_key=api_key, base_url=base_url,
         model=mw_config.get("model") or DEFAULT_MITTWALD_TTS_MODEL,
         voice=mw_config.get("voice") or DEFAULT_MITTWALD_TTS_VOICE,

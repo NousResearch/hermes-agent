@@ -27,6 +27,7 @@ export interface DirectSttConfig {
   api_key: string
   model: null | string
   language: null | string
+  response_format?: null | string
 }
 
 export interface DirectTtsConfig {
@@ -195,7 +196,7 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
       form.set('model', stt.model)
     }
 
-    form.set('response_format', 'text')
+    form.set('response_format', stt.response_format || 'text')
 
     if (stt.language) {
       form.set('language', stt.language)

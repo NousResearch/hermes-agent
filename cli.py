@@ -2408,7 +2408,7 @@ def save_config_value(key_path: str, value: any) -> bool:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
-        # Same fail-closed cron drift warning as `hermes config set` for every model switch.
+        # Same unpinned-cron notice as `hermes config set` for every model switch.
         from hermes_cli.config import warn_unpinned_cron_jobs_after_model_config_change
 
         warn_unpinned_cron_jobs_after_model_config_change(key_path, value)
@@ -2619,7 +2619,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # Streaming display state
         self._stream_buf = ""  # partial line buffer
         self._reasoning_preview_buf = ""  # coalesces tiny reasoning chunks
-        self._stream_started = self._stream_box_opened = False
+        self._stream_started = self._stream_box_opened = self._stream_box_live = False
+        self._held_status_lines: list[str] = []  # agent status lines parked while a box streams
         # Possible markdown-table lines held until the block ends for wcwidth-aware re-padding.
         self._stream_table_buf: list[str] = []
         self._in_stream_table = False

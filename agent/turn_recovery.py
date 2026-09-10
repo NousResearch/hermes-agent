@@ -10,6 +10,7 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -60,6 +61,17 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
             except Exception:
                 pass
     text = " ".join(parts).lower()
+    # OpenAI Codex Responses reports a tile-patch budget (ceil(w/32)×ceil(h/32))
+    # instead of a pixel ceiling. A square image is the worst case for the budget,
+    # so a per-side cap of isqrt(limit)*32 px keeps isqrt(limit)² ≤ limit — for the
+    # 30000-patch ceiling that is 5536 px. Without this the caller falls back to
+    # 8000 px and a 6000 px image that already exceeds the budget is skipped (#106337).
+    if "patches after processing" in text:
+        match = re.search(r"exceeding the limit of\s*(\d{2,7})", text)
+        if not match:
+            return None
+        max_dimension = math.isqrt(int(match.group(1))) * 32
+        return max_dimension if 512 <= max_dimension <= 8000 else None
     if "image" not in text or "dimension" not in text or "max allowed size" not in text:
         return None
     match = re.search(r"max allowed size(?:\s+for [^:]+)?:\s*(\d{3,5})\s*pixels?", text)
@@ -726,7 +738,15 @@ def nonretryable_client_error_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
         )
-    return _failed_turn_result(_nonretryable_summary, messages, api_call_count, _nonretryable_summary)
+    result = _failed_turn_result(_nonretryable_summary, messages, api_call_count, _nonretryable_summary)
+    # Same verdict fields as the max-retries path: without them the UI descriptor
+    # (agent/error_surface.py) reads a rejected OAuth token as a retryable
+    # "Provider error" and offers Retry instead of a re-login.
+    result.update({
+        "failure_reason": classified.reason.value,
+        "failure_retryable": bool(classified.retryable),
+    })
+    return result
 
 
 _STREAM_DROP_MARKERS = (

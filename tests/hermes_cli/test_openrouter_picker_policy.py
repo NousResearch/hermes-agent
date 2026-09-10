@@ -1,6 +1,10 @@
 """Fixed catalog fixtures exercise profile policy through real picker assembly."""
 
 from types import SimpleNamespace
+import json
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -166,6 +170,75 @@ def test_cache_is_scoped_to_profile_and_policy(profile, tmp_path, monkeypatch):
     finally:
         reset_hermes_home_override(token)
     assert [mid for mid, _ in openrouter_picker_models()] == ["vendor/zero", "vendor/label"]
+
+
+def _cold_catalog(profile, *, live_rows=None, force_refresh=False):
+    """Read the real profile disk cache from a fresh interpreter with synthetic transport."""
+    probe = r'''
+import json, sys
+from hermes_cli import models, model_catalog
+settings = json.loads(sys.argv[1])
+calls = []
+def fetch(*args):
+    calls.append(True)
+    rows = settings["live_rows"]
+    return None if rows is None else (rows, {row["id"]: row for row in rows})
+models._fetch_live_catalog_index = fetch
+models._seed_reasoning_caps = lambda *args: None
+models.get_preferred_silent_default_model = lambda provider: "vendor/zero"
+model_catalog.get_curated_openrouter_models = lambda: settings["curated"]
+print(json.dumps({
+    "raw": models.fetch_openrouter_models(force_refresh=settings["force_refresh"]),
+    "free": models.fetch_openrouter_models(free_only=True, force_refresh=settings["force_refresh"]),
+    "calls": len(calls),
+}))
+'''
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", probe, json.dumps({
+            "live_rows": live_rows, "curated": CURATED, "force_refresh": force_refresh,
+        })],
+        cwd=profile,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+             "HOME": str(profile / "isolated-home"), "HERMES_HOME": str(profile)},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize("legacy_cache", [False, True])
+def test_cold_disk_cache_separates_policy_and_refreshes_legacy_free_view(profile, monkeypatch, legacy_cache):
+    monkeypatch.setattr(models, "get_preferred_silent_default_model", lambda _provider: "vendor/zero")
+    raw = models.fetch_openrouter_models()
+    free = models.fetch_openrouter_models(free_only=True)
+    assert ("vendor/zero", "default") in free  # eligibility cannot be recovered from this label
+    if legacy_cache:
+        path = models._openrouter_catalog_disk_path()
+        payload = json.loads(path.read_text())
+        payload.pop("schema_version")
+        payload.pop("free_curated")
+        path.write_text(json.dumps(payload))
+
+    cold = _cold_catalog(profile, live_rows=LIVE)
+    assert cold["raw"] == [list(row) for row in raw]
+    assert cold["free"] == [list(row) for row in free]
+    assert cold["calls"] == int(legacy_cache)
+
+
+@pytest.mark.parametrize("force_refresh", [False, True])
+@pytest.mark.parametrize("live_rows", [[], LIVE[:1]])
+def test_empty_free_disk_cache_survives_cold_process_and_refresh_outage(
+    profile, monkeypatch, live_rows, force_refresh,
+):
+    monkeypatch.setattr(models, "_fetch_live_catalog_index",
+                        lambda *_a: (live_rows, {row["id"]: row for row in live_rows}))
+    assert models.fetch_openrouter_models(free_only=True) == []
+    raw = models.fetch_openrouter_models()
+
+    cold = _cold_catalog(profile, force_refresh=force_refresh)
+    assert cold["free"] == []
+    assert cold["raw"] == [list(row) for row in raw]
+    assert cold["calls"] == (2 if force_refresh else 0)
 
 
 def _row():

@@ -1385,7 +1385,7 @@ def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapsho
     from hermes_cli.service_manager import detect_service_manager, get_service_manager
     if detect_service_manager() != "s6":
         return None
-    service_name = f"gateway-{_profile_suffix() or 'default'}"
+    service_name = f"gateway-{_current_profile_name()}"
     mgr = get_service_manager()
     service_installed = service_running = False
     try:
@@ -1949,16 +1949,29 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
 
 
 def _profile_suffix() -> str:
-    """Service-name suffix for HERMES_HOME: "" for the default root, the profile name for
-    ``<root>/profiles/<name>``, else a short hash of the path."""
+    """Service-name suffix for HERMES_HOME: "" for the platform-native default home (``~/.hermes``), the
+    profile name for ``<root>/profiles/<name>``, else a short hash of the path.
+
+    The bare name is reserved for the NATIVE default, not ``get_default_hermes_root()``: that helper
+    treats any HERMES_HOME outside ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself",
+    which let a temp-home harness resolve to the default profile's ``hermes-gateway`` unit and uninstall
+    the production gateway. Service names are host-wide identities; only the real default home owns the
+    bare one."""
     import hashlib
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
     home = get_hermes_home().resolve()
-    default = get_default_hermes_root().resolve()
-    if home == default:
+    if home == _get_platform_default_hermes_home().resolve():
         return ""
-    # Fallback: short hash for arbitrary HERMES_HOME paths
-    return _profile_name_from_home(home, default) or hashlib.sha256(str(home).encode()).hexdigest()[:8]
+    name = _profile_name_from_home(home, get_default_hermes_root().resolve())
+    return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]
+
+
+def _current_profile_name() -> str:
+    """Profile id relative to the profile ROOT: ``default`` for the root itself (Docker's ``/opt/data``
+    included), ``<name>`` for ``<root>/profiles/<name>``, else the service hash. s6 slots and the
+    multiplexer ask which PROFILE this is; ``_profile_suffix()`` answers which HOST SERVICE this is."""
+    from hermes_constants import profile_name_for_home
+    return profile_name_for_home(get_hermes_home()) or _profile_suffix()
 
 
 def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:
@@ -3205,8 +3218,24 @@ def _systemd_scope_preamble(
     return system
 
 
+def _systemd_unit_belongs_to_current_home(system: bool = False) -> bool:
+    """False (with a warning) when the installed unit pins a HERMES_HOME other than this process's: the
+    service name then resolved to ANOTHER install's gateway, and stop/disable/unlink would take it down."""
+    _sync_hermes_home_from_systemd_unit(system=system)  # sudo strips HERMES_HOME; adopt the unit's first
+    unit_home = _hermes_home_from_systemd_unit_file(system=system)
+    if unit_home is None or Path(unit_home).expanduser().resolve() == get_hermes_home().resolve():
+        return True
+    print_warning(
+        f"Refusing to remove {get_systemd_unit_path(system=system)}: it runs HERMES_HOME={unit_home}, "
+        f"but this process has HERMES_HOME={get_hermes_home()}"
+    )
+    return False
+
+
 def systemd_uninstall(system: bool = False):
     system = _systemd_scope_preamble("uninstall", system, require_installed=False)
+    if not _systemd_unit_belongs_to_current_home(system):
+        return
     _run_systemctl(["stop", get_service_name()], system=system, check=False, timeout=90)
     _run_systemctl(["disable", get_service_name()], system=system, check=False, timeout=30)
 
@@ -3530,7 +3559,11 @@ def _launchctl_bootstrap(domain: str, plist_path, label: str, *, timeout: int = 
         if exc.returncode != _LAUNCHCTL_BOOTSTRAP_EIO:
             raise
         # Stale registration — bootout the leftover label and bootstrap once more.
-        subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], check=False, timeout=timeout)
+        # Captured: the bootout is best-effort (a drained job may already be
+        # unloaded), so its expected 3/113/125 stderr must not leak to the terminal.
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            check=False, timeout=timeout, **_CAPTURE_TEXT)
         subprocess.run(bootstrap, check=True, timeout=timeout)
 
 
@@ -3912,7 +3945,8 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     # Bootout/bootstrap so launchd reads the new definition; bootstrap can fail silently under load
     # during a drain, and KeepAlive can't revive an unregistered job.
-    subprocess.run(["launchctl", "bootout", target], check=False, timeout=90)
+    # Captured: best-effort (the job may already be unloaded), keep expected noise off the terminal.
+    subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_CAPTURE_TEXT)
     _reload_budget = _launchd_reload_budget()
     # Wait out the old gateway's drain first so the budget isn't burned on guaranteed EIO ("already loaded").
     if gateway_pid is not None and not _wait_for_pid_exit(gateway_pid, _reload_budget):
@@ -3972,7 +4006,10 @@ def launchd_install(force: bool = False):
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{get_launchd_label()}"], check=False, timeout=90)
+    # Captured: uninstalling an already-unloaded job is fine — don't print Boot-out failed: 3.
+    subprocess.run(
+        ["launchctl", "bootout", f"{_launchd_domain()}/{get_launchd_label()}"],
+        check=False, timeout=90, **_CAPTURE_TEXT)
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
@@ -4034,9 +4071,10 @@ def launchd_stop():
     _mark_planned_stop()
     # bootout unloads the definition so KeepAlive doesn't respawn; `hermes gateway start` re-bootstraps.
     try:
-        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+        # Captured: an already-unloaded job (3/113/125) is handled below, so launchctl's own
+        # "Boot-out failed: 3" must not print around the ✓ line; e.stderr stays on the raised error.
+        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90, **_CAPTURE_TEXT)
     except subprocess.CalledProcessError as e:
-        # Job already unloaded (3/113/125) or domain unmanageable (5/125): fall through to the PID-based kill.
         # Job already unloaded (3/113/125), or the domain can't be managed at all (5/125, macOS 26+
         # detached-fallback process, issue #23387) — in both cases just fall through to the PID-based kill
         # below.
@@ -4129,7 +4167,9 @@ def launchd_restart():
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
             else:
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        # Captured: an unloaded job (3/113/125) is the expected case below, which
+        # prints its own ↻ line — and e.stderr feeds the update_cmd failure diagnostic.
+        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90, **_CAPTURE_TEXT)
         _launchd_ok("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
@@ -4139,7 +4179,9 @@ def launchd_restart():
         print("↻ launchd job was unloaded; reloading")
         try:
             # After a drain the job is usually still registered (bootstrap would hit EIO): boot it out first.
-            subprocess.run(["launchctl", "bootout", target], check=False, timeout=90)
+            # Captured: best-effort (the job may already be unloaded after the drain),
+            # so an expected Boot-out failed: 3 must not leak past the ↻ line below.
+            subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_CAPTURE_TEXT)
             plist_path = str(get_launchd_plist_path())
             subprocess.run(["launchctl", "bootstrap", _launchd_domain(), plist_path], check=True, timeout=30)
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
@@ -4277,7 +4319,7 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
     See #97120.
     """
     try:
-        suffix = profile_name if profile_name is not None else _profile_suffix()
+        suffix = profile_name if profile_name is not None else _current_profile_name()
     except Exception:
         return False
     if not suffix or suffix == "default":
@@ -4334,7 +4376,7 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     if force:
         return
     try:
-        suffix = _profile_suffix()
+        suffix = _current_profile_name()
     except Exception:
         return
     if not named_profile_served_by_running_multiplexer():
@@ -5683,8 +5725,7 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
     if detect_service_manager() != "s6":
         return False
     if profile is None:
-        # _profile_suffix() is "" for the default root; the default gateway is gateway-default.
-        profile = _profile_suffix() or "default"
+        profile = _current_profile_name()  # root home (Docker /opt/data included) is gateway-default
     mgr = get_service_manager()
     if action not in ("start", "stop", "restart"):
         return False

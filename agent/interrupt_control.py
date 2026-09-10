@@ -215,8 +215,8 @@ class InterruptControlMixin:
         return True
 
     def steer(self, text: str) -> bool:
-        """Append user text to the LAST tool result once the batch finishes (no interrupt); multiple calls
-        concatenate with newlines. Returns False for empty text."""
+        """Queue user text for delivery as its own user row after the current tool batch finishes (no
+        interrupt); multiple calls concatenate with newlines. Returns False for empty text."""
         if not text or not text.strip():
             return False
         cleaned = text.strip()

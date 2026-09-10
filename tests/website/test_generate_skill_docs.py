@@ -114,3 +114,37 @@ def test_bundled_catalog_explains_missing_local_skills(gen_module):
     result = gen_module.build_catalog_md_bundled([])
     assert "respects local deletions and user edits" in result
     assert "hermes skills reset <name> --restore" in result
+
+
+def test_discover_skills_skips_dependency_dirs(gen_module, tmp_path):
+    """Dependency and venv trees must not contribute ghost skills to docs generation."""
+    source_dir = tmp_path / "skills"
+    real_skill = source_dir / "dev" / "real-skill"
+    real_skill.mkdir(parents=True)
+    (real_skill / "SKILL.md").write_text(
+        "---\n"
+        "name: real-skill\n"
+        "description: Real skill.\n"
+        "---\n"
+        "Body\n",
+        encoding="utf-8",
+    )
+    ghost_skill = source_dir / ".venv" / "Lib" / "site-packages" / "ghost-skill"
+    ghost_skill.mkdir(parents=True)
+    (ghost_skill / "SKILL.md").write_text(
+        "---\n"
+        "name: ghost-skill\n"
+        "description: Ghost skill.\n"
+        "---\n"
+        "Body\n",
+        encoding="utf-8",
+    )
+
+    original_sources = gen_module.SKILL_SOURCES
+    gen_module.SKILL_SOURCES = [("bundled", source_dir)]
+    try:
+        entries = gen_module.discover_skills()
+    finally:
+        gen_module.SKILL_SOURCES = original_sources
+
+    assert [meta["slug"] for meta, _ in entries] == ["real-skill"]

@@ -485,7 +485,19 @@ DEFAULT_CONTEXT_LENGTHS = {
     # and inherit the same 1M window. The ``deepseek`` substring entry
     # below remains as a 128K fallback for older / unknown DeepSeek model
     # ids (e.g. via custom endpoints).
+    #
+    # ``deepseek-flash`` is the production name for DeepSeek-V4.1-Flash,
+    # which superseded the time-boxed beta slug
+    # ``deepseek-v4.1-flash-expires-on-0910`` on 2026-09-10. It is NOT
+    # covered by the ``deepseek-v4-flash`` entry — substring matching never
+    # spans the ``v4-`` infix — so without an explicit entry it drops
+    # through to the 128K ``deepseek`` catch-all while the API actually
+    # serves a 1M window, silently capping token budgeting and compression.
+    # ``deepseek-v4-flash`` and ``deepseek-v4-flash-vision-exp`` remain
+    # accepted aliases that route to V4.1-Flash server-side and bill at the
+    # Flash price.
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+    "deepseek-flash": 1_000_000,
     "deepseek-v4-pro": 1_000_000,
     "deepseek-v4-flash": 1_000_000,
     "deepseek-chat": 1_000_000,

@@ -339,6 +339,7 @@ class TestDefaultContextLengths:
         from unittest.mock import patch as mock_patch
 
         expected_keys = {
+            "deepseek-flash": 1_000_000,
             "deepseek-v4-pro": 1_000_000,
             "deepseek-v4-flash": 1_000_000,
             "deepseek-chat": 1_000_000,
@@ -358,8 +359,11 @@ class TestDefaultContextLengths:
              mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
             cases = [
+                ("deepseek-flash", 1_000_000),
+                ("deepseek/deepseek-flash", 1_000_000),
                 ("deepseek-v4-pro", 1_000_000),
                 ("deepseek-v4-flash", 1_000_000),
+                ("deepseek-v4-flash-vision-exp", 1_000_000),
                 ("deepseek/deepseek-v4-pro", 1_000_000),
                 ("deepseek/deepseek-v4-flash", 1_000_000),
                 ("deepseek-chat", 1_000_000),

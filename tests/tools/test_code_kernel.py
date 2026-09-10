@@ -339,7 +339,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         used to see proc=None as 'dead', replace the registry entry, and
         orphan the winner's process — 110 live kernels under a 4-capped
         process (Sep 2026). Every kernel process must stay registry-owned."""
-        import subprocess
+        import psutil
         import threading
 
         results = []
@@ -353,11 +353,10 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
                 t.join()
         self.assertEqual([r["status"] for r in results], ["success"] * 6)
         self.assertEqual(len(_KERNELS), 1)
-        live = subprocess.run(
-            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-        self.assertEqual(live, "1")
+        # Inspect real child processes; BSD pgrep has no GNU-only -c flag.
+        live = [child.pid for child in psutil.Process().children()
+                if "hermes_kernel_runner" in " ".join(child.cmdline())]
+        self.assertEqual(len(live), 1)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):

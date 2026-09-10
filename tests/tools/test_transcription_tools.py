@@ -383,9 +383,11 @@ class TestTranscribeLocalExtended:
         assert mock_whisper_cls.call_count == 1
 
     def test_config_device_and_compute_type_passed_to_whisper(self, tmp_path):
-        """User-configured device and compute_type should be forwarded to WhisperModel.
+        """User-configured device and compute_type reach the platform-aware loader.
 
         Regression test for #8319: these values were hardcoded to "auto".
+        The loader may apply native safety constraints; this test checks
+        configuration forwarding without pretending to run on another host.
         """
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
@@ -398,7 +400,7 @@ class TestTranscribeLocalExtended:
 
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
-        mock_whisper_cls = MagicMock(return_value=mock_model)
+        mock_loader = MagicMock(return_value=mock_model)
 
         fake_config = {
             "local": {
@@ -408,7 +410,7 @@ class TestTranscribeLocalExtended:
         }
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._load_local_whisper_model", mock_loader), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None), \
              patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
@@ -416,7 +418,7 @@ class TestTranscribeLocalExtended:
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
-        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+        mock_loader.assert_called_once_with("base", device="cpu", compute_type="float32")
 
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):

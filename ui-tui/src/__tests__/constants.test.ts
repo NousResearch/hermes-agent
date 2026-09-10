@@ -29,7 +29,16 @@ describe('constants', () => {
   it('documents Ctrl/Cmd+L as non-destructive redraw', () => {
     const hotkey = HOTKEYS.find(([k]) => k.endsWith('+L'))
     expect(hotkey).toBeDefined()
-    expect(hotkey?.[1]).toBe('redraw / repaint')
+    expect(hotkey?.[1]).toBe('redraw / repaint (in place; tmux-scroll-safe)')
+  })
+
+  it('documents Ctrl/Cmd+T / /hardreset as the strong screen reset', () => {
+    const hotkey = HOTKEYS.find(([k]) => k.includes('+T'))
+    expect(hotkey).toBeDefined()
+    expect(hotkey?.[0]).toContain('/hardreset')
+    expect(hotkey?.[1]).toMatch(/hard-reset/i)
+    expect(hotkey?.[1]).toContain('terminal/desktop only')
+    expect(hotkey?.[1]).toContain('browser fallback')
   })
 
   it('TOOL_VERBS maps known tools (verb-only, no emoji)', () => {

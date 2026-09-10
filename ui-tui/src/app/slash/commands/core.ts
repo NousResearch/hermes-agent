@@ -1,4 +1,4 @@
-import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
+import { forceRedraw, hardResetScreen, type MouseTrackingMode } from '@hermes/ink'
 
 import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
@@ -222,6 +222,23 @@ export const coreCommands: SlashCommand[] = [
     run: (_arg, ctx) => {
       forceRedraw(process.stdout)
       ctx.transcript.sys('ui redrawn')
+    }
+  },
+
+  {
+    // The strongest PAINT recovery: /redraw repaints in place (resize-grade
+    // erase now), but when the terminal's own alt-screen buffer is polluted —
+    // glyphs migrated to wrong columns, two frames composited, corruption
+    // that recurs every few seconds and only a manual window resize clears —
+    // an in-buffer erase cannot win. /hardreset sends ?1049l before ?1049h,
+    // forcing the terminal to discard and allocate the alternate buffer. The
+    // gateway session are untouched (no turn teardown); only the terminal
+    // screen buffer and the renderer's diff model reset.
+    help: 'hard-reset the screen buffer (browser fallback for the terminal/desktop Ctrl+T shortcut)',
+    name: 'hardreset',
+    run: (_arg, ctx) => {
+      hardResetScreen(process.stdout)
+      ctx.transcript.sys('screen hard-reset')
     }
   },
 

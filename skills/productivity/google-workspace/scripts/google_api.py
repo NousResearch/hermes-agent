@@ -136,6 +136,19 @@ def _headers_dict(msg: dict) -> dict[str, str]:
     }
 
 
+def _get_profile_email() -> str:
+    """Fetch the authenticated Gmail user's email address from the API profile."""
+    if _gws_binary():
+        result = _run_gws(
+            ["gmail", "users", "getProfile"],
+            params={"userId": "me"},
+        )
+        return result.get("emailAddress", "")
+    service = build_service("gmail", "v1")
+    profile = service.users().getProfile(userId="me").execute()
+    return profile.get("emailAddress", "")
+
+
 def _extract_message_body(msg: dict) -> str:
     body = ""
     payload = msg.get("payload", {})
@@ -316,49 +329,75 @@ def gmail_get(args):
 
 
 def gmail_send(args):
+    # --- Guard: body must have real content ---
+    body = (args.body or "").strip()
+    if not body:
+        print(json.dumps({"status": "failed", "error": "body cannot be empty"}, indent=2))
+        sys.exit(1)
+
+    # --- Determine sender — fail closed if unresolvable ---
+    from_addr = args.from_header.strip() if args.from_header else ""
+    if not from_addr:
+        from_addr = _get_profile_email()
+    if not from_addr:
+        print(json.dumps({"status": "failed", "error": "could not determine sender (set --from or check authentication)"}, indent=2))
+        sys.exit(1)
+
     if _gws_binary():
-        message = MIMEText(args.body, "html" if args.html else "plain")
+        message = MIMEText(body, "html" if args.html else "plain")
         message["To"] = args.to
         message["Subject"] = args.subject
+        message["From"] = from_addr
         if args.cc:
             message["Cc"] = args.cc
-        if args.from_header:
-            message["From"] = args.from_header
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        body = {"raw": raw}
+        body_payload = {"raw": raw}
         if args.thread_id:
-            body["threadId"] = args.thread_id
+            body_payload["threadId"] = args.thread_id
 
         result = _run_gws(
             ["gmail", "users", "messages", "send"],
             params={"userId": "me"},
-            body=body,
+            body=body_payload,
         )
-        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", ""), "from": from_addr}, indent=2))
         return
 
     service = build_service("gmail", "v1")
-    message = MIMEText(args.body, "html" if args.html else "plain")
+    message = MIMEText(body, "html" if args.html else "plain")
     message["To"] = args.to
     message["Subject"] = args.subject
+    message["From"] = from_addr
     if args.cc:
         message["Cc"] = args.cc
-    if args.from_header:
-        message["From"] = args.from_header
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    body = {"raw": raw}
+    body_payload = {"raw": raw}
 
     if args.thread_id:
-        body["threadId"] = args.thread_id
+        body_payload["threadId"] = args.thread_id
 
-    result = service.users().messages().send(userId="me", body=body).execute()
-    print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+    result = service.users().messages().send(userId="me", body=body_payload).execute()
+    print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", ""), "from": from_addr}, indent=2))
 
 
 
 def gmail_reply(args):
+    # --- Guard: body must have real content ---
+    body = (args.body or "").strip()
+    if not body:
+        print(json.dumps({"status": "failed", "error": "body cannot be empty"}, indent=2))
+        sys.exit(1)
+
+    # --- Determine sender — fail closed if unresolvable ---
+    from_addr = args.from_header.strip() if args.from_header else ""
+    if not from_addr:
+        from_addr = _get_profile_email()
+    if not from_addr:
+        print(json.dumps({"status": "failed", "error": "could not determine sender (set --from or check authentication)"}, indent=2))
+        sys.exit(1)
+
     if _gws_binary():
         original = _run_gws(
             ["gmail", "users", "messages", "get"],
@@ -375,11 +414,10 @@ def gmail_reply(args):
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
 
-        message = MIMEText(args.body)
+        message = MIMEText(body, "html" if getattr(args, 'html', False) else "plain")
         message["To"] = headers.get("from", "")
         message["Subject"] = subject
-        if args.from_header:
-            message["From"] = args.from_header
+        message["From"] = from_addr
         if headers.get("message-id"):
             message["In-Reply-To"] = headers["message-id"]
             message["References"] = headers["message-id"]
@@ -390,7 +428,7 @@ def gmail_reply(args):
             params={"userId": "me"},
             body={"raw": raw, "threadId": original["threadId"]},
         )
-        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", ""), "from": from_addr}, indent=2))
         return
 
     service = build_service("gmail", "v1")
@@ -404,20 +442,19 @@ def gmail_reply(args):
     if not subject.startswith("Re:"):
         subject = f"Re: {subject}"
 
-    message = MIMEText(args.body)
+    message = MIMEText(body, "html" if getattr(args, 'html', False) else "plain")
     message["To"] = headers.get("from", "")
     message["Subject"] = subject
-    if args.from_header:
-        message["From"] = args.from_header
+    message["From"] = from_addr
     if headers.get("message-id"):
         message["In-Reply-To"] = headers["message-id"]
         message["References"] = headers["message-id"]
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    body = {"raw": raw, "threadId": original["threadId"]}
+    body_payload = {"raw": raw, "threadId": original["threadId"]}
 
-    result = service.users().messages().send(userId="me", body=body).execute()
-    print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+    result = service.users().messages().send(userId="me", body=body_payload).execute()
+    print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", ""), "from": from_addr}, indent=2))
 
 
 
@@ -1082,6 +1119,7 @@ def main():
     p.add_argument("message_id", help="Message ID to reply to")
     p.add_argument("--body", required=True)
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
+    p.add_argument("--html", action="store_true", help="Send body as HTML")
     p.set_defaults(func=gmail_reply)
 
     p = gmail_sub.add_parser("labels")

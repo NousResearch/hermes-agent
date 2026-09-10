@@ -24,7 +24,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync, appendFileSync, statSync, renameSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -114,6 +114,54 @@ const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+// Durable inbound-message log (JSONL). Appended for every message queued to
+// the gateway so message *content* survives bridge restarts and is
+// retrievable later. Path: <whatsapp dir>/inbound.jsonl — a sibling of the
+// session dir. Disable with WHATSAPP_INBOUND_LOG=off (or ''/0/false/no).
+const INBOUND_LOG = path.join(path.dirname(SESSION_DIR), 'inbound.jsonl');
+const INBOUND_LOG_ENABLED = !['off', '0', 'false', 'no', ''].includes(
+  String(process.env.WHATSAPP_INBOUND_LOG || 'on').toLowerCase()
+);
+// Rotate at a configurable size cap (default 10MB) so the file never grows
+// without bound: the current file is renamed to `.1` and a fresh one started.
+const INBOUND_LOG_MAX_BYTES = parseInt(
+  process.env.WHATSAPP_INBOUND_LOG_MAX_BYTES || String(10 * 1024 * 1024),
+  10
+);
+// Log the first append failure (full disk / bad permissions / bad path) so an
+// operator is alerted that the durable log is not being written, then stay
+// quiet on subsequent failures to avoid per-message noise.
+let inboundLogWarned = false;
+
+function appendInboundLog(event) {
+  if (!INBOUND_LOG_ENABLED) return;
+  try {
+    const stats = statSync(INBOUND_LOG, { throwIfNoEntry: false });
+    if (stats && stats.size >= INBOUND_LOG_MAX_BYTES) {
+      try {
+        renameSync(INBOUND_LOG, INBOUND_LOG + '.1');
+      } catch (e) {
+        console.warn('[whatsapp] inbound log rotation failed:', e.message);
+      }
+    }
+    appendFileSync(INBOUND_LOG, JSON.stringify({
+      ts: Date.now(),
+      chatId: event.chatId || null,
+      senderId: event.senderId || null,
+      senderName: event.senderName || null,
+      fromOwner: !!event.fromOwner,
+      body: event.body || null,
+      hasMedia: !!event.hasMedia,
+      mediaType: event.mediaType || null,
+      messageId: event.messageId || null,
+    }) + '\n', 'utf8');
+  } catch (e) {
+    if (!inboundLogWarned) {
+      inboundLogWarned = true;
+      console.warn('[whatsapp] failed to append inbound log:', e.message);
+    }
+  }
+}
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -740,6 +788,7 @@ async function startSocket() {
 
       messageStore.remember(msg);
       messageQueue.push(event);
+      appendInboundLog(event);
       emitDebugEvent({
         stage: 'queued',
         chatId: redactWhatsAppId(chatId),

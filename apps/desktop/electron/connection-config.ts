@@ -921,6 +921,22 @@ function authModeFromStatus(statusBody) {
 }
 
 /**
+ * Classify a backend's runtime from its public `/api/status` body.
+ *
+ * Validate-at-the-boundary: only the two exact literals the gateway declares are
+ * accepted. A missing field (a gateway older than `runtime_kind`), an unrecognised
+ * value, or a non-object all yield `undefined` — meaning "unknown", which renders no
+ * indicator. Never infer 'native' from absence: a wrong badge is worse than none.
+ *
+ * Returns 'container' | 'native' | undefined.
+ */
+function runtimeKindFromStatus(statusBody) {
+  const kind = statusBody && typeof statusBody === 'object' ? statusBody.runtime_kind : undefined
+
+  return kind === 'container' || kind === 'native' ? kind : undefined
+}
+
+/**
  * Resolve the effective auth mode for a coerce/save operation.
  * Explicit input wins; otherwise inherit the saved value; default 'token'.
  * Returns 'oauth' | 'token'.
@@ -1049,6 +1065,7 @@ export {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  runtimeKindFromStatus,
   savedProfileSsh,
   tokenPreview,
   translateSelfProfileQuery,

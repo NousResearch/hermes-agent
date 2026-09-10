@@ -122,6 +122,7 @@ import {
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
+  runtimeKindFromStatus,
   savedProfileSsh,
   tokenPreview,
   withTransientRetries
@@ -9587,13 +9588,14 @@ function sanitizeRegistryConnection(entry) {
   // Last-known stable backend identity (from roster enumeration / Test) so
   // Settings can hint "Same backend as <label>" on connections that are two
   // addresses for one box. Display-only; absent until a probe has seen it.
-  const knownInstallId = connectionInstallIds.get(entry.id)?.id
+  const known = connectionInstallIds.get(entry.id)
 
   return {
     ...rest,
     tokenSet: Boolean(decrypted),
     tokenPreview: tokenPreview(decrypted),
-    ...(knownInstallId ? { installId: knownInstallId } : {}),
+    ...(known?.id ? { installId: known.id } : {}),
+    ...(known?.runtimeKind ? { runtimeKind: known.runtimeKind } : {}),
     // Header VALUES are secrets (Cloudflare Access client secrets etc.) and
     // never cross the IPC boundary — the renderer only needs the names to
     // render the edit form.
@@ -15558,20 +15560,29 @@ const sshRosterCache = new Map<string, string[]>()
 const sshInventoryAttemptedAt = new Map<string, number>()
 const SSH_INVENTORY_RETRY_MS = 60_000
 
-// Stable backend identity per registered connection: the `install_id` its
-// /api/status reports (absent on backends older than the field). Enumeration
-// runs on the ~5s Bot Mode roster poll and only hits /api/profiles, so the
-// status probe is cached per connection with a TTL to avoid doubling roster
-// traffic; the Test button refreshes it eagerly. A missing id simply bypasses
-// the same-backend roster collapse — fully backward compatible.
-const connectionInstallIds = new Map<string, { id?: string; ts: number }>()
+// Stable backend FACTS per registered connection, both read off the same
+// /api/status probe: the `install_id` it reports, and its `runtime_kind`
+// (container vs native). Both are absent on backends older than their field.
+// Enumeration runs on the ~5s Bot Mode roster poll and only hits /api/profiles,
+// so the status probe is cached per connection with a TTL to avoid doubling
+// roster traffic; the Test button refreshes it eagerly. A missing id simply
+// bypasses the same-backend roster collapse — fully backward compatible.
+const connectionInstallIds = new Map<
+  string,
+  { id?: string; runtimeKind?: 'container' | 'native'; ts: number }
+>()
+
 const INSTALL_ID_TTL_MS = 5 * 60_000
 const INSTALL_ID_NEGATIVE_TTL_MS = 60_000
 
 function rememberConnectionInstallId(connectionId: string, statusBody: any) {
   const raw = statusBody && typeof statusBody === 'object' ? statusBody.install_id : undefined
   const id = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined
-  connectionInstallIds.set(connectionId, { id, ts: Date.now() })
+  connectionInstallIds.set(connectionId, {
+    id,
+    runtimeKind: runtimeKindFromStatus(statusBody),
+    ts: Date.now(),
+  })
 
   return id
 }
@@ -15595,7 +15606,14 @@ async function probeConnectionInstallId(connectionId: string, descriptor: any): 
       return cached.id
     }
 
-    connectionInstallIds.set(connectionId, { id: undefined, ts: Date.now() })
+    // Cache the id MISS, but carry any known runtimeKind forward: both facts are
+    // static per backend, and a backend whose install_id is unpersistable would
+    // otherwise lose its runtime kind on every probe.
+    connectionInstallIds.set(connectionId, {
+      id: undefined,
+      runtimeKind: cached?.runtimeKind,
+      ts: Date.now(),
+    })
 
     return undefined
   }

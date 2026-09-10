@@ -746,6 +746,12 @@ export function ConnectionsRegistrySection() {
                   {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
                   {isPrimary && <Pill>{s.primaryPill}</Pill>}
                   {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
+                  {conn.runtimeKind === 'container' && (
+                    <Pill data-runtime-kind="container">{s.runtimeContainerPill}</Pill>
+                  )}
+                  {conn.runtimeKind === 'native' && (
+                    <Pill data-runtime-kind="native">{s.runtimeNativePill}</Pill>
+                  )}
                 </span>
               }
             />

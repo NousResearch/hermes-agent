@@ -68,6 +68,48 @@ afterEach(() => {
 })
 
 describe('ConnectionsRegistrySection', () => {
+  it('renders a runtime pill only for backends that declared one', async () => {
+    // 'homelab' declared container; 'local' declared nothing (an older backend, or one
+    // never probed). Absence must render NO pill — never a confident, wrong "Native".
+    list.mockResolvedValue({
+      ...registry,
+      connections: [
+        registry.connections[0],
+        { ...registry.connections[1], runtimeKind: 'container' as const }
+      ]
+    })
+
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+    expect(screen.getByText('Container')).toBeTruthy()
+    expect(screen.queryByText('Native')).toBeNull()
+  })
+
+  it('renders the native pill when a backend declares native', async () => {
+    list.mockResolvedValue({
+      ...registry,
+      connections: [
+        registry.connections[0],
+        { ...registry.connections[1], runtimeKind: 'native' as const }
+      ]
+    })
+
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+    expect(screen.getByText('Native')).toBeTruthy()
+    expect(screen.queryByText('Container')).toBeNull()
+  })
+
+  it('renders no runtime pill when nothing declared one', async () => {
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+    expect(screen.queryByText('Container')).toBeNull()
+    expect(screen.queryByText('Native')).toBeNull()
+  })
+
   it('distinguishes the current connection from the registry primary', async () => {
     render(<ConnectionsRegistrySection />)
 

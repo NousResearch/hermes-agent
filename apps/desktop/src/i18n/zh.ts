@@ -1018,6 +1018,8 @@ export const zh: Translations = {
       currentPill: '当前',
       primaryPill: '主连接',
       managedPill: '应用管理',
+      runtimeContainerPill: '容器',
+      runtimeNativePill: '原生',
       addConnection: '添加连接',
       editConnection: '编辑',
       removeConnection: '移除',

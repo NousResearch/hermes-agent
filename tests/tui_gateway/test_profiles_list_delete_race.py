@@ -1039,38 +1039,52 @@ def test_interactive_delete_confirmation_does_not_hold_lifecycle_lock(
     profile_dir = home / "profiles" / "worker"
     profile_dir.mkdir(parents=True)
 
-    class MustNotEnter:
-        def __enter__(self):
-            raise AssertionError("profile lifecycle lock acquired before confirmation")
+    def cancel_without_lease(_prompt: str) -> str:
+        assert not getattr(profile_lifecycle._PROFILE_MUTATION_LOCAL, "depth", 0)
+        return "cancel"
 
-        def __exit__(self, *_args) -> None:
-            return None
-
-    monkeypatch.setattr(
-        profile_lifecycle,
-        "_cross_process_profile_mutation_lock",
-        MustNotEnter,
-    )
-    monkeypatch.setattr("builtins.input", lambda _prompt: "cancel")
+    monkeypatch.setattr("builtins.input", cancel_without_lease)
 
     assert profiles.delete_profile("worker", yes=False) == profile_dir
     assert profile_dir.is_dir()
 
 
+@pytest.mark.parametrize("with_marker", (False, True), ids=("legacy", "marked"))
 def test_delete_confirmation_never_deletes_replacement_generation(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
+    with_marker: bool,
 ) -> None:
+    from types import SimpleNamespace
+    from hermes_cli.profile_incarnation import write_fresh_profile_incarnation
+
     profile_dir = home / "profiles" / "worker"
     profile_dir.mkdir(parents=True)
     (profile_dir / "old-generation").write_text("old", encoding="utf-8")
+    if with_marker:
+        write_fresh_profile_incarnation(profile_dir)
+    original_stat = Path.stat
+    first_stat = profile_dir.stat()
+
+    def reused_stat(path, *args, **kwargs):
+        value = original_stat(path, *args, **kwargs)
+        if path != profile_dir:
+            return value
+        fields = {name: getattr(value, name) for name in dir(value) if name.startswith("st_")}
+        fields.update(
+            st_dev=first_stat.st_dev, st_ino=first_stat.st_ino, st_ctime_ns=first_stat.st_ctime_ns,
+        )
+        return SimpleNamespace(**fields)
 
     def replace_then_confirm(_prompt: str) -> str:
         shutil.rmtree(profile_dir)
         profile_dir.mkdir()
         (profile_dir / "replacement-generation").write_text("new", encoding="utf-8")
+        if with_marker:
+            write_fresh_profile_incarnation(profile_dir)
         return "worker"
 
+    monkeypatch.setattr(Path, "stat", reused_stat)
     monkeypatch.setattr("builtins.input", replace_then_confirm)
 
     with pytest.raises(RuntimeError, match="changed while deletion was being confirmed"):

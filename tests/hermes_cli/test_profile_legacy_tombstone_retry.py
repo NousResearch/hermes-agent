@@ -71,6 +71,37 @@ def test_failed_retry_preserves_existing_fence(legacy_profile, monkeypatch, cont
     assert not (profile / PROFILE_INCARNATION_FILENAME).exists()
 
 
+def test_interactive_legacy_delete_backfills_before_unlocked_confirmation(legacy_profile, monkeypatch):
+    from hermes_cli.profile_incarnation import read_profile_incarnation
+
+    def confirm(_prompt):
+        assert read_profile_incarnation(legacy_profile) is not None
+        assert not getattr(profile_lifecycle._PROFILE_MUTATION_LOCAL, "depth", 0)
+        return "worker"
+
+    monkeypatch.setattr("builtins.input", confirm)
+    assert profiles.delete_profile("worker", yes=False) == legacy_profile
+    assert not legacy_profile.exists()
+
+
+@pytest.mark.parametrize("contents", ["", "deleted\n"])
+def test_interactive_tokenless_fence_requires_explicit_retry(legacy_profile, monkeypatch, contents):
+    marker = profile_lifecycle.mark_profile_deleting(legacy_profile)
+    marker.write_text(contents, encoding="utf-8")
+
+    def unexpected_prompt(_prompt):
+        pytest.fail("A tokenless fence cannot support an interactive generation check")
+
+    monkeypatch.setattr("builtins.input", unexpected_prompt)
+    with pytest.raises(RuntimeError, match="retry deletion with --yes"):
+        profiles.delete_profile("worker", yes=False)
+
+    assert marker.read_text(encoding="utf-8") == contents
+    assert not (legacy_profile / PROFILE_INCARNATION_FILENAME).exists()
+    assert profiles.delete_profile("worker", yes=True) == legacy_profile
+    assert not legacy_profile.exists()
+
+
 @pytest.mark.parametrize("contents", ["not-a-generation\n", "deleted-but-malformed\n", "a" * 31 + "\n"])
 def test_malformed_token_tombstone_is_not_a_legacy_bypass(legacy_profile, contents):
     marker = profile_lifecycle.mark_profile_deleting(legacy_profile)

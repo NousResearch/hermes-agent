@@ -29,6 +29,7 @@ import {
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
+import { useRef } from 'react'
 
 import { $boardSlug, bindApi, boardKey, fetchBoard } from './api'
 import { KanbanBoardPage } from './board'
@@ -36,11 +37,31 @@ import { KANBAN_LOCALES } from './i18n'
 import { $newTaskLane, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
-// clicks through to the board. Shares the board query (one cache, one poll with
+// toggles the board. Shares the board query (one cache, one poll with
 // the page); hidden when nothing is in flight (or unloaded).
-function KanbanCount() {
+export function KanbanCount() {
   const k = useKanban()
   const slug = useValue($boardSlug)
+
+  const previousRoute = useRef({
+    connectionId: host.state.connectionId.get(),
+    path: '#/',
+    profile: host.state.profile.get()
+  })
+
+  const toggleBoard = () => {
+    const profile = host.state.profile.get()
+    const connectionId = host.state.connectionId.get()
+    const path = window.location.hash || '#/'
+
+    if (path.split('?')[0] === '#/kanban') {
+      const previous = previousRoute.current
+      host.navigate(previous.profile === profile && previous.connectionId === connectionId ? previous.path : '/')
+    } else {
+      previousRoute.current = { connectionId, path, profile }
+      host.navigate('/kanban')
+    }
+  }
 
   // Socket-invalidated like the page (same cache); slow socketless heartbeat.
   const { data: board } = useQuery({
@@ -67,7 +88,7 @@ function KanbanCount() {
           'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors',
           'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
         )}
-        onClick={() => host.navigate('/kanban')}
+        onClick={toggleBoard}
         type="button"
       >
         <Codicon name="project" size="0.7rem" />

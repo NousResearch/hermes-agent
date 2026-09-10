@@ -50,16 +50,32 @@ def _make_cli(**kwargs):
         "prompt_toolkit.formatted_text": MagicMock(),
         "prompt_toolkit.auto_suggest": MagicMock(),
     }
-    with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
-        "os.environ", clean_env, clear=False
-    ):
+    try:
+        with (
+            patch.dict(sys.modules, prompt_toolkit_stubs),
+            patch.dict("os.environ", clean_env, clear=False),
+        ):
+            import cli as _cli_mod
+
+            _cli_mod = importlib.reload(_cli_mod)
+            with (
+                patch.object(_cli_mod, "get_tool_definitions", return_value=[]),
+                patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}),
+            ):
+                return _cli_mod.HermesCLI(**kwargs)
+    finally:
+        # The reload above re-executed `cli.py`'s top-level
+        # `from prompt_toolkit import ... as _pt_print`-style imports against
+        # the MagicMock stubs. `patch.dict(sys.modules, ...)` restores the
+        # real `prompt_toolkit` on exit, but does nothing about the bindings
+        # `cli`'s module dict already captured — those stay MagicMocks and
+        # leak into every other test that does `from cli import ...`
+        # afterward (e.g. tests/cli/test_resume_quiet_stderr.py, whose
+        # stdout assertions then silently see nothing printed). Reload once
+        # more, now against the real modules, to restore genuine bindings.
         import cli as _cli_mod
 
-        _cli_mod = importlib.reload(_cli_mod)
-        with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
-            _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
-        ):
-            return _cli_mod.HermesCLI(**kwargs)
+        importlib.reload(_cli_mod)
 
 
 @pytest.fixture(scope="module")

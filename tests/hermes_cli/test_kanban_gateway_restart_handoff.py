@@ -21,9 +21,9 @@ def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
     profile.mkdir(parents=True)
     root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
     profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
 
     workspace = tmp_path / "candidate-worktree"
     workspace.mkdir()
@@ -83,7 +83,10 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert captured_cmd[unit_index + 1] == "hermes-worker-kanban-t_candidate_restart-run-23"
     assert "MemoryMax=536870912" in captured_cmd
     separator = captured_cmd.index("--")
-    assert captured_cmd[separator + 1 : separator + 4] == ["hermes", "-p", "coder"]
+    assert captured_cmd[separator + 1 :] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert task.assignee is not None
+    assert captured_env["HERMES_PROFILE"] == task.assignee
+    assert captured_env["HERMES_HOME"] == str(workspace.parent / ".hermes" / "profiles" / task.assignee)
     assert captured_cwd == str(workspace)
     assert captured_env["HERMES_KANBAN_TASK"] == task.id
     assert captured_env["HERMES_KANBAN_RUN_ID"] == "23"
@@ -138,7 +141,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     )
 
     assert kbd._default_spawn(task, str(workspace)) == 4243
-    assert captured_cmd[:3] == ["hermes", "-p", "coder"]
+    assert captured_cmd == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
 
 
 @pytest.mark.linux_only
@@ -171,7 +174,11 @@ def test_real_user_systemd_scope_preserves_worker_context(
         "'terminal_cwd': os.environ.get('TERMINAL_CWD'), "
         "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); time.sleep(0.5)"
     )
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: [sys.executable, "-c", script, str(receipt)])
+    # Replace only the worker payload; keep real scope creation and env handoff.
+    monkeypatch.setattr(
+        kbd, "_worker_argv",
+        lambda task, profile_arg, hermes_home: [sys.executable, "-c", script, str(receipt)],
+    )
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
 

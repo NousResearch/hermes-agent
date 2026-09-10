@@ -49,7 +49,15 @@ def _resolve_peer(agent: str) -> Optional[dict]:
 
 
 def _auth_header(auth: dict) -> dict:
-    return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
+    # `token_env` names an environment variable holding the bearer token, so a
+    # peer's credential does not have to sit inline in config.yaml. Deployments
+    # that render config from a template or keep it in a mounted volume would
+    # otherwise have a secret at rest in that file. Inline `token` still wins
+    # when both are set.
+    if not auth or auth.get("type") != "bearer":
+        return {}
+    token = auth.get("token") or os.getenv(str(auth.get("token_env") or ""), "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:

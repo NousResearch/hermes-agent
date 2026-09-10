@@ -356,6 +356,8 @@ class TestDefaultContextLengths:
         expected_keys = {
             "deepseek-v4-pro": 1_000_000,
             "deepseek-v4-flash": 1_000_000,
+            "deepseek-v4.1-flash": 1_000_000,
+            "deepseek-flash": 1_000_000,
             "deepseek-chat": 1_000_000,
             "deepseek-reasoner": 1_000_000,
         }
@@ -375,8 +377,11 @@ class TestDefaultContextLengths:
             cases = [
                 ("deepseek-v4-pro", 1_000_000),
                 ("deepseek-v4-flash", 1_000_000),
+                ("deepseek-v4.1-flash", 1_000_000),
+                ("deepseek-flash", 1_000_000),
                 ("deepseek/deepseek-v4-pro", 1_000_000),
                 ("deepseek/deepseek-v4-flash", 1_000_000),
+                ("deepseek/deepseek-v4.1-flash", 1_000_000),
                 ("deepseek-chat", 1_000_000),
                 ("deepseek-reasoner", 1_000_000),
             ]

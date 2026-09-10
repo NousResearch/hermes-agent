@@ -108,6 +108,8 @@ class TestDeepSeekModelGating:
             "deepseek-v4-flash",
             "deepseek-v4-future-variant",
             "DEEPSEEK-V4-PRO",  # case-insensitive
+            "deepseek/deepseek-v4-pro",  # aggregator spelling reaches the profile
+            "deepseek/deepseek-v4.1-flash",
         ],
     )
     def test_thinking_capable_models_emit_thinking(self, deepseek_profile, model):
@@ -142,6 +144,25 @@ class TestDeepSeekFullKwargsIntegration:
     "enabled"}}}``.  Confirm the transport produces that exact shape when wired
     through the registered DeepSeek profile.
     """
+
+    @pytest.mark.parametrize("model", ["deepseek-flash", "deepseek/deepseek-flash"])
+    @pytest.mark.parametrize("reasoning_config", [None, {"enabled": False}, {"enabled": True, "effort": "high"}])
+    def test_flash_alias_preserves_thinking_controls(self, deepseek_profile, model, reasoning_config):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        transport = ChatCompletionsTransport()
+        context = dict(
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=deepseek_profile,
+            reasoning_config=reasoning_config,
+            base_url=deepseek_profile.base_url,
+            provider_name=deepseek_profile.name,
+        )
+        expected = transport.build_kwargs(model="deepseek-v4-flash", **context)
+        actual = transport.build_kwargs(model=model, **context)
+        expected["model"] = model
+        assert actual == expected
 
     def test_full_kwargs_match_live_wire_shape(self, deepseek_profile):
         from agent.transports.chat_completions import ChatCompletionsTransport
@@ -198,4 +219,3 @@ class TestDeepSeekAuxModel:
     def test_consumer_api_returns_deepseek_v4_flash(self):
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert _get_aux_model_for_provider("deepseek") == "deepseek-v4-flash"
-

@@ -104,6 +104,12 @@ class TestDeepseekVSeriesPassThrough:
     """
 
 
+    @pytest.mark.parametrize("model", ["deepseek-flash", "DeepSeek-Flash", "deepseek/deepseek-flash"])
+    def test_flash_preserves_native_identity(self, model):
+        native = model.rsplit("/", 1)[-1].lower()
+        assert normalize_model_for_provider(model, "deepseek") == native
+        assert normalize_model_for_provider(native, "deepseek") == native
+
     def test_deepseek_provider_preserves_v4_pro(self):
         """End-to-end via normalize_model_for_provider — user selecting
         V4 Pro must reach DeepSeek's API as V4 Pro, not V3 alias."""
@@ -186,4 +192,3 @@ class TestIssue78796NvidiaPrefixRepair:
             normalize_model_for_provider("claude-sonnet-4.6", "openrouter")
             == "anthropic/claude-sonnet-4.6"
         )
-

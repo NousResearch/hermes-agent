@@ -490,6 +490,11 @@ export const en: Translations = {
         gitCloneLabel: 'Git clone URL',
         enableAgent: 'Enable agent plugin after install',
         forceReinstall: 'Force reinstall (replace if already installed)',
+        pinToCommit: 'Pin to commit (optional)',
+        pinToCommitPlaceholder: 'Full 40-character commit SHA',
+        pinToCommitHint:
+          'Everyone installing this SHA gets the same code; the plugin then refuses updates until re-pinned. Leave empty for the latest commit.',
+        pinToCommitInvalid: 'Must be a full 40-character commit SHA (branches and tags are not accepted).',
         install: 'Install',
         installing: 'Installing…',
         probing: 'Inspecting repository…',
@@ -1520,6 +1525,9 @@ export const en: Translations = {
         'Hit "+ Add to this Agent" on any plugin — reviewed entries install at their pinned commit into the selected profile. Bundled agent+desktop plugins offer both halves.',
       alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
       catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
+      pinnedProvenance: (sha: string) =>
+        `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
+      pinnedBadge: (sha: string) => `pinned @ ${sha}`,
       tierOfficial: 'official',
       tierCommunity: 'community',
       updateToPin: (sha: string) => `Update to ${sha}`,

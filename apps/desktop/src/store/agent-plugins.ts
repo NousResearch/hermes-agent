@@ -34,7 +34,12 @@ export interface AgentPluginRow {
   catalog_sha?: string
   /** Installed SHA differs from the catalog pin — an update is available. */
   update_available?: boolean
+  /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
+  pinned_sha?: string
 }
+
+/** A `--ref` pin is a full 40-hex commit SHA; branches and tags are refused server-side. */
+export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
 
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -194,6 +199,8 @@ export async function installAgentPlugin(
     /** Curated-catalog install: the backend resolves repo + pinned SHA from
      *  its own plugin-catalog and records provenance in the sidecar. */
     catalogName?: string
+    /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
+    ref?: string
     /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
     profile?: string | null
   }
@@ -213,7 +220,8 @@ export async function installAgentPlugin(
           identifier: opts.identifier,
           force: Boolean(opts.force),
           enable: opts.enable ?? true,
-          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {})
+          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+          ...(opts.ref ? { ref: opts.ref } : {})
         },
         opts.profile
       )

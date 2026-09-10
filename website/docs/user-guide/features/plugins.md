@@ -191,6 +191,13 @@ plugin; choose a new exact commit explicitly with
 profile-local install metadata contains no config values, environment values,
 secrets, or capability grants.
 
+The same pin is available in Hermes Desktop: **Skills → Plugins → Install from
+Git** has a *Pin to commit* field that takes the full 40-character SHA, and the
+plugins list shows a `pinned @ <sha8>` badge on every pinned install so a team
+can confirm everyone is running the same commit. `hermes plugins list` prints
+the pin in its Source column (`git pinned@<sha8>`). Pins work for private
+repositories too, through the same stored credentials described below.
+
 ### Installing from a private repository
 
 `hermes plugins install` clones non-interactively (it never prompts for a

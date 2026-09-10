@@ -144,7 +144,7 @@ class TestDetectProviderForModel:
         with patch(
             "hermes_cli.models.fetch_openrouter_models",
             side_effect=AssertionError("network lookup should not run"),
-        ):
+        ), patch("hermes_cli.models_detect.provider_has_credentials", return_value=True):
             result = detect_provider_for_model("sonnet", "auto")
         assert result is not None
         assert result[0] == "anthropic"

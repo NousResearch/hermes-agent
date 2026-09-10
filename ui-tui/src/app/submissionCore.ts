@@ -75,7 +75,7 @@ export function submitPrompt(
     opts.queueItem.settle?.(false)
 
     if (focused()) {
-      deps.sys('legacy delivery unconfirmed — check the session before sending a new input; retained input was not resent')
+      deps.sys('delivery unconfirmed — check the session before sending a new input; retained input was not resent')
       patchUiState({ status: 'delivery unconfirmed' })
     }
 
@@ -105,6 +105,8 @@ export function submitPrompt(
 
     if (item) {
       item.preparedText ??= submitText
+      // Busy controls have no deduplication receipt: never replay after an ambiguous reply.
+      if (item.controlMethod) { item.legacyAttempted = true }
       item.attachments ??= opts.attachments?.map(attachment => ({ ...attachment }))
 
       if (opts.behindTurn) { item.queued = true }
@@ -113,15 +115,29 @@ export function submitPrompt(
       savePendingInput(item)
     }
 
+    if (item?.controlMethod && item.attachments?.length) {
+      item.settle?.(false)
+      if (focused()) { deps.sys('busy corrections accept text only — image input retained; submit it with /queue') }
+      return
+    }
+
     deps.gw
       .request<PromptSubmitResponse>(item?.controlMethod ?? 'prompt.submit', {
         session_id: sid,
         text: item?.preparedText ?? submitText,
         ...((item?.attachments ?? opts.attachments)?.length ? { attachments: item?.attachments ?? opts.attachments } : {}),
         ...(item?.controlMethod ? { execution_generation: item.executionGeneration } : {}),
-        ...(item ? { submission_id: item.submissionId, ...(item.controlMethod ? {} : { queued: item.queued !== false }) } : {})
+        ...(item && !item.controlMethod ? { submission_id: item.submissionId, queued: item.queued !== false } : {})
       })
       .then(r => {
+        if (item?.controlMethod) {
+          const control = r as PromptSubmitResponse & { execution_generation?: number }
+          const accepted = control.execution_generation === item.executionGeneration &&
+            ['queued', 'redirected'].includes(control.status ?? '')
+          item.settle?.(accepted)
+          if (focused()) { deps.sys(accepted ? `correction ${control.status}` : 'correction rejected — input retained') }
+          return
+        }
         if (item) {
           const accepted =
             (r?.input_id ?? r?.admission_id) === item.submissionId &&

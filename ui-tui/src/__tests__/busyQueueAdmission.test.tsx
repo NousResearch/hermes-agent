@@ -169,7 +169,7 @@ it('discards unknown execution with its generation, retaining the row on refusal
   } finally { h.cleanup() }
 })
 
-it('preserves requested busy correction and generation through ambiguous retry without queue fallback', async () => {
+it('never replays an ambiguous non-idempotent busy correction or falls back to queue', async () => {
   const h = mount('steer')
   try {
     h.request.mockImplementation(async (method, params) => { h.calls.push({ method, params }); throw new Error('invalid_params') })
@@ -180,8 +180,9 @@ it('preserves requested busy correction and generation through ambiguous retry w
     await expect.poll(() => h.queue.queueRef.current[0]?.failed).toBe(true)
     patchUiState({ busyInputMode: 'interrupt', info: { ...$uiState.get().info!, execution_generation: 2 } })
     h.submission.sendQueued(h.queue.dequeue(true)!)
-    await expect.poll(() => h.calls.length).toBe(2)
-    expect(h.calls[1]).toEqual({ method: 'session.steer', params: first })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(h.calls).toEqual([{ method: 'session.steer', params: first }])
+    expect(first).not.toHaveProperty('submission_id')
     expect(loadPendingInputs(captureDestination())[0]).toMatchObject({ controlMethod: 'session.steer', executionGeneration: 1 })
   } finally { h.cleanup() }
 })

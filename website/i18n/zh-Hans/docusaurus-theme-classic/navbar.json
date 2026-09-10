@@ -1,0 +1,34 @@
+{
+  "item.label.Docs": {
+    "message": "文档",
+    "description": "Navbar item with label Docs"
+  },
+  "item.label.Skills": {
+    "message": "技能",
+    "description": "Navbar item with label Skills"
+  },
+  "item.label.Download": {
+    "message": "下载",
+    "description": "Navbar item with label Download"
+  },
+  "item.label.Home": {
+    "message": "首页",
+    "description": "Navbar item with label Home"
+  },
+  "item.label.GitHub": {
+    "message": "GitHub",
+    "description": "Navbar item with label GitHub"
+  },
+  "item.label.Discord": {
+    "message": "Discord",
+    "description": "Navbar item with label Discord"
+  },
+  "title": {
+    "message": "Hermes Agent",
+    "description": "The title in the navbar"
+  },
+  "logo.alt": {
+    "message": "Hermes Agent",
+    "description": "The alt text of navbar logo"
+  }
+}

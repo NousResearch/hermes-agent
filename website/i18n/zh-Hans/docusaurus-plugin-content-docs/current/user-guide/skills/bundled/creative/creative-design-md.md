@@ -36,7 +36,7 @@ DESIGN.md 是 Google 的开放规范（Apache-2.0，`google-labs-code/design.md`
 - **YAML 前置元数据** — 机器可读的设计 token（规范值）
 - **Markdown 正文** — 人类可读的说明，按规范章节组织
 
-Token 提供精确值。正文告诉 agent *为什么*这些值存在以及如何应用它们。CLI（`npx @google/design.md`）可对结构和 WCAG 对比度进行 lint 检查，对版本进行 diff 以检测回归，并导出为 Tailwind 或 W3C DTCG JSON。
+Token 提供精确值。正文告诉智能体 *为什么*这些值存在以及如何应用它们。CLI（`npx @google/design.md`）可对结构和 WCAG 对比度进行 lint 检查，对版本进行 diff 以检测回归，并导出为 Tailwind 或 W3C DTCG JSON。
 
 ## 何时使用此 skill
 

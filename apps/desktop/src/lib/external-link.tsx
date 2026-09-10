@@ -253,8 +253,19 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
   // pulls the layout/session graph behind it. A static edge would make one
   // link helper drag that whole tree into anything that renders a link. The
   // tab lands a microtask later, which is invisible.
-  void import('@/store/preview').then(({ openPreview }) =>
-    openPreview({ kind: 'url', label: hostPathLabel(target), source: target, url: target }, 'explicit-link')
+  void Promise.all([import('@/store/preview'), import('@/lib/preview-reach')]).then(
+    async ([{ openPreview }, { reachablePreviewUrl }]) => {
+      // On a remote gateway, a localhost link the agent surfaced (chat text,
+      // a linkified terminal URL) names the GATEWAY's loopback, not this
+      // machine's — give it the same loopback-reach resolution the address
+      // bar and the agent's own preview.open tool call already get, or it
+      // silently fails to load (or loads whatever happens to be listening on
+      // that port locally instead). `source`/`label` stay the original
+      // address so the user still sees what the link actually said.
+      const url = await reachablePreviewUrl(target)
+
+      openPreview({ kind: 'url', label: hostPathLabel(target), source: target, url }, 'explicit-link')
+    }
   )
 }
 

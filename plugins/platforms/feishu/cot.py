@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from functools import wraps
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any, Awaitable, Callable
 import uuid
-from urllib.error import HTTPError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,38 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+_SENSITIVE_FIELD = re.compile(
+    r"app[_-]?secret|(?:api|private|access)[_-]?key|password|passwd|token|secret|authorization|cookie|credentials?",
+    re.IGNORECASE,
+)
+
+_NAMED_SECRET = re.compile(
+    r"""(["']?[\w-]*(?:""" + _SENSITIVE_FIELD.pattern + r""")[\w-]*["']?\s*[:=]\s*)"""
+    r"""("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Bearer|Basic)\s+[^\s,;}]+|[^\s,;}]+)""",
+    re.IGNORECASE,
+)
+
+
+def _redact_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "***" if _SENSITIVE_FIELD.search(str(key)) else _redact_fields(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_fields(item) for item in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return _NAMED_SECRET.sub(lambda match: match[1] + "***", value)
+        if isinstance(parsed, (dict, list)):
+            return json.dumps(_redact_fields(parsed), ensure_ascii=False)
+    return value
+
+
 def _safe_text(value: Any, limit: int) -> str:
+    value = _redact_fields(value)
     if isinstance(value, str):
         text = value
     else:
@@ -78,7 +111,7 @@ def _safe_text(value: Any, limit: int) -> str:
 class FeishuCOTError(RuntimeError):
     def __init__(self, code: Any = None):
         super().__init__("Feishu message_cot request failed")
-        self.code = code
+        self.code = code if isinstance(code, int) else None
 
 
 class FeishuCOTClient:
@@ -98,42 +131,39 @@ class FeishuCOTClient:
             else "https://open.feishu.cn"
         )
         self._request_override = request_json
+        self._http_client: httpx.AsyncClient | None = None
         self._token = ""
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
+        self._flush_tasks: set[asyncio.Task] = set()
+        self._closed = False
+        self._closing = False
+        self._finalizer_tasks: set[asyncio.Task] = set()
+        self._active_runs: set[FeishuCOTRun] = set()
 
     async def _http_json(
         self, method: str, path: str, body: dict | None, token: str = ""
     ) -> dict:
-        def request() -> dict:
-            headers = {"Content-Type": "application/json; charset=utf-8"}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-            data = (
-                json.dumps(body, ensure_ascii=False).encode("utf-8")
-                if body is not None
-                else None
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=10)
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            response = await self._http_client.request(
+                method, self._base_url + path, json=body, headers=headers
             )
-            try:
-                with urlopen(
-                    Request(
-                        self._base_url + path, data=data, headers=headers, method=method
-                    ),
-                    timeout=10,
-                ) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                    status = response.status
-            except HTTPError as exc:
-                raise FeishuCOTError(exc.code) from exc
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
-                raise FeishuCOTError() from exc
-            if not isinstance(payload, dict):
-                raise FeishuCOTError(status)
-            if status >= 400 or payload.get("code", 0) != 0:
-                raise FeishuCOTError(payload.get("code", status))
-            return payload
-
-        return await asyncio.to_thread(request)
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise FeishuCOTError(exc.response.status_code) from None
+        except (httpx.RequestError, ValueError):
+            raise FeishuCOTError() from None
+        if not isinstance(payload, dict):
+            raise FeishuCOTError(response.status_code)
+        if payload.get("code", 0) != 0:
+            raise FeishuCOTError(payload["code"])
+        return payload
 
     async def _tenant_token(self) -> str:
         if self._token and time.monotonic() < self._token_expires_at:
@@ -159,6 +189,8 @@ class FeishuCOTClient:
     async def request_json(
         self, method: str, path: str, body: dict | None = None
     ) -> dict:
+        if self._closed:
+            raise FeishuCOTError("closed")
         if self._request_override is not None:
             return await self._request_override(method, path, body)
         return await self._http_json(method, path, body, await self._tenant_token())
@@ -182,6 +214,8 @@ class FeishuCOTClient:
         *,
         flush_interval: float = COT_FLUSH_INTERVAL_SECONDS,
     ) -> "FeishuCOTRun | None":
+        if self._closing or self._closed:
+            return None
         body = {"receive_id": chat_id}
         if origin_message_id:
             body["origin_message_id"] = origin_message_id
@@ -198,7 +232,7 @@ class FeishuCOTClient:
             )
             if not cot_id or not message_id:
                 raise FeishuCOTError(data.get("code"))
-            return FeishuCOTRun(
+            run = FeishuCOTRun(
                 self,
                 cot_id,
                 message_id,
@@ -207,12 +241,43 @@ class FeishuCOTClient:
                 chat_id=chat_id,
                 input_preview=input_preview,
             )
+            self._active_runs.add(run)
+            return run
         except Exception as exc:
             self._log_failure("create", exc)
             return None
 
     async def close(self) -> None:
-        return None
+        self._closing = True
+        for run in list(self._active_runs):
+            run.finish("error")
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while self._finalizer_tasks:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            await asyncio.wait(self._finalizer_tasks, timeout=remaining)
+        finalizers = list(self._finalizer_tasks)
+        for task in finalizers:
+            task.cancel()
+        await asyncio.gather(*finalizers, return_exceptions=True)
+        self._closed = True
+        tasks = list(self._flush_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if self._http_client is not None:
+            await self._http_client.aclose()
+
+
+def _accept_events(callback):
+    @wraps(callback)
+    def guarded(self, *args, **kwargs):
+        with self._event_lock:
+            if not self._finished and not self._disabled:
+                return callback(self, *args, **kwargs)
+
+    return guarded
 
 
 class FeishuCOTRun:
@@ -239,6 +304,8 @@ class FeishuCOTRun:
         self._flush_task: asyncio.Task | None = None
         self._flush_lock = asyncio.Lock()
         self._finished = False
+        self._finalizer_task: asyncio.Task | None = None
+        self._event_lock = threading.RLock()
         self._timestamp_lock = threading.Lock()
         self._last_timestamp = 0
         self._active_step: str | None = f"step-start-{self.run_id}"
@@ -272,63 +339,88 @@ class FeishuCOTRun:
             "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             "timestamp": self._timestamp(),
         })
-        if self._flush_task is None:
-            self._flush_task = self._loop.create_task(self._flush_later())
+        self._loop.call_soon_threadsafe(self._schedule_flush)
 
-    def _emit(self, event_type: str, payload: dict) -> None:
-        self._loop.call_soon_threadsafe(self._append_event, event_type, payload)
+    def _schedule_flush(self) -> None:
+        if (
+            not self._finished
+            and not self._disabled
+            and not self._client._closed
+            and self._flush_task is None
+        ):
+            self._flush_task = self._loop.create_task(self._flush_later())
+            self._client._flush_tasks.add(self._flush_task)
+            self._flush_task.add_done_callback(self._client._flush_tasks.discard)
 
     async def _flush_later(self) -> None:
         try:
             await asyncio.sleep(self._flush_interval)
-            self._flush_task = None
             await self.flush()
-        except asyncio.CancelledError:
-            pass
+        finally:
+            self._flush_task = None
+            with self._event_lock:
+                if self._events:
+                    self._schedule_flush()
 
     async def flush(self) -> None:
         async with self._flush_lock:
-            events, self._events = self._events, []
+            with self._event_lock:
+                events, self._events = self._events, []
+                if self._disabled:
+                    return
             if not events:
                 return
             try:
-                await self._client.request_json(
-                    "PUT",
-                    "/open-apis/im/v1/message_cot",
-                    {
-                        "cot_id": self.cot_id,
-                        "message_id": self.message_id,
-                        "events": events,
-                    },
+                await asyncio.wait_for(
+                    self._client.request_json(
+                        "PUT",
+                        "/open-apis/im/v1/message_cot",
+                        {
+                            "cot_id": self.cot_id,
+                            "message_id": self.message_id,
+                            "events": events,
+                        },
+                    ),
+                    timeout=1.0,
                 )
             except Exception as exc:
                 self._client._log_failure("update", exc)
-                self._disabled = True
-                self._events.clear()
+                with self._event_lock:
+                    self._disabled = True
+                    self._events.clear()
 
+    @_accept_events
     def step(self, iteration: int, tools: list | None = None) -> None:
         if self._active_step is not None:
-            self._emit(
+            self._append_event(
                 "STEP_FINISHED",
                 {"stepId": self._active_step, "stepName": self._active_step_name},
             )
         self._active_step = f"step-{self.run_id}-{iteration}"
-        self._active_step_name = f"执行阶段 {iteration}"
-        self._emit(
+        if iteration <= 1:
+            self._active_step_name = "理解用户问题"
+        elif tools:
+            self._active_step_name = "分析工具结果"
+        else:
+            self._active_step_name = "规划下一步"
+        self._append_event(
             "STEP_STARTED",
             {"stepId": self._active_step, "stepName": self._active_step_name},
         )
 
+    @_accept_events
     def tool_started(self, call_id: str, tool_name: str, args: dict) -> None:
         from agent.display import build_tool_preview
 
         preview = _safe_text(
-            build_tool_preview(tool_name, args or {}, max_len=120) or "", 120
+            build_tool_preview(tool_name, _redact_fields(args or {}), max_len=120)
+            or "",
+            120,
         )
         call_key = str(call_id)
         title = preview or str(tool_name)
         self._tool_summaries[call_key] = title
-        self._emit(
+        self._append_event(
             "TOOL_CALL_START",
             {
                 "toolCallId": call_key,
@@ -338,15 +430,16 @@ class FeishuCOTRun:
             },
         )
         if self.mode == "detailed":
-            self._emit(
+            self._append_event(
                 "TOOL_CALL_ARGS",
                 {
                     "toolCallId": call_key,
                     "delta": _safe_text(args or {}, COT_TEXT_MAX),
                 },
             )
-        self._emit("TOOL_CALL_END", {"toolCallId": call_key})
+        self._append_event("TOOL_CALL_END", {"toolCallId": call_key})
 
+    @_accept_events
     def tool_completed(
         self, call_id: str, tool_name: str, args: dict, result: Any
     ) -> None:
@@ -366,7 +459,7 @@ class FeishuCOTRun:
             + ("（失败）" if is_error else "（完成）")
         )
         self._tool_summaries.pop(call_key, None)
-        self._emit(
+        self._append_event(
             "TOOL_CALL_RESULT",
             {
                 "messageId": f"tool-result-{call_key}",
@@ -376,50 +469,72 @@ class FeishuCOTRun:
             },
         )
 
+    @_accept_events
     def commentary(self, text: str) -> None:
         visible = _safe_text(text, COT_TEXT_MAX).strip()
         if not visible:
             return
         message_id = f"text-{self._timestamp()}"
-        self._emit("TEXT_MESSAGE_START", {"messageId": message_id, "role": "assistant"})
-        self._emit("TEXT_MESSAGE_CONTENT", {"messageId": message_id, "delta": visible})
-        self._emit("TEXT_MESSAGE_END", {"messageId": message_id})
-
-    async def finish(self, reason: str = "done") -> None:
-        if self._finished:
-            return
-        await asyncio.sleep(
-            0
-        )  # drain call_soon_threadsafe events from the agent worker
-        if self._active_step is not None:
-            self._append_event(
-                "STEP_FINISHED",
-                {"stepId": self._active_step, "stepName": self._active_step_name},
-            )
-        api_reason = "done" if reason == "done" else "error"
         self._append_event(
-            "RUN_FINISHED" if api_reason == "done" else "RUN_ERROR",
-            (
-                {"threadId": self.thread_id, "runId": self.run_id, "status": "done"}
-                if api_reason == "done"
-                else {"message": reason, "code": reason}
-            ),
+            "TEXT_MESSAGE_START", {"messageId": message_id, "role": "assistant"}
         )
+        self._append_event(
+            "TEXT_MESSAGE_CONTENT", {"messageId": message_id, "delta": visible}
+        )
+        self._append_event("TEXT_MESSAGE_END", {"messageId": message_id})
+
+    def finish(self, reason: str = "done") -> asyncio.Task:
+        # Close admission synchronously, before a managed finalizer can be scheduled.
+        with self._event_lock:
+            if not self._finished:
+                if self._active_step is not None:
+                    self._append_event(
+                        "STEP_FINISHED",
+                        {
+                            "stepId": self._active_step,
+                            "stepName": self._active_step_name,
+                        },
+                    )
+                self._append_event(
+                    "RUN_FINISHED" if reason == "done" else "RUN_ERROR",
+                    {"threadId": self.thread_id, "runId": self.run_id, "status": "done"}
+                    if reason == "done"
+                    else {"message": reason, "code": reason},
+                )
+                self._finished = True
+                if self._flush_task is not None and not self._flush_lock.locked():
+                    self._flush_task.cancel()
+                    self._flush_task = None
+                self._finalizer_task = self._loop.create_task(self._finish(reason))
+                self._client._finalizer_tasks.add(self._finalizer_task)
+                self._finalizer_task.add_done_callback(self._finalizer_done)
+            return self._finalizer_task
+
+    def _finalizer_done(self, task: asyncio.Task) -> None:
+        self._client._finalizer_tasks.discard(task)
+        self._client._active_runs.discard(self)
+
+    async def _finish(self, reason: str) -> None:
         task = self._flush_task
-        if task is not None:
+        if task is not None and not self._flush_lock.locked():
             task.cancel()
-            self._flush_task = None
             with suppress(asyncio.CancelledError):
                 await task
-        await self.flush()
-        self._finished = True
-        if self._disabled:
-            return
+            self._flush_task = None
+        try:
+            await self.flush()
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            self._flush_task = None
+        api_reason = "done" if reason == "done" else "error"
         path = (
             f"/open-apis/im/v1/message_cot/complete/{quote(self.cot_id, safe='')}"
             f"?message_id={quote(self.message_id, safe='')}&reason={api_reason}"
         )
         try:
-            await self._client.request_json("POST", path)
+            await asyncio.wait_for(self._client.request_json("POST", path), timeout=1.0)
         except Exception as exc:
             self._client._log_failure("complete", exc)

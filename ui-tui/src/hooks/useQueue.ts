@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { isServerQueued } from '../app/pendingBubbles.js'
 import { captureDestination, type SubmissionDestination } from '../app/submissionDestination.js'
-import { $uiState, getUiState } from '../app/uiStore.js'
+import { $uiState, getUiState, patchUiState } from '../app/uiStore.js'
 import {
   loadPendingInputs,
   pendingDestinationKey,
@@ -25,6 +25,9 @@ export interface QueueItem {
   ownerDestination?: SubmissionDestination
   inFlight?: boolean
   failed?: boolean
+  attachments?: Array<{ path: string; mime: string }>
+  controlMethod?: 'session.steer' | 'session.redirect'
+  executionGeneration?: number
   preparedText?: string
   legacyAttempted?: boolean
   settle?: (accepted: boolean) => void
@@ -203,8 +206,15 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   )
 
   const cancelServerRow = useCallback(
-    (row: { admission_id: string }) => {
-      void gw?.request('prompt.cancel', { session_id: getUiState().sid, admission_id: row.admission_id }).catch(() => {})
+    (row: { admission_id: string; status?: string; execution_generation?: number | null }) => {
+      const session_id = getUiState().sid
+      const unknown = row.status === 'unknown'
+      void gw?.request(unknown ? 'prompt.resolve_unknown' : 'prompt.cancel', {
+        session_id, admission_id: row.admission_id,
+        ...(unknown ? { execution_generation: row.execution_generation } : {})
+      }).catch((error: Error) => {
+        if (getUiState().sid === session_id) { patchUiState({ status: `discard failed: ${error.message}` }) }
+      })
     },
     [gw]
   )
@@ -338,6 +348,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
 
   const dequeue = useCallback(
     (retry = false) => {
+      if (getUiState().gatewayConnected === false) { return undefined }
       const queue = getQueue()
       const item = queue.items[0]
 
@@ -358,6 +369,10 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       // Editing a durable row re-admits the edited text as a new input; the
       // authority retires the original.
       if (server) {
+        if (server.status === 'unknown') {
+          patchUiState({ status: 'unknown execution — Ctrl+X to discard before retrying' })
+          return undefined
+        }
         cancelServerRow(server)
         const item = queueItem(editedDisplay ?? server.user)
         queue.items.push(item)

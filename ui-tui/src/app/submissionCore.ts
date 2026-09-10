@@ -114,11 +114,12 @@ export function submitPrompt(
     }
 
     deps.gw
-      .request<PromptSubmitResponse>('prompt.submit', {
+      .request<PromptSubmitResponse>(item?.controlMethod ?? 'prompt.submit', {
         session_id: sid,
         text: item?.preparedText ?? submitText,
         ...((item?.attachments ?? opts.attachments)?.length ? { attachments: item?.attachments ?? opts.attachments } : {}),
-        ...(item ? { submission_id: item.submissionId, queued: item.queued !== false } : {})
+        ...(item?.controlMethod ? { execution_generation: item.executionGeneration } : {}),
+        ...(item ? { submission_id: item.submissionId, ...(item.controlMethod ? {} : { queued: item.queued !== false }) } : {})
       })
       .then(r => {
         if (item) {

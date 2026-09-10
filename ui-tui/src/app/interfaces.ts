@@ -318,6 +318,7 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  gatewayConnected?: boolean
   battery: boolean
   batteryStatus: BatteryInfo | null
   bgTasks: Set<string>
@@ -384,7 +385,7 @@ export interface ComposerActions {
   clearIn: () => void
   stage?: (text: string, display?: string, destination?: SubmissionDestination) => QueueItem
   dequeue: (retry?: boolean) => QueueItem | undefined
-  enqueue: (text: string, display?: string, destination?: SubmissionDestination) => void
+  enqueue: (text: string, display?: string, destination?: SubmissionDestination) => QueueItem | void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
   prependQueue: (item: QueueItem, destination?: SubmissionDestination) => void
@@ -499,7 +500,7 @@ export interface GatewayEventHandlerContext {
     /** Submit text literally as a prompt — no slash/!/interpolation dispatch.
      *  Used for `-q` startup queries, which are arbitrary launcher-provided
      *  text (parity with one-shot's literal prompt handling). */
-    submitLiteralRef: MutableRefObject<(value: string) => void>
+    submitLiteralRef: MutableRefObject<(value: string, attachments?: Array<{ path: string; mime: string }>) => void>
     submitRef: MutableRefObject<(value: string) => void>
   }
   system: {

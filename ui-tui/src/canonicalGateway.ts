@@ -19,7 +19,7 @@ export function canonicalRequest(method: string, original: Record<string, unknow
     if (unsupported.length) { throw new Error(`gateway does not support TUI launch options: ${unsupported.join(', ')}`) }
   }
 
-  if (method === 'prompt.submit' && params.submission_id) {
+  if (['prompt.submit', 'session.steer', 'session.redirect'].includes(method) && params.submission_id) {
     params.input_id = params.submission_id
     delete params.submission_id
   }
@@ -38,7 +38,7 @@ export function canonicalResult(method: string, value: any, request: Record<stri
 
   // The JSON-RPC response correlates the prepared input; admission_id is a
   // separate server-issued identity and must not be rewritten to that input ID.
-  if (method === 'prompt.submit' && value.ref) {
+  if (['prompt.submit', 'session.steer', 'session.redirect'].includes(method) && value.ref) {
     return { ...value, input_id: request.input_id, target_profile_home: value.ref.profile_id, target_session_id: value.ref.session_id }
   }
 

@@ -1,12 +1,13 @@
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
-import { expandTokens } from '../domain/attachments.js'
+import { expandTokens, imageAttachments } from '../domain/attachments.js'
 import { completionToApplyOnSubmit, looksLikeSlashCommand, parseSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { savePendingInput } from '../lib/pendingInputs.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
@@ -38,7 +39,8 @@ export const queueItemFromSlash = (displayCommand: string, expandedCommand: stri
 
 export const prepareSubmission = (display: string, tokens: ComposerToken[]) => ({
   display,
-  text: expandTokens(tokens)(display)
+  text: expandTokens(tokens)(display),
+  attachments: imageAttachments(display, tokens)
 })
 
 /**
@@ -103,7 +105,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       showUserMessage = true,
       displayText?: string,
       expandOverride?: (value: string) => string,
-      submitOpts: { skipDetectDrop?: boolean; destination?: SubmissionDestination; queueItem?: QueueItem; behindTurn?: boolean } = {}
+      submitOpts: { attachments?: Array<{ path: string; mime: string }>; skipDetectDrop?: boolean; destination?: SubmissionDestination; queueItem?: QueueItem; behindTurn?: boolean } = {}
     ) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
@@ -252,13 +254,23 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
       }
 
+      if (gw.isCanonical && mode !== 'queue') {
+        const staged = item.settle ? item : composerActions.stage?.(item.text, item.display, destination)
+        if (!staged) { return }
+        staged.controlMethod ??= mode === 'steer' ? 'session.steer' : 'session.redirect'
+        staged.executionGeneration ??= live.info?.execution_generation
+        staged.attachments ??= item.attachments
+        return send(item.text, true, item.display, value => value, {
+          destination, behindTurn: true, queueItem: staged, attachments: item.attachments })
+      }
+
       if (mode === 'queue') {
         // Canonical authority: admit now so the input is crash-durable and in
         // every viewer's pending list; the server FIFO orders it behind the
         // running turn. Legacy gateways keep the renderer-side queue.
         if (gw.isCanonical) {
           return send(item.text, true, item.display, value => value, {
-            destination, behindTurn: true, queueItem: item.settle ? item : undefined })
+            destination, behindTurn: true, queueItem: item.settle ? item : undefined, attachments: item.attachments })
         }
 
         return enqueueText()
@@ -272,7 +284,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       // the agent is in model generation, tool execution, or an older runtime.
       // Reuse the normal submit pipeline so the correction gets its user bubble
       // and file-drop interpolation exactly once.
-      send(item.text, true, item.display, value => value, { destination, queueItem: item.settle ? item : undefined })
+      send(item.text, true, item.display, value => value, { destination, queueItem: item.settle ? item : undefined, attachments: item.attachments })
     },
     [composerActions, gw, send]
   )
@@ -314,7 +326,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
         composerActions.clearIn()
 
         if (queued) {
-          composerActions.enqueue(queued.text, queued.display)
+          const retained = composerActions.enqueue(queued.text, queued.display, destination)
+          if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
           slashRef.current(slash.command)
@@ -331,9 +344,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       const live = getUiState()
 
-      if (!live.sid) {
+      if (!live.sid || live.gatewayConnected === false) {
         composerActions.pushHistory(toHistory)
-        composerActions.enqueue(submission.text, submission.display)
+        const retained = composerActions.enqueue(submission.text, submission.display, destination)
+        if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
         composerActions.clearIn()
 
         return
@@ -367,7 +381,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       composerActions.pushHistory(toHistory)
 
       if (getUiState().busy) {
-        return handleBusyInput(queueItem(submission.text, submission.display))
+        return handleBusyInput({ ...queueItem(submission.text, submission.display), attachments: submission.attachments })
       }
 
       if (shouldInterpolateSubmission(full)) {
@@ -380,13 +394,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
           text =>
             send(prepareSubmission(text, submissionTokens).text, true, text, value => value, {
               destination,
-              queueItem: item
+              queueItem: item, attachments: submission.attachments
             }),
           destination
         )
       }
 
-      send(submission.text, true, submission.display, value => value)
+      send(submission.text, true, submission.display, value => value, { attachments: submission.attachments })
     },
     [
       appendMessage,
@@ -459,12 +473,12 @@ export function useSubmission(opts: UseSubmissionOptions) {
   // $(...) interpolation. Startup `-q` queries use this — they're arbitrary
   // launcher/script text, and one-shot mode already treats them literally.
   const submitLiteral = useCallback(
-    (value: string) => {
+    (value: string, attachments?: Array<{ path: string; mime: string }>) => {
       if (!value.trim()) {
         return
       }
 
-      send(value, true, value, v => v, { skipDetectDrop: true })
+      send(value, true, value, v => v, { skipDetectDrop: true, attachments })
     },
     [send]
   )

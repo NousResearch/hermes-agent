@@ -396,6 +396,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               busy: running,
               info,
               sid: r.session_id,
+              gatewayConnected: true,
               status: statusFromLiveSession(r.status, running),
               usage: usageFrom(info)
             })

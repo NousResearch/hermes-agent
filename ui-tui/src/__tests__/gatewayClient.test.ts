@@ -166,6 +166,32 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
+  it('keeps discovery-only retries alive and delivers readiness to the mounted subscriber', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    const grant = { url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }
+    const bootstrap = vi.fn().mockResolvedValueOnce(grant).mockRejectedValueOnce(new Error('owner stopped')).mockRejectedValueOnce(new Error('owner stopped')).mockResolvedValue(grant)
+    const gw = new GatewayClient(bootstrap)
+    const events: any[] = []
+    gw.on('event', event => events.push(event))
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.open()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.close()
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 4)
+      expect(bootstrap.mock.calls.map(args => args[0])).toEqual([true, false, false, false])
+      const socket = FakeWebSocket.instances.at(-1)!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const request = JSON.parse(socket.sent[0]!)
+      socket.message(JSON.stringify({ id: request.id, result: { session_create: { sources: ['tui'], parameters: [] } } }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events.some(event => event.type === 'gateway.ready')).toBe(true)
+    } finally { gw.kill(); vi.useRealTimers() }
+  })
+
   it('waits for websocket open and resolves RPC requests', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     const gw = new GatewayClient()

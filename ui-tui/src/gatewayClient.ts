@@ -328,6 +328,7 @@ export class GatewayClient extends EventEmitter {
       }
 
       this.start()
+      this.drain()
     }, delay)
     this.reconnectTimer.unref?.()
   }
@@ -506,6 +507,7 @@ export class GatewayClient extends EventEmitter {
         python: 'gateway ensure', cwd: '', stderr_tail: this.bootstrapError.message
       } })
       this.rejectPending(this.bootstrapError)
+      this.scheduleReconnect()
     })
   }
 
@@ -685,9 +687,9 @@ export class GatewayClient extends EventEmitter {
   }
 
   private toError(raw: unknown): Error {
-    const err = raw as { message?: unknown } | null | undefined
+    const err = raw as { message?: unknown; code?: unknown; data?: unknown } | null | undefined
 
-    return new Error(typeof err?.message === 'string' ? err.message : 'request failed')
+    return Object.assign(new Error(typeof err?.message === 'string' ? err.message : 'request failed'), { code: err?.code, data: err?.data })
   }
 
   private settle(p: Pending, err: Error | null, result: unknown) {

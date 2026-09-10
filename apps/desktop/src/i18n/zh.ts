@@ -3851,6 +3851,7 @@ export const zh: Translations = {
       statusError: '错误',
       statusRecovered: '已恢复',
       statusDone: '完成',
+      resultUnavailable: '结果不可用',
       memoryWriteNoted: '已记下记忆写入',
       actions: {
         read: '已读取',

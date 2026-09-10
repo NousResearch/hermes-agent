@@ -857,11 +857,36 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         backoff = _get_bot_chat_busy_backoff_seconds()
         budget = _get_bot_chat_busy_budget_seconds()
         started = time.monotonic()
+        # The budget is a DEADLINE, not just a gate on sleeping. Clamping each
+        # attempt's timeout to the time actually left is what makes the ceiling
+        # real: checking only before a sleep lets the NEXT attempt start with a
+        # full per-attempt timeout and overshoot by up to that timeout again
+        # (measured: 1230s elapsed against a 900s budget).
         for attempt in range(attempts):
-            result = subprocess.run(
-                argv, capture_output=True, text=True,
-                timeout=_get_bot_chat_delivery_timeout(), env=env,
-                creationflags=windows_hide_flags())
+            per_attempt = _get_bot_chat_delivery_timeout()
+            if budget:
+                remaining = budget - (time.monotonic() - started)
+                if remaining <= 0:
+                    return _fail(
+                        f"bot-chat delivery to profile '{profile_label}' gave up after "
+                        f"{time.monotonic() - started:.0f}s (budget {budget:.0f}s); "
+                        f"recipient stayed busy")
+                per_attempt = min(per_attempt, remaining)
+            budget_deadline = budget and per_attempt < _get_bot_chat_delivery_timeout()
+            try:
+                result = subprocess.run(
+                    argv, capture_output=True, text=True,
+                    timeout=per_attempt, env=env,
+                    creationflags=windows_hide_flags())
+            except subprocess.TimeoutExpired:
+                # A timeout caused by the BUDGET deadline is budget exhaustion, not
+                # evidence the recipient hung for the full configured timeout.
+                if budget_deadline:
+                    return _fail(
+                        f"bot-chat delivery to profile '{profile_label}' gave up after "
+                        f"{time.monotonic() - started:.0f}s (budget {budget:.0f}s); "
+                        f"recipient stayed busy")
+                raise
             if result.returncode == 0:
                 logger.info(
                     "Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)

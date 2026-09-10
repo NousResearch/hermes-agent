@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Launch-flag fact: the app was started with --local, so the renderer may
   // show the local-models surfaces. Static for the window's lifetime.
   localModelsEnabled: launchFlags?.localModels === true,
+  // Launch-flag fact: the Nous free tier is on for this launch
+  // (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only; the same
+  // decision is stamped onto every backend the app spawns.
+  guestOnboardingEnabled: launchFlags?.guestOnboarding === true,
   getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),

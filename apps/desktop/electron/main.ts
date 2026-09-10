@@ -202,6 +202,7 @@ import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gatewa
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import { clearStaleGitLocks } from './gitlock'
+import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -903,6 +904,9 @@ const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
 const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
+// Nous free tier gate, decided ONCE here and stamped onto every backend spawn
+// (desktopBackendSpawnEnv) and the renderer (hermes:launch-flags).
+const GUEST_ONBOARDING = guestOnboardingEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -10737,6 +10741,9 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
+      // Same launch-time free-tier decision the local spawns get; the POSIX
+      // spawn command adds HERMES_GUEST_ONBOARDING=1 only when this is on.
+      guestOnboarding: GUEST_ONBOARDING,
       signal: lease.signal
     })
   } catch (error: any) {
@@ -12666,25 +12673,28 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     backend.args,
     hiddenWindowsChildOptions({
       cwd: hermesCwd,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        ...backend.env,
-        // Pin the gateway's tool/terminal cwd to the same directory we chose for
-        // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
-        // can still point at the install dir even when spawn cwd is home.
-        TERMINAL_CWD: hermesCwd,
-        HERMES_DASHBOARD_SESSION_TOKEN: token,
-        // Marks this dashboard backend as desktop-spawned so it runs the cron
-        // scheduler tick loop (the gateway isn't running under the app).
-        HERMES_DESKTOP: '1',
-        // Exact parent identity lets the backend self-exit after an unclean
-        // Desktop death without mistaking a reused PID for its owner. If the
-        // optional marker probe fails, retain legacy PID-only tracking.
-        ...parentIdentityEnv,
-        HERMES_WEB_DIST: webDist,
-        ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-      },
+      env: desktopBackendSpawnEnv(
+        {
+          ...process.env,
+          HERMES_HOME,
+          ...backend.env,
+          // Pin the gateway's tool/terminal cwd to the same directory we chose for
+          // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
+          // can still point at the install dir even when spawn cwd is home.
+          TERMINAL_CWD: hermesCwd,
+          HERMES_DASHBOARD_SESSION_TOKEN: token,
+          // Marks this dashboard backend as desktop-spawned so it runs the cron
+          // scheduler tick loop (the gateway isn't running under the app).
+          HERMES_DESKTOP: '1',
+          // Exact parent identity lets the backend self-exit after an unclean
+          // Desktop death without mistaking a reused PID for its owner. If the
+          // optional marker probe fails, retain legacy PID-only tracking.
+          ...parentIdentityEnv,
+          HERMES_WEB_DIST: webDist,
+          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+        },
+        GUEST_ONBOARDING
+      ),
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -13083,30 +13093,33 @@ async function startHermes() {
       backend.args,
       hiddenWindowsChildOptions({
         cwd: hermesCwd,
-        env: {
-          ...process.env,
-          // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
-          // resolves to the SAME location our resolveHermesHome() picked. Without
-          // this pin, Python falls back to ~/.hermes on every platform — fine on
-          // mac/linux (where our default matches), but on Windows our default is
-          // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
-          // Mismatch would split config / sessions / .env / logs across two
-          // directories. install.ps1 sets HERMES_HOME via setx; the desktop
-          // can't reliably do that, so we set it inline for every spawn.
-          HERMES_HOME,
-          ...backend.env,
-          TERMINAL_CWD: hermesCwd,
-          HERMES_DASHBOARD_SESSION_TOKEN: token,
-          // Marks this dashboard backend as desktop-spawned so it runs the cron
-          // scheduler tick loop (the gateway isn't running under the app).
-          HERMES_DESKTOP: '1',
-          // Exact parent identity lets the backend self-exit after an unclean
-          // Desktop death without mistaking a reused PID for its owner. If the
-          // optional marker probe fails, retain legacy PID-only tracking.
-          ...parentIdentityEnv,
-          HERMES_WEB_DIST: webDist,
-          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-        },
+        env: desktopBackendSpawnEnv(
+          {
+            ...process.env,
+            // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
+            // resolves to the SAME location our resolveHermesHome() picked. Without
+            // this pin, Python falls back to ~/.hermes on every platform — fine on
+            // mac/linux (where our default matches), but on Windows our default is
+            // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+            // Mismatch would split config / sessions / .env / logs across two
+            // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+            // can't reliably do that, so we set it inline for every spawn.
+            HERMES_HOME,
+            ...backend.env,
+            TERMINAL_CWD: hermesCwd,
+            HERMES_DASHBOARD_SESSION_TOKEN: token,
+            // Marks this dashboard backend as desktop-spawned so it runs the cron
+            // scheduler tick loop (the gateway isn't running under the app).
+            HERMES_DESKTOP: '1',
+            // Exact parent identity lets the backend self-exit after an unclean
+            // Desktop death without mistaking a reused PID for its owner. If the
+            // optional marker probe fails, retain legacy PID-only tracking.
+            ...parentIdentityEnv,
+            HERMES_WEB_DIST: webDist,
+            ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+          },
+          GUEST_ONBOARDING
+        ),
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']
       })
@@ -17202,7 +17215,8 @@ ipcMain.on('hermes:translucency:support', event => {
 // only strips internal flags.
 ipcMain.on('hermes:launch-flags', event => {
   event.returnValue = {
-    localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin'
+    localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin',
+    guestOnboarding: GUEST_ONBOARDING
   }
 })
 

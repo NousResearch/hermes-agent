@@ -8,13 +8,14 @@ import {
   fromFallback,
   fromLocalGit,
   isFallbackCommit,
+  normalizeGitHubRepository,
   resolveStamp
 } from './write-build-stamp.mjs'
 
 test('fromCI reads GITHUB_SHA / GITHUB_REF_NAME', () => {
   assert.deepEqual(
     fromCI({ GITHUB_SHA: 'a'.repeat(40), GITHUB_REF_NAME: 'release' }),
-    { commit: 'a'.repeat(40), branch: 'release', dirty: false, source: 'ci' }
+    { commit: 'a'.repeat(40), branch: 'release', repository: null, dirty: false, source: 'ci' }
   )
   assert.equal(fromCI({}), null)
 })
@@ -36,6 +37,7 @@ test('fromLocalGit reads HEAD + branch + dirty status', () => {
   assert.deepEqual(fromLocalGit('/repo', execFn), {
     commit: 'b'.repeat(40),
     branch: 'main',
+    repository: null,
     dirty: true,
     source: 'local'
   })
@@ -46,6 +48,7 @@ test('fromFallback uses the all-zero placeholder commit', () => {
   assert.deepEqual(fromFallback(), {
     commit: FALLBACK_COMMIT,
     branch: FALLBACK_BRANCH,
+    repository: null,
     dirty: false,
     source: 'fallback'
   })
@@ -80,7 +83,32 @@ test('resolveStamp falls back when neither CI nor git is available', () => {
   assert.deepEqual(stamp, {
     commit: FALLBACK_COMMIT,
     branch: FALLBACK_BRANCH,
+    repository: null,
     dirty: false,
     source: 'fallback'
   })
+})
+
+test('normalizeGitHubRepository reduces remote URLs to owner/name', () => {
+  assert.equal(normalizeGitHubRepository('git@github.com:ForkOwner/hermes-agent.git'), 'ForkOwner/hermes-agent')
+  assert.equal(normalizeGitHubRepository('https://github.com/NousResearch/hermes-agent.git'), 'NousResearch/hermes-agent')
+  assert.equal(normalizeGitHubRepository('https://github.com/NousResearch/hermes-agent/'), 'NousResearch/hermes-agent')
+  assert.equal(normalizeGitHubRepository('ForkOwner/hermes-agent'), 'ForkOwner/hermes-agent')
+  // Non-GitHub / malformed remotes must not become a fetch URL.
+  assert.equal(normalizeGitHubRepository('https://gitlab.com/ForkOwner/hermes-agent.git'), null)
+  assert.equal(normalizeGitHubRepository('/srv/mirrors/hermes-agent.git'), null)
+  assert.equal(normalizeGitHubRepository(undefined), null)
+})
+
+test('stamps record the repository the build came from', () => {
+  assert.equal(fromCI({ GITHUB_SHA: 'a'.repeat(40), GITHUB_REPOSITORY: 'ForkOwner/hermes-agent' }).repository, 'ForkOwner/hermes-agent')
+
+  const forkLocal = fromLocalGit('/repo', (cmd) => {
+    if (cmd === 'git rev-parse HEAD') return 'b'.repeat(40)
+    if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'fix/desktop'
+    if (cmd === 'git status --porcelain -uno') return ''
+    if (cmd === 'git remote get-url origin') return 'git@github.com:ForkOwner/hermes-agent.git'
+    return null
+  })
+  assert.equal(forkLocal.repository, 'ForkOwner/hermes-agent')
 })

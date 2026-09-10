@@ -43,8 +43,11 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+# Overridable so a desktop app built from a fork bootstraps against the repo it
+# was actually built from (HERMES_INSTALL_REPO_* is set by the desktop
+# bootstrap runner from the build stamp).  Unset -> canonical upstream.
+REPO_URL_SSH="${HERMES_INSTALL_REPO_URL_SSH:-git@github.com:NousResearch/hermes-agent.git}"
+REPO_URL_HTTPS="${HERMES_INSTALL_REPO_URL_HTTPS:-https://github.com/NousResearch/hermes-agent.git}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an

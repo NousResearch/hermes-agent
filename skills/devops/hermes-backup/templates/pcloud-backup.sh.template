@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Backup Script Template — Customize REMOTE and PATHS before deploying
+# Copy this to ~/scripts/pcloud-backup.sh and edit the CONFIGURATION section
+set -euo pipefail
+
+# === CONFIGURATION — customize these ===
+REMOTE="pcloud:hermes-backup"           # rclone remote:path (change to your storage)
+STAGING="/tmp/pcloud-backup-staging"
+LOG="$HOME/.hermes/logs/pcloud-backup.log"
+BACKUP_ASSETS="$HOME/.hermes/backup-assets"
+# ======================================
+
+# Directories to back up (relative to $HOME/.hermes/)
+HERMES_DIRS=(skills scripts cron state career memories engram)
+
+# Config files to back up
+CONFIG_FILES=("$HOME/.hermes/config.yaml")
+ENV_FILE="$HOME/.hermes/.env"
+BACKUP_SCRIPT_SELF="$HOME/scripts/pcloud-backup.sh"
+
+mkdir -p "$STAGING"
+mkdir -p "$(dirname "$LOG")"
+mkdir -p "$BACKUP_ASSETS"
+
+echo "[$(date)] Starting backup to $REMOTE..." >> "$LOG"
+
+# Clean staging
+rm -rf "${STAGING:?}"/*
+
+# 1. Hermes core config files
+for f in "${CONFIG_FILES[@]}"; do
+  [ -f "$f" ] && cp "$f" "$STAGING/" 2>> "$LOG" || true
+done
+
+# 2. .env renamed for safety
+[ -f "$ENV_FILE" ] && cp "$ENV_FILE" "$STAGING/hermes-env" 2>> "$LOG" || true
+
+# 3. Hermes directories
+for d in "${HERMES_DIRS[@]}"; do
+  [ -d "$HOME/.hermes/$d" ] && cp -r "$HOME/.hermes/$d" "$STAGING/$d" 2>> "$LOG" || true
+done
+
+# 4. Sessions — compress before upload
+if [ -d "$HOME/.hermes/sessions" ] && [ -n "$(ls -A "$HOME/.hermes/sessions/" 2>/dev/null)" ]; then
+  tar czf "$STAGING/sessions.tar.gz" -C "$HOME/.hermes" sessions/ 2>> "$LOG" || true
+fi
+
+# 5. Restore assets — so a fresh install can self-heal
+cp "$BACKUP_ASSETS/RESTORE.md" "$STAGING/RESTORE.md" 2>> "$LOG" || true
+cp "$BACKUP_ASSETS/restore.sh" "$STAGING/restore.sh" 2>> "$LOG" || true
+cp "$BACKUP_ASSETS/generate-manifest.sh" "$STAGING/generate-manifest.sh" 2>> "$LOG" || true
+[ -f "$BACKUP_SCRIPT_SELF" ] && cp "$BACKUP_SCRIPT_SELF" "$STAGING/pcloud-backup.sh" 2>> "$LOG" || true
+
+# 6. Generate manifest with checksums
+bash "$BACKUP_ASSETS/generate-manifest.sh" "$STAGING" 2>> "$LOG" || true
+
+# Sync to storage
+rclone sync "$STAGING/" "$REMOTE/" \
+  --transfers 4 \
+  --checkers 8 \
+  --timeout 120s \
+  --retries 3 \
+  --low-level-retries 5 \
+  --stats 0 2>> "$LOG"
+
+RESULT=$?
+if [ $RESULT -eq 0 ]; then
+  SIZE=$(rclone size "$REMOTE/" 2>/dev/null | grep "Total size" || echo "unknown")
+  echo "[$(date)] ✅ Backup OK — $SIZE" >> "$LOG"
+else
+  echo "[$(date)] ❌ Backup FAILED (exit $RESULT)" >> "$LOG"
+fi
+
+# Clean staging
+rm -rf "${STAGING:?}"/*
+echo "[$(date)] Done." >> "$LOG"

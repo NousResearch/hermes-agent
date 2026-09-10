@@ -24,6 +24,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 import { $unreadSessionCount } from '@/store/session-dot-state'
+import { $titlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
@@ -138,6 +139,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
+  const appActionsSide = useStore($titlebarAppActionsSide)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
 
@@ -265,8 +267,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     return <div className={leftClusterClass}>{titlebarSlots}</div>
   }
 
-  const visibleLeftTools = [sidebarTool, ...leftTools].filter(tool => !tool.hidden)
-  const visibleSystemTools = systemTools.filter(tool => !tool.hidden)
+  const visibleLeftTools = (
+    appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools]
+  ).filter(tool => !tool.hidden)
+  const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(tool => !tool.hidden) : []
   const visiblePaneTools = tools.filter(tool => !tool.hidden)
 
   return (

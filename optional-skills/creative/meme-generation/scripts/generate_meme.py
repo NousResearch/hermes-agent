@@ -39,9 +39,9 @@ IMGFLIP_CACHE_MAX_AGE = 86400  # 24 hours
 def _fetch_url(url: str, timeout: int = 15) -> bytes:
     """Fetch URL content, using requests if available, else urllib."""
     if _requests is not None:
-        resp = _requests.get(url, timeout=timeout)
-        resp.raise_for_status()
-        return resp.content
+        with _requests.get(url, timeout=timeout) as resp:
+            resp.raise_for_status()
+            return resp.content
     import urllib.request
     return urllib.request.urlopen(url, timeout=timeout).read()
 

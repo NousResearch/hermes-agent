@@ -196,8 +196,15 @@ Prompts use dot-notation to access nested fields in the webhook payload:
 - `{pull_request.title}` resolves to `payload["pull_request"]["title"]`
 - `{repository.full_name}` resolves to `payload["repository"]["full_name"]`
 - `{__raw__}` — special token that dumps the **entire payload** as indented JSON (truncated at 4000 characters). Useful for monitoring alerts or generic webhooks where the agent needs the full context.
+- `{event_type}` — special token that resolves to the route's resolved event type
 - Missing keys are left as the literal `{key}` string (no error)
 - Nested dicts and lists are JSON-serialized and truncated at 2000 characters
+
+:::caution There is no `{payload}` token
+`{__raw__}` is the only placeholder for the whole payload. `{payload}` is **not** special — it is treated as an ordinary field reference, so unless your payload happens to contain a top-level `payload` field it resolves to nothing and is left in the prompt as the literal text `{payload}`.
+
+This bites most often with notification wrappers. A CrowdSec-style body of `{"alerts": [...]}` makes `{alerts}` work, which makes `{payload}` look like it should work too — it does not. Use `{__raw__}`.
+:::
 
 You can mix `{__raw__}` with regular template variables:
 

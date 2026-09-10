@@ -21,6 +21,11 @@ def _make_adapter(address="hermes@test.com"):
         "EMAIL_PASSWORD": "secret",
         "EMAIL_IMAP_HOST": "imap.test.com",
         "EMAIL_SMTP_HOST": "smtp.test.com",
+        # Scrubbed, not merged: this patch.dict does not clear, so an
+        # EMAIL_FROM_ADDRESS in the developer's own shell would otherwise
+        # decide the visible sender these tests assert on.
+        "EMAIL_FROM_ADDRESS": "",
+        "EMAIL_FROM_ALIASES": "",
     }):
         from plugins.platforms.email.adapter import EmailAdapter
 

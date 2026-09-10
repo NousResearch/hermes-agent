@@ -1336,6 +1336,17 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#   email:
+#     extra:
+#       # One mailbox, several verified sender identities (Gmail "send mail as",
+#       # Microsoft 365 shared mailboxes, catch-all domains). Both default to
+#       # EMAIL_ADDRESS, which stays the IMAP/SMTP login. A reply goes out from
+#       # the identity the sender wrote to; an address outside this set is
+#       # refused and the default sender is used instead.
+#       from_address: "support@example.com"
+#       from_aliases:                       # or a comma-separated string
+#         - "hr@example.com"
+#         - "billing@example.com"
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

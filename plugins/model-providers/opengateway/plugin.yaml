@@ -1,0 +1,6 @@
+name: opengateway-provider
+kind: model-provider
+version: 1.0.0
+description: OpenGateway OpenAI-compatible LLM gateway
+author: Yeongyu Kim
+homepage: https://opengateway.ai/docs/coding-agents/hermes

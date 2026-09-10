@@ -84,6 +84,15 @@ def _is_ancestor_pid(pid: int) -> bool:
     """
     if pid <= 0:
         return False
+    # psutil.Process().parents() enumerates the complete process table on
+    # macOS. Sandboxed/test hosts may deny that sysctl even though the direct
+    # parent is readable. The immediate parent is the common staged-updater
+    # handoff, so handle it without requiring a global process listing.
+    try:
+        if pid == os.getppid():
+            return True
+    except Exception:
+        pass
     try:
         import psutil
         return any(parent.pid == pid for parent in psutil.Process().parents())

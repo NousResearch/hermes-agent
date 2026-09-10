@@ -101,7 +101,20 @@ def _has_pytest_ancestor() -> bool:
     found = False
     if psutil is not None:
         try:
-            found = any(_process_looks_like_pytest(p) for p in psutil.Process().parents())
+            # Walk by pid instead of Process().parents(). On macOS the latter
+            # first enumerates every process via sysctl, which can be denied
+            # to a child even when its direct parent's cmdline/ppid are
+            # readable. This ancestry signal must survive precisely those
+            # scrubbed child environments.
+            parent_pid = os.getppid()
+            seen: set[int] = set()
+            while parent_pid > 1 and parent_pid not in seen:
+                seen.add(parent_pid)
+                parent = psutil.Process(parent_pid)
+                if _process_looks_like_pytest(parent):
+                    found = True
+                    break
+                parent_pid = int(parent.ppid())
         except Exception:
             found = False
     _PYTEST_ANCESTOR = found

@@ -568,6 +568,12 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*",
 
 [tool.setuptools.package-data]
 hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.json"]
+
+[tool.setuptools.data-files]
+# Federation is a checked-in, user-auditable manifest rather than Python
+# code. Install it beside the environment so the CLI remains functional from
+# a wheel as well as from a source checkout.
+"configs/federation" = ["configs/federation/roles.json"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram

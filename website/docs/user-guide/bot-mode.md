@@ -273,3 +273,5 @@ Because Bots are profiles, everything has a terminal equivalent:
 | Create / inspect profiles | `hermes profile create`, `hermes profile list` |
 
 See [Profiles](./profiles.md) for the underlying primitive and [Profile Commands](../reference/profile-commands.md) for the full CLI reference.
+
+For a complete specialist roster—including the Arts Department, librarian, shared-memory, and nerdy-content ingestion roles—see [Federation Role Registry](./federation.md).

@@ -234,6 +234,37 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
 
+def _federation_role(profile_path):
+    """Read optional role identity metadata for Bot Mode roster clients."""
+    try:
+        from pathlib import Path
+        import json
+
+        path = Path(profile_path) / "federation_role.json"
+        if not path.is_file():
+            return None
+        with path.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict) or raw.get("schema_name") != "hermes_federation_role_v1":
+            return None
+        return {
+            key: raw[key]
+            for key in (
+                "role_id",
+                "display_name",
+                "department",
+                "authority",
+                "schedule",
+                "skills",
+                "toolsets",
+                "handoffs",
+            )
+            if key in raw
+        }
+    except Exception:
+        return None
+
+
 @_profile_handler("profiles.list", 5061)
 def _(rid, params: dict) -> dict:
     """List Hermes profiles. ``include_sessions`` (default true) adds ``last_session`` /
@@ -245,6 +276,12 @@ def _(rid, params: dict) -> dict:
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
                "display_name": p.display_name or "", "skill_count": p.skill_count or 0}
+        federation_role = _federation_role(p.path)
+        if federation_role:
+            # Optional and additive: older clients ignore it, while Bot
+            # Mode and future federation surfaces can group/filter the
+            # roster without parsing profile files themselves.
+            row["federation_role"] = federation_role
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))

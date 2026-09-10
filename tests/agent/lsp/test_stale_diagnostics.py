@@ -27,6 +27,11 @@ import pytest
 
 from agent.lsp.client import LSPClient
 
+# These tests intentionally launch the fixed in-process mock LSP child. On
+# macOS it can be reparented before teardown, so the live-system guard cannot
+# reliably identify it from the parent process alone.
+pytestmark = pytest.mark.live_system_guard_bypass
+
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 

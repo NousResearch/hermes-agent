@@ -51,6 +51,17 @@ export interface SessionPreview {
   preview?: string
 }
 
+export interface FederationRole {
+  authority?: string
+  department?: string
+  display_name?: string
+  handoffs?: string[]
+  role_id?: string
+  schedule?: string
+  skills?: string[]
+  toolsets?: string[]
+}
+
 /** Per-bot presentation state, persisted in the profile's `ui_meta`. */
 export interface BotMeta {
   /** Which user-made section this bot is filed under (`user-sections.ts`).
@@ -85,6 +96,7 @@ export interface RosterRow {
   connectionLabel?: string
   description?: string
   display_name?: string
+  federation_role?: FederationRole
   /** An offline twin of a selected bot, kept visible so the row doesn't vanish. */
   ghost?: boolean
   handle?: string

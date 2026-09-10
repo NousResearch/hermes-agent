@@ -421,7 +421,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             mutate(state => {
               const message = state.messages.find(candidate => candidate.id === messageId)
 
-              return message
+              // A newer reply may precede this ACK; it already owns its boundary.
+              const hasNewReply = state.messages.slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
+                .some(candidate => candidate.role === 'assistant')
+
+              return message && state.streamId && !hasNewReply
                 ? appendMidTurnUserMessage(
                     { ...state, messages: state.messages.filter(candidate => candidate.id !== messageId) },
                     message

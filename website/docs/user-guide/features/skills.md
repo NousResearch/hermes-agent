@@ -158,6 +158,26 @@ Level 2: skill_view(name, path)  → Specific reference file       (varies)
 
 The agent only loads the full skill content when it actually needs it.
 
+### Opt-in lean prompt
+
+`hermes config set skills.prompt_mode lean` uses a names-only skills catalog and
+targeted loading guidance for **new sessions in the active profile**. All otherwise
+visible skills remain listed and loadable; name-collision warnings remain visible.
+The agent still loads governing workflows, explicit skill requests, and required
+safety gates, but a weak thematic match alone no longer requires loading a skill.
+When names are ambiguous, it can inspect descriptions with `skills_list`.
+
+The default is `full`, which preserves the existing catalog and loading policy.
+Unset or invalid values also use `full`. Restore it with
+`hermes config set skills.prompt_mode full`. Other profiles are unchanged unless
+configured explicitly. This does not change tool access, permissions or execution
+verification. Existing conversations keep their frozen prompt until an existing
+rebuild boundary, such as context compression; a running process must also have
+loaded the version that implements this option.
+
+Fewer prompt characters do not establish subscription-quota savings: compare
+provider usage, tool rounds and task outcomes in equivalent fresh sessions.
+
 ## SKILL.md Format
 
 ```markdown

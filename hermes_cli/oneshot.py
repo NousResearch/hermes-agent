@@ -22,13 +22,17 @@ from hermes_cli.fallback_config import get_fallback_chain
 
 _ALL_TOOLSETS = {"all", "*"}
 
-# Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
-# billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so
-# batch pipelines can verify the tier they pay for went out on the wire.
+# Keys copied from the run result into the ``--usage-file`` report. ``provider`` and ``model``
+# retain their existing final-runtime semantics for compatibility; the routing fields distinguish
+# the initial and final routes for mixed-provider runs. ``service_tier`` is a billing-audit field:
+# the tier REQUESTED via request_overrides.extra_body (None when unset), so batch pipelines can
+# verify the tier they pay for went out on the wire.
 _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
     "model", "provider", "session_id", "completed",
+    "routing_provenance", "routing_decision_id", "primary_profile", "initial_provider",
+    "initial_model", "final_provider", "final_model", "fallback_used", "fallback_reason",
 )
 
 
@@ -405,6 +409,36 @@ def _apply_stored_session_runtime(
     return choice
 
 
+def _resolve_oneshot_runtime(choice: _ModelChoice) -> tuple[dict, str]:
+    """Resolve the runtime provider for a oneshot turn, falling through to the configured
+    fallback chain on AuthError -- the same startup credential-fallback behavior as the gateway
+    (``gateway.run._resolve_runtime_agent_kwargs``), reusing the one shared implementation in
+    ``hermes_cli.fallback_config``. Returns ``(runtime, effective_model)``; re-raises the
+    original AuthError (wrapped via ``format_runtime_provider_error``) when no fallback is
+    configured or every fallback entry also fails to resolve.
+    """
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=choice.provider,
+            target_model=choice.model or None,
+            explicit_base_url=choice.base_url,
+            explicit_api_key=choice.api_key,
+        )
+        return runtime, choice.model
+    except AuthError as auth_exc:
+        from hermes_cli.config import load_config
+        from hermes_cli.fallback_config import resolve_first_available_fallback
+        from hermes_cli.runtime_provider import format_runtime_provider_error
+
+        resolved = resolve_first_available_fallback(load_config(), logger=logging.getLogger(__name__))
+        if resolved is None:
+            raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+        return resolved.runtime, (resolved.model or choice.model)
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -417,7 +451,6 @@ def _run_agent(
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
     from hermes_cli.config import load_config
-    from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
@@ -429,12 +462,7 @@ def _run_agent(
     session_db = _create_session_db_for_oneshot()
     resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
     choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
-    runtime = resolve_runtime_provider(
-        requested=choice.provider,
-        target_model=choice.model or None,
-        explicit_base_url=choice.base_url,
-        explicit_api_key=choice.api_key,
-    )
+    runtime, choice.model = _resolve_oneshot_runtime(choice)
     if choice.api_mode:
         runtime["api_mode"] = choice.api_mode
 

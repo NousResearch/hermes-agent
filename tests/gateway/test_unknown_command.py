@@ -172,6 +172,38 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
         assert "Unknown command" not in result
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command_name", ["rozmilo-override", "rozmilo_override"])
+async def test_active_plugin_command_dispatches_registered_hyphen_handler(monkeypatch, command_name):
+    from hermes_cli import plugins as plugins_module
+
+    runner = _make_runner()
+    resolved_names = []
+    event = _make_event(f"/{command_name} card-528")
+    session_key = build_session_key(event.source)
+    running_agent = MagicMock()
+    runner._running_agents[session_key] = running_agent
+    runner._check_slash_access = MagicMock(return_value=None)
+
+    def _get_handler(name):
+        resolved_names.append(name)
+        return (lambda args: f"override {args}") if name == "rozmilo-override" else None
+
+    monkeypatch.setattr(
+        plugins_module,
+        "get_plugin_commands",
+        lambda: {"rozmilo-override": {"description": "Override the active run"}},
+    )
+    monkeypatch.setattr(plugins_module, "get_plugin_command_handler", _get_handler)
+
+    result = await runner._handle_message(event)
+
+    assert result == "override card-528"
+    assert resolved_names == ["rozmilo-override"]
+    runner._check_slash_access.assert_called_once_with(event.source, "rozmilo-override")
+    running_agent.interrupt.assert_not_called()
+
+
 # ------------------------------------------------------------------
 # command:<name> decision hook — deny / handled / rewrite
 # ------------------------------------------------------------------

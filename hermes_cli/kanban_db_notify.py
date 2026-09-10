@@ -187,6 +187,27 @@ def list_notify_subs(
     return out
 
 
+def summarize_notify_subs(
+    conn: sqlite3.Connection, task_id: str, *, profile_limit: int = 50,
+) -> dict:
+    """Return bounded ownership facts for read-only operator status surfaces."""
+    rows = conn.execute(
+        "SELECT DISTINCT notifier_profile FROM kanban_notify_subs "
+        "WHERE task_id = ? AND notifier_profile IS NOT NULL AND notifier_profile != '' "
+        "ORDER BY notifier_profile LIMIT ?",
+        (task_id, max(1, int(profile_limit))),
+    ).fetchall()
+    unowned = conn.execute(
+        "SELECT 1 FROM kanban_notify_subs WHERE task_id = ? "
+        "AND (notifier_profile IS NULL OR notifier_profile = '') LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return {
+        "advisory_unowned": unowned is not None,
+        "owned_profiles": [str(row["notifier_profile"]) for row in rows],
+    }
+
+
 def count_notify_subs(
     db_path: Optional[Path] = None,
     *,

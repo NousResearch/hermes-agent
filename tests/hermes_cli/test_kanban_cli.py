@@ -72,6 +72,50 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+@pytest.mark.parametrize(
+    ("command", "tool_name", "expected_args"),
+    [
+        (
+            "complete {task_id} --result done --summary shipped --metadata '{\"tests\":1}'",
+            "kanban_complete",
+            {"result": "done", "summary": "shipped", "metadata": {"tests": 1}},
+        ),
+        (
+            "request-review {task_id} --summary ready --reviewer reviewer "
+            "--metadata '{\"tests\":1}' --force",
+            "kanban_request_review",
+            {"summary": "ready", "reviewer": "reviewer", "metadata": {"tests": 1}, "force": True},
+        ),
+        (
+            "request-changes {task_id} revise this",
+            "kanban_request_changes",
+            {"reason": "revise this"},
+        ),
+    ],
+)
+def test_terminal_lifecycle_transitions_honor_plugin_policy(
+    kanban_home, monkeypatch, command, tool_name, expected_args
+):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="policy protected")
+
+    calls = []
+
+    def block(name, args):
+        calls.append((name, args))
+        return "blocked by plugin policy"
+
+    monkeypatch.setattr("hermes_cli.plugins.resolve_pre_tool_block", block)
+
+    output = kc.run_slash(command.replace("{task_id}", task_id))
+
+    assert "blocked by plugin policy" in output
+    assert calls and calls[0][0] == tool_name
+    assert calls[0][1] == {"task_id": task_id, **expected_args}
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, task_id).status == "ready"
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

@@ -40,7 +40,6 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
-from hermes_cli.fallback_config import get_fallback_chain
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -2372,30 +2371,21 @@ def _credential_pool_for_provider(provider: Optional[str]):
 
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.fallback_config import resolve_first_available_fallback
     try:
         # Canonical loader so managed overlay / ${VAR} expansion reach the fallback chain.
         cfg = _load_gateway_runtime_config()
-        fb_list = get_fallback_chain(cfg)
-        if not fb_list:
+        resolved = resolve_first_available_fallback(cfg, logger=logger)
+        if resolved is None:
             return None
-        for entry in fb_list:
-            try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=resolve_entry_api_key(entry))
-                # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
-                logger.info(
-                    # Log the literal `provider` key from config, not the resolved runtime category — an
-                    # Ollama fallback resolves through the OpenAI-compatible path and would otherwise be
-                    # logged as "openrouter", contradicting the operator's config (#32790).
-                    "Fallback provider resolved: %s model=%s",
-                    entry.get("provider") or runtime.get("provider"), entry.get("model"))
-                return {**_runtime_agent_kwargs(runtime), "model": entry.get("model")}
-            except Exception as fb_exc:
-                logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
-                continue
+        # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
+        logger.info(
+            # Log the literal `provider` key from config, not the resolved runtime category — an
+            # Ollama fallback resolves through the OpenAI-compatible path and would otherwise be
+            # logged as "openrouter", contradicting the operator's config (#32790).
+            "Fallback provider resolved: %s model=%s",
+            resolved.configured_provider or resolved.runtime.get("provider"), resolved.model)
+        return {**_runtime_agent_kwargs(resolved.runtime), "model": resolved.model}
     except Exception:
         pass
     return None

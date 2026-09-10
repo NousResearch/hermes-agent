@@ -79,3 +79,32 @@ def test_lock_is_board_scoped(conn):
             assert held_b is True, "a lock on a different board must be independent"
 
 
+def test_engaged_estop_returns_non_started_result_without_mutation(conn, monkeypatch):
+    task_id = kb.create_task(conn, title="paused", assignee="w")
+    before = {
+        "task": tuple(conn.execute(
+            "SELECT status, current_run_id, claim_lock, worker_pid FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()),
+        "runs": conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id=?", (task_id,)).fetchone()[0],
+        "routing": conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='routing_selected'", (task_id,)
+        ).fetchone()[0],
+    }
+    monkeypatch.setattr(kbd.estop, "check_paused", lambda *_args: True)
+    spawn_calls = []
+    result = kbd.dispatch_once(conn, spawn_fn=lambda *_args, **_kwargs: spawn_calls.append(1))
+    after = {
+        "task": tuple(conn.execute(
+            "SELECT status, current_run_id, claim_lock, worker_pid FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()),
+        "runs": conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id=?", (task_id,)).fetchone()[0],
+        "routing": conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='routing_selected'", (task_id,)
+        ).fetchone()[0],
+    }
+    assert result.paused is True
+    assert result.spawned == []
+    assert spawn_calls == []
+    assert after == before
+
+

@@ -1469,6 +1469,8 @@ def list_tasks(
     tenant: Optional[str] = None, session_id: Optional[str] = None, include_archived: bool = False,
     limit: Optional[int] = None, order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None, current_step_key: Optional[str] = None,
+    block_recurrences_lt: Optional[int] = None, project_id: Optional[str] = None,
+    title: Optional[str] = None, title_contains: Optional[str] = None,
 ) -> list[Task]:
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
@@ -1477,13 +1479,23 @@ def list_tasks(
     for col, val in (
         ("assignee", _canonical_assignee(assignee)), ("status", status), ("tenant", tenant),
         ("session_id", session_id), ("workflow_template_id", workflow_template_id),
-        ("current_step_key", current_step_key),
+        ("current_step_key", current_step_key), ("project_id", project_id),
     ):
         if val is not None:
             query += f" AND {col} = ?"
             params.append(val)
+    if title is not None:
+        query += " AND title = ? COLLATE NOCASE"
+        params.append(str(title))
+    if title_contains is not None:
+        escaped = str(title_contains).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query += " AND title LIKE ? ESCAPE '\\' COLLATE NOCASE"
+        params.append(f"%{escaped}%")
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
+    if block_recurrences_lt is not None:
+        query += " AND block_recurrences < ?"
+        params.append(int(block_recurrences_lt))
     if order_by is not None:
         order_by = order_by.strip().lower()
         if order_by not in VALID_SORT_ORDERS:
@@ -1495,6 +1507,24 @@ def list_tasks(
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()
     return [Task.from_row(r) for r in rows]
+
+
+def count_tasks_by_status(
+    conn: sqlite3.Connection, *, project_id: Optional[str] = None,
+    include_archived: bool = False,
+) -> dict[str, int]:
+    """Return status counts without materializing every matching task."""
+    clauses = [] if include_archived else ["status != 'archived'"]
+    params: list[Any] = []
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS count FROM tasks" + where + " GROUP BY status",
+        params,
+    ).fetchall()
+    return {str(row["status"]): int(row["count"]) for row in rows}
 
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
@@ -1830,6 +1860,38 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return [Event.from_row(r) for r in _task_rows(conn, "task_events", task_id, "created_at ASC, id ASC")]
 
 
+def find_latest_event(
+    conn: sqlite3.Connection, task_id: str, *, kinds: Optional[Iterable[str]] = None,
+    exclude_kinds: Optional[Iterable[str]] = None,
+) -> Optional[Event]:
+    """Return the newest matching event without materializing task history."""
+    clauses = ["task_id = ?"]
+    params: list[Any] = [task_id]
+    included = sorted({str(kind) for kind in kinds or () if kind})
+    excluded = sorted({str(kind) for kind in exclude_kinds or () if kind})
+    if included:
+        clauses.append("kind IN (" + ",".join("?" for _ in included) + ")")
+        params.extend(included)
+    if excluded:
+        clauses.append("kind NOT IN (" + ",".join("?" for _ in excluded) + ")")
+        params.extend(excluded)
+    row = conn.execute(
+        "SELECT * FROM task_events WHERE " + " AND ".join(clauses)
+        + " ORDER BY created_at DESC, id DESC LIMIT 1",
+        params,
+    ).fetchone()
+    return Event.from_row(row) if row else None
+
+
+def count_events(conn: sqlite3.Connection, task_id: str, *, kind: str) -> int:
+    """Count one event kind without loading event payloads."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, kind),
+    ).fetchone()
+    return int(row["count"] if row else 0)
+
+
 def _insert_comment(
     conn: sqlite3.Connection, task_id: str, author: str, body: str, created_at: int,
 ) -> None:
@@ -1862,6 +1924,10 @@ def _end_run(
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    from hermes_cli.kanban_db_routing import merged_run_metadata
+    run_metadata = merged_run_metadata(
+        conn, task_id=task_id, run_id=run_id, metadata=metadata,
+    )
     conn.execute(
         """
         UPDATE task_runs
@@ -1877,7 +1943,7 @@ def _end_run(
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (status or outcome, outcome, summary, error, _json_or_null(run_metadata), now, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
@@ -2082,7 +2148,7 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, profile_override: Optional[str] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
     when the CAS lost. Caller holds the txn."""
@@ -2114,7 +2180,8 @@ def _claim_and_open_run(
         ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
         """,
         (
-            task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
+            task_id, profile_override or (trow["assignee"] if trow else None),
+            trow["current_step_key"] if trow else None,
             lock, expires, trow["max_runtime_seconds"] if trow else None, now,
         ),
     )
@@ -2129,7 +2196,7 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, on_claim_fn=None, profile_override: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -2154,17 +2221,23 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(
+            conn, task_id, "ready", lock, expires, now, profile_override=profile_override,
+        )
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
+        if claimed is not None and profile_override:
+            claimed.assignee = profile_override
+        if claimed is not None and on_claim_fn is not None:
+            on_claim_fn(conn, claimed)
     _fire_task_hook("kanban_task_claimed", claimed, task_id, run_id)
     return claimed
 
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, on_claim_fn=None, profile_override: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2185,11 +2258,17 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={"source_status": "review"}, profile_override=profile_override,
         )
         if run_id is None:
             return None
-        return get_task(conn, task_id)
+        claimed = get_task(conn, task_id)
+        if claimed is not None and profile_override:
+            claimed.assignee = profile_override
+        if claimed is not None and on_claim_fn is not None:
+            on_claim_fn(conn, claimed)
+        return claimed
 
 
 def _retry_status_for_run(

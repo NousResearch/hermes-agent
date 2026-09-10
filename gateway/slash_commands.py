@@ -369,6 +369,66 @@ class GatewaySlashCommandsMixin(
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_project_status_command(self, event: MessageEvent) -> str:
+        """Handle the feature-gated, read-only Phase-C status adapter."""
+        from hermes_cli.kanban_status import (
+            project_status_command_enabled,
+            run_project_status_slash,
+        )
+
+        if not project_status_command_enabled():
+            return "Project status is not enabled (kanban.project_status_command)."
+        try:
+            return await asyncio.to_thread(run_project_status_slash, event.get_command_args())
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            logger.warning("project-status read failed: %s", exc)
+            return "Project status is unavailable. No action taken."
+
+    async def _handle_implement_command(self, event: MessageEvent) -> str:
+        """Handle the feature-gated canonical /implement adapter."""
+        from hermes_cli.kanban_implement import run_implement_slash_rendered
+        try:
+            return await asyncio.to_thread(run_implement_slash_rendered, event.get_command_args())
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            logger.warning("implement dispatch failed: %s", exc)
+            return "Implement is unavailable. No action taken."
+
+    async def _handle_fix_review_command(self, event: MessageEvent) -> str:
+        """Handle the feature-gated canonical Kanban /fix-review adapter."""
+        from hermes_cli.kanban_fix_review import run_fix_review_slash_rendered
+        try:
+            return await asyncio.to_thread(run_fix_review_slash_rendered, event.get_command_args())
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            logger.warning("fix-review dispatch failed: %s", exc)
+            return "Fix-review is unavailable. No action taken."
+
+    async def _handle_continue_command(self, event: MessageEvent) -> str:
+        """Handle the canonical state-aware Kanban /continue router."""
+        from hermes_cli.kanban_continue import run_continue_slash_rendered
+        try:
+            return await asyncio.to_thread(run_continue_slash_rendered, event.get_command_args())
+        except Exception as exc:
+            logger.warning("continue dispatch failed: %s", exc)
+            return "Continue is unavailable. No action taken."
+
+    async def _handle_recover_command(self, event: MessageEvent) -> str:
+        """Handle the canonical state-normalizing Kanban /recover adapter."""
+        from hermes_cli.kanban_recover import run_recover_slash_rendered
+        try:
+            return await asyncio.to_thread(run_recover_slash_rendered, event.get_command_args())
+        except Exception as exc:
+            logger.warning("recover dispatch failed: %s", exc)
+            return "Recover is unavailable. No action taken."
+
+    async def _handle_close_task_command(self, event: MessageEvent) -> str:
+        """Handle the feature-gated canonical Kanban /close-task adapter."""
+        from hermes_cli.kanban_close_task import run_close_task_slash_rendered
+        try:
+            return await asyncio.to_thread(run_close_task_slash_rendered, event.get_command_args())
+        except Exception as exc:
+            logger.warning("close-task dispatch failed: %s", exc)
+            return "Close-task is unavailable. No action taken."
+
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
         source has no platform/chat to route back to."""

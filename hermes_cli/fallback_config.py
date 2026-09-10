@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 
 def _normalized_base_url(value: Any) -> str:
@@ -72,3 +72,46 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
                 seen.add(identity)
                 chain.append(entry)
     return chain
+
+
+class FallbackResolution(NamedTuple):
+    """Non-secret result of a successful fallback-chain walk.
+
+    ``configured_provider`` is the literal ``provider`` key from the matched config entry — not
+    ``runtime.get("provider")``, which reflects the resolved runtime *category* (e.g. an Ollama
+    entry resolves through the OpenAI-compatible path and would read back as ``"openrouter"``).
+    Callers that log or display which fallback fired must use ``configured_provider`` to keep the
+    message consistent with what the operator actually configured (#32790). ``runtime`` itself may
+    still carry credentials (api_key, etc.) — never log it wholesale.
+    """
+
+    runtime: dict[str, Any]
+    model: str | None
+    configured_provider: str | None
+
+
+def resolve_first_available_fallback(
+    config: dict[str, Any] | None, *, logger: Any = None,
+) -> FallbackResolution | None:
+    """Walk the configured fallback chain and return a :class:`FallbackResolution` for the first
+    entry that resolves; ``None`` when no chain is configured or every entry fails to resolve.
+
+    Shared by every startup credential-fallback caller (gateway, oneshot) so there is exactly one
+    fallback-chain-walking implementation: it reuses :func:`get_fallback_chain`,
+    :func:`resolve_entry_api_key`, and ``resolve_runtime_provider`` — never re-derive fallback
+    resolution elsewhere. An entry that fails to resolve (missing/invalid credentials, network
+    error) is skipped in favor of the next; nothing here logs API keys or tokens.
+    """
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    for entry in get_fallback_chain(config):
+        try:
+            runtime = resolve_runtime_provider(
+                requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
+                explicit_api_key=resolve_entry_api_key(entry))
+        except Exception as fb_exc:
+            if logger is not None:
+                logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
+            continue
+        return FallbackResolution(runtime, entry.get("model"), entry.get("provider"))
+    return None

@@ -22,6 +22,14 @@ from typing import Dict, Mapping, Optional
 # at gateway startup when gateway.multiplex_profiles is true.
 _MULTIPLEX_ACTIVE: bool = False
 
+# Context-local counterpart: a task serving a profile OTHER than the process's own, inside a
+# process that is not a multiplexer as a whole — the desktop backend's cron ticker firing a
+# sibling profile's job. Every isolation keyed on ``is_multiplex_active()`` (the routed-dotenv
+# guard, ``get_secret``'s fail-closed miss, subprocess scrubbing, passthrough) applies inside
+# it while the process's own turns keep single-profile semantics. A contextvar, so it reaches
+# the pool worker together with the home override via ``copy_context()``.
+_MULTIPLEX_CONTEXT: ContextVar[bool] = ContextVar("_MULTIPLEX_CONTEXT", default=False)
+
 
 def set_multiplex_active(active: bool) -> None:
     """Mark whether the process is a profile multiplexer (get_secret fails closed)."""
@@ -29,8 +37,19 @@ def set_multiplex_active(active: bool) -> None:
     _MULTIPLEX_ACTIVE = bool(active)
 
 
+def set_multiplex_context(active: bool) -> Token:
+    """Run the current task under multiplex semantics regardless of the process flag.
+    Returns a reset token; pair with :func:`reset_multiplex_context` in a ``finally``."""
+    return _MULTIPLEX_CONTEXT.set(bool(active))
+
+
+def reset_multiplex_context(token: Token) -> None:
+    _MULTIPLEX_CONTEXT.reset(token)
+
+
 def is_multiplex_active() -> bool:
-    return _MULTIPLEX_ACTIVE
+    """True in a multiplexing process, or for a task running under multiplex semantics."""
+    return _MULTIPLEX_ACTIVE or _MULTIPLEX_CONTEXT.get()
 
 
 _SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar("_SECRET_SCOPE", default=None)
@@ -124,8 +143,8 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = scope.get(name)
         if val is not None:
             return val
-        return default if _MULTIPLEX_ACTIVE else _environ_or(name, default)
-    if _MULTIPLEX_ACTIVE:
+        return default if is_multiplex_active() else _environ_or(name, default)
+    if is_multiplex_active():
         raise UnscopedSecretError(
             f"get_secret({name!r}) called with no profile secret scope active "
             f"while multiplexing is on. This credential read must run inside a "
@@ -197,3 +216,18 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
         external_secrets = {}
     secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
     return secrets
+
+
+def refresh_installed_secret_scope(hermes_home: Path) -> bool:
+    """Fold a fresh build of *hermes_home*'s secrets into the INSTALLED scope, in place.
+
+    A scope is frozen when installed, but a fire can learn of new values afterwards: a routed cron
+    fire's first agent build discovers plugin secret sources, and under multiplex semantics the
+    reload that follows is hydrate-only (never ``os.environ``), so nothing else would carry those
+    values into the scope this fire already holds. The caller names the home the installed scope
+    was built for. True when a scope was updated; False when none is installed."""
+    scope = _SECRET_SCOPE.get()
+    if not isinstance(scope, dict):
+        return False
+    scope.update(build_profile_secret_scope(hermes_home))
+    return True

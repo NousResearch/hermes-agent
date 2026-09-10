@@ -1288,6 +1288,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             home = get_hermes_home()
             reset_secret_source_cache(home)
             load_hermes_dotenv(hermes_home=home)
+            # A scope installed for this home was frozen BEFORE these sources existed — a routed cron
+            # fire builds its scope in run_one_job and only then, on its first agent build, discovers
+            # plugins; under multiplex semantics the load above is hydrate-only, so fold the values
+            # into the installed scope or THIS fire never sees the plugin credential.
+            from agent.secret_scope import refresh_installed_secret_scope
+            refresh_installed_secret_scope(Path(home))
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
                          ", ".join(sorted(enabled_names)))
         except Exception as exc:

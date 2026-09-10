@@ -1687,6 +1687,12 @@ class _EventTail:
             out.append({**dict(r), "payload": payload})
         return (rows[-1]["id"] if rows else cursor), out
 
+    def _current_max(self) -> int:
+        if self._conn is None:
+            self._conn = kbc.connect(board=self._board)
+        row = self._conn.execute("SELECT MAX(id) AS m FROM task_events").fetchone()
+        return int(row["m"] or 0) if row is not None else 0
+
     def _close(self) -> None:
         if self._conn is not None:
             self._conn.close()
@@ -1696,6 +1702,13 @@ class _EventTail:
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kanban-events")
         return await asyncio.get_running_loop().run_in_executor(self._executor, self._fetch, cursor)
+
+    async def baseline(self) -> int:
+        """Current max event id, for a fresh socket with no ``since``: starting the tail there
+        (not 0) means it streams only NEW events instead of replaying the entire ledger."""
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kanban-events")
+        return await asyncio.get_running_loop().run_in_executor(self._executor, self._current_max)
 
     async def shutdown(self) -> None:
         if self._executor is None:
@@ -1717,8 +1730,14 @@ async def stream_events(ws: WebSocket):
     # Board is pinned at the handshake; the UI opens a new WS on board change
     # rather than reconciling two cursors mid-stream.
     tail = _EventTail(_ws_board(ws.query_params.get("board")))
-    cursor = _int_param(ws, "since")
     try:
+        # A fresh socket with no ``since`` baselines at the current max event id instead of 0, so
+        # it streams only new events instead of replaying the entire ledger; an explicit ``since``
+        # (including "0", a client resuming from the very start) is honored as given.
+        cursor = (
+            await tail.baseline() if ws.query_params.get("since") is None
+            else _int_param(ws, "since")
+        )
         while True:
             # Race receive() against the poll interval so a disconnect is detected even when no
             # events flow (else idle boards leak poll tasks). Other client messages are ignored.

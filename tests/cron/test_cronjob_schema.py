@@ -19,3 +19,14 @@ def test_cronjob_schema_action_description_flags_create_requirements():
     assert "REQUIRED" in action_desc
 
 
+def test_cronjob_schema_does_not_suggest_terminal():
+    """H3 (c): the schema must not prompt the model to request terminal."""
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    desc = CRONJOB_SCHEMA["parameters"]["properties"]["enabled_toolsets"]["description"]
+    lowered = desc.lower()
+    assert "use \"terminal\"" not in lowered
+    assert '"terminal"' not in lowered
+    assert "never receives more toolsets than the platform" in lowered
+
+

@@ -80,6 +80,10 @@ describe('click-to-edit user message', () => {
 
     const bubble = await screen.findByRole('button', { name: 'Edit message' })
 
+    // Themes provide a dedicated user-bubble border. The message component
+    // must consume it rather than flattening every theme to the generic stroke.
+    expect(bubble.className).toContain('border-(--dt-user-bubble-border)')
+
     fireEvent.click(bubble)
 
     await waitFor(() => {

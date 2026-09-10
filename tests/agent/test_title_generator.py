@@ -127,6 +127,61 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("question", "answer") == "Investigate the title resolver bug"
 
+    @pytest.mark.parametrize("echo", [
+        "Fix login button on mobile",
+        "fix login button on mobile",
+        '"Fix login button on mobile"',
+        "(Fix login button on mobile)",
+        "[Fix login button on mobile]",
+        "Postgres connection pool exhaustion",
+        "Code changes",
+    ])
+    def test_rejects_prompt_example_echo(self, echo):
+        """A model that parrots one of the prompt's own example titles back
+        must be rejected — a canned example says nothing about the session.
+        Port of QwenLM/qwen-code#9709 (their #9706 bug class)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = echo
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("help me with something unrelated") is None
+
+    def test_friendly_greeting_example_is_allowed(self):
+        """'Friendly greeting' is prescribed output for bare greetings, not an
+        echo failure — it must pass the guard."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Friendly greeting"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("hey there!") == "Friendly greeting"
+
+    def test_prompt_examples_render_from_guard_constants(self):
+        """The prompt's example lines are rendered from the same constants the
+        guard checks, so the two cannot drift apart."""
+        from agent.title_generator import (
+            _PROMPT_GOOD_EXAMPLES,
+            _PROMPT_VAGUE_EXAMPLE,
+            _TITLE_PROMPT_TEMPLATE,
+        )
+
+        for example in _PROMPT_GOOD_EXAMPLES:
+            assert f'Good: {{"title": "{example}"}}' in _TITLE_PROMPT_TEMPLATE
+        assert f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}' in _TITLE_PROMPT_TEMPLATE
+
+    def test_topical_title_resembling_example_passes(self):
+        """The guard is exact-match only: a genuinely topical title that merely
+        resembles an example must not be rejected."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Fix login button on desktop"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("the login button is broken on desktop") == (
+                "Fix login button on desktop"
+            )
+
 
 
     def test_invokes_failure_callback_on_exception(self):

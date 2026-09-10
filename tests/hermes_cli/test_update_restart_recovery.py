@@ -14,10 +14,13 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import os
 import subprocess
 import sys
 import textwrap
 from types import SimpleNamespace
+
+import pytest
 
 from hermes_cli import update_abort_recovery as abort_recovery
 from hermes_cli import update_cmd
@@ -481,3 +484,145 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
     assert [argv[argv.index("-p") + 1] for argv in restarts] == ["coder", "default"]
     for argv in restarts:
         assert argv[-2:] == ["gateway", "restart"]
+
+
+def _env_sensitive_systemctl(calls: list, restarted: list):
+    """A ``systemctl`` faithful to the real one: every ``--user`` probe fails without a session bus.
+
+    That is the observable that separates a reachable user manager from an absent one — the real
+    command prints ``Failed to connect to user scope bus via local transport`` and exits 1.
+    """
+
+    def fake_run(argv, **kwargs):
+        argv = list(argv)
+        if "hermes_cli.main" in argv:  # the per-profile relaunch
+            calls.append(argv)
+            return _Completed(0)
+        if argv and str(argv[0]).endswith("systemctl"):
+            calls.append(argv)
+            user_scope = "--user" in argv
+            if user_scope and not (
+                os.environ.get("XDG_RUNTIME_DIR") and os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+            ):
+                return _Completed(1, stderr="Failed to connect to user scope bus via local transport")
+            if "is-active" in argv:
+                return _Completed(0, stdout="active\n")
+            if "list-units" in argv:
+                # The serve unit exists in the user manager only (system scope: nothing to recover).
+                return _Completed(0, stdout="hermes-serve.service loaded active running\n" if user_scope else "")
+            if "show" in argv:
+                return _Completed(0, stdout="5151\n" if restarted else "4242\n")
+            if "restart" in argv:
+                restarted.append({"user" if user_scope else "system": argv[-1]})
+                return _Completed(0)
+            return _Completed(0)
+        return _Completed(0)
+
+    return fake_run
+
+
+@pytest.mark.linux_only
+def test_bus_less_recovery_child_reaches_our_user_manager(monkeypatch):
+    """#107614: the recovery child must observe a user manager that IS on disk.
+
+    ``update_abort_recovery`` spawns this module with ``os.environ.copy()``, so a bus-less
+    dispatcher (``sudo -u <user>``, cron, a systemd service, an SSH wrapper) hands the child no
+    session bus. Every ``systemctl --user`` probe then fails, and two things follow: the profile is
+    reported ``relaunch_attempted`` rather than ``verified`` — which ``_abort_recovery_is_complete``
+    reads as incomplete, so a healthy restart still fails the update — and user-scope
+    ``hermes-serve*`` units are never listed, so they are neither restarted nor reported.
+    """
+    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    runtime_dir = f"/run/user/{os.getuid()}"
+    # The on-disk state ``loginctl enable-linger`` leaves behind: ours, and the bus socket exists.
+    monkeypatch.setattr(recovery, "_runtime_dir_is_ours", lambda path: str(path) == runtime_dir)
+    monkeypatch.setattr(recovery, "_path_exists", lambda path: str(path) == f"{runtime_dir}/bus")
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(recovery.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls: list = []
+    restarted: list = []
+    run = _env_sensitive_systemctl(calls, restarted)
+
+    profiles = recovery.restart_profiles(["default"], supervisors={"default": "systemd"}, run=run)
+    serve = recovery.restart_serve_units(run=run)
+
+    assert profiles == {"verified": ["default"], "relaunch_attempted": [], "failed": []}
+    assert serve == {"verified": ["user/hermes-serve"], "failed": []}
+    assert os.environ["XDG_RUNTIME_DIR"] == runtime_dir
+    assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={runtime_dir}/bus"
+    assert restarted == [{"user": "hermes-serve.service"}]
+
+
+@pytest.mark.linux_only
+def test_bus_less_recovery_child_never_fabricates_a_bus(monkeypatch):
+    """Fail closed, never invent: with no user manager on disk the bare environment must survive.
+
+    A fabricated bus address would turn an honest "could not verify" into a connect failure that
+    looks like a broken host, and would let a later probe "reach" a manager that does not exist.
+    """
+    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    monkeypatch.setattr(recovery, "_runtime_dir_is_ours", lambda path: False)
+    monkeypatch.setattr(recovery, "_path_exists", lambda path: False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(recovery.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls: list = []
+    restarted: list = []
+    run = _env_sensitive_systemctl(calls, restarted)
+
+    profiles = recovery.restart_profiles(["default"], supervisors={"default": "systemd"}, run=run)
+    serve = recovery.restart_serve_units(run=run)
+
+    assert profiles == {"verified": [], "relaunch_attempted": ["default"], "failed": []}
+    assert serve == {"verified": [], "failed": []}
+    assert restarted == []
+    assert "XDG_RUNTIME_DIR" not in os.environ
+    assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+
+@pytest.mark.linux_only
+def test_bus_less_recovery_child_result_completes_the_abort_path(monkeypatch):
+    """#107614, consumer half: what the child prints is what decides the update's exit code.
+
+    ``_abort_recovery_is_complete()`` requires ``not relaunch_attempted``, so a bus-less child's
+    misclassification of a healthy profile makes completeness unprovable: the abort path keeps
+    ``out.incomplete`` set and ``hermes update`` exits 1 for a gateway that WAS restarted onto the
+    new code. Drives the real parent entry with the real child passes for a bus-less dispatch.
+    """
+    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    runtime_dir = f"/run/user/{os.getuid()}"
+    monkeypatch.setattr(recovery, "_runtime_dir_is_ours", lambda path: str(path) == runtime_dir)
+    monkeypatch.setattr(recovery, "_path_exists", lambda path: str(path) == f"{runtime_dir}/bus")
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(recovery.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls: list = []
+    restarted: list = []
+    child_run = _env_sensitive_systemctl(calls, restarted)
+
+    def fake_child(argv, **kwargs):
+        """The fresh child's output: the production passes, in the environment it inherited."""
+        payload = json.loads(kwargs["input"])
+        result = recovery.restart_profiles(
+            payload["profiles"], supervisors=payload["supervisors"], run=child_run
+        )
+        if payload["serve_units"]["recover"]:
+            result["serve_units"] = recovery.restart_serve_units(run=child_run)
+        return _Completed(0, stdout=json.dumps(result))
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", fake_child)
+    plan = SimpleNamespace(runtimes=[_runtime("default", "systemd")])
+
+    result = update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False)
+
+    assert result["verified"] == ["default"]
+    assert result["relaunch_attempted"] == []
+    # The consequence the issue reports: the abort path may clear ``incomplete`` (exit 0) instead of
+    # failing the whole update for a fleet that is already running the new code.
+    assert update_cmd._abort_recovery_is_complete(
+        planned_gateway_profiles={"default"},
+        covered_gateway_profiles={"default"},
+        recovery_result=result,
+        stale_runtime_rows=[],
+    )

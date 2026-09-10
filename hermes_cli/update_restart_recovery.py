@@ -109,6 +109,61 @@ def _run_profile_restart(profile: str, *, run: Callable[..., Any]) -> bool:
     return _succeeded(_run_quiet(run, argv, timeout=_PROFILE_RESTART_TIMEOUT, **kwargs))
 
 
+def _runtime_dir_is_ours(path: str) -> bool:
+    """True only when ``path`` is a runtime directory this uid owns (never adopt a foreign
+    ``/run/user/0`` leaked by ``su``/``sudo -u``)."""
+    uid = os.getuid()  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    try:
+        return os.path.isdir(path) and os.stat(path).st_uid == uid
+    except OSError:
+        return False
+
+
+def _path_exists(path: str) -> bool:
+    try:
+        return os.path.exists(path)
+    except OSError:
+        return False
+
+
+def _adopt_user_bus_env() -> None:
+    """Point ``systemctl --user`` at OUR user manager when the dispatcher did not.
+
+    ``update_abort_recovery._run_fresh_recovery_process`` spawns this module with
+    ``os.environ.copy()``, so a bus-less dispatcher (``sudo -u <user>``, cron, a systemd service, an
+    SSH wrapper) hands the child no session bus. Every ``systemctl --user`` probe then fails against
+    a perfectly reachable user manager: the profile is reported ``relaunch_attempted`` rather than
+    ``verified`` (which is what ``_abort_recovery_is_complete`` requires), and user-scope
+    ``hermes-serve*`` units are never listed at all, so they are neither restarted nor reported.
+
+    Same contract as ``gateway._ensure_user_systemd_env``, inlined: this module deliberately imports
+    no Hermes code (importing the freshly pulled tree is what aborted the phase that called us).
+    Adopts only our own ``/run/user/<uid>``, and only when the ``bus`` socket exists — a genuinely
+    bus-less host keeps failing its probes instead of being handed an address that points at nothing.
+    """
+    if sys.platform != "linux":  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+        return
+    uid = os.getuid()  # windows-footgun: ok — see above
+    ours = f"/run/user/{uid}"
+    xdg = os.environ.get("XDG_RUNTIME_DIR")
+    if (not xdg or not _runtime_dir_is_ours(xdg)) and _runtime_dir_is_ours(ours):
+        os.environ["XDG_RUNTIME_DIR"] = ours
+    if "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
+        bus = f"{os.environ.get('XDG_RUNTIME_DIR', ours)}/bus"
+        if _path_exists(bus):
+            os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+
+
+def _user_scope_cmd(systemctl: str) -> list[str]:
+    """``systemctl --user`` argv, with the user bus adopted first.
+
+    Both user-scope probe paths (``_systemd_verified_active`` and ``_systemctl_scopes``) go through
+    here, so a future call site cannot get the argv without the normalization.
+    """
+    _adopt_user_bus_env()
+    return [systemctl, "--user"]
+
+
 def _systemd_unit_candidates(profile: str) -> tuple[str, ...]:
     """Unit names the existing systemd gateway lifecycle produces per profile."""
     if profile == "default":
@@ -122,7 +177,7 @@ def _systemd_verified_active(profile: str, *, run: Callable[..., Any]) -> bool:
     ``active``) means we could NOT verify, never that the restart failed."""
     systemctl = shutil.which("systemctl")
     return bool(systemctl) and any(
-        _unit_is_active([systemctl, "--user"], unit, run=run, require_rc0=True)
+        _unit_is_active(_user_scope_cmd(systemctl), unit, run=run, require_rc0=True)
         for unit in _systemd_unit_candidates(profile)
     )
 
@@ -153,12 +208,14 @@ def _systemctl_scopes() -> list[tuple[str, list[str]]]:
 
     ``systemctl`` comes from ``shutil.which`` so this module never imports a Hermes platform helper —
     importing the freshly pulled tree is exactly what aborted the phase that called us. Scopes carry
-    their label because the same unit name in both managers is two different processes.
+    their label because the same unit name in both managers is two different processes. The user
+    scope's argv is built by ``_user_scope_cmd`` so the session bus is adopted even when the
+    dispatcher handed this process none.
     """
     systemctl = shutil.which("systemctl")
     if not systemctl or sys.platform != "linux":
         return []
-    return [("user", [systemctl, "--user"]), ("system", [systemctl])]
+    return [("user", _user_scope_cmd(systemctl)), ("system", [systemctl])]
 
 
 def _listed_serve_units(scope: list[str], *, run: Callable[..., Any]) -> list[str]:

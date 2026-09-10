@@ -147,13 +147,16 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
         record_step(step, ok, detail)
 
 
-def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
+def _git_run(git_cmd, args, cwd=None, *, check=False, network=False, env=None):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
-    terminal prompt so an HTTP 401 fails fast instead of hanging."""
+    terminal prompt so an HTTP 401 fails fast instead of hanging. ``env`` overrides the child
+    environment (used to pass the MSYS-noglob env for brace-bearing ``stash@{N}`` selectors)."""
+    run_kwargs = _no_prompt_git_kwargs() if network else {}
+    if env is not None:
+        run_kwargs["env"] = env
     return subprocess.run(
         git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
-        text=True, encoding="utf-8", errors="replace", check=check,
-        **(_no_prompt_git_kwargs() if network else {}))
+        text=True, encoding="utf-8", errors="replace", check=check, **run_kwargs)
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:

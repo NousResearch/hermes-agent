@@ -1253,3 +1253,26 @@ def test_prune_orphan_rescue_refs_with_real_git_unpins_objects(tmp_path):
     # And gc can now reclaim the snapshot's objects.
     git("gc", "-q", "--prune=now")
     assert git("cat-file", "-e", snap_sha, check=False).returncode != 0
+
+
+def test_drop_restored_stash_passes_msys_noglob_env(monkeypatch):
+    """The stash-drop call must run with an env carrying MSYS ``noglob`` so
+    Git-for-Windows does not strip the braces off the ``stash@{N}`` selector,
+    which would leave the auto-stash undropped after a restore (#87542)."""
+    from hermes_cli import update_cmd_stash
+
+    calls = []
+
+    def fake_git_run(git_cmd, args, cwd=None, *, check=False, network=False, env=None):
+        calls.append({"args": args, "env": env})
+        return SimpleNamespace(returncode=0, stdout="", stderr="", args=args)
+
+    monkeypatch.setattr(update_cmd, "_git_run", fake_git_run)
+    monkeypatch.setattr(update_cmd_stash, "_resolve_stash_selector", lambda *a, **k: "stash@{0}")
+
+    update_cmd_stash._drop_restored_stash(["git"], Path("."), "deadbeef")
+
+    drop_call = next(c for c in calls if c["args"][:2] == ["stash", "drop"])
+    assert drop_call["args"] == ["stash", "drop", "stash@{0}"]
+    assert drop_call["env"] is not None
+    assert "noglob" in drop_call["env"]["MSYS"].split()

@@ -6,7 +6,7 @@ import { startPromptLiveSession } from '../app/useMainApp.js'
 describe('startPromptLiveSession', () => {
   it('keeps the created target through a delayed model switch without publishing into the new focus', async () => {
     patchUiState({ sid: 'created' })
-    let finish!: (value: { value: string }) => void
+    let finish!: (value: { model: string }) => void
     const dispatched: unknown[] = []
     const notices: string[] = []
 
@@ -17,13 +17,18 @@ describe('startPromptLiveSession', () => {
       newLiveSession: async () => 'created',
       onModelSwitched: () => notices.push('model'),
       prompt: 'private prompt',
-      rpc: () => new Promise(resolve => { finish = resolve }),
+      rpc: async method =>
+        method === 'session.resume'
+          ? { revision: 8, execution_generation: 4 }
+          : new Promise(resolve => {
+              finish = resolve
+            }),
       sys: text => notices.push(text)
     })
 
-    await Promise.resolve()
+    await new Promise(resolve => setImmediate(resolve))
     patchUiState({ sid: 'other' })
-    finish({ value: 'chosen' })
+    finish({ model: 'chosen' })
     await pending
     expect(dispatched).toEqual([{ text: 'private prompt', destination: expect.objectContaining({ sid: 'created' }) }])
     expect(notices).toEqual([])
@@ -48,7 +53,9 @@ describe('startPromptLiveSession', () => {
       rpc: async (method, params) => {
         calls.push(['rpc', { method, params }])
 
-        return { value: 'kimi-k2.6', warning: '' }
+        return method === 'session.resume'
+          ? { revision: 8, execution_generation: 4 }
+          : { model: 'kimi-k2.6', warning: '' }
       },
       sys: text => calls.push(['sys', text])
     })
@@ -56,16 +63,24 @@ describe('startPromptLiveSession', () => {
     expect(sid).toBe('abc123')
     expect(calls).toEqual([
       ['new', { message: 'new live session started', title: undefined }],
+      ['rpc', { method: 'session.resume', params: { session_id: 'abc123' } }],
       [
         'rpc',
         {
-          method: 'config.set',
-          params: { key: 'model', session_id: 'abc123', value: 'kimi-k2.6 --provider ollama-cloud --session' }
+          method: 'session.mutate',
+          params: {
+            session_id: 'abc123',
+            request_id: expect.any(String),
+            expected_revision: 8,
+            expected_generation: 4,
+            operation: 'model',
+            payload: { model: 'kimi-k2.6', provider: 'ollama-cloud' }
+          }
         }
       ],
       ['sys', 'model → kimi-k2.6'],
-      ['warn', { value: 'kimi-k2.6', warning: '' }],
-      ['model-switched', { result: { value: 'kimi-k2.6', warning: '' }, value: 'kimi-k2.6' }],
+      ['warn', { model: 'kimi-k2.6', value: 'kimi-k2.6', warning: '' }],
+      ['model-switched', { result: { model: 'kimi-k2.6', value: 'kimi-k2.6', warning: '' }, value: 'kimi-k2.6' }],
       ['dispatch', 'Build the thing']
     ])
   })

@@ -16,7 +16,7 @@ import {
   type StatusBarMode
 } from './interfaces.js'
 import { turnController } from './turnController.js'
-import { patchUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -254,10 +254,23 @@ export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
-  setBellOnPrompt?: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void,
+  scope?: { sid: string; isCurrent: () => boolean }
 ): Promise<ConfigFullResponse | null> {
-  const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
-  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
+  const params = scope ? { session_id: scope.sid } : {}
+  const [cfg, busy] = await Promise.all([
+    quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full', ...params }),
+    gw.isCanonical && scope ? quietRpc(gw, 'config.get', { key: 'busy', ...params }) : null
+  ])
+
+  if (scope && !scope.isCurrent()) {
+    return null
+  }
+
+  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt, !gw.isCanonical)
+  if (gw.isCanonical && BUSY_MODES.has(busy?.value)) {
+    patchUiState({ busyInputMode: busy!.value })
+  }
 
   return cfg
 }
@@ -266,7 +279,8 @@ export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
-  setBellOnPrompt?: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void,
+  applyBusy = true
 ) => {
   const d = cfg?.config?.display ?? {}
   const approvals = cfg?.config?.approvals
@@ -290,7 +304,7 @@ export const applyDisplay = (
 
   patchUiState({
     battery: !!d.battery,
-    busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
+    ...(applyBusy ? { busyInputMode: normalizeBusyInputMode(d.busy_input_mode) } : {}),
     compact: !!d.tui_compact,
     // Fail safe: only YAML boolean false disables the prompt. A transient
     // config RPC failure (cfg=null) preserves the last known policy instead
@@ -331,12 +345,16 @@ export function useConfigSync({
       return
     }
 
+    let active = true
+    const scope = { sid, isCurrent: () => active && getUiState().sid === sid }
+
     // Keep startup cheap: voice.toggle status probes optional audio/STT deps and
     // can run long enough to delay prompt.submit on the single stdio RPC pipe.
     // Environment flags are enough to initialize the UI bit; the heavier status
     // check still runs when the user opens /voice.
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
-    quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
+    quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid }).then(r => {
+      if (!scope.isCurrent()) return
       mtimeRef.current = Number(r?.mtime ?? 0)
       // Seed the MCP revision baseline too: after a normal boot mtime is
       // already non-zero, so the poller's baseline branch never runs, and an
@@ -344,7 +362,10 @@ export function useConfigSync({
       // mcp_rev) look like an MCP change and fire a needless reload.mcp.
       mcpRevRef.current.accepted = String(r?.mcp_rev ?? '')
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
+    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt, scope)
+    return () => {
+      active = false
+    }
   }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
@@ -352,8 +373,11 @@ export function useConfigSync({
       return
     }
 
+    let active = true
+    const scope = { sid, isCurrent: () => active && getUiState().sid === sid }
     const id = setInterval(() => {
-      quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
+      quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid }).then(r => {
+        if (!scope.isCurrent()) return
         const next = Number(r?.mtime ?? 0)
         const nextMcpRev = String(r?.mcp_rev ?? '')
 
@@ -392,11 +416,14 @@ export function useConfigSync({
           )
         }
 
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
+        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt, scope)
       })
     }, MTIME_POLL_MS)
 
-    return () => clearInterval(id)
+    return () => {
+      active = false
+      clearInterval(id)
+    }
   }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceRecordKey, sid])
 }
 

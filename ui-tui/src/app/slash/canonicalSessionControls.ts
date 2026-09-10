@@ -2,15 +2,18 @@ import { randomUUID } from 'node:crypto'
 
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
-import type { GatewayClient } from '../../gatewayClient.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { getUiState, patchUiState } from '../uiStore.js'
 
 import type { SlashRunCtx } from './types.js'
 
+interface MutationGateway {
+  request: (method: string, params?: Record<string, unknown>) => Promise<unknown>
+}
+
 // Keep the original CAS tuple after a lost reply. Reissuing the same command
 // must query that receipt, not silently authorize another write at a new revision.
-const pending = new WeakMap<GatewayClient, Map<string, Record<string, unknown>>>()
+const pending = new WeakMap<MutationGateway, Map<string, Record<string, unknown>>>()
 
 function modelPayload(arg: string) {
   const parts = arg.trim().split(/\s+/)
@@ -40,6 +43,69 @@ function modelPayload(arg: string) {
   return payload
 }
 
+export async function mutateCanonicalSession(
+  gw: MutationGateway,
+  sid: string,
+  operation: 'model' | 'branch' | 'compress',
+  arg: string,
+  stale: () => boolean = () => false
+) {
+  const payload =
+    operation === 'model' ? modelPayload(arg) : arg ? { [operation === 'branch' ? 'title' : 'focus']: arg } : {}
+
+  let requests = pending.get(gw)
+
+  if (!requests) {
+    requests = new Map()
+    pending.set(gw, requests)
+  }
+
+  const key = JSON.stringify([sid, operation, payload])
+  let params = requests.get(key)
+
+  if (!params) {
+    const snapshot = asRpcResult(await gw.request('session.resume', { session_id: sid }))
+
+    if (stale()) {
+      return
+    }
+
+    if (!Number.isSafeInteger(snapshot?.revision) || !Number.isSafeInteger(snapshot?.execution_generation)) {
+      throw new Error('session execution identity unavailable; reconnect before editing')
+    }
+
+    params = {
+      session_id: sid,
+      request_id: randomUUID(),
+      expected_revision: snapshot!.revision,
+      expected_generation: snapshot!.execution_generation,
+      operation,
+      payload
+    }
+    requests.set(key, params)
+  }
+
+  let result
+
+  try {
+    result = asRpcResult(await gw.request('session.mutate', params))
+
+    if (!result) {
+      throw new Error('invalid response: session.mutate')
+    }
+
+    requests.delete(key)
+  } catch (error) {
+    // A structured authority refusal is definitive; transport errors are not.
+    if ((error as { data?: { reason?: string } })?.data?.reason) {
+      requests.delete(key)
+    }
+
+    throw error
+  }
+  return { result, expectedGeneration: params.expected_generation as number }
+}
+
 export async function runCanonicalSessionControl(
   operation: 'model' | 'branch' | 'compress',
   arg: string,
@@ -52,60 +118,13 @@ export async function runCanonicalSessionControl(
       throw new Error('no active session')
     }
 
-    const payload =
-      operation === 'model' ? modelPayload(arg) : arg ? { [operation === 'branch' ? 'title' : 'focus']: arg } : {}
+    const mutation = await mutateCanonicalSession(gw, ctx.sid, operation, arg, ctx.stale)
 
-    let requests = pending.get(gw)
-
-    if (!requests) {
-      requests = new Map()
-      pending.set(gw, requests)
+    if (!mutation) {
+      return
     }
 
-    const key = JSON.stringify([ctx.sid, operation, payload])
-    let params = requests.get(key)
-
-    if (!params) {
-      const snapshot = asRpcResult(await gw.request('session.resume', { session_id: ctx.sid }))
-
-      if (ctx.stale()) {
-        return
-      }
-
-      if (!Number.isSafeInteger(snapshot?.revision) || !Number.isSafeInteger(snapshot?.execution_generation)) {
-        throw new Error('session execution identity unavailable; reconnect before editing')
-      }
-
-      params = {
-        session_id: ctx.sid,
-        request_id: randomUUID(),
-        expected_revision: snapshot!.revision,
-        expected_generation: snapshot!.execution_generation,
-        operation,
-        payload
-      }
-      requests.set(key, params)
-    }
-
-    let result
-
-    try {
-      result = asRpcResult(await gw.request('session.mutate', params))
-
-      if (!result) {
-        throw new Error('invalid response: session.mutate')
-      }
-
-      requests.delete(key)
-    } catch (error) {
-      // A structured authority refusal is definitive; transport errors are not.
-      if ((error as { data?: { reason?: string } })?.data?.reason) {
-        requests.delete(key)
-      }
-
-      throw error
-    }
-
+    const { result, expectedGeneration } = mutation
     if (ctx.stale()) {
       return
     }
@@ -115,7 +134,7 @@ export async function runCanonicalSessionControl(
     if (
       operation !== 'branch' &&
       (current?.execution_epoch !== ctx.ui.info?.execution_epoch ||
-        (current?.execution_generation ?? 0) > (result.execution_generation ?? params.expected_generation))
+        (current?.execution_generation ?? 0) > (result.execution_generation ?? expectedGeneration))
     ) {
       return
     }

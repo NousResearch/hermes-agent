@@ -18,7 +18,6 @@ import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
-import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
@@ -57,6 +56,7 @@ import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfa
 import { $overlayState, capturePromptResponseGuard, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
+import { mutateCanonicalSession } from './slash/canonicalSessionControls.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
@@ -129,10 +129,11 @@ export async function startPromptLiveSession({
   }
 
   const destination = Object.freeze({ ...captureDestination(), sid })
-  const requestedModel = modelArg ? sessionScopedModelArg(modelArg) : ''
+  const requestedModel = modelArg?.trim() ?? ''
 
   if (requestedModel) {
-    const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
+    const mutation = await mutateCanonicalSession({ request: rpc }, sid, 'model', requestedModel)
+    const result = mutation ? { ...mutation.result, value: mutation.result.model } : null
 
     if (!result?.value) {
       sys('error: invalid response: model switch')

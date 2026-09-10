@@ -23,11 +23,14 @@ import { notify, notifyError } from '@/store/notifications'
 
 import type { ImageDetachResponse } from '../../types'
 
-const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico)$/i
+const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico|heic|heif|avif)$/i
 
 const BLOB_MIME_EXTENSION: Record<string, string> = {
   'image/bmp': '.bmp',
   'image/gif': '.gif',
+  'image/heic': '.heic',
+  'image/heif': '.heif',
+  'image/avif': '.avif',
   'image/jpeg': '.jpg',
   'image/png': '.png',
   'image/svg+xml': '.svg',
@@ -544,7 +547,7 @@ export function useComposerActions({
       filters: [
         {
           name: t.composer.images,
-          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
+          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'heic', 'heif', 'avif']
         }
       ]
     })

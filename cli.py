@@ -1706,6 +1706,7 @@ def _cli_visible_print(text: str = "") -> None:
 _IMAGE_EXTENSIONS = frozenset({
     '.png', '.jpg', '.jpeg', '.gif', '.webp',
     '.bmp', '.tiff', '.tif', '.svg', '.ico',
+    '.heic', '.heif', '.avif',
 })
 
 

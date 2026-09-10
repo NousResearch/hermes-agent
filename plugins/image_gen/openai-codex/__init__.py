@@ -39,7 +39,24 @@ logger = logging.getLogger(__name__)
 _MAX_ERROR_BODY_CHARS = 500
 
 # Hosts the ``image_generation`` tool call; ``API_MODEL`` does the image work.
+# Override via ``CODEX_CHAT_MODEL`` for accounts without this host (issue #107076).
 _CODEX_CHAT_MODEL = "gpt-5.5"
+
+
+def _resolve_codex_chat_model() -> str:
+    """Host model for the Responses ``image_generation`` tool.
+
+    ``CODEX_CHAT_MODEL`` overrides the default when set and non-empty after
+    strip; whitespace-only is treated as unset so the documented default stays.
+    Orthogonal to ``OPENAI_IMAGE_MODEL`` (tool model, not host).
+    """
+    override = os.environ.get("CODEX_CHAT_MODEL")
+    if override is None:
+        return _CODEX_CHAT_MODEL
+    stripped = override.strip()
+    return stripped or _CODEX_CHAT_MODEL
+
+
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation and image editing "
@@ -181,7 +198,7 @@ def _build_responses_payload(
     nudged by ``instructions``."""
     content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}, *(input_images or [])]
     return {
-        "model": _CODEX_CHAT_MODEL,
+        "model": _resolve_codex_chat_model(),
         "store": False,
         "instructions": _CODEX_INSTRUCTIONS,
         "input": [{"type": "message", "role": "user", "content": content}],

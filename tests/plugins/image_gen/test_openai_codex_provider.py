@@ -136,6 +136,7 @@ class TestGenerate:
             ))
             return {"b64": _b64_png(), "source": "final"}
 
+        monkeypatch.delenv("CODEX_CHAT_MODEL", raising=False)
         monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
 
         result = provider.generate("a cat", aspect_ratio="portrait")
@@ -400,6 +401,27 @@ class TestGenerate:
 
 
 class TestRequestShape:
+    def test_codex_host_model_env_override(self, monkeypatch):
+        """Host model for image_generation comes from CODEX_CHAT_MODEL when set."""
+        monkeypatch.setenv("CODEX_CHAT_MODEL", "gpt-5.6-sol")
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1024", quality="medium")
+        assert payload["model"] == "gpt-5.6-sol"
+
+    def test_codex_host_model_default_when_env_unset(self, monkeypatch):
+        """Unset CODEX_CHAT_MODEL keeps the documented gpt-5.5 default."""
+        monkeypatch.delenv("CODEX_CHAT_MODEL", raising=False)
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1024", quality="medium")
+        assert payload["model"] == "gpt-5.5"
+
+    def test_codex_host_model_whitespace_env_is_unset(self, monkeypatch):
+        """Whitespace-only CODEX_CHAT_MODEL is treated as unset (fail-open)."""
+        monkeypatch.setenv("CODEX_CHAT_MODEL", "   ")
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1024", quality="medium")
+        assert payload["model"] == "gpt-5.5"
+
     def test_payload_omits_tool_choice(self):
         """Codex rejects every tool_choice shape for hosted image_generation."""
         payload = codex_plugin._build_responses_payload(

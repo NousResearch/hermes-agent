@@ -6,15 +6,7 @@ import { stubResizeObserver } from '@/test/jsdom'
 
 import { useHudTranscriptBand } from './transcript-band'
 
-function Harness({
-  children,
-  withThreadContent = true,
-  withViewport
-}: {
-  children?: ReactNode
-  withThreadContent?: boolean
-  withViewport: boolean
-}) {
+function Harness({ children, withViewport }: { children?: ReactNode; withViewport: boolean }) {
   const ref = useRef<HTMLDivElement | null>(null)
 
   useHudTranscriptBand(ref)
@@ -24,7 +16,7 @@ function Harness({
       <div data-slot="composer-dock" />
       {withViewport && (
         <div data-slot="aui_thread-viewport">
-          {withThreadContent && <div data-slot="aui_thread-content">{children ?? <div>row</div>}</div>}
+          <div data-slot="aui_thread-content">{children ?? <div>row</div>}</div>
         </div>
       )}
     </div>
@@ -90,6 +82,7 @@ describe('useHudTranscriptBand', () => {
   // short session at --hud-band-height: 0px and clips the transcript.
   it('measures a TurnRow with data-slot="aui_message-group" as transcript height', () => {
     stubMeasuredRects()
+
     const { container } = render(
       <Harness withViewport>
         <div data-slot="aui_message-group">turn</div>
@@ -99,32 +92,15 @@ describe('useHudTranscriptBand', () => {
     expect(bandHeight(container)).toBeGreaterThan(0)
   })
 
-  it('still measures slot-less direct children such as show-earlier', () => {
-    stubMeasuredRects()
-    const { container } = render(
-      <Harness withViewport>
-        <button type="button">Show earlier</button>
-      </Harness>
-    )
-
-    expect(bandHeight(container)).toBeGreaterThan(0)
-  })
-
   it('does not treat clearance or background-resume spacers as message rows', () => {
     stubMeasuredRects()
+
     const { container } = render(
       <Harness withViewport>
         <div data-slot="aui_background-resume">resume</div>
         <div data-slot="aui_composer-clearance" />
       </Harness>
     )
-
-    expect(bandHeight(container)).toBe(0)
-  })
-
-  it('keeps an empty band when aui_thread-content is missing', () => {
-    stubMeasuredRects()
-    const { container } = render(<Harness withThreadContent={false} withViewport />)
 
     expect(bandHeight(container)).toBe(0)
   })

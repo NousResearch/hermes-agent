@@ -2585,6 +2585,11 @@ def save_env_value(key: str, value: str):
             lines.append(f"{key}={serialized_value}\n")
 
         _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
+        # _write_anthropic_slots / use_anthropic_claude_code_credentials blank a slot by writing "":
+        # describe that write as what it is rather than calling an emptied credential "set".
+        logger.info(
+            "env %s %s in %s (value not logged; %s)",
+            _audit_text(key), "set" if value else "cleared", env_path, _write_origin())
     _publish_env_value(key, value)
     invalidate_env_cache()
 
@@ -2615,6 +2620,7 @@ def remove_env_value(key: str) -> bool:
         found = len(new_lines) < len(lines)
         if found:
             _write_env_lines(env_path, new_lines, preserve_mode=True)
+            logger.info("env %s removed from %s (%s)", _audit_text(key), env_path, _write_origin())
     _publish_env_value(key, None)
     invalidate_env_cache()
     return found
@@ -2746,6 +2752,298 @@ def _is_secret_config_key(key: str) -> bool:
     if _is_env_config_key(key):
         return not leaf.endswith(_NON_SECRET_KEY_SUFFIXES)
     return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
+
+
+# Leaf-key suffixes treated as credential-shaped for the audit log ONLY. This is deliberately a
+# superset of the exact-match ``_SECRET_CONFIG_KEYS`` the stdout echo uses (set_config_value's
+# ``_display_value`` block): a leaf like ``openrouter_api_key``, ``smtp_pass`` or ``db_password``
+# is not an exact match against that frozenset but is still a credential by shape, and the audit
+# log has no stdout-parity requirement to preserve. Over-masking (e.g. an ``ssh_key`` path) costs
+# nothing here; under-masking writes a credential into a persistent, rotated file.
+_AUDIT_SECRET_LEAF_SUFFIXES = ("_api_key", "_key", "_token", "_secret", "_pass", "_passwd", "password")
+
+
+def _audit_text(text: str) -> str:
+    """Strip control characters (newlines included) from a caller- or environment-supplied field
+    so it can never terminate the audit line early and forge a second one."""
+    return "".join(ch for ch in text if ch.isprintable())
+
+
+def _write_origin() -> str:
+    """``session=<key> platform=<platform>`` for the audit log line; ``-`` when either half is
+    absent. Read through ``gateway.session_context.get_session_env`` (the documented drop-in
+    for ``os.getenv``: a bound ContextVar wins, else ``os.environ``) so the two ways a write
+    can carry a session are both seen -- the gateway's in-process callers of ``save_env_value``
+    (gateway/pairing.py, gateway/slash_commands.py) have the session only in the ContextVars,
+    while the agent's ``hermes config set`` subprocess has it only in the environment the local
+    terminal backend bridged in (tools/environments/local.py, ``_inject_session_context_env``).
+    It prints what it sees, never an attribution: for an unengaged CLI the env values may be
+    stale or absent."""
+    try:
+        from gateway.session_context import get_session_env
+    except ImportError:  # pragma: no cover - defensive: gateway package absent
+        get_session_env = os.getenv
+    session = _audit_text(get_session_env("HERMES_SESSION_KEY") or "") or "-"
+    platform = _audit_text(get_session_env("HERMES_SESSION_PLATFORM") or "") or "-"
+    return f"session={session} platform={platform}"
+
+
+def _is_audit_secret_leaf(name: str) -> bool:
+    leaf = name.rsplit(".", 1)[-1].lower()
+    return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_AUDIT_SECRET_LEAF_SUFFIXES)
+
+
+def _audit_mask(value: Any) -> str:
+    """Log-grade mask for a secret leaf of any scalar type: ``_coerce_config_set_value`` turns an
+    all-digit password into an ``int``, so the value is stringified before masking rather than
+    gated on ``isinstance(value, str)``. Same head/tail/floor as ``agent.redact._mask_token`` --
+    the display defaults (4/4/12) would reveal 8 characters of a 12-char password into a
+    persistent file."""
+    from agent.redact import mask_secret
+    return mask_secret(str(value), head=6, tail=4, floor=18)
+
+
+def _audit_redact(value: Any, is_secret: bool = False, _depth: int = 0) -> Any:
+    """Copy of a mapping/list for the audit log with every secret-shaped leaf masked, using the
+    same (superset) leaf test as the top-level key so a ``--force`` overwrite of a whole section
+    masks ``providers.*.openrouter_api_key`` exactly as a direct ``set`` of that key would."""
+    if _depth > 20:  # bound recursion for pathological/cyclic configs
+        return value
+    if isinstance(value, dict):
+        return {
+            k: _audit_redact(v, isinstance(k, str) and _is_audit_secret_leaf(k), _depth + 1)
+            for k, v in value.items()}
+    if isinstance(value, list):
+        return [_audit_redact(v, is_secret, _depth + 1) for v in value]
+    if is_secret and value is not None and value != "":
+        return _audit_mask(value)
+    return value
+
+
+def _audit_repr(key: str, value: Any) -> str:
+    """Render a config value for the write-audit log: never the raw secret.
+
+    ``_MISSING`` -> ``"<unset>"``. A credential-shaped leaf (``_is_audit_secret_leaf``: exact
+    match against ``_SECRET_CONFIG_KEYS`` or a suffix in ``_AUDIT_SECRET_LEAF_SUFFIXES``) is
+    masked whatever its coerced type, a list under it included. A mapping or list is rendered
+    with every nested secret-shaped leaf masked by the same test, so a ``--force`` overwrite of
+    a whole section never logs a credential that a direct ``set`` would have masked. Everything
+    else is
+    ``repr()`` (which also escapes control characters). Capped at 200 characters so a
+    pathological value cannot blow up a log line.
+    """
+    if value is _MISSING:
+        return "<unset>"
+    is_secret = _is_audit_secret_leaf(key)
+    if isinstance(value, (dict, list)):
+        # The key's own secret-ness carries into the container: ``set model.api_key "[a, b]"``
+        # yaml-parses to a list (no str default pins the type), and every element is the secret.
+        rendered = repr(_audit_redact(value, is_secret))
+    elif is_secret and value is not None and value != "":
+        rendered = _audit_mask(value)
+    else:
+        rendered = repr(value)
+    return rendered[:200]
+
+
+def _section(title: str) -> None:
+    print()
+    print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
+
+
+def _show_managed_banner() -> None:
+    """Surface administrator-pinned settings so the user knows why a config.yaml value may not
+    be the effective one."""
+    managed_keys = managed_scope.managed_config_keys()
+    managed_env = managed_scope.load_managed_env()
+    if not managed_keys and not managed_env:
+        return
+    print()
+    print(color(
+        f"  ⚷ Some settings are managed by your administrator ({managed_scope.get_managed_dir()}) "
+        f"and cannot be changed", Colors.YELLOW, Colors.BOLD))
+    for label, keys in (("config", managed_keys), ("env", managed_env)):
+        if keys:
+            print(color(f"    Managed {label} keys: {', '.join(sorted(keys))}", Colors.YELLOW))
+
+
+_SHOW_CONFIG_API_KEYS = (
+    ("OPENROUTER_API_KEY", "OpenRouter"),
+    ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
+    ("EXA_API_KEY", "Exa"),
+    ("PARALLEL_API_KEY", "Parallel"),
+    ("FIRECRAWL_API_KEY", "Firecrawl"),
+    ("TAVILY_API_KEY", "Tavily"),
+    ("PERPLEXITY_API_KEY", "Perplexity"),
+    ("BROWSERBASE_API_KEY", "Browserbase"),
+    ("BROWSER_USE_API_KEY", "Browser Use"),
+    ("FAL_KEY", "FAL"))
+
+
+def _show_model_section(config: dict[str, Any]) -> None:
+    _section("Model")
+    print(f"  Model:        {redact_config_value(config.get('model', 'not set'))}")
+    cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
+    print(f"  Max turns:    {cfg_max_turns}")
+    # Read the .env FILE directly so a stale HERMES_MAX_ITERATIONS ghost is caught even when the
+    # gateway bridge already overrode os.environ.
+    try:
+        env_ghost = load_env().get("HERMES_MAX_ITERATIONS")
+    except Exception:
+        env_ghost = None
+    if env_ghost is not None and str(env_ghost).strip() != str(cfg_max_turns).strip():
+        print(color(f"                ⚠ .env has stale HERMES_MAX_ITERATIONS={env_ghost} "
+                    f"(run 'hermes doctor --fix' to remove)", Colors.YELLOW))
+
+
+def _show_display_section(config: dict[str, Any]) -> None:
+    _section("Display")
+    display = config.get('display', {})
+    try:
+        from hermes_cli.personality import active_personality_name
+        active_personality = active_personality_name(config) or 'none'
+    except Exception:
+        active_personality = display.get('personality') or 'none'
+    on_off = lambda flag: 'on' if flag else 'off'
+    print(f"  Personality:  {active_personality}")
+    print(f"  Reasoning:    {on_off(display.get('show_reasoning', True))}")
+    print(
+        f"  Bell:         complete={on_off(display.get('bell_on_complete', False))}, "
+        f"prompt={on_off(display.get('bell_on_prompt', False))}")
+    ump = display.get('user_message_preview', {})
+    ump = ump if isinstance(ump, dict) else {}
+    print(f"  User preview: first {ump.get('first_lines', 2)} line(s), last {ump.get('last_lines', 2)} line(s)")
+
+
+def _show_terminal_section(config: dict[str, Any]) -> None:
+    _section("Terminal")
+    terminal = config.get('terminal', {})
+    print(f"  Backend:      {terminal.get('backend', 'local')}")
+    print(f"  Working dir:  {terminal.get('cwd', '.')}")
+    print(f"  Timeout:      {terminal.get('timeout', 60)}s")
+
+    configured = lambda *names: 'configured' if all(get_env_value(n) for n in names) else '(not set)'
+    default_img = 'nikolaik/python-nodejs:python3.11-nodejs20'
+    backend_lines = {
+        'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
+        'singularity': lambda: [f"  Image:        {terminal.get('singularity_image', 'docker://' + default_img)}"],
+        'modal': lambda: [
+            f"  Modal image:  {terminal.get('modal_image', default_img)}",
+            f"  Modal token:  {configured('MODAL_TOKEN_ID')}"],
+        'daytona': lambda: [
+            f"  Daytona image: {terminal.get('daytona_image', default_img)}",
+            f"  API key:      {configured('DAYTONA_API_KEY')}"],
+        'vercel_sandbox': lambda: [
+            f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}",
+            f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}",
+        ],
+        'ssh': lambda: [
+            f"  SSH host:     {get_env_value('TERMINAL_SSH_HOST') or '(not set)'}",
+            f"  SSH user:     {get_env_value('TERMINAL_SSH_USER') or '(not set)'}"]}
+    for line in backend_lines.get(terminal.get('backend'), list)():
+        print(line)
+
+
+def _show_compression_section(config: dict[str, Any]) -> None:
+    _section("Context Compression")
+    compression = config.get('compression', {})
+    enabled = compression.get('enabled', True)
+    print(f"  Enabled:      {'yes' if enabled else 'no'}")
+    if not enabled:
+        return
+    print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+    tt = compression.get('threshold_tokens')
+    try:
+        if tt is not None and int(tt) > 0:
+            print(f"  Token cap:    {int(tt):,} tokens (takes lower of ratio vs absolute)")
+    except (TypeError, ValueError):
+        pass
+    print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
+    print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
+    print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")
+    aux_comp = config.get('auxiliary', {}).get('compression', {})
+    print(f"  Model:        {aux_comp.get('model', '') or '(auto)'}")
+    comp_provider = aux_comp.get('provider', 'auto')
+    if comp_provider and comp_provider != 'auto':
+        print(f"  Provider:     {comp_provider}")
+
+
+def _show_aux_overrides(config: dict[str, Any]) -> None:
+    aux_tasks = {"Vision": config.get('auxiliary', {}).get('vision', {})}
+    overrides = {
+        label: (t.get('provider', 'auto'), t.get('model', ''))
+        for label, t in aux_tasks.items()
+        if t.get('provider', 'auto') != 'auto' or t.get('model', '')}
+    if not overrides:
+        return
+    _section("Auxiliary Models (overrides)")
+    for label, (prov, mdl) in overrides.items():
+        parts = [f"provider={prov}"] + ([f"model={mdl}"] if mdl else [])
+        print(f"  {label:12s}  {', '.join(parts)}")
+
+
+def _show_skill_settings() -> None:
+    try:
+        from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
+        skill_vars = discover_all_skill_config_vars()
+        if not skill_vars:
+            return
+        resolved = resolve_skill_config_values(skill_vars)
+        _section("Skill Settings")
+        for var in skill_vars:
+            value = resolved.get(var["key"], "")
+            display_val = str(value) if value else color("(not set)", Colors.DIM)
+            skill_tag = color(f"[{var.get('skill', '')}]", Colors.DIM)
+            print(f"  {var['key']:<20s} {display_val}  {skill_tag}")
+    except Exception:
+        pass
+
+
+def show_config():
+    """Display current configuration."""
+    config = load_config()
+
+    print()
+    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
+    print(color("│              ☤ Hermes Configuration                    │", Colors.CYAN))
+    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    _show_managed_banner()
+
+    _section("Paths")
+    print(f"  Config:       {get_config_path()}")
+    print(f"  Secrets:      {get_env_path()}")
+    print(f"  Install:      {get_project_root()}")
+
+    _section("API Keys")
+    for env_key, name in _SHOW_CONFIG_API_KEYS:
+        print(f"  {name:<14} {redact_key(get_env_value(env_key))}")
+    from hermes_cli.auth import get_anthropic_key
+    print(f"  {'Anthropic':<14} {redact_key(get_anthropic_key())}")
+
+    _show_model_section(config)
+    _show_display_section(config)
+    _show_terminal_section(config)
+
+    _section("Timezone")
+    tz = config.get('timezone', '')
+    print(f"  Timezone:     {tz or color('(server-local)', Colors.DIM)}")
+
+    _show_compression_section(config)
+    _show_aux_overrides(config)
+
+    _section("Messaging Platforms")
+    for label, env_key in (("Telegram", "TELEGRAM_BOT_TOKEN"), ("Discord", "DISCORD_BOT_TOKEN")):
+        state = 'configured' if get_env_value(env_key) else color('not configured', Colors.DIM)
+        print(f"  {label + ':':<13} {state}")
+
+    _show_skill_settings()
+
+    print()
+    print(color("─" * 60, Colors.DIM))
+    print(color("  hermes config edit     # Edit config file", Colors.DIM))
+    print(color("  hermes config set <key> <value>", Colors.DIM))
+    print(color("  hermes setup           # Run setup wizard", Colors.DIM))
+    print()
 
 
 def edit_config():
@@ -3225,6 +3523,15 @@ def set_config_value(key: str, value: str, force: bool = False):
     from hermes_cli.config_section_guard import _guard_section_overwrite
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
+    _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
+    # The api_base -> base_url alias below is a fallback-only rename (_normalize_root_model_keys
+    # never overrides an explicit base_url), so the audit snapshot has to be taken under the key
+    # the write will actually land on, not the pre-alias input key — otherwise a `set
+    # model.api_base` against a config that already has model.base_url reads _old_value as
+    # <unset> (api_base was never set) instead of the real, unchanged base_url.
+    _is_api_base_alias = key.strip().lower() in ("model.api_base", "api_base")
+    _audit_key = "model.base_url" if _is_api_base_alias else key
+    _old_value = _get_nested(user_config, _audit_key)
     from hermes_cli.config_secret_refs import config_set_secret_value, masked_display_value
     value = config_set_secret_value(key, value, user_config)
     # A provider switch re-points its block at a new route; the old provider's base_url/api_mode
@@ -3241,7 +3548,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     for _note in _dropped_shadow_notes(user_config, key, legacy_key, drop_legacy_disabled_for_key):
         print(_note)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
-    if key.strip().lower() in ("model.api_base", "api_base"):
+    if _is_api_base_alias:
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
         # set model.api_base ...` lands on the canonical key the runtime resolver actually reads, instead of
         # being silently ignored.
@@ -3251,6 +3558,14 @@ def set_config_value(key: str, value: str, force: bool = False):
     from hermes_cli.config_backend import pinning_keys
     with pinning_keys(key):  # an explicit set is stored even when it equals the inherited value
         _write_user_config(config_path, user_config)
+    # Log the value actually persisted (re-read post-write), not the raw input: the alias above
+    # can make this a no-op against an existing base_url, and old -> new must never claim a
+    # change that didn't happen.
+    _persisted_value = _get_nested(user_config, key)
+    logger.info(
+        "config set %s: %s -> %s in %s (%s)",
+        _audit_text(key), _audit_repr(key, _old_value), _audit_repr(key, _persisted_value),
+        config_path, _write_origin())
 
     # Keep .env in sync: terminal_tool reads TERMINAL_ENV etc. directly from env vars.
     env_var = terminal_config_env_var_for_key(key)
@@ -3364,6 +3679,7 @@ def unset_config_value(key: str):
     if _redirect_note:
         # Mirror set_config_value's display.platforms canonicalization (#71047).
         print(_redirect_note.replace("saved as", "resolved as"))
+    _old_value = _get_nested(user_config, key)
     removed = _unset_nested(user_config, key)
     if legacy_key:
         removed = _unset_nested(user_config, legacy_key) or removed
@@ -3377,6 +3693,13 @@ def unset_config_value(key: str):
         _exit_invalid(f"Config key not set: {key}")
 
     _write_user_config(config_path, user_config)
+    # A terminal.* key present only in .env makes ``removed`` truthy above with nothing removed
+    # from config.yaml; the .env removal is already logged by remove_env_value, so don't
+    # fabricate a ``<unset> -> <unset>`` config.yaml line for it.
+    if _old_value is not _MISSING:
+        logger.info(
+            "config unset %s: %s -> <unset> in %s (%s)",
+            _audit_text(key), _audit_repr(key, _old_value), config_path, _write_origin())
     print(f"✓ Unset {key} from {config_destination(config_path)}")
 
 

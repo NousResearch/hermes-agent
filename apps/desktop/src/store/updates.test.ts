@@ -1386,4 +1386,45 @@ describe('startUpdatePoller', () => {
 
     expect(checkMock).toHaveBeenCalled()
   })
+
+  it('keeps structured blocker metadata when a late error progress frame arrives', async () => {
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const progress = onProgressMock.mock.calls[0]?.[0] as ((payload: unknown) => void) | undefined
+    expect(progress).toBeTypeOf('function')
+
+    $updateApply.set({
+      applying: false,
+      stage: 'error',
+      message: 'Update aborted: another Hermes process is using this installation.',
+      percent: null,
+      error: 'venv-blocked',
+      command: null,
+      blockers: [
+        {
+          pid: 3528,
+          name: 'python.exe',
+          cmdline: 'python.exe -m hermes_cli.main gateway run',
+          kind: 'other',
+          safeToStop: false
+        }
+      ],
+      log: []
+    })
+
+    progress?.({
+      stage: 'error',
+      message: 'Update aborted: another Hermes process is using this installation.',
+      percent: null,
+      error: null,
+      at: Date.now()
+    })
+
+    expect($updateApply.get()).toMatchObject({
+      stage: 'error',
+      error: 'venv-blocked',
+      blockers: [{ pid: 3528 }]
+    })
+  })
 })

@@ -106,8 +106,8 @@ export function UpdatesOverlay() {
       {/* This dialog has no inputs, so Radix's default autofocus would land on
           the close button and trigger its tooltip immediately on open. */}
       <DialogContent
-        bodyClassName="overflow-hidden p-0 gap-0"
-        className="max-w-sm"
+        bodyClassName="overflow-x-hidden p-0 gap-0"
+        className="max-w-2xl"
         onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
       >
@@ -538,7 +538,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
     <ErrorState
       className="px-6 pb-6 pt-7 pr-8"
       description={
-        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+        <DialogDescription className="max-w-prose whitespace-pre-line break-words text-center text-sm leading-5 text-muted-foreground">
           {message || u.errorBody}
         </DialogDescription>
       }

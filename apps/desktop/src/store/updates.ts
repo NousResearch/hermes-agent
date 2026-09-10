@@ -976,9 +976,16 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
     // Streamed log lines carry percent: null; keep the last milestone percent
     // (10/60/…) instead of resetting the bar to indeterminate on every line.
     percent: payload.percent ?? current.percent,
-    error: payload.error,
+    // IPC progress and the resolved apply result travel on separate Electron
+    // channels. A late terminal progress frame can therefore arrive *after*
+    // applyUpdates() has already stored structured failure metadata (for
+    // example `venv-blocked` + its blocker list). Keep that metadata while we
+    // remain on the same error terminal state; a fresh apply resets the store
+    // to IDLE before any new progress arrives.
+    error: payload.error ?? (payload.stage === 'error' ? current.error : null),
     // 'manual' carries the command to run in its message field.
     command: payload.stage === 'manual' ? payload.message : current.command,
+    blockers: payload.stage === 'error' ? (current.blockers ?? null) : null,
     log
   })
 }

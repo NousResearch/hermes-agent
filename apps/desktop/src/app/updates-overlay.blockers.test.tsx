@@ -115,6 +115,7 @@ describe('BlockerView', () => {
     expect(screen.getByText('Close other processes to update Hermes')).toBeTruthy()
     expect(screen.getByText('python.exe')).toBeTruthy()
     expect(screen.queryByText('Update didn’t finish')).toBeNull()
+    expect(document.querySelector('[data-slot="dialog-content"]')?.className).toContain('max-w-2xl')
   })
 
   it('identifies foreign blockers without offering automatic termination', async () => {

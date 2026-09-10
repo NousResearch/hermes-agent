@@ -1197,6 +1197,9 @@ class GatewayInboundMixin:
         if _paused_notice is not None:
             return _paused_notice
 
+        if not is_internal and source.platform == Platform.TELEGRAM and not event.is_command():
+            source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
+            event.source = source
         _quick_key = self._session_key_for_source(source)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
@@ -1250,6 +1253,24 @@ class GatewayInboundMixin:
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
+        # Notice I/O must own the sentinel too: another message must queue while
+        # metadata or the picker transport is pending. A stop can revoke this claim.
+        notice_passed = False
+        try:
+            handled, response = await self._maybe_handle_stale_override_notice(event, _quick_key)
+            if handled:
+                return response
+            if (
+                not self._is_session_run_current(_quick_key, _run_generation)
+                or not self._is_session_running(_quick_key)
+            ):
+                return None
+            notice_passed = True
+        finally:
+            if not notice_passed:
+                self._release_running_agent_state(_quick_key, run_generation=_run_generation)
+                self._release_turn_lease(_quick_key, _run_generation)
+
         try:
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
@@ -1267,6 +1288,9 @@ class GatewayInboundMixin:
                     "protect the transcript, this message was not processed. "
                     "Wait for the active turn to finish, then resend it."
                 )
+            await self._defer_stale_override_turn_completed(
+                _quick_key, source=source, run_generation=_run_generation, is_internal=is_internal,
+            )
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,

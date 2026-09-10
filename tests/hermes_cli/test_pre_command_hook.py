@@ -11,7 +11,6 @@ dispatch while a turn is live) is deliberately excluded — control-plane
 commands on an in-flight run must not be observable/veto-able by plugins.
 """
 
-from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -210,22 +209,8 @@ def _make_event(text: str):
     )
 
 
-def _session_entry():
-    from gateway.config import Platform
-    from gateway.session import SessionEntry, build_session_key
-
-    return SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        total_tokens=0,
-    )
-
-
-def _make_runner():
+def _make_runner(tmp_path):
+    from gateway.session import AsyncSessionStore, SessionStore
     from gateway.config import GatewayConfig, Platform, PlatformConfig
     from gateway.run import GatewayRunner
 
@@ -243,17 +228,15 @@ def _make_runner():
         emit_collect=AsyncMock(return_value=[]),
         loaded_hooks=False,
     )
-    runner.session_store = MagicMock()
-    runner.session_store.get_or_create_session.return_value = _session_entry()
-    runner.session_store.load_transcript.return_value = []
-    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+    runner.session_store.get_or_create_session(_make_source())
+    runner._async_session_store = AsyncSessionStore(runner.session_store)
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._queued_events = {}
-    runner._session_db = MagicMock()
-    runner._session_db.get_session_title.return_value = None
+    runner._session_db = SimpleNamespace(_db=runner.session_store._db)
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -282,15 +265,11 @@ def _make_runner():
     runner._is_telegram_topic_root_lobby = lambda _source: False
     runner._should_send_telegram_lobby_reminder = lambda _source: False
     runner._check_slash_access = lambda _source, _command: None
-    runner._begin_session_run_generation = lambda _key: 1
-    runner._release_running_agent_state = (
-        lambda key: runner._running_agents.pop(key, None)
-    )
     return runner, adapter
 
 
 @pytest.mark.asyncio
-async def test_gateway_fires_for_recognized_command(monkeypatch):
+async def test_gateway_fires_for_recognized_command(monkeypatch, tmp_path):
     from hermes_cli import plugins as plugins_mod
 
     captured = {}
@@ -299,7 +278,7 @@ async def test_gateway_fires_for_recognized_command(monkeypatch):
         lambda **kwargs: captured.update(kwargs),
     )
 
-    runner, _adapter = _make_runner()
+    runner, _adapter = _make_runner(tmp_path)
 
     async def _fake_agent(event, source, key, generation):
         return {"final_response": "", "messages": []}
@@ -317,7 +296,7 @@ async def test_gateway_fires_for_recognized_command(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gateway_reports_canonical_name_for_alias(monkeypatch):
+async def test_gateway_reports_canonical_name_for_alias(monkeypatch, tmp_path):
     """/q is an alias of /queue — payload reports canonical name."""
     from hermes_cli import plugins as plugins_mod
 
@@ -327,7 +306,7 @@ async def test_gateway_reports_canonical_name_for_alias(monkeypatch):
         lambda **kwargs: captured.update(kwargs),
     )
 
-    runner, _adapter = _make_runner()
+    runner, _adapter = _make_runner(tmp_path)
 
     async def _fake_agent(event, source, key, generation):
         return {"final_response": "", "messages": []}
@@ -341,7 +320,7 @@ async def test_gateway_reports_canonical_name_for_alias(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gateway_does_not_fire_for_plain_text(monkeypatch):
+async def test_gateway_does_not_fire_for_plain_text(monkeypatch, tmp_path):
     from hermes_cli import plugins as plugins_mod
 
     fired = []
@@ -350,7 +329,7 @@ async def test_gateway_does_not_fire_for_plain_text(monkeypatch):
         lambda **kwargs: fired.append(kwargs),
     )
 
-    runner, _adapter = _make_runner()
+    runner, _adapter = _make_runner(tmp_path)
 
     async def _fake_agent(event, source, key, generation):
         return {"final_response": "ok", "messages": []}
@@ -362,7 +341,7 @@ async def test_gateway_does_not_fire_for_plain_text(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gateway_control_plane_intercept_excluded(monkeypatch):
+async def test_gateway_control_plane_intercept_excluded(monkeypatch, tmp_path):
     """Commands hitting the running-agent intercept path must NOT fire the
     hook — /stop et al. during an active run are control-plane operations."""
     from hermes_cli import plugins as plugins_mod
@@ -373,7 +352,7 @@ async def test_gateway_control_plane_intercept_excluded(monkeypatch):
         lambda **kwargs: fired.append(kwargs),
     )
 
-    runner, _adapter = _make_runner()
+    runner, _adapter = _make_runner(tmp_path)
     runner._peek_session_state = lambda _key: None
     runner._is_session_running = lambda _key: True
     runner._dispatch_busy_slash_command = AsyncMock(return_value="busy-handled")
@@ -386,7 +365,7 @@ async def test_gateway_control_plane_intercept_excluded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gateway_hook_failure_is_non_fatal(monkeypatch):
+async def test_gateway_hook_failure_is_non_fatal(monkeypatch, tmp_path):
     """A raising fire helper must not break command dispatch."""
     from hermes_cli import plugins as plugins_mod
 
@@ -395,7 +374,7 @@ async def test_gateway_hook_failure_is_non_fatal(monkeypatch):
 
     monkeypatch.setattr(plugins_mod, "fire_pre_command_hook", _boom)
 
-    runner, _adapter = _make_runner()
+    runner, _adapter = _make_runner(tmp_path)
     captured = {}
 
     async def _fake_agent(event, source, key, generation):

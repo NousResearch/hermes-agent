@@ -407,7 +407,7 @@ export interface Translations {
         includesHeading: string
         agentLabel: string
         desktopLabel: string
-        agentTargetLocal: (profile: string) => string
+        agentTargetLocal: (profile: string, dir: string) => string
         agentTargetRemote: (profile: string) => string
         catalogPinned: (name: string, sha: string) => string
         reviewedHeading: string
@@ -417,6 +417,7 @@ export interface Translations {
         missingEnvAction: string
         alreadyInstalled: (name: string) => string
         desktopTarget: string
+        desktopTargetFromPackage: string
         desktopOnlyNote: string
         insecureWarning: string
         securityHeading: string
@@ -1323,6 +1324,21 @@ export interface Translations {
     plugins: {
       agentTitle: string
       agentBlurb: string
+      pageBlurb: string
+      halfDesktop: string
+      halfDesktopHint: string
+      halfAgent: string
+      halfAgentIn: (profile: string) => string
+      defaultProfile: string
+      kindAgent: string
+      kindDesktop: string
+      kindBoth: string
+      installAgentHere: string
+      installAgentHereTip: (profile: string) => string
+      installAgentHereNoOrigin: string
+      desktopHalfPending: string
+      desktopHalfPendingTip: string
+      emptyAll: string
       empty: string
       emptyHint: string
       loadFailed: string

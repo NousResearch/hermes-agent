@@ -8,7 +8,12 @@ import path from 'node:path'
 import { ipcMain, shell } from 'electron'
 
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
-import { DESKTOP_PLUGINS_DIR, ensureDir, migrateProfileScopedDesktopPlugins } from './desktop-plugins-root'
+import {
+  DESKTOP_PLUGINS_DIR,
+  ensureDir,
+  migrateProfileScopedDesktopPlugins,
+  reconcileUnifiedDesktopHalves
+} from './desktop-plugins-root'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
 
@@ -97,24 +102,27 @@ export function registerFsIpc({
   async function desktopPluginsRoot(): Promise<string> {
     const root = await ensureDir(path.join(hermesHome, DESKTOP_PLUGINS_DIR))
     await migrateProfileScopedDesktopPlugins(hermesHome, root)
+    await reconcileUnifiedDesktopHalves(hermesHome, root)
 
     return root
   }
 
   ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => desktopPluginsRoot())
 
+  // Re-run the unified-half reconcile on demand (after an agent-plugin install /
+  // update / uninstall through the gateway) so the app-level copy tracks the
+  // package without waiting for the next root resolution.
+  ipcMain.handle('hermes:fs:reconcileDesktopPlugins', async () => {
+    const root = await ensureDir(path.join(hermesHome, DESKTOP_PLUGINS_DIR))
+
+    return reconcileUnifiedDesktopHalves(hermesHome, root)
+  })
+
   // The LOCAL logs root (`<HERMES_HOME>/logs`, profile-aware) — the error
   // card's "Open Logs" action reveals agent.log/gateway.log without the user
   // knowing where HERMES_HOME lives. Same Electron-local resolution as the
   // plugin roots: valid in every connection mode, created on demand.
   ipcMain.handle('hermes:fs:logsRoot', async () => localPluginsRoot('logs'))
-
-  // The LOCAL agent-plugin root (`<HERMES_HOME>/plugins`), same Electron-local
-  // resolution as above. This is the desktop half of a UNIFIED plugin package:
-  // an agent plugin may ship `desktop/plugin.js` alongside its Python code (the
-  // same shape as `dashboard/manifest.json`), and the renderer's disk door scans
-  // this root for it — one installable folder serving both SDKs.
-  ipcMain.handle('hermes:fs:agentPluginsRoot', async () => localPluginsRoot('plugins'))
 
   ipcMain.handle('hermes:plugin:probe', async (_event, payload) => {
     const identifier = String(payload?.identifier || payload?.repo || '').trim()

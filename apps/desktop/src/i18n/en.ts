@@ -467,7 +467,7 @@ export const en: Translations = {
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
         desktopLabel: 'Desktop UI',
-        agentTargetLocal: profile => `Installs into the ${profile} backend (~/.hermes/plugins/)`,
+        agentTargetLocal: (profile, dir) => `Installs into the ${profile} backend (${dir})`,
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
         catalogPinned: (name, sha) =>
           `Hermes catalog entry "${name}" — the agent component installs at the reviewed pin${sha ? ` ${sha}` : ''}, not the branch tip.`,
@@ -479,6 +479,7 @@ export const en: Translations = {
         missingEnvAction: 'Set it up',
         alreadyInstalled: (name: string) => `${name} is already installed.`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",
+        desktopTargetFromPackage: 'Loaded into this app from the package above — same for every profile',
         desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
         insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
         securityHeading: 'Before you install',
@@ -1512,6 +1513,25 @@ export const en: Translations = {
       agentTitle: 'Agent plugins',
       agentBlurb:
         'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
+      pageBlurb:
+        'One row per plugin. A plugin can extend this app, the agent, or both — each half has its own switch.',
+      halfDesktop: 'Desktop',
+      halfDesktopHint: 'this app, same for every profile',
+      halfAgent: 'Agent',
+      halfAgentIn: (profile: string) => `Agent in ${profile}`,
+      defaultProfile: 'Hermes (default)',
+      kindAgent: 'Agent',
+      kindDesktop: 'Desktop',
+      kindBoth: 'Agent + Desktop',
+      installAgentHere: 'Install here',
+      installAgentHereTip: (profile: string) =>
+        `The desktop half is loaded in this app, but the agent half is not installed in ${profile}. Install it there.`,
+      installAgentHereNoOrigin:
+        'The agent half is not installed in this profile, and this package was copied in by hand (no catalog entry or git remote), so it cannot be installed from here. Copy its folder into the profile or reinstall from Git.',
+      desktopHalfPending: 'copying…',
+      desktopHalfPendingTip:
+        'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
+      emptyAll: 'No plugins yet.',
       empty: 'No agent plugins installed for this profile.',
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
       loadFailed: 'Could not load agent plugins',

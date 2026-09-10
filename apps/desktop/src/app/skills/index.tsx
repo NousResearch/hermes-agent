@@ -822,14 +822,25 @@ export function SkillsView({
   // Browse Hub). Lets the user configure ANY profile's capabilities — on any
   // registered gateway — without switching the whole app. Only meaningful
   // with >1 option; hidden otherwise to avoid clutter.
+  // Plugins embeds the selector in its Agent-column header (compact, no label,
+  // no border): desktop halves on that page are app-level and must not read as
+  // governed by "Configuring: <profile>".
+  const compactSelector = mode === 'plugins'
+  const scopeLabel = scopeOptions.find(option => option.value === scopeSelectValue)?.label
+
   const profileScopeSelector =
     scopeOptions.length > 1 ? (
       <div
-        className={cn('flex items-center gap-2 px-3 py-2', mode !== 'plugins' && 'border-b border-(--ui-stroke-secondary)')}
+        className={cn(
+          'flex min-w-0 items-center gap-2',
+          compactSelector ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2'
+        )}
       >
-        <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+        {!compactSelector && (
+          <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+        )}
         <Select onValueChange={changeScope} value={scopeSelectValue}>
-          <SelectTrigger className="h-7 w-56 text-xs">
+          <SelectTrigger className={cn('text-xs', compactSelector ? 'h-6 w-full max-w-64 px-2' : 'h-7 w-56')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -877,7 +888,12 @@ export function SkillsView({
               // header), app-level desktop plugins, the live catalog picker
               // underneath. Keyed on scope so a profile/connection switch
               // reloads the agent list.
-              <PluginsTab key={`plugins-${scopeKey}`} profile={scopeProfile} scopeSelector={profileScopeSelector} />
+              <PluginsTab
+                key={`plugins-${scopeKey}`}
+                profile={scopeProfile}
+                scopeLabel={scopeLabel}
+                scopeSelector={profileScopeSelector}
+              />
             ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
               // it is the ACTIVE gateway's socket — for a scope pinned to a

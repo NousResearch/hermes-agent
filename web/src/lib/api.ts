@@ -76,6 +76,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/config",
   "/api/env",
   "/api/mcp",
+  "/api/memory/providers",
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",

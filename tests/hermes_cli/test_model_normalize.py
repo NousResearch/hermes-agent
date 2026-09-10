@@ -8,6 +8,8 @@ import pytest
 from hermes_cli.model_normalize import (
     normalize_model_for_provider,
     _DOT_TO_HYPHEN_PROVIDERS,
+    _DEEPSEEK_CANONICAL_MODELS,
+    _DEEPSEEK_V_SERIES_RE,
     _normalize_for_deepseek,
     detect_vendor,
 )
@@ -114,18 +116,26 @@ class TestDeepseekVSeriesPassThrough:
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
 class TestDeepseekCanonicalAndReasonerMapping:
-    """Retired aliases and fuzzy names rewrite to deepseek-v4-flash.
+    """Retired aliases and fuzzy names rewrite to the CURRENT flash model.
 
     DeepSeek cut off ``deepseek-chat`` / ``deepseek-reasoner`` on
-    2026-07-24; sending them on the wire returns HTTP 400.
+    2026-07-24; sending them on the wire returns HTTP 400. The rewrite target is
+    asserted as a *contract* — "a DeepSeek-accepted id, and the same one the canonical
+    flash id resolves to" — rather than a frozen literal, so this class does not need
+    editing every time DeepSeek renames the flash model (it was pinned to the now-retired
+    ``deepseek-v4-flash`` and had to be updated when ``deepseek-flash`` became canonical).
     """
 
+    @staticmethod
+    def _assert_deepseek_accepted(model_id: str) -> None:
+        assert (
+            model_id in _DEEPSEEK_CANONICAL_MODELS or _DEEPSEEK_V_SERIES_RE.match(model_id)
+        ), f"{model_id!r} is not an id DeepSeek will accept"
 
     def test_provider_path_rewrites_reasoner(self):
-        assert (
-            normalize_model_for_provider("deepseek-reasoner", "deepseek")
-            == "deepseek-v4-flash"
-        )
+        rewritten = normalize_model_for_provider("deepseek-reasoner", "deepseek")
+        self._assert_deepseek_accepted(rewritten)
+        assert rewritten == normalize_model_for_provider("deepseek-flash", "deepseek")
 
     @pytest.mark.parametrize("model", [
         "deepseek-r1",
@@ -134,8 +144,10 @@ class TestDeepseekCanonicalAndReasonerMapping:
         "deepseek-reasoning-preview",
         "deepseek-cot-experimental",
     ])
-    def test_reasoner_keywords_map_to_v4_flash(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
+    def test_reasoner_keywords_map_to_the_live_flash_model(self, model):
+        rewritten = _normalize_for_deepseek(model)
+        self._assert_deepseek_accepted(rewritten)
+        assert rewritten == _normalize_for_deepseek("deepseek-flash")
 
 
 # ── Regression: issue #78796 ───────────────────────────────────────────
@@ -186,4 +198,48 @@ class TestIssue78796NvidiaPrefixRepair:
             normalize_model_for_provider("claude-sonnet-4.6", "openrouter")
             == "anthropic/claude-sonnet-4.6"
         )
+
+
+# ── Regression: DeepSeek-V4.1-Flash canonical id (2026-09-10) ──────────
+
+class TestDeepSeekFlashCanonicalId:
+    """``deepseek-flash`` is the canonical id of the CURRENT flash model (V4.1-Flash).
+
+    Regression: the id has no digit directly after ``-v``, so it never matched
+    ``_DEEPSEEK_V_SERIES_RE`` and was absent from ``_DEEPSEEK_CANONICAL_MODELS``.
+    It therefore fell through to the legacy fallback and was silently rewritten to the
+    retired ``deepseek-v4-flash``, which DeepSeek keeps only as a TEMPORARY compat alias.
+    """
+
+    @pytest.mark.parametrize("model", [
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+    ])
+    def test_accepted_ids_pass_through_unchanged(self, model):
+        assert _normalize_for_deepseek(model) == model
+        assert normalize_model_for_provider(model, "deepseek") == model
+
+    def test_vendor_prefixed_canonical_id_survives(self):
+        assert normalize_model_for_provider("deepseek/deepseek-flash", "deepseek") == "deepseek-flash"
+
+    def test_matching_is_case_insensitive(self):
+        assert _normalize_for_deepseek("DeepSeek-Flash") == "deepseek-flash"
+        assert normalize_model_for_provider("deepseek-flash", "DEEPSEEK") == "deepseek-flash"
+
+    def test_retired_aliases_resolve_to_the_live_flash_model(self):
+        """deepseek-chat / deepseek-reasoner are aliases of the flash model's modes, so they
+        must land on the same target as the canonical id rather than a legacy literal."""
+        assert (
+            _normalize_for_deepseek("deepseek-chat")
+            == _normalize_for_deepseek("deepseek-reasoner")
+            == _normalize_for_deepseek("deepseek-flash")
+        )
+
+    def test_unknown_input_falls_back_to_the_live_flash_model(self):
+        assert _normalize_for_deepseek("some-retired-model") == _normalize_for_deepseek("deepseek-flash")
+
+    def test_future_v_series_still_passes_through_without_release(self):
+        """The explicit canonical list must not regress the generic V-series escape hatch."""
+        assert _normalize_for_deepseek("deepseek-v5-flash") == "deepseek-v5-flash"
 

@@ -192,6 +192,18 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"): ("0.14", "0.28", "0.0028"),
         "deepseek-v4-pro": ("0.435", "0.87", "0.003625"),
     }),
+    # DeepSeek-V4.1-Flash, released 2026-09-10. ``deepseek-flash`` is the canonical id; the
+    # predecessor names (deepseek-v4-flash, and the deepseek-chat/-reasoner aliases) are all served
+    # by V4.1-Flash now, so they share these rates — without this the new canonical id had NO row
+    # and resolved to `unknown` cost while the legacy names kept stale 2026-07 pricing.
+    # DeepSeek bills PEAK 01:00-04:00 and 06:00-10:00 UTC Mon-Fri, with OFF-PEAK exactly HALF of
+    # the figures below (miss 0.15 / hit 0.003 / out 0.60). We record the PEAK (list) rates so an
+    # estimate never UNDERSTATES a bill; a time-of-day-aware estimate is out of scope for a static
+    # snapshot. https://api-docs.deepseek.com/quick_start/pricing
+    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-09-10", {
+        ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"):
+            ("0.30", "1.20", "0.006"),
+    }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),
     }),

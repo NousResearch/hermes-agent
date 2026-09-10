@@ -6,6 +6,7 @@ from agent.usage_pricing import (
     format_cost_label,
     estimate_usage_cost,
     get_pricing_entry,
+    has_known_pricing,
     normalize_usage,
     resolve_billing_route,
 )
@@ -962,3 +963,53 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+# ── DeepSeek-V4.1-Flash pricing (2026-09-10) ───────────────────────────
+
+def test_deepseek_flash_canonical_id_has_pricing():
+    """The canonical current DeepSeek flash id must resolve to a pricing entry.
+
+    Regression: only the legacy ids carried rows, so the canonical id reported unknown
+    cost while the retired names kept stale 2026-07 rates.
+    """
+    assert has_known_pricing("deepseek-flash", provider="deepseek")
+    assert get_pricing_entry("deepseek-flash", provider="deepseek") is not None
+
+
+def test_deepseek_flash_shares_rates_with_legacy_ids():
+    """DeepSeek serves V4.1-Flash for every one of these names, so they must bill identically —
+    otherwise the same request is priced differently depending on which id the caller used."""
+    canonical = get_pricing_entry("deepseek-flash", provider="deepseek")
+    assert canonical is not None
+    for legacy in ("deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"):
+        assert get_pricing_entry(legacy, provider="deepseek") == canonical
+
+
+def test_deepseek_flash_is_priced_above_zero():
+    """A zero/absent rate would silently report a free model for paid traffic."""
+    entry = get_pricing_entry("deepseek-flash", provider="deepseek")
+    assert entry is not None
+    assert entry.input_cost_per_million > 0
+    assert entry.output_cost_per_million > 0
+
+
+def test_deepseek_flash_estimate_derives_from_the_entry():
+    """Assert the relationship between tokens and cost, not a frozen dollar figure."""
+    entry = get_pricing_entry("deepseek-flash", provider="deepseek")
+    assert entry is not None
+
+    result = estimate_usage_cost(
+        "deepseek-flash",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000),
+        provider="deepseek",
+    )
+    assert result.amount_usd == (
+        Decimal(1_000_000) * entry.input_cost_per_million
+        + Decimal(1_000_000) * entry.output_cost_per_million
+    ) / Decimal(1_000_000)
+
+
+def test_deepseek_pricing_survives_the_vendor_prefix_form():
+    """Users paste ``deepseek/deepseek-flash``; the route must still find the row."""
+    assert get_pricing_entry("deepseek/deepseek-flash", provider="deepseek") is not None

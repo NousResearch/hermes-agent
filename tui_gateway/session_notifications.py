@@ -318,7 +318,9 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
-            _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
+            claim_owner = f"tui:{session_key}"
+            _old, _new, events = _kbn.claim_unseen_events_for_sub(
+                conn, kinds=_KANBAN_NOTIFY_KINDS, claim_owner=claim_owner, **sub_ident)
             if not events:
                 continue
             task = _kb.get_task(conn, sub["task_id"])
@@ -328,6 +330,13 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             if task and getattr(task, "status", "") == "archived":
                 with contextlib.suppress(Exception):
                     _kbn.remove_notify_sub(conn, **sub_ident)
+            else:
+                # Same claim/advance protocol as the gateway notifier (gateway/kanban_watchers.py):
+                # the cursor only moves once delivery (formatting into `texts`) has actually
+                # succeeded, so a poller that dies mid-format can be reclaimed after the lease
+                # expires instead of permanently losing the event.
+                with contextlib.suppress(Exception):
+                    _kbn.advance_notify_cursor(conn, new_cursor=_new, claim_owner=claim_owner, **sub_ident)
     return texts
 
 

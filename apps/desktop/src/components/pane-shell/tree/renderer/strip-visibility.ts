@@ -38,12 +38,13 @@ export interface StripZone {
 
 /**
  * A pane is STRANDED without a strip when the strip is the only thing carrying
- * its handle: a lone closeable tile needs its ✕, a lone tool panel needs a chip
- * to grab. The uncloseable workspace is not strandable — it cannot be closed
- * or lost, so a lone chat is free to be chromeless. Hide-only chrome (sessions
- * / Bots) is the same: the panes stay, Show/Hide is a separate verb, and a
- * hidden strip comes back via ⌘⌥T. Treating it as stranded at any count made
- * Hide tabs a silent no-op on the sessions sidebar.
+ * its handle: a lone main tile needs its ✕ and +, a lone tool panel needs a
+ * chip to grab. The workspace cannot leave the tree, but Close still empties
+ * it to a draft and + still opens a tab — chromeless is a dead zone for those
+ * handles. Hide-only chrome (sessions / Bots) is different: the panes stay,
+ * Show/Hide is a separate verb, and a hidden strip comes back via ⌘⌥T.
+ * Treating side chrome as stranded at any count made Hide tabs a silent no-op
+ * on the sessions sidebar.
  *
  * This outranks an explicit `never` on purpose. "Hide the strip" is a request
  * about chrome, never a request to make a surface unreachable, and a zone that
@@ -64,7 +65,7 @@ function stranded(shown: readonly StripPane[]): boolean {
 
   const [only] = shown
 
-  return only.collapsePane || (!only.uncloseable && only.placement === 'main')
+  return only.collapsePane || only.placement === 'main'
 }
 
 export function resolveTabStripVisible(zone: StripZone): boolean {

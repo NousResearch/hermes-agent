@@ -18,12 +18,12 @@ import hermes_cli.web_server_gateway as _web_server_gateway
 
 @pytest.fixture(autouse=True)
 def reset_restart_cooldown():
-    """Keep the module-level cooldown state out of neighbouring tests."""
+    """Keep the module-level per-profile cooldown state out of neighbouring tests."""
     import hermes_cli.web_server as web_server
 
-    web_server._LAST_GATEWAY_RESTART = None
+    web_server._GATEWAY_RESTARTS_BY_PROFILE.clear()
     yield
-    web_server._LAST_GATEWAY_RESTART = None
+    web_server._GATEWAY_RESTARTS_BY_PROFILE.clear()
 
 
 def _exited_proc(pid: int = 4242) -> MagicMock:
@@ -191,10 +191,8 @@ class TestExistingBehaviourIsPreserved:
         live.pid = 7
 
         with patch(
-            "hermes_cli.web_server_gateway._ACTION_PROCS", {"gateway-restart": live}
-        ), patch(
-            "hermes_cli.web_server_gateway._ACTION_COMMANDS",
-            {"gateway-restart": ("gateway", "restart")},
+            "hermes_cli.web_server._GATEWAY_RESTARTS_BY_PROFILE",
+            {"": (50.0, live, ("gateway", "restart"))},
         ), patch(
             "hermes_cli.gateway._reap_unsupervised_gateway_orphans"
         ):
@@ -202,28 +200,4 @@ class TestExistingBehaviourIsPreserved:
 
         assert proc is live
         assert reused is True
-        mock_spawn.assert_not_called()
-
-    @patch(
-        "hermes_cli.web_server_gateway._gateway_subcommand",
-        return_value=["gateway", "restart"],
-    )
-    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
-    def test_live_child_for_another_profile_still_raises(self, mock_spawn, mock_subcmd):
-        from hermes_cli.web_server import _spawn_gateway_restart
-
-        live = MagicMock(spec=subprocess.Popen)
-        live.poll.return_value = None
-
-        with patch(
-            "hermes_cli.web_server_gateway._ACTION_PROCS", {"gateway-restart": live}
-        ), patch(
-            "hermes_cli.web_server_gateway._ACTION_COMMANDS",
-            {"gateway-restart": ("-p", "coder", "gateway", "restart")},
-        ), patch(
-            "hermes_cli.gateway._reap_unsupervised_gateway_orphans"
-        ):
-            with pytest.raises(RuntimeError, match="another profile"):
-                _spawn_gateway_restart()
-
         mock_spawn.assert_not_called()

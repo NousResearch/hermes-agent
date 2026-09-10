@@ -940,6 +940,7 @@ function SidebarSystemActions({
   const navigate = useNavigate();
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
     useSystemActions();
+  const { profile: scopedProfile } = useProfileScope();
   const canUpdateHermes = status?.can_update_hermes === true;
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
@@ -1076,15 +1077,19 @@ function SidebarSystemActions({
       cancelLabel={t.common.cancel}
       confirmLabel={t.status.restartGateway}
       description={
-        t.status.restartGatewayConfirmMessage ??
-        "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward."
+        scopedProfile
+          ? `This restarts the gateway for profile "${scopedProfile}" — not the dashboard's own default gateway. Connected channels and active sessions for that profile will reconnect afterward.`
+          : (t.status.restartGatewayConfirmMessage ??
+            "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.")
       }
       loading={pendingAction === "restart"}
       onCancel={() => setRestartConfirmOpen(false)}
       onConfirm={confirmRestart}
       open={restartConfirmOpen}
       title={
-        t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
+        scopedProfile
+          ? `Restart gateway for profile "${scopedProfile}"?`
+          : (t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`)
       }
     />
 

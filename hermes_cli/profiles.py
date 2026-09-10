@@ -247,6 +247,64 @@ def profile_exists(name: str) -> bool:
     return profile_dir.is_dir() and not named_profile_is_deleted(profile_dir)
 
 
+def _maybe_install_host_gateway_service(profile_name: str, profile_dir: Path) -> None:
+    """Best-effort install of the host service-manager unit for a freshly-created profile.
+
+    Mirrors the CLI path ``hermes -p <name> gateway install --no-start-now
+    --no-start-on-login`` so the unit records the correct HERMES_HOME (the
+    freshly-created profile dir) and is enabled for future boots without
+    starting the gateway right now (the user starts it explicitly).
+
+    Non-fatal: a fresh profile that cannot get a unit is still usable — the
+    user can install it later with ``hermes -p <name> gateway install``.
+    """
+    import platform as _platform
+
+    if _platform.system() not in {"Linux", "Darwin"}:
+        return  # Windows Scheduled Tasks and unsupported hosts are out of scope here
+
+    # HERMES_HOME must point at the new profile dir so the generated unit
+    # references the right home (vs. whichever home the caller happened to
+    # carry). Restore the previous value when done.
+    old_home = os.environ.get("HERMES_HOME")
+    try:
+        os.environ["HERMES_HOME"] = str(profile_dir)
+        from hermes_cli.gateway import get_service_name
+
+        svc_name = get_service_name()
+        svc_dir = Path.home() / ".config" / "systemd" / "user"
+        svc_dir.mkdir(parents=True, exist_ok=True)
+
+        from hermes_cli.gateway import generate_systemd_unit, systemd_install
+
+        # Non-blocking install: generate the unit into place, then let the
+        # existing `systemd_install` path handle daemon-reload + enable.
+        unit_path = svc_dir / f"{svc_name}.service"
+        if unit_path.exists():
+            return  # already installed
+        unit_path.write_text(generate_systemd_unit(system=False), encoding="utf-8")
+        systemd_install(
+            force=False, system=False, run_as_user=None,
+            enable_on_startup=False, non_interactive=True,
+        )
+    except Exception as exc:
+        # Never let this block profile creation — the dashboard only cares that
+        # the profile dir exists; the service install is a convenience.
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "Could not auto-install host gateway service for profile %r: %s",
+            profile_name, exc,
+        )
+    finally:
+        if old_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = old_home
+
+
+
+
 def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
     """True when *name* refers to the profile served from *home* (default: current home).
 
@@ -820,6 +878,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
+    auto_install_service: bool = False,
 ) -> Path:
     """Create a new profile directory and return its path.
 
@@ -883,6 +942,16 @@ def create_profile(
     if description and description.strip():
         with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
             write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
+
+    # Best-effort install of the host service manager unit for this profile.
+    # Mirrors the CLI path `hermes -p <name> gateway install --no-start-now,
+    # --no-start-on-login` so the unit records the correct HERMES_HOME and is
+    # enabled for future boots without starting the gateway right now (the user
+    # starts it explicitly). Non-fatal: a fresh profile that can't get a unit is
+    # still usable — the user can install it later with `hermes -p <name>
+    # gateway install`.
+    if auto_install_service:
+        _maybe_install_host_gateway_service(canon, profile_dir)
 
     # Inside a container under s6, register the gateway as a runtime s6 service so
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare

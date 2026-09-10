@@ -411,6 +411,11 @@ class ProfileCreate(BaseModel):
     # Installed async via `hermes -p <name> skills install` (skills_hub.SKILLS_DIR is import-time-bound,
     # so HERMES_HOME can't redirect it); PIDs go back for the UI to poll.
     hub_skills: List[str] = []
+    # Best-effort install of the host service-manager unit for this profile (Linux/Darwin only),
+    # mirroring `hermes -p <name> gateway install --no-start-now --no-start-on-login` so the unit
+    # records the correct HERMES_HOME from the freshly-created profile dir and is enabled for future
+    # boots without starting the gateway right now. Non-fatal: a hiccup never 500s the create.
+    auto_install_service: bool = False
 
 class ProfileRename(BaseModel):
     new_name: str

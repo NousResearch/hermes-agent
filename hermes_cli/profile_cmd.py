@@ -144,6 +144,65 @@ def _profile_use(args):
         _die(f"Error: {e}")
 
 
+def _install_profile_gateway(*, service_profile: str, profile_dir: Path) -> None:
+    """Best-effort install of the new profile's gateway service on the host.
+
+    Mirrors what ``hermes -p <name> gateway install`` does, but driven from
+    inside ``profile create`` with the correct ``HERMES_HOME`` already bound
+    to the freshly-created profile dir, so the service records the right
+    launch root instead of whichever home the creating shell happened to carry.
+
+    The install is intentionally non-fatal: a profile is still created even
+    when the host has no service manager, when systemd user bus is unreachable,
+    or when ``gateway install`` declines (e.g. legacy-unit removal pending).
+    Any failure is reported as a warning so the user can reinstall later with
+    ``hermes -p <name> gateway install``.
+    """
+    import subprocess
+
+    env = {**os.environ, "HERMES_HOME": str(profile_dir)}
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "-p", service_profile, "gateway", "install"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"⚠ Gateway service install for profile '{service_profile}' timed out — "
+            "the profile was created; install it manually with:  "
+            f"  hermes -p {service_profile} gateway install"
+        )
+        return
+    except Exception as exc:
+        print(
+            f"⚠ Gateway service install for profile '{service_profile}' failed: {exc} — "
+            "the profile was created; install it manually with:  "
+            f"  hermes -p {service_profile} gateway install"
+        )
+        return
+
+    if result.returncode == 0:
+        # Surface the installer's own "✓ … service installed" lines instead of
+        # inventing a second summary — those lines already tell the user what
+        # to run next (start, status, journalctl).
+        for line in result.stdout.splitlines():
+            if line.strip():
+                print(line)
+    else:
+        print(
+            f"⚠ Gateway service install for profile '{service_profile}' failed "
+            f"(exit {result.returncode}). The profile was created; install it "
+            f"manually with:  hermes -p {service_profile} gateway install"
+        )
+        if result.stderr.strip():
+            for line in result.stderr.splitlines():
+                if line.strip():
+                    print(f"  {line}")
+
+
 def _profile_create(args):
     from hermes_cli.profiles import (
         _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_profile,
@@ -157,6 +216,7 @@ def _profile_create(args):
     clone_from = getattr(args, "clone_from", None)
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
+    install_service = getattr(args, "install_service", False)
     try:
         profile_dir = create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
@@ -164,6 +224,8 @@ def _profile_create(args):
         )
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         _die(f"Error: {e}")
+    if install_service:
+        _install_profile_gateway(service_profile=name, profile_dir=profile_dir)
     print(f"\nProfile '{name}' created at {profile_dir}")
     if cloned:
         source_label = clone_from or get_active_profile_name()

@@ -8,8 +8,19 @@ QQBOT_VERSION = "1.1.0"  # bump on functional changes to the adapter package
 # Portal domain is overridable (QQ_PORTAL_HOST) for corporate proxies / test environments.
 PORTAL_HOST = os.getenv("QQ_PORTAL_HOST", "q.qq.com")
 
-API_BASE = "https://api.sgroup.qq.com"
-TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
+# Sandbox mode — use sandbox API endpoints when QQ_SANDBOX=true.
+# Override the individual endpoint env vars (QQ_API_BASE, QQ_TOKEN_URL)
+# for fine-grained control.
+SANDBOX = os.getenv("QQ_SANDBOX", "").lower() in ("1", "true", "yes")
+
+API_BASE = os.getenv(
+    "QQ_API_BASE",
+    "https://sandbox.api.sgroup.qq.com" if SANDBOX else "https://api.sgroup.qq.com",
+)
+TOKEN_URL = os.getenv(
+    "QQ_TOKEN_URL",
+    "https://bots.qq.com/app/getAppAccessToken",
+)
 GATEWAY_URL_PATH = "/gateway"
 ONBOARD_CREATE_PATH = "/lite/create_bind_task"
 ONBOARD_POLL_PATH = "/lite/poll_bind_result"

@@ -119,7 +119,6 @@ describe('desktop slash command curation', () => {
   })
 
   it('hides terminal, messaging, and dedicated-UI commands from suggestions', () => {
-    expect(isDesktopSlashSuggestion('/clear')).toBe(false)
     expect(isDesktopSlashSuggestion('/density')).toBe(false)
     expect(isDesktopSlashSuggestion('/redraw')).toBe(false)
     expect(isDesktopSlashSuggestion('/approve')).toBe(false)
@@ -289,6 +288,12 @@ describe('desktop slash command curation', () => {
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)
+    // Help advertises `/clear` as "start a new session". On the TUI that
+    // also clears the terminal screen; on desktop it must take the same
+    // path as `/new` instead of being marked terminal-only (#95779).
+    expect(isDesktopSlashSuggestion('/clear')).toBe(false)
+    expect(isDesktopSlashCommand('/clear')).toBe(true)
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'action', action: 'new' })
   })
 
   it('filters built-in catalog noise but keeps skill / quick-command extensions', () => {
@@ -380,7 +385,7 @@ describe('desktop slash command curation', () => {
   it('explains known commands that desktop owns elsewhere', () => {
     expect(desktopSlashUnavailableMessage('/model sonnet')).toContain('model picker')
     expect(desktopSlashUnavailableMessage('/skills')).toContain('desktop sidebar')
-    expect(desktopSlashUnavailableMessage('/clear')).toContain('terminal interface')
+    expect(desktopSlashUnavailableMessage('/quit')).toContain('terminal interface')
   })
 
   it('flags /model as a picker-owned command so the desktop opens the overlay', () => {
@@ -405,9 +410,10 @@ describe('desktop slash command curation', () => {
   it('resolves commands and aliases to their declared surface', () => {
     expect(resolveDesktopCommand('/new')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
     expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
-    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
+    expect(desktopSlashUnavailableMessage('/clear')).toBeNull()
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()
   })

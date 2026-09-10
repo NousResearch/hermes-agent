@@ -7,11 +7,14 @@ config-false behaviour is verified against the shipped code path rather than
 against a re-implementation.
 """
 
+from datetime import datetime
+
 import pytest
 
 from agent.turn_summary import (
     TurnSummaryCollector,
     TurnTally,
+    format_completion_time,
     format_elapsed,
     format_token_flow,
     format_turn_summary,
@@ -34,6 +37,11 @@ from agent.turn_summary import (
 )
 def test_format_elapsed(seconds, expected):
     assert format_elapsed(seconds) == expected
+
+
+def test_format_completion_time_is_compact():
+    assert format_completion_time(datetime(2026, 8, 31, 9, 6)) == "9:06 AM"
+    assert format_completion_time(datetime(2026, 8, 31, 15, 42)) == "3:42 PM"
 
 
 # ── format_turn_summary: pure formatter ─────────────────────────────────────
@@ -177,10 +185,20 @@ def _emit_and_capture(stub, monkeypatch):
 
 
 def test_gating_enabled_prints_summary(monkeypatch):
+    import hermes_cli.cli_status_bar_mixin as status_bar_module
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 31, 9, 6, tzinfo=tz)
+
+    monkeypatch.setattr(status_bar_module, "datetime", FixedDateTime)
+
     stub = _make_cli()
     printed = _emit_and_capture(stub, monkeypatch)
     assert len(printed) == 1
     assert "read 1 file" in printed[0]
+    assert "finished at 9:06 AM" in printed[0]
 
 
 

@@ -42,6 +42,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
   },
+  // Pop-out annotate flush: the popped-out Browser has no composer, so it
+  // posts its packaged comment pins here; main forwards them to the primary
+  // window, whose receiver attaches them to the real composer.
+  postAnnotateFlush: envelope => ipcRenderer.invoke('hermes:annotate:flush', envelope),
+  onAnnotateFlushed: callback => {
+    const listener = (_event, envelope) => callback(envelope)
+    ipcRenderer.on('hermes:annotate:flushed', listener)
+
+    return () => ipcRenderer.removeListener('hermes:annotate:flushed', listener)
+  },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
   wakeIndicator: {
     getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),

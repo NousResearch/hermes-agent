@@ -69,7 +69,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
         className={cn(
           collapsed
             ? "text-text-secondary hover:text-foreground hover:bg-transparent"
-            : "px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
+            : "px-2 py-1.5 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
         )}
         title={`${t.theme?.switchTheme ?? "Switch theme"}: ${label}`}
         aria-label={t.theme?.switchTheme ?? "Switch theme"}

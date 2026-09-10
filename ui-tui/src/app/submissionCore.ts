@@ -1,6 +1,7 @@
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse, SessionActivateResponse } from '../gatewayTypes.js'
 import type { QueueItem } from '../hooks/useQueue.js'
+import { stageImagePath } from '../lib/imageAttachments.js'
 import { pendingInputOwner, savePendingInput } from '../lib/pendingInputs.js'
 import type { Msg } from '../types.js'
 
@@ -54,7 +55,7 @@ export function submitPrompt(
   deps: SubmitPromptDeps,
   showUserMessage = true,
   displayOverride?: string,
-  opts: { skipDetectDrop?: boolean; destination?: SubmissionDestination; queueItem?: QueueItem; behindTurn?: boolean } = {}
+  opts: { attachments?: Array<{ path: string; mime: string }>; skipDetectDrop?: boolean; destination?: SubmissionDestination; queueItem?: QueueItem; behindTurn?: boolean } = {}
 ): void {
   const destination = opts.destination ?? captureDestination()
   const owner = pendingInputOwner(opts.queueItem?.ownerDestination ?? destination)
@@ -104,6 +105,7 @@ export function submitPrompt(
 
     if (item) {
       item.preparedText ??= submitText
+      item.attachments ??= opts.attachments?.map(attachment => ({ ...attachment }))
 
       if (opts.behindTurn) { item.queued = true }
 
@@ -115,6 +117,7 @@ export function submitPrompt(
       .request<PromptSubmitResponse>('prompt.submit', {
         session_id: sid,
         text: item?.preparedText ?? submitText,
+        ...((item?.attachments ?? opts.attachments)?.length ? { attachments: item?.attachments ?? opts.attachments } : {}),
         ...(item ? { submission_id: item.submissionId, queued: item.queued !== false } : {})
       })
       .then(r => {
@@ -177,7 +180,7 @@ export function submitPrompt(
         // 4094 is a pre-admission refusal, not an ambiguous write. Special
         // compute modes still support legacy submit; retry only this refusal,
         // keeping the prepared payload, destination and queue mode unchanged.
-        if (item && e.code === 4094) {
+        if (item && e.code === 4094 && !deps.gw.isCanonical && !item.attachments?.length) {
           if (focused()) {deps.sys('durable admission unavailable for this session — using legacy delivery')}
 
           try {
@@ -262,6 +265,27 @@ export function submitPrompt(
   }
 
   if (opts.skipDetectDrop) {
+    return startSubmit(text, deps.expand(text), showUserMessage)
+  }
+
+  if (deps.gw.isCanonical) {
+    if (/^(?:["']?(?:[/.~]|[A-Za-z]:[/\\])|file:\/\/)/.test(text) && /\.(?:png|jpe?g|gif|webp)(?:["']?)(?:\s|$)/i.test(text)) {
+      void stageImagePath(text, deps.gw, destination).then(image => {
+        opts.attachments = [{ path: image.path, mime: image.mime }]
+        startSubmit(text, image.remainder || 'What do you see in this image?', showUserMessage)
+      }).catch((error: Error) => {
+        opts.queueItem?.settle?.(false)
+
+        if (focused()) {
+          deps.sys(`image not submitted: ${error.message} — input retained`)
+
+          if (ownsTurn()) { patchUiState({ busy: false, status: 'image not submitted' }) }
+        }
+      })
+
+      return
+    }
+
     return startSubmit(text, deps.expand(text), showUserMessage)
   }
 

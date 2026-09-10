@@ -15,6 +15,7 @@ import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
+import { stageImagePath } from '../lib/imageAttachments.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
@@ -179,7 +180,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       }
 
       for (const token of gone) {
-        if (token.kind === 'image') {
+        if (token.kind === 'image' && !gw.isCanonical) {
           void gw.request('image.detach', { path: token.path, session_id: getUiState().sid }).catch(() => {})
         }
       }
@@ -195,11 +196,11 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
    * of `~/shot.png look at this` keeps the caption).
    */
   const attachImageToken = useCallback(
-    (attached: ImageAttachResponse & { path?: string }, value: string, cursor: number): ComposerPasteResult => {
+    (attached: ImageAttachResponse & { path?: string; mime?: string }, value: string, cursor: number): ComposerPasteResult => {
       const index = nextImageIndex(tokensRef.current)
       const label = imageToken(index)
 
-      setComposerTokens(prev => trimTokens([...prev, { index, kind: 'image', label, path: attached.path ?? '' }]))
+      setComposerTokens(prev => trimTokens([...prev, { index, kind: 'image', label, path: attached.path ?? '', ...(attached.mime ? { mime: attached.mime } : {}) }]))
 
       const withToken = insertAtCursor(value, cursor, label)
       const remainder = attached.remainder?.trim() ?? ''
@@ -228,7 +229,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
           return accept(attached)
         }
 
-        if (attached?.path) {
+        if (attached?.path && !gw.isCanonical) {
           staleAttachments.current.push({ destination, path: attached.path })
         }
 
@@ -307,10 +308,11 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       if (sid && looksLikeDroppedPath(cleanedText)) {
         try {
-          const next = await resolveAttachment(
+          const next = await resolveAttachment<ImageAttachResponse & { path?: string; mime?: string }>(
             destination,
             revision,
-            gw.request<ImageAttachResponse & { path?: string }>('image.attach', { path: cleanedText, session_id: sid }),
+            gw.isCanonical ? stageImagePath(cleanedText, gw, destination)
+              : gw.request<ImageAttachResponse & { path?: string }>('image.attach', { path: cleanedText, session_id: sid }),
             attached => attached?.name ? attachImageToken(attached, value, cursor) : null
           )
 
@@ -455,10 +457,11 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
           return null
         }
 
-        return resolveAttachment(
+        return resolveAttachment<ImageAttachResponse & { path?: string; mime?: string }>(
           destination,
           revision,
-          gw.request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid })
+          (gw.isCanonical ? stageImagePath(path, gw, destination)
+            : gw.request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid }))
             .catch((e: Error) => {
               if (isCurrentDestination(destination) && revision === composerRevision.current) {
                 sys(`error: ${e.message}`)

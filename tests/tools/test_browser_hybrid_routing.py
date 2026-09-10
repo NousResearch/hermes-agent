@@ -15,6 +15,9 @@ from unittest.mock import Mock
 import pytest
 
 import tools.browser_tool as browser_tool
+from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_tool_session as bt_session
+from tools import browser_tool_cloud as bt_cloud
 
 
 @pytest.fixture(autouse=True)
@@ -26,10 +29,10 @@ def _reset_routing_state(monkeypatch):
     monkeypatch.setattr(browser_tool, "_cloud_provider_resolved", False)
     monkeypatch.setattr(browser_tool, "_auto_local_for_private_urls_resolved", False)
     monkeypatch.setattr(browser_tool, "_cached_auto_local_for_private_urls", True)
-    monkeypatch.setattr(browser_tool, "_start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr(browser_tool, "_update_session_activity", lambda t: None)
+    monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr("tools.browser_tool_lifecycle._update_session_activity", lambda t: None)
     # Default: no CDP override, no Camofox
-    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: None)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: None)
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
 
 
@@ -38,26 +41,26 @@ class TestNavigationSessionKey:
 
     def test_public_url_uses_bare_task_id(self, monkeypatch):
         """Public URL with cloud provider configured → bare task_id (cloud)."""
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: Mock())
         key = browser_tool._navigation_session_key("default", "https://github.com/x/y")
         assert key == "default"
 
     def test_localhost_routes_to_local_sidecar(self, monkeypatch):
         """``localhost`` URL → ``::local`` suffix when cloud configured + flag on."""
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: Mock())
         key = browser_tool._navigation_session_key("default", "http://localhost:3000/")
         assert key == "default::local"
 
 
     def test_rfc1918_lan_routes_to_local_sidecar(self, monkeypatch):
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: Mock())
         key = browser_tool._navigation_session_key("default", "http://192.168.1.50:8000/")
         assert key == "default::local"
 
 
     def test_none_task_id_defaults(self, monkeypatch):
         """``None`` task_id resolves to 'default'."""
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: Mock())
         key = browser_tool._navigation_session_key(None, "http://localhost:3000/")
         assert key == "default::local"
 
@@ -101,10 +104,10 @@ class TestHybridRoutingSessionCreation:
             "bb_session_id": "bb_xxx",
             "cdp_url": "wss://fake.browserbase.com/ws",
         }
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
-        monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda t: None)
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
+        monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda t: None)
 
-        session = browser_tool._get_session_info("default::local")
+        session = bt_session._get_session_info("default::local")
 
         assert provider.create_session.call_count == 0
         assert session["bb_session_id"] is None
@@ -121,11 +124,11 @@ class TestHybridRoutingSessionCreation:
             "bb_session_id": "bb_123",
             "cdp_url": "wss://real.browserbase.com/ws",
         }
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
-        monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda t: None)
-        monkeypatch.setattr(browser_tool, "_resolve_cdp_override", lambda u: u)
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
+        monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda t: None)
+        monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda u: u)
 
-        session = browser_tool._get_session_info("default")
+        session = bt_session._get_session_info("default")
 
         assert provider.create_session.call_count == 1
         assert session["bb_session_id"] == "bb_123"
@@ -143,7 +146,7 @@ class TestCleanupHybridSessions:
         def _fake_cleanup_one(key):
             reaped.append(key)
 
-        monkeypatch.setattr(browser_tool, "_cleanup_single_browser_session", _fake_cleanup_one)
+        monkeypatch.setattr(bt_lifecycle, "_cleanup_single_browser_session", _fake_cleanup_one)
         monkeypatch.setattr(
             browser_tool,
             "_active_sessions",
@@ -156,7 +159,7 @@ class TestCleanupHybridSessions:
             browser_tool, "_last_active_session_key", {"default": "default::local"}
         )
 
-        browser_tool.cleanup_browser("default")
+        bt_lifecycle.cleanup_browser("default")
 
         assert set(reaped) == {"default", "default::local"}
         # last-active pointer dropped
@@ -170,7 +173,7 @@ class TestCleanupHybridSessions:
         def _fake_cleanup_one(key):
             reaped.append(key)
 
-        monkeypatch.setattr(browser_tool, "_cleanup_single_browser_session", _fake_cleanup_one)
+        monkeypatch.setattr(bt_lifecycle, "_cleanup_single_browser_session", _fake_cleanup_one)
         monkeypatch.setattr(
             browser_tool,
             "_active_sessions",
@@ -183,7 +186,7 @@ class TestCleanupHybridSessions:
             browser_tool, "_last_active_session_key", {"default": "default::local"}
         )
 
-        browser_tool.cleanup_browser("default::local")
+        bt_lifecycle.cleanup_browser("default::local")
 
         assert reaped == ["default::local"]
         # The cleaned sidecar must not remain the recorded owner; otherwise a

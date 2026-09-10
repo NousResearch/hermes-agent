@@ -83,7 +83,7 @@ class TestDeclarationParsing:
 
     def test_manifest_field_lands_on_parsed_manifest(self, tmp_path):
         """PluginManifest picks up ``capabilities:`` from plugin.yaml."""
-        from hermes_cli.plugins import PluginManager
+        from hermes_cli.plugins import parse_manifest_file
 
         plugin_dir = tmp_path / "capplug"
         plugin_dir.mkdir()
@@ -92,23 +92,21 @@ class TestDeclarationParsing:
             "capabilities:\n  - tools.override\n  - bogus.capability\n",
             encoding="utf-8",
         )
-        mgr = PluginManager()
-        manifest = mgr._parse_manifest(
+        manifest = parse_manifest_file(
             plugin_dir / "plugin.yaml", plugin_dir, "user", ""
         )
         assert manifest is not None
         assert manifest.capabilities == ["tools.override"]
 
     def test_manifest_without_capabilities_field(self, tmp_path):
-        from hermes_cli.plugins import PluginManager
+        from hermes_cli.plugins import parse_manifest_file
 
         plugin_dir = tmp_path / "plainplug"
         plugin_dir.mkdir()
         (plugin_dir / "plugin.yaml").write_text(
             "name: plainplug\n", encoding="utf-8"
         )
-        mgr = PluginManager()
-        manifest = mgr._parse_manifest(
+        manifest = parse_manifest_file(
             plugin_dir / "plugin.yaml", plugin_dir, "user", ""
         )
         assert manifest is not None

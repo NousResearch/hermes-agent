@@ -22,32 +22,25 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hermes_cli.main import (
-    _finish_dashboard_update_cleanup,
-    _find_stale_dashboard_pids,
-    _kill_stale_dashboard_processes,
-    _restart_managed_dashboard_service,
-    _warn_stale_dashboard_processes,  # back-compat alias
-)
+from hermes_cli.main_dashboard import _find_stale_dashboard_pids
+from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
+from hermes_cli import dashboard_procs
+from hermes_cli import main_dashboard
+from hermes_cli import update_cmd
+from hermes_cli.update_cmd import _finish_dashboard_update_cleanup
+from hermes_cli.main_dashboard import _restart_managed_dashboard_service
+from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes as _warn_stale_dashboard_processes
 
 
 @pytest.fixture(autouse=True)
 def _refresh_bindings_against_live_module():
-    """Rebind module-level names to the *current* ``hermes_cli.main``.
+    """Rebind module-level names to the *current* defining modules.
 
-    Other tests in the suite (notably ``test_env_loader.py`` and
-    ``test_skills_subparser.py``) reload or delete ``hermes_cli.main`` from
-    ``sys.modules``.  When that happens on the same xdist worker before we
-    run, our top-of-file ``from hermes_cli.main import ...`` bindings end
-    up pointing at the *old* module object.  ``patch(\"hermes_cli.main.X\")``
-    then patches the *new* module, but the function we call still resolves
-    ``_find_stale_dashboard_pids`` via its stale ``__globals__``, so every
-    patch becomes a no-op and the kill path silently returns early.
-
-    Refreshing the bindings (and the patch target) to the live module
-    object — and keeping them consistent — makes the tests immune to
-    ordering within the worker.  The fix lives in the test module because
-    the two pollutants above are load-bearing for their own tests.
+    Other tests in the suite reload modules from ``sys.modules``; when that
+    happens on the same xdist worker before we run, our top-of-file bindings
+    end up pointing at the *old* module object and ``patch("<module>.X")``
+    patches the *new* one, so every patch becomes a no-op and the kill path
+    silently returns early. Refreshing the bindings keeps them consistent.
     """
     global _finish_dashboard_update_cleanup
     global _find_stale_dashboard_pids
@@ -55,15 +48,11 @@ def _refresh_bindings_against_live_module():
     global _restart_managed_dashboard_service
     global _warn_stale_dashboard_processes
 
-    live = sys.modules.get("hermes_cli.main")
-    if live is None:
-        live = importlib.import_module("hermes_cli.main")
-
-    _finish_dashboard_update_cleanup = live._finish_dashboard_update_cleanup
-    _find_stale_dashboard_pids = live._find_stale_dashboard_pids
-    _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
-    _restart_managed_dashboard_service = live._restart_managed_dashboard_service
-    _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
+    _finish_dashboard_update_cleanup = update_cmd._finish_dashboard_update_cleanup
+    _find_stale_dashboard_pids = main_dashboard._find_stale_dashboard_pids
+    _kill_stale_dashboard_processes = dashboard_procs._kill_stale_dashboard_processes
+    _restart_managed_dashboard_service = main_dashboard._restart_managed_dashboard_service
+    _warn_stale_dashboard_processes = dashboard_procs._kill_stale_dashboard_processes
     yield
 
 
@@ -122,7 +111,7 @@ def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeyp
         return []
 
     with patch(
-        "hermes_cli.main._find_stale_dashboard_pids",
+        "hermes_cli.main_dashboard._find_stale_dashboard_pids",
         side_effect=assert_owned_pid_is_excluded,
     ):
         result = _kill_stale_dashboard_processes(restart_managed=True)
@@ -141,7 +130,7 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
         return []
 
     with patch(
-        "hermes_cli.main._find_stale_dashboard_pids",
+        "hermes_cli.main_dashboard._find_stale_dashboard_pids",
         side_effect=assert_owned_pid_is_not_excluded,
     ):
         result = _kill_stale_dashboard_processes(restart_managed=False)
@@ -205,7 +194,7 @@ class TestKillStaleDashboardPosix:
                 raise ProcessLookupError
             # SIGTERM itself: succeed silently.
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch("hermes_cli.main_dashboard._find_stale_dashboard_pids",
                    return_value=[12345, 12346]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
@@ -255,7 +244,7 @@ class TestKillStaleDashboardPosix:
             raise AssertionError(f"unexpected subprocess.run call: {args}")
 
         with patch("subprocess.run", side_effect=fake_run), \
-             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]) as find_pids, \
+             patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", return_value=[]) as find_pids, \
              patch("os.kill") as kill:
             _kill_stale_dashboard_processes(restart_managed=True)
 
@@ -289,7 +278,7 @@ class TestKillStaleDashboardWindows:
             # taskkill returns 0 on success
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch("hermes_cli.main_dashboard._find_stale_dashboard_pids",
                    return_value=[12345, 12346]), \
              patch("gateway.status.get_process_start_time", return_value=123), \
              patch("hermes_cli._subprocess_compat.pid_is_hermes", return_value=True), \
@@ -391,7 +380,7 @@ class TestSupervisedBackendRestart:
     Restart=on-failure never fires on its own."""
 
     def _live(self):
-        return sys.modules["hermes_cli.main"]
+        return main_dashboard
 
     def test_supervised_pid_restarts_owning_unit(self, capsys):
         """A killed PID whose cgroup names a custom unit → systemctl restart."""
@@ -401,13 +390,13 @@ class TestSupervisedBackendRestart:
             if sig == 0:
                 raise ProcessLookupError
 
-        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
              patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
-             patch.object(live, "_get_pid_cgroup_path",
+             patch.object(main_dashboard, "_get_pid_cgroup_path",
                           return_value="/system.slice/hermes-serve.service"), \
-             patch.object(live, "_get_systemd_service_for_pid",
+             patch.object(main_dashboard, "_get_systemd_service_for_pid",
                           return_value="hermes-serve.service"), \
-             patch.object(live, "_try_restart_systemd_service", return_value=True) as restart, \
+             patch.object(main_dashboard, "_try_restart_systemd_service", return_value=True) as restart, \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes(restart_managed=True)
@@ -427,13 +416,13 @@ class TestSupervisedBackendRestart:
         skip killing/restarting it again here."""
         live = self._live()
 
-        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
              patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
-             patch.object(live, "_get_pid_cgroup_path",
+             patch.object(main_dashboard, "_get_pid_cgroup_path",
                           return_value="/system.slice/hermes-serve.service"), \
-             patch.object(live, "_get_systemd_service_for_pid",
+             patch.object(main_dashboard, "_get_systemd_service_for_pid",
                           return_value="hermes-serve.service"), \
-             patch.object(live, "_try_restart_systemd_service") as restart, \
+             patch.object(main_dashboard, "_try_restart_systemd_service") as restart, \
              patch("os.kill") as kill, \
              patch("time.sleep"):
             result = _kill_stale_dashboard_processes(
@@ -450,7 +439,7 @@ class TestManualBackendRespawn:
     kill and are respawned detached after the update (#40449)."""
 
     def _live(self):
-        return sys.modules["hermes_cli.main"]
+        return main_dashboard
 
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
@@ -461,11 +450,11 @@ class TestManualBackendRespawn:
             if sig == 0:
                 raise ProcessLookupError
 
-        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
              patch.object(live, "_find_stale_dashboard_pids", return_value=[5555]), \
-             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
-             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
-             patch.object(live, "_dashboard_cmdline_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=None), \
              patch.object(live, "_respawn_dashboard_processes") as respawn, \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
@@ -485,11 +474,11 @@ class TestManualBackendRespawn:
             if sig == 0:
                 raise ProcessLookupError
 
-        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
              patch.object(live, "_find_stale_dashboard_pids", return_value=[6001]), \
-             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
-             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
-             patch.object(live, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
              patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
              patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
              patch("os.kill", side_effect=fake_kill), \
@@ -512,12 +501,12 @@ class TestManualBackendRespawn:
             if sig == 0:
                 raise ProcessLookupError
 
-        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
              patch.object(live, "_find_stale_dashboard_pids",
                           return_value=[7001, 7002, 7003]), \
-             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
-             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
-             patch.object(live, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
              patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
              patch.object(live, "_respawn_dashboard_processes") as respawn, \
              patch("os.kill", side_effect=fake_kill), \
@@ -540,11 +529,11 @@ class TestManualBackendRespawn:
             if sig == 0:
                 raise ProcessLookupError
 
-        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
              patch.object(live, "_find_stale_dashboard_pids", return_value=[8001]), \
-             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
-             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
-             patch.object(live, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
              patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
              patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
              patch("os.kill", side_effect=fake_kill), \
@@ -806,7 +795,7 @@ class TestCmdlineCapture:
     """_dashboard_cmdline_for_pid reads /proc on Linux, ps on macOS."""
 
     def _live(self):
-        return sys.modules["hermes_cli.main"]
+        return main_dashboard
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /proc cmdline path")
     def test_reads_proc_cmdline_when_available(self, tmp_path, monkeypatch):
@@ -830,7 +819,7 @@ class TestCmdlineCapture:
 
         with patch.object(live.os.path, "exists", fake_exists), \
              patch("builtins.open", fake_open):
-            argv = live._dashboard_cmdline_for_pid(777)
+            argv = main_dashboard._dashboard_cmdline_for_pid(777)
 
         assert argv == ["/usr/bin/python3", "-m", "hermes_cli.main", "serve"]
 
@@ -844,7 +833,7 @@ class TestCmdlineCapture:
 
         with patch.object(live.os.path, "exists", return_value=False), \
              patch("subprocess.run", side_effect=fake_run):
-            argv = live._dashboard_cmdline_for_pid(888)
+            argv = main_dashboard._dashboard_cmdline_for_pid(888)
 
         assert argv == ["hermes", "serve", "--port", "8300"]
 
@@ -855,7 +844,7 @@ class TestCmdlineCapture:
         restated the branch condition.
         """
         live = self._live()
-        assert live._dashboard_cmdline_for_pid(123) is None
+        assert main_dashboard._dashboard_cmdline_for_pid(123) is None
 
 
 class TestPostUpdateStaleModuleReload:

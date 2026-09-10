@@ -23,8 +23,6 @@ from tools.tts_tool_providers import _tts_response_format_from_path
 logger = logging.getLogger("tools.tts_tool")
 
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
-# The managed OpenAI audio gateway only proxies these; anything else is 400 "Unsupported".
-MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # DeepInfra base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
@@ -117,15 +115,8 @@ def _generate_openai_tts(
     if speed is None:
         speed_default = tts_config.get("speed", 1.0) if isinstance(tts_config, dict) else 1.0
         speed = float(oai_config.get("speed", speed_default))
-    # The managed gateway only proxies MANAGED_OPENAI_TTS_MODELS; coerce a direct-OpenAI
-    # model (e.g. "tts-1-hd") unless the user redirected base_url to their own endpoint.
-    if is_managed and not explicit_base_url and not config_base_url and model not in MANAGED_OPENAI_TTS_MODELS:
-        logger.warning(
-            "TTS: managed OpenAI audio gateway does not support model %r; "
-            "falling back to %s. Set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY "
-            "to use %r directly.",
-            model, DEFAULT_OPENAI_MODEL, model)
-        model = DEFAULT_OPENAI_MODEL
+    # The managed gateway forwards the configured model as-is; which models are billable is
+    # decided by Nous pricing rules, and an unpriced model surfaces as a gateway error here.
     create_kwargs: Dict[str, Any] = {
         "model": model, "voice": voice, "input": text,
         "response_format": _tts_response_format_from_path(output_path),

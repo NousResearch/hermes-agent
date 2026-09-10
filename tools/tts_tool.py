@@ -675,7 +675,6 @@ _PLUGIN_COMPAT_LAZY = {
     'ELEVENLABS_MODEL_MAX_TEXT_LENGTH': ('tools.tts_tool_delivery', 'ELEVENLABS_MODEL_MAX_TEXT_LENGTH'),
     'FALLBACK_MAX_TEXT_LENGTH': ('tools.tts_tool_delivery', 'FALLBACK_MAX_TEXT_LENGTH'),
     'GEMINI_AUDIO_TAG_REWRITE_TASK': ('tools.tts_tool_providers', 'GEMINI_AUDIO_TAG_REWRITE_TASK'),
-    'MANAGED_OPENAI_TTS_MODELS': ('tools.tts_tool_openai', 'MANAGED_OPENAI_TTS_MODELS'),
     'PROVIDER_MAX_TEXT_LENGTH': ('tools.tts_tool_delivery', 'PROVIDER_MAX_TEXT_LENGTH'),
     'TTS_RESPONSE_BODY_CHUNK_BYTES': ('tools.tts_tool_providers', 'TTS_RESPONSE_BODY_CHUNK_BYTES'),
     'TTS_RESPONSE_BODY_LIMIT_BYTES': ('tools.tts_tool_providers', 'TTS_RESPONSE_BODY_LIMIT_BYTES'),

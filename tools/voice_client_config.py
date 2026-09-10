@@ -172,10 +172,6 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         model = oai.get("model") or tts_tool_openai.DEFAULT_OPENAI_MODEL
         config_base = oai.get("base_url")
         base_url = config_base or base_url
-        # The managed gateway only proxies MANAGED_OPENAI_TTS_MODELS — same
-        # coercion text_to_speech applies server-side.
-        if is_managed and not config_base and model not in tts_tool_openai.MANAGED_OPENAI_TTS_MODELS:
-            model = tts_tool_openai.DEFAULT_OPENAI_MODEL
         speed_default = tts_config.get("speed", 1.0) if isinstance(tts_config, dict) else 1.0
         try:
             speed = float(oai.get("speed", speed_default))

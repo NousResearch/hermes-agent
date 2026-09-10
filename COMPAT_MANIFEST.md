@@ -3698,7 +3698,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `GEMINI_TTS_SAMPLE_RATE` | restored-def | `(deleted; BASE body restored)` |
 | `GEMINI_TTS_SAMPLE_WIDTH` | restored-def | `(deleted; BASE body restored)` |
 | `Iterator` | import | `typing` |
-| `MANAGED_OPENAI_TTS_MODELS` | moved-lazy | `tools.tts_tool_openai` |
 | `MAX_TEXT_LENGTH` | restored-def | `(deleted; BASE body restored)` |
 | `PROVIDER_MAX_TEXT_LENGTH` | moved-lazy | `tools.tts_tool_delivery` |
 | `TTS_RESPONSE_BODY_CHUNK_BYTES` | moved-lazy | `tools.tts_tool_providers` |

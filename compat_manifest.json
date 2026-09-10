@@ -11962,12 +11962,6 @@
   },
   {
    "facade": "tools.tts_tool",
-   "name": "MANAGED_OPENAI_TTS_MODELS",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_openai"
-  },
-  {
-   "facade": "tools.tts_tool",
    "name": "FALLBACK_MAX_TEXT_LENGTH",
    "kind": "restored-helper",
    "target": "(deleted; restored as a dependency of MAX_TEXT_LENGTH)"

@@ -242,6 +242,24 @@ def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatc
     assert captured["close_calls"] == 1
 
 
+def test_openai_tts_forwards_configured_model_to_managed_gateway(monkeypatch, tmp_path):
+    """The managed gateway decides which speech models are billable (NAS pricing rules), so the
+    client must send the configured model as-is instead of coercing it to a hardcoded one."""
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_openai_module(captured)
+    monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "nousresearch.com")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
+    tts_tool._generate_openai_tts("hello world", str(tmp_path / "speech.mp3"), {"openai": {"model": "tts-1-hd"}})
+
+    assert captured["base_url"] == "https://openai-audio-gateway.nousresearch.com/v1"
+    assert captured["speech_kwargs"]["model"] == "tts-1-hd"
+
+
 def test_openai_tts_accepts_openai_api_key_as_direct_fallback(monkeypatch, tmp_path):
     captured = {}
     _install_fake_tools_package()

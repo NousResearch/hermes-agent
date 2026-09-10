@@ -880,6 +880,37 @@ class TestHuggingFaceModels:
 
 
 # =============================================================================
+# AIgateway provider tests (added by feat/add-aigateway-provider)
+# =============================================================================
+
+class TestAIgatewayProvider:
+    """Tests for AIgateway — an OpenAI-compatible multi-model aggregator."""
+
+    def test_aigateway_profile_loads(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("aigateway")
+        assert profile is not None
+        assert profile.name == "aigateway"
+        assert profile.display_name == "AIgateway"
+        assert profile.base_url == "https://api.aigateway.sh/v1"
+        assert "AIGATEWAY_API_KEY" in profile.env_vars
+
+    def test_aigateway_alias_resolves(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("aigw")
+        assert profile is not None
+        assert profile.name == "aigateway"
+
+    def test_aigateway_alias_does_not_shadow_vercel(self):
+        """Vercel's ai-gateway profile keeps its own aliases; 'aigateway' resolves to us."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("aigateway")
+        assert profile is not None
+        assert profile.name == "aigateway"
+        assert profile.base_url != "https://ai-gateway.vercel.sh/v1"
+
+
+# =============================================================================
 # NovitaAI provider tests (added by feat/add-novita-provider)
 # =============================================================================
 

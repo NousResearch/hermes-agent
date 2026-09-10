@@ -427,6 +427,10 @@ export interface Translations {
         gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
+        pinToCommit: string
+        pinToCommitPlaceholder: string
+        pinToCommitHint: string
+        pinToCommitInvalid: string
         install: string
         installing: string
         probing: string
@@ -1331,6 +1335,8 @@ export interface Translations {
       catalogHint: string
       alreadyInstalled: (name: string) => string
       catalogProvenance: (sha: string) => string
+      pinnedProvenance: (sha: string) => string
+      pinnedBadge: (sha: string) => string
       tierOfficial: string
       tierCommunity: string
       updateToPin: (sha: string) => string

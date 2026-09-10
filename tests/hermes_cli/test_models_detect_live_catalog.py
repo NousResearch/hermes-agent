@@ -35,6 +35,9 @@ class TestCurrentProviderCatalogWins:
         live_catalog["nous"] = ["zai/glm-5.3-flash"]
         assert models.detect_provider_for_model("glm-5.3-flash", "nous") == ("nous", "zai/glm-5.3-flash")
 
-    def test_unserved_model_still_walks_the_ladder(self, live_catalog):
+    def test_unserved_model_still_walks_the_ladder(self, live_catalog, monkeypatch):
+        from hermes_cli import models_detect
+
+        monkeypatch.setattr(models_detect, "provider_has_credentials", lambda p: p == "openrouter")
         live_catalog["nous"] = ["hermes-4-405b"]
         assert models.detect_provider_for_model("no-such-model", "nous") == ("openrouter", "vendor/no-such-model")

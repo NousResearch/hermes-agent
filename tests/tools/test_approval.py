@@ -213,20 +213,34 @@ class TestSafeCommand:
             assert desc is None
 
 
-def _clear_session(key):
-    """Replace for removed clear_session() — directly clear internal state."""
-    approval_module._session_approved.pop(key, None)
-    approval_module._pending.pop(key, None)
-
-
 class TestApproveAndCheckSession:
     def test_session_approval(self):
         key = "test_session_approve"
-        _clear_session(key)
+        approval_module.clear_session(key)
 
         assert is_approved(key, "rm") is False
         approve_session(key, "rm")
         assert is_approved(key, "rm") is True
+
+    def test_clear_session_removes_all_session_scoped_state(self):
+        key = "test_session_clear_all_state"
+        approval_module.clear_session(key)
+        event = threading.Event()
+        entry = SimpleNamespace(result=None, event=event)
+        approval_module.approve_session(key, "rm")
+        approval_module.enable_session_yolo(key)
+        approval_module.submit_pending(key, {"command": "rm -rf build"})
+        with approval_module._lock:
+            approval_module._gateway_queues[key] = [entry]
+
+        approval_module.clear_session(key)
+
+        assert is_approved(key, "rm") is False
+        assert approval_module.is_session_yolo_enabled(key) is False
+        assert key not in approval_module._pending
+        assert key not in approval_module._gateway_queues
+        assert entry.result == "deny"
+        assert event.is_set()
 
 
 class TestSessionKeyContext:
@@ -545,13 +559,13 @@ class TestPatternKeyUniqueness:
             "approving one silently approves the other"
         )
         session = "test_find_collision"
-        _clear_session(session)
+        approval_module.clear_session(session)
         approve_session(session, key_exec)
         assert is_approved(session, key_exec) is True
         assert is_approved(session, key_delete) is False, (
             "approving find -exec rm should not auto-approve find -delete"
         )
-        _clear_session(session)
+        approval_module.clear_session(session)
 
     def test_legacy_find_key_still_approves_both_variants(self):
         """Old colliding allowlist entry 'find' should remain backwards compatible."""

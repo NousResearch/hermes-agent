@@ -1633,6 +1633,13 @@ DEFAULT_CONFIG = {
         # Base seconds between busy retries; doubles per attempt (30s, 60s, 120s), sized
         # for a recipient agent turn rather than a network blip.
         "bot_chat_busy_backoff_seconds": 30.0,
+        # Overall wall-clock ceiling for one bot-chat delivery including retries. A refusal
+        # returns in seconds, so the realistic ladder costs ~4 min; but each attempt carries
+        # its own delivery timeout, so a recipient whose turns HANG could otherwise stack
+        # 4x600s + 210s of backoff (~44 min) inside a single delivery while holding a cron
+        # worker. Checked before starting another attempt, so it never truncates a delivery
+        # that is progressing. 0 disables the ceiling.
+        "bot_chat_busy_budget_seconds": 900.0,
         # Pre-dispatch validation: before building any agent machinery, verify the provider API key
         # resolves (unless a fallback chain exists), attached skills are ready, and delivery
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.

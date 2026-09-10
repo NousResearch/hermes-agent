@@ -683,6 +683,25 @@ def _get_bot_chat_busy_backoff_seconds() -> float:
         return 30.0
 
 
+def _get_bot_chat_busy_budget_seconds() -> float:
+    """Overall wall-clock ceiling for one bot-chat delivery, retries included.
+
+    ``cron.bot_chat_busy_budget_seconds``; default 900. A refusal returns in
+    seconds (measured ~3.4s), so the realistic retry ladder costs ~4 minutes.
+    But each attempt carries its own delivery timeout, so a recipient whose
+    turns HANG could otherwise stack 4x600s + 210s of backoff ~= 44 minutes in
+    one delivery. The budget is checked before starting another attempt and
+    before sleeping, so it bounds the pathological case without truncating a
+    delivery that is actually progressing. 0 disables the ceiling.
+    """
+    try:
+        cfg = _sched.load_config()
+        value = float(cfg.get("cron", {}).get("bot_chat_busy_budget_seconds", 900.0))
+        return max(0.0, value)
+    except Exception:
+        return 900.0
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
@@ -815,6 +834,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         ]
         attempts = max(1, _get_bot_chat_busy_retries() + 1)
         backoff = _get_bot_chat_busy_backoff_seconds()
+        budget = _get_bot_chat_busy_budget_seconds()
+        started = time.monotonic()
         for attempt in range(attempts):
             result = subprocess.run(
                 argv, capture_output=True, text=True,
@@ -832,6 +853,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
                     f"bot-chat delivery to profile '{profile_label}' failed "
                     f"(exit {result.returncode})" + (f": {tail}" if tail else ""))
             delay = backoff * (2 ** attempt)
+            # Stop before sleeping into a budget we cannot honour: an attempt that
+            # cannot start is wasted wall time held by the worker for nothing.
+            if budget and (time.monotonic() - started) + delay >= budget:
+                return _fail(
+                    f"bot-chat delivery to profile '{profile_label}' gave up after "
+                    f"{time.monotonic() - started:.0f}s (budget {budget:.0f}s); "
+                    f"recipient stayed busy" + (f": {tail}" if tail else ""))
             logger.info(
                 "Job '%s': Bot Chat of profile '%s' busy; retrying in %.1fs (%d/%d)",
                 job_id, profile_label, delay, attempt + 1, attempts - 1)

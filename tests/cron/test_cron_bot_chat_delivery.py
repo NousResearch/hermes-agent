@@ -327,6 +327,61 @@ def test_capacity_refusal_is_detected_behind_a_long_preamble():
     assert err is None
 
 
+def test_busy_retries_stop_at_the_wall_clock_budget():
+    """A hanging recipient must not hold a cron worker for the full retry ladder.
+
+    Each attempt carries its own delivery timeout, so without an overall budget a
+    recipient whose turns hang stacks 4x600s + 210s of backoff (~44 min) inside a
+    single delivery. The budget is checked BEFORE sleeping, so it bounds the
+    pathological case without truncating a delivery that is progressing.
+    """
+    busy = _completed(
+        returncode=1,
+        stderr="hermes-refusal-reason: SESSION_NOT_OWNED\nbusy",
+    )
+    attempts = []
+    clock = {"t": 0.0}
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        clock["t"] += 600.0  # every attempt hangs to its delivery timeout
+        return busy
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "monotonic", lambda: clock["t"]), \
+            mock.patch.object(sched_delivery.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s)):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) < 4, "the budget must stop the ladder before every retry is spent"
+    assert err is not None
+    assert "budget" in err.lower()
+
+
+def test_budget_does_not_interrupt_a_fast_retry_ladder():
+    """The realistic path (refusals return in seconds) must still retry normally."""
+    busy = _completed(
+        returncode=1,
+        stderr="hermes-refusal-reason: SESSION_NOT_OWNED\nbusy",
+    )
+    attempts = []
+    clock = {"t": 0.0}
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        clock["t"] += 3.4  # measured live refusal latency
+        return busy if len(attempts) == 1 else _completed()
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "monotonic", lambda: clock["t"]), \
+            mock.patch.object(sched_delivery.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s)):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is None
+    assert len(attempts) == 2
+
+
 def test_deliver_message_carries_cron_attribution(tmp_path):
     """The injected turn must self-identify as scheduled output, not the user."""
     captured = {}

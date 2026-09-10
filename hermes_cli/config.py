@@ -1319,6 +1319,65 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     else:
         run_migrations(current_ver, results, quiet)
 
+    # ── Version → 42: split legacy `stepfun` into standard chat + `stepfun-plan` ──
+    # Older builds shipped a single `stepfun` provider pointed at the Step Plan
+    # endpoint (api.stepfun.ai/step_plan/v1). This release redefines bare
+    # `stepfun` as the standard chat API (api.stepfun.ai/v1) and adds a
+    # dedicated `stepfun-plan` id for the Step Plan endpoint. To preserve every
+    # existing user's ACTUAL endpoint, a `stepfun` config is rewritten to
+    # `stepfun-plan` whenever it resolved to the Step Plan endpoint, detected by
+    # the endpoint it actually used (not the schema version):
+    #   • config.yaml model.base_url contains `/step_plan/`            → plan
+    #   • else STEPFUN_BASE_URL (the old shared override) has it        → plan
+    #     (its value is moved to the plan-specific STEPFUN_STEP_PLAN_BASE_URL)
+    #   • else no explicit endpoint at all                              → plan
+    #     (the pre-split default WAS Step Plan)
+    # A `stepfun` config that explicitly targets the standard `/v1` endpoint
+    # (only set by users already on the split scheme) stays `stepfun`.
+    if current_ver < 42:
+        config = read_raw_config()
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict) and model_cfg.get("provider") == "stepfun":
+            base_url = str(model_cfg.get("base_url") or "").strip()
+            env_val = (get_env_value("STEPFUN_BASE_URL") or "").strip()
+            if base_url:
+                is_step_plan = "/step_plan/" in base_url
+            elif env_val:
+                is_step_plan = "/step_plan/" in env_val
+            else:
+                is_step_plan = True  # pre-split default endpoint was Step Plan
+            env_var_moved = False
+            if is_step_plan:
+                # Move a Step Plan override off the shared var onto the
+                # plan-specific one so it attaches to the new `stepfun-plan` id.
+                if (not base_url and "/step_plan/" in env_val
+                        and not get_env_value("STEPFUN_STEP_PLAN_BASE_URL")):
+                    try:
+                        save_env_value("STEPFUN_STEP_PLAN_BASE_URL", env_val)
+                        remove_env_value("STEPFUN_BASE_URL")
+                        env_var_moved = True
+                    except Exception:
+                        # Best-effort: never let an env write crash a migration.
+                        env_var_moved = False
+                model_cfg["provider"] = "stepfun-plan"
+                config["model"] = model_cfg
+                _persist_migration(config)
+                results["config_added"].append(
+                    "model.provider stepfun → stepfun-plan (Step Plan endpoint preserved)"
+                )
+                if env_var_moved:
+                    results["config_added"].append(
+                        "env STEPFUN_BASE_URL → STEPFUN_STEP_PLAN_BASE_URL "
+                        "(Step Plan base URL now attaches to stepfun-plan)"
+                    )
+                    if not quiet:
+                        print(
+                            "  ✓ Moved STEPFUN_BASE_URL → "
+                            "STEPFUN_STEP_PLAN_BASE_URL for Step Plan config"
+                        )
+                if not quiet:
+                    print("  ✓ Migrated StepFun Step Plan config to provider 'stepfun-plan'")
+
     _disable_suspicious_mcp_servers(results, quiet)
     _warn_invalid_platform_toolsets(results, quiet)
 

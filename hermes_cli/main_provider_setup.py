@@ -633,8 +633,12 @@ def _infer_stepfun_region(base_url: str) -> str:
     return "china" if "api.stepfun.com" in (base_url or "").strip().lower() else "international"
 
 
-def _stepfun_base_url_for_region(region: str) -> str:
-    from hermes_cli.auth import STEPFUN_STEP_PLAN_CN_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL
+def _stepfun_base_url_for_region(region: str, family: str = "plan") -> str:
+    from hermes_cli.auth import (
+        STEPFUN_STEP_PLAN_CN_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL,
+        STEPFUN_STD_CN_BASE_URL, STEPFUN_STD_INTL_BASE_URL)
+    if family == "standard":
+        return STEPFUN_STD_CN_BASE_URL if region == "china" else STEPFUN_STD_INTL_BASE_URL
     return STEPFUN_STEP_PLAN_CN_BASE_URL if region == "china" else STEPFUN_STEP_PLAN_INTL_BASE_URL
 
 

@@ -649,13 +649,13 @@ def _model_flow_kimi(config, current_model=""):
                   base_url=effective_base, drop_api_mode=True)
 
 
-def _model_flow_stepfun(config, current_model=""):
-    """StepFun Step Plan flow with region-specific endpoints."""
+def _model_flow_stepfun(config, current_model="", provider_id="stepfun-plan"):
+    """StepFun flow with region-specific endpoints (standard chat or Step Plan)."""
     from hermes_cli.main_provider_setup import _infer_stepfun_region, _prompt_provider_choice, _stepfun_base_url_for_region
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import save_env_value
     from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
-    provider_id = "stepfun"
+    family = "standard" if provider_id == "stepfun" else "plan"
     pconfig = PROVIDER_REGISTRY[provider_id]
     base_url_env = pconfig.base_url_env_var or ""
 
@@ -670,7 +670,7 @@ def _model_flow_stepfun(config, current_model=""):
             current_base = str(model_cfg.get("base_url") or "").strip()
     current_region = _infer_stepfun_region(current_base or pconfig.inference_base_url)
 
-    regions = [(key, f"{name} ({_stepfun_base_url_for_region(key)})") for key, name in
+    regions = [(key, f"{name} ({_stepfun_base_url_for_region(key, family)})") for key, name in
                (("international", "International"), ("china", "China"))]
     # Active region first, marked; then the other; then Cancel.
     ordered_regions = ([(k, f"{label}  ← currently active") for k, label in regions if k == current_region]
@@ -680,7 +680,7 @@ def _model_flow_stepfun(config, current_model=""):
     if region_idx is None or ordered_regions[region_idx][0] == "cancel":
         print("No change.")
         return
-    effective_base = _stepfun_base_url_for_region(ordered_regions[region_idx][0])
+    effective_base = _stepfun_base_url_for_region(ordered_regions[region_idx][0], family)
     if base_url_env:
         save_env_value(base_url_env, effective_base)
 
@@ -690,7 +690,7 @@ def _model_flow_stepfun(config, current_model=""):
     else:
         model_list = _PROVIDER_MODELS.get(provider_id, [])
         if model_list:
-            print(f"  Could not auto-detect models from {pconfig.name} API — showing Step Plan fallback catalog.")
+            print(f"  Could not auto-detect models from {pconfig.name} API — showing fallback catalog.")
 
     selected = _pick_model_or_prompt(
         model_list, "Model name: ", current_model=current_model, confirm_provider=provider_id,

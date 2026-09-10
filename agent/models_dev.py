@@ -109,7 +109,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
     "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
     "kimi": "kimi-for-coding", "kimi-coding": "kimi-for-coding",
-    "moonshot": "kimi-for-coding", "stepfun": "stepfun",
+    "moonshot": "kimi-for-coding", "stepfun": "stepfun", "stepfun-plan": "stepfun",
     "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
     "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",

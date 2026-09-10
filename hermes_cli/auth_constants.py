@@ -81,6 +81,8 @@ DEFAULT_ACTUAL_BASE_URL = "https://api.actual.inc/v1"
 DEFAULT_ACTUAL_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
+STEPFUN_STD_INTL_BASE_URL = "https://api.stepfun.ai/v1"
+STEPFUN_STD_CN_BASE_URL = "https://api.stepfun.com/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 try:  # Version tag for the Codex token-endpoint User-Agent; fall back if unavailable.

@@ -20,6 +20,12 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_get = config_subparsers.add_parser("get", help="Print a resolved configuration value")
     config_get.add_argument("key", nargs="?", help="Configuration key (e.g., model)")
     add_json_flag(config_get, "Print value as JSON")
+    config_get.add_argument(
+        "--origin",
+        action="store_true",
+        help="Print which layer defines the key (env/managed/user/default/unset) "
+        "instead of the value — Codex-style per-key origins tracking",
+    )
 
     config_set = config_subparsers.add_parser("set", help="Set a configuration value")
     config_set.add_argument(

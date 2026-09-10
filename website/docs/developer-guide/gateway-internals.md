@@ -95,6 +95,22 @@ Text-only submissions keep the `{text}` payload and fingerprint. The ACP transpo
 agent uses this for image, image resource-link and embedded-image prompt blocks;
 Ink and Desktop still attach through the legacy `image.attach`/`file.attach` RPCs.
 
+## Native admission startup recovery
+
+Ordinary gateway startup recovers accepted native inputs after adapter connection,
+route publication, and the startup restore gate. Only never-started queued work is
+eligible. Recovery uses the current routing index and connected adapter, rechecks
+sender authorization and the retained connector/profile binding, and leaves rows
+queued when a route, transport, or authorization is unavailable. Restoring that
+configuration permits recovery on a later startup.
+
+An interrupted started admission becomes `unknown` and pauses its session's FIFO;
+its followers do not automatically run. Legacy synthetic restart turns are excluded
+from sessions with canonical admission history, so they cannot race the durable
+queue or bypass an unknown pause. Completed inputs are not reinferred on restart.
+This recovery does not enable multiplex profile authorities, which remain refused
+by the ordinary bootstrap.
+
 ## Shared authority local slash commands
 
 Authenticated local sessions accept `slash.exec({session_id, command})` and

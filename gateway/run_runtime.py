@@ -44,6 +44,28 @@ async def start_gateway_runtime_api(runner):
     await recover_bot_deliveries(runner.session_authority)
 
 
+async def recover_gateway_native_sessions(runner):
+    """Recover against the published routing index and currently connected adapters.
+
+    Stored envelopes are input, not authority to create a route or reconnect a
+    transport. The authority preflights every queued sender before any claim.
+    """
+    authority = getattr(runner, 'session_authority', None)
+    if authority is None:
+        return {}
+    pending = {row['target_session_id'] for row in authority.db._read_all(
+        "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
+    bindings = [(entry.session_id, entry.origin, runner._adapter_for_source(entry.origin))
+                for entry in runner.session_store.list_sessions()
+                if entry.session_id in pending and entry.origin is not None]
+    results = await authority.recover_native_sessions(bindings)
+    import logging
+    logger = logging.getLogger(__name__)
+    for sid, outcome in results.items():
+        logger.info('Native session startup recovery %s: %s', sid, outcome)
+    return results
+
+
 def publish_gateway_runtime_ready(runner):
     descriptor = runner.session_runtime_descriptor
     if runner.session_api.task.done() or not runner._running or runner._draining:

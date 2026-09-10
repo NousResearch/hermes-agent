@@ -5,6 +5,8 @@ import { capitalize, firstStringField, normalize } from '@/lib/text'
 import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
+import { skillActivityTitle } from '../skill-activity'
+
 import {
   browserExecStepLabel,
   compactPreview,
@@ -1302,6 +1304,12 @@ function dynamicTitle(
   result: Record<string, unknown>,
   fallback: ToolTitleParts
 ): ToolTitleParts {
+  const skillTitle = skillActivityTitle(part)
+
+  if (skillTitle) {
+    return { title: skillTitle }
+  }
+
   const verb = (gerund: string, past: string) => (part.result === undefined ? gerund : past)
 
   const titledAction = (action: string, title: string): ToolTitleParts =>

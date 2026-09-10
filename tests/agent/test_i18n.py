@@ -70,6 +70,25 @@ def test_catalog_placeholders_match_english(lang: str):
         )
 
 
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+def test_picker_titles_render_real_newlines(lang: str):
+    """Picker titles must decode to real newlines, never literal backslash-n.
+
+    Regression: ``gateway.fast.picker_title`` / ``gateway.reasoning.picker_title``
+    in most catalogs were double-escaped (``\\n`` in the YAML source), so
+    ``yaml.safe_load`` decoded them to a literal backslash + ``n`` in the rendered
+    message instead of a line break. The rendered value for these keys must contain
+    no backslash and at least one real newline.
+    """
+    flat = _flatten(_load_raw(lang))
+    for key in ("gateway.fast.picker_title", "gateway.reasoning.picker_title"):
+        value = flat[key]
+        assert "\\" not in value, (
+            f"{lang}.yaml {key} renders a literal backslash: {value!r}"
+        )
+        assert "\n" in value, f"{lang}.yaml {key} should contain a real newline"
+
+
 # ---------------------------------------------------------------------------
 # Language resolution
 # ---------------------------------------------------------------------------

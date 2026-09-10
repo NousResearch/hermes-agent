@@ -281,18 +281,27 @@ def _seed_row(record: dict) -> None:
     """Persist a parentless seeded session NOW, for the reason ``_seed_branch_row`` gives: seeded content is
     intent, not an abandoned draft, and the renderer's post-create hydration reads the DB. The client's title
     lands with the row so a restart before the first prompt keeps it. Best-effort — the first-prompt path is
-    the fallback."""
+    the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
+    ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
+    key = record.get("session_key")
     try:
         if _ensure_session_db_row(record) is False:
             return
         _persist_branch_seed(record)
+    except Exception:
+        logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
+    if not record.get("_branch_seed_persisted"):
+        with contextlib.suppress(Exception), _session_db(record) as db:
+            if db is not None:
+                db.delete_session(key)
+        return
+    try:
         if title := record.get("pending_title"):
             with _session_db(record) as db:
-                if db is not None and db.set_session_title(record["session_key"], title):
+                if db is not None and db.set_session_title(key, title):
                     record["pending_title"] = None
     except Exception:
-        logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation",
-                       record.get("session_key"), exc_info=True)
+        logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
 def _create_overrides(params: dict) -> tuple:

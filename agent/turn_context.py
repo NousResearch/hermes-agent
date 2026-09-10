@@ -21,6 +21,7 @@ from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
+from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
@@ -77,20 +78,72 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
         return True
 
 
+def _context_injection_parts(
+    ext_prefetch_cache: str,
+    plugin_user_context: str,
+) -> list[str]:
+    """The ephemeral context pieces (memory prefetch + ``pre_llm_call``).
+
+    Shared by the string sidecar (:func:`compose_user_api_content`) and the
+    multimodal text-part (:func:`compose_multimodal_context_part`) paths so
+    both inject byte-identical context regardless of the turn's content shape.
+    """
+    injections: list[str] = []
+    if ext_prefetch_cache:
+        fenced = build_memory_context_block(ext_prefetch_cache)
+        if fenced:
+            injections.append(fenced)
+    if plugin_user_context:
+        injections.append(plugin_user_context)
+    return injections
+
+
 def compose_user_api_content(
     content: Any, ext_prefetch_cache: str, plugin_user_context: str
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
-    Single source for the ``api_content`` sidecar and the wire bytes so they never drift
-    (what turn N sends is what turn N+1 replays). ``None`` when nothing is injected."""
+    Sources: memory-manager prefetch + ``pre_llm_call`` plugin context with
+    target="user_message" (the default). Both are appended to the *API copy*
+    of the user message only — the stored content stays clean.
+
+    This is the single source of that composition. The prologue stamps the
+    result onto the live message as ``api_content`` (persisted alongside the
+    clean content) and the ``api_messages`` build in ``conversation_loop``
+    sends the same helper's output, so the persisted sidecar can never drift
+    from the bytes on the wire — which is the whole prompt-cache invariant:
+    what turn N sends must be what turn N+1 replays.
+
+    Returns ``None`` when nothing is injected (multimodal/non-string content,
+    or no ephemeral context), meaning the message is sent as-is. Multimodal
+    (list) turns take the injection via :func:`compose_multimodal_context_part`
+    instead, since the string sidecar can't ride on list content.
+    """
     if not isinstance(content, str):
         return None
-    fenced = build_memory_context_block(ext_prefetch_cache) if ext_prefetch_cache else ""
-    injections = [part for part in (fenced, plugin_user_context) if part]
+    injections = _context_injection_parts(ext_prefetch_cache, plugin_user_context)
     if not injections:
         return None
     return content + "\n\n" + "\n\n".join(injections)
+
+
+def compose_multimodal_context_part(
+    ext_prefetch_cache: str,
+    plugin_user_context: str,
+) -> Optional[str]:
+    """The memory-prefetch + ``pre_llm_call`` context as a single text part.
+
+    :func:`compose_user_api_content` returns ``None`` for multimodal (list)
+    turns, so the string ``api_content`` sidecar can't carry this context and
+    it would silently drop on image/attachment turns (#71998). Callers append
+    the returned text as a durable content part instead — the same channel the
+    gateway must-deliver notes use (:func:`append_notes_to_multimodal_content`)
+    — so an image-only turn still reaches the model with the injected context.
+
+    Returns ``None`` when nothing is injected.
+    """
+    injections = _context_injection_parts(ext_prefetch_cache, plugin_user_context)
+    return "\n\n".join(injections) if injections else None
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
@@ -753,13 +806,29 @@ def _bind_interrupt_scope(agent: Any, ra) -> None:
     agent._interrupt_thread_signal_pending = False
 
 
+def _memory_query_text(original_user_message: Any) -> str:
+    """The semantic text of a turn's user content for memory queries.
+
+    A multimodal (list) turn carries its text in content parts, so keying the
+    query off ``isinstance(str)`` alone collapses it to ``""`` — ``on_turn_start``
+    sees an empty turn and ``is_trivial_prompt("")`` skips ``prefetch_all``
+    entirely, so memory recall never even runs on an image+text turn. That is the
+    execution-side twin of the delivery gap this PR (#71998) closes: the sidecar
+    can now carry recall on a multimodal turn, but only if prefetch produced any.
+    Flatten str/list to text; an image-only turn still yields ``""`` and is
+    correctly treated as trivial (no semantic text to query on)."""
+    if isinstance(original_user_message, (str, list)):
+        return flatten_message_text(original_user_message)
+    return ""
+
+
 def _memory_turn_start_and_prefetch(agent: Any, original_user_message: Any) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
     Returns the prefetch text (``""`` when nothing was injected)."""
     if not agent._memory_manager:
         return ""
-    _query = original_user_message if isinstance(original_user_message, str) else ""
+    _query = _memory_query_text(original_user_message)
     with suppress(Exception):
         agent._memory_manager.on_turn_start(agent._user_turn_count, _query)
     ext_prefetch_cache = ""
@@ -781,9 +850,26 @@ def _stamp_api_content_sidecar(
     plugin_user_context: str, *, preflight_compressed: bool,
 ) -> None:
     """api_content sidecar — persist what you send: injected context lives only in the
-    API copy, so stamp the exact sent bytes on the live dict for replay."""
+    API copy, so stamp the exact sent bytes on the live dict for replay.
+
+    Multimodal (list) turns can't carry the string ``api_content`` sidecar —
+    :func:`compose_user_api_content` returns ``None`` for them — so the memory/
+    plugin context would silently drop on an image-only turn (#71998). For those,
+    deliver the context as a durable text part instead (the same channel the
+    gateway must-deliver notes use), keeping the wire byte-identical to what is
+    persisted and replayed."""
     _turn_user_msg = messages[current_turn_user_idx]
     live_content = _turn_user_msg.get("content")
+    # Multimodal (list) turns can't carry the string ``api_content`` sidecar —
+    # :func:`compose_user_api_content` returns ``None`` for them — so the memory/
+    # plugin context would silently drop on an image-only turn (#71998). Deliver it
+    # as a durable text part instead (the same channel the gateway must-deliver notes
+    # use), which is persisted and replayed as ordinary content — no sidecar needed.
+    if isinstance(live_content, list):
+        _mm_ctx = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
+        if _mm_ctx:
+            append_notes_to_multimodal_content(live_content, _mm_ctx)
+        return
     from agent.session_persistence import _persist_lock, durable_user_row_content
     # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
     durable_content, _api_content = durable_user_row_content(

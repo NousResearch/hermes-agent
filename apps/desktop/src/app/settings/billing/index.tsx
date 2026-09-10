@@ -575,8 +575,20 @@ function BillingSettingsWithDevFixtures() {
   )
 }
 
+// The fixture switcher is opt-in even in dev — it cluttered the billing header of
+// every dev session. Summon it for a visual-QA pass with
+// `localStorage.setItem('hermes:billing-preview', '1')` + reload (see the billing
+// revamp plan doc's runbook); production builds compile the whole path out.
+function billingPreviewEnabled(): boolean {
+  try {
+    return localStorage.getItem('hermes:billing-preview') === '1'
+  } catch {
+    return false
+  }
+}
+
 export function BillingSettings() {
-  if (import.meta.env.DEV) {
+  if (import.meta.env.DEV && billingPreviewEnabled()) {
     return <BillingSettingsWithDevFixtures />
   }
 

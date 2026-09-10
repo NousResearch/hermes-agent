@@ -4,7 +4,12 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The host tab lists installed plugins on mount; only an `install` action counts as installing.
-const { requestGateway } = vi.hoisted(() => ({ requestGateway: vi.fn(async () => ({ plugins: [] })) }))
+const { requestGateway } = vi.hoisted(() => ({
+  requestGateway: vi.fn(async (_method: string, _params?: Record<string, unknown>): Promise<unknown> => ({
+    plugins: []
+  }))
+}))
+
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
@@ -114,7 +119,7 @@ describe('Install from Git entry flow', () => {
 
   it('pins a custom install to a full commit SHA and refuses anything shorter', async () => {
     probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
-    requestGateway.mockImplementation(async (method: string) =>
+    requestGateway.mockImplementation(async method =>
       method === 'plugins.manage' ? { ok: true, plugin_name: 'plugin', plugins: [] } : { plugins: [] }
     )
     renderFlow()

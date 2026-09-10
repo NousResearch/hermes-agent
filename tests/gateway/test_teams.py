@@ -86,6 +86,7 @@ def _ensure_teams_mock():
     microsoft_teams_api.MessageActivity = MagicMock
     microsoft_teams_api.ConversationReference = MagicMock
     microsoft_teams_api.MessageActivityInput = MagicMock
+    microsoft_teams_api.Account = MagicMock
     microsoft_teams_api.Attachment = MagicMock
 
     # TypingActivityInput mock
@@ -1107,5 +1108,4 @@ class TestTeamsMediaAttachments:
         result = await adapter.send_document("19:abc@thread.v2", str(doc))
         assert result.success
         adapter._app.send.assert_awaited_once()
-
 

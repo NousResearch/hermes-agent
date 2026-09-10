@@ -40,6 +40,8 @@ def _install_fake_teams_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     api = types.ModuleType("microsoft_teams.api")
     api.__path__ = []  # type: ignore[attr-defined]
     api.MessageActivity = type("MessageActivity", (), {})
+    api.Account = type("Account", (), {})
+    api.MessageActivityInput = type("MessageActivityInput", (), {})
     api.ConversationReference = type("ConversationReference", (), {})
 
     api_activities = types.ModuleType("microsoft_teams.api.activities")

@@ -10,6 +10,7 @@ import {
   hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
+  pinChildHermesHome,
   POSIX_SANE_PATH_ENTRIES
 } from './backend-env'
 
@@ -145,6 +146,24 @@ test('buildDesktopBackendEnv forces PYTHONUTF8 unless the user set it explicitly
   })
 
   assert.equal(optedOut.PYTHONUTF8, '0')
+})
+
+test('pinChildHermesHome drops profile-shaped and differently cased HERMES_HOME (#102315)', () => {
+  const env = pinChildHermesHome(
+    {
+      Path: 'C:\\Windows',
+      Hermes_Home: 'C:\\Users\\test\\AppData\\Local\\hermes\\profiles\\work',
+      HERMES_HOME: 'C:\\Users\\test\\AppData\\Local\\hermes\\profiles\\work',
+      OTHER: 'keep'
+    },
+    'C:\\Users\\test\\AppData\\Local\\hermes\\profiles\\work',
+    { pathModule: path.win32, platform: 'win32' }
+  )
+
+  assert.equal(env.Hermes_Home, undefined)
+  assert.equal(env.HERMES_HOME, 'C:\\Users\\test\\AppData\\Local\\hermes')
+  assert.equal(env.OTHER, 'keep')
+  assert.equal(env.Path, 'C:\\Windows')
 })
 
 test('normalizeHermesHomeRoot maps profile homes back to the global Hermes root', () => {

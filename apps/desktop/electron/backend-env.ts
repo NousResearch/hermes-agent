@@ -118,6 +118,31 @@ function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatfor
   return resolved
 }
 
+/** Build a child env whose HERMES_HOME is the global root, never a profile dir.
+ *
+ *  Windows env keys are case-insensitive: spreading `process.env` then setting
+ *  `HERMES_HOME` can leave a prior `Hermes_Home` / profile-shaped value in the
+ *  block that uv_spawn actually sends. Drop every casing, then pin the root
+ *  so `--profile default` cannot inherit another profile's home (#102315).
+ */
+function pinChildHermesHome(
+  env: Record<string, string | undefined>,
+  hermesHome: string,
+  { platform = process.platform, pathModule = pathModuleForPlatform(platform) }: any = {}
+) {
+  const next: Record<string, string | undefined> = { ...env }
+
+  for (const key of Object.keys(next)) {
+    if (key.toUpperCase() === 'HERMES_HOME') {
+      delete next[key]
+    }
+  }
+
+  next.HERMES_HOME = normalizeHermesHomeRoot(hermesHome, { pathModule })
+
+  return next
+}
+
 function buildDesktopBackendEnv({
   hermesHome,
   pythonPathEntries = [],
@@ -157,5 +182,6 @@ export {
   hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
+  pinChildHermesHome,
   POSIX_SANE_PATH_ENTRIES
 }

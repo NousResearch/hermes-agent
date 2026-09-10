@@ -91,6 +91,13 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
+    (
+        _RM_FLAG_PREFIX
+        + _hardline_rm_path(
+            r'(?:~/\.hermes|\$\{?HERMES_HOME\}?)(?:/?|/\*)?'
+        ),
+        "recursive delete of active Hermes home",
+    ),
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
     # See #93392.
@@ -472,6 +479,19 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     return command
 
 
+def _fold_exact_home_paths(command: str, paths, replacement: str) -> str:
+    """Fold exact resolved home path tokens without folding child paths."""
+    boundary = r"""(?=$|[\s'"`;|&<>()])"""
+    seen: set[str] = set()
+    for path in sorted((p for p in paths if p), key=len, reverse=True):
+        for variant in {path, path.replace("\\", "/"), path.replace("/", "\\")}:
+            if not variant or variant in seen:
+                continue
+            seen.add(variant)
+            command = re.sub(re.escape(variant) + boundary, replacement, command)
+    return command
+
+
 def _rewrite_resolved_user_home(command: str) -> str:
     """User home (expanduser / realpath / $HOME) -> ``~/``; no-op when unset, degenerate, or unresolvable."""
     try:
@@ -492,7 +512,8 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         paths = [str(home), str(home.resolve(strict=False))]
     except Exception:
         return command
-    return _fold_home_prefixes(command, paths, "~/.hermes")
+    command = _fold_home_prefixes(command, paths, "~/.hermes")
+    return _fold_exact_home_paths(command, paths, "~/.hermes")
 
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")

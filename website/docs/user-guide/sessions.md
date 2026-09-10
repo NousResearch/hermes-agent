@@ -953,3 +953,32 @@ hermes sessions prune --older-than 30 --yes
 :::tip
 Auto-prune is **on by default**: ended sessions that have been inactive for `sessions.retention_days` (default 90) are removed at startup, and active sessions are never touched (see [Automatic Cleanup](#automatic-cleanup) above). Session history powers `session_search` recall across past conversations, so if you want to keep every ended session forever, set `sessions.auto_prune: false` in `config.yaml`, or raise `retention_days`. With auto-prune off, `hermes sessions prune` remains available for one-off cleanup (observed failure mode without any pruning: a 384 MB `state.db` with ~1000 sessions slowing down FTS5 inserts and `/resume` listing).
 :::
+
+### Scheduled Maintenance: `weekly_maintenance.py`
+
+Long-lived gateway installs that almost never restart can drift past the in-process auto-prune window. The `scripts/weekly_maintenance.py` helper packages the same maintenance work as a standalone script you can wire into cron / launchd / systemd:
+
+```bash
+# Default — VACUUM state.db, prune state-snapshots/ older than 90 days,
+# rotate logs > 10 MB and drop archives older than 90 days.
+python scripts/weekly_maintenance.py
+
+# Show what would happen without modifying anything.
+python scripts/weekly_maintenance.py --dry-run
+
+# Single phase + tighter retention.
+python scripts/weekly_maintenance.py --only vacuum
+python scripts/weekly_maintenance.py --retention-days 30
+```
+
+The script resolves every path through `hermes_constants.get_hermes_home()`, so it always operates on the database the running Hermes process is using:
+
+```bash
+# Uses ~/.hermes-work, not ~/.hermes — the active profile is honoured.
+HERMES_HOME=~/.hermes-work python scripts/weekly_maintenance.py
+hermes -p work shell -- python scripts/weekly_maintenance.py
+```
+
+This profile awareness was the #24035 fix — community versions of the script that hardcoded `os.path.expanduser("~")` silently no-op'd users on non-default profiles (VACUUM ran on the wrong database while the active profile's `state.db` kept growing).
+
+VACUUM uses `timeout=0` against SQLite, so a live gateway holding the WAL writer never blocks weekly maintenance — the script yields and the next gateway restart's opportunistic `maybe_auto_prune_and_vacuum` picks up the slack.

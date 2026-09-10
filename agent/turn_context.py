@@ -884,6 +884,28 @@ def build_turn_context(
     if isinstance(persist_user_message, str):
         persist_user_message = sanitize_surrogates(persist_user_message)
 
+    # Select this turn's reasoning tier before the first API request is built.
+    # Score the clean persist value when a platform prepends routing metadata.
+    # The override is pinned to the exact provider/model tuple, so fallbacks
+    # cannot inherit a stronger effort level.
+    try:
+        from agent.reasoning_escalation import apply_turn_reasoning_escalation
+
+        reasoning_prompt = (
+            persist_user_message
+            if isinstance(persist_user_message, str)
+            else user_message
+        )
+        apply_turn_reasoning_escalation(agent, reasoning_prompt)
+    except Exception as exc:
+        # Fail closed to the configured baseline and scrub any stale override.
+        agent._turn_reasoning_config_override = None
+        agent._turn_reasoning_escalation_target = None
+        logger.warning(
+            "Reasoning auto-escalation failed; keeping configured baseline: %s",
+            exc,
+        )
+
     effective_task_id, turn_id = _bind_turn_identity(
         agent, task_id, stream_callback, persist_user_message,
         persist_user_timestamp, persist_user_platform_id,

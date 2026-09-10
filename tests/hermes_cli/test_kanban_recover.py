@@ -13,6 +13,14 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_recover as recover
 
 
+CANONICAL_RECOVER_ACTIONS = frozenset({"normalized", "none", "requeued", "reported"})
+
+
+def _assert_action(result: dict, expected: str) -> None:
+    assert result["action"] == expected
+    assert result["action"] in CANONICAL_RECOVER_ACTIONS
+
+
 @pytest.fixture
 def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / ".hermes"
@@ -80,8 +88,12 @@ def test_recover_failed_ready_marks_ready_for_manual_continue(kanban_home):
     result = recover.run_recover_slash(task_id)
     assert result["command"] == "recover"
     assert result["recovery_state"] == "recovered"
+    _assert_action(result, "normalized")
     assert result["next_action"] == f"/continue {task_id}"
     assert result["mutation_performed"] is True
+    repeated = recover.run_recover_slash(task_id)
+    _assert_action(repeated, "none")
+    assert repeated["mutation_performed"] is False
     with kbc.connect() as conn:
         assert kb.get_task(conn, task_id).status == "ready"
         assert conn.execute(
@@ -95,6 +107,7 @@ def test_recover_all_authoritative_failure_outcomes(kanban_home, outcome):
         task_id = _failure(conn, outcome)
     result = recover.run_recover_slash(task_id)
     assert result["recovery_state"] == "recovered"
+    _assert_action(result, "normalized")
     assert result["next_action"] == f"/continue {task_id}"
     assert result["mutation_performed"] is True
 
@@ -110,6 +123,7 @@ def test_recover_does_not_reclaim_live_worker(kanban_home):
         conn.commit()
     result = recover.run_recover_slash(task_id)
     assert result["recovery_state"] in {"active", "healthy"}
+    _assert_action(result, "none")
     assert result["mutation_performed"] is False
     with kbc.connect() as conn:
         assert kb.get_task(conn, task_id).status == "running"
@@ -120,9 +134,11 @@ def test_recover_gave_up_requires_explicit_requeue(kanban_home):
         task_id = _failure(conn, "gave_up", status="blocked", failures=2)
     result = recover.run_recover_slash(task_id)
     assert result["recovery_state"] == "gave-up"
+    _assert_action(result, "none")
     assert result["mutation_performed"] is False
     requeued = recover.run_recover_slash(f"{task_id} --requeue")
     assert requeued["dispatch_status"] == "requeued"
+    _assert_action(requeued, "requeued")
     assert requeued["mutation_performed"] is True
     with kbc.connect() as conn:
         task = kb.get_task(conn, task_id)
@@ -143,6 +159,7 @@ def test_recover_requeue_preserves_explicit_sticky_block(kanban_home):
         before = kb.get_task(conn, task_id)
     result = recover.run_recover_slash(f"{task_id} --requeue")
     assert result["recovery_state"] == "sticky-blocked"
+    _assert_action(result, "none")
     assert result["mutation_performed"] is False
     with kbc.connect() as conn:
         after = kb.get_task(conn, task_id)
@@ -159,18 +176,21 @@ def test_recover_rate_limit_cooldown_is_read_only(kanban_home, monkeypatch):
         before = conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=?", (task_id,)).fetchone()[0]
     result = recover.run_recover_slash(task_id)
     assert result["recovery_state"] == "rate-limited"
+    _assert_action(result, "none")
     assert result["mutation_performed"] is False
     with kbc.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=?", (task_id,)).fetchone()[0] == before
 
 
-def test_recover_terminal_is_read_only(kanban_home):
+@pytest.mark.parametrize("status", ["done", "archived"])
+def test_recover_terminal_is_read_only(kanban_home, status):
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="done", assignee="a")
-        conn.execute("UPDATE tasks SET status='archived' WHERE id=?", (task_id,))
+        conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
         conn.commit()
     result = recover.run_recover_slash(task_id)
     assert result["recovery_state"] == "terminal"
+    _assert_action(result, "none")
     assert result["mutation_performed"] is False
 
 
@@ -181,6 +201,8 @@ def test_recover_concurrent_calls_are_idempotent(kanban_home):
         results = list(pool.map(lambda _: recover.run_recover_slash(task_id), range(4)))
     assert sum(item["mutation_performed"] for item in results) == 1
     assert all(item["dispatch_status"] in {"recovered", "already_recovered"} for item in results)
+    for item in results:
+        _assert_action(item, "normalized" if item["mutation_performed"] else "none")
     with kbc.connect() as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='recovered'", (task_id,)
@@ -193,6 +215,8 @@ def test_recover_concurrent_requeue_resets_breaker_once(kanban_home):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: recover.run_recover_slash(f"{task_id} --requeue"), range(4)))
     assert sum(item["mutation_performed"] for item in results) == 1
+    for item in results:
+        _assert_action(item, "requeued" if item["mutation_performed"] else "none")
     with kbc.connect() as conn:
         task = kb.get_task(conn, task_id)
         assert task.status == "ready"
@@ -209,9 +233,62 @@ def test_recover_estop_is_zero_mutation(kanban_home, monkeypatch):
     monkeypatch.setattr(recover.kbd, "dispatch_paused", lambda: True)
     result = recover.run_recover_slash(task_id)
     assert result["dispatch_status"] == "paused"
+    _assert_action(result, "none")
     assert result["mutation_performed"] is False
     with kbc.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=?", (task_id,)).fetchone()[0] == before
+
+
+def test_recover_blocker_auth_requires_no_recover_action(kanban_home, monkeypatch):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="auth blocked", assignee="a")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (task_id,))
+        conn.commit()
+    monkeypatch.setattr(recover.kbd, "check_respawn_guard", lambda *_args, **_kwargs: "blocker_auth")
+
+    result = recover.run_recover_slash(task_id)
+
+    assert result["recovery_state"] == "blocker-auth"
+    _assert_action(result, "none")
+    assert result["mutation_performed"] is False
+
+
+@pytest.mark.parametrize(
+    ("dispatch_case", "expected_state", "expected_action", "expected_mutation"),
+    [
+        ("paused", "paused", "none", False),
+        ("gave_up", "gave-up", "none", False),
+        ("stale", "recovered", "normalized", True),
+    ],
+)
+def test_recover_post_dispatch_action_contract(
+    kanban_home, monkeypatch, dispatch_case, expected_state, expected_action, expected_mutation,
+):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title=dispatch_case, assignee="a")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (task_id,))
+        conn.commit()
+
+    def dispatch_once(conn, **_kwargs):
+        if dispatch_case == "paused":
+            return kbd.DispatchResult(paused=True)
+        if dispatch_case == "gave_up":
+            conn.execute(
+                "UPDATE tasks SET status='blocked', consecutive_failures=2 WHERE id=?",
+                (task_id,),
+            )
+            conn.commit()
+            return kbd.DispatchResult(auto_blocked=[task_id])
+        return kbd.DispatchResult(stale=[task_id])
+
+    monkeypatch.setattr(recover.kbd, "dispatch_paused", lambda: False)
+    monkeypatch.setattr(recover.kbd, "dispatch_once", dispatch_once)
+
+    result = recover.run_recover_slash(task_id)
+
+    assert result["recovery_state"] == expected_state
+    _assert_action(result, expected_action)
+    assert result["mutation_performed"] is expected_mutation
 
 
 def test_recover_command_registry_and_gate_default():

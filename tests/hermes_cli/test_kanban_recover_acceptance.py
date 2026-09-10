@@ -12,6 +12,14 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_recover as recover
 
 
+CANONICAL_RECOVER_ACTIONS = frozenset({"normalized", "none", "requeued", "reported"})
+
+
+def _assert_action(result: dict, expected: str) -> None:
+    assert result["action"] == expected
+    assert result["action"] in CANONICAL_RECOVER_ACTIONS
+
+
 @pytest.fixture
 def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / ".hermes"
@@ -84,8 +92,7 @@ def test_triage_is_truthful_repeatable_and_zero_mutation(kanban_home, monkeypatc
     assert first["task_status"] == "triage"
     assert first["recovery_state"] == "waiting"
     assert first["eligible"] is False
-    assert first["action"] == "none"
-    assert first["action"] in {"normalized", "none", "requeued", "reported"}
+    _assert_action(first, "none")
     assert first["mutation_performed"] is False
     assert first["dispatch_status"] == "not_eligible"
     assert first["run_id"] is None
@@ -114,24 +121,30 @@ def test_triage_is_truthful_repeatable_and_zero_mutation(kanban_home, monkeypatc
         ).fetchone()[0] == 0
 
 
-def test_waiting_and_healthy_states_are_read_only(kanban_home):
+@pytest.mark.parametrize("waiting_status", ["todo", "scheduled"])
+@pytest.mark.parametrize("healthy_status", ["ready", "review"])
+def test_waiting_and_healthy_states_are_read_only(kanban_home, waiting_status, healthy_status):
     with kbc.connect() as conn:
         waiting = kb.create_task(conn, title="waiting", assignee="a")
         healthy = kb.create_task(conn, title="healthy", assignee="a")
-        conn.execute("UPDATE tasks SET status='scheduled' WHERE id=?", (waiting,))
-        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (healthy,))
+        conn.execute("UPDATE tasks SET status=? WHERE id=?", (waiting_status, waiting))
+        conn.execute("UPDATE tasks SET status=? WHERE id=?", (healthy_status, healthy))
         conn.commit()
         before_waiting = _snapshot(conn, waiting)
         before_healthy = _snapshot(conn, healthy)
 
     waiting_result = recover.run_recover_slash(waiting)
-    healthy_result = recover.run_recover_slash(healthy)
     assert waiting_result["recovery_state"] == "waiting"
+    _assert_action(waiting_result, "none")
     assert waiting_result["mutation_performed"] is False
-    assert healthy_result["recovery_state"] == "healthy"
-    assert healthy_result["mutation_performed"] is False
     with kbc.connect() as conn:
         assert _snapshot(conn, waiting) == before_waiting
+
+    healthy_result = recover.run_recover_slash(healthy)
+    assert healthy_result["recovery_state"] == "healthy"
+    _assert_action(healthy_result, "none")
+    assert healthy_result["mutation_performed"] is False
+    with kbc.connect() as conn:
         assert _snapshot(conn, healthy) == before_healthy
 
 
@@ -142,6 +155,7 @@ def test_expired_rate_limit_is_read_only_and_ready(kanban_home, monkeypatch):
         before = _snapshot(conn, task_id)
     result = recover.run_recover_slash(task_id)
     assert result["recovery_state"] == "healthy"
+    _assert_action(result, "none")
     assert result["dispatch_status"] == "already_recovered"
     assert result["mutation_performed"] is False
     with kbc.connect() as conn:
@@ -159,6 +173,8 @@ def test_sticky_block_default_and_requeue_are_fail_closed(kanban_home):
     second = recover.run_recover_slash(f"{task_id} --requeue")
     assert first["recovery_state"] == "blocked"
     assert second["recovery_state"] == "sticky-blocked"
+    _assert_action(first, "none")
+    _assert_action(second, "none")
     assert first["mutation_performed"] is False
     assert second["mutation_performed"] is False
     with kbc.connect() as conn:
@@ -178,6 +194,8 @@ def test_sticky_requeue_concurrency_has_no_side_effects(kanban_home):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: recover.run_recover_slash(f"{task_id} --requeue"), range(4)))
     assert all(item["recovery_state"] == "sticky-blocked" for item in results)
+    assert all(item["action"] == "none" for item in results)
+    assert all(item["action"] in CANONICAL_RECOVER_ACTIONS for item in results)
     assert all(item["mutation_performed"] is False for item in results)
     with kbc.connect() as conn:
         task = kb.get_task(conn, task_id)
@@ -192,6 +210,8 @@ def test_requeue_is_idempotent_and_has_no_routing_metadata(kanban_home):
         task_id = _failed_task(conn, "gave_up", status="blocked", failures=3)
     first = recover.run_recover_slash(f"{task_id} --requeue")
     second = recover.run_recover_slash(f"{task_id} --requeue")
+    _assert_action(first, "requeued")
+    _assert_action(second, "none")
     assert first["mutation_performed"] is True
     assert second["mutation_performed"] is False
     assert second["dispatch_status"] == "already_recovered"
@@ -221,7 +241,25 @@ def test_estop_blocks_default_and_requeue_without_db_mutation(kanban_home):
         estop.disengage()
     assert default["dispatch_status"] == "paused"
     assert requeue["dispatch_status"] == "paused"
+    _assert_action(default, "none")
+    _assert_action(requeue, "none")
     assert default["mutation_performed"] is False
     assert requeue["mutation_performed"] is False
+    with kbc.connect() as conn:
+        assert _snapshot(conn, task_id) == before
+
+
+def test_invalid_requeue_is_read_only(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="healthy", assignee="a")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (task_id,))
+        conn.commit()
+        before = _snapshot(conn, task_id)
+
+    result = recover.run_recover_slash(f"{task_id} --requeue")
+
+    assert result["recovery_state"] == "not-requeueable"
+    _assert_action(result, "none")
+    assert result["mutation_performed"] is False
     with kbc.connect() as conn:
         assert _snapshot(conn, task_id) == before

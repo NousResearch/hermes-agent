@@ -148,33 +148,33 @@ def run_recover_slash(text: str) -> dict[str, Any]:
         base = {"task_id": task.id, "board": board, "task_status": task.status,
                 "run_id": task.current_run_id}
         if task.status in {"done", "archived"}:
-            return _result(**base, recovery_state="terminal", action="terminal", dispatch_status="not_eligible",
+            return _result(**base, recovery_state="terminal", action="none", dispatch_status="not_eligible",
                            message=f"task is {task.status}; it will not be changed")
         if task.status == "triage":
             return _result(**base, recovery_state="waiting", action="none", dispatch_status="not_eligible",
                            message="task is in triage; /recover does not act on triage tasks")
         if kbd.dispatch_paused():
-            return _result(**base, recovery_state="paused", action="wait", dispatch_status="paused",
+            return _result(**base, recovery_state="paused", action="none", dispatch_status="paused",
                            message="recovery paused by ESTOP; no mutation was performed")
 
         latest = _latest_run(conn, task_id)
         latest_outcome = latest["outcome"] if latest else None
         sticky = _sticky_block(conn, task_id)
         if requeue and sticky:
-            return _result(**base, recovery_state="sticky-blocked", action="operator-unblock",
+            return _result(**base, recovery_state="sticky-blocked", action="none",
                            dispatch_status="not_eligible", retry_info={"outcome": latest_outcome},
                            message="explicit operator block remains; use the existing unblock/control command")
 
         if task.status in {"todo", "scheduled"}:
-            return _result(**base, recovery_state="waiting", action="wait", dispatch_status="not_eligible",
+            return _result(**base, recovery_state="waiting", action="none", dispatch_status="not_eligible",
                            retry_info={"outcome": latest_outcome} if latest_outcome else None,
                            message="task is waiting; no action was taken")
         if task.status == "blocked" and not (requeue and latest_outcome in _BREAKER_OUTCOMES):
             if latest_outcome in _BREAKER_OUTCOMES:
-                return _result(**base, recovery_state="gave-up", action="requeue-required",
+                return _result(**base, recovery_state="gave-up", action="none",
                                dispatch_status="not_eligible", retry_info={"outcome": latest_outcome, "reset": False},
                                message="retry budget is exhausted; use /recover <task> --requeue")
-            return _result(**base, recovery_state="blocked", action="wait", dispatch_status="not_eligible",
+            return _result(**base, recovery_state="blocked", action="none", dispatch_status="not_eligible",
                            retry_info={"outcome": latest_outcome} if latest_outcome else None,
                            message="task is blocked; no action was taken")
 
@@ -187,7 +187,8 @@ def run_recover_slash(text: str) -> dict[str, Any]:
             after = kb.get_task(conn, task_id)
             return _result(task_id=task_id, board=board, task_status=after.status if after else None,
                            recovery_state="requeued" if changed else "already-requeued",
-                           eligible=bool(changed), action="requeue", mutation_performed=bool(changed),
+                           eligible=bool(changed), action="requeued" if changed else "none",
+                           mutation_performed=bool(changed),
                            retry_info={"outcome": latest_outcome, "reset": bool(changed), "consecutive_failures": 0},
                            dispatch_status="requeued" if changed else "already_recovered",
                            next_action=f"/continue {task_id}" if after and after.status in {"ready", "review"} else None,
@@ -196,7 +197,7 @@ def run_recover_slash(text: str) -> dict[str, Any]:
         dispatch = kbd.dispatch_once(conn, task_id=task_id, max_spawn=0)
         after = kb.get_task(conn, task_id)
         if dispatch.paused:
-            return _result(**base, recovery_state="paused", action="wait", dispatch_status="paused",
+            return _result(**base, recovery_state="paused", action="none", dispatch_status="paused",
                            message="recovery paused by ESTOP; no mutation was performed")
         task_status = after.status if after else task.status
         latest = _latest_run(conn, task_id)
@@ -204,24 +205,25 @@ def run_recover_slash(text: str) -> dict[str, Any]:
         cooldown = _cooldown(conn, task_id)
         if cooldown is not None:
             return _result(task_id=task_id, board=board, task_status=task_status,
-                           recovery_state="rate-limited", action="wait", dispatch_status="not_eligible",
+                           recovery_state="rate-limited", action="none", dispatch_status="not_eligible",
                            cooldown={"remaining_seconds": cooldown}, retry_info={"outcome": latest_outcome},
                            message=f"rate-limit cooldown is active; wait {cooldown}s")
         if kbd.check_respawn_guard(conn, task_id) == "blocker_auth":
             return _result(task_id=task_id, board=board, task_status=task_status,
-                           recovery_state="blocker-auth", action="operator-remediation", dispatch_status="not_eligible",
+                           recovery_state="blocker-auth", action="none", dispatch_status="not_eligible",
                            retry_info={"outcome": latest_outcome},
                            message="provider/auth blocker requires human remediation; failure details were preserved")
         if latest_outcome == "gave_up" or (task_status == "blocked" and int(after.consecutive_failures or 0) > 0):
             return _result(task_id=task_id, board=board, task_status=task_status,
-                           recovery_state="gave-up", action="requeue-required", dispatch_status="not_eligible",
+                           recovery_state="gave-up", action="none", dispatch_status="not_eligible",
                            retry_info={"outcome": latest_outcome, "reset": False},
                            message="retry budget is exhausted; use /recover <task> --requeue")
         if latest_outcome in _RECOVERABLE_OUTCOMES or any(_dispatch_fields(dispatch)[key] for key in ("reclaimed", "reconciled_orphans", "crashed", "stale", "timed_out")):
             mutation = _mark_recovered(conn, task_id, outcome=str(latest_outcome or "reclaimed"))
             after = kb.get_task(conn, task_id)
             return _result(task_id=task_id, board=board, task_status=after.status if after else task_status,
-                           recovery_state="recovered", eligible=True, action="recover", mutation_performed=mutation,
+                           recovery_state="recovered", eligible=True,
+                           action="normalized" if mutation else "none", mutation_performed=mutation,
                            retry_info={"outcome": latest_outcome, "reset": False}, dispatch_status="recovered",
                            next_action=f"/continue {task_id}", message="task recovered and is ready for /continue")
         if latest_outcome == "rate_limited":

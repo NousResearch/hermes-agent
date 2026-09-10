@@ -471,12 +471,13 @@ def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: b
     folder wins so nested projects resolve to the innermost one."""
     if not str(path or "").strip():
         return None
-    target = _normalize_path(path)
+    target = _primary_path_key(path)
     sql = "SELECT pf.project_id AS pid, pf.path AS folder FROM project_folders pf JOIN projects p ON p.id = pf.project_id"
     if not include_archived:
         sql += " WHERE p.archived = 0"
 
     def owns(folder: str) -> bool:
+        folder = os.path.normcase(folder)
         stem = folder.rstrip("/\\")
         return target == folder or target.startswith(stem + os.sep) or target.startswith(stem + "/")
 

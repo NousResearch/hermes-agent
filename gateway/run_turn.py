@@ -304,6 +304,101 @@ class GatewayTurnMixin:
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
+
+        # Mirrored project threads: a thread created by the session mirror
+        # stands for a session that ran on another surface (desktop/TUI/CLI).
+        # Bind this lane to that session the first time the user types in it,
+        # so the thread simply CONTINUES that conversation instead of starting
+        # a fresh one. Mirrors the Telegram topic-binding override below.
+        # Only rebinds when the lane isn't already on the target session, so
+        # subsequent turns are a no-op and the transcript isn't re-ended.
+        # NB: compare on the platform's *value* — Platform may be shadowed by
+        # local imports further down this module's call paths.
+        if getattr(source.platform, "value", None) == "discord" and source.thread_id:
+            try:
+                from gateway import project_channels as _pc
+
+                _mirror_sid = await asyncio.to_thread(
+                    _pc.mirrored_session_for_thread, str(source.thread_id)
+                )
+                if _mirror_sid and session_entry.session_id != _mirror_sid:
+                    _switched = await self.async_session_store.switch_session(
+                        session_key, _mirror_sid
+                    )
+                    if _switched is not None:
+                        session_entry = _switched
+                        logger.info(
+                            "project_channels: bound mirrored thread %s to session %s",
+                            source.thread_id, _mirror_sid,
+                        )
+            except Exception as _mb_err:
+                logger.debug(
+                    "project_channels: mirrored-thread binding skipped: %s", _mb_err
+                )
+
+        # Project channels: when this Discord channel (or the parent of this
+        # thread) mirrors a Hermes project, run the turn in that project's
+        # primary folder instead of the gateway-global TERMINAL_CWD. Registered
+        # per-session rather than mutating os.environ, so concurrent sessions in
+        # different project channels don't clobber each other's cwd.
+        if getattr(source.platform, "value", None) == "discord" and session_entry.session_id:
+            try:
+                from gateway import project_channels as _pc
+
+                _proj_cwd = _pc.cwd_for_channel(
+                    source.chat_id,
+                    parent_id=getattr(source, "parent_chat_id", None)
+                    or source.chat_id,
+                )
+                if _proj_cwd:
+                    _db = (
+                        getattr(self._session_db, "_db", self._session_db)
+                        if self._session_db is not None else None
+                    )
+                    # The project primary path is only a DEFAULT for a session
+                    # that has no workspace yet. A mirrored desktop/TUI/CLI
+                    # session continuing through its Discord thread already owns
+                    # an authoritative cwd — often a NESTED path under the
+                    # project — and the transport must not seize that authority.
+                    _stored_cwd = ""
+                    if _db is not None:
+                        try:
+                            _row = await asyncio.to_thread(
+                                _db.get_session, session_entry.session_id
+                            )
+                            _stored_cwd = str((_row or {}).get("cwd") or "").strip()
+                        except Exception as _read_err:
+                            logger.debug(
+                                "project_channels: could not read session cwd: %s",
+                                _read_err,
+                            )
+                    _effective_cwd, _should_persist = _pc.resolve_session_cwd(
+                        _stored_cwd, _proj_cwd
+                    )
+
+                    from tools.terminal_tool import register_task_env_overrides
+
+                    register_task_env_overrides(
+                        session_entry.session_id, {"cwd": _effective_cwd}
+                    )
+                    # Persist ONLY when the session has no cwd of its own —
+                    # see resolve_session_cwd for why the transport must not
+                    # seize workspace authority from an existing session.
+                    if _db is not None and _should_persist:
+                        try:
+                            await asyncio.to_thread(
+                                _db.update_session_cwd,
+                                session_entry.session_id,
+                                _proj_cwd,
+                            )
+                        except Exception as _cwd_err:
+                            logger.debug(
+                                "project_channels: could not persist cwd: %s",
+                                _cwd_err,
+                            )
+            except Exception as _pc_err:
+                logger.debug("project_channels: cwd binding skipped: %s", _pc_err)
+
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner

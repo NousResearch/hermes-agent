@@ -1290,6 +1290,56 @@ class GatewayStartupMixin:
         self._spawn_reconnect_watcher()
         for method in self._POST_RECONNECT_WATCHERS:
             self._spawn_supervised(getattr(self, method), method[1:])
+        # Backfill Discord channels for any project that doesn't have one yet.
+        # Covers projects created outside `hermes project create` (desktop UI,
+        # direct DB writes, a restored backup). Runs off the event loop because
+        # provisioning is blocking HTTP, and never blocks startup on failure.
+        try:
+            from gateway import project_channels as _pc
+
+            if _pc.is_enabled():
+                async def _project_channel_backfill() -> None:
+                    try:
+                        results = await asyncio.to_thread(_pc.sync_all_projects)
+                        created = [s for s, cid in results if cid]
+                        if created:
+                            logger.info(
+                                "project_channels: %d project channel(s) ready",
+                                len(created),
+                            )
+                        # Reverse direction: adopt hand-made channels in the
+                        # Projects category that have no project yet. Runs after
+                        # the forward sync so a channel this pass just created is
+                        # already bound and cannot be re-adopted as an orphan.
+                        adopted = await asyncio.to_thread(_pc.adopt_orphan_channels)
+                        made = [n for n, pid in adopted if pid]
+                        if made:
+                            logger.info(
+                                "project_channels: adopted %d manual channel(s): %s",
+                                len(made), ", ".join(made),
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "project_channels: startup backfill failed: %s", exc
+                        )
+
+                self._spawn_supervised(
+                    _project_channel_backfill,
+                    "project_channel_backfill",
+                    # One-shot: a completed backfill must not be respawned in a
+                    # loop the way a long-lived watcher would be.
+                    restart=False,
+                )
+
+                # Long-lived: mirror each project-linked session as a thread in
+                # its project's channel, so the channel shows one thread per
+                # session without the user doing anything.
+                self._spawn_supervised(
+                    self._project_session_mirror_watcher,
+                    "project_session_mirror",
+                )
+        except Exception:  # noqa: BLE001 - provisioning must never block startup
+            logger.debug("project_channels: startup backfill skipped", exc_info=True)
         # Scale-to-zero watcher ONLY when opted in, messaging is relay-only/absent, and a wakeUrl exists.
         try:
             if self._scale_to_zero_should_arm():
@@ -1421,14 +1471,40 @@ class GatewayStartupMixin:
         home_chat_id = str(home.chat_id)
         # Fresh thread for the handoff's own scrollback; None when unsupported or creation failed.
         cli_title = row.get("title") or cli_session_id[:8]
+        # Project channels: deliver the handoff into the channel mirroring the
+        # project that owns this session's cwd, instead of the single global
+        # home channel. Falls back to home when the feature is off, the session
+        # has no cwd, or its cwd belongs to no project — so an unmapped session
+        # behaves exactly as before.
+        target_chat_id = home_chat_id
+        if platform == Platform.DISCORD:
+            try:
+                from gateway import project_channels as _pc
+
+                _session_cwd = row.get("cwd") or row.get("git_repo_root") or ""
+                _proj_channel = _pc.channel_for_cwd(_session_cwd)
+                if _proj_channel:
+                    logger.info(
+                        "Handoff: routing '%s' to project channel %s (cwd=%s)",
+                        cli_title, _proj_channel, _session_cwd,
+                    )
+                    target_chat_id = _proj_channel
+            except Exception as exc:
+                logger.debug("Handoff: project-channel routing skipped: %s", exc)
         try:
             new_thread_id = await transport.adapter.create_handoff_thread(
-                home_chat_id, f"Hermes — {cli_title}",
+                target_chat_id, f"Hermes — {cli_title}",
             )
         except Exception as exc:
             logger.debug("Handoff: create_handoff_thread raised on %s: %s", platform_name, exc, exc_info=True)
             new_thread_id = None
         effective_thread_id = new_thread_id or (str(home.thread_id) if home.thread_id else None)
+        # ``target_chat_id`` is the project channel when one is bound, else the
+        # configured home channel — the thread above was created under it, so
+        # every downstream identity must agree with it rather than re-deriving
+        # from ``home``. Otherwise a failed thread creation would silently drop
+        # the handoff back into the home channel.
+        home_chat_id = target_chat_id
         # Telegram private-chat DM topics use the DM-topic source shape (user_id == chat_id) so the
         # synthetic turn binds the same key later inbound turns arrive on (`dm`, not `thread`).
         is_telegram_private_chat = (
@@ -1509,7 +1585,7 @@ class GatewayStartupMixin:
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
             "(home=%s, thread=%s, session_key=%s)",
-            cli_session_id, dest.platform_name, dest.home.chat_id, dest.effective_thread_id, session_key,
+            cli_session_id, dest.platform_name, dest.home_chat_id, dest.effective_thread_id, session_key,
         )
         # Inline _handle_message keeps success/failure observable (handle_message would detach it).
         response_text = await self._handle_message(synthetic_event)
@@ -1521,7 +1597,7 @@ class GatewayStartupMixin:
         send_metadata = {"thread_id": dest.effective_thread_id} if dest.effective_thread_id else None
         try:
             result = await dest.transport.send(
-                dest.platform, str(dest.home.chat_id), response_text, send_metadata,
+                dest.platform, dest.home_chat_id, response_text, send_metadata,
             )
         except Exception as exc:
             raise RuntimeError(f"adapter.send failed: {exc}") from exc

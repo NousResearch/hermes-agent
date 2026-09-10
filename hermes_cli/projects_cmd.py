@@ -54,6 +54,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     project_sub("bind-board", "Bind a kanban board to a project").add_argument(
         "board", nargs="?", default="", help="Board slug (omit to unbind)"
     )
+    p_sync = sub.add_parser("sync-discord", help="Create missing Discord channels for projects (idempotent)")
+    p_sync.add_argument("--include-archived", action="store_true", help="Also provision channels for archived projects")
     parser.set_defaults(_project_parser=parser)
     return parser
 
@@ -143,6 +145,20 @@ def _cmd_create(args, conn) -> int:
         print("project: vanished after create", file=sys.stderr)
         return 2
     print(f"Created project {proj.slug} ({pid})")
+    # Mirror the new project as a Discord channel when the feature is on. Best-effort by contract:
+    # a Discord outage or a missing permission must never fail `hermes project create`.
+    try:
+        from gateway import project_channels as _pc
+
+        if _pc.is_enabled():
+            cid = _pc.provision_project(pid)
+            if cid:
+                print(f"Discord: bound to #{_pc.channel_name_for(proj.slug)} ({cid})")
+            else:
+                print("Discord: channel provisioning skipped (see logs); retry with `hermes project sync-discord`.")
+            proj = pdb.get_project(conn, pid) or proj  # pick up the stored channel id
+    except Exception as exc:
+        print(f"Discord: channel provisioning failed: {exc}", file=sys.stderr)
     _print_project(proj)
     return 0
 
@@ -181,7 +197,29 @@ def _cmd_remove_folder(args, conn, proj):
 @_with_project
 def _cmd_rename(args, conn, proj) -> str:
     pdb.update_project(conn, proj.id, name=args.name)
-    return f"Renamed {proj.slug} -> {args.name}"
+    msg = f"Renamed {proj.slug} -> {args.name}"
+    # Push the rename to Discord immediately instead of waiting for the
+    # gateway's reconcile pass. Best-effort by contract: a Discord outage must
+    # never fail the local rename (reconciliation will catch up later).
+    try:
+        from gateway import project_channels as _pc
+
+        if _pc.is_enabled() and proj.discord_channel_id:
+            desired = _pc.channel_name_for(_pc._slugify_for_channel(args.name))
+            if _pc.rename_channel(proj.discord_channel_id, desired):
+                msg += f"\nDiscord: channel renamed to #{desired}"
+                # Re-agree the name pair so the reconciler doesn't read this as
+                # drift and try to rename anything back.
+                state = _pc._read_name_state()
+                state[proj.id] = {
+                    "channel_name": desired, "project_name": args.name,
+                }
+                _pc._write_name_state(state)
+            else:
+                msg += "\nDiscord: channel rename failed (see logs); will retry on the next gateway pass."
+    except Exception as exc:
+        msg += f"\nDiscord: channel rename skipped: {exc}"
+    return msg
 
 
 @_with_project
@@ -225,6 +263,59 @@ def _cmd_bind_board(args, conn, proj) -> str:
     return f"Bound {proj.slug} -> board {args.board}"
 
 
+def _cmd_sync_discord(args: argparse.Namespace) -> int:
+    """Create any missing Discord channels for existing projects."""
+    try:
+        from gateway import project_channels as _pc
+    except Exception as exc:
+        print(f"project: cannot load Discord support: {exc}", file=sys.stderr)
+        return 2
+
+    s = _pc.settings()
+    if not s["enabled"]:
+        print(
+            "Discord project channels are disabled.\n"
+            "Enable with: hermes config set discord.project_channels.enabled true"
+        )
+        return 1
+    if not s["guild_id"]:
+        print(
+            "discord.project_channels.guild_id is not set.\n"
+            "Set it with: hermes config set discord.project_channels.guild_id <id>",
+            file=sys.stderr,
+        )
+        return 2
+
+    results = _pc.sync_all_projects(include_archived=getattr(args, "include_archived", False))
+    failed = 0
+    if not results:
+        print("No projects to sync.")
+    for slug, cid in results:
+        if cid:
+            print(f"  {slug:24} -> #{_pc.channel_name_for(slug)} ({cid})")
+        else:
+            failed += 1
+            print(f"  {slug:24} -> FAILED (see logs)", file=sys.stderr)
+
+    # Reverse direction: hand-made channels in the category with no project yet.
+    # Runs after the forward sync so a channel just created above is already
+    # bound and cannot be re-adopted as an orphan.
+    adopted = _pc.adopt_orphan_channels()
+    if adopted:
+        print("\nAdopted manual channels:")
+        for chan_name, pid in adopted:
+            if pid:
+                print(f"  #{chan_name:23} -> project {pid}")
+            else:
+                failed += 1
+                print(f"  #{chan_name:23} -> FAILED (see logs)", file=sys.stderr)
+
+    if failed:
+        print(f"\n{failed} item(s) could not be provisioned.", file=sys.stderr)
+        return 1
+    return 0
+
+
 _HANDLERS = {
     "create": _cmd_create,
     "list": _cmd_list,
@@ -238,4 +329,5 @@ _HANDLERS = {
     "archive": _flag_command("archive_project", "Archived"),
     "restore": _flag_command("restore_project", "Restored"),
     "bind-board": _cmd_bind_board,
+    "sync-discord": _cmd_sync_discord,
 }

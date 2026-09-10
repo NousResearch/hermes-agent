@@ -101,10 +101,10 @@ def _remove_custom(name: str) -> None:
     _say(f"  ✓ Removed '{name}'")
 
 
-def _install(entry: CatalogEntry, verb: str) -> bool:
+def _install(entry: CatalogEntry, verb: str, *, network: str | None = None) -> bool:
     """Install *entry*, printing (not raising) a CatalogError. True on success."""
     try:
-        install_entry(entry, enable=True)
+        install_entry(entry, enable=True, **({"network": network} if network is not None else {}))
     except CatalogError as exc:
         _say(f"  ✗ {verb} failed: {exc}", Colors.RED)
         return False
@@ -130,6 +130,24 @@ def _run_submenu(title: str, actions: list) -> None:
         actions[choice][1]()
 
 
+def _network_actions(name: str) -> list:
+    from hermes_cli.mcp_config import _get_mcp_servers, cmd_mcp_configure
+    from types import SimpleNamespace
+
+    if not (_get_mcp_servers().get(name) or {}).get("url"):
+        return []
+
+    def choose():
+        labels = {"auto": "Automatic (backend first, then Windows from WSL)",
+                  "local": "Backend only", "windows": "Windows loopback"}
+        _run_submenu(f"Network target for '{name}'", [
+            (label, lambda value=value: cmd_mcp_configure(SimpleNamespace(name=name, network=value)))
+            for value, label in labels.items()
+        ])
+
+    return [("Network target (HTTP/SSE)", choose)]
+
+
 def _handle_row(row: _Row) -> None:
     """Act on the picked row based on its current status."""
     if row.entry and not is_installed(row.name):
@@ -141,6 +159,7 @@ def _handle_row(row: _Row) -> None:
     if row.is_custom:
         enabled = is_enabled(row.name)
         _run_submenu(f"Action for '{row.name}' (custom)", [
+            *_network_actions(row.name),
             ("Configure tools (probe server + re-pick)", lambda: _configure_tools(row.name)),
             ("Enable" if not enabled else "Disable",
              lambda: _enable_disable(row.name, enable=not is_enabled(row.name))),
@@ -150,6 +169,7 @@ def _handle_row(row: _Row) -> None:
     print()
     _say(f"  '{row.name}' is already enabled.", Colors.DIM)
     _run_submenu(f"Action for '{row.name}'", [
+        *_network_actions(row.name),
         ("Configure tools (probe server + re-pick)", lambda: _configure_tools(row.name)),
         ("Disable (keep config, stop loading on next session)",
          lambda: _enable_disable(row.name, enable=False)),
@@ -206,7 +226,7 @@ def run_picker() -> None:
         _handle_row(rows[idx])
 
 
-def install_by_name(identifier: str) -> int:
+def install_by_name(identifier: str, *, network: str | None = None) -> int:
     """`hermes mcp install <name>` — non-interactive entry-point."""
     from hermes_cli.mcp_catalog import get_entry
 
@@ -217,7 +237,7 @@ def install_by_name(identifier: str) -> int:
             Colors.RED,
         )
         return 1
-    return 0 if _install(entry, "install") else 1
+    return 0 if _install(entry, "install", **({"network": network} if network is not None else {})) else 1
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

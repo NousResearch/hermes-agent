@@ -220,6 +220,11 @@ def _translate_mcp_server(name: str, srv: Dict[str, Any]) -> Tuple[Dict[str, Any
             hermes_srv["cwd"] = srv["cwd"]
     if srv.get("url"):
         hermes_srv["url"] = srv["url"]
+        if "network" in srv:
+            hermes_srv["network"] = srv["network"]
+        transport = srv.get("transport", srv.get("type"))
+        if isinstance(transport, str) and transport in {"http", "sse"}:
+            hermes_srv["transport"] = transport
         headers = srv.get("headers")
         if isinstance(headers, dict):
             kept_headers = {k: v for k, v in headers.items()
@@ -473,6 +478,12 @@ class AgentImporter:
             self.stripped_secrets.extend(stripped)
             if not hermes_srv:
                 self.record(kind, name, None, "skipped", "Server has neither a command nor a url")
+                continue
+            from tools.mcp_windows import InvalidMcpNetworkError, validate_mcp_network_config
+            try:
+                validate_mcp_network_config(hermes_srv)
+            except InvalidMcpNetworkError as exc:
+                self.record(kind, name, None, "skipped", str(exc))
                 continue
             existing[name] = hermes_srv
             added += 1

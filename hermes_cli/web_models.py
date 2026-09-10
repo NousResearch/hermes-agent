@@ -304,6 +304,8 @@ class AutomationBlueprintInstantiate(BaseModel):
 class MCPServerCreate(BaseModel):
     name: str
     url: Optional[str] = None
+    transport: Optional[Literal["http", "sse"]] = None
+    network: Optional[Literal["auto", "local", "windows"]] = None
     command: Optional[str] = None
     args: List[str] = []
     env: Dict[str, str] = {}  # KEY=VALUE for stdio servers (API keys, etc.)
@@ -322,6 +324,7 @@ class MCPEnabledToggle(BaseModel):
     profile: Optional[str] = None
 
 class MCPCatalogInstall(BaseModel):
+    network: Optional[Literal["auto", "local", "windows"]] = None
     name: str
     env: Dict[str, str] = {}  # KEY=VALUE for entries declaring required env vars
     enable: bool = True

@@ -12,7 +12,7 @@ from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _res
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
-from tools.mcp_windows import InvalidMcpNetworkError, validate_mcp_network
+from tools.mcp_windows import InvalidMcpNetworkError, validate_mcp_network, validate_mcp_network_config
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -168,9 +168,10 @@ class MCPServerRunMixin:
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "
                            "('url'). Remove 'command' to silence this warning.", self.name)
-        if not self._is_http():
-            return True
         try:
+            validate_mcp_network_config(config)
+            if not self._is_http():
+                return True
             _errors._validate_remote_mcp_url(self.name, config.get("url"))
             validate_mcp_network(config["url"], config.get("network", "auto"))
             # Content-type preflight (Streamable HTTP only; SSE serves text/event-stream): a

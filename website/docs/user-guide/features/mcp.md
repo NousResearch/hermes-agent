@@ -352,6 +352,47 @@ Linux gateway cannot use this setting to reach your PC's Windows localhost.
 This feature does not import another installation's MCP configuration, translate
 stdio executables/arguments, or make Windows filesystem paths valid inside WSL.
 
+### Configuring the target across Hermes surfaces
+
+The network target belongs to the **server configuration in the selected profile**.
+CLI, TUI, Desktop, dashboard, messaging gateway, scheduled runs and ACP use the
+same MCP runtime. HTTP/SSE sessions carry tools, prompts and resources through the
+same route. Ordinary backend-local and remote non-loopback URLs remain direct.
+
+```bash
+hermes mcp add unity --url http://localhost:8080/mcp --network windows
+hermes mcp add unity-sse --url http://localhost:8080/sse --transport sse --network windows
+hermes mcp configure unity --network local
+hermes mcp install <catalog-entry> --network windows
+```
+
+The MCP picker has a **Network target (HTTP/SSE)** action for configured URL
+servers. The dashboard Add Server and Profile Builder forms expose both the
+network target and HTTP/SSE protocol. Desktop's MCP JSON editor/importer accepts
+the same `network` and `transport` fields. The structured create/bulk-save APIs
+and HTTP catalog install API preserve these choices; catalog reinstall retains
+an existing network choice unless explicitly overridden.
+
+Browser OAuth requests use the session route. Device-code login and cold-start
+OAuth metadata discovery also use the configured route and TLS settings, with
+separate connection lifetimes. A different authorization-server origin remains
+direct rather than being sent to the MCP loopback listener. In-memory OAuth
+providers and the on-disk tool-schema cache are invalidated when network intent
+changes; existing prompt/tool snapshots still follow the normal new-session or
+explicit MCP reload policy.
+
+ACP-supplied HTTP and SSE servers use automatic routing, and SSE remains SSE.
+ACP's standard server description does not provide Hermes' explicit `network`
+selector. Set explicit targets in Hermes' own profile configuration instead.
+Import from supported other-agent JSON configurations preserves explicit network
+and HTTP/SSE fields without importing literal credentials.
+
+Invalid network names, explicit Windows targeting of non-loopback URLs, and
+network options on stdio entries are rejected rather than silently ignored.
+These choices do **not** import another OS installation's config, translate
+stdio executables or filesystem paths, scan for unconfigured application ports,
+or add reverse Windows-to-WSL tunneling.
+
 ## mTLS / client certificates
 
 Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.

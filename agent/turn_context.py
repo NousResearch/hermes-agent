@@ -670,6 +670,7 @@ def _collect_pre_llm_call_context(
             turn_id=turn_id,
             user_message=original_user_message,
             conversation_history=list(messages),
+            todos=agent._todo_store.read(),
             is_first_turn=(not bool(conversation_history)),
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",

@@ -1656,3 +1656,75 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Crash diagnosis: the worker's own log names the cause, so a nonzero exit
+# must not be recorded as a bare "exited with code 1" (undiagnosable on the
+# board). Regression coverage for the unknown-skill crash loop.
+# ---------------------------------------------------------------------------
+
+
+def test_crash_records_the_reason_from_the_worker_log(kanban_home, monkeypatch):
+    """A nonzero worker exit carries its log's error line into
+    ``last_failure_error`` and the ``crashed`` event payload."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="bad skill", assignee="a")
+        kb.claim_task(conn, tid, claimer=f"{host}:w0")
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (70123, tid))
+        conn.commit()
+
+        log = _kb.worker_log_path(tid)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(
+            "Query: work kanban task t_x\n"
+            "Initializing agent...\n"
+            "Error: Unknown skill(s): humanizer\n"
+        )
+
+        kbd._record_worker_exit(70123, _exited_status(1))
+        assert tid in kbd.detect_crashed_workers(conn)
+
+        task = kb.get_task(conn, tid)
+        assert "Unknown skill(s): humanizer" in (task.last_failure_error or ""), (
+            f"crash reason lost; got {task.last_failure_error!r}"
+        )
+
+        event = next(e for e in kb.list_events(conn, tid) if e.kind == "crashed")
+        assert event.payload["reason"] == "Error: Unknown skill(s): humanizer"
+
+
+def test_crash_without_a_readable_log_still_records_the_exit(kanban_home, monkeypatch):
+    """No log file (GC'd, never spawned) must not break crash accounting."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="no log", assignee="a")
+        kb.claim_task(conn, tid, claimer=f"{host}:w0")
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (70124, tid))
+        conn.commit()
+
+        kbd._record_worker_exit(70124, _exited_status(1))
+        assert tid in kbd.detect_crashed_workers(conn)
+
+        # The exact exit_kind depends on the process-global exit registry,
+        # so assert the stable property: the crash is still accounted with a
+        # pid-identified reason, and no log excerpt is appended.
+        failure = kb.get_task(conn, tid).last_failure_error or ""
+        assert "70124" in failure, failure
+        assert ":" not in failure.split("pid ", 1)[-1], (
+            f"no log exists, so no excerpt should be appended; got {failure!r}"
+        )
+        event = next(e for e in kb.list_events(conn, tid) if e.kind == "crashed")
+        assert "reason" not in event.payload
+

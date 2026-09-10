@@ -84,7 +84,7 @@ def _repair_object_shape(node):
             props = repaired.get("properties") or {}
             valid = [r for r in required if isinstance(r, str) and r in props]
             if len(valid) != len(required):
-                    repaired["required"] = valid
+                repaired["required"] = valid
     return repaired
 
 

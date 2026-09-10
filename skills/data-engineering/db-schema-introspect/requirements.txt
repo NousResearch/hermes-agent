@@ -1,0 +1,2 @@
+# Dependencies inherited from sql-query-executor
+# No additional requirements needed

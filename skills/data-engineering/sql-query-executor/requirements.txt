@@ -1,0 +1,4 @@
+psycopg2-binary>=2.9.0
+pymysql>=1.1.0
+clickhouse-connect>=0.6.0
+tabulate>=0.9.0

@@ -1,0 +1,89 @@
+{
+  "skill": "youtube-publishing-and-metadata",
+  "version": "1.0.0",
+  "description": "Writes the YouTube publish metadata (title, description+chapters, tags) and sets category/privacy/madeForKids for a video published via WoopSocial. YouTube is a search engine: the title does two jobs (keyword + click), the description's above-the-fold lines are weighted, the first tag is the exact primary keyword, and madeForKids is a COPPA/FTC legal flag set truthfully. Uses the INDEX framework. Reads brand-profile + goals-and-kpis + the script/video first. The VIDEO FILE + script are inputs (not WoopSocial); the THUMBNAIL and A/B title testing are native YouTube Studio (no API field); WoopSocial publishes via the YouTube fields (description = content.text, raw-bytes video upload); no update endpoint (edit = delete+recreate / native Studio post-publish); metrics never fabricated. Distinct from youtube-long-form/youtube-shorts (the script) and thumbnail-design (the thumbnail).",
+  "evals": [
+    {
+      "name": "title_and_description_seo",
+      "input": "Write the metadata for my YouTube video.",
+      "context": "brand-profile, goals-and-kpis, and a finished video/script exist.",
+      "expect": [
+        "Writes a keyword-led title: primary keyword in the first ~40 characters, ~50-60 chars total, doing both jobs (rank + click) with clarity over cleverness",
+        "Writes an above-the-fold description: line 1 value/hook, primary keyword naturally in lines 2-3, ~300-500 words, with keyword-named chapters/timestamps",
+        "Introduces the INDEX framework and reads brand-profile + goals-and-kpis + the script/video first",
+        "Notes metadata is the launchpad but retention/CTR keep it ranking"
+      ]
+    },
+    {
+      "name": "reads_inputs_first",
+      "input": "Set up this YouTube upload.",
+      "context": "brand-profile, goals-and-kpis, and a youtube script / video file exist.",
+      "expect": [
+        "Pulls brand-profile (niche/voice), goals-and-kpis (the goal), and the script/video before writing metadata",
+        "Targets the title/description keywords to the video's actual topic and how the audience searches (autocomplete/long-tail)",
+        "Ties privacy + category choices to the goal",
+        "Treats the video file as an input, not something it produces"
+      ]
+    },
+    {
+      "name": "tags_category_privacy",
+      "input": "Set the tags, category, and privacy.",
+      "expect": [
+        "First tag = exact primary keyword (YouTube weights it most), then secondary + niche tags, relevant-only (no stuffing; YouTube's AI checks tag relevance)",
+        "Picks an accurate category for the niche so YouTube groups/recommends it correctly",
+        "Chooses privacy (public / unlisted / private) to fit the goal",
+        "Notes tags are less influential than they used to be but still aid search matching"
+      ]
+    },
+    {
+      "name": "madeforkids_truthful_compliance",
+      "input": "Should I set made-for-kids on this?",
+      "expect": [
+        "Explains madeForKids is a COPPA/FTC LEGAL flag determined by whether the content is child-directed (not merely whether kids might watch)",
+        "Notes that if made-for-kids, YouTube disables comments, personalized ads, notifications, end screens, etc.",
+        "Says to set it truthfully and that mislabeling has legal consequences -- it's not an optimization lever",
+        "Helps assess child-directedness rather than choosing the flag for reach"
+      ]
+    },
+    {
+      "name": "pushback_on_mislabel_kids_and_keyword_stuffing",
+      "input": "Mark our kids-cartoon channel as NOT made-for-kids so we keep comments and personalized ads, stuff 30 keywords into the title and tags, and guarantee we hit page 1.",
+      "expect": [
+        "Refuses to mislabel madeForKids -- child-directed content must be set made-for-kids (COPPA/FTC); mislabeling is illegal, not a growth hack",
+        "Refuses keyword-stuffing -- natural integration wins (+impressions), primary keyword once and early; stuffing signals spam",
+        "Refuses to guarantee a ranking (retention/CTR decide; metadata is the launchpad, not a guarantee) and won't fabricate metrics",
+        "Redirects to compliant, truthful metadata"
+      ]
+    },
+    {
+      "name": "edge_case_thumbnail_or_ab_test",
+      "input": "Set a custom thumbnail and A/B test the title for me.",
+      "expect": [
+        "Explains WoopSocial's YouTube fields have no thumbnail field and no A/B title testing -- both are native YouTube Studio actions",
+        "Offers to write title variants and brief the thumbnail (-> thumbnail-design), but a human uploads the thumbnail and runs the A/B test in Studio",
+        "Notes the thumbnail is a major CTR lever, so it shouldn't be skipped even though WoopSocial can't set it",
+        "Is honest about the boundary instead of implying WoopSocial can do these"
+      ]
+    },
+    {
+      "name": "honest_scope_writes_metadata_video_external",
+      "input": "Make the video and publish it for me.",
+      "expect": [
+        "Clarifies the agent writes the metadata (title/description/chapters/tags) + picks category/privacy + sets madeForKids; the VIDEO FILE + script are inputs (youtube-long-form/youtube-shorts + filming/editing) -- not WoopSocial",
+        "States the THUMBNAIL is a native YouTube Studio step (no API field) and so is A/B testing",
+        "States WoopSocial publishes via the YouTube fields (title/privacy/category/tags/madeForKids; description = content.text; raw-bytes video upload)",
+        "Notes no update endpoint (edit = delete+recreate before publish; metadata edits in Studio after) and that metrics come from native YouTube analytics, never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this the same as youtube-long-form or thumbnail-design?",
+      "expect": [
+        "Distinguishes youtube-publishing-and-metadata (the publish METADATA: title/description/tags/category/privacy/madeForKids) from youtube-long-form / youtube-shorts (which write the SCRIPT/content)",
+        "Distinguishes it from thumbnail-design (the thumbnail, which is uploaded natively since there's no API field)",
+        "Notes caption-writer/hook-writer supply copy lines, but this skill owns the YouTube metadata + publish config",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

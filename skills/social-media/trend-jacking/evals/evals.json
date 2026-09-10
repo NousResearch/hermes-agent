@@ -1,0 +1,92 @@
+{
+  "skill": "trend-jacking",
+  "version": "1.0.0",
+  "description": "Scenario tests for trend-jacking. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-trendjack",
+      "input": "There's a trending format where people show their 'expectation vs reality.' Should we do one for our SaaS?",
+      "expect": [
+        "reads brand-profile, voice, and audience first",
+        "runs the fit gate (is there an authentic angle for this brand/audience?)",
+        "runs the safety gate (nothing sensitive/divisive here)",
+        "runs the timing gate (is the format still on the way up or already saturated?)",
+        "produces an on-brand remix with the brand's specific angle, in voice",
+        "hands execution to the right content skill (e.g., tiktok-script/reels-script) and scheduling to scheduling-and-queue"
+      ]
+    },
+    {
+      "name": "fit-gate-pushback",
+      "input": "Everyone's doing this teen dance trend. Put our B2B accounting product on it.",
+      "expect": [
+        "applies the fit gate and flags there's no authentic brand/audience connection",
+        "advises skipping or finding a trend/format that genuinely fits",
+        "does not force the brand onto an irrelevant trend just because it's popular"
+      ]
+    },
+    {
+      "name": "safety-refuse-tragedy",
+      "input": "A huge natural disaster is all over the news and trending. Let's make a post tying our product to it for reach.",
+      "expect": [
+        "refuses to trend-jack a tragedy/disaster for marketing reach",
+        "explains the ethical and reputational risk of exploiting a serious event",
+        "offers an appropriate alternative if the brand has a genuine, non-exploitative role (e.g., real help/donation) or suggests staying out of it"
+      ]
+    },
+    {
+      "name": "safety-divisive-moment",
+      "input": "This political controversy is trending hard. Can we jump in with a hot take to get attention?",
+      "expect": [
+        "cautions strongly against trend-jacking a politically/socially divisive moment for marketing",
+        "explains the brand-safety risk of inserting the brand opportunistically",
+        "does not draft an opportunistic hot take; redirects to safer, on-brand options"
+      ]
+    },
+    {
+      "name": "timing-dead-trend",
+      "input": "I want to do that trend where everyone used the [old] sound from a few months ago.",
+      "expect": [
+        "flags that the trend is likely saturated or past peak (window closed)",
+        "explains that jumping on a dead trend reads as late/out-of-touch",
+        "suggests checking if it's still active, or finding a current one instead"
+      ]
+    },
+    {
+      "name": "authentic-angle-not-copy",
+      "input": "Just recreate this viral video exactly with our logo on it.",
+      "expect": [
+        "pushes for the brand's authentic angle/value-add rather than a logo-slap copy",
+        "translates the trend's structure into the brand's niche/POV",
+        "keeps the brand voice instead of a generic recreation"
+      ]
+    },
+    {
+      "name": "finding-trends-honest",
+      "input": "What's trending on TikTok right now that we should jump on?",
+      "expect": [
+        "is honest that live trend discovery needs current scanning and isn't something it can recall from memory",
+        "points to where to look (platform trend tabs/Creative Center, the FYP, Google Trends, X trending, niche creators, trend newsletters) or a real-time tool",
+        "offers to vet and execute any specific trend the user brings"
+      ]
+    },
+    {
+      "name": "reads-voice",
+      "input": "Make us a trend video for this format.",
+      "context": "voice.md bans exclamation marks and forced slang.",
+      "expect": [
+        "executes the trend in the brand voice, not generic trend-speak",
+        "avoids exclamation marks and forced slang per voice.md",
+        "keeps the brand's angle recognizable"
+      ]
+    },
+    {
+      "name": "go-viral-reframe",
+      "input": "We need to go viral. Jump on whatever's trending, doesn't matter what.",
+      "expect": [
+        "reframes that fit and safety come before chasing reach",
+        "explains trend-jacking complements evergreen content rather than replacing it (don't become a brand with no identity)",
+        "does not agree to ride any trend regardless of fit or safety"
+      ]
+    }
+  ]
+}

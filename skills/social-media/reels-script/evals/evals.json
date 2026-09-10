@@ -1,0 +1,94 @@
+{
+  "skill": "reels-script",
+  "version": "1.0.0",
+  "description": "Scenario tests for reels-script. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-reel",
+      "input": "Write an Instagram Reel about why our most-requested feature flopped.",
+      "expect": [
+        "reads brand-profile and voice first",
+        "hooks within the first ~3 seconds (verbal + on-screen text + visual), no slow intro",
+        "writes muted-first: the on-screen text carries the story without audio",
+        "structures for watch-through and sends (fast pacing, open loop, a loop/rewatch trigger, a concrete who-forwards-this answer)",
+        "outputs a production doc (shot - on-screen text - spoken - audio - timing) plus a cover-frame brief",
+        "places IG keywords in the first spoken seconds, on-screen text, and caption (via instagram-seo) and hands the caption to caption-writer",
+        "routes publishing to instagram-reels-publishing and scheduling to scheduling-and-queue"
+      ]
+    },
+    {
+      "name": "three-second-sound-off-hook",
+      "input": "Give me the opening for a Reel about saving money on SaaS.",
+      "expect": [
+        "the hook lands in the first ~3 seconds",
+        "combines a verbal hook with a bold on-screen text hook that works on mute",
+        "does NOT open with a logo, intro, or 'hey guys welcome back'"
+      ]
+    },
+    {
+      "name": "tiktok-reupload-pushback",
+      "input": "Just repost my TikToks to Reels, they already perform well there.",
+      "expect": [
+        "pushes back that watermarked reposts are throttled by the originality and watermark gates",
+        "recommends a clean, re-cut native version (and routes adaptation to cross-platform-repurposing)",
+        "does not endorse posting the watermarked file"
+      ]
+    },
+    {
+      "name": "watch-through-and-sends",
+      "input": "How do I get more reach on this Reel?",
+      "expect": [
+        "explains watch time (the first ~3 seconds) and sends-per-reach (DM shares) as the dominant discovery signals",
+        "notes sends are weighted roughly 3-5x more than likes for reaching new people",
+        "designs a loop or rewatch trigger and answers who would forward the Reel and why",
+        "removes retention killers (slow intro, dead air, sound-on-only hook)"
+      ]
+    },
+    {
+      "name": "trending-audio-native-limit",
+      "input": "Pick a trending song and attach it to the Reel when you schedule it.",
+      "expect": [
+        "explains Instagram's licensed audio library is native-only: the human adds the track in-app",
+        "does NOT claim WoopSocial can attach trending audio",
+        "still names an audio direction in the script (and routes live trend research to trend-jacking)",
+        "keeps the script working on mute regardless of the audio choice"
+      ]
+    },
+    {
+      "name": "reels-seo-keywords",
+      "input": "I want this Reel to show up when people search our topic on Instagram.",
+      "expect": [
+        "treats Instagram search as keyword-based (not hashtag-based)",
+        "places the target keyword in the first ~3 spoken seconds, the on-screen text, and the caption's first sentence",
+        "routes keyword research and the search-first caption to instagram-seo, with 3-5 topic hashtags rather than dozens"
+      ]
+    },
+    {
+      "name": "trial-reel-for-unproven-hook",
+      "input": "I'm not sure this hook will land with a cold audience. Should I just post it?",
+      "expect": [
+        "recommends a Trial Reel to test with non-followers first at no cost to follower-facing stats",
+        "does not guarantee virality or fabricate expected numbers"
+      ]
+    },
+    {
+      "name": "veo-pack-honest-caveat",
+      "input": "Generate this Reel with AI video instead of filming it.",
+      "expect": [
+        "provides a Veo prompt pack mapping beats to ~8-second 9:16 prompts with crop-safe, centered framing",
+        "flags that filming faces usually builds more trust, and recommends AI mainly for faceless niches, b-roll, or unfilmable shots",
+        "notes AI-disclosure on Instagram is native/manual per Meta's rules (not auto-disclosed like TikTok) and points to tools/integrations/veo.md"
+      ]
+    },
+    {
+      "name": "reads-voice-thin-input",
+      "input": "make a reel",
+      "context": "voice.md bans exclamation marks and 'hey guys'.",
+      "expect": [
+        "asks for or infers the one concept/goal rather than padding",
+        "stays on-voice (no exclamation marks, no 'hey guys')",
+        "does not invent fake claims or fabricated stats to fill the script"
+      ]
+    }
+  ]
+}

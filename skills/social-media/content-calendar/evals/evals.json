@@ -1,0 +1,84 @@
+{
+  "skill": "content-calendar",
+  "version": "1.0.0",
+  "description": "Scenario tests for content-calendar. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-calendar",
+      "input": "Help me build a content calendar for my SaaS across LinkedIn and TikTok.",
+      "expect": [
+        "reads social-strategy, content-pillars, and brand-profile first (or derives/flags if missing)",
+        "sets a sustainable cadence per platform matched to real capacity",
+        "builds a recurring skeleton (content buckets mapping pillars x formats to days/slots), not a one-off list",
+        "includes at least one named recurring series",
+        "anchors known dates and reserves room for reactive/trend content",
+        "sets a planning rhythm (batch, buffer, review)",
+        "hands a specific period to batch-content-plan and scheduling to scheduling-and-queue"
+      ]
+    },
+    {
+      "name": "capacity-pushback",
+      "input": "I want to post 5 times a day on 6 platforms. I'm a solo founder with no team.",
+      "expect": [
+        "pushes back that this is unsustainable solo and is the main reason calendars fail",
+        "right-sizes to a cadence the user can actually maintain",
+        "uses repurposing to cover more platforms without proportionally more work",
+        "frames a sustainable minimum as better than an ambitious plan that gets abandoned"
+      ]
+    },
+    {
+      "name": "recurring-skeleton-not-list",
+      "input": "Just give me 20 post ideas for next month.",
+      "expect": [
+        "recognizes that is a job for batch-content-plan, not a calendar",
+        "offers the recurring skeleton (buckets/slots by pillar x format x day) so the user is never staring at a blank page",
+        "routes the specific-period fill to batch-content-plan"
+      ]
+    },
+    {
+      "name": "reactive-room-too-rigid",
+      "input": "Plan and lock every single post for the next 90 days, no gaps.",
+      "expect": [
+        "reserves slots for reactive/timely/trend content rather than locking 100%",
+        "explains that a fully rigid calendar can't ride trends or news",
+        "proposes a planned-vs-reactive balance (e.g., a majority evergreen, a portion reactive)"
+      ]
+    },
+    {
+      "name": "platform-specific-cadence",
+      "input": "Should I post the same amount on every platform?",
+      "expect": [
+        "gives different sustainable cadences per platform rather than one number everywhere",
+        "treats cadence numbers as general 2026 norms to verify, not analytics",
+        "uses repurposing so multi-platform is sustainable"
+      ]
+    },
+    {
+      "name": "operating-rhythm",
+      "input": "I keep starting a posting schedule and abandoning it after two weeks.",
+      "expect": [
+        "addresses the workflow, not just the grid: a planning ritual, batch creation, and a buffer/queue",
+        "recommends a sustainable minimum cadence and a buffer so one bad week doesn't break the streak",
+        "includes a review-and-iterate step"
+      ]
+    },
+    {
+      "name": "no-analytics-claims",
+      "input": "Build the calendar around our best-performing times and content.",
+      "expect": [
+        "does not claim WoopSocial provides analytics or performance data",
+        "offers to incorporate native platform data the user pulls, or qualitative review",
+        "treats timing as general guidance, not data-driven optimization it can't back"
+      ]
+    },
+    {
+      "name": "reads-pillars-or-derives",
+      "input": "Make my calendar but I haven't done pillars yet.",
+      "expect": [
+        "flags that pillars anchor the calendar and routes to content-pillars (or derives lightweight provisional pillars)",
+        "does not invent a calendar disconnected from any strategy or themes",
+        "maps recurring slots to pillars once available"
+      ]
+    }
+  ]
+}

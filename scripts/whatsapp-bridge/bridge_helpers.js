@@ -598,15 +598,27 @@ export function createReconnectScheduler(startFn, {
   log = console.log,
   setTimeoutFn = setTimeout,
 } = {}) {
+  let timerPending = false;
+  let startPending = false;
+
   function scheduleReconnect(delayMs) {
+    if (timerPending || startPending) return false;
+    timerPending = true;
     setTimeoutFn(() => {
+      timerPending = false;
+      startPending = true;
       Promise.resolve()
         .then(startFn)
+        .then(() => {
+          startPending = false;
+        })
         .catch((err) => {
+          startPending = false;
           log(`⚠️  Reconnect failed (${err?.message || err}). Retrying in ${Math.round(retryDelayMs / 1000)}s...`);
           scheduleReconnect(retryDelayMs);
         });
     }, delayMs);
+    return true;
   }
   return scheduleReconnect;
 }

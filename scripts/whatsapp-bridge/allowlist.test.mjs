@@ -6,10 +6,28 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
   expandWhatsAppIdentifiers,
+  groupAllowlistFromEnv,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
+  parseAllowedGroups,
   parseAllowedUsers,
 } from './allowlist.js';
+
+test('parseAllowedGroups preserves canonical group JIDs', () => {
+  const groups = parseAllowedGroups('120363001@g.us, 120363002@g.us');
+  assert.deepEqual([...groups], ['120363001@g.us', '120363002@g.us']);
+});
+
+test('groupAllowlistFromEnv honors the gateway variable and compatibility alias', () => {
+  assert.deepEqual(
+    [...groupAllowlistFromEnv({ WHATSAPP_GROUP_ALLOWED_USERS: '120363001@g.us' })],
+    ['120363001@g.us'],
+  );
+  assert.deepEqual(
+    [...groupAllowlistFromEnv({ WHATSAPP_GROUP_ALLOW_FROM: '120363002@g.us' })],
+    ['120363002@g.us'],
+  );
+});
 
 test('normalizeWhatsAppIdentifier strips jid syntax and plus prefix', () => {
   assert.equal(normalizeWhatsAppIdentifier('+19175395595@s.whatsapp.net'), '19175395595');

@@ -18,6 +18,21 @@ export function parseAllowedUsers(rawValue) {
   );
 }
 
+export function parseAllowedGroups(rawValue) {
+  return new Set(
+    String(rawValue || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+}
+
+export function groupAllowlistFromEnv(env = {}) {
+  return parseAllowedGroups(
+    env.WHATSAPP_GROUP_ALLOWED_USERS || env.WHATSAPP_GROUP_ALLOW_FROM || ''
+  );
+}
+
 function readMappingFile(sessionDir, identifier, suffix = '') {
   const filePath = path.join(sessionDir, `lid-mapping-${identifier}${suffix}.json`);
   if (!existsSync(filePath)) {

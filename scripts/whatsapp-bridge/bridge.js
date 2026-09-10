@@ -30,7 +30,7 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { groupAllowlistFromEnv, matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -114,6 +114,9 @@ const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+// The Python gateway translates config.yaml group_allow_from to
+// WHATSAPP_GROUP_ALLOWED_USERS. GROUP_ALLOW_FROM remains a compatibility alias.
+const GROUP_ALLOWLIST = groupAllowlistFromEnv(process.env);
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -381,7 +384,7 @@ async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const version = await getWAVersion();
 
-  sock = makeWASocket({
+  const currentSock = makeWASocket({
     ...(version ? { version } : {}),
     auth: state,
     logger,
@@ -397,10 +400,13 @@ async function startSocket() {
       return { conversation: '' };
     },
   });
+  sock = currentSock;
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
   sock.ev.on('connection.update', (update) => {
+    // Ignore late events from a socket superseded by a reconnect attempt.
+    if (sock !== currentSock) return;
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
@@ -625,7 +631,7 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        if (!(isGroup && GROUP_ALLOWLIST.has(chatId)) && WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',

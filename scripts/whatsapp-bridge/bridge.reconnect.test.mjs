@@ -89,6 +89,27 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   assert.equal(timers.length, 2);
 }
 
+// Repeated close events must coalesce into one reconnect. Without this guard,
+// overlapping Baileys sockets evict one another in a 408/428 reconnect loop.
+{
+  const timers = [];
+  let attempts = 0;
+  const schedule = createReconnectScheduler(
+    async () => { attempts += 1; },
+    { setTimeoutFn: (fn, ms) => timers.push({ fn, ms }) },
+  );
+
+  assert.equal(schedule(3000), true);
+  assert.equal(schedule(3000), false);
+  assert.equal(schedule(3000), false);
+  assert.equal(timers.length, 1);
+
+  timers[0].fn();
+  await tick();
+  await tick();
+  assert.equal(attempts, 1);
+}
+
 // -- createVersionResolver ------------------------------------------------
 
 // A successful fetch returns and caches the version.

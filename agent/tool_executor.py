@@ -42,6 +42,7 @@ from agent.tool_dispatch_helpers import (
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
+    _peel_bridge_call,
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
@@ -199,9 +200,10 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
 _KANBAN_USAGE_TERMINALS = frozenset({"kanban_complete", "kanban_block"})
 
 
-def _kanban_session_usage(agent, tool_name: str) -> dict | None:
+def _kanban_session_usage(agent, tool_name: str, function_args: Optional[dict] = None) -> dict | None:
     """Exact numeric/route usage for a worker's terminal lifecycle call."""
-    if tool_name not in _KANBAN_USAGE_TERMINALS or not os.environ.get("HERMES_KANBAN_TASK"):
+    effective_name, _ = _peel_bridge_call(tool_name, function_args or {})
+    if effective_name not in _KANBAN_USAGE_TERMINALS or not os.environ.get("HERMES_KANBAN_TASK"):
         return None
     session_id = str(getattr(agent, "session_id", "") or "").strip()
     session = None
@@ -232,6 +234,7 @@ def _kanban_session_usage(agent, tool_name: str) -> dict | None:
         "turns": getattr(agent, "_user_turn_count", 0),
         "estimated_cost_usd": (getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
         + (auxiliary_usage.get("estimated_cost_usd") or 0.0),
+        "auxiliary_estimated_cost_usd": auxiliary_usage.get("estimated_cost_usd") or 0.0,
         "actual_cost_usd": session.get("actual_cost_usd"),
         "model": getattr(agent, "model", None) or session.get("model"),
         "provider": getattr(agent, "provider", None) or session.get("billing_provider"),
@@ -1590,7 +1593,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 tool_request_middleware_trace=list(middleware_trace),
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                session_usage=_kanban_session_usage(agent, function_name),
+                session_usage=_kanban_session_usage(agent, function_name, next_args),
             )
 
     return _SequentialDispatch(

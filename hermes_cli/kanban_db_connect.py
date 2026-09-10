@@ -837,6 +837,7 @@ _RUN_USAGE_COLUMNS = (
     ("api_call_count", "api_call_count INTEGER NOT NULL DEFAULT 0"),
     ("turns", "turns INTEGER NOT NULL DEFAULT 0"),
     ("estimated_cost_usd", "estimated_cost_usd REAL NOT NULL DEFAULT 0"),
+    ("auxiliary_estimated_cost_usd", "auxiliary_estimated_cost_usd REAL NOT NULL DEFAULT 0"),
     ("actual_cost_usd", "actual_cost_usd REAL"),
     ("model", "model TEXT"),
     ("provider", "provider TEXT"),
@@ -1031,7 +1032,8 @@ _REBUILD_SPECS = {
         " reasoning_tokens INTEGER NOT NULL DEFAULT 0,"
         " api_call_count INTEGER NOT NULL DEFAULT 0,"
         " turns INTEGER NOT NULL DEFAULT 0,"
-        " estimated_cost_usd REAL NOT NULL DEFAULT 0, actual_cost_usd REAL,"
+        " estimated_cost_usd REAL NOT NULL DEFAULT 0,"
+        " auxiliary_estimated_cost_usd REAL NOT NULL DEFAULT 0, actual_cost_usd REAL,"
         " model TEXT, provider TEXT, usage_recorded_at INTEGER)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",

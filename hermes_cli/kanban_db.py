@@ -782,6 +782,7 @@ class Run:
     api_call_count: int = 0
     turns: int = 0
     estimated_cost_usd: float = 0.0
+    auxiliary_estimated_cost_usd: float = 0.0
     actual_cost_usd: Optional[float] = None
     model: Optional[str] = None
     provider: Optional[str] = None
@@ -810,6 +811,7 @@ class Run:
             api_call_count=int(g("api_call_count") or 0),
             turns=int(g("turns") or 0),
             estimated_cost_usd=float(g("estimated_cost_usd") or 0.0),
+            auxiliary_estimated_cost_usd=float(g("auxiliary_estimated_cost_usd") or 0.0),
             actual_cost_usd=(float(g("actual_cost_usd")) if g("actual_cost_usd") is not None else None),
             model=g("model") or None,
             provider=g("provider") or None,
@@ -1031,6 +1033,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     api_call_count       INTEGER NOT NULL DEFAULT 0,
     turns                INTEGER NOT NULL DEFAULT 0,
     estimated_cost_usd   REAL NOT NULL DEFAULT 0,
+    auxiliary_estimated_cost_usd REAL NOT NULL DEFAULT 0,
     actual_cost_usd      REAL,
     model                TEXT,
     provider             TEXT,
@@ -1921,7 +1924,8 @@ def _end_run(
                worker_pid    = NULL,
                session_id = ?, input_tokens = ?, output_tokens = ?,
                cache_read_tokens = ?, cache_write_tokens = ?, reasoning_tokens = ?,
-               api_call_count = ?, turns = ?, estimated_cost_usd = ?, actual_cost_usd = ?,
+               api_call_count = ?, turns = ?, estimated_cost_usd = ?, auxiliary_estimated_cost_usd = ?,
+               actual_cost_usd = ?,
                model = ?, provider = ?, usage_recorded_at = ?
          WHERE id = ?
            AND ended_at IS NULL
@@ -1931,7 +1935,8 @@ def _end_run(
             run_usage["session_id"], run_usage["input_tokens"], run_usage["output_tokens"],
             run_usage["cache_read_tokens"], run_usage["cache_write_tokens"],
             run_usage["reasoning_tokens"], run_usage["api_call_count"], run_usage["turns"],
-            run_usage["estimated_cost_usd"], run_usage["actual_cost_usd"], run_usage["model"],
+            run_usage["estimated_cost_usd"], run_usage["auxiliary_estimated_cost_usd"],
+            run_usage["actual_cost_usd"], run_usage["model"],
             run_usage["provider"], run_usage["usage_recorded_at"], run_id,
         ),
     )

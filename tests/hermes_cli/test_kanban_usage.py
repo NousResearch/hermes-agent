@@ -41,6 +41,7 @@ def _usage(session_id: str, *, scale: int, actual_cost_usd=None):
         "api_call_count": scale,
         "turns": 1,
         "estimated_cost_usd": 0.1 * scale,
+        "auxiliary_estimated_cost_usd": 0.0,
         "actual_cost_usd": actual_cost_usd,
         "model": f"model-{scale}",
         "provider": "provider",
@@ -146,7 +147,7 @@ def test_model_tools_lifecycle_snapshot_includes_auxiliary_without_double_counti
         model="main-model",
         provider="main-provider",
     )
-    snapshot = _kanban_session_usage(agent, "kanban_complete")
+    snapshot = _kanban_session_usage(agent, "kanban_complete", {"summary": "done"})
     response = json.loads(model_tools.handle_function_call(
         "kanban_complete",
         {"summary": "done"},
@@ -166,6 +167,77 @@ def test_model_tools_lifecycle_snapshot_includes_auxiliary_without_double_counti
     assert run.output_tokens == (15 if auxiliary else 10)
     assert run.api_call_count == expected_calls
     assert run.estimated_cost_usd == pytest.approx(expected_cost)
+    assert run.auxiliary_estimated_cost_usd == pytest.approx(0.5 if auxiliary else 0.0)
     assert usage["input_tokens"] == expected_input
     assert usage["api_call_count"] == expected_calls
     assert usage["estimated_cost_usd"] == pytest.approx(expected_cost)
+
+
+@pytest.mark.parametrize("lifecycle", ["kanban_complete", "kanban_block"])
+def test_bridged_lifecycle_snapshot_keeps_worker_usage(worker_task, lifecycle, monkeypatch):
+    from agent.tool_executor import _kanban_session_usage
+    from tools import tool_search
+    import model_tools
+
+    monkeypatch.setattr(
+        tool_search,
+        "is_deferrable_tool_name",
+        lambda name, defer_tools=None: name == lifecycle,
+    )
+    lifecycle_args = (
+        {"summary": "done"}
+        if lifecycle == "kanban_complete"
+        else {"reason": "retry", "kind": "transient"}
+    )
+    bridge_args = {"name": lifecycle, "arguments": lifecycle_args}
+    agent = SimpleNamespace(
+        session_id="bridged-worker",
+        _session_db=None,
+        session_input_tokens=321,
+        session_output_tokens=45,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        session_reasoning_tokens=0,
+        session_api_calls=2,
+        session_estimated_cost_usd=0.25,
+        _user_turn_count=1,
+        model="main-model",
+        provider="main-provider",
+    )
+
+    snapshot = _kanban_session_usage(agent, "tool_call", bridge_args)
+    response = json.loads(model_tools.handle_function_call(
+        "tool_call",
+        bridge_args,
+        session_usage=snapshot,
+        skip_pre_tool_call_hook=True,
+        skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True,
+    ))
+    assert response["ok"] is True
+
+    with kbc.connect_closing() as conn:
+        run = kb.latest_run(conn, worker_task)
+    assert run.session_id == "bridged-worker"
+    assert run.input_tokens == 321
+    assert run.output_tokens == 45
+    assert run.api_call_count == 2
+
+
+def test_task_usage_combines_main_actual_with_auxiliary_estimate(worker_task):
+    usage = _usage("mixed-cost", scale=1, actual_cost_usd=0.8)
+    usage["estimated_cost_usd"] = 1.5
+    usage["auxiliary_estimated_cost_usd"] = 0.5
+    completed = json.loads(kt._handle_complete({"summary": "done"}, session_usage=usage))
+    assert completed["ok"] is True
+
+    with kbc.connect_closing() as conn:
+        run = kb.latest_run(conn, worker_task)
+        aggregate = task_usage(conn, worker_task)
+
+    assert run.estimated_cost_usd == pytest.approx(1.5)
+    assert run.actual_cost_usd == pytest.approx(0.8)
+    assert run.auxiliary_estimated_cost_usd == pytest.approx(0.5)
+    assert aggregate["estimated_cost_usd"] == pytest.approx(1.5)
+    assert aggregate["auxiliary_estimated_cost_usd"] == pytest.approx(0.5)
+    assert aggregate["cost_usd"] == pytest.approx(1.3)

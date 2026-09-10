@@ -15,9 +15,6 @@ _TOKEN_FIELDS = (
     "api_call_count",
     "turns",
 )
-_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
-
-
 def _nonnegative_int(value: Any) -> int:
     try:
         return max(0, int(value or 0))
@@ -41,6 +38,7 @@ def normalized_run_usage(usage: Optional[dict]) -> dict[str, Any]:
     return {
         **{field: _nonnegative_int(raw.get(field)) for field in _TOKEN_FIELDS},
         "estimated_cost_usd": _nonnegative_float(raw.get("estimated_cost_usd")),
+        "auxiliary_estimated_cost_usd": _nonnegative_float(raw.get("auxiliary_estimated_cost_usd")),
         "actual_cost_usd": _nonnegative_float(raw.get("actual_cost_usd"), nullable=True),
         "session_id": str(raw.get("session_id") or "").strip() or None,
         "model": str(raw.get("model") or "").strip() or None,
@@ -55,18 +53,26 @@ def normalized_run_usage(usage: Optional[dict]) -> dict[str, Any]:
 
 def task_usage(conn, task_id: str) -> dict[str, Any]:
     """Aggregate immutable closed-run snapshots, including profile segments."""
-    sum_columns = ", ".join(f"COALESCE(SUM({field}), 0) AS {field}" for field in (*_TOKEN_FIELDS, "estimated_cost_usd"))
-    actual = "COALESCE(SUM(CASE WHEN actual_cost_usd IS NOT NULL THEN actual_cost_usd ELSE estimated_cost_usd END), 0) AS cost_usd"
+    sum_columns = ", ".join(
+        f"COALESCE(SUM({field}), 0) AS {field}"
+        for field in (*_TOKEN_FIELDS, "estimated_cost_usd", "auxiliary_estimated_cost_usd")
+    )
+    preferred_cost = (
+        "COALESCE(SUM(CASE WHEN actual_cost_usd IS NOT NULL "
+        "THEN actual_cost_usd + auxiliary_estimated_cost_usd "
+        "ELSE estimated_cost_usd END), 0) AS cost_usd"
+    )
 
     def _summary(where: str, params: tuple[Any, ...]) -> dict[str, Any]:
         row = conn.execute(
-            f"SELECT COUNT(*) AS runs, {sum_columns}, {actual} FROM task_runs WHERE {where}",
+            f"SELECT COUNT(*) AS runs, {sum_columns}, {preferred_cost} FROM task_runs WHERE {where}",
             params,
         ).fetchone()
         return {
             "runs": int(row["runs"] or 0),
             **{field: int(row[field] or 0) for field in _TOKEN_FIELDS},
             "estimated_cost_usd": float(row["estimated_cost_usd"] or 0.0),
+            "auxiliary_estimated_cost_usd": float(row["auxiliary_estimated_cost_usd"] or 0.0),
             "cost_usd": float(row["cost_usd"] or 0.0),
         }
 

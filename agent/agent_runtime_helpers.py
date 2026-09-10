@@ -2291,7 +2291,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
             from agent.tool_executor import _kanban_session_usage
-            dispatch_kwargs["session_usage"] = _kanban_session_usage(agent, function_name)
+            dispatch_kwargs["session_usage"] = _kanban_session_usage(agent, function_name, next_args)
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools

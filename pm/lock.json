@@ -38,35 +38,6 @@
       },
       "version": "1208+145.0.7632.6"
     },
-    "chromium-headless-shell": {
-      "artifacts": {
-        "darwin-arm64": {
-          "sha256": "8510b9b1575538aa6a092ed16d981738b2ebf52c5e41ea4c54a7ce16756cdcf5",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/mac-arm64/chrome-headless-shell-mac-arm64.zip"
-        },
-        "darwin-x64": {
-          "sha256": "4316f7f98213a173e2356406203359cd4ab5b2b2db36cb219b9d99edec746819",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/mac-x64/chrome-headless-shell-mac-x64.zip"
-        },
-        "linux-arm64": {
-          "sha256": "6bdb4349429ec33e7c0267e0eaa039c2131fa0b3b2997dec0ec96b0d40f579fd",
-          "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1208/chromium-headless-shell-linux-arm64.zip"
-        },
-        "linux-x64": {
-          "sha256": "2536e97d8f410df0394b3e7c4252e88ce9f239f04f3af4e247a26caf45baf49e",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/linux64/chrome-headless-shell-linux64.zip"
-        },
-        "win32-arm64": {
-          "sha256": "839500db9e1b0865961ce8b05134ba3d3d71b82be5dec236d6c87ecd93e082cd",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-headless-shell-win64.zip"
-        },
-        "win32-x64": {
-          "sha256": "839500db9e1b0865961ce8b05134ba3d3d71b82be5dec236d6c87ecd93e082cd",
-          "url": "https://cdn.playwright.dev/builds/cft/145.0.7632.6/win64/chrome-headless-shell-win64.zip"
-        }
-      },
-      "version": "1208+145.0.7632.6"
-    },
     "cua-driver": {
       "artifacts": {
         "darwin-arm64": {

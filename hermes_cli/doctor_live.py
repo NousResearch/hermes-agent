@@ -10,6 +10,7 @@ import os
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
+from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info
 from hermes_cli.doctor_report import check_fail, check_ok, check_warn
 
@@ -89,7 +90,10 @@ def _launch_browser_probe(timeout: float) -> tuple:
     except ImportError:
         return (False, "playwright not installed")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, timeout=timeout * 1000)
+        browser = p.chromium.launch(
+            channel="chromium", executable_path=chromium_executable(),
+            headless=True, timeout=timeout * 1000,
+        )
         try:
             browser.new_page().goto("about:blank", timeout=timeout * 1000)
         finally:

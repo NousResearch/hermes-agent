@@ -158,21 +158,24 @@ test('the emulated x64 agent-browser exe is exempt in a win32-arm64 payload', ()
   assert.equal(isExemptPath('resources/agent-payload/tools/something-1.0-win32-arm64/bin/thing.exe'), false)
 })
 
-test('the emulated x64 chromium trees are exempt in a win32-arm64 payload', () => {
-  // PlaywrightBrowser._CFT maps win32-arm64 to the CfT win64 (x64) build;
-  // store entries are named by playwright revision (dashes→underscores)
-  // and the zip extracts in place, so the x64 trees sit under
-  // chrome-win64 / chrome-headless-shell-win64 inside the entry.
+test('only the emulated full Chromium win64 tree is exempt', () => {
+  // CfT has no native win-arm64 build. The x64 zip extracts into
+  // chrome-win64 inside the revision-named Chromium store entry.
   for (const relPath of [
     'resources/agent-payload/tools/chromium-1208/chrome-win64/chrome.exe',
-    'resources\\agent-payload\\tools\\chromium-1208\\chrome-win64\\chrome.dll',
-    'resources/agent-payload/tools/chromium_headless_shell-1208/chrome-headless-shell-win64/chrome-headless-shell.exe'
+    'resources\\agent-payload\\tools\\chromium-1208\\chrome-win64\\chrome.dll'
   ]) {
     assert.equal(isExemptPath(relPath), true, relPath)
   }
-  // The linux/darwin chromium trees stay audited: no -win64 segment.
-  assert.equal(isExemptPath('resources/agent-payload/tools/chromium-1208/chrome-linux/chrome'), false)
-  assert.equal(isExemptPath('resources/agent-payload/tools/chromium-1208/chrome-mac-arm64/chrome'), false)
+  // Other platforms and obsolete shell payloads have no exemption.
+  for (const relPath of [
+    'resources/agent-payload/tools/chromium-1208/chrome-linux/chrome',
+    'resources/agent-payload/tools/chromium-1208/chrome-mac-arm64/chrome',
+    'resources/agent-payload/tools/chromium_headless_shell-1208/chrome-headless-shell-win64/chrome-headless-shell.exe',
+    'resources/agent-payload/tools/chromium-1208/chrome-headless-shell-win64/chrome-headless-shell.exe'
+  ]) {
+    assert.equal(isExemptPath(relPath), false, relPath)
+  }
 })
 
 test('the uv wheel/build cache is exempt in the payload', () => {

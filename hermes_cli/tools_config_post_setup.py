@@ -67,25 +67,48 @@ def _post_setup_lightpanda() -> None:
             _print_info("    Lightpanda has no native Windows build; run Hermes under WSL2.")
 
 
-def _install_chromium(install_cmd: list[str]) -> None:
-    """Run the agent-browser Chromium install command and report the outcome."""
-    _print_info("    Installing Chromium (~170MB one-time download)...")
+def _install_chromium() -> None:
+    """Install the managed full Chromium package, without a second headless shell."""
+    _print_info("    Installing pinned Chromium...")
     try:
-        result = _run_text(install_cmd, cwd=str(PROJECT_ROOT), timeout=600, creationflags=_post_setup_no_window_flags())
-        if result.returncode == 0:
-            _print_success("    Chromium installed")
-            # Invalidate the cached "missing" flag so later check_browser_requirements() calls see the install.
-            import tools.browser_tool as _bt
-            _bt._cached_chromium_installed = None
-            return
-        _print_warning("    Chromium install failed:")
-        for line in (result.stderr or result.stdout or "").strip().splitlines()[-3:]:
-            _print_info(f"      {line[:200]}")
-    except subprocess.TimeoutExpired:
-        _print_warning("    Chromium install timed out (>10min)")
+        import pm
+        pm.ensure("chromium", explicit=True)
+        _print_success("    Chromium installed")
+        # Invalidate the cached "missing" flag so later check_browser_requirements() calls see the install.
+        import tools.browser_tool as _bt
+        _bt._cached_chromium_installed = None
     except Exception as exc:
         _print_warning(f"    Chromium install failed: {exc}")
-    _print_info("    Run manually: npx agent-browser install --with-deps")
+        _print_info("    Run manually: hermes pm install chromium")
+        return
+
+    # Preserve --with-deps on apt-based Linux without invoking a browser downloader.
+    if sys.platform != "linux" or not shutil.which("apt-get"):
+        return
+    try:
+        from tools.browser_tool_install import _resolve_npx_bin
+        npx_bin = _resolve_npx_bin()
+        if not npx_bin:
+            _print_warning("    npx not found - Chromium system dependencies were not installed")
+        else:
+            from tools.browser_tool import _build_browser_env
+
+            env = _build_browser_env()
+            env["PATH"] = f"{Path(npx_bin).parent}{os.pathsep}{env.get('PATH', '')}"
+            _print_info("    Installing Chromium system dependencies...")
+            result = _run_text(
+                [npx_bin, "--ignore-scripts", "-y", "playwright@1.62.1", "install-deps", "chromium"],
+                cwd=str(PROJECT_ROOT), timeout=600,
+                env=env,
+                creationflags=_post_setup_no_window_flags())
+            if result.returncode == 0:
+                return
+            _print_warning("    Chromium system dependency install failed:")
+            for line in (result.stderr or result.stdout or "").strip().splitlines()[-3:]:
+                _print_info(f"      {line[:200]}")
+    except Exception as exc:
+        _print_warning(f"    Chromium system dependency install failed: {exc}")
+    _print_info("    Run manually: npx playwright install-deps chromium")
 
 
 def _post_setup_agent_browser(post_setup_key: str) -> None:
@@ -108,10 +131,8 @@ def _post_setup_agent_browser(post_setup_key: str) -> None:
         # agent-browser is no longer a root package.json dependency (#43564) — it resolves lazily via npx
         # (or a global/Hermes-managed install) instead of a local `npm install`, so there's no node_modules/
         # population step here anymore.
-        from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
         from tools.browser_tool_install import (
-            _chromium_installed, _running_in_docker, _find_agent_browser, _resolve_npx_bin,
-            _is_npx_agent_browser_sentinel)
+            _chromium_installed, _running_in_docker, _find_agent_browser)
     except Exception as exc:  # pragma: no cover — defensive
         _print_warning(f"    Could not check Chromium status: {exc}")
         return
@@ -119,7 +140,7 @@ def _post_setup_agent_browser(post_setup_key: str) -> None:
     # Reuse the runtime resolution cascade (PATH -> Homebrew/Hermes-managed node -> npx) rather than
     # a bare shutil.which — Hermes-managed-Node-only setups resolve agent-browser/npx only that way.
     try:
-        browser_cmd = _find_agent_browser(validate=False)
+        _find_agent_browser(validate=False)
     except FileNotFoundError:
         _print_warning("    npx not found - browser tools require Node.js: https://nodejs.org")
         return
@@ -140,17 +161,7 @@ def _post_setup_agent_browser(post_setup_key: str) -> None:
                     "  docker pull ghcr.io/nousresearch/hermes-agent:latest")
         return
 
-    if _is_npx_agent_browser_sentinel(browser_cmd):
-        # Re-resolve npx via the same cascade _find_agent_browser used — a bare shutil.which("npx")
-        # would silently diverge and hand subprocess.run a None argument.
-        npx_bin = _resolve_npx_bin()
-        if not npx_bin:
-            _print_warning("    npx not found - install Chromium manually: npx agent-browser install --with-deps")
-            return
-        install_cmd = [npx_bin, "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps"]
-    else:
-        install_cmd = [browser_cmd, "install", "--with-deps"]
-    _install_chromium(install_cmd)
+    _install_chromium()
 
 
 def _post_setup_camofox() -> None:

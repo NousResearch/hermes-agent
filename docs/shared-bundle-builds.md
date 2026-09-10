@@ -79,6 +79,18 @@ Docker has its own curated extras and image lifecycle. Nix uses uv2nix and
 separate derivations. [Stable release admission](stable-releases.md) coordinates
 their acceptance and publication with desktop and Termux packages.
 
+PM and Docker ship full Chromium, without a separate headless shell. The same
+executable serves headed and headless sessions. Browser launchers use the
+selected PM executable; direct Playwright callers select the `chromium` channel.
+Native staging removes retired package facts and directories from its build
+cache. It does not remove browser files from the user's machine-wide store.
+
+PM retains completed download archives until the package is verified and
+published. Normal installs commit package facts before deleting their archives.
+Cross-target staging verifies the published entry before deleting its archives.
+Failed or paused installs keep downloads for retry. Cleanup leaves unrelated
+archives and resumable partials alone. A later repair may download again.
+
 ## Verification boundary
 
 Tests execute shared snapshot/manifest helpers on real git fixtures, stage

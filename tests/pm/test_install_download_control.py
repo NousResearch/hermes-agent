@@ -6,6 +6,7 @@ import hashlib
 import io
 import threading
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +28,12 @@ def archive(files: dict[str, bytes]) -> bytes:
         for name, body in files.items():
             stream.writestr(name, body)
     return output.getvalue()
+
+
+@pytest.fixture(autouse=True)
+def isolate_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
 
 def test_install_pause_preserves_archives_and_resumes_the_same_pin(tmp_path, monkeypatch, dl_server):
@@ -68,6 +75,7 @@ def test_install_pause_preserves_archives_and_resumes_the_same_pin(tmp_path, mon
         assert (root / fact["entry"] / name).read_bytes() == body
     assert [request for request in RangeHandler.ranges_seen if request[0] == "/component-0.zip"] == first_requests
     assert not list(paths.partials_root().glob("*.part"))
+    assert not list(root.glob("fetch-*"))
 
 
 def test_install_progress_covers_all_archives_including_cache(tmp_path, monkeypatch, dl_server):

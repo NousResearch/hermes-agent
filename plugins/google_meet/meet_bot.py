@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
+from hermes_cli.browser_runtime import chromium_executable
 from plugins.google_meet._jsonfile import write_json_atomic
 
 # Short three-segment code, a lookup URL, or /new. Anything else is rejected.
@@ -409,7 +410,7 @@ def run_bot() -> int:
     except ImportError as e:
         state.set(error=f"playwright not installed: {e}", exited=True)
         sys.stderr.write("google_meet bot: playwright is not installed. Run "
-                         "`pip install playwright && python -m playwright install chromium`\n")
+                         "`pip install playwright && python -m playwright install chromium --no-shell`\n")
         if rt["bridge"]:
             rt["bridge"].teardown()
         return 3
@@ -424,7 +425,10 @@ def run_bot() -> int:
         context_args["storage_state"] = cfg.auth_state
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=not cfg.headed, args=chrome_args)
+            browser = pw.chromium.launch(
+                channel="chromium", executable_path=chromium_executable(),
+                headless=not cfg.headed, args=chrome_args,
+            )
             context = browser.new_context(**context_args)
             page = context.new_page()
             try:

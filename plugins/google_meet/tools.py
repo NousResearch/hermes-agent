@@ -146,7 +146,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
             return {"ok": False, "error": (
                 "google_meet plugin prerequisites missing — install with "
                 "`pip install playwright && python -m playwright install "
-                "chromium`. Plugin is supported on Linux and macOS only.")}
+                "chromium --no-shell`. Plugin is supported on Linux and macOS only.")}
         return pm.start(**common)
 
     return _dispatch(args.get("node"), "start_bot", lambda c: c.start_bot(**common), _local)

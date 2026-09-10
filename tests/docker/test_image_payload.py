@@ -13,6 +13,7 @@ from pm.registry import get_package
 from pm.store import current_target
 
 store = Path('/opt/hermes/tools')
+assert not list(store.glob('fetch-*')), 'completed download archives must not ship'
 fact = Facts(store / 'facts.json').get('python')
 expected = get_package('python').binary(store / fact['entry'], current_target())
 assert Path(sys._base_executable).resolve() == expected.resolve()

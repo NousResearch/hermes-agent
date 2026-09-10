@@ -181,6 +181,12 @@ def _remove_entry(store: Store, entry_name: str) -> None:
             time.sleep(0.2 * (attempt + 1))
 
 
+def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
+    """Release this package's archives after publication, under its store lock."""
+    for artifact in artifacts:
+        _remove_entry(store, f"fetch-{artifact['sha256']}")
+
+
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
     """Explicit installs re-check realized bytes; startup keeps its cheap facts check."""
     entry = store.entry(fact["entry"])
@@ -250,6 +256,7 @@ def _install(
         if facts.installed(
             package.name, version, store.root, _identity(lockfile, package.name, target)
         ) and _entry_verified(package, facts.get(package.name), store, target):
+            _remove_downloads(store, artifacts)
             return
         if not artifacts:
             raise InstallError(
@@ -322,6 +329,7 @@ def _install(
                     raise
                 if previous_entry.exists():
                     _remove_entry(store, previous_entry.name)
+                _remove_downloads(store, artifacts)
             except (InstallError, DownloadPaused):
                 raise
             except Exception as e:
@@ -381,6 +389,7 @@ def stage_only(name: str, target: str, progress=None) -> "Path":
             except OSError:
                 recorded = None
             if not package.verify(entry, target) and recorded == pin:
+                _remove_downloads(store, artifacts)
                 return entry
         if not artifacts:
             raise InstallError(
@@ -420,6 +429,7 @@ def stage_only(name: str, target: str, progress=None) -> "Path":
                 raise
             if previous_entry.exists():
                 _remove_entry(store, previous_entry.name)
+            _remove_downloads(store, artifacts)
     return store.entry(entry_name)
 
 

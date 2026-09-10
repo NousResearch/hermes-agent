@@ -850,7 +850,7 @@ class CuaDriver(BinaryPackage):
 class AgentBrowser(BinaryPackage):
     name = "agent-browser"
     optional = True
-    deps = ("chromium", "chromium-headless-shell")
+    deps = ("chromium",)
     flatten = True
     probe_version = False
     url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
@@ -890,7 +890,8 @@ class AgentBrowser(BinaryPackage):
                 item.unlink()
 
 
-class PlaywrightBrowser(Package):
+@register
+class Chromium(Package):
     """Playwright resolves browsers by DIRECTORY NAME under one root:
     `<name with '-'→'_'>-<revision>`, no target suffix. The env points
     PLAYWRIGHT_BROWSERS_PATH at the store root itself. The entry carries
@@ -902,8 +903,10 @@ class PlaywrightBrowser(Package):
     mirror by revision. The store entry is named by revision only, which
     is all playwright's resolver reads."""
 
+    name = "chromium"
     optional = True
     on_path = False
+    emulated_arch_targets = frozenset({"win32-arm64"})
     _CDN = "https://cdn.playwright.dev"
 
     # Chrome-for-Testing platform names; targets absent here fall back to
@@ -919,8 +922,6 @@ class PlaywrightBrowser(Package):
         "win32-arm64": "win64",
     }
     _MIRROR = {"linux-arm64": "linux-arm64"}
-    _FILE = ""  # "chrome" / "chrome-headless-shell"
-    _MIRROR_FILE = ""  # "chromium" / "chromium-headless-shell"
 
     def store_entry(self, version: str, target: str) -> str:
         revision = version.partition("+")[0]
@@ -930,38 +931,39 @@ class PlaywrightBrowser(Package):
         revision, _, chrome = version.partition("+")
         plat = self._CFT.get(target)
         if plat and chrome:
-            return f"{self._CDN}/builds/cft/{chrome}/{plat}/{self._FILE}-{plat}.zip"
+            return f"{self._CDN}/builds/cft/{chrome}/{plat}/chrome-{plat}.zip"
         mirror_plat = self._MIRROR[target]
         return (
             f"{self._CDN}/dbazure/download/playwright/builds/chromium/"
-            f"{revision}/{self._MIRROR_FILE}-{mirror_plat}.zip"
+            f"{revision}/chromium-{mirror_plat}.zip"
         )
+
+    def binary(self, entry: Path, target: str) -> Optional[Path]:
+        # CfT and Playwright's ARM Linux archive use different enclosing
+        # directories. Resolve the executable within the selected entry.
+        names = {"chrome.exe"} if target.startswith("win32") else {"chrome", "chromium", "Google Chrome for Testing", "Chromium"}
+        return next((p for p in sorted(entry.rglob("*")) if p.name in names and p.is_file()), None)
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         (staged / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
 
     def verify(self, entry: Path, target: str) -> str:
         marker = entry / "INSTALLATION_COMPLETE"
-        if marker.is_file():
-            return ""
-        return f"INSTALLATION_COMPLETE missing under {entry}; {_entry_listing(entry)}"
+        if not marker.is_file():
+            return f"INSTALLATION_COMPLETE missing under {entry}; {_entry_listing(entry)}"
+        binary = self.binary(entry, target)
+        if binary is None:
+            return f"Chromium executable missing under {entry}"
+        return self._binary_reason(binary, entry, target)
 
     def env(self, entry: Path, target: str) -> dict:
-        return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
-
-
-@register
-class Chromium(PlaywrightBrowser):
-    name = "chromium"
-    _FILE = "chrome"
-    _MIRROR_FILE = "chromium"
-
-
-@register
-class ChromiumHeadlessShell(PlaywrightBrowser):
-    name = "chromium-headless-shell"
-    _FILE = "chrome-headless-shell"
-    _MIRROR_FILE = "chromium-headless-shell"
+        binary = self.binary(entry, target)
+        if binary is None:
+            raise InstallError(self.name, f"Chromium executable missing under {entry}")
+        return {
+            "PLAYWRIGHT_BROWSERS_PATH": str(entry.parent),
+            "AGENT_BROWSER_EXECUTABLE_PATH": str(binary),
+        }
 
 
 class LlamaCpp(BinaryPackage):

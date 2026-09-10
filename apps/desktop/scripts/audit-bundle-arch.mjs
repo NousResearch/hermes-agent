@@ -203,15 +203,11 @@ const EXEMPT_PATTERNS = [
   // payload stages the x64 exe, which Windows runs under built-in
   // emulation (its own postinstall falls back to x64 on arm64).
   /agent-payload[/\\]tools[/\\]agent-browser-[^/\\]+[/\\]bin[/\\]agent-browser-win32-x64\.exe$/i,
-  // chromium / chromium-headless-shell are pm packages too: CfT publishes
-  // no native win-arm64 build, so on win32-arm64 the payload stages the
-  // win64 (x64) build and Windows runs it under emulation — the same
-  // choice the package code makes (PlaywrightBrowser._CFT maps win32-arm64
-  // to win64). Store entries are named by playwright revision only
-  // (chromium-<rev>, chromium_headless_shell-<rev>, dashes→underscores);
-  // the zips extract in place, so the x64 trees carry a -win64 segment.
-  // Scoping to that segment keeps linux/darwin chromium audited.
-  /agent-payload[/\\]tools[/\\]chromium(_headless_shell)?-[^/\\]+[/\\](chrome|chrome-headless-shell)-win64[/\\]/i,
+  // CfT publishes no native win-arm64 Chromium, so PM stages the win64
+  // (x64) build and Windows runs it under emulation. The zip extracts
+  // into chrome-win64 inside the chromium-<rev> store entry. Scoping to
+  // that segment keeps linux/darwin Chromium audited.
+  /agent-payload[/\\]tools[/\\]chromium-[^/\\]+[/\\]chrome-win64[/\\]/i,
   // The uv wheel/build cache (uv-cache/) is DELIBERATELY shipped with the
   // payload for warm rebuilds of the mutable venv (pm bundle copies it).
   // It holds cached sdists/archives that uv may have built for ANY arch

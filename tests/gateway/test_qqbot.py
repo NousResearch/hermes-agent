@@ -440,6 +440,45 @@ class TestWaitForReconnection:
 
 
 # ---------------------------------------------------------------------------
+# send pipeline
+# ---------------------------------------------------------------------------
+
+class TestSendPipeline:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @pytest.mark.asyncio
+    async def test_formats_splits_and_replies_only_to_first_chunk(self):
+        from gateway.platforms.base import SendResult
+
+        adapter = self._make_adapter(markdown_support=False)
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter.format_message = mock.Mock(return_value="formatted content")
+        adapter.truncate_message = mock.Mock(return_value=["chunk 1", "chunk 2"])
+        calls = []
+
+        async def fake_send_chunk(chat_id, content, reply_to=None):
+            calls.append((chat_id, content, reply_to))
+            return SendResult(success=True, message_id=content)
+
+        adapter._send_chunk = fake_send_chunk
+
+        result = await adapter.send("user-1", "raw **content**", reply_to="inbound-1")
+
+        assert result.success
+        adapter.format_message.assert_called_once_with("raw **content**")
+        adapter.truncate_message.assert_called_once_with(
+            "formatted content", adapter.MAX_MESSAGE_LENGTH
+        )
+        assert calls == [
+            ("user-1", "chunk 1", "inbound-1"),
+            ("user-1", "chunk 2", None),
+        ]
+
+
+# ---------------------------------------------------------------------------
 # Regression for #78183: httpx timeout empty-string defeats _is_timeout_error
 # ---------------------------------------------------------------------------
 
@@ -1270,4 +1309,3 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = SimpleNamespace(closed=True)
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
-

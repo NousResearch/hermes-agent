@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { flushSync } from 'react-dom'
 
 import {
   initQuickEntryBridge,
@@ -65,7 +66,10 @@ export function useQuickEntryBridge({ startFreshSessionDraft, submitText }: Quic
       if (target === QUICK_TARGET_NEW) {
         // Same as the user clicking New Chat and typing: fresh draft, then the
         // normal submit creates the backend session.
-        startFreshRef.current()
+        // IPC delivers both actions in one task. Commit the fresh route before
+        // submit snapshots the route refs, or our own navigation looks like a
+        // user switch and the session-context drift guard aborts the first send.
+        flushSync(() => startFreshRef.current())
         void submitTextRef.current(text)
 
         return

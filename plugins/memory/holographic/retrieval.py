@@ -72,6 +72,7 @@ class FactRetriever:
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts
+        self._record_retrieval(results)
         return results
 
     def _vector_query(self, fallback: str, category: str | None, limit: int, sim_fn: Callable) -> list[dict]:
@@ -164,7 +165,32 @@ class FactRetriever:
         scored = [dict(row) for row in rows]
         for fact in scored:
             fact["score"] = _shift(sim_fn(fact, self._phases(fact.pop("hrr_vector")))) * fact["trust_score"]
-        return sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
+        results = sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
+        self._record_retrieval(results)
+        return results
+
+    def _record_retrieval(self, results: list[dict]) -> None:
+        """Mark returned facts as retrieved. Every recall path funnels through here.
+
+        Only the facts actually RETURNED are counted, not the wider candidate pool, so
+        the counter measures what the model saw. The returned dicts are updated in place
+        to match the row that was just written — a caller must never be handed a
+        retrieval_count that the store has already moved past. Best-effort by contract:
+        retrieval bookkeeping must never turn a successful read into an exception.
+        """
+        if not results:
+            return
+        counted = [f for f in results if f.get("fact_id") is not None]
+        if not counted:
+            return
+        try:
+            updated = self.store.record_retrieval([f["fact_id"] for f in counted])
+        except Exception:  # pragma: no cover - defensive; store method is already guarded
+            return
+        if updated == len(counted):  # only mirror a write we know landed in full
+            for fact in counted:
+                if isinstance(fact.get("retrieval_count"), int):
+                    fact["retrieval_count"] += 1
 
     def _fts_candidates(self, query: str, category: str | None, min_trust: float, limit: int) -> list[dict]:
         """Raw FTS5 MATCH candidates with rank normalized to [0, 1] as 'fts_rank'."""

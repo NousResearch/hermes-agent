@@ -53,7 +53,12 @@ CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
         VALUES ('delete', old.fact_id, old.content, old.tags);
 END;
 
-CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+-- Guarded with WHEN so counter-only updates (retrieval_count, helpful_count,
+-- trust_score) do not delete+reinsert the FTS5 row. Recording a retrieval
+-- touches every returned fact on every recall; without the guard that would
+-- rewrite the full-text index on the hot read path for no indexable change.
+CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts
+WHEN old.content IS NOT new.content OR old.tags IS NOT new.tags BEGIN
     INSERT INTO facts_fts(facts_fts, rowid, content, tags)
         VALUES ('delete', old.fact_id, old.content, old.tags);
     INSERT INTO facts_fts(rowid, content, tags)
@@ -127,6 +132,13 @@ class MemoryStore:
         """Create schema, enable WAL via the shared fallback helper (NFS/SMB/FUSE degrade gracefully), add hrr_vector to pre-HRR DBs."""
         from hermes_state_wal import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
+        # Migration: the original facts_au trigger was unguarded, so any UPDATE
+        # (including counter-only writes) rebuilt the FTS5 row. CREATE TRIGGER
+        # IF NOT EXISTS will not replace it, so drop the old definition first
+        # and let the schema script recreate the WHEN-guarded version.
+        row = self._one("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'facts_au'")
+        if row is not None and row["sql"] and "WHEN" not in row["sql"].upper():
+            self._conn.execute("DROP TRIGGER facts_au")
         self._conn.executescript(_SCHEMA)
         if "hrr_vector" not in {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
@@ -211,6 +223,31 @@ class MemoryStore:
             self._write("UPDATE facts SET trust_score = ?, helpful_count = helpful_count + ?, "
                         "updated_at = CURRENT_TIMESTAMP WHERE fact_id = ?", (new_trust, increment, fact_id))
             return {"fact_id": fact_id, "old_trust": old_trust, "new_trust": new_trust, "helpful_count": row["helpful_count"] + increment}
+
+    def record_retrieval(self, fact_ids: "list[int] | tuple[int, ...]") -> int:
+        """Increment retrieval_count for facts that were actually surfaced to the model.
+
+        Called by every FactRetriever recall path (search/probe/related/reason), so
+        retrieval_count answers "which facts does this agent actually use" — the usage
+        signal that trust decay and the consolidation pass depend on. Deliberately does
+        NOT touch updated_at: retrieval is a read, and bumping updated_at would reset
+        the temporal-decay clock so that merely finding a fact made it look fresh.
+
+        Best-effort: a failure here must never break a read. Returns rows updated.
+        """
+        ids = [int(fid) for fid in fact_ids if fid is not None]
+        if not ids:
+            return 0
+        with self._lock:
+            try:
+                placeholders = ",".join("?" * len(ids))
+                cur = self._write(
+                    f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                    ids,
+                )
+                return cur.rowcount or 0
+            except sqlite3.Error:
+                return 0
 
     def _extract_entities(self, text: str) -> list[str]:
         """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order."""

@@ -125,6 +125,16 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+      - name: Run NL search evaluation gate
+        run: |
+          source .venv/bin/activate
+          # "all" resolves against the packs actually present in this branch:
+          # core validates default, Latin validates default+Latin, and the
+          # final stacked branch validates the full registry.
+          python scripts/nl_search_eval.py --packs all \
+            --min-nl-recall 0.95 --min-nl-precision 0.80 \
+            --min-absent-accuracy 1.00
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15

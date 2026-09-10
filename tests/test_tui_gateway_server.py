@@ -896,9 +896,11 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
     monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
     monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
-    # CI runs this huge file serially under load; a prior session's _build can
-    # still be finishing (session.info emit) when the next test starts, so a
-    # 2s Event wait flakes. Unique sid + longer bound; still fail closed.
+    # This huge file runs serially under CI load, so any *duration* bound here
+    # is a stopwatch on the runner, not on the behavior. The facts under test
+    # are ordering facts — the build thread ran, it called _make_agent, it set
+    # agent_ready, and MCP discovery resolved the PROFILE home — so join the
+    # build thread and assert those directly.
     monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
@@ -914,8 +916,20 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
     server._sessions[sid] = session
     try:
         server._start_agent_build(sid, session)
-        assert built.wait(timeout=15), "agent build thread never called _make_agent"
-        assert ready.wait(timeout=5), "agent_ready never set after build"
+        build_thread = session.get("_agent_build_thread")
+        assert build_thread is not None, "_start_agent_build published no thread"
+        # Finite only as a hang guard (orders of magnitude above the ~0.2s
+        # real build), not as a timing assertion: this waits for the thread to
+        # FINISH, so no assertion below can fire merely because it was slow.
+        build_thread.join(timeout=120)
+        assert not build_thread.is_alive(), "agent build thread never finished"
+        assert built.is_set(), "agent build thread never called _make_agent"
+        # _build sets agent_ready on EVERY exit path (its finally), so an unset
+        # event after the thread is dead means the build died hard.
+        assert ready.is_set(), "agent_ready never set after the build thread exited"
+        assert not session.get("agent_error"), (
+            f"agent build failed: {session.get('agent_error')}"
+        )
     finally:
         server._sessions.pop(sid, None)
 
@@ -959,8 +973,9 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
     monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
-    # Same CI flake class as the MCP profile-home test: bound wait + less work
-    # on the build thread (no poller / late MCP refresh / session.info emit).
+    # Same conversion as the MCP profile-home test above: join the build
+    # thread and assert the ordering facts, so a slow-but-correct build on a
+    # loaded runner cannot fail this test.
     monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
@@ -976,8 +991,20 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
     server._sessions[sid] = session
     try:
         server._start_agent_build(sid, session)
-        assert built.wait(timeout=15), "agent build thread never called _make_agent"
-        assert ready.wait(timeout=5), "agent_ready never set after build"
+        build_thread = session.get("_agent_build_thread")
+        assert build_thread is not None, "_start_agent_build published no thread"
+        # Finite only as a hang guard (orders of magnitude above the ~0.2s
+        # real build), not as a timing assertion: this waits for the thread to
+        # FINISH, so no assertion below can fire merely because it was slow.
+        build_thread.join(timeout=120)
+        assert not build_thread.is_alive(), "agent build thread never finished"
+        assert built.is_set(), "agent build thread never called _make_agent"
+        # _build sets agent_ready on EVERY exit path (its finally), so an unset
+        # event after the thread is dead means the build died hard.
+        assert ready.is_set(), "agent_ready never set after the build thread exited"
+        assert not session.get("agent_error"), (
+            f"agent build failed: {session.get('agent_error')}"
+        )
     finally:
         server._sessions.pop(sid, None)
 

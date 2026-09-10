@@ -16,6 +16,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  fmtDateTime,
   GlyphSpinner,
   host,
   Input,
@@ -328,7 +329,7 @@ function scheduleLabel(schedule: string | undefined): string {
 function routineTimestamp(value: string | undefined): null | string {
   const ms = value ? new Date(value).getTime() : Number.NaN
 
-  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString()}` : null
+  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${fmtDateTime.format(new Date(ms))}` : null
 }
 
 /** The scheduler's `last_status` literals, spelled out for the inspector. The

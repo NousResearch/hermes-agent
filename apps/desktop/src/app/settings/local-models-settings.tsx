@@ -39,6 +39,7 @@ import {
   Trash2,
   Zap
 } from '@/lib/icons'
+import { formatNumber } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import {
   $localRuntimeJobs,
@@ -1014,9 +1015,9 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
               }
               description={
                 <span>
-                  {Intl.NumberFormat().format(hit.downloads)} {copy.browseDownloads}
+                  {formatNumber(hit.downloads)} {copy.browseDownloads}
                   {' · '}
-                  {Intl.NumberFormat().format(hit.likes)} {copy.browseLikes}
+                  {formatNumber(hit.likes)} {copy.browseLikes}
                   {hit.gated ? ` · ${copy.browseGated}` : ''}
                 </span>
               }

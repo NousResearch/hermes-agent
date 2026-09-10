@@ -2071,6 +2071,7 @@ export const en: Translations = {
     search: 'Search profiles...',
     loading: 'Loading profiles...',
     newProfile: 'New profile',
+    defaultProfile: 'Default profile',
     importProfile: 'Import profile…',
     exportProfile: 'Export profile…',
     imported: 'Profile imported',

@@ -266,6 +266,11 @@ export function ProfileRail() {
   const isAll = scope === ALL_PROFILES
   const activeKey = normalizeProfileKey(gatewayProfile)
   const defaultProfile = profiles.find(profile => profile.is_default)
+
+  const defaultProfileLabel = defaultProfile
+    ? (defaultProfile.display_name ?? '').trim() || p.defaultProfile
+    : p.defaultProfile
+
   const onDefault = !isAll && activeKey === 'default'
 
   const named = sortByProfileOrder(
@@ -426,7 +431,7 @@ export function ProfileRail() {
           <ProfilePill
             active={isAll || onDefault}
             glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(defaultProfile))}
+            label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfileLabel)}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
@@ -438,7 +443,7 @@ export function ProfileRail() {
         <ProfilePill
           active
           glyph="home"
-          label={profileLabel(defaultProfile)}
+          label={defaultProfileLabel}
           onSelect={() => selectProfile(defaultProfile.name)}
         />
       )}
@@ -489,7 +494,7 @@ export function ProfileRail() {
                         <ProfilePill
                           active={onDefault}
                           glyph="home"
-                          label={profileLabel(defaultProfile)}
+                          label={defaultProfileLabel}
                           onSelect={() => selectProfile(defaultProfile.name)}
                         />
                       )}
@@ -985,7 +990,7 @@ function FleetRestGroup({
           active={false}
           connectionId={group.connectionId}
           glyph="home"
-          label={p.fleet.onGateway(group.defaultAgent.profile, group.label)}
+          label={p.fleet.onGateway(p.defaultProfile, group.label)}
           muted
           onSelect={() => onSelect(group.defaultAgent)}
           pending={pendingRoute === defaultKey}

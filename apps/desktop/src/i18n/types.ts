@@ -7,7 +7,7 @@
 
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'da'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -1761,6 +1761,7 @@ export interface Translations {
     search: string
     loading: string
     newProfile: string
+    defaultProfile: string
     /** Verb + noun: the profiles-list button and the native file-dialog titles,
      *  which stand alone. Per-profile menus use the bare `exportMenu`. */
     importProfile: string

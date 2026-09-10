@@ -13,7 +13,7 @@ import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
-import { requestScrollToBottom } from '@/store/thread-scroll'
+import { $threadScrolledUp, requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
 
@@ -23,6 +23,13 @@ import type { GatewayEventContext } from './types'
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
   const { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
+
+  // A clarify request for the active session snaps the transcript to the
+  // bottom so the question is seen, unless the reader has scrolled up into
+  // history: same rule the runStart guard applies. They still get the floating
+  // jump control and a native notification, so the question cannot go unnoticed.
+  const shouldSnapToClarify = (sid: string): boolean =>
+    sid === activeSessionIdRef.current && !$threadScrolledUp.get()
 
   if (event.type === 'clarify.request') {
     // Surface the clarify tool's overlay. The Python side is blocked on
@@ -93,7 +100,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
           }
         })
 
-        if (sessionId === activeSessionIdRef.current) {
+        if (shouldSnapToClarify(sessionId)) {
           requestScrollToBottom(sessionId)
         }
       }
@@ -141,7 +148,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
           }
         })
 
-        if (sessionId === activeSessionIdRef.current) {
+        if (shouldSnapToClarify(sessionId)) {
           requestScrollToBottom(sessionId)
         }
       }

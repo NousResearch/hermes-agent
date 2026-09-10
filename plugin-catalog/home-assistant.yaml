@@ -1,0 +1,14 @@
+name: home-assistant
+repo: https://github.com/chuggies510/ChuggiesMart
+sha: 378011efed6a8b464b36a37b9093a034c54d1b1c
+subdir: home-assistant
+description: Home Assistant operations with a cascade-prevention workflow.
+maintainer: chuggies510
+tier: community
+docs_url: https://github.com/chuggies510/ChuggiesMart/tree/378011efed6a8b464b36a37b9093a034c54d1b1c/home-assistant
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

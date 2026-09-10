@@ -1,0 +1,16 @@
+name: workspace-toolkit
+repo: https://github.com/chuggies510/ChuggiesMart
+sha: 378011efed6a8b464b36a37b9093a034c54d1b1c
+subdir: workspace-toolkit
+description: Injects first-turn prompt routing and provides session lifecycle, memory-bank, and problem-solving skills.
+maintainer: chuggies510
+tier: community
+docs_url: https://github.com/chuggies510/ChuggiesMart/tree/378011efed6a8b464b36a37b9093a034c54d1b1c/workspace-toolkit
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

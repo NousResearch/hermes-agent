@@ -13,6 +13,7 @@ import pytest
 
 from hermes_cli.cloud_overflow import (
     EXCLUDED_CLASSES,
+    ApprovalRecord,
     BoardSnapshot,
     ClaudeCloudAdapter,
     CodexCloudAdapter,
@@ -31,6 +32,7 @@ from hermes_cli.cloud_overflow import (
     sanitize_environment,
     sanitize_receipt,
     source_revision,
+    verify_approval,
 )
 
 
@@ -189,10 +191,66 @@ def test_comment_failure_marks_launch_unresolved(tmp_path, task):
     def runner(argv, *, timeout, env):
         return SimpleNamespace(stdout='{"session_id":"s"}')
     adapter = ClaudeCloudAdapter("claude-cloud", plan_authenticated=True, isolated_checkout="x", runner=runner)
+    approval = ApprovalRecord(approver="frank", approval_id="appr-1", decision="approved")
     with pytest.raises(CommentWriteError):
-        record_launch(state=state, lease_key=key, board="b", task=task, adapter=adapter, comment_writer=lambda *_: (_ for _ in ()).throw(RuntimeError("no comment")), approved=True, now=2)
+        record_launch(state=state, lease_key=key, board="b", task=task, adapter=adapter, comment_writer=lambda *_: (_ for _ in ()).throw(RuntimeError("no comment")), approval=approval, now=2)
     assert state.get(key)["status"] == "unresolved"
     assert state.get(key)["veto"] == "receipt_comment_failed"
+
+
+@pytest.mark.parametrize("bad_approval", [True, False, None, "approved", {"decision": "approved"}])
+def test_verify_approval_rejects_bare_flags_and_non_records(bad_approval):
+    with pytest.raises(ProviderRefused, match="verified ApprovalRecord"):
+        verify_approval(bad_approval)
+
+
+@pytest.mark.parametrize(
+    "approval",
+    [
+        ApprovalRecord(approver="", approval_id="appr-1", decision="approved"),
+        ApprovalRecord(approver="frank", approval_id="", decision="approved"),
+        ApprovalRecord(approver="frank", approval_id="appr-1", decision="pending"),
+    ],
+)
+def test_verify_approval_rejects_incomplete_or_non_approved_records(approval):
+    with pytest.raises(ProviderRefused):
+        verify_approval(approval)
+
+
+def test_record_launch_rejects_bare_boolean_approval(tmp_path, task):
+    """Regression for the prior `approved: bool` seam: `True` must not launch."""
+    state = OverflowState(tmp_path / "state.sqlite3")
+    ok, _, key = state.acquire(board="b", task=task, provider="claude-cloud", now=1)
+    assert ok
+    calls = []
+    def runner(argv, *, timeout, env):
+        calls.append(argv)
+        return SimpleNamespace(stdout='{"session_id":"s"}')
+    adapter = ClaudeCloudAdapter("claude-cloud", plan_authenticated=True, isolated_checkout="x", runner=runner)
+    with pytest.raises(ProviderRefused, match="verified ApprovalRecord"):
+        record_launch(state=state, lease_key=key, board="b", task=task, adapter=adapter, comment_writer=lambda *_: None, approval=True, now=2)
+    assert not calls
+    assert state.get(key)["status"] == "planned"
+
+
+def test_record_launch_succeeds_with_verified_approval_record(tmp_path, task):
+    state = OverflowState(tmp_path / "state.sqlite3")
+    ok, _, key = state.acquire(board="b", task=task, provider="claude-cloud", now=1)
+    assert ok
+    def runner(argv, *, timeout, env):
+        return SimpleNamespace(stdout='{"session_id":"s", "url":"https://example.test/s"}')
+    adapter = ClaudeCloudAdapter("claude-cloud", plan_authenticated=True, isolated_checkout="x", runner=runner)
+    written = {}
+    def comment_writer(board, task_id, body):
+        written["board"] = board
+        written["task_id"] = task_id
+        written["body"] = body
+        return 1
+    approval = ApprovalRecord(approver="frank", approval_id="appr-1", decision="approved")
+    receipt = record_launch(state=state, lease_key=key, board="b", task=task, adapter=adapter, comment_writer=comment_writer, approval=approval, now=2)
+    assert receipt["provider"] == "claude-cloud"
+    assert written["task_id"] == task.id
+    assert state.get(key)["status"] == "launched"
 
 
 def test_backoff_is_exponential_and_bounded():

@@ -6,12 +6,79 @@ loops:
     status: paused
     owner: fleet-engineer
     project: control-plane
-    trigger: manual fixture-backed dry-run only; no schedule installed
+    trigger: >-
+      manual fixture-backed dry-run only; no schedule installed; PAUSED status
+      means no scheduler/gateway process executes this loop today (verified
+      2026-09-10, no cron/kanban-recurring job references this id in any
+      profile cron store or kanban dispatcher config)
     oracle: python -m pytest tests/hermes_cli/test_cloud_overflow.py -q -o addopts=''
-    budget: max one planned launch per tick; max three concurrent leases; bounded retries
-    consumer: jarvis-os cloud-overflow review surface
-    retirement: retire when DGX capacity policy or the approved cloud-provider contract changes
+    executed_copy: >-
+      hermes-agent repo, branch wt/t_95e4ad8d (fork remote
+      fork/wt/t_95e4ad8d), draft PR
+      https://github.com/NousResearch/hermes-agent/pull/101619, exact head
+      commit recorded on task t_95e4ad8d's latest handoff comment; the oracle
+      command above must be run from that exact checkout root, not from main
+      or any other worktree, until the PR lands
+    liveness_proof: >-
+      none required while status=paused; this row intentionally has no live
+      scheduler/gateway/service process attached. Activation is blocked by
+      design (see PM card t_95e4ad8d / t_2142ca43 READY-only gate) until
+      Frank approves a named trigger (cron id or kanban-recurring dispatch)
+      AND supplies the Codex ENV_ID / spend approval referenced by
+      t_38dc6806. Until that trigger exists, liveness is not-applicable by
+      construction rather than unproven; the CI-equivalent liveness check is
+      the oracle command exiting 0 on the exact head above.
+    delivery: >-
+      none - no cron/webhook/goal schedule is installed and no gateway
+      channel is wired. On activation, the RECORDER stage's only allowed
+      delivery target is a sanitized comment on the SOURCE kanban card via
+      the native hermes_cli.kanban_db.add_comment API (see
+      kanban_comment_writer in hermes_cli/cloud_overflow.py); no
+      telegram/discord/email delivery path exists or is proposed by this row
+    budget: max one planned launch per tick; max three concurrent leases; bounded
+      exponential retry backoff (30s base, 3600s cap)
+    consumer: >-
+      jarvis-os cloud-overflow review surface (human review of RECORDER
+      receipts posted on the source kanban card); no automated downstream
+      consumer exists while status=paused
+    retirement: retire when DGX capacity policy or the approved cloud-provider
+      contract changes
     store: ~/.hermes/cloud-overflow/state.sqlite3
+    verification_matrix:
+      - command: python -m pytest tests/hermes_cli/test_cloud_overflow.py -q -o addopts=''
+        expected: >-
+          all tests pass; includes eligibility/exclusion/TOCTOU/idempotency/
+          concurrency-cap/backoff/receipt-sanitization coverage plus the
+          operation-boundary tests
+          (test_prepare_only_boundary_rejects_activation_operations) and the
+          ApprovalRecord structural-gate tests
+          (test_verify_approval_rejects_bare_flags_and_non_records,
+          test_record_launch_rejects_bare_boolean_approval)
+      - command: >-
+          python -m pytest tests/hermes_cli/test_cloud_overflow.py
+          tests/hermes_cli/test_kanban_cli.py
+          tests/hermes_cli/test_kanban_cli_exit_status.py
+          tests/hermes_cli/test_kanban_write_guard.py -q -o addopts=''
+        expected: full regression subset passes with no kanban CLI / write-guard regressions
+      - command: >-
+          ruff check hermes_cli/cloud_overflow.py
+          tests/hermes_cli/test_cloud_overflow.py hermes_cli/kanban.py
+        expected: "All checks passed, zero lint errors"
+      - command: >-
+          python3
+          /home/frank/.hermes/skills/devops/fleet-loop-registry/scripts/validate_registry.py
+          --registry config/cloud-overflow-loop-registry.yaml
+        expected: "VALID rows=1"
+      - command: >-
+          python -m hermes_cli.main kanban cloud-overflow --fixture
+          tests/fixtures/cloud_overflow.json --state <tmp>/cli-state.sqlite3
+          --dry-run --json (run twice against the same state path)
+        expected: >-
+          first invocation prints action=prepare-only with a planned
+          provider and no cloud CLI substrings (cloud-agent, "claude
+          --cloud", "codex cloud exec") in stdout; second identical
+          invocation prints reason=duplicate_lease with the same
+          idempotency_key, proving no double-launch
     skills:
       - loop-engineering
       - graph-engineering

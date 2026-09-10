@@ -519,6 +519,40 @@ def exponential_backoff(attempt: int, *, base_seconds: int = 30, cap_seconds: in
     return min(max(0, int(cap_seconds)), max(0, int(base_seconds)) * (2 ** max(0, int(attempt))))
 
 
+@dataclass(frozen=True)
+class ApprovalRecord:
+    """A verified human-gate decision; a bare boolean cannot satisfy this gate.
+
+    Every field is required and checked structurally.  This exists so the
+    launcher seam cannot be tripped by an accidental ``True`` — only an actual
+    recorded decision (who approved it, an id for the approval, and an
+    explicit "approved" outcome) can pass ``verify_approval``.
+    """
+
+    approver: str
+    approval_id: str
+    decision: str
+
+
+def verify_approval(approval: Optional["ApprovalRecord"]) -> "ApprovalRecord":
+    """Reject anything that is not a complete, explicitly-approved record.
+
+    Deliberately does not accept ``bool`` (or any non-``ApprovalRecord``
+    value): ``isinstance`` fails closed on ``True``/``False``/``None``/dicts,
+    so a caller cannot short-circuit the gate with a stray flag the way the
+    prior ``approved: bool`` parameter allowed.
+    """
+    if not isinstance(approval, ApprovalRecord):
+        raise ProviderRefused(
+            "provider launch requires a verified ApprovalRecord, not a bare flag"
+        )
+    if not approval.approver.strip() or not approval.approval_id.strip():
+        raise ProviderRefused("ApprovalRecord is missing approver or approval_id")
+    if approval.decision != "approved":
+        raise ProviderRefused("ApprovalRecord decision must be exactly 'approved'")
+    return approval
+
+
 def record_launch(
     *,
     state: OverflowState,
@@ -527,17 +561,17 @@ def record_launch(
     task: TaskSnapshot,
     adapter: ProviderAdapter,
     comment_writer: CommentWriter,
-    approved: bool = False,
+    approval: Optional[ApprovalRecord] = None,
     now: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Approved-only launch/receipt seam; callers must opt in explicitly.
+    """Approved-only launch/receipt seam; callers must supply a verified record.
 
-    The prepare CLI never calls this.  A future launcher must supply a separate
-    approval decision and a real comment writer; a failed receipt comment marks
-    the state unresolved instead of pretending the launch was audited.
+    The prepare CLI never calls this.  A future launcher must supply a
+    structurally-verified ``ApprovalRecord`` (see ``verify_approval``) and a
+    real comment writer; a failed receipt comment marks the state unresolved
+    instead of pretending the launch was audited.
     """
-    if not approved:
-        raise ProviderRefused("provider launch requires a separate explicit approval")
+    verify_approval(approval)
     result = adapter.launch(task)
     receipt = sanitize_receipt(
         provider=adapter.name,

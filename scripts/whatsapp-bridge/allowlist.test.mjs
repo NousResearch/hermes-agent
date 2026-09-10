@@ -6,26 +6,33 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
   expandWhatsAppIdentifiers,
+  matchesAllowedMessage,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
   parseAllowedUsers,
 } from './allowlist.js';
 
+// Synthetic fixtures only. Never put real phone numbers or LIDs in tests.
+const TEST_PHONE = '15555550123';
+const TEST_LID = '900000000000001';
+const OTHER_PHONE = '15555550999';
+const OTHER_LID = '900000000000002';
+
 test('normalizeWhatsAppIdentifier strips jid syntax and plus prefix', () => {
-  assert.equal(normalizeWhatsAppIdentifier('+19175395595@s.whatsapp.net'), '19175395595');
-  assert.equal(normalizeWhatsAppIdentifier('267383306489914@lid'), '267383306489914');
-  assert.equal(normalizeWhatsAppIdentifier('19175395595:12@s.whatsapp.net'), '19175395595');
+  assert.equal(normalizeWhatsAppIdentifier(`+${TEST_PHONE}@s.whatsapp.net`), TEST_PHONE);
+  assert.equal(normalizeWhatsAppIdentifier(`${TEST_LID}@lid`), TEST_LID);
+  assert.equal(normalizeWhatsAppIdentifier(`${TEST_PHONE}:12@s.whatsapp.net`), TEST_PHONE);
 });
 
 test('expandWhatsAppIdentifiers resolves phone and lid aliases from session files', () => {
   const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
 
   try {
-    writeFileSync(path.join(sessionDir, 'lid-mapping-19175395595.json'), JSON.stringify('267383306489914'));
-    writeFileSync(path.join(sessionDir, 'lid-mapping-267383306489914_reverse.json'), JSON.stringify('19175395595'));
+    writeFileSync(path.join(sessionDir, `lid-mapping-${TEST_PHONE}.json`), JSON.stringify(TEST_LID));
+    writeFileSync(path.join(sessionDir, `lid-mapping-${TEST_LID}_reverse.json`), JSON.stringify(TEST_PHONE));
 
-    const aliases = expandWhatsAppIdentifiers('267383306489914@lid', sessionDir);
-    assert.deepEqual([...aliases].sort(), ['19175395595', '267383306489914']);
+    const aliases = expandWhatsAppIdentifiers(`${TEST_LID}@lid`, sessionDir);
+    assert.deepEqual([...aliases].sort(), [TEST_PHONE, TEST_LID].sort());
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }
@@ -35,12 +42,12 @@ test('matchesAllowedUser accepts mapped lid sender when allowlist only contains 
   const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
 
   try {
-    writeFileSync(path.join(sessionDir, 'lid-mapping-19175395595.json'), JSON.stringify('267383306489914'));
-    writeFileSync(path.join(sessionDir, 'lid-mapping-267383306489914_reverse.json'), JSON.stringify('19175395595'));
+    writeFileSync(path.join(sessionDir, `lid-mapping-${TEST_PHONE}.json`), JSON.stringify(TEST_LID));
+    writeFileSync(path.join(sessionDir, `lid-mapping-${TEST_LID}_reverse.json`), JSON.stringify(TEST_PHONE));
 
-    const allowedUsers = parseAllowedUsers('+19175395595');
-    assert.equal(matchesAllowedUser('267383306489914@lid', allowedUsers, sessionDir), true);
-    assert.equal(matchesAllowedUser('188012763865257@lid', allowedUsers, sessionDir), false);
+    const allowedUsers = parseAllowedUsers(`+${TEST_PHONE}`);
+    assert.equal(matchesAllowedUser(`${TEST_LID}@lid`, allowedUsers, sessionDir), true);
+    assert.equal(matchesAllowedUser(`${OTHER_LID}@lid`, allowedUsers, sessionDir), false);
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }
@@ -51,8 +58,8 @@ test('matchesAllowedUser treats * as allow-all wildcard', () => {
 
   try {
     const allowedUsers = parseAllowedUsers('*');
-    assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', allowedUsers, sessionDir), true);
-    assert.equal(matchesAllowedUser('267383306489914@lid', allowedUsers, sessionDir), true);
+    assert.equal(matchesAllowedUser(`${TEST_PHONE}@s.whatsapp.net`, allowedUsers, sessionDir), true);
+    assert.equal(matchesAllowedUser(`${TEST_LID}@lid`, allowedUsers, sessionDir), true);
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }
@@ -68,12 +75,54 @@ test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () =
   try {
     const empty = parseAllowedUsers('');
     assert.equal(empty.size, 0);
-    assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', empty, sessionDir), false);
-    assert.equal(matchesAllowedUser('267383306489914@lid', empty, sessionDir), false);
+    assert.equal(matchesAllowedUser(`${TEST_PHONE}@s.whatsapp.net`, empty, sessionDir), false);
+    assert.equal(matchesAllowedUser(`${TEST_LID}@lid`, empty, sessionDir), false);
 
     // Null/undefined allowlist (defensive) also rejects.
-    assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', null, sessionDir), false);
-    assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', undefined, sessionDir), false);
+    assert.equal(matchesAllowedUser(`${TEST_PHONE}@s.whatsapp.net`, null, sessionDir), false);
+    assert.equal(matchesAllowedUser(`${TEST_PHONE}@s.whatsapp.net`, undefined, sessionDir), false);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('matchesAllowedMessage authorizes a raw LID through its alternate phone JID', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+  try {
+    const allowedUsers = parseAllowedUsers(`+${TEST_PHONE}`);
+    const key = {
+      remoteJid: `${TEST_LID}@lid`,
+      remoteJidAlt: `${TEST_PHONE}@s.whatsapp.net`,
+    };
+    assert.equal(matchesAllowedMessage(key.remoteJid, key, allowedUsers, sessionDir), true);
+    assert.equal(matchesAllowedMessage(`${TEST_LID}@lid`, {
+      participant: `${TEST_LID}@lid`,
+      participantAlt: `${TEST_PHONE}@s.whatsapp.net`,
+    }, allowedUsers, sessionDir), true);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('matchesAllowedMessage denies unresolved, unrelated, and empty-allowlist aliases', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+  try {
+    const allowedUsers = parseAllowedUsers(`+${TEST_PHONE}`);
+    const rawLid = `${TEST_LID}@lid`;
+    assert.equal(matchesAllowedMessage(rawLid, { remoteJid: rawLid }, allowedUsers, sessionDir), false);
+    assert.equal(matchesAllowedMessage(rawLid, {
+      remoteJid: rawLid,
+      remoteJidAlt: `${OTHER_PHONE}@s.whatsapp.net`,
+    }, allowedUsers, sessionDir), false);
+    // senderPn is not part of Baileys 7.0.0-rc13's WAMessageKey contract.
+    assert.equal(matchesAllowedMessage(rawLid, {
+      remoteJid: rawLid,
+      senderPn: `${TEST_PHONE}@s.whatsapp.net`,
+    }, allowedUsers, sessionDir), false);
+    assert.equal(matchesAllowedMessage(rawLid, {
+      remoteJid: rawLid,
+      participantAlt: `${TEST_PHONE}@s.whatsapp.net`,
+    }, parseAllowedUsers(''), sessionDir), false);
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }

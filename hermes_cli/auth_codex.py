@@ -74,11 +74,12 @@ def _codex_runtime_result(
 
 def _load_auth_store_maybe_locked(lock: bool) -> Dict[str, Any]:
     """Load the auth store, taking the cross-process lock unless the caller already holds it."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store
+    from hermes_cli.auth import _auth_store_lock, _codex_auth_file_path, _load_auth_store
+    auth_path = _codex_auth_file_path()
     if lock:
-        with _auth_store_lock():
-            return _load_auth_store()
-    return _load_auth_store()
+        with _auth_store_lock(target_path=auth_path):
+            return _load_auth_store(auth_path)
+    return _load_auth_store(auth_path)
 
 
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
@@ -145,12 +146,13 @@ def _sync_codex_pool_entries(
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     from hermes_cli.auth import (
-        _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
+        _auth_store_lock, _codex_auth_file_path, _load_auth_store, _load_provider_state, _save_auth_store,
         _save_provider_state, _utc_now_z)
     if last_refresh is None:
         last_refresh = _utc_now_z()
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    auth_path = _codex_auth_file_path()
+    with _auth_store_lock(target_path=auth_path):
+        auth_store = _load_auth_store(auth_path)
         state = _load_provider_state(auth_store, "openai-codex") or {}
         # Capture the previous singleton tokens BEFORE overwriting: the pool sync uses them to
         # tell legacy singleton-aliases (refresh) from independent ``auth add`` accounts (keep).
@@ -162,7 +164,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         _save_provider_state(auth_store, "openai-codex", state)
         _sync_codex_pool_entries(
             auth_store, tokens, last_refresh, previous_singleton_tokens=previous_singleton_tokens)
-        _save_auth_store(auth_store)
+        _save_auth_store(auth_store, target_path=auth_path)
 
 
 def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
@@ -391,7 +393,7 @@ def resolve_codex_runtime_credentials(
     credential. See issue #32992.
     """
     from hermes_cli.auth import (
-        _auth_store_lock, _codex_access_token_is_expiring, _probe_codex_quota_restored,
+        _auth_store_lock, _codex_access_token_is_expiring, _codex_auth_file_path, _probe_codex_quota_restored,
         _read_codex_tokens)
     read_error: Optional[AuthError] = None
     data = None
@@ -440,7 +442,7 @@ def resolve_codex_runtime_credentials(
     if _should_refresh(access_token):
         # Re-read under lock to avoid racing with other Hermes processes
         lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)
-        with _auth_store_lock(timeout_seconds=lock_timeout):
+        with _auth_store_lock(timeout_seconds=lock_timeout, target_path=_codex_auth_file_path()):
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
             if _should_refresh(_stripped(tokens.get("access_token"))):

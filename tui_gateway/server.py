@@ -506,19 +506,10 @@ def _profile_scoped(handler):
 
     Secondary-profile adapters are constructed inside ``_profile_runtime_scope`` (secret scope installed +
     multiplex active) — the same discriminator the Buzz/SimpleX adapters use for this bug class (#98738).
-    The DEFAULT profile under multiplexing runs unscoped: ``os.environ`` holds its own bridge output there
-    and keeps its legacy precedence.
-    Same discriminator as the Buzz/SimpleX/Raft adapters (#98738): secret scope installed + multiplex
-    active. The DEFAULT profile under multiplexing (and every single-profile process) runs unscoped and
-    keeps its legacy ``os.environ`` precedence.
-    Secondary-profile adapters are constructed, connected, and reloaded inside ``_profile_runtime_scope``
-    (secret scope installed + multiplex active) — the same discriminator as the Discord adapter's
-    ``_profile_scoped_config_load`` (#72348). The DEFAULT profile under multiplexing runs unscoped:
-    ``os.environ`` holds its own bridge output there and keeps its legacy precedence.
-    Secondary-profile adapters are constructed, connected, and reloaded inside ``_profile_runtime_scope``
-    (secret scope installed + multiplex active) — the same discriminator the Buzz/SimpleX adapters use for
-    this bug class (#98738). The DEFAULT profile under multiplexing runs unscoped: ``os.environ`` holds its
-    own bridge output there and keeps its legacy precedence.
+    Once multiplexing is active, launch-profile *turns* bind their own terminal scope
+    (``prompt_turn._prepare_turn_input``) so they never depend on ambient ``os.environ``
+    that a secondary context might have poisoned (#107422). Single-profile processes stay
+    unscoped and keep legacy ``os.environ`` precedence.
     """
     def wrapper(rid, params):
         home = _profile_home(params.get("profile") if isinstance(params, dict) else None)

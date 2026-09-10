@@ -450,6 +450,13 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
         from tools.terminal_scope import install_profile_terminal_scope
         scopes.terminal = install_profile_terminal_scope(Path(profile_home))
+    elif _served_profile_homes:
+        # Multiplex residual of #68559 / #107422: the launch profile used to run
+        # unscoped and fall back to ambient os.environ. Once any secondary home
+        # has been served, bind the launch home's own terminal policy so a
+        # poisoned ambient bridge can never become the launch turn's authority.
+        from tools.terminal_scope import install_profile_terminal_scope
+        scopes.terminal = install_profile_terminal_scope(Path(_hermes_home))
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)

@@ -44,6 +44,22 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('settings.appearance.title')).toBe('外觀')
     expect(translateNow('settings.nav.providerApiKeys')).toBe('API 金鑰')
+    expect(translateNow('settings.nav.plugins')).toBe('外掛程式')
+    expect(translateNow('settings.sections.browser')).toBe('瀏覽器')
+    expect(translateNow('settings.config.attachmentSizeTitle')).toBe('預覽與圖片載入大小上限')
+    expect(translateNow('settings.config.attachmentSizeLabel')).toBe('預覽與圖片載入大小上限（MB）')
+    expect(translateNow('settings.model.defaultsLabel')).toBe('預設值')
+    expect(translateNow('settings.model.reasoning')).toBe('推理')
+    expect(translateNow('settings.model.reasoningOff')).toBe('關閉')
+    expect(translateNow('settings.model.defaultsFailed')).toBe('儲存模型預設值失敗')
+    expect(translateNow('settings.model.fallbackAdd')).toBe('新增備援模型')
+    expect(translateNow('settings.model.fallbackEmpty')).toBe('沒有備援模型；預設模型失敗時將無法切換。')
+    expect(translateNow('settings.model.notInCatalog')).toBe(
+      '不在此提供方的模型清單中；呼叫可能會改用備援模型。'
+    )
+    expect(translateNow('skills.metadataLabels.platforms')).toBe('平台')
+    expect(translateNow('skills.metadataLabels.prerequisites')).toBe('先決條件')
+    expect(translateNow('skills.metadataLabels.metadata')).toBe('中繼資料')
 
     setRuntimeI18nLocale('ar')
     expect(translateNow('settings.appearance.reasoningCollapsedTitle')).toBe('طي التفكير افتراضيًا')

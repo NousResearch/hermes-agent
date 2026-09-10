@@ -6,6 +6,7 @@ import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
+import { I18nProvider } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
@@ -278,9 +279,52 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     // the one-line description.
     await waitFor(() => expect(getSkillContent).toHaveBeenCalled())
     expect(getSkillContent.mock.calls[0][0]).toBe('web-research')
-    expect(await screen.findByText('version')).toBeTruthy()
+    expect(await screen.findByText('Version')).toBeTruthy()
     expect(await screen.findByText('1.2.0')).toBeTruthy()
     expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
+  })
+
+  it('localizes category and metadata chrome without hiding the raw document', async () => {
+    getSkills.mockResolvedValue([
+      {
+        name: 'code-review',
+        description: '審查程式碼並提出可執行的改善建議。',
+        category: 'software-development',
+        enabled: true,
+        usage: 1,
+        provenance: 'bundled'
+      }
+    ])
+    getSkillContent.mockResolvedValue({
+      name: 'code-review',
+      path: '/skills/code-review/SKILL.md',
+      content:
+        '---\nname: code-review\ndescription: Review code and suggest fixes.\nversion: 1.0.0\nauthor: Nous\nlicense: MIT\n---\n\n# Code Review\n\nRaw English instructions.'
+    })
+
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <I18nProvider configClient={null} initialLocale="zh-hant">
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/skills?tab=skills']}>
+              <SkillsView />
+            </MemoryRouter>
+          </QueryClientProvider>
+        </I18nProvider>
+      )
+    })
+
+    await waitFor(() => expect(getSkillContent).toHaveBeenCalledWith('code-review', expect.anything()))
+    expect((await screen.findAllByText('軟體開發')).length).toBeGreaterThan(0)
+
+    for (const label of ['名稱', '說明', '版本', '作者', '授權']) {
+      expect(await screen.findByText(label)).toBeTruthy()
+    }
+
+    expect((await screen.findAllByText('審查程式碼並提出可執行的改善建議。')).length).toBe(2)
+    expect(screen.queryByText('Review code and suggest fixes.')).toBeNull()
+    expect(await screen.findByText(/Raw English instructions/)).toBeTruthy()
   })
 
   it('hub picker refuses to reinstall an already-installed skill', async () => {

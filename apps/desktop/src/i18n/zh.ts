@@ -973,7 +973,10 @@ export const zh: Translations = {
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: '预览 / 图片加载大小上限（MB）'
+      attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
+      optionLabels: {
+        'agent.image_input_mode': { auto: '自动', native: '原生图片', text: '文字描述' }
+      }
     },
     quickEntry: {
       enabledTitle: '快速输入',
@@ -1702,6 +1705,31 @@ export const zh: Translations = {
     },
     officialCatalog: '可安装',
     officialPill: '官方',
+    categories: {
+      general: '通用',
+      apple: 'Apple',
+      'software-development': '软件开发',
+      'website-operations': '网站运维',
+      'autonomous-ai-agents': '自主 AI 智能体',
+      creative: '创意制作',
+      devops: 'DevOps',
+      email: '电子邮件',
+      media: '媒体',
+      'note-taking': '笔记',
+      productivity: '生产力',
+      presentation: '演示文稿',
+      research: '研究',
+      'social-media': '社交媒体',
+      web: '网页'
+    },
+    metadataLabels: {
+      name: '名称',
+      description: '描述',
+      version: '版本',
+      author: '作者',
+      license: '许可证'
+    },
+    toolCount: count => `${count} 个工具`,
     hub: {
       searchPlaceholder: '搜索技能中心',
       search: '搜索',

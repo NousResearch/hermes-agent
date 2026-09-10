@@ -139,7 +139,7 @@ export function ConfigField({
         onValueChange={next => onChange(next === EMPTY_SELECT_VALUE ? '' : next)}
         value={String(value ?? '') || EMPTY_SELECT_VALUE}
       >
-        <SelectTrigger className={CONTROL_TEXT}>
+        <SelectTrigger aria-label={label} className={CONTROL_TEXT}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

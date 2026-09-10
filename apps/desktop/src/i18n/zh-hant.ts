@@ -319,7 +319,8 @@ export const zhHant = defineLocale({
       archivedChats: '已封存聊天',
       about: '關於',
       billing: '帳單',
-      notifications: '通知'
+      notifications: '通知',
+      plugins: '外掛程式'
     },
     notifications: {
       title: '通知',
@@ -374,7 +375,8 @@ export const zhHant = defineLocale({
       safety: '安全性',
       memory: '記憶與上下文',
       voice: '語音',
-      advanced: '進階'
+      advanced: '進階',
+      browser: '瀏覽器'
     },
     searchPlaceholder: {
       about: '關於 Hermes Desktop',
@@ -793,7 +795,15 @@ export const zhHant = defineLocale({
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
+      keepAwakeDesc: '防止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      attachmentSizeTitle: '預覽與圖片載入大小上限',
+      attachmentSizeDesc:
+        'Hermes Desktop 載入本機檔案預覽與圖片附件的大小上限，單位為 MB。預設為 16。遠端非圖片附件另有 256 MB 上限。設得過高會將整個檔案載入記憶體，可能造成應用程式凍結或當機。',
+      attachmentSizeUnit: 'MB',
+      attachmentSizeLabel: '預覽與圖片載入大小上限（MB）',
+      optionLabels: {
+        'agent.image_input_mode': { auto: '自動', native: '原生圖片', text: '文字描述' }
+      }
     },
     quickEntry: {
       enabledTitle: '快速輸入',
@@ -1012,6 +1022,10 @@ export const zhHant = defineLocale({
       provider: '提供方',
       model: '模型',
       applying: '套用中...',
+      defaultsLabel: '預設值',
+      reasoning: '推理',
+      reasoningOff: '關閉',
+      defaultsFailed: '儲存模型預設值失敗',
       loadFailed: '無法載入模型',
       restartRequired: '更新後此後端仍在執行舊程式碼。請重新啟動以載入新程式碼。',
       restartBackend: '重新啟動後端',
@@ -1024,6 +1038,9 @@ export const zhHant = defineLocale({
       change: '變更',
       autoUseMain: '自動 · 使用主要模型',
       providerDefault: '(提供方預設)',
+      fallbackAdd: '新增備援模型',
+      fallbackEmpty: '沒有備援模型；預設模型失敗時將無法切換。',
+      notInCatalog: '不在此提供方的模型清單中；呼叫可能會改用備援模型。',
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
@@ -1278,6 +1295,7 @@ export const zhHant = defineLocale({
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    configuringProfile: '正在設定：',
     tabMcp: 'MCP',
     all: '全部',
     searchSkills: '搜尋技能...',
@@ -1330,7 +1348,83 @@ export const zhHant = defineLocale({
     skillArchivedTitle: '技能已封存',
     skillArchivedMessage: '可透過 hermes curator restore 還原。',
     officialCatalog: '可安裝',
-    officialPill: '官方'
+    officialPill: '官方',
+    categories: {
+      general: '一般',
+      apple: 'Apple',
+      'software-development': '軟體開發',
+      'website-operations': '網站維運',
+      'autonomous-ai-agents': '自主式 AI 代理',
+      creative: '創意製作',
+      devops: 'DevOps',
+      email: '電子郵件',
+      media: '媒體',
+      'note-taking': '筆記',
+      productivity: '生產力',
+      presentation: '簡報',
+      research: '研究',
+      'social-media': '社群媒體',
+      web: '網頁'
+    },
+    metadataLabels: {
+      name: '名稱',
+      description: '說明',
+      version: '版本',
+      author: '作者',
+      license: '授權',
+      platforms: '平台',
+      prerequisites: '先決條件',
+      metadata: '中繼資料'
+    },
+    toolCount: count => `${count} 個工具`,
+    hub: {
+      searchPlaceholder: '搜尋 Skills Hub',
+      search: '搜尋',
+      searching: '搜尋中…',
+      connectingHubs: '正在連線至 Skills Hub…',
+      connectedHubs: '已連線的 Hub：',
+      featured: '精選 Skills',
+      landingHint: '搜尋 Hub，瀏覽官方索引、GitHub 與社群來源中可安裝的 Skills。',
+      noResults: 'Skills Hub 中找不到相符的 Skill。',
+      resultCount: (count, ms) => `${count} 項結果${ms !== null ? `，耗時 ${ms} 毫秒` : ''}`,
+      timedOut: sources => `逾時：${sources}`,
+      installed: '已安裝',
+      install: '安裝',
+      installing: '安裝中…',
+      uninstall: '解除安裝',
+      uninstalling: '解除安裝中…',
+      updateAll: '更新已安裝項目',
+      updating: '更新中…',
+      preview: '預覽',
+      scan: '掃描',
+      scanning: '掃描中…',
+      close: '關閉',
+      files: '檔案',
+      noReadme: '此 Skill 沒有 SKILL.md 預覽。',
+      trust: { builtin: '內建', trusted: '受信任', community: '社群' },
+      verdictSafe: '安全',
+      verdictCaution: '需注意',
+      verdictDangerous: '危險',
+      policyAllow: '允許安裝',
+      policyAsk: '安裝前先檢查',
+      policyBlock: '政策已封鎖安裝',
+      findings: count => `${count} 項發現`,
+      noFindings: '未發現安全問題。',
+      installStarted: name => `正在安裝 ${name}…`,
+      uninstallStarted: name => `正在解除安裝 ${name}…`,
+      updateStarted: '正在更新已安裝的 Skills…',
+      actionFailed: 'Skill 操作失敗',
+      actionLog: '操作記錄',
+      alreadyInstalled: name => `「${name}」已安裝`,
+      pickerTitle: 'Skills Hub',
+      pickerBrowse: '瀏覽完整 Skills Hub',
+      pickerHide: '隱藏 Skills Hub 瀏覽器',
+      pickerHint: '在任何 Skill 上按「+ 新增至此 Agent」，即可安裝並顯示在上方清單。',
+      loadFailed: 'Skills Hub 載入失敗',
+      previewFailed: 'Skill 預覽失敗',
+      scanFailed: '安全掃描失敗',
+      searchFailed: 'Hub 搜尋失敗'
+    }
   },
 
   starmap: {

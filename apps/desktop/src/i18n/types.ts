@@ -653,6 +653,7 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      optionLabels: Record<string, Record<string, string>>
     }
     quickEntry: {
       enabledTitle: string
@@ -1343,6 +1344,9 @@ export interface Translations {
     }
     officialCatalog: string
     officialPill: string
+    categories: Record<string, string>
+    metadataLabels: Record<string, string>
+    toolCount: (count: number) => string
     hub: {
       searchPlaceholder: string
       search: string

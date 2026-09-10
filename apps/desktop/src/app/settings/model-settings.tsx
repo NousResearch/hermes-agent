@@ -917,7 +917,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
             <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
             {reasoningSupported && (
-              <div className="flex items-center gap-2 text-xs">
+              <div className="flex items-center gap-2 whitespace-nowrap text-xs">
                 {m.reasoning}
                 <Select
                   onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}

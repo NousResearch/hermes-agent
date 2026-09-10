@@ -776,7 +776,10 @@ export const en: Translations = {
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: 'Max preview / image load size in megabytes'
+      attachmentSizeLabel: 'Max preview / image load size in megabytes',
+      optionLabels: {
+        'agent.image_input_mode': { auto: 'Auto', native: 'Native', text: 'Text description' }
+      }
     },
     quickEntry: {
       enabledTitle: 'Quick Entry',
@@ -1531,6 +1534,22 @@ export const en: Translations = {
     },
     officialCatalog: 'Available to install',
     officialPill: 'Official',
+    categories: {
+      general: 'General',
+      'software-development': 'Software Development',
+      'website-operations': 'Website Operations',
+      'autonomous-ai-agents': 'Autonomous AI Agents',
+      presentation: 'Presentation',
+      research: 'Research'
+    },
+    metadataLabels: {
+      name: 'Name',
+      description: 'Description',
+      version: 'Version',
+      author: 'Author',
+      license: 'License'
+    },
+    toolCount: count => `${count} ${count === 1 ? 'tool' : 'tools'}`,
     hub: {
       searchPlaceholder: 'Search the skill hub',
       search: 'Search',

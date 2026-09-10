@@ -102,6 +102,14 @@ async function renderModelSettings(scopeProfile?: string) {
 }
 
 describe('ModelSettings profile scope', () => {
+  it('keeps the reasoning label on one line', async () => {
+    await renderModelSettings()
+
+    const label = await screen.findByText('Reasoning')
+
+    expect(label.className).toContain('whitespace-nowrap')
+  })
+
   // #90549: the API helpers treat `null` as "deliberately target the
   // primary/default profile". A page following the active profile must pass
   // `undefined`, or every read repaints the primary's model and the user's

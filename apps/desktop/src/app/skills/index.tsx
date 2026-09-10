@@ -118,9 +118,17 @@ const usageOf = (skill: SkillInfo): number => (typeof skill.usage === 'number' ?
 
 const categoryFor = (skill: SkillInfo): string => asText(skill.category) || 'general'
 
+function categoryLabel(category: string, labels: Record<string, string>): string {
+  return labels[category] ?? prettyName(category)
+}
+
 // Row subtitle: category, with non-default origins badged.
-function skillSubtitle(skill: SkillInfo): React.ReactNode {
-  const category = prettyName(categoryFor(skill))
+function skillSubtitle(
+  skill: SkillInfo,
+  categoryLabels: Record<string, string>,
+  provenanceLabels: { agent: string; hub: string }
+): React.ReactNode {
+  const category = categoryLabel(categoryFor(skill), categoryLabels)
   const provenance = skill.provenance
 
   return (
@@ -128,12 +136,12 @@ function skillSubtitle(skill: SkillInfo): React.ReactNode {
       <span className="truncate">{category}</span>
       {provenance === 'agent' && (
         <Badge className="shrink-0 normal-case" variant="default">
-          learned
+          {provenanceLabels.agent}
         </Badge>
       )}
       {provenance === 'hub' && (
         <Badge className="shrink-0 normal-case" variant="muted">
-          hub
+          {provenanceLabels.hub}
         </Badge>
       )}
     </>
@@ -934,7 +942,7 @@ export function SkillsView({
                           setSelectedOfficial(null)
                         }}
                         onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                        subtitle={skillSubtitle(skill)}
+                        subtitle={skillSubtitle(skill, t.skills.categories, t.skills.provenance)}
                         title={skill.name}
                         toggleLabel={skill.name}
                       />
@@ -968,7 +976,7 @@ export function SkillsView({
                           enabled={false}
                           key={skill.identifier}
                           onSelect={() => setSelectedOfficial(skill.identifier)}
-                          subtitle={prettyName(skill.category)}
+                          subtitle={categoryLabel(skill.category, t.skills.categories)}
                           title={skill.name}
                         />
                       )
@@ -1023,7 +1031,7 @@ export function SkillsView({
                           ) : calls > 0 ? (
                             `×${compactNumber(calls)}`
                           ) : (
-                            `${toolNames(toolset).length} tools`
+                            t.skills.toolCount(toolNames(toolset).length)
                           )
                         }
                         onSelect={() => setSelectedToolset(toolset.name)}
@@ -1158,6 +1166,47 @@ function parseFrontmatter(content: string): { body: string; meta: [string, strin
   return { body: content.slice(match[0].length), meta }
 }
 
+function SkillDocument({
+  isLoading,
+  localizedDescription,
+  parsed
+}: {
+  isLoading: boolean
+  localizedDescription?: string
+  parsed: { body: string; meta: [string, string][] } | null
+}) {
+  const { t } = useI18n()
+
+  return (
+    <>
+      {parsed && parsed.meta.length > 0 && (
+        <div className="grid gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3">
+          {parsed.meta.map(([key, value]) => (
+            <div className="flex gap-2 text-[0.68rem] leading-4" key={key}>
+              <span className="w-24 shrink-0 font-medium text-(--ui-text-tertiary)">
+                {t.skills.metadataLabels[key] ?? prettyName(key)}
+              </span>
+              <span className="min-w-0 whitespace-pre-wrap break-words text-(--ui-text-secondary)">
+                {key === 'description' && localizedDescription ? localizedDescription : value}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {isLoading ? (
+        <CountSkeleton />
+      ) : parsed ? (
+        <pre
+          className="overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.68rem] leading-relaxed"
+          data-selectable-text="true"
+        >
+          {parsed.body.trim() || t.skills.noDescription}
+        </pre>
+      ) : null}
+    </>
+  )
+}
+
 function SkillDetail({
   onArchive,
   onEdit,
@@ -1173,6 +1222,7 @@ function SkillDetail({
   // Only learned/local skills are the user's to rewrite or archive — bundled
   // and hub skills are managed by their sources.
   const editable = skill.provenance === 'agent'
+  const description = asText(skill.description) || t.skills.noDescription
 
   // The FULL skill — frontmatter metadata + complete SKILL.md body — for any
   // provenance, scoped to the Capabilities profile selector. The row list only
@@ -1191,10 +1241,10 @@ function SkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={description}
         pills={
           <>
-            <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
+            <PanelPill>{categoryLabel(categoryFor(skill), t.skills.categories)}</PanelPill>
             {skill.provenance && skill.provenance !== 'bundled' && (
               <PanelPill tone={skill.provenance === 'agent' ? 'good' : 'muted'}>
                 {t.skills.provenance[skill.provenance]}
@@ -1214,26 +1264,7 @@ function SkillDetail({
           </Button>
         </div>
       )}
-      {parsed && parsed.meta.length > 0 && (
-        <div className="grid gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3">
-          {parsed.meta.map(([key, value]) => (
-            <div className="flex gap-2 text-[0.68rem] leading-4" key={key}>
-              <span className="w-24 shrink-0 font-medium text-(--ui-text-tertiary)">{key}</span>
-              <span className="min-w-0 whitespace-pre-wrap break-words text-(--ui-text-secondary)">{value}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {contentQuery.isLoading ? (
-        <CountSkeleton />
-      ) : parsed ? (
-        <pre
-          className="overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.68rem] leading-relaxed"
-          data-selectable-text="true"
-        >
-          {parsed.body.trim() || t.skills.noDescription}
-        </pre>
-      ) : null}
+      <SkillDocument isLoading={contentQuery.isLoading} localizedDescription={description} parsed={parsed} />
     </>
   )
 }
@@ -1272,7 +1303,7 @@ function OfficialSkillDetail({
         description={asText(skill.description) || t.skills.noDescription}
         pills={
           <>
-            <PanelPill>{prettyName(skill.category)}</PanelPill>
+            <PanelPill>{categoryLabel(skill.category, t.skills.categories)}</PanelPill>
             <PanelPill tone="muted">{t.skills.officialPill}</PanelPill>
           </>
         }
@@ -1284,26 +1315,7 @@ function OfficialSkillDetail({
           {installing ? t.skills.hub.installing : t.skills.hub.install}
         </Button>
       </div>
-      {parsed && parsed.meta.length > 0 && (
-        <div className="grid gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3">
-          {parsed.meta.map(([key, value]) => (
-            <div className="flex gap-2 text-[0.68rem] leading-4" key={key}>
-              <span className="w-24 shrink-0 font-medium text-(--ui-text-tertiary)">{key}</span>
-              <span className="min-w-0 whitespace-pre-wrap break-words text-(--ui-text-secondary)">{value}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {previewQuery.isLoading ? (
-        <CountSkeleton />
-      ) : parsed ? (
-        <pre
-          className="overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.68rem] leading-relaxed"
-          data-selectable-text="true"
-        >
-          {parsed.body.trim() || t.skills.noDescription}
-        </pre>
-      ) : null}
+      <SkillDocument isLoading={previewQuery.isLoading} parsed={parsed} />
     </>
   )
 }

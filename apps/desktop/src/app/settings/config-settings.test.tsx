@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { I18nProvider } from '@/i18n'
 
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
@@ -47,17 +49,19 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderConfigSettings() {
+async function renderConfigSettings(activeSectionId = 'safety', initialLocale = 'en') {
   const { ConfigSettings } = await import('./config-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
   render(
-    <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <ConfigSettings activeSectionId="safety" importInputRef={importInputRef} />
-      </QueryClientProvider>
-    </MemoryRouter>
+    <I18nProvider configClient={null} initialLocale={initialLocale}>
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} />
+        </QueryClientProvider>
+      </MemoryRouter>
+    </I18nProvider>
   )
 
   return { importInputRef }
@@ -91,6 +95,33 @@ describe('ConfigSettings autosave', () => {
       // (the field is back to its original value) and leave disk stuck at
       // `enabled: true` from the first save.
       expect(saveHermesConfig.mock.calls[1][0]).toEqual({ checkpoints: { enabled: false } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('ConfigSettings localized option labels', () => {
+  it('shows a translated image-input label while saving the original token', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    getHermesConfigRecord.mockResolvedValue({ agent: { image_input_mode: 'text' } })
+    getHermesConfigSchema.mockResolvedValue({
+      fields: {
+        'agent.image_input_mode': { type: 'select', options: ['auto', 'native', 'text'] }
+      }
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await renderConfigSettings('chat', 'zh-hant')
+      const picker = await screen.findByRole('combobox', { name: '圖片附件' })
+
+      fireEvent.click(picker)
+      fireEvent.click(await screen.findByRole('option', { name: '自動' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled())
+      expect(saveHermesConfig.mock.calls.at(-1)?.[0]).toEqual({ agent: { image_input_mode: 'auto' } })
     } finally {
       vi.useRealTimers()
     }

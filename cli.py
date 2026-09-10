@@ -472,9 +472,25 @@ def load_cli_config() -> Dict[str, Any]:
     if config_path.exists():
         try:
             with open(config_path, "r", encoding="utf-8") as f:
-                from hermes_cli.config import _normalize_root_model_keys
+                from hermes_cli.config import (
+                    _deep_merge,
+                    _load_inherited_config,
+                    _normalize_root_model_keys,
+                )
 
                 file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
+
+            # A profile that opted into inheritance keeps most of its settings
+            # in the root config, so reading its file alone yields blanks the
+            # agent cannot act on — an empty model resolves to the provider's
+            # first catalog entry, silently running a model nobody chose. This
+            # loader parses the file itself instead of going through
+            # load_config(), so it has to apply the same layering.
+            if file_config.get("inherit") is True:
+                inherited = _normalize_root_model_keys(_load_inherited_config(config_path))
+                inherited.pop("inherit", None)
+                if inherited:
+                    file_config = _deep_merge(inherited, file_config)
 
             _file_has_terminal_config = "terminal" in file_config
             _merge_file_config(defaults, file_config)

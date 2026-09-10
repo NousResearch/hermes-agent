@@ -1931,6 +1931,28 @@ display:
 
 
 # =============================================================================
+# Profile Config Inheritance
+# =============================================================================
+# Named profiles are isolated by default: a key absent from a profile's own
+# config falls back to the built-in defaults, never to the root profile. That
+# keeps one profile from silently changing another's behaviour.
+#
+# Set `inherit: true` in a NAMED profile's config (~/.hermes/profiles/<name>/
+# config.yaml) to layer it on top of the root config at ~/.hermes/config.yaml.
+# The profile's own keys always win; inheritance only fills what the profile
+# did not set, leaf by leaf — so overriding `model.default` keeps the root's
+# `model.base_url` instead of dropping it.
+#
+# The point is a fleet that follows one setting: profiles that inherit their
+# model pick up a change to the root model on their next load, with no per-
+# profile edit. Editing the root invalidates their cached config too.
+#
+# Opt out by removing the key or setting it to false. A root config that is
+# missing or unparseable is skipped with a warning rather than taking the
+# profile down with it, and the key is a no-op in the root profile itself,
+# which has no parent to inherit from.
+# inherit: true
+
 # Telemetry
 # =============================================================================
 # Shared metrics are disabled by default. When enabled, Hermes writes only

@@ -112,6 +112,17 @@ and lifecycle commands. Use the existing generation-bound control RPCs where
 available. Catalog presence alone does not imply execution support. No legacy
 fallback is installed on the canonical transport.
 
+## Canonical native projections
+
+`gateway/session_config.py` exposes profile-authorized `config.get` presentation
+reads and `model.options` through the shared provider inventory. `full` contains
+display, approval and paste preferences plus voice record/submit settings, not
+provider/MCP/plugin credentials. Session reasoning/model selection comes from the
+retained agent or frozen launch policy. `mtime.mcp_rev` is pinned to that policy;
+cosmetic edits do not request a cache-breaking live MCP reload. Busy overrides
+remain session-scoped; composer model changes use `session.mutate`, never global
+`config.set`. Discovery can refresh provider metadata, but never starts inference.
+
 ## Dev commands
 
 ```bash

@@ -710,7 +710,28 @@ function groupModels(
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {
-    const allFamilies = collapseModelFamilies(provider.models ?? [])
+    // Subscription gating (Nous free tier): the backend already decided which
+    // ids this account cannot spend on — drop them here so the composer menu
+    // lists exactly what's selectable. ONLY once the entitlement is actually
+    // known: while TIER resolution is pending (free_tier_pending) nothing is
+    // filtered — a blank menu is worse than briefly showing locked models.
+    // While only PRICING is pending the backend fails closed and marks EVERY
+    // model unavailable, so `unavailable_models` is useless as a filter — but
+    // the tier IS known, and on a free tier the Portal's free picks are
+    // exactly the `:free`-suffixed ids, so fall back to that shape instead of
+    // showing paid models a free account cannot spend on. The dashboard's
+    // Models page keeps its locked-row rendering; this is the chat menu.
+    const isNous = provider.slug.toLowerCase() === 'nous'
+    const gated = isNous && provider.free_tier === true && !provider.free_tier_pending
+    let spendable = provider.models ?? []
+
+    if (gated) {
+      spendable = provider.pricing_pending
+        ? spendable.filter(model => model.endsWith(':free'))
+        : spendable.filter(model => !(provider.unavailable_models ?? []).includes(model))
+    }
+
+    const allFamilies = collapseModelFamilies(spendable)
 
     if (allFamilies.length === 0) {
       continue

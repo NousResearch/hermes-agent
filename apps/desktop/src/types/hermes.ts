@@ -463,6 +463,10 @@ export interface ModelOptionProvider {
   pricing?: Record<string, ModelPricing>
   /** Nous only: whether the current account is on the free tier. */
   free_tier?: boolean
+  /** Nous only: tier not yet resolved — backend fails closed (all unavailable). */
+  free_tier_pending?: boolean
+  /** Nous only: pricing not yet loaded — backend fails closed (all unavailable). */
+  pricing_pending?: boolean
   /** Nous only: paid models a free-tier user cannot select (shown disabled). */
   unavailable_models?: string[]
   /** Per-model option support, keyed by model id (present when the picker

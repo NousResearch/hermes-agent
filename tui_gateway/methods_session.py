@@ -1233,6 +1233,35 @@ def _(rid, params: dict, session: dict) -> dict:
 _PET_OFF = {"enabled": False}
 
 
+# ── KENSEI re-anchor (upstream tip): pet.info / pet.info.meta handlers ──
+@_pet_method("pet.info", fail_open=_PET_OFF)
+def _(rid, params: dict) -> dict:
+    """Active pet for sprite renderers: spritesheet (base64) + frame geometry + state-row taxonomy."""
+    if (active := _active_pet()) is None:
+        return _ok(rid, {"enabled": False})
+    pet, scale = active
+    payload = {"enabled": True, **_pet_sprite_payload(pet, scale=scale)}
+    # Send-once for the multi-MB sheet: same revision → metadata only.
+    if (known := str(params.get("knownRevision", "") or "")) and known == payload.get("spritesheetRevision"):
+        # Send-once semantics for the multi-MB spritesheet (#54730): a caller that already holds the sheet
+        # passes the revision it has, and an unchanged sheet comes back as metadata only
+        # (spritesheetUnchanged).
+        payload.pop("spritesheetBase64", None)
+        payload["spritesheetUnchanged"] = True
+    return _ok(rid, payload)
+
+
+@_pet_method("pet.info.meta", fail_open=_PET_OFF)
+def _(rid, params: dict) -> dict:
+    """Cheap active-pet metadata used to avoid full payload refreshes."""
+    if (active := _active_pet()) is None:
+        return _ok(rid, {"enabled": False})
+    pet, scale = active
+    return _ok(rid, {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "scale": scale,
+                     "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)})
+# ── END KENSEI re-anchor ──
+
+
 def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
     """kitty payload for a TTY that speaks it (dashboard PTY falls through); only kitty is grid-safe in Ink."""
     from agent.pet import constants, render

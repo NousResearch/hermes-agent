@@ -23,18 +23,20 @@
  *    it in place would break both. Localizing it needs the marker and its
  *    rendering split apart — worth doing, not doable as a rename.
  *
- * Locales follow kanban: `en` / `ja` / `zh` / `zh-hant`. Arabic falls through
- * the resolution chain (active locale → this plugin's `en` → the key) the
- * same way a missing string in any locale does. Nouns match core: ボット /
+ * Legacy Bot Mode copy covers `en` / `ja` / `zh` / `zh-hant`; canonical hosted
+ * groups additionally cover Arabic and Russian. Missing legacy keys still
+ * resolve through this plugin's English bundle. Nouns match core: ボット /
  * 机器人 / 機器人, プロファイル / 配置档案 / 設定檔, ゲートウェイ / 网关 / 閘道.
  */
 
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { CANONICAL_GROUP_LOCALES, type CanonicalGroupMessages } from './canonical-group-locales'
 import { getPluginCtx } from './shared'
 
 type BotsMessages = {
+  canonical: { [K in keyof CanonicalGroupMessages]: string }
   /** Left rail: the bot + group-chat roster. */
   roster: {
     search: string
@@ -267,6 +269,7 @@ type BotsMessages = {
 }
 
 const en: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.en,
   roster: {
     search: 'Search bots and group chats',
     searchPlaceholder: 'Search bots and group chats…',
@@ -485,6 +488,7 @@ const en: BotsMessages = {
 }
 
 const ja: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.ja,
   roster: {
     search: 'ボットとグループチャットを検索',
     searchPlaceholder: 'ボットとグループチャットを検索…',
@@ -702,6 +706,7 @@ const ja: BotsMessages = {
 }
 
 const zh: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.zh,
   roster: {
     search: '搜索机器人和群聊',
     searchPlaceholder: '搜索机器人和群聊…',
@@ -915,6 +920,7 @@ const zh: BotsMessages = {
 }
 
 const zhHant: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES['zh-hant'],
   roster: {
     search: '搜尋機器人和群組聊天',
     searchPlaceholder: '搜尋機器人和群組聊天…',
@@ -1128,7 +1134,14 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = {
+  en,
+  ja,
+  zh,
+  'zh-hant': zhHant,
+  ar: { canonical: CANONICAL_GROUP_LOCALES.ar },
+  ru: { canonical: CANONICAL_GROUP_LOCALES.ru }
+}
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …).

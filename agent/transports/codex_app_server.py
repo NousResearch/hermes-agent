@@ -21,6 +21,89 @@ from tools.environments.local import hermes_subprocess_env
 
 MIN_CODEX_VERSION = (0, 125, 0)
 
+_VALID_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
+_VALID_APPROVAL_POLICIES = {"untrusted", "on-request", "never"}
+_VALID_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+
+
+def _optional_choice(config: dict[str, Any], key: str, choices: set[str]) -> str:
+    if key not in config:
+        return ""
+    value = config[key]
+    normalized = value.strip().lower() if isinstance(value, str) else ""
+    if normalized not in choices:
+        raise ValueError(
+            f"model.codex_app_server.{key} must be one of: {', '.join(sorted(choices))}"
+        )
+    return normalized
+
+
+def resolve_codex_app_server_args(
+    *, model: str, config: Optional[dict[str, Any]] = None,
+    kanban_root: Optional[str] = None,
+) -> list[str]:
+    """Validate and resolve session-local Codex ``-c`` overrides."""
+    cfg = config if isinstance(config, dict) else {}
+    overrides: list[tuple[str, Any]] = []
+    if model:
+        overrides.append(("model", model))
+
+    effort = _optional_choice(cfg, "model_reasoning_effort", _VALID_REASONING_EFFORTS)
+    if effort:
+        overrides.append(("model_reasoning_effort", effort))
+
+    configured_sandbox_mode = _optional_choice(
+        cfg, "sandbox_mode", _VALID_SANDBOX_MODES
+    )
+    sandbox_mode = "workspace-write" if kanban_root else configured_sandbox_mode
+    if sandbox_mode:
+        overrides.append(("sandbox_mode", sandbox_mode))
+
+    approval = _optional_choice(cfg, "ask_for_approval", _VALID_APPROVAL_POLICIES)
+    if approval:
+        overrides.append(("approval_policy", approval))
+
+    if sandbox_mode == "workspace-write":
+        if (
+            not kanban_root
+            and "network_access" in cfg
+            and not isinstance(cfg["network_access"], bool)
+        ):
+            raise ValueError("model.codex_app_server.network_access must be a boolean")
+        if "network_access" in cfg or kanban_root:
+            overrides.append((
+                "sandbox_workspace_write.network_access",
+                False if kanban_root else cfg["network_access"],
+            ))
+
+        configured_roots = [] if kanban_root else cfg.get("writable_roots", [])
+        if not isinstance(configured_roots, list) or any(
+            not isinstance(root, str) or not os.path.isabs(root)
+            for root in configured_roots
+        ):
+            raise ValueError(
+                "model.codex_app_server.writable_roots must contain only absolute paths"
+            )
+        roots: list[str] = []
+        seen_roots: set[str] = set()
+        for candidate in [*configured_roots, kanban_root]:
+            if not candidate:
+                continue
+            dedupe_key = os.path.normcase(os.path.normpath(candidate))
+            if dedupe_key not in seen_roots:
+                seen_roots.add(dedupe_key)
+                roots.append(candidate)
+        if roots:
+            overrides.append(("sandbox_workspace_write.writable_roots", roots))
+
+    args: list[str] = []
+    for key, value in overrides:
+        args.extend((
+            "-c",
+            f"{key}={json.dumps(value, ensure_ascii=False, separators=(',', ':'))}",
+        ))
+    return args
+
 
 @dataclass
 class CodexAppServerError(RuntimeError):
@@ -45,6 +128,7 @@ class CodexAppServerClient:
     def __init__(
         self, codex_bin: str = "codex", codex_home: Optional[str] = None,
         extra_args: Optional[list[str]] = None, env: Optional[dict[str, str]] = None,
+        model: str = "", config: Optional[dict[str, Any]] = None,
     ) -> None:
         self._codex_bin = codex_bin
         # codex needs LLM provider creds but must not receive Tier-1 Hermes secrets (gateway/GitHub/infra tokens).
@@ -62,7 +146,6 @@ class CodexAppServerClient:
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
 
-        cmd = [codex_bin, "app-server", *(extra_args or [])]
         from agent.delegation_context import (
             DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS,
             delegated_child_subprocess_env, is_dispatcher_owned_worker_context,
@@ -71,23 +154,24 @@ class CodexAppServerClient:
         # endpoint acts for this worker; grant it scope via its existing per-server
         # environment, never by granting the whole executor process ownership.
         owned_task = os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context()
+        managed_args: list[str] = []
         if owned_task:
             for key in (*KANBAN_ENV_KEYS, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
                 if key in os.environ:
-                    cmd += ["-c", f"mcp_servers.hermes-mcp.env.{key}={json.dumps(os.environ[key])}"]
-            cmd += ["-c", f'mcp_servers.hermes-mcp.env.{DELEGATED_CHILD_ENV_MARKER}=""']
+                    managed_args += ["-c", f"mcp_servers.hermes-mcp.env.{key}={json.dumps(os.environ[key])}"]
+            managed_args += ["-c", f'mcp_servers.hermes-mcp.env.{DELEGATED_CHILD_ENV_MARKER}=""']
         spawn_env = delegated_child_subprocess_env(spawn_env)
-        # Kanban workers must write handoff/status to the board DB outside the
-        # workspace: keep the sandbox on, add the Kanban root as writable.
+        kanban_root = None
         if owned_task:
             kanban_db = spawn_env.get("HERMES_KANBAN_DB")
             default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
             kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)
-            cmd += [
-                "-c", 'sandbox_mode="workspace-write"',
-                "-c", f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
-                "-c", "sandbox_workspace_write.network_access=false",
-            ]
+        cmd = [
+            codex_bin, "app-server",
+            *(extra_args or []),
+            *managed_args,
+            *resolve_codex_app_server_args(model=model, config=config, kanban_root=kanban_root),
+        ]
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 

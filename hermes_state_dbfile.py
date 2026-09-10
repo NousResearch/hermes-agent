@@ -141,8 +141,22 @@ def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
     return {_canonical_sqlite_path(base + "-wal"), _canonical_sqlite_path(base + "-shm")}
 
 
+def _fd_is_truly_unlinked(fd_path: str) -> bool:
+    """Confirm a `` (deleted)`` /proc fd target really lost its last name.
+
+    The suffix alone is not proof: on OpenZFS a live, still-linked file whose
+    dentry was unhashed is reported as deleted while ``st_nlink`` is still 1 and
+    the path resolves to the very same inode. Only ``st_nlink == 0`` means the
+    inode is an orphan generation. An unstattable descriptor counts as deleted
+    so the guard keeps failing closed."""
+    try:
+        return os.stat(fd_path).st_nlink == 0
+    except OSError:
+        return True
+
+
 def _iter_proc_fd_targets():
-    """Yield ``(pid, readlink target)`` for every readable ``/proc/<pid>/fd`` entry."""
+    """Yield ``(pid, readlink target, fd path)`` for every readable ``/proc/<pid>/fd`` entry."""
     for pid_str in os.listdir("/proc"):
         if not pid_str.isdigit():
             continue
@@ -153,7 +167,8 @@ def _iter_proc_fd_targets():
             continue  # process gone or not ours
         for fd in fds:
             with contextlib.suppress(OSError):
-                yield int(pid_str), os.readlink(f"{fd_dir}/{fd}")
+                fd_path = f"{fd_dir}/{fd}"
+                yield int(pid_str), os.readlink(fd_path), fd_path
 
 
 def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
@@ -166,8 +181,9 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     holders: List[Tuple[int, str]] = []
     watched = _watched_sqlite_sidecar_paths(db_path)
     try:
-        for pid, target in _iter_proc_fd_targets():
-            if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
+        for pid, target, fd_path in _iter_proc_fd_targets():
+            if (" (deleted)" in target and _canonical_sqlite_path(target) in watched
+                    and _fd_is_truly_unlinked(fd_path)):
                 holders.append((pid, target))
     except Exception as exc:
         logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
@@ -614,7 +630,7 @@ def count_db_holders(db_path: Path) -> Optional[int]:
         if not sys.platform.startswith("linux"):
             return None
         target = os.path.realpath(str(db_path))
-        return len({pid for pid, link in _iter_proc_fd_targets() if link == target})
+        return len({pid for pid, link, _fd_path in _iter_proc_fd_targets() if link == target})
     except Exception:
         return None
 

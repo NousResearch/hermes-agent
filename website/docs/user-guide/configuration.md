@@ -50,6 +50,29 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
 :::
 
+## OpenRouter picker preference
+
+To list only OpenRouter models with free prompt and completion pricing in this
+profile's model pickers, set:
+
+```yaml
+models:
+  openrouter:
+    free_only: true
+```
+
+The default is `false`. Use a YAML boolean, not a quoted string. The setting
+applies to CLI, gateway, web/desktop, TUI, setup and shared auxiliary pickers.
+It leaves the active model and provider defaults unchanged. A selected paid
+model remains the current model but is excluded from free-only choices.
+Explicitly typed model IDs still work; this preference is not a spending limit.
+
+A successful catalog with no eligible models leaves the list empty. If the
+catalog is unavailable, Hermes uses a previously validated result for that
+profile and policy, or the curated offline entries explicitly marked free.
+Offline annotations cannot guarantee a provider's current billing. Refresh the
+picker to update its catalog.
+
 ## Configuration Precedence
 
 Settings are resolved in this order (highest priority first):

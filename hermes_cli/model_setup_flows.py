@@ -54,6 +54,9 @@ def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
     from hermes_constants import OPENROUTER_BASE_URL
     from hermes_cli.auth import ProviderConfig, _prompt_model_selection
+    from hermes_cli.models_openrouter_policy import openrouter_free_only, openrouter_picker_models
+
+    free_only = openrouter_free_only(config)
 
     # OpenRouter isn't in PROVIDER_REGISTRY so we synthesize a minimal pconfig.
     pconfig = ProviderConfig(id="openrouter", name="OpenRouter", auth_type="api_key", api_key_env_vars=("OPENROUTER_API_KEY",))
@@ -62,9 +65,10 @@ def _model_flow_openrouter(config, current_model=""):
     if abort:
         return
 
-    from hermes_cli.models import model_ids
     from hermes_cli.models_pricing import get_pricing_for_provider
-    openrouter_models = model_ids(force_refresh=True)
+    openrouter_models = [mid for mid, _ in openrouter_picker_models(config=config, force_refresh=True)]
+    if free_only and current_model and current_model not in openrouter_models:
+        _say(f"Current model: {current_model} (outside the free-only picker)")
     # Live pricing is non-blocking — empty dict on failure.
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
     selected = _prompt_model_selection(

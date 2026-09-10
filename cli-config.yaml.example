@@ -271,6 +271,16 @@ model:
 #                             # (approval prompts, clarify) never count against it.
 
 # =============================================================================
+# OpenRouter Model Picker
+# =============================================================================
+# Set true to list only models with free prompt and completion pricing.
+# This preference does not change the active model or explicitly typed model IDs.
+# It is not a billing limit; offline catalog labels cannot guarantee current prices.
+models:
+  openrouter:
+    free_only: false
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.

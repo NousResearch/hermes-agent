@@ -91,7 +91,11 @@ def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url"):
 
 
 def _list_auth_returning(rows: list[dict]):
-    """Patch list_authenticated_providers to return a fixed row list."""
+    """Return fixed rows with the same policy markers as the real finalized source."""
+    rows = [
+        {**row, "catalog_authoritative": True, "free_only": False}
+        if row.get("slug") == "openrouter" else row for row in rows
+    ]
     return patch(
         "hermes_cli.model_switch.list_authenticated_providers",
         return_value=rows,

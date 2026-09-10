@@ -48,13 +48,15 @@ class TestFetchOpenRouterModels:
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        snapshot = [("vendor/paid", "recommended"), ("vendor/model:free", "free")]
+        monkeypatch.setattr(_models_mod, "OPENROUTER_MODELS", snapshot)
         # Pin the remote manifest out too — otherwise the fallback silently
         # depends on whatever the deployed catalog currently contains.
         with patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=None), \
              patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
             models = fetch_openrouter_models(force_refresh=True)
 
-        assert models == OPENROUTER_MODELS
+        assert models == [("vendor/paid", "recommended"), ("vendor/model:free", "free")]
 
     def test_filters_out_models_without_tool_support(self, monkeypatch):
         """Models whose supported_parameters omits 'tools' must not appear in the picker.
@@ -1538,7 +1540,7 @@ class TestOpenRouterCatalogDiskCache:
         payload = {"data": [{"id": "a/one", "supported_parameters": ["tools"],
                              "pricing": {"prompt": "0", "completion": "0"}}]}
 
-        def fake_index(url, timeout, opener):
+        def fake_index(url, timeout, opener, **kwargs):
             calls.append(url)
             return payload["data"], {m["id"]: m for m in payload["data"]}
 

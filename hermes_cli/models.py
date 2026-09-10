@@ -79,13 +79,14 @@ def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: floa
 
 
 def _get_json(
-    url: str, *, timeout: float, headers: Optional[dict[str, str]] = None, opener=None, **open_kwargs: Any
+    url: str, *, timeout: float, headers: Optional[dict[str, str]] = None, opener=None,
+    parse_float=float, **open_kwargs: Any
 ) -> Any:
     """GET ``url`` and parse the JSON body. ``opener`` defaults to the catalog opener (resolved at
     call time so monkeypatching ``_urlopen_model_catalog_request`` still applies). Raises on failure."""
     req = urllib.request.Request(url, headers=headers or {})
     with (opener or _urlopen_model_catalog_request)(req, timeout=timeout, **open_kwargs) as resp:
-        return json.loads(resp.read().decode())
+        return json.loads(resp.read().decode(), parse_float=parse_float)
 
 
 def _read_json_cache(path: Path, *, errors=Exception) -> Optional[dict]:
@@ -145,7 +146,7 @@ def _custom_provider_ssl_context(base_url: str):
 
 
 # Process-lifetime picker lists refreshed from the live catalogs (see fetch_*_models).
-_openrouter_catalog_cache: list[tuple[str, str]] | None = None
+_openrouter_catalog_cache: dict[tuple[str, bool], list[tuple[str, str]]] | None = None
 
 # The in-memory ``_openrouter_catalog_cache`` is per-process, so without a disk cache every cold
 # picker open re-downloads the full ~686KB /api/v1/models catalog. The *curated* result
@@ -166,28 +167,37 @@ def _openrouter_catalog_disk_path() -> Path:
     return get_hermes_home() / "cache" / "openrouter_curated_catalog.json"
 
 
-def _read_openrouter_catalog_disk() -> list[tuple[str, str]] | None:
-    """Fresh curated catalog from disk, or None (missing, corrupt, expired, or empty)."""
+def _read_openrouter_catalog_disk(*, free_only: bool = False) -> list[tuple[str, str]] | None:
+    """Fresh policy-specific catalog, including a successful empty result."""
     obj = _read_json_cache(_openrouter_catalog_disk_path())
-    if obj is None:
+    if not isinstance(obj, dict):
         return None
     try:
         if time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
             return None
     except (TypeError, ValueError):
         return None
-    items = obj.get("curated")
-    if not isinstance(items, list):
+    # Legacy labels cannot prove free pricing: a zero-priced silent default is
+    # labelled "default". Refresh that view instead of guessing from raw rows.
+    if free_only and obj.get("schema_version") != 2:
         return None
-    out = [(str(it[0]), str(it[1])) for it in items if isinstance(it, (list, tuple)) and len(it) == 2]
-    return out or None
+    items = obj.get("free_curated" if free_only else "curated")
+    if not isinstance(items, list) or any(
+        not isinstance(item, (list, tuple)) or len(item) != 2
+        or not all(isinstance(value, str) for value in item) for item in items
+    ):
+        return None
+    return [(item[0], item[1]) for item in items]
 
 
-def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
+def _write_openrouter_catalog_disk(
+    curated: list[tuple[str, str]], free_curated: list[tuple[str, str]],
+) -> None:
     try:
         _write_json_cache(
             _openrouter_catalog_disk_path(),
-            {"fetched_at": time.time(), "curated": [list(c) for c in curated]})
+            {"schema_version": 2, "fetched_at": time.time(),
+             "curated": [list(c) for c in curated], "free_curated": [list(c) for c in free_curated]})
     except Exception as exc:
         logger.debug("openrouter curated catalog disk write failed: %s", exc)
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
@@ -454,7 +464,8 @@ def get_default_model_for_provider(provider: str) -> str:
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:
-    return _zero_priced(pricing, ("prompt", "completion"), "0")
+    from hermes_cli.models_openrouter_policy import explicitly_zero_priced
+    return explicitly_zero_priced(pricing)
 
 
 def _openrouter_model_supports_tools(item: Any) -> bool:
@@ -493,14 +504,17 @@ def clamp_reasoning_effort_to_supported(
     return _clamp_effort(effort, supported_efforts)
 
 
-def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tuple[list, dict[str, dict[str, Any]]]]:
+def _fetch_live_catalog_index(
+    url: str, timeout: float, opener, *, parse_float=float,
+) -> Optional[tuple[list, dict[str, dict[str, Any]]]]:
     """GET an OpenAI-style ``/models`` listing → ``(raw data array, {id: item})``, or None when the
     endpoint is unreachable or the payload has no ``data`` list."""
     try:
-        payload = _get_json(url, timeout=timeout, headers={"Accept": "application/json"}, opener=opener)
+        payload = _get_json(url, timeout=timeout, headers={"Accept": "application/json"},
+                            opener=opener, parse_float=parse_float)
     except Exception:
         return None
-    live_items = payload.get("data", [])
+    live_items = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(live_items, list):
         return None
     live_by_id = {
@@ -510,20 +524,27 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
 
 
 def fetch_openrouter_models(
-    timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
+    timeout: float = 8.0, *, force_refresh: bool = False,
+    free_only: bool = False) -> list[tuple[str, str]]:
+    """Curated catalog; optional free pricing filter is independent of explicit slug lookup."""
     global _openrouter_catalog_cache
+    from hermes_constants import get_hermes_home
 
-    if _openrouter_catalog_cache is not None and not force_refresh:
-        return list(_openrouter_catalog_cache)
+    if type(free_only) is not bool:
+        raise ValueError("free_only must be a boolean")
+    cache_key = (str(get_hermes_home()), free_only)
+    if _openrouter_catalog_cache is None:
+        _openrouter_catalog_cache = {}
+    cached = _openrouter_catalog_cache.get(cache_key)
+    if cached is not None and not force_refresh:
+        return list(cached)
 
     # Cold process: serve from the persisted disk cache when fresh so the
     # picker doesn't re-download the full ~686KB catalog on every open.
-    if not force_refresh:
-        disk = _read_openrouter_catalog_disk()
-        if disk:
-            _openrouter_catalog_cache = disk
-            return list(disk)
+    disk = _read_openrouter_catalog_disk(free_only=free_only)
+    if disk is not None and not force_refresh:
+        _openrouter_catalog_cache[cache_key] = disk
+        return list(disk)
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.
@@ -533,41 +554,47 @@ def fetch_openrouter_models(
     except Exception:
         remote = None
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
-
-    live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
+    # Preserve tiny nonzero OpenRouter prices without changing other catalogs' numeric types.
+    live = _fetch_live_catalog_index(
+        _OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request, parse_float=str)
     if live is None:
-        return list(_openrouter_catalog_cache or fallback)
+        if cached is not None:
+            return list(cached)
+        if disk is not None:
+            _openrouter_catalog_cache[cache_key] = disk
+            return list(disk)
+        # Offline annotations are a selection hint, not a guarantee of provider billing.
+        return [(mid, desc) for mid, desc in fallback
+                if not free_only or str(mid).endswith(":free") or str(desc).strip().lower() == "free"]
     live_items, live_by_id = live
 
-    # Free warm-up for the reasoning-capability cache: same payload the caps fetch would pull.
     global _openrouter_reasoning_caps_cache
     seeded = _seed_reasoning_caps(_OPENROUTER_CATALOG_URL, live_items)
     if _openrouter_reasoning_caps_cache is None and seeded is not None:
         _openrouter_reasoning_caps_cache = seeded
 
     curated: list[tuple[str, str]] = []
+    free_curated: list[tuple[str, str]] = []
     silent_default = get_preferred_silent_default_model("openrouter")
     for preferred_id, _ in fallback:
         live_item = live_by_id.get(preferred_id)
-        # Hide models without tool-calling support — selecting one fails at the first tool call.
         if live_item is None or not _openrouter_model_supports_tools(live_item):
             continue
-        # Hide models that don't advertise tool-calling support — hermes-agent requires it and surfacing
-        # them leads to immediate runtime failures when the user selects them. Ported from
-        # Kilo-Org/kilocode#9068.
-        if preferred_id == silent_default:
-            desc = "default"  # keep the silent-default badge through the live refresh
-        else:
-            desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
+        is_free = _openrouter_model_is_free(live_item.get("pricing"))
+        desc = "default" if preferred_id == silent_default else ("free" if is_free else "")
         curated.append((preferred_id, desc))
+        if is_free:
+            free_curated.append((preferred_id, desc))
 
-    if not curated:
-        return list(_openrouter_catalog_cache or fallback)
-    if not curated[0][1]:
+    # A successful empty catalog is authoritative, including after a paid/free policy change.
+    if curated and not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
-    _openrouter_catalog_cache = curated
-    _write_openrouter_catalog_disk(curated)
-    return list(curated)
+    # Derive both independent choices from one response: assembling provider rows and then
+    # applying their policy should not issue a second cold catalog request.
+    _openrouter_catalog_cache[(cache_key[0], False)] = curated
+    _openrouter_catalog_cache[(cache_key[0], True)] = free_curated
+    _write_openrouter_catalog_disk(curated, free_curated)
+    return list(free_curated if free_only else curated)
 
 
 def model_ids(*, force_refresh: bool = False) -> list[str]:
@@ -1664,6 +1691,9 @@ def cached_provider_model_ids(
 def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     """Drop one provider's cache entry, or wipe the whole cache (``provider=None``). Used by
     ``/model --refresh`` and ``hermes model --refresh``."""
+    global _openrouter_catalog_cache
+    if provider is None or _normalized_cache_slug(provider) == "openrouter":
+        _openrouter_catalog_cache = None
     try:
         # Native Ollama tags are keyed by root URL, not provider slug — a targeted refresh can't
         # identify the root from the name alone, so clear this small in-process cache every time.

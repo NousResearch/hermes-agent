@@ -231,3 +231,21 @@ describe('host workspace scope', () => {
     expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
   })
 })
+
+describe('host.updates', () => {
+  afterEach(async () => {
+    const { setUpdateOverlayOpen } = await import('@/store/updates')
+    setUpdateOverlayOpen(false)
+  })
+
+  it('opens the native update overlay on the requested lane', async () => {
+    const { $updateOverlayOpen, $updateOverlayTarget } = await import('@/store/updates')
+
+    host.updates.open()
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect($updateOverlayTarget.get()).toBe('client')
+
+    host.updates.open('backend')
+    expect($updateOverlayTarget.get()).toBe('backend')
+  })
+})

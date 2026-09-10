@@ -51,6 +51,28 @@ export function applyThinkingSoundFromConfig(
   $thinkingSoundEnabled.set(config?.voice?.thinking_sound !== false)
 }
 
+// `voice.tts_conclusion_only` — auto read-aloud speaks only the last reply of a
+// burst, after a quiet window, instead of every interim assistant message
+// (default off, matching the backend default).
+export const $ttsConclusionOnly = atom<boolean>(false)
+
+// `voice.tts_conclusion_grace_ms` — how long the conclusion window stays quiet
+// before speech fires (backend default 1500 ms).
+export const $ttsConclusionGraceMs = atom<number>(1500)
+
+/** Seed the read-aloud debounce pair from a loaded config payload. */
+export function applyTtsConclusionFromConfig(
+  config: { voice?: { tts_conclusion_only?: unknown; tts_conclusion_grace_ms?: unknown } | null } | null | undefined
+) {
+  $ttsConclusionOnly.set(config?.voice?.tts_conclusion_only === true)
+
+  const grace = Number(config?.voice?.tts_conclusion_grace_ms)
+
+  if (Number.isFinite(grace) && grace >= 0) {
+    $ttsConclusionGraceMs.set(grace)
+  }
+}
+
 /** Persist even an unchanged value, so migrating false is also one-time. */
 export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
   autoSpeakChosen = true

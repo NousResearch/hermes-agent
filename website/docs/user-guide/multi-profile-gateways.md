@@ -171,6 +171,16 @@ using the default listener's existing credentials.
   `/p/coder/webhooks/<route>` and is rejected on every other profile prefix.
 - Webhook routes without `profile` remain default-profile routes and are not
   reachable through a named profile prefix.
+- Delivery follows the same binding. A `profile: coder` route's reply (or
+  `deliver_only` message) goes out through **coder's** adapter for the
+  `deliver` platform, falls back to **coder's** home channel when
+  `deliver_extra.chat_id` is unset, and a `github_comment` delivery runs `gh`
+  with `GH_TOKEN` / `GITHUB_TOKEN` from `profiles/coder/.env`. If coder has no
+  adapter for that platform the delivery fails (502) rather than posting as
+  another profile's bot; a default route likewise never borrows a platform that
+  is enabled only on a secondary profile.
+- `/p/coder/api/platforms/<platform>/events` callbacks are verified and
+  dispatched by coder's adapter; when coder has none the callback is a 503.
 
 Keep port-binding platforms disabled in secondary profile configs. The shared
 listener and its route definitions stay on the default profile; profile

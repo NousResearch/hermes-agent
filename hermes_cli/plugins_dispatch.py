@@ -50,6 +50,8 @@ _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
+# Concurrent invocations wait in a bounded FIFO. Each admitted callback receives its own timeout.
+_HOOK_CALLBACK_QUEUE_CAP = 64
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
 # System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
@@ -148,6 +150,12 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
 
 
 class PluginDispatchMixin:
+    _hook_timeout_lock: Any
+    _hook_callback_waiters: Dict[tuple, List[threading.Event]]
+    _hook_running_callbacks: Dict[tuple, object]
+    _hook_timeout_suppressed_until: Dict[tuple, float]
+    _hook_timeout_suppression_seconds: float
+
     @staticmethod
     def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
         """Invoke a hook while withholding additive fields from narrow legacy callbacks."""
@@ -201,63 +209,102 @@ class PluginDispatchMixin:
     def _run_hook_callback_bounded(
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
-        """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
-        suppressed, still running, timed out (worker abandoned, never joined), or the worker
-        could not be started. Exceptions propagate."""
+        """Run one callback through a bounded FIFO with a full per-callback timeout.
+
+        Healthy concurrent calls are serialized rather than dropped. A callback that times out is
+        abandoned without joining, and its live-worker latch remains until that worker actually exits.
+        """
         callback_name = getattr(cb, "__name__", repr(cb))
         callback_key = (hook_name, id(cb))
-        token = object()
+        waiter = threading.Event()
         with self._hook_timeout_lock:
-            suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
-            running = callback_key in self._hook_running_callbacks
-            if (suppressed_until is not None and suppressed_until > time.monotonic()) or running:
+            waiters = self._hook_callback_waiters.setdefault(callback_key, [])
+            if len(waiters) >= _HOOK_CALLBACK_QUEUE_CAP:
                 logger.warning(
-                    "Hook '%s' callback %s skipped after previous "
-                    "timeout or while still running", hook_name, callback_name)
+                    "Hook '%s' callback %s skipped because its FIFO reached the cap of %d",
+                    hook_name, callback_name, _HOOK_CALLBACK_QUEUE_CAP,
+                )
                 return _HOOK_SKIPPED
-            if suppressed_until is not None:
-                self._hook_timeout_suppressed_until.pop(callback_key, None)
-            self._hook_running_callbacks[callback_key] = token
+            waiters.append(waiter)
+            if len(waiters) == 1:
+                waiter.set()
 
-        context = contextvars.copy_context()
-        done = threading.Event()
-        outcome: Dict[str, Any] = {}
-        failure: Dict[str, Exception] = {}
-
-        def _release_token() -> None:
-            with self._hook_timeout_lock:
-                if self._hook_running_callbacks.get(callback_key) is token:
-                    self._hook_running_callbacks.pop(callback_key, None)
-
-        def _runner() -> None:
-            try:
-                outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
-            except Exception as exc:
-                failure["exc"] = exc
-            finally:
-                _release_token()
-                done.set()
-
-        thread = threading.Thread(target=_runner, name=f"hermes-hook-{callback_name}"[:40], daemon=True)
+        # Every predecessor has its own bounded callback timeout. Queue admission is capped, so this
+        # wait is bounded without consuming the execution budget of this callback.
+        waiter.wait()
         try:
-            thread.start()
-        except RuntimeError as exc:
-            _release_token()  # the runner's finally never runs when OS thread creation fails
-            logger.warning(
-                "Hook '%s' callback %s worker failed to start: %s — skipping",
-                hook_name, callback_name, exc)
-            return _HOOK_SKIPPED
-        if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
+            token = object()
             with self._hook_timeout_lock:
-                # See #6622.
-                self._hook_timeout_suppressed_until[callback_key] = (
-                    time.monotonic() + self._hook_timeout_suppression_seconds)
-            logger.warning(
-                "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
-            return _HOOK_SKIPPED
-        if "exc" in failure:
-            raise failure["exc"]
-        return outcome.get("value")
+                now = time.monotonic()
+                suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
+                if suppressed_until is not None and suppressed_until <= now:
+                    self._hook_timeout_suppressed_until.pop(callback_key, None)
+                    suppressed_until = None
+                running_token = self._hook_running_callbacks.get(callback_key)
+                if suppressed_until is not None or running_token is not None:
+                    logger.warning(
+                        "Hook '%s' callback %s skipped after a previous timeout or while its "
+                        "abandoned worker is still running",
+                        hook_name, callback_name,
+                    )
+                    return _HOOK_SKIPPED
+                self._hook_running_callbacks[callback_key] = token
+
+            context = contextvars.copy_context()
+            done = threading.Event()
+            outcome: Dict[str, Any] = {}
+            failure: Dict[str, Exception] = {}
+
+            def _release_token() -> None:
+                with self._hook_timeout_lock:
+                    if self._hook_running_callbacks.get(callback_key) is token:
+                        self._hook_running_callbacks.pop(callback_key, None)
+
+            def _runner() -> None:
+                try:
+                    outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
+                except Exception as exc:
+                    failure["exc"] = exc
+                finally:
+                    _release_token()
+                    done.set()
+
+            thread = threading.Thread(
+                target=_runner, name=f"hermes-hook-{callback_name}"[:40], daemon=True
+            )
+            try:
+                thread.start()
+            except RuntimeError as exc:
+                _release_token()
+                logger.warning(
+                    "Hook '%s' callback %s worker failed to start: %s — skipping",
+                    hook_name, callback_name, exc,
+                )
+                return _HOOK_SKIPPED
+            if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
+                with self._hook_timeout_lock:
+                    self._hook_timeout_suppressed_until[callback_key] = (
+                        time.monotonic() + self._hook_timeout_suppression_seconds
+                    )
+                logger.warning(
+                    "Hook '%s' callback %s timed out after %gs — skipping",
+                    hook_name, callback_name, timeout,
+                )
+                return _HOOK_SKIPPED
+            if "exc" in failure:
+                raise failure["exc"]
+            return outcome.get("value")
+        finally:
+            with self._hook_timeout_lock:
+                waiters = self._hook_callback_waiters.get(callback_key, [])
+                if waiters and waiters[0] is waiter:
+                    waiters.pop(0)
+                elif waiter in waiters:
+                    waiters.remove(waiter)
+                if waiters:
+                    waiters[0].set()
+                else:
+                    self._hook_callback_waiters.pop(callback_key, None)
 
     def _subscribe_event(self, owner: str, event: str, callback: Callable) -> None:
         """Add an owner-tagged event subscription in registration order."""

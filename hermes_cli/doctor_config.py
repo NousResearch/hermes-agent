@@ -17,6 +17,24 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def pooled_credential_providers() -> list[str]:
+    """Provider ids that hold an explicit credential-pool entry in ``auth.json``.
+
+    ``hermes auth add`` persists to the pool and never writes ``.env``, so a credential added that
+    way is invisible to :func:`_has_provider_env_config` and an env-only check reports a missing API
+    key on an install that is fully authed. Ambient borrowed sources (gh_cli / claude_code / qwen-cli)
+    are excluded by ``_pool_entry_is_explicit``, so this cannot green-light a pool the user never set
+    up. A store that fails to read degrades to "found nothing" rather than failing the check."""
+    providers: list[str] = []
+    with warn_on_error(""):
+        from hermes_cli.auth import _pool_entry_is_explicit, read_credential_pool
+        pool = read_credential_pool()
+        providers = sorted(
+            pid for pid, entries in (pool.items() if isinstance(pool, dict) else ())
+            if isinstance(entries, list) and any(_pool_entry_is_explicit(e) for e in entries))
+    return providers
+
+
 # Legacy config keys still read for back-compat: warn-only with the modern replacement, never auto-migrated
 # (migrations live in config.py). (section, key, replacement)
 _DEPRECATED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
@@ -141,7 +159,12 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
             content = env_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = env_path.read_text(encoding="latin-1")
-        if not check_bool(_has_provider_env_config(content), "API key or custom endpoint configured", f"No API key found in {_DHH}/.env"):
+        if _has_provider_env_config(content):
+            check_ok("API key or custom endpoint configured")
+        elif pooled := pooled_credential_providers():
+            check_ok("API key configured in the credential pool", f"({', '.join(pooled)})")
+        else:
+            check_warn(f"No API key found in {_DHH}/.env or the credential pool")
             f.issues.append("Run 'hermes setup' to configure API keys")
     elif (PROJECT_ROOT / '.env').exists():  # project root as fallback
         check_ok(".env file exists (in project directory)")

@@ -23,6 +23,7 @@ from hermes_cli import doctor_tools
 from hermes_cli import doctor_state
 from hermes_cli import doctor_platform
 from hermes_cli import doctor_config
+from hermes_cli import auth as auth_mod
 from tools import browser_tool_install as bt_install
 
 
@@ -75,6 +76,56 @@ class TestProviderEnvDetection:
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
+
+
+class TestPooledCredentialDetection:
+    """`hermes auth add` persists to the auth.json credential pool and never writes .env, so the
+    env-only check used to report "No API key found" on a fully-authed install."""
+
+    def test_lists_providers_with_explicit_pool_entries(self, monkeypatch):
+        monkeypatch.setattr(auth_mod, "read_credential_pool", lambda provider_id=None: {
+            "zai": [{"source": "device_code"}],
+            "anthropic": [{"source": "manual", "label": "Agentic", "priority": 0}],
+        })
+
+        assert doctor_config.pooled_credential_providers() == ["anthropic", "zai"]
+
+    def test_ignores_ambient_borrowed_credentials(self, monkeypatch):
+        monkeypatch.setattr(auth_mod, "read_credential_pool", lambda provider_id=None: {
+            "anthropic": [{"source": "claude_code"}], "copilot": [{"source": "gh_cli"}],
+        })
+
+        assert doctor_config.pooled_credential_providers() == []
+
+    def test_unreadable_store_reports_nothing_instead_of_raising(self, monkeypatch):
+        def boom(provider_id=None):
+            raise OSError("auth.json unreadable")
+
+        monkeypatch.setattr(auth_mod, "read_credential_pool", boom)
+
+        assert doctor_config.pooled_credential_providers() == []
+
+    def test_env_check_accepts_a_pool_only_credential(self, monkeypatch, tmp_path, capsys):
+        (tmp_path / ".env").write_text("TERMINAL_ENV=local\n")
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", tmp_path)
+        monkeypatch.setattr(doctor_config, "pooled_credential_providers", lambda: ["anthropic"])
+
+        finding = doctor_config._check_env_file(False)
+
+        out = capsys.readouterr().out
+        assert "API key configured in the credential pool" in out
+        assert "No API key found" not in out
+        assert finding.issues == []
+
+    def test_env_check_still_warns_when_the_pool_is_empty_too(self, monkeypatch, tmp_path, capsys):
+        (tmp_path / ".env").write_text("TERMINAL_ENV=local\n")
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", tmp_path)
+        monkeypatch.setattr(doctor_config, "pooled_credential_providers", lambda: [])
+
+        finding = doctor_config._check_env_file(False)
+
+        assert "No API key found" in capsys.readouterr().out
+        assert finding.issues == ["Run 'hermes setup' to configure API keys"]
 
 
 class TestDoctorToolAvailabilitySummary:

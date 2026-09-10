@@ -124,13 +124,16 @@ class _ResponsesStream:
 
     def __init__(self, adapter, response, *, response_id: str, model: str, created_at: int,
                  conversation_history: List[Dict[str, str]], user_message: str,
-                 instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str):
+                 instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
+                 include_reasoning: bool = False, stream_reasoning: bool = False):
         from gateway.platforms import api_server as api
         self._api = api
         self.adapter, self.response, self.response_id = adapter, response, response_id
         self.model, self.created_at, self.conversation_history = model, created_at, conversation_history
         self.user_message, self.instructions = user_message, instructions
         self.conversation, self.store, self.session_id = conversation, store, session_id
+        self.include_reasoning = include_reasoning
+        self.stream_reasoning = stream_reasoning
         self.final_text_parts: List[str] = []
         self.pending_tool_calls: List[Dict[str, Any]] = []  # open function_call items, in order
         self.emitted_items: List[Dict[str, Any]] = []  # output items so far (terminal payload)
@@ -141,6 +144,8 @@ class _ResponsesStream:
         self.message_output_index: Optional[int] = None
         self.message_opened = False
         self.final_response_text = ""
+        self.final_reasoning_text = ""
+        self.reasoning_delta_seen = False
         self.agent_error: Optional[str] = None
         self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self.terminal_snapshot_persisted = False
@@ -166,6 +171,8 @@ class _ResponsesStream:
         if error is not None:
             env["error"] = {"message": error, "type": "server_error"}
         env["usage"] = self._api._responses_usage_payload(self.usage)
+        if self.include_reasoning and self.final_reasoning_text:
+            env.setdefault("hermes", {})["reasoning"] = {"text": self.final_reasoning_text, "status": "completed"}
         return env
 
     def _history_with_user(self) -> List[Dict[str, Any]]:
@@ -221,6 +228,17 @@ class _ResponsesStream:
             "output_index": self.message_output_index, "content_index": 0, "delta": delta_text,
             "logprobs": []})
 
+    async def emit_reasoning_delta(self, delta_text: str) -> None:
+        if not (self.include_reasoning and self.stream_reasoning and delta_text):
+            return
+        self.reasoning_delta_seen = True
+        await self.write_event("hermes.reasoning.delta", {
+            "type": "hermes.reasoning.delta",
+            "response_id": self.response_id,
+            "item_id": self.message_item_id,
+            "delta": delta_text,
+        })
+
     async def emit_tool_started(self, payload: Dict[str, Any]) -> None:
         """function_call ``output_item.added``; the agent's tool_call_id beats a generated call id."""
         self.call_counter += 1
@@ -274,6 +292,9 @@ class _ResponsesStream:
                 await self.emit_tool_started(payload)
             elif tag == "__tool_completed__":
                 await self.emit_tool_completed(payload)
+            elif tag == "__reasoning_delta__":
+                delta_text = payload.get("delta", "") if isinstance(payload, dict) else ""
+                await self.emit_reasoning_delta(delta_text)
         elif isinstance(item, str):
             self._batch_buf.append(item)
             if self._batch_timer is None:
@@ -315,14 +336,43 @@ class _ResponsesStream:
                 await self.emit_text_delta(agent_final)
             if agent_final and not self.final_response_text:
                 self.final_response_text = agent_final
+            # Extract reasoning text for hermes.reasoning exposure
+            if isinstance(result, dict):
+                extracted = self._extract_reasoning_text(result)
+                if extracted:
+                    self.final_reasoning_text = extracted
             if isinstance(result, dict) and result.get("error") and not self.final_response_text:
                 self.agent_error = self._api._redact_api_error_text(result["error"])
         except Exception as e:  # noqa: BLE001
             logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
             self.agent_error = self._api._redact_api_error_text(e)
 
+    @staticmethod
+    def _extract_reasoning_text(result: Dict[str, Any]) -> str:
+        """Extract final reasoning text from an agent result if available."""
+        text = result.get("last_reasoning") or ""
+        if isinstance(text, str) and text.strip():
+            return text
+        messages = result.get("messages", [])
+        if not isinstance(messages, list):
+            return ""
+        for msg in reversed(messages):
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            msg_reasoning = msg.get("reasoning") or msg.get("reasoning_content")
+            if isinstance(msg_reasoning, str) and msg_reasoning.strip():
+                return msg_reasoning
+        return ""
+
     async def close_message_item(self) -> None:
         self.final_response_text = "".join(self.final_text_parts) or self.final_response_text
+        # Emit hermes.reasoning.done if streaming deltas were seen
+        if self.include_reasoning and self.stream_reasoning and self.reasoning_delta_seen:
+            await self.write_event("hermes.reasoning.done", {
+                "type": "hermes.reasoning.done",
+                "response_id": self.response_id,
+                "item_id": self.message_item_id,
+            })
         if not self.message_opened:
             return
         await self.write_event("response.output_text.done", {
@@ -696,7 +746,8 @@ class OpenAICompatRoutesMixin:
         self, request: "web.Request", response_id: str, model: str, created_at: int, stream_q,
         agent_task, agent_ref, conversation_history: List[Dict[str, str]], user_message: str,
         instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
-        gateway_session_key: Optional[str] = None) -> "web.StreamResponse":
+        gateway_session_key: Optional[str] = None,
+        include_reasoning: bool = False, stream_reasoning: bool = False) -> "web.StreamResponse":
         """Write the SSE stream for POST /v1/responses.
 
         Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
@@ -709,7 +760,8 @@ class OpenAICompatRoutesMixin:
         st = _ResponsesStream(
             self, response, response_id=response_id, model=model, created_at=created_at,
             conversation_history=conversation_history, user_message=user_message,
-            instructions=instructions, conversation=conversation, store=store, session_id=session_id)
+            instructions=instructions, conversation=conversation, store=store, session_id=session_id,
+            include_reasoning=include_reasoning, stream_reasoning=stream_reasoning)
         try:
             await st.emit_created()
             async for item in _iter_stream_items(stream_q, agent_task, response):
@@ -773,6 +825,20 @@ class OpenAICompatRoutesMixin:
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
+        hermes_options = body.get("hermes") if isinstance(body.get("hermes"), dict) else {}
+        reasoning_options = hermes_options.get("reasoning") if isinstance(hermes_options.get("reasoning"), dict) else {}
+        include_reasoning = bool(reasoning_options.get("include"))
+        stream_reasoning = bool(reasoning_options.get("stream"))
+        # Forward gateway reasoning/service_tier so the agent uses the same config as other platforms
+        from gateway.run import GatewayRunner
+        try:
+            _reasoning_config = GatewayRunner._load_reasoning_config()
+        except Exception:
+            _reasoning_config = None
+        try:
+            _service_tier = GatewayRunner._load_service_tier()
+        except Exception:
+            _service_tier = None
         if conversation and previous_response_id:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
         if conversation:
@@ -846,6 +912,7 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
+            reasoning_config=_reasoning_config, service_tier=_service_tier,
             **agent_overrides, route=route)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
@@ -862,9 +929,14 @@ class OpenAICompatRoutesMixin:
                 _stream_q.put_threadsafe(("__tool_completed__", {
                     "tool_call_id": tool_call_id, "name": function_name,
                     "arguments": function_args or {}, "result": function_result}))
+
+            def _on_reasoning_delta(delta_text):
+                if include_reasoning and stream_reasoning and delta_text:
+                    _stream_q.put_threadsafe(("__reasoning_delta__", {"delta": delta_text}))
             agent_task, agent_ref = self._spawn_stream_agent(
                 _stream_q, tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start, tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning_delta if include_reasoning else None,
                 **run_kwargs)
             return await self._write_sse_responses(
                 request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}",
@@ -872,7 +944,8 @@ class OpenAICompatRoutesMixin:
                 stream_q=_stream_q, agent_task=agent_task, agent_ref=agent_ref,
                 conversation_history=conversation_history, user_message=user_message,
                 instructions=instructions, conversation=conversation, store=store,
-                session_id=session_id, gateway_session_key=gateway_session_key)
+                session_id=session_id, gateway_session_key=gateway_session_key,
+                include_reasoning=include_reasoning, stream_reasoning=stream_reasoning)
 
         async def _compute_response():
             return await self._run_agent(**run_kwargs)
@@ -904,6 +977,10 @@ class OpenAICompatRoutesMixin:
             "created_at": created_at, "model": body.get("model", self._model_name),
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}
+        if include_reasoning:
+            _reasoning_text = _ResponsesStream._extract_reasoning_text(result) if isinstance(result, dict) else ""
+            if _reasoning_text:
+                response_data.setdefault("hermes", {})["reasoning"] = {"text": _reasoning_text, "status": "completed"}
         if store:
             self._response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,

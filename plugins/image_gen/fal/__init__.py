@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 _PASSTHROUGH_KWARGS = (
     "num_inference_steps", "guidance_scale", "num_images", "output_format", "seed", "upscale",
+    "model",
 )
 
 

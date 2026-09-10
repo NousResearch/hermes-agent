@@ -95,7 +95,7 @@ class TestFalImageGenProviderGenerate:
 
         monkeypatch.setattr(image_tool, "image_generate_tool", fake_image_generate_tool)
         monkeypatch.setattr(image_tool, "_resolve_fal_model",
-                            lambda: ("fal-ai/flux-2/klein/9b", {}))
+                            lambda override=None: ("fal-ai/flux-2/klein/9b", {}))
 
         result = FalImageGenProvider().generate(
             "a serene mountain landscape",
@@ -113,6 +113,28 @@ class TestFalImageGenProviderGenerate:
         assert result["prompt"] == "a serene mountain landscape"
         assert result["aspect_ratio"] == "square"
         assert result["model"] == "fal-ai/flux-2/klein/9b"
+
+    def test_generate_passthrough_model_override(self, monkeypatch):
+        """Per-call ``model`` (#45278) reaches the legacy pipeline as ``model=``."""
+        import tools.image_generation_tool as image_tool
+        from plugins.image_gen.fal import FalImageGenProvider
+
+        captured = {}
+
+        def fake_image_generate_tool(prompt, aspect_ratio, **kwargs):
+            captured["kwargs"] = kwargs
+            return json.dumps({
+                "success": True, "image": "https://fake/image.png",
+                "model": "fal-ai/gpt-image-2"})
+
+        monkeypatch.setattr(image_tool, "image_generate_tool", fake_image_generate_tool)
+        monkeypatch.setattr(image_tool, "_resolve_fal_model",
+                            lambda override=None: ("fal-ai/flux-2/klein/9b", {}))
+
+        result = FalImageGenProvider().generate("poster with text", model="fal-ai/gpt-image-2")
+
+        assert captured["kwargs"]["model"] == "fal-ai/gpt-image-2"
+        assert result["model"] == "fal-ai/gpt-image-2"
 
 
 # ---------------------------------------------------------------------------

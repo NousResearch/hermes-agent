@@ -223,6 +223,37 @@ Two inputs drive the edit:
 - **`image_url`** — the primary source image to edit/transform (public URL or local path).
 - **`reference_image_urls`** — additional style/composition references (capped per-model).
 
+## Per-Call Model Override
+
+The agent can route a specific request to a different model than the
+configured default by passing `model` (mirrors `video_generate`). Omit it and
+the configured `image_gen.model` is used. The dynamic tool schema advertises
+the active model's identity and strengths, and — for backends with an
+enumerable catalog — the list of valid ids, so the agent can pick, say, a
+text-rendering specialist for a poster without the user reconfiguring
+anything:
+
+```
+Make a poster with readable text → <image>   # agent passes model: gpt-image-2
+```
+
+```
+Edit this photo and keep everything else → <image>   # agent passes model: nano-banana-pro
+```
+
+Resolution order: explicit `model` argument → `image_gen.model` from
+`config.yaml` → backend default. An unknown model id is rejected with the
+list of valid ids; the configured default keeps its legacy behavior
+(warn-and-fall-back) so a stale config never breaks the tool.
+
+### Which backends support the per-call override
+
+| Backend | Per-call `model` | Valid ids |
+|---|---|---|
+| **FAL.ai** (in-tree path) | ✓ | the FAL catalog (enum in the tool schema) |
+| **Plugin providers** | ✓ forwarded as `model` | the provider's own catalog, validated provider-side |
+| **Managed Krea** (`nous`) | ✓ | native `krea-2-*` ids |
+
 ### Which backends support editing
 
 | Backend | Image-to-image | Reference cap | How |
@@ -310,7 +341,7 @@ If upscaling fails (network issue, rate limit), the original image is returned a
 
 ## How It Works Internally
 
-1. **Model resolution** — `_resolve_fal_model()` reads `image_gen.model` from `config.yaml`, falls back to the `FAL_IMAGE_MODEL` env var, then to `fal-ai/flux-2/klein/9b`.
+1. **Model resolution** — `_resolve_fal_model()` takes the agent's per-call `model` argument first, then `image_gen.model` from `config.yaml`, falls back to the `FAL_IMAGE_MODEL` env var, then to `fal-ai/flux-2/klein/9b`. An unknown per-call override is rejected with the catalog; an unknown configured model warns and falls back.
 2. **Payload building** — `_build_fal_payload()` translates your `aspect_ratio` into the model's native format (preset enum, aspect-ratio enum, or GPT literal), merges the model's default params, applies any caller overrides, then filters to the model's `supports` whitelist so unsupported keys are never sent.
 3. **Submission** — `_submit_fal_request()` routes via direct FAL credentials or the managed Nous gateway, according to the stored `image_gen.provider` selection.
 4. **Upscaling** — runs only when the agent passed `upscale: true`; every model's catalog default is off.

@@ -11,7 +11,8 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+#   * Python selection: pytest-capable local/shared venv, HERMES_PYTHON,
+#     then the invoking `python` command from PATH
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -80,6 +81,8 @@ if [ -n "$SKIPPED_VENVS" ]; then
   done
 fi
 
+PATH_PYTHON="$(command -v python 2>/dev/null || true)"
+
 if [ -n "$VENV" ]; then
   PYTHON="$VENV_PYTHON"
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
@@ -88,13 +91,29 @@ elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
   # venv (no pytest) when inherited from a wrapped `hermes` binary rather
   # than the devShell hook.
   PYTHON="$HERMES_PYTHON"
-  echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
+  echo "▶ no local venv — using configured HERMES_PYTHON: $PYTHON"
+elif [ -n "$PATH_PYTHON" ] && "$PATH_PYTHON" -c 'import pytest' 2>/dev/null; then
+  # The active Hermes worker/runtime interpreter is generated and its path is
+  # intentionally not stable. Resolve the `python` command the caller actually
+  # invoked instead of growing another hardcoded installation-path list.
+  PYTHON="$("$PATH_PYTHON" -c 'import sys; print(sys.executable)')"
+  echo "▶ no configured pytest venv matched — using invoking Python from PATH: $PYTHON"
 else
-  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
+  echo "error: no Python interpreter with pytest was found." >&2
+  echo "       Probed virtualenvs:" >&2
+  echo "         $REPO_ROOT/.venv" >&2
+  echo "         $REPO_ROOT/venv" >&2
+  echo "         $HOME/.hermes/hermes-agent/venv" >&2
+  echo "       Probed HERMES_PYTHON: ${HERMES_PYTHON:-<unset>}" >&2
+  echo "       Probed invoking Python from PATH: ${PATH_PYTHON:-<not found>}" >&2
   if [ -n "$SKIPPED_VENVS" ]; then
-    echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
+    echo "       Existing venvs skipped because pytest was not importable:$SKIPPED_VENVS" >&2
   fi
+  echo "       Direct equivalent (requires pytest in that interpreter):" >&2
+  printf '         %s -m pytest' "${PATH_PYTHON:-python}" >&2
+  printf ' %q' "$@" >&2
+  printf '\n' >&2
+  echo "       Select a Python that can import pytest or set HERMES_PYTHON to one." >&2
   exit 1
 fi
 

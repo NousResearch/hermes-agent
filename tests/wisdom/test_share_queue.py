@@ -572,6 +572,53 @@ def test_private_review_pages_cover_exact_files_without_consuming_consent(sharin
         mediation.consent.resolve("org", identity, actor, "inspect.999")
 
 
+@pytest.mark.parametrize("control", ["Back to first page", "Not Now"])
+def test_package_review_controls_never_upload_and_preserve_review(sharing, monkeypatch, control):
+    from hermes_wisdom.mediation_view import resolve_surface_action
+
+    service, mediation, actor, shown, model, _, _ = sharing
+    service.client.display_org_id = "org"
+    monkeypatch.setattr("hermes_wisdom.mediation_view.WisdomConsent", lambda _: mediation.consent)
+    mediation.consent.resolve("org", shown["id"], actor, "confirm")
+    item = mediation.prepare(
+        "org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[]
+    )[0]
+    identity = item["interaction"]["id"]
+    reviewed = mediation.consent.resolve("org", identity, actor, "inspect.1")
+    view = interaction_view(reviewed)
+    selected = next(
+        action for action in view.actions + view.navigation_actions if action.label == control
+    )
+    with pytest.raises(WisdomNotFound):
+        resolve_surface_action(
+            service, selected.callback_data, platform=actor.platform,
+            actor_id="stranger", **actor.address,
+        )
+    returned = resolve_surface_action(
+        service, selected.callback_data, platform=actor.platform,
+        actor_id=actor.actor_id, **actor.address,
+    )
+    assert service.client.uploaded == service.client.publications == 0
+    if control == "Not Now":
+        assert returned.summary == "Deferred on this surface"
+        assert not any(action.primary for action in returned.actions)
+        with service.store.transaction() as db:
+            assert db.execute(
+                "SELECT interaction_id FROM wisdom_consent_defer WHERE interaction_id=?", (identity,)
+            ).fetchone()[0] == identity
+    else:
+        assert returned.summary.endswith("1/" + str(reviewed["inspection"]["page_count"]))
+    reopened = mediation.consent.resolve("org", identity, actor, "inspect.0")
+    assert reopened["state"] == "pending"
+    assert reopened["facts"]["hashes"] == reviewed["facts"]["hashes"]
+    assert reopened["inspection"]["page"] == 0
+    model.assert_called_once()
+    assert service.client.uploaded == service.client.publications == 0
+    result = mediation.consent.resolve("org", identity, actor, "confirm")
+    assert result["state"] == "completed"
+    assert service.client.uploaded == service.client.publications == 1
+
+
 @pytest.mark.parametrize(
     "publication,title",
     [("published", "Published"), ("pending_moderation", "Pending moderation")],

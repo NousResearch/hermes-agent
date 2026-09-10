@@ -56,6 +56,11 @@ cannot retract a message already sent.
   prevent you from reviewing it manually. Offline changes remain pending until
   they sync to the Gateway.
 
+The proposed-package file reviewer also offers **Not Now**. It keeps the package
+available for later review without uploading or publishing it. Page navigation,
+including **Back to first page**, is read-only; publication still requires the
+separate **Approve exact package** control.
+
 Proactive Telegram and Slack advice includes **Notification settings**. Opening
 it reads the current state without muting anything; choose a duration separately.
 Use **Back** to return to the current inbox. Local notifications offer

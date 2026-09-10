@@ -423,7 +423,7 @@ def interaction_view(
             [
                 WisdomAction(
                     "Back to first page",
-                    callback_data=f"wi:agent:inspect:{result['id']}",
+                    callback_data=f"wi:agent:inspect.0:{result['id']}",
                 )
             ]
             if page["page"]
@@ -440,6 +440,13 @@ def interaction_view(
                 )
         # Keep the exact approval control available, but never turn navigation
         # into an implicit acknowledgement or a publication request.
+        if "defer" in result["actions"]:
+            actions.append(
+                WisdomAction(
+                    "Not Now",
+                    callback_data=f"wi:agent:defer:{result['id']}",
+                )
+            )
         if "confirm" in result["actions"]:
             actions.append(
                 WisdomAction(

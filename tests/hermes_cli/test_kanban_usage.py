@@ -241,3 +241,79 @@ def test_task_usage_combines_main_actual_with_auxiliary_estimate(worker_task):
     assert aggregate["estimated_cost_usd"] == pytest.approx(1.5)
     assert aggregate["auxiliary_estimated_cost_usd"] == pytest.approx(0.5)
     assert aggregate["cost_usd"] == pytest.approx(1.3)
+
+    shown = json.loads(kt._handle_show({}))
+    assert shown["runs"][0]["auxiliary_estimated_cost_usd"] == pytest.approx(0.5)
+
+
+def test_goal_gate_usage_is_captured_after_final_judge_call(worker_task, monkeypatch):
+    from agent.tool_executor import _kanban_session_usage
+    from hermes_state import SessionDB
+    import model_tools
+
+    session_id = "goal-mode-worker"
+    session_db = SessionDB(Path(os.environ["HERMES_HOME"]) / "state.db")
+    session_db.create_session(session_id, source="cli", model="main-model")
+    session_db.update_token_counts(
+        session_id,
+        input_tokens=100,
+        output_tokens=10,
+        model="main-model",
+        billing_provider="main-provider",
+        estimated_cost_usd=1.0,
+        api_call_count=1,
+    )
+    with kbc.connect_closing() as conn:
+        conn.execute("UPDATE tasks SET goal_mode = 1 WHERE id = ?", (worker_task,))
+        conn.commit()
+
+    agent = SimpleNamespace(
+        session_id=session_id,
+        _session_db=session_db,
+        session_input_tokens=100,
+        session_output_tokens=10,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        session_reasoning_tokens=0,
+        session_api_calls=1,
+        session_estimated_cost_usd=1.0,
+        _user_turn_count=1,
+        model="main-model",
+        provider="main-provider",
+    )
+
+    def record_final_judge_usage(tool_name, task, tid, evidence):
+        assert tool_name == "kanban_complete"
+        assert task.goal_mode
+        assert tid == worker_task
+        assert evidence == "done"
+        session_db.record_auxiliary_usage(
+            session_id,
+            "goal_judge",
+            model="judge-model",
+            billing_provider="judge-provider",
+            input_tokens=25,
+            output_tokens=5,
+            estimated_cost_usd=0.25,
+        )
+
+    monkeypatch.setattr(kt, "_goal_gate", record_final_judge_usage)
+    response = json.loads(model_tools.handle_function_call(
+        "kanban_complete",
+        {"summary": "done"},
+        session_usage=lambda: _kanban_session_usage(agent, "kanban_complete"),
+        skip_pre_tool_call_hook=True,
+        skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True,
+    ))
+    assert response["ok"] is True
+
+    with kbc.connect_closing() as conn:
+        run = kb.latest_run(conn, worker_task)
+    session_db.close()
+
+    assert run.input_tokens == 125
+    assert run.output_tokens == 15
+    assert run.api_call_count == 2
+    assert run.estimated_cost_usd == pytest.approx(1.25)
+    assert run.auxiliary_estimated_cost_usd == pytest.approx(0.25)

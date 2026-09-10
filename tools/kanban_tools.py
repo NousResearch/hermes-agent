@@ -316,7 +316,8 @@ _TASK_SUMMARY_FIELDS = tuple(
 _RUN_FIELDS = tuple(
     "id profile status outcome summary error metadata started_at ended_at session_id "
     "input_tokens output_tokens cache_read_tokens cache_write_tokens reasoning_tokens "
-    "api_call_count turns estimated_cost_usd actual_cost_usd model provider usage_recorded_at".split()
+    "api_call_count turns estimated_cost_usd auxiliary_estimated_cost_usd actual_cost_usd "
+    "model provider usage_recorded_at".split()
 )
 _COMMENT_FIELDS = ("author", "body", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
@@ -328,6 +329,11 @@ _CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
 def _fields(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
     """``{name: getattr(obj, name)}``; every value None when ``obj`` is None."""
     return {n: getattr(obj, n) if obj is not None else None for n in names}
+
+
+def _resolve_session_usage(value: Any) -> Any:
+    """Materialize deferred worker usage at the lifecycle write boundary."""
+    return value() if callable(value) else value
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -569,11 +575,12 @@ def _handle_complete(args: dict, **kw) -> str:
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        usage = _resolve_session_usage(kw.get("session_usage"))
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
                 created_cards=created_cards, expected_run_id=_worker_run_id(tid),
-                usage=kw.get("session_usage"))
+                usage=usage)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -628,9 +635,10 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
+        usage = _resolve_session_usage(kw.get("session_usage"))
         ok = kb.block_task(
             conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid),
-            usage=kw.get("session_usage"),
+            usage=usage,
         )
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         return _ok_landed(kb, conn, tid, "blocked", block_kind=kind)

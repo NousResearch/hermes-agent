@@ -1593,7 +1593,9 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 tool_request_middleware_trace=list(middleware_trace),
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                session_usage=_kanban_session_usage(agent, function_name, next_args),
+                # Lifecycle handlers resolve this only when they are ready to close
+                # the run, after any goal-mode judge has recorded its own usage.
+                session_usage=lambda: _kanban_session_usage(agent, function_name, next_args),
             )
 
     return _SequentialDispatch(

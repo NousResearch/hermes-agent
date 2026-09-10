@@ -156,6 +156,18 @@ class TestSetupLogging:
             [hermes_home, profile_home], live_membership=True
         ) is True
 
+        stale_record = logging.LogRecord(
+            "cron.scheduler.live-profile-routing-test",
+            logging.INFO,
+            __file__,
+            1,
+            "queued before profile recreation",
+            (),
+            None,
+        )
+        stale_record.hermes_home = str(profile_home)
+        stale_record._hermes_profile_routing_epoch = hermes_logging._profile_routing_epoch
+
         logger = logging.getLogger("cron.scheduler.live-profile-routing-test")
         token = set_hermes_home_override(profile_home)
         try:
@@ -180,6 +192,12 @@ class TestSetupLogging:
         assert hermes_logging.enable_profile_log_routing(
             [hermes_home, profile_home], live_membership=True
         ) is True
+        routing_handler = next(
+            handler
+            for handler in hermes_logging._queued_file_handlers
+            if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+        )
+        routing_handler.emit(stale_record)
 
         token = set_hermes_home_override(profile_home)
         try:
@@ -191,6 +209,7 @@ class TestSetupLogging:
         recreated_log = (profile_home / "logs" / "agent.log").read_text()
         assert "recreated profile cron record" in recreated_log
         assert "late profile cron record" not in recreated_log
+        assert "queued before profile recreation" not in recreated_log
 
 
 

@@ -1,0 +1,3 @@
+name: memvid
+description: Single-file .mv2 memory provider backed by the memvid CLI.
+version: 1.0.0

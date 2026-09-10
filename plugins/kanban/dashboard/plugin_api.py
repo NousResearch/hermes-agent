@@ -1714,7 +1714,13 @@ class _EventTail:
         if self._executor is None:
             return
         try:
-            await asyncio.get_running_loop().run_in_executor(self._executor, self._close)
+            # A blocking call, not an ``await`` -- a cancellation already pending on this
+            # task (the common case: shutdown() runs from stream_events()'s ``finally``
+            # after a cancelled turn) would otherwise let asyncio skip straight past an
+            # ``await run_in_executor(...)`` here without ever running _close(), leaking
+            # the thread-affine sqlite connection. The executor thread itself can't be
+            # interrupted anyway, so waiting on it synchronously costs nothing extra.
+            self._executor.submit(self._close).result(timeout=10)
         except Exception as exc:
             log.warning("Kanban event stream connection cleanup failed: %s", exc)
         finally:

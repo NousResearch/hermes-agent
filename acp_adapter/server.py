@@ -890,7 +890,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             except Exception:
                 logger.debug("Could not emit ACP provenance update after rotation for %s", session_id, exc_info=True)
 
-        final_response = result.get("final_response", "")
+        # ``or ""`` rather than a ``.get`` default: the conversation loop can
+        # return the key with an explicit ``None`` (e.g. the truncation path's
+        # ``partial_response or None``), and a default only applies when the
+        # key is absent. Other consumers already tolerate None — see
+        # ``turn_finalizer``'s ``len(final_response) if final_response else 0``.
+        final_response = result.get("final_response") or ""
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
         from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX

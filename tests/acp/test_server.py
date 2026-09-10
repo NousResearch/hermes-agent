@@ -446,6 +446,84 @@ class TestPrompt:
 
         assert captured.get("child") == resp.session_id
 
+    @pytest.mark.asyncio
+    async def test_prompt_survives_null_final_response(self, agent):
+        """A None final_response must not crash the turn (#73693).
+
+        The conversation loop returns the key with an explicit None on some
+        paths (e.g. truncation's ``partial_response or None``), so the ``""``
+        default never applies and ``.startswith`` raised AttributeError. The
+        client saw a bare JSON-RPC "Internal error" and treated the session
+        as non-recoverable.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            state.cancel_event.set()
+            return {
+                "final_response": None,
+                "messages": [],
+                "interrupted": True,
+                "completed": False,
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="cancel me")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_queued_prompt_drains_after_interrupted_turn(self, agent):
+        """A prompt queued behind an interrupted turn must still run (#86798).
+
+        The crash above happened *before* the queue drain, so a queued user
+        message was never dispatched and stayed "queued" forever. This guards
+        the drain loop independently of the None normalization: the first
+        turn is interrupted with ``final_response=None``; the queued prompt
+        must still reach ``run_conversation``.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        runs: list[str] = []
+
+        def mock_run(*args, **kwargs):
+            text = kwargs.get("user_message") or (args[0] if args else "")
+            runs.append(text)
+            if len(runs) == 1:
+                state.cancel_event.set()
+                return {
+                    "final_response": None,
+                    "messages": [],
+                    "interrupted": True,
+                    "completed": False,
+                }
+            return {"final_response": "ok", "messages": [], "completed": True}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with state.runtime_lock:
+            state.queued_prompts.append("second")
+
+        prompt = [TextContentBlock(type="text", text="first")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "cancelled"
+        assert runs == ["first", "second"]
+        assert state.queued_prompts == []
+        assert not state.is_running
+
 
 
 

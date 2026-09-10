@@ -389,6 +389,19 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     elif url.rstrip("/").endswith("/anthropic"):
         # Third-party Anthropic-compatible endpoints (MiniMax, DashScope) end in /anthropic.
         agent.api_mode = "anthropic_messages"
+    elif (
+        agent._base_url_hostname == "api.kimi.com"
+        and "/coding" in agent._base_url_lower
+    ):
+        # Kimi Code's api.kimi.com/coding endpoint speaks the Anthropic
+        # Messages protocol (it accepts Claude Code's native request shape),
+        # even on URLs like .../coding/v1 that do NOT carry the /anthropic
+        # suffix matched above. Mirror determine_api_mode() so a directly
+        # constructed AIAgent routes to the Anthropic adapter instead of
+        # falling through to chat_completions and sending the wrong wire
+        # protocol. See hermes_cli.providers.determine_api_mode and
+        # hermes_cli.runtime_provider._detect_api_mode_for_url.
+        agent.api_mode = "anthropic_messages"
     elif agent.provider == "bedrock" or (
         host.startswith("bedrock-runtime.") and base_url_host_matches(url, "amazonaws.com")
     ):

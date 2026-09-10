@@ -322,18 +322,21 @@ def nous_api_mode(model: str = "") -> str:
     signed native blocks, and cache_control scopes are translated by the portal's adapter.
     Empty/unknown model defaults to ``chat_completions`` (the historical Nous transport)."""
     if str(model or "").strip().lower().startswith("anthropic/"):
+        # ``auto`` starts on chat too: it is safe on every upstream, and ``agent/nous_wire.py``
+        # promotes the session to native from the first response when the upstream allows it.
         return "anthropic_messages" if _nous_anthropic_wire() == "native" else "chat_completions"
     return "chat_completions"
 
 
 def _nous_anthropic_wire() -> str:
-    """``nous.anthropic_wire``: ``"chat"`` (default) or ``"native"``. Anything else reads as ``chat``."""
+    """``nous.anthropic_wire``: ``"chat"`` (default), ``"native"``, or ``"auto"`` (chat, then per-session
+    promotion decided from the first response; see ``agent/nous_wire.py``). Anything else reads as ``chat``."""
     try:
         from hermes_cli.config import load_config_readonly
         value = str(((load_config_readonly().get("nous") or {}).get("anthropic_wire")) or "chat").strip().lower()
     except Exception:
         return "chat"
-    return "native" if value == "native" else "chat"
+    return value if value in ("native", "auto") else "chat"
 
 
 def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:

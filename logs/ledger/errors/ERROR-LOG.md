@@ -85,6 +85,50 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 
 ---
 
+### ERR-2026-09-10-001 — HIGH — `import hermes_cli.main` raises `NameError` (`_desktop_ssh_backend` undefined)
+
+- **Opened:** 2026-09-10 · **Base:** hermes@0e9fc2cc15 (0 behind upstream/main)
+- **Run:** RUN-2026-09-10-001
+- **Source:** surfaced running `tests/test_nf_tier_enforcement.py` while finishing
+  `CHG-2026-09-10-001` — `test_integration_full_defaults_to_pin_but_switches`
+  fails because its `python -c "import hermes_cli.main"` subprocess aborts.
+- **What:** `hermes_cli/main.py:642`, inside `_apply_profile_override()`, calls
+  `_desktop_ssh_backend(argv)` but **no `def _desktop_ssh_backend` exists in the
+  tree**. `git grep` finds only the call site — on local `main` (`bb64aab4f3`)
+  **and on `origin/main`**. Commit `677e8ed8a4` ("fix(desktop): SSH remote
+  backend stops following the host's sticky active_profile", 2026-09-09) added
+  both the helper (a 1-line `return "--ssh-session-token-file" in argv`) and its
+  call; a later `Merge branch 'main' into main` kept the call and dropped the
+  `def`. `_apply_profile_override()` is invoked at **module scope**
+  (`main.py:679`), so `import hermes_cli.main` raises
+  `NameError: name '_desktop_ssh_backend' is not defined` whenever the branch is
+  reached — i.e. on an unprovisioned drive, or a Full-tier drive whose
+  `HERMES_HOME` is not a `profiles/<name>` dir and with no `-p`. A Basic-tier
+  pinned drive returns earlier and is unaffected.
+- **Confidence:** Confirmed Fact — reproduced directly:
+  `python -c "import sys; sys.argv=['hermes','chat']; import hermes_cli.main"` →
+  `NameError` at `main.py:642` (traceback through the module-level
+  `_apply_profile_override()` at line 679).
+- **Exposure / impact:** the North Forge / Hermes CLI **fails to start** on an
+  unprovisioned or Full-tier drive in this state. Present on the public
+  `origin/main`. Not caused by `CHG-2026-09-10-001` (which touches
+  `nf_admin.py` / `nf_tier.py` / `cli.py` comments / a test — never `main.py`);
+  reproduced with this run's changes reverted.
+- **Not self-fixed:** `_apply_profile_override()` is the Basic-tier enforcement
+  path (ledger Agent-Conduct: escalate, do not self-fix access-tier logic), the
+  fault is outside this run's task, and it already sits on `origin/main` — a
+  local-only patch would diverge further ahead of the owner's push decision.
+- **Status:** OPEN
+- **Required action (one-line, verbatim restore):** re-add `def
+  _desktop_ssh_backend(argv: list) -> bool:` returning
+  `"--ssh-session-token-file" in argv` immediately after `_under_gateway_supervisor`
+  in `hermes_cli/main.py`, exactly as in `677e8ed8a4` (which also carries the 15
+  covering lines for `tests/hermes_cli/test_apply_profile_override.py` — confirm
+  those survived the merge). Owner: decide whether to fix on local `main` now or
+  fold into the next `git pull --rebase origin main`.
+
+---
+
 ## Resolved
 
 ### ERR-2026-09-09-003 — MEDIUM — `query_session_listing` visibility filter can hide older eligible sessions
@@ -787,3 +831,4 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-09-001 | 2026-09-09 | HIGH | Launcher / bootstrap tooling | `bootstrap-north-forge.ps1` trusted a bare `hermes.exe`+marker existence check and, under `-Force`, ran `Remove-Item -Recurse` on any `$VenvDir` that merely existed — a partial/unrelated dir at `<checkout>-venv` was reused or deleted with no ownership proof (readiness failure conflated with the right to delete) | RESOLVED | CHG-2026-09-09-001 — readiness (`Test-NfVenvReady`) and ownership (new read-only `scripts/lib/nf-venv-state.ps1`) split into a `create`/`rebuild`/`refuse`/`none` state table; `UnknownDirectory`/`UnsafePath` ⇒ unconditional refuse (`-Force` ≠ deletion override); re-check immediately before the one `Remove-Item`; `+13` tests |
 | ERR-2026-09-09-002 | 2026-09-09 | HIGH | Launcher / bootstrap tooling | `bootstrap-north-forge.ps1` checked `-VenvDir` and `-DataDir` each against the checkout but never against each other → an equal/nested/case-variant pair let a `-Force` rebuild `Remove-Item -Recurse` on `VenvDir` delete `HERMES_HOME` (explicit-override path only; default `north-forge.cmd` unaffected) | RESOLVED | CHG-2026-09-09-001 — new `Test-PathOverlap $VenvDir $DataDir` guard after the existing RepoRoot guards; equal/trailing-sep/case/nested all rejected; `test_reject_venv_equals_or_contains_data` ×4 |
 | ERR-2026-09-09-003 | 2026-09-09 | MEDIUM | `hermes` sessions CLI | `query_session_listing` fetched a fixed `limit*4` window then filtered unnamed/current rows in Python — enough newer unnamed sessions hid an older *named* displayable session that was never fetched (same shape as `ERR-2026-09-08-008`) | RESOLVED | CHG-2026-09-09-002 — `limit<=0` ⇒ `[]` before any query; adaptive widening `limit*(4,8,16)` always from row 0, stop when `limit` displayable rows survive or the DB returns short; filter factored to `_displayable()`; `+5` tests |
+| ERR-2026-09-10-001 | 2026-09-10 | HIGH | Access-tier logic | A `Merge branch 'main' into main` dropped `def _desktop_ssh_backend` from `hermes_cli/main.py` but kept its call in `_apply_profile_override` (`main.py:642`); the module-level call at `main.py:679` makes `import hermes_cli.main` raise `NameError` on an unprovisioned or Full-tier drive. On `origin/main` too. Introduced by a merge after `677e8ed8a4`; not caused by `CHG-2026-09-10-001` (reproduced on the reverted tree) | OPEN | — (not self-fixed — access-tier code + out of task scope + already on `origin/main`; verbatim 1-line restore from `677e8ed8a4`, owner to sequence vs next rebase) |

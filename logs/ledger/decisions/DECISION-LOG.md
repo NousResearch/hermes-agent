@@ -23,6 +23,23 @@ _None._
 
 ## Resolved
 
+### DECISION-2026-09-10-001 — Access architecture — how does a Full-tier operator re-open Setup Run from inside a running session?
+
+- **Opened:** 2026-09-10 · **Base:** hermes@0e9fc2cc15 (0 behind upstream/main)
+- **Run:** RUN-2026-09-10-001 (opened + decided + implemented same run — owner-directed; the WIP already carried the design and the owner asked to finish it)
+- **Source:** in-flight work-in-progress found on the working tree (`hermes_cli/nf_admin.py` + `cli.py` wiring, referencing an unwritten `CHG-2026-09-09-004`); owner instruction this session to complete and land it.
+- **Confidence:** Confirmed Fact — the options and their trade-offs were read directly from `scripts/nf-setup.ps1` (its `-Force` / passcode-prompt / RE-PROVISION path), `hermes_cli/nf_tier.py` (`verify_admin_passcode`, `write_provisioning`), and the WIP itself.
+- **Supersedes:** — (builds on `DECISION-2026-09-07-003`, the edition/tier mechanism; does not change it — enforcement, signing, and the two tiers are untouched).
+- **The call:** a Full-tier operator who needs to change tier / pin / edition on an already-provisioned drive currently has to quit the session and run `scripts/nf-setup.ps1` by hand. Should the running session offer a shortcut, and if so, how is it gated so it is invisible and inert to everyone else?
+- **Options:**
+  - **A — in-session passcode trigger (chosen).** The drive's admin passcode, typed as a bare message, defers to `nf-setup.ps1 -Force` after teardown, then re-execs `hermes`. Recogniser is Full-tier + passcode-set + exact-match only; every other input is indistinguishable from normal chat; recognised attempts are logged for the owner (never the passcode). Nothing is registered in any command table, completion, or help. Reuses `nf_tier.verify_admin_passcode` and `nf-setup.ps1` verbatim — no second verification or reconfiguration system.
+  - **B — a `/edition`-style slash command behind a passcode prompt.** Discoverable (help, completion), which is the opposite of what a Full-tier-only admin action wants; still needs the same deferral + `nf-setup.ps1` call. Rejected: a visible surface for a privileged action, no upside over A.
+  - **C — do nothing; document "quit and re-run `nf-setup.ps1`".** Zero new code, zero new surface. Rejected by the owner: the round-trip is the friction this is meant to remove, and A adds no reachable capability a Full operator does not already have (they hold the passcode and can already re-run Setup Run).
+- **Decided:** 2026-09-10 (`RUN-2026-09-10-001`) — chose **A**. The trigger is a convenience over an ability the Full-tier operator already has (the admin passcode + the right to re-run Setup Run); it grants nothing new and changes no enforcement path. It is silent and unlogged-to-the-model on every non-matching input, and `-Force` in the launch path only lifts `write_provisioning`'s overwrite guard — `nf-setup.ps1` still prompts for and verifies the passcode. Implementing change: **`CHG-2026-09-10-001`** (`hermes_cli/nf_admin.py` new; `nf_tier.log_admin_attempt`/`admin_attempt_log_path`; `cli.py` + `cli_commands_mixin.py` wiring; `tests/test_nf_admin.py`).
+- **Blocking:** nothing — the drive is fully usable without it; this removes an admin round-trip only.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** DECIDED
+
 ### DECISION-2026-09-09-001 — Drive provisioning — bundle a Python toolchain on the drive, and how?
 
 - **Opened:** 2026-09-09 · **Base:** hermes@0e9fc2cc15 (0 behind upstream/main)
@@ -414,3 +431,4 @@ _None._
 | DECISION-2026-09-07-003 | 2026-09-07 | Access architecture | What is an "edition", and how is Basic tier enforced? | DECIDED — A (edition = Hermes profile; HMAC-signed `provisioning.json` + gates at every profile-selection path), landed `CHG-2026-09-07-022` (`NF-v0.6.0`). Signature is tamper-evident not tamper-proof; hardened key store deferred to `DECISION-2026-09-06-003` | 2026-09-07 |
 | DECISION-2026-09-07-002 | 2026-09-07 | Branding wording | "engine used unmodified" / "full rebrand" broader than the code (Codex F-07) | **DECIDED** — A (tighten wording), `RUN-2026-09-08-004` / `CHG-2026-09-08-010`+`-011`. README ×2 + 3 translations + BRANDING ×2 reworded; `cli.py` welcome + `_parser.py` chat description moved to North Forge; BRANDING names the deliberately-Hermes surfaces | 2026-09-08 |
 | DECISION-2026-09-09-001 | 2026-09-09 | Drive provisioning | Bundle a Python toolchain on the drive, and how? | **DECIDED** — B (bundle `uv.exe` + a `python-build-standalone` CPython 3.11 as a never-git-tracked drive sibling `<parent>\<leaf>-toolchain\`, admin-prepared once and copied per drive — not fetched at first-launch, not git/LFS). `RUN-2026-09-09-002` / `CHG-2026-09-09-003` (`NF-v0.9.0`). Resolution order: bundled → host PATH (admin/dev, logged) → existing error. No change to R1 | 2026-09-09 |
+| DECISION-2026-09-10-001 | 2026-09-10 | Access architecture | How does a Full-tier operator re-open Setup Run from inside a running session? | **DECIDED** — A (in-session admin-passcode trigger → `nf-setup.ps1 -Force` after teardown, then re-exec; Full-tier + passcode-set + exact-match only, silent and inert on every other input, recognised attempts logged for the owner without the passcode). `RUN-2026-09-10-001` / `CHG-2026-09-10-001` (`NF-v0.10.0`). Owner-directed. Grants no reachable capability a Full operator lacks; no enforcement path changed. Builds on `DECISION-2026-09-07-003` | 2026-09-10 |

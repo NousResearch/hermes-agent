@@ -8,6 +8,79 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.10.0] — 2026-09-10 — hermes@0e9fc2cc15 (0 behind upstream/main)
+
+**`RUN-2026-09-10-001` — completed and landed the North Forge Full-tier
+in-session admin trigger: a Full-tier operator can type the drive's admin
+passcode as a bare message in a running session to open the same
+`scripts/nf-setup.ps1` reconfiguration (tier / pin / edition) nf-setup already
+provides, without exiting and without a re-provision-from-scratch cycle.**
+**MINOR** — a new North Forge admin capability on top of upstream; no schema or
+engine change. Committed to local `main` on base `hermes@0e9fc2cc15`
+(`NF-v0.9.0` HEAD `bb64aab4f3`); **not pushed** — local `main` is 4 commits
+behind `origin/main` (a `NousResearch:main` sync + `fmt(js)` + two `fix(desktop)`
+clarify-form commits), and a `git pull --rebase` + push is a separate
+owner-authorised step. `DECISION-2026-09-10-001` (opened + decided same run,
+owner-directed): the trigger stands as designed — a bare-token passcode on an
+active Full-tier drive, silent on every other input.
+
+The feature arrived this run as an **uncommitted work-in-progress** (classifier
++ CLI wiring already written, referencing an unwritten `CHG-2026-09-09-004`).
+Completing it: (1) **the launch path was non-functional** — `run_nf_reconfig_and_resume`
+shelled `nf-setup.ps1` with no `-Force`, so `nf_tier.write_provisioning` got
+`overwrite=False` and refused every already-provisioned drive with "already
+exists — pass --force" (the only drive this trigger can fire on). Added `-Force`;
+nf-setup.ps1 still prompts for and verifies the admin passcode itself, so auth is
+unchanged — `-Force` only lifts the overwrite guard, and this is nf-setup.ps1's
+own documented RE-PROVISION path. (2) `maybe_recognize_admin_phrase` gained a
+test-only `root=` override mirroring every `nf_tier` entry point. (3) The
+placeholder id was reassigned `CHG-2026-09-09-004` → `CHG-2026-09-10-001` per the
+daily-`NNN`-reset rule (same as the `NF-v0.8.2` earmark reassignment).
+
+Found in passing, **not fixed here** (access-tier code, and pre-existing on
+`origin/main`): `ERR-2026-09-10-001` — a merge dropped `def _desktop_ssh_backend`
+from `hermes_cli/main.py` while keeping its call in `_apply_profile_override`, so
+`import hermes_cli.main` raises `NameError` on an unprovisioned or Full-tier
+drive. Flagged for the owner; one-line verbatim restore from `677e8ed8a4`.
+
+Verification (Windows-native, `.venv` pytest, `TZ=UTC PYTHONHASHSEED=0`):
+`tests/test_nf_admin.py` **17 passed** (new — silent-path / recognised-hit /
+mismatch-logged / wrong-shape-never-hashed / tampered-record / never-raises, plus
+a `windows_only` check that the launch path passes `-Force`);
+`tests/test_nf_tier_enforcement.py` **29 passed, 1 failed** — the single failure
+(`test_integration_full_defaults_to_pin_but_switches`) is `ERR-2026-09-10-001`
+above, reproduced on the untouched tree, not this change. `ruff check` clean on
+the new/changed files.
+
+### Added
+
+- **CHG-2026-09-10-001** — **North Forge Full-tier in-session admin trigger.**
+  New `hermes_cli/nf_admin.py`: `maybe_recognize_admin_phrase(text, root=None)`
+  classifies a submitted line and returns `"open"` only when the drive is
+  `STATE_ACTIVE` + `TIER_FULL`, an admin passcode is set, and *text* is exactly
+  it (a whitespace-free 6–128-char token — the shape of a passcode attempt, so
+  normal multi-word chat is skipped without hashing). Every other input —
+  unprovisioned, Basic tier, plain upstream Hermes, wrong value, wrong shape —
+  returns `None` and routes as normal chat with **zero observable difference**.
+  Verification reuses `nf_tier.verify_admin_passcode` (the PBKDF2 check
+  `nf-setup.ps1` uses at build time); no tier/pin/edition logic is duplicated
+  into the CLI. A recognised hit (`reconfig-opened`) and a plausible miss on a
+  Full drive (`passcode-mismatch`) are appended to
+  `<nf-root>/north-forge/admin-attempts.log` via `nf_tier.log_admin_attempt` for
+  the owner — timestamped, tab-separated, **the passcode is never written**.
+  `run_nf_reconfig_and_resume()` runs `scripts/nf-setup.ps1 -Force` on the main
+  thread after prompt_toolkit tears down (real terminal), then re-execs `hermes`
+  — the same deferral `/update` uses. `cli.py` sets `_pending_nf_reconfig` in
+  `__init__`, calls `_maybe_handle_nf_admin_phrase()` in the interactive input
+  path (after `handle_bang_shell`, before slash-command dispatch; skipped for
+  seeded `-q` queries), and dispatches the reconfig next to the `_pending_relaunch`
+  handling in `run()`. `hermes_cli/nf_tier.py` adds `admin_attempt_log_path()` +
+  `log_admin_attempt()` (append-only, `chmod 600`, never raises).
+  Paths: `hermes_cli/nf_admin.py`, `hermes_cli/nf_tier.py`, `cli.py`,
+  `hermes_cli/cli_commands_mixin.py`, `tests/test_nf_admin.py`.
+  Ref: DECISION-2026-09-10-001; ERR-2026-09-10-001 (found in passing, not fixed).
+  Run: RUN-2026-09-10-001.
+
 ## [NF-v0.9.0] — 2026-09-09 — hermes@0e9fc2cc15 (0 behind upstream/main)
 
 **`RUN-2026-09-09-002` — `DECISION-2026-09-09-001` decided + implemented same

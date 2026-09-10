@@ -24,6 +24,7 @@ import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 
 import { batchSignAppTree } from './batch-sign-binaries.mjs'
+import { rehashPayloadDigests } from './payload-digests.mjs'
 import { resolveSigningIdentity, signNestedChromium } from './sign-nested-chromium.mjs'
 import { sanitizeTree } from './sanitize-pe-signatures.mjs'
 import { stampExeIdentity } from './set-exe-identity.mjs'
@@ -47,6 +48,9 @@ export default async function afterPack(context) {
         `[after-pack] repaired ${nested.repaired} framework links; signed ${nested.signed} nested chromium targets` +
           (identity ? ` as ${identity}` : ' (no Developer ID in the builder keychain)')
       )
+      // The macOS signer refreshes this again before sealing the outer app.
+      // Unsigned builds end here and still need final-byte facts.
+      rehashPayloadDigests(payload)
     }
     return
   }
@@ -90,4 +94,5 @@ export default async function afterPack(context) {
     config: context.packager.config,
     resourcesDir: context.packager.buildResourcesDir,
   })
+  rehashPayloadDigests(payload)
 }

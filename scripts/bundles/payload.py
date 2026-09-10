@@ -61,6 +61,14 @@ def record_tools(root: Path, lock_path: Path, target: str, entries: dict[str, st
                      target=target, artifacts=[a["sha256"] for a in artifacts], digest=tree_digest(entry))
 
 
+def rehash_tools(root: Path) -> int:
+    """Record final tool bytes before the enclosing package is signed."""
+    from pm.lock import Facts
+
+    store = root / "tools"
+    return Facts(store / "facts.json", strict=True).refresh_digests(store)
+
+
 def plant_surfaces(repo: Path, source: Path, *, dashboard: bool = True) -> None:
     tui = source / "ui-tui/dist/entry.js"
     if not tui.is_file():
@@ -222,12 +230,15 @@ def stage_launchers(root: Path, manifest: dict, *, run=subprocess.run) -> list[s
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["launchers", "relocate", "surfaces"])
+    parser.add_argument("action", choices=["launchers", "relocate", "surfaces", "rehash"])
     parser.add_argument("payload", type=Path)
     parser.add_argument("--source", type=Path, default=ROOT)
     parser.add_argument("--tui-only", action="store_true")
     parser.add_argument("--repo-dir", help="staged repository directory when no manifest exists yet")
     args = parser.parse_args()
+    if args.action == "rehash":
+        print(f"rehashed {rehash_tools(args.payload)} payload tools")
+        return
     if args.action == "relocate":
         relativize_links(args.payload)
         return

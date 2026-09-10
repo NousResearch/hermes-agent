@@ -21,6 +21,7 @@ any machine by substitution.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 SCHEMA = 1
@@ -120,6 +121,39 @@ class Facts:
 
     def get(self, name: str) -> dict | None:
         return self._packages.get(name)
+
+    def refresh_digests(self, store_root: Path) -> int:
+        """Publish all tool digests after packaging finishes changing their bytes."""
+        from pm.store import tree_digest
+
+        packages = _read(self.path, strict=True)["packages"]
+        root = store_root.resolve()
+        count = 0
+        for name, fact in packages.items():
+            if not isinstance(fact, dict):
+                raise ValueError(f"invalid payload fact: {name}")
+            if "entry" not in fact and "stamp" in fact:
+                continue
+            entry_name = fact.get("entry")
+            artifacts = fact.get("artifacts")
+            if (not isinstance(entry_name, str) or entry_name in ("", ".", "..")
+                    or any(c in entry_name for c in "/\\:")
+                    or not isinstance(fact.get("version"), str) or not fact["version"]
+                    or not isinstance(fact.get("target"), str) or not fact["target"]
+                    or not isinstance(artifacts, list) or not artifacts
+                    or any(not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{64}", sha)
+                           for sha in artifacts)):
+                raise ValueError(f"incomplete payload tool: {name}")
+            entry = root / entry_name
+            if not entry.is_dir() or not entry.resolve().is_relative_to(root):
+                raise ValueError(f"incomplete payload tool: {name}")
+            fact["digest"] = tree_digest(entry)
+            count += 1
+        if not count:
+            raise ValueError(f"payload facts carry no tool entries: {self.path}")
+        _write(self.path, {"schema": SCHEMA, "packages": packages})
+        self._packages = packages
+        return count
 
     def installed(
         self,

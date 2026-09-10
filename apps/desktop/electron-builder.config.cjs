@@ -11,7 +11,9 @@
 'use strict'
 
 const fs = require('node:fs')
+const path = require('node:path')
 const feedContract = require('./update-feed.cjs')
+const { createMacSigner } = require('./scripts/mac-sign.mjs')
 
 const {
   light,
@@ -145,9 +147,9 @@ module.exports = {
       NSAppleMusicUsageDescription: `${displayName} accesses your music library when a plugin or feature you enable requests it.`
     },
     target: ['dmg', 'zip'],
-    sign: {
-      entitlements: 'electron/entitlements.mac.plist',
-      entitlementsInherit: 'electron/entitlements.mac.inherit.plist',
+    sign: createMacSigner({
+      entitlements: path.join(__dirname, 'electron/entitlements.mac.plist'),
+      entitlementsInherit: path.join(__dirname, 'electron/entitlements.mac.inherit.plist'),
       hardenedRuntime: true,
       ignore: (/** @type {string} */ file) => {
         try {
@@ -159,7 +161,7 @@ module.exports = {
           return true
         }
       }
-    }
+    })
   },
   dmg: {
     title: `Install ${displayName}`,

@@ -60,6 +60,13 @@ Staging does not prove native startup or package replacement. Those checks
 use the [bundled-update acceptance suite](../../tests/install/BUNDLED_UPDATES.md).
 Acceptance requires a native run with the actual signed release artifacts.
 
+Packaged tool facts describe the final bytes, not only the staged archives.
+Windows refreshes the tool digests after sanitization and batch signing.
+The macOS custom signer retains the builder's entitlements and file selection.
+It refreshes digests after child signatures and before the outer app signature.
+Unsigned macOS builds refresh them at the end of `afterPack`.
+Do not refresh facts in `afterSign`: that changes resources covered by the signature.
+
 ## Complete native build
 
 From a checkout whose `HEAD` equals the release tag, run:

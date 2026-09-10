@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>林知远 - 双页简历示例</title>
+  <style>
+    :root { --page-width: 210mm; --page-height: 297mm; --accent: #2F5597; --band: #f0f0f0; }
+    @page { size: 210mm 297mm; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #e9edf2; }
+    body { color: #111; font-family: "Microsoft YaHei", "微软雅黑", "Noto Sans CJK SC", Arial, sans-serif; }
+    .toolbar { width: var(--page-width); margin: 12px auto 8px; display: flex; justify-content: flex-end; gap: 6px; padding: 8px; border: 1px solid #d7dce3; border-radius: 8px; background: #fff; box-shadow: 0 3px 12px rgba(0,0,0,.12); }
+    .toolbar button { border: 0; border-radius: 5px; padding: 7px 10px; color: #fff; background: var(--accent); font-size: 13px; cursor: pointer; }
+    .toolbar button.secondary { color: var(--accent); background: #eef3fb; }
+    .toolbar-control { display:flex; align-items:center; gap:4px; color:#596273; font-size:12px; white-space:nowrap; }
+    .toolbar-control select { border:1px solid #cbd4df; border-radius:5px; padding:6px 7px; color:var(--accent); background:#fff; font:inherit; }
+    .toolbar-control input[type=color] { width:32px; height:29px; padding:2px; border:1px solid #cbd4df; border-radius:5px; background:#fff; cursor:pointer; }
+    .toolbar button[data-action=bold] { min-width:64px; }
+    .toolbar-status { color: #596273; font-size: 12px; }
+    .resume-page { width: var(--page-width); min-height: var(--page-height); margin: 0 auto; padding: 8mm 12mm 10mm; background: #fff; break-after: page; page-break-after: always; overflow: hidden; }
+    .resume-page:last-child { break-after: auto; page-break-after: auto; }
+    .profile-header { display: grid; grid-template-columns: 24mm 1fr 1.45fr; gap: 6mm; align-items: start; min-height: 34mm; padding-bottom: 4mm; border-bottom: .55mm solid var(--accent); }
+    .photo { width: 24mm; height: 34mm; display: flex; align-items: center; justify-content: center; overflow: hidden; border: .3mm solid #d9d9d9; color: #888; font-size: 9pt; }
+    .photo img { width: 100%; height: 100%; object-fit: cover; }
+    .name { margin: 8mm 0 3mm; color: var(--accent); font-size: 22pt; line-height: 1; font-weight: 700; }
+    .meta { margin: 0 0 1.2mm; font-size: 10pt; line-height: 1.35; }
+    .contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2mm 5mm; padding-top: 5mm; font-size: 10pt; line-height: 1.35; }
+    .section { margin-top: 4.5mm; }
+    .section-band { display: flex; align-items: center; min-height: 7mm; margin-bottom: 2.5mm; background: var(--band); }
+    .section-mark { display: flex; gap: 1mm; padding-left: 1mm; width: 7mm; }
+    .section-mark i { width: 1.2mm; height: 5.5mm; background: var(--accent); }
+    .section-name { padding: 1.4mm 3mm 1.4mm 2.5mm; color: #fff; background: var(--accent); font-size: 12pt; line-height: 1; font-weight: 700; }
+    .edu-row, .role-row { display: grid; grid-template-columns: 5cm 1fr 4.2cm; gap: 2mm; align-items: end; margin-bottom: 2mm; font-size: 9.8pt; line-height: 1.35; font-weight: 700; }
+    .leader { display: flex; align-items: end; gap: 2mm; }
+    .leader::after { content: ""; flex: 1; margin-bottom: 1.2mm; border-bottom: .35mm dotted #999; }
+    .body { font-size: 9.6pt; line-height: 1.35; }
+    .bullet { display: grid; grid-template-columns: 4mm 1fr; gap: 1mm; margin-bottom: 1.6mm; }
+    .marker { font-size: 10pt; line-height: 1.3; }
+    .label { font-weight: 700; }
+    .continue-rule { height: 1.2mm; margin-bottom: 5mm; background: var(--accent); }
+    .self-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm 8mm; }
+    @media print { html, body { background: #fff; } .toolbar { display: none !important; } .resume-page { margin: 0; } }
+    @media screen and (max-width: 840px) { .toolbar { width: 100%; } }
+  </style>
+</head>
+<body>
+  <div class="toolbar" role="toolbar" aria-label="简历编辑工具" contenteditable="false">
+    <button id="editButton" type="button">编辑</button>
+    <label class="toolbar-control">字体<select id="fontSelect" aria-label="字体"><option value="Microsoft YaHei">微软雅黑</option><option value="SimSun">宋体</option><option value="SimHei">黑体</option><option value="Arial">Arial</option><option value="Georgia">Georgia</option></select></label>
+    <label class="toolbar-control">文字颜色<input id="colorInput" type="color" value="#111111" aria-label="文字颜色"></label>
+    <button id="boldButton" data-action="bold" type="button" title="对选中文字加粗或取消加粗"><strong>B</strong> 加粗</button>
+    <button id="photoButton" class="secondary" type="button">替换照片</button>
+    <button id="exportButton" type="button">导出PDF</button>
+    <input id="photoInput" type="file" accept="image/*" hidden>
+    <span id="toolbarStatus" class="toolbar-status" aria-live="polite"></span>
+  </div>
+  <main id="resumeDocument">
+    <article class="resume-page">
+      <header class="profile-header">
+        <div id="photoBox" class="photo"><img src="fictional-resume-photo.png" alt="虚构示例证件照"></div>
+        <div><h1 class="name">林知远</h1><p class="meta">后端开发工程师</p><p class="meta">2002.05 · 汉</p></div>
+        <div class="contact-grid"><div>电话：188-0000-0000</div><div>邮箱：sample@example.com</div><div>微信：sample-id</div><div>作品集：sample-portfolio</div></div>
+      </header>
+      <section class="section"><div class="section-band"><span class="section-mark"><i></i><i></i></span><span class="section-name">教育背景</span></div><div class="edu-row"><span>清华大学</span><span class="leader">计算机科学与技术（本科）</span><span>2020.09-2024.06</span></div><div class="edu-row"><span>北京大学</span><span class="leader">软件工程（硕士）</span><span>2024.09-2027.06</span></div></section>
+      <section class="section"><div class="section-band"><span class="section-mark"><i></i><i></i></span><span class="section-name">实习经历</span></div><div class="role-row"><span>2026.01-2026.07</span><span class="leader">示例智能平台实验室</span><span>后端开发实习生</span></div><div class="body"><div class="bullet"><span class="marker">●</span><div><span class="label">项目：</span>参与搭建校园知识检索平台，整合课程资料与实验室文档，支持关键词检索、语义召回、权限过滤和结果溯源，面向小规模内部试用。</div></div><div class="bullet"><span class="marker">●</span><div><span class="label">技术栈：</span>Python、FastAPI、PostgreSQL、Redis、Docker、pytest</div></div><div class="bullet"><span class="marker">●</span><div><span class="label">个人职责：</span>负责接口设计、文档解析、数据清洗、检索服务和后台管理模块；补充异常处理、接口文档与自动化测试，协助完成部署和问题排查。</div></div></div></section>
+      <section class="section"><div class="section-band"><span class="section-mark"><i></i><i></i></span><span class="section-name">项目经历</span></div><div class="body"><p><span class="label">智能文档协作平台</span>面向团队知识管理场景，设计文档上传、解析、检索、引用和权限协作流程，帮助成员快速定位资料并保留来源信息。</p><div class="bullet"><span class="marker">●</span><div><span class="label">技术栈：</span>Python、FastAPI、Vue、PostgreSQL、Docker</div></div><div class="bullet"><span class="marker">●</span><div><span class="label">个人职责：</span>负责后端服务、权限设计和质量保障，完成文档状态管理、检索接口、错误提示与部署说明。</div></div></div></section>
+    </article>
+    <article class="resume-page">
+      <div class="continue-rule"></div>
+      <section class="section"><div class="section-band"><span class="section-mark"><i></i><i></i></span><span class="section-name">工作经历（续）</span></div><div class="role-row"><span>2026.01-2026.07</span><span class="leader">示例智能平台实验室</span><span>后端开发实习生</span></div><div class="body"><div class="bullet"><span class="marker">●</span><div><span class="label">接口服务：</span>拆分检索、账户与后台管理模块，统一接口规范；为高频接口补充参数校验、异常响应和自动化测试，降低联调成本。</div></div><div class="bullet"><span class="marker">●</span><div><span class="label">数据处理：</span>设计文档清洗、分块和索引流程，支持常见办公文档与图片资料；记录失败原因并提供可重试机制，方便后续运维。</div></div><div class="bullet"><span class="marker">●</span><div><span class="label">工程协作：</span>参与需求评审、代码审查和部署排障，整理接口文档、环境变量说明与交接材料，帮助团队稳定迭代。</div></div></div></section>
+      <section class="section"><div class="section-band"><span class="section-mark"><i></i><i></i></span><span class="section-name">学校经历</span></div><div class="body"><div class="bullet"><span class="marker">●</span><div>清华大学创新实践奖学金；北京大学优秀研究生，持续参与课程项目与工程实践。</div></div><div class="bullet"><span class="marker">●</span><div>参与校园开源社团，组织后端基础、数据库设计和项目协作主题分享，辅导新生完成课程项目。</div></div></div></section>
+      <section class="section"><div class="section-band"><span class="section-mark"><i></i><i></i></span><span class="section-name">自我评价</span></div><div class="body self-grid"><div class="bullet"><span class="marker">●</span><div><span class="label">综合素质：</span>逻辑清晰，重视协作与交付质量，能够将复杂问题拆解为可执行任务，并通过文档和测试降低沟通成本。</div></div><div class="bullet"><span class="marker">●</span><div><span class="label">专业背景：</span>具备计算机与软件工程复合背景，关注后端工程、数据系统和智能应用，能够在需求、开发、测试和部署之间持续推进。</div></div></div></section>
+      <section class="section"><div class="section-band"><span class="section-mark"><i></i><i></i></span><span class="section-name">技能特长</span></div><div class="body"><div class="bullet"><span class="marker">●</span><div><span class="label">编程开发：</span>熟练使用 Python，掌握 Linux、Git、Docker、pytest 与常见服务部署流程，能够独立完成接口开发和问题定位。</div></div><div class="bullet"><span class="marker">●</span><div><span class="label">Agent / LLM：</span>了解 FastAPI、RAG、MCP 与 Agent 工程，能够设计工具调用、检索增强和任务编排流程。</div></div></div></section>
+    </article>
+  </main>
+  <script>
+    (() => {
+      const documentRoot = document.getElementById('resumeDocument');
+      const edit = document.getElementById('editButton');
+      const photoBox = document.getElementById('photoBox');
+      const input = document.getElementById('photoInput');
+      const status = document.getElementById('toolbarStatus');
+      const fontSelect = document.getElementById('fontSelect');
+      const colorInput = document.getElementById('colorInput');
+      const boldButton = document.getElementById('boldButton');
+      let savedRange = null;
+      document.addEventListener('selectionchange', () => { const selection = window.getSelection(); if (selection && selection.rangeCount && documentRoot.contains(selection.anchorNode)) savedRange = selection.getRangeAt(0).cloneRange(); });
+      const restoreSelection = () => { if (!savedRange) return; const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(savedRange); };
+      const applyFormat = (command, value = null) => { if (!documentRoot.isContentEditable) edit.click(); documentRoot.focus(); restoreSelection(); document.execCommand(command, false, value); };
+      edit.onclick = () => { const on = !documentRoot.isContentEditable; documentRoot.contentEditable = String(on); documentRoot.spellcheck = false; edit.textContent = on ? '完成编辑' : '编辑'; edit.classList.toggle('secondary', on); status.textContent = on ? '可直接点击文字修改' : ''; if (on) documentRoot.focus(); };
+      fontSelect.onchange = () => applyFormat('fontName', fontSelect.value);
+      colorInput.oninput = () => applyFormat('foreColor', colorInput.value);
+      boldButton.onclick = () => applyFormat('bold');
+      document.getElementById('photoButton').onclick = () => input.click();
+      input.onchange = () => { const file = input.files && input.files[0]; if (!file || !file.type.startsWith('image/')) return; const reader = new FileReader(); reader.onload = () => { photoBox.innerHTML = `<img src="${reader.result}" alt="照片">`; status.textContent = '照片已替换'; }; reader.readAsDataURL(file); };
+      document.getElementById('exportButton').onclick = () => { status.textContent = '请在打印窗口选择“另存为 PDF”'; window.print(); };
+    })();
+  </script>
+</body>
+</html>

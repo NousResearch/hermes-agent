@@ -1,0 +1,39 @@
+{
+  "sample_data_is_fictional": true,
+  "document": {
+    "layout": "one-page",
+    "page_size": "A4",
+    "page_width": "210mm",
+    "page_height": "297mm"
+  },
+  "profile": {
+    "name": "林知远",
+    "target_role": "后端开发工程师",
+    "birth_date": "2002.05",
+    "ethnicity": "汉",
+    "political_status": "共青团员",
+    "language": "CET-6",
+    "phone": "188-0000-0000",
+    "email": "sample@example.com",
+    "wechat_or_portfolio": "sample-portfolio",
+    "photo": "fictional-resume-photo.png"
+  },
+  "education": [
+    {"school": "清华大学", "major_degree": "计算机科学与技术（本科）", "dates": "2020.09-2024.06"},
+    {"school": "北京大学", "major_degree": "软件工程（硕士）", "dates": "2024.09-2027.06"}
+  ],
+  "experience": [{
+    "dates": "2026.01-2026.07",
+    "organization": "示例智能平台实验室",
+    "role": "后端开发实习生",
+    "bullets": [
+      {"label": "项目：", "text": "参与搭建校园知识检索平台，整合课程资料与实验室文档，支持关键词检索、语义召回、权限过滤和结果溯源，面向小规模内部试用。"},
+      {"label": "技术栈：", "text": "Python、FastAPI、PostgreSQL、Redis、Docker、pytest"},
+      {"label": "个人职责：", "text": "负责接口设计、文档解析、数据清洗、检索服务和后台管理模块；补充异常处理、接口文档与自动化测试，协助完成部署和问题排查。"}
+    ]
+  }],
+  "projects": [{"name": "智能文档协作平台", "summary": "面向团队知识管理场景，设计文档上传、解析、检索、引用和权限协作流程，帮助成员快速定位资料并保留来源信息。", "url": "", "bullets": [{"label": "技术栈：", "text": "Python、FastAPI、Vue、PostgreSQL、Docker"}, {"label": "个人职责：", "text": "负责后端服务、权限设计和质量保障，完成文档状态管理、检索接口、错误提示与部署说明。"}]}],
+  "school": ["清华大学创新实践奖学金；北京大学优秀研究生；参与校园开源社团，组织技术分享与新生项目辅导。"],
+  "self_evaluation": [{"label": "综合素质：", "text": "逻辑清晰，重视协作与交付质量，能够将复杂问题拆解为可执行任务，并通过文档和测试降低沟通成本。"}, {"label": "专业背景：", "text": "具备计算机与软件工程复合背景，关注后端工程、数据系统和智能应用，能够在需求、开发、测试和部署之间持续推进。"}],
+  "skills": [{"label": "编程开发：", "text": "熟练使用 Python，掌握 Linux、Git、Docker、pytest 与常见服务部署流程，能够独立完成接口开发和问题定位。"}, {"label": "Agent / LLM：", "text": "了解 FastAPI、RAG、MCP 与 Agent 工程，能够设计工具调用、检索增强和任务编排流程。"}, {"label": "其他：", "text": "掌握数据建模、接口设计、权限控制、技术文档和团队协作规范。"}]
+}

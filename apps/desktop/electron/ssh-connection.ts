@@ -796,7 +796,22 @@ class SshConnection {
         spawnFn: this._spawnFn,
         ...(stdinData != null ? { stdinData } : {})
       })
-    } catch (error) {
+    } catch (error: any) {
+      // A wedge (half-open TCP after sleep, a network change mid-attempt) can
+      // develop *between* two execs on an already-`_opened` mux — open()'s
+      // check-then-verify dance (_verifyMuxChannel/_evictStaleMaster) only
+      // runs at dial time. Left alone, the local master process keeps
+      // answering a future `-O check` (it's a live process talking to a dead
+      // peer), so the *next* attempt's open() re-discovers the same wedge and
+      // pays its own full verify-then-evict timeout before dialing fresh.
+      // Evict now, the moment the wedge is detected, so the next open() sees
+      // a missing control socket and dials fresh immediately instead of
+      // re-paying this cost.
+      if (this._mux && error?.kind === SSH_ERROR.TIMEOUT) {
+        await this._evictStaleMaster()
+        this._opened = false
+      }
+
       throw this._fail(error)
     }
 

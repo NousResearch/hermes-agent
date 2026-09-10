@@ -52,9 +52,13 @@ const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
-// image syntax (`![alt](path)`) on its existing inline pipeline. The target
-// char class excludes `)`/whitespace, matching how LLMs actually emit these.
-const FILE_LINK_RE = /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target><?(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*>?)\)/gi
+// image syntax (`![alt](path)`) on its existing inline pipeline. Angle-bracket
+// destinations (`[x](<path with spaces.md>)`) are the CommonMark form for
+// spaces in a href — match them with an explicit `<…>` branch so they rewrite
+// to `#preview/…` instead of falling through to rehype-harden as "[blocked]"
+// (#102782). Unbracketed targets still exclude `)`/whitespace.
+const FILE_LINK_RE =
+  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*)\)/gi
 
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo

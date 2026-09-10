@@ -6,6 +6,7 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 
 import logging
 import contextlib
+import json
 import argparse
 import os
 import re
@@ -109,9 +110,59 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
         print(f"  ⚠ A previous update left the desktop bundle incomplete ({dist_dir}); rebuilding it")
         return True
 
+    # A failed stage-and-swap leaves the source-content stamp current while the
+    # INSTALLED app in release/ is behind: the swap failed, so the packaged tree
+    # still holds the OLD commit, and the content hash (which describes the
+    # source tree, not the output) can't see it. Treat installed-stamp commit !=
+    # HEAD as a rebuild trigger too, so `hermes desktop` stops reporting an app
+    # weeks behind as up to date (#107542). Packaged mode only — a source-mode
+    # run has no installed stamp.
+    if not source_mode and _installed_desktop_stamp_behind_head(desktop_dir, project_root):
+        print("  ⚠ The installed desktop app was built from an older commit than the "
+              "checkout; rebuilding it")
+        return True
+
     return not _stamp_is_current(
         _desktop_stamp_path(), lambda: _compute_desktop_content_hash(project_root), sourceMode=source_mode
     )
+
+
+def _installed_desktop_commit(desktop_dir: Path) -> Optional[str]:
+    """Commit the currently-installed packaged desktop app was built from.
+
+    Read from ``install-stamp.json`` shipped in the unpacked app's resources (beside the exe on
+    Windows/Linux, under ``Contents/Resources`` on macOS). Returns ``None`` when the stamp is
+    absent, unreadable, malformed, or an unpinned all-zero fallback (a local/ZIP build with no
+    real commit — not a divergence signal).
+    """
+    exe = _desktop_packaged_executable(desktop_dir)
+    if exe is None:
+        return None
+    resources = exe.parent.parent / "Resources" if sys.platform == "darwin" else exe.parent / "resources"
+    try:
+        data = json.loads((resources / "install-stamp.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    commit = data.get("commit") if isinstance(data, dict) else None
+    if not isinstance(commit, str) or len(commit) != 40 or commit == "0" * 40:
+        return None
+    return commit
+
+
+def _installed_desktop_stamp_behind_head(desktop_dir: Path, project_root: Path) -> bool:
+    """True only when the installed app's commit and HEAD are both resolvable and differ.
+
+    Conservative by design: any unknown (no/fallback stamp, no resolvable git HEAD) returns
+    ``False`` so a signal we cannot trust never forces a rebuild (#107542).
+    """
+    installed = _installed_desktop_commit(desktop_dir)
+    if installed is None:
+        return False
+    from hermes_cli.build_info import _resolve_git_head_sha
+    head = _resolve_git_head_sha(project_root)
+    if head is None:
+        return False
+    return installed != head
 
 
 def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:

@@ -372,6 +372,78 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_blocker_auth_transitions_ready_task_to_blocked(
+    kanban_home, all_assignees_spawnable,
+):
+    """t_dd8a811d: the blocker_auth branch has no TTL and (before the fix)
+    never transitions the task out of ``ready`` — it strands the task
+    forever, silently re-emitting ``respawn_guarded`` every tick with no
+    state change (only the diagnostics-actuator side channel notices).
+
+    The sibling ``rate_limit_cooldown`` branch self-clears after
+    ``DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS``; blocker_auth has no such
+    signal to expire on (there's no "auth restored" event), so the correct
+    symmetric behavior is: on the FIRST blocker_auth guard hit, transition
+    ready -> blocked(kind=needs_input) with a comment naming the matched
+    substring, so the stall surfaces in the normal blocked-lane review flow
+    instead of parking invisibly in ready forever.
+    """
+    def fake_spawn(task, workspace, board=None):
+        raise AssertionError("a blocker_auth-guarded task must never spawn")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="auth-stuck", assignee="alice")
+        # Mirrors the live t_2b487430 repro string exactly.
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("workspace: [Errno 13] Permission denied: '/Users'", tid),
+        )
+        conn.commit()
+
+        res = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+
+    assert res.respawn_guarded == [(tid, "blocker_auth")]
+    assert not res.spawned
+    # This is the fix: no longer stuck in 'ready' — visibly blocked within
+    # one dispatcher tick, no manual kanban_unblock required to observe it.
+    assert task.status == "blocked"
+    assert task.block_kind == "needs_input"
+    # A comment names the matched substring so a human reviewing the
+    # blocked lane immediately sees WHY, without digging into dispatcher logs.
+    assert any("permission" in c.body.lower() for c in comments)
+
+
+def test_respawn_guard_blocker_auth_second_tick_does_not_reblock(
+    kanban_home, all_assignees_spawnable,
+):
+    """Once blocked, the task is no longer in the ready lane, so a second
+    dispatcher tick must not re-fire the guard/block path against it (no
+    duplicate blocked events, no crash from double-blocking an already
+    blocked task)."""
+    def fake_spawn(task, workspace, board=None):
+        raise AssertionError("must not spawn")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="auth-stuck-2", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("Billing or credits exhausted: HTTP 404", tid),
+        )
+        conn.commit()
+
+        first = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+        second = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+
+    assert first.respawn_guarded == [(tid, "blocker_auth")]
+    assert task.status == "blocked"
+    # Second tick sees no ready-lane row at all for this task (it's blocked
+    # now), so the guard never fires again.
+    assert second.respawn_guarded == []
+
+
 
 
 

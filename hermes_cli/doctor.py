@@ -165,6 +165,38 @@ def run_doctor(args):
     should_fix = getattr(args, 'fix', False)
     # Doctor runs from the interactive CLI, so CLI-gated tool checks (e.g. cronjob) see the same context.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
+    # ------------------------------------------------------------------
+    # --upstream : READONLY diagnostic branch (UH1..UH5, UH9, UH10).
+    # Incompatible with --fix / --ack to preserve the existing surface.
+    # Emits text, --json, or --compact and returns before ordinary doctor.
+    # ------------------------------------------------------------------
+    if getattr(args, 'upstream', False):
+        if should_fix or getattr(args, 'ack', None):
+            print(color(
+                "--upstream is incompatible with --fix and --ack",
+                Colors.RED,
+            ))
+            sys.exit(2)
+        from hermes_cli.doctor_upstream import (
+            run_upstream_health,
+            render_text,
+            render_compact,
+            serialize_json,
+        )
+        use_json = bool(getattr(args, 'json', False))
+        use_compact = bool(getattr(args, 'compact', False))
+        result = run_upstream_health(cwd=PROJECT_ROOT)
+        if use_json:
+            sys.stdout.write(serialize_json(result))
+            sys.stdout.write("\n")
+        elif use_compact:
+            sys.stdout.write(render_compact(result))
+            sys.stdout.write("\n")
+        else:
+            sys.stdout.write(render_text(result))
+        sys.exit(result.exit_code)
+        return
+
     if getattr(args, 'ack', None):
         return _ack_advisory(args.ack)
     print()

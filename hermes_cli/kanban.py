@@ -869,9 +869,22 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     metadata, rc = _parse_metadata_flag(raw_meta)
     if rc:
         return rc
+    from hermes_cli.plugins import resolve_pre_tool_block
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
+            policy_block = resolve_pre_tool_block(
+                "kanban_complete",
+                {
+                    "task_id": tid,
+                    "result": args.result,
+                    "summary": summary,
+                    "metadata": metadata,
+                },
+            )
+            if policy_block:
+                fail_msg[tid] = policy_block
+                return False
             gate_err = _goal_gate_error(
                 conn, tid, (summary or args.result or "").strip(), "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
@@ -959,6 +972,19 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
     metadata, rc = _parse_metadata_flag(getattr(args, "metadata", None))
     if rc:
         return rc
+    from hermes_cli.plugins import resolve_pre_tool_block
+    policy_block = resolve_pre_tool_block(
+        "kanban_request_review",
+        {
+            "task_id": tid,
+            "summary": summary,
+            "reviewer": getattr(args, "reviewer", None),
+            "metadata": metadata,
+            "force": bool(getattr(args, "force", False)),
+        },
+    )
+    if policy_block:
+        return _err(policy_block)
     with kbc.connect_closing() as conn:
         gate_err = _goal_gate_error(
             conn, tid, summary or "", "review handoff",
@@ -980,6 +1006,12 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
 def _cmd_request_changes(args: argparse.Namespace) -> int:
     tid = args.task_id
     reason = " ".join(args.reason).strip()
+    from hermes_cli.plugins import resolve_pre_tool_block
+    policy_block = resolve_pre_tool_block(
+        "kanban_request_changes", {"task_id": tid, "reason": reason},
+    )
+    if policy_block:
+        return _err(policy_block)
     with kbc.connect_closing() as conn:
         ok, detail = kb.request_changes(conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid))
         if not ok:

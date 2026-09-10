@@ -153,6 +153,23 @@ def _prompt_parts(agent):
         return build_system_prompt_parts(agent)
 
 
+def test_kanban_worker_prompt_routes_current_task_review_without_a_child():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    prompt = _stable_prompt(_make_agent(_kanban_worker_guidance=KANBAN_GUIDANCE))
+
+    assert "pre-created review, QA, or release child" in prompt
+    assert "independent review of the CURRENT task" in prompt
+    assert "MUST call `kanban_request_review" in prompt
+    assert "MUST NOT create a reviewer child with `kanban_create`" in prompt
+    assert "`do not create child tasks`" in prompt
+    assert "takes precedence over this generic guidance" in prompt
+    assert "DISTINCT additional work item or work product" in prompt
+    assert "never to hand the current card to its reviewer" in prompt
+    assert "## Orchestrator mode" in prompt
+    assert "use `kanban_create` to fan out into child tasks" in prompt
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""

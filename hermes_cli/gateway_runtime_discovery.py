@@ -47,8 +47,11 @@ def _socket_path(home: Path) -> Path:
     target = Path(data.decode("utf-8").strip())
     if not target.is_absolute():
         raise DiscoveryError("invalid_control_pointer")
-    from gateway.control_socket import _fallback_socket_path
-    if target != _fallback_socket_path(home):
+    from gateway.control_socket import _home_hash
+    # The owner may have a different TMPDIR (notably launchd/native apps).
+    # Authenticate its private pointer and profile-specific directory, not our
+    # process-local temporary-root preference.
+    if target.name != "control.sock" or target.parent.name != f"hermes-gw-{_home_hash(home)}":
         raise DiscoveryError("invalid_control_pointer")
     directory = _private_node(target.parent, kind="directory")
     if directory.st_mode & 0o077:

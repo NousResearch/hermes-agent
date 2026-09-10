@@ -371,7 +371,7 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     for sub, globs, recursive, files_only in _LINKED_FILE_SPECS if skill_dir else ():
         base = skill_dir / sub
         found = [
-            str(f.relative_to(skill_dir)) for g in globs if base.exists()
+            f.relative_to(skill_dir).as_posix() for g in globs if base.exists()
             for f in (base.rglob(g) if recursive else base.glob(g))
             if not files_only or f.is_file()]
         if found:
@@ -475,7 +475,7 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         # ambiguity WITHIN the project tier still refuses.
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
     if len(candidates) > 1:
-        paths = [str(smd) for _, smd in candidates]
+        paths = [smd.as_posix() for _, smd in candidates]
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
         return _fail(
             f"Ambiguous skill name '{name}': {len(candidates)} skills match across your local skills dir "
@@ -563,9 +563,10 @@ def skill_view(
             _parse_tags(hermes_meta.get(k) or frontmatter.get(k, "")) for k in ("tags", "related_skills"))
         linked_files = _skill_linked_files(skill_dir)
         try:
-            rel_path = str(skill_md.relative_to(active_skills_dir))
+            rel_path = skill_md.relative_to(active_skills_dir).as_posix()
         except ValueError:  # external skill — relative to its own parent dir
-            rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
+            rel_path = (skill_md.relative_to(skill_md.parent.parent).as_posix()
+                        if skill_md.parent.parent else skill_md.name)
         skill_name = frontmatter.get("name", skill_md.stem if not skill_dir else skill_dir.name)
         readiness, readiness_extras = _skill_readiness(frontmatter, skill_name)
         rendered_content = content if not preprocess else _preprocess_skill(

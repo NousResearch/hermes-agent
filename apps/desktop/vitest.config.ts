@@ -19,12 +19,8 @@ const reactUi: TestProjectConfiguration = {
     // reports a result -- no assertion failure, just silence). Capping
     // concurrency trades some wall-clock time for staying inside the
     // runner's memory budget.
-    poolOptions: {
-      threads: {
-        maxThreads: 4,
-        minThreads: 1
-      }
-    }
+    maxWorkers: 4,
+    minWorkers: 1
   }
 }
 

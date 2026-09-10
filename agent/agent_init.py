@@ -1815,6 +1815,27 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
+        # Context-engine plugin controls are supplied from the context config block.
+        # Keep defaults unchanged; only explicitly configured plugin attributes are applied.
+        _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
+        if isinstance(_ctx_cfg, dict):
+            for _attr in (
+                "intelligence_enabled",
+                "memory_integration_enabled",
+                "history_retrieval_enabled",
+                "history_retrieval_limit",
+                "history_retrieval_max_messages",
+                "history_retrieval_max_chars_per_message",
+                "history_retrieval_min_relevance",
+                "history_retrieval_query_max_words",
+                "history_recall_intent_terms",
+                "memory_max_entry_chars",
+                "supplement_max_ratio",
+            ):
+                if _attr in _ctx_cfg and hasattr(agent.context_compressor, _attr):
+                    setattr(agent.context_compressor, _attr, _ctx_cfg[_attr])
+        if hasattr(agent.context_compressor, "user_id"):
+            agent.context_compressor.user_id = getattr(agent, "_user_id", None)
         # External engines own compaction policy — the host threshold (and its Codex
         # autoraise) never reaches the plugin, so drop the notice.
         agent._compression_threshold_autoraised = None

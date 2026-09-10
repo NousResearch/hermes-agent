@@ -94,6 +94,12 @@ def _callback_tool(module: str, func: str, callback_attr: str, *arg_specs: _ArgS
 
 
 def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
+    owner_user_id = getattr(agent, "_user_id", None)
+    if not str(owner_user_id or "").strip():
+        # T4 history retrieval is fail-closed when the transport did not establish
+        # a user ownership identity (legacy CLI/NULL-owner sessions are not eligible).
+        from tools.session_search_tool import _ownership_error
+        return _ownership_error()
     session_db = agent._get_session_db_for_recall()
     if not session_db:
         from hermes_state import format_session_db_unavailable
@@ -106,7 +112,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
             ("window", "window", 5), ("sort", "sort"), ("detail", "detail", "adaptive"),
         ),
-        db=session_db, current_session_id=agent.session_id,
+        db=session_db, current_session_id=agent.session_id, user_id=getattr(agent, "_user_id", None),
     )
 
 

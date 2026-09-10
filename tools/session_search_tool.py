@@ -75,6 +75,24 @@ def _get_session_meta(db, session_id: str) -> dict:
                   "get_session failed for %s: %s", session_id, with_exc=True) or {}
 
 
+def _owner_matches(meta: Dict[str, Any], owner_user_id: Optional[str]) -> bool:
+    """Fail-closed ownership check for historical session recall.
+
+    ``user_id`` is the authoritative owner boundary when present. An unknown caller
+    identity must never gain access to an owned session; this prevents legacy NULL
+    sessions from becoming a cross-user bypass.
+    """
+    owner = str(owner_user_id or "").strip()
+    if not owner_user_id:
+        return True  # legacy direct callers; the agent inline executor gates T4 identity.
+    target = str(meta.get("user_id") or "").strip()
+    return bool(target) and owner == target
+
+
+def _ownership_error() -> str:
+    return tool_error("session history unavailable: caller ownership identity is required", success=False)
+
+
 def _session_meta_block(meta: Dict[str, Any]) -> Dict[str, Any]:
     return {"when": _format_timestamp(meta.get("started_at")), "source": meta.get("source"),
             "model": meta.get("model"), "title": meta.get("title")}
@@ -183,7 +201,7 @@ def _discovery_entry(lineage_root: Optional[str], **fields) -> Dict[str, Any]:
     return entry
 
 
-def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[Dict[str, Any]]:
+def _title_match_result(db, query: str, current_lineage_root: Optional[str], owner_user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Discovery-shaped result when the query matches a session title, else None."""
     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
     session_id = title_query and _quiet(lambda: db.resolve_session_by_title(title_query), None,
@@ -198,6 +216,8 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     session_meta = _quiet(lambda: db.get_session(lineage_root) or db.get_session(session_id), None,
                           "get_session failed for title match %s", session_id) or {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
+        return None
+    if not _owner_matches(session_meta, owner_user_id):
         return None
     messages = _quiet(lambda: db.get_messages(session_id), [], "get_messages failed for title match %s", session_id)
     anchor_id = messages[0].get("id") if messages else None
@@ -259,16 +279,21 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
 
 
 def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
-              detail: str, current_session_id: str = None, link_profile: str = None) -> str:
+              detail: str, current_session_id: str = None, link_profile: str = None,
+              owner_user_id: str = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(db, query, current_lineage_root, owner_user_id)
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
         exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
         fields=_DISCOVER_SEARCH_FIELDS), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
+    # Ownership is enforced before ranking/dedup/hydration so another user's session
+    # can neither be discovered nor influence result ordering.
+    raw_results = [r for r in raw_results
+                   if _owner_matches(_get_session_meta(db, r.get("session_id")), owner_user_id)]
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
     # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
     # order within each class.
@@ -365,11 +390,13 @@ def _locate_session_db(session_id: str):
     return None, None
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
+def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None, owner_user_id: str = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
     meta = _get_session_meta(db, session_id)
     if not meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
+    if not _owner_matches(meta, owner_user_id):
+        return _ownership_error()
     rows, err = _loud(lambda: db.get_messages(session_id), "get_messages failed for %s: %s", "failed to load session",
                       session_id)
     if err:
@@ -383,21 +410,21 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
 
 
-def _read_with_profile_fallback(db, sid: str, profile: Optional[str]) -> str:
+def _read_with_profile_fallback(db, sid: str, profile: Optional[str], owner_user_id: str = None) -> str:
     """Read shape; on a miss scan every profile (the model may have dropped the owning
     profile from the link) and tag the result with where it was found."""
-    result = _read_session(db, sid, link_profile=profile)
+    result = _read_session(db, sid, link_profile=profile, owner_user_id=owner_user_id)
     located, owner = (None, None) if json.loads(result).get("success") else _locate_session_db(sid)
     if located is None:
         return result
     try:
-        found = json.loads(_read_session(located, sid, link_profile=owner))
+        found = json.loads(_read_session(located, sid, link_profile=owner, owner_user_id=owner_user_id))
     finally:
         located.close()
     return json.dumps({**found, "profile": owner}, ensure_ascii=False) if found.get("success") else result
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None, owner_user_id: str = None) -> str:
     """Browse shape: metadata for the most recent sessions (no LLM, no FTS5)."""
     def _browse():
         # Never use list_sessions_rich(order_by_last_active=True) here: it walks every
@@ -417,6 +444,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
         # Compression continuation: the root was summarised into the live child, so hide
         # it. /new-reset children carry no transcript — keep that root browsable.
         hidden = {current_session_id, current_root if has_compression_hop and current_root else None}
+        sessions = [s for s in sessions if _owner_matches(s, owner_user_id)]
         results = [{
             "session_id": s.get("id", ""), "link": _session_link(s.get("id", ""), link_profile),
             "title": s.get("title") or None, **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
@@ -449,7 +477,7 @@ def _anchor_in_live_context(db, anchor_state, anchor_sid: str, current_session_i
 
 
 def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
-            current_session_id: str = None) -> str:
+            current_session_id: str = None, owner_user_id: str = None) -> str:
     """Scroll shape: a window centered on an anchor (no FTS5, no bookends)."""
     try:
         around_message_id = int(around_message_id)
@@ -464,6 +492,12 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     session_meta = _get_session_meta(db, session_id)
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
+    if not _owner_matches(session_meta, owner_user_id):
+        return _ownership_error()
+    if owning and owning != session_id:
+        owning_meta = _get_session_meta(db, owning)
+        if not _owner_matches(owning_meta, owner_user_id):
+            return _ownership_error()
     view, err = _loud(lambda: db.get_messages_around(session_id, around_message_id, window=window),
                       "get_messages_around failed: %s", "failed to load messages")
     if err:
@@ -495,7 +529,8 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
 
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-              around_message_id, window, sort, profile, detail, owned_dbs) -> str:
+              around_message_id, window, sort, profile, detail, owned_dbs,
+              owner_user_id) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
@@ -517,26 +552,30 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         owned_dbs.append(profile_db)
     if isinstance(session_id, str) and session_id.strip():
         if around_message_id is not None:
-            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
-        return _read_with_profile_fallback(db, session_id.strip(), profile)
+            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id, owner_user_id)
+        return _read_with_profile_fallback(db, session_id.strip(), profile, owner_user_id)
     limit = _clamp_int(limit, 3, 1, 10)
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile, owner_user_id=owner_user_id)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     return _discover(
         db=db, query=query.strip(), limit=limit, sort=sort_norm if sort_norm in ("newest", "oldest") else None,
         role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
         detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
-        current_session_id=current_session_id, link_profile=profile)
+        current_session_id=current_session_id, link_profile=profile, owner_user_id=owner_user_id)
 
 
 def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
+                   user_id: str = None,
                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive") -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers."""
     from hermes_state import format_session_db_unavailable
     from hermes_state_registry import acquire, release_or_close
     owned_dbs: List[Any] = []
+    owner_user_id = str(user_id or "").strip() or None
+    if not owner_user_id and current_session_id and db is not None:
+        owner_user_id = str(_get_session_meta(db, current_session_id).get("user_id") or "").strip() or None
     if db is None:
         db = _quiet(acquire, None, "SessionDB unavailable for session_search")
         if db is None:
@@ -544,7 +583,7 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
         owned_dbs.append(db)
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-                         around_message_id, window, sort, profile, detail, owned_dbs)
+                         around_message_id, window, sort, profile, detail, owned_dbs, owner_user_id)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")

@@ -1,0 +1,11 @@
+name: ci
+description: >-
+  Context Intelligence context engine: the bounded engine's hard-budget selection
+  (system prompt / current request / newest pending tool chain preserved, never
+  mutating persisted history) plus gated context intelligence — T3 durable memory
+  and T4 selective historical-session retrieval. Supplements are budget-bounded,
+  deduplicated, labelled as contextual evidence only (Knowledge stays authoritative),
+  and T4 fires at most once per request and only on a deterministic recall-intent
+  signal. No production config or memory defaults are changed by this plugin.
+version: 0.1.0
+author: Nous Research

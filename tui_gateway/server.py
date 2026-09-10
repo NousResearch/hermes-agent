@@ -556,6 +556,28 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     return None
 
 
+def _profile_model(profile_home: Path | None) -> str:
+    """A non-launch profile's configured model from ITS config.yaml (fail-open → \"\"): the launch-context
+    ``_resolve_model()`` resolves the *launch* profile, so a session bound to another profile must not
+    report the launch model. Same pattern as :func:`_profile_configured_cwd` (issue #40334). Empty
+    (no configured model) → the caller keeps the launch-context fallback, unchanged for single-profile
+    and model-less profiles."""
+    if profile_home is None:
+        return ""
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import read_user_config_raw
+        p = Path(profile_home) / "config.yaml"
+        if not p.exists():
+            return ""
+        cfg = _expand_cfg(_apply_managed(read_user_config_raw(p)))
+        m = cfg.get("model", "")
+        if isinstance(m, dict):
+            return str(m.get("default", "") or "").strip()
+        if isinstance(m, str) and m:
+            return m.strip()
+    return ""
+
+
 def _launch_configured_cwd() -> str | None:
     """Launch profile's ``terminal.cwd`` from config.yaml: the dashboard's in-memory gateway gets no bridged
     ``TERMINAL_CWD`` env (only the Node PTY child does), so a fresh /chat would otherwise start in ``os.getcwd()``."""

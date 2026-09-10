@@ -352,8 +352,10 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(history),
         "messages": _history_to_messages(history),
-        # Reflect the override now so the client doesn't clobber its sticky pick.
-        "info": {"model": override.get("model") if override else _resolve_model(),
+        # Reflect the override now so the client doesn't clobber its sticky pick. A named
+        # profile without an explicit override reports its OWN configured model, not the
+        # launch-context model (mirrors _profile_configured_cwd / issue #40334).
+        "info": {"model": override.get("model") if override else (_profile_model(profile_home) or _resolve_model()),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,

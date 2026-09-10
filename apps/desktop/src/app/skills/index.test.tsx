@@ -45,6 +45,14 @@ vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
 
+// Tab contents have their own suites; this suite owns route-to-panel selection.
+vi.mock('./collective-tab', () => ({
+  CollectiveTab: () => <section aria-label="Collective workspace" />
+}))
+vi.mock('./plugins-tab', () => ({
+  PluginsTab: () => <section aria-label="Plugins workspace" />
+}))
+
 // The catalog Install button routes through the hub action pipeline — stub the
 // action entrypoint (real module kept: SkillsView reads $hubActions and the
 // query keys from it).
@@ -75,14 +83,14 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function renderSkills() {
+async function renderSkills(tab = 'toolsets') {
   const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
       // SkillsView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+        <MemoryRouter initialEntries={[`/skills?tab=${tab}`]}>
           <SkillsView />
         </MemoryRouter>
       </QueryClientProvider>
@@ -122,6 +130,22 @@ afterEach(() => {
 // (2× in a row on PR #93612, plus a main run the same hour). Give this file
 // headroom; the tests are not slow individually.
 describe('SkillsView toolset management', { timeout: 60_000 }, () => {
+  it.each([
+    ['collective', 'Collective workspace', 'Plugins workspace'],
+    ['plugins', 'Plugins workspace', 'Collective workspace']
+  ])('opens the %s deep link without replacing the other workspace', async (tab, selected, other) => {
+    await renderSkills(tab)
+
+    expect(await screen.findByRole('region', { name: selected })).toBeTruthy()
+    expect(screen.queryByRole('region', { name: other })).toBeNull()
+    const otherTab = other.replace(' workspace', '')
+    fireEvent.click(screen.getByRole('button', { name: otherTab }))
+    expect(navigateSpy).toHaveBeenCalledWith(
+      { pathname: '/skills', search: `?tab=${otherTab.toLowerCase()}`, hash: '' },
+      { replace: true }
+    )
+  })
+
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 

@@ -70,12 +70,13 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { CollectiveTab } from './collective-tab'
 import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { McpTab } from './mcp-tab'
+import { PluginsTab } from './plugins-tab'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
 
 // 'hub' is gone as a top-level tab — the Skills Hub browser lives inside the
 // Skills tab now (EmbeddedHubPicker below the installed list). Legacy
 // `?tab=hub` links fall back to 'skills' via useRouteEnumParam.
-const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'collective'] as const
+const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'plugins', 'collective'] as const
 
 // Skills + toolsets live in the RQ cache so switching tabs/pages paints the
 // cached lists instantly (no reload flash) and mount only fires a deduped
@@ -868,7 +869,7 @@ export function SkillsView({
       onTabChange={id => setMode(id as (typeof SKILLS_MODES)[number])}
       // MCP manages a handful of entries with the editor right there —
       // searching it is noise.
-      searchHidden={mode === 'mcp'}
+      searchHidden={mode === 'mcp' || mode === 'plugins'}
       searchHints={searchHints}
       searchPlaceholder={
         mode === 'skills'
@@ -882,6 +883,7 @@ export function SkillsView({
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
         { id: 'mcp', label: t.skills.tabMcp },
+        { id: 'plugins', label: t.skills.tabPlugins },
         { id: 'collective', label: t.skills.tabCollective }
       ]}
     >
@@ -894,6 +896,11 @@ export function SkillsView({
           <div className={cn(mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1', 'relative')}>
             {mode === 'collective' ? (
               <CollectiveTab profile={scopeProfile} query={query} />
+            ) : mode === 'plugins' ? (
+              // Agent plugins for the scoped profile: installed list on top,
+              // the live catalog picker underneath (same shape as Skills).
+              // Keyed on scope so a profile/connection switch reloads the list.
+              <PluginsTab key={`plugins-${scopeKey}`} profile={scopeProfile} />
             ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
               // it is the ACTIVE gateway's socket — for a scope pinned to a

@@ -1328,7 +1328,9 @@ def _(rid, params: dict) -> dict:
 # ─── Plugins ─────────────────────────────────────────────────────────────────
 def _plugin_rows() -> list[dict]:
     pc = _tools_mod("hermes_cli.plugins_cmd")
+    cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
+    pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
     out = []
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
         status = pc._plugin_status(name, enabled, disabled, key=key)
@@ -1339,7 +1341,8 @@ def _plugin_rows() -> list[dict]:
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir)})
+            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
+            **cat.catalog_row_fields(_dir, pins)})
     return out
 
 
@@ -1363,22 +1366,44 @@ def _plugins_toggle(rid, params):
 
 
 def _plugins_install(rid, params):
+    # ``catalog_name`` alone installs a curated entry at its pinned SHA (resolved server-side, kill list
+    # enforced, no bypass) — same contract as the dashboard endpoint.
     ident = (params.get("identifier") or params.get("repo") or "").strip()
-    if not ident:
-        return _err(rid, 4019, "plugins.install requires 'identifier' or 'repo'")
+    catalog_name = str(params.get("catalog_name") or "").strip()
+    if not ident and not catalog_name:
+        return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', or 'catalog_name'")
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
-        ident, force=bool(params.get("force")), enable=params.get("enable", True))
+        ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None)
     return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed")
 
 
-_PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install}
+def _plugins_update(rid, params):
+    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI)."""
+    name = (params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4019, "plugins.update requires a 'name'")
+    pc, cat = _tools_mod("hermes_cli.plugins_cmd"), _tools_mod("hermes_cli.plugins_cmd_catalog")
+    target = pc._plugins_dir() / name
+    sidecar = cat.read_catalog_sidecar(target) if target.is_dir() else None
+    if not sidecar:
+        return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
+    try:
+        sha, changed = cat.repin_catalog_plugin(target, sidecar)
+    except pc.PluginOperationError as e:
+        return _err(rid, 4021, str(e))
+    return _ok(rid, {"ok": True, "unchanged": not changed, "sha": sha})
+
+
+_PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
+                    "update": _plugins_update}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
 def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
-    ``install`` git-clones ``identifier``/``repo`` (``force``, ``enable`` default True)."""
+    ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
+    default True); ``update`` re-pins a catalog install to the current catalog SHA."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 

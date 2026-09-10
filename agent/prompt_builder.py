@@ -13,7 +13,7 @@ import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from hermes_constants import (
     get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
@@ -512,8 +512,20 @@ STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
 
 
 def format_steer_marker(steer_text: str) -> str:
-    """Wrap a mid-turn steer for appending to a tool result (see note above)."""
+    """Wrap a mid-turn steer in the self-describing marker (see note above)."""
     return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_MARKER_CLOSE}"
+
+
+STEER_DISPLAY_KIND = "steer"
+
+
+def steer_user_row(steer_text: str) -> Dict[str, Any]:
+    """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
+    result). Its own row — never smeared onto the already-persisted tool row, which append-only
+    persistence would leave divergent from the live request — and typed so the alternation repair
+    never merges the next real prompt into it and history renderers can label it."""
+    return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
+            "display_kind": STEER_DISPLAY_KIND}
 
 
 STEER_CHANNEL_NOTE = (

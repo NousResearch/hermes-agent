@@ -20,9 +20,8 @@ import { type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from 
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
-import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
+import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
-  $activeTreeGroup,
   $layoutTree,
   focusedSessionTabAnchor,
   isPaneVisible,
@@ -30,7 +29,7 @@ import {
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
-import { $workspaceMode, resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
+import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
@@ -57,6 +56,7 @@ import {
   setSessions
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
+import { $focusedTreePaneId } from './session-focus'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   requestForSessionProfile,
@@ -1916,45 +1916,13 @@ export function reopenLastClosedTile(): void {
 
 // ---------------------------------------------------------------------------
 // The FOCUSED session — one derivation, not another hand-maintained
-// "$activeSession" sibling. The layout's interaction tracker ($activeTreeGroup:
-// last click/focus, the same source ⌘W uses) resolves to a zone; its active
+// "$activeSession" sibling. session-focus resolves the interacted content zone,
+// retaining it while the Sessions sidebar owns keyboard focus. Its active
 // pane names the session: a `session-tile:<storedId>` pane IS that session,
 // anything else falls back to the route-driven primary. Chrome that should
 // follow the user between tiles (titlebar session title, statusbar context /
 // timer / model) reads these instead of the primary-only atoms.
 // ---------------------------------------------------------------------------
-
-/** Focused pane identity, retaining Bot Mode's main-zone fallback. */
-const $focusedTreePaneId = computed([$activeTreeGroup, $layoutTree, $workspaceMode], (groupId, tree, workspaceMode) => {
-  const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
-
-  if (active?.startsWith(TILE_PANE_PREFIX)) {
-    return active
-  }
-
-  // The interaction tracker can point at sidebar CHROME while a chat still
-  // holds the main zone's active tab — clicking a Bots-pane roster row moves
-  // it to the sidebar group, whose active pane ('hermes-bots:pane') is not a
-  // session tile. In sessions mode the primary selection answers, exactly as
-  // always. In Bot Mode that fallback alone publishes a NULL "focused"
-  // edge: bot chats open as TILES and never set $selectedStoredSessionId,
-  // so the selection is null while the chat is plainly on screen. The Bots
-  // plugin reads that null edge as "the chat lost the center", releases its
-  // open claim, and re-asserts the Bots home over the still-visible chat —
-  // the reported "clicking a bot chat jumps to the list" (#96062). Bot
-  // Mode's on-screen truth is the main zone's active TILE; only when the
-  // main zone holds no tile (chat closed) does the selection answer, so a
-  // genuine close still lets the home return.
-  if (workspaceMode === 'bots' && tree) {
-    const mainActive = findGroupOfPane(tree, 'workspace')?.active
-
-    if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
-      return mainActive
-    }
-  }
-
-  return active
-})
 
 export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
   Boolean(active?.startsWith(TILE_PANE_PREFIX))

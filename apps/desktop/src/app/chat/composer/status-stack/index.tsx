@@ -8,6 +8,7 @@ import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/u
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -141,15 +142,26 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.
   const visiblePreviews = previews.filter(item => hasRunningBackground || !isLocalhostPreview(item.target))
 
+  // Keep-alive keeps every ever-active tab mounted, so without this gate each
+  // background tile's safety-net poll fires every 5s — N sessions means N
+  // gateway round-trips plus shared-map churn forever. Hidden tabs skip the
+  // poll (event-driven refreshes in use-message-stream still land through the
+  // store) and resume it on reveal via `paneVisible` in the dep array.
+  const paneVisible = usePaneVisible()
+
   useEffect(() => {
-    if (!sessionId || !hasRunningBackground) {
+    if (!sessionId || !hasRunningBackground || !paneVisible) {
       return
     }
 
-    const timer = setInterval(() => void refreshBackgroundProcesses(sessionId), BACKGROUND_POLL_MS)
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshBackgroundProcesses(sessionId)
+      }
+    }, BACKGROUND_POLL_MS)
 
     return () => clearInterval(timer)
-  }, [hasRunningBackground, sessionId])
+  }, [hasRunningBackground, sessionId, paneVisible])
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 
@@ -229,7 +241,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
               />
             ) : undefined
           }
-          defaultCollapsed={group.type !== 'todo' && group.type !== 'goal'}
+          defaultCollapsed={group.type !== 'todo'}
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
           label={groupLabel(group, t.statusStack)}
         >
@@ -301,7 +313,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             composerDockCard('top'),
             // Inset (mx-2) so the stack reads slightly narrower than the composer
             // surface below it — the original look.
-            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5'
+            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent'
           )}
         >
           <div

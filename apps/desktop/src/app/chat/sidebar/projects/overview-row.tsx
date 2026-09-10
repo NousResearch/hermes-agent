@@ -3,6 +3,7 @@ import { useRef } from 'react'
 
 import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -27,7 +28,10 @@ import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
 // the lead's default tertiary. The glyph wrapper centers + caps size either way.
-export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
+// Auto-discovered repos (git lanes Desktop found by scanning disk, not rows in
+// projects.db) get the `repo` glyph so a glance tells explicit projects
+// (`folder-library`) apart from incidental disk/session findings.
+export function projectIcon({ color, icon, isAuto, isNoProject }: SidebarProjectTree) {
   if (color && !icon) {
     return (
       <SidebarRowLeadGlyph>
@@ -38,7 +42,10 @@ export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
 
   return (
     <SidebarRowLeadGlyph style={color ? { color } : undefined}>
-      <Codicon name={icon || (isNoProject ? 'home' : 'folder-library')} size={SIDEBAR_LEAD_ICON_SIZE} />
+      <Codicon
+        name={icon || (isNoProject ? 'home' : isAuto ? 'repo' : 'folder-library')}
+        size={SIDEBAR_LEAD_ICON_SIZE}
+      />
     </SidebarRowLeadGlyph>
   )
 }
@@ -115,6 +122,22 @@ export function ProjectOverviewRow({
     <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
   )
 
+  const labelLink = (
+    <SidebarRowLink
+      // The glyph is aria-hidden and the tooltip only speaks on hover, so the
+      // link's own name carries the auto cue — screen readers get it too.
+      aria-label={
+        project.isAuto
+          ? `${s.projects.enter(project.label)} (${s.projects.autoDiscovered})`
+          : s.projects.enter(project.label)
+      }
+      labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
+      onClick={() => onEnter?.(project.id)}
+    >
+      {project.label}
+    </SidebarRowLink>
+  )
+
   const shell = (
     <SidebarGroupRow
       actions={
@@ -155,15 +178,7 @@ export function ProjectOverviewRow({
       }
       className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
       data-glass-opaque={dragging ? '' : undefined}
-      label={
-        <SidebarRowLink
-          aria-label={s.projects.enter(project.label)}
-          labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
-          onClick={() => onEnter?.(project.id)}
-        >
-          {project.label}
-        </SidebarRowLink>
-      }
+      label={project.isAuto ? <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip> : labelLink}
       lead={lead}
       // The label is grab surface too, not just the lead's grabber — same
       // listeners, minus the controls that keep their own gestures. A project

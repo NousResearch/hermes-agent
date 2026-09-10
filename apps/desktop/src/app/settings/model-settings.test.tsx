@@ -12,6 +12,8 @@ beforeAll(() => {
   Element.prototype.releasePointerCapture = vi.fn()
 })
 
+const getProfiles = vi.fn()
+const getApiRequestConnection = vi.fn()
 const getGlobalModelInfo = vi.fn()
 const getGlobalModelOptions = vi.fn()
 const getAuxiliaryModels = vi.fn()
@@ -28,10 +30,12 @@ const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
+  getProfiles: (scope?: unknown) => getProfiles(scope),
   getGlobalModelInfo: (profile?: null | string) => getGlobalModelInfo(profile),
   getGlobalModelOptions: (opts?: unknown, profile?: null | string) => getGlobalModelOptions(opts, profile),
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
   getApiRequestProfile: () => 'default',
+  getApiRequestConnection: () => getApiRequestConnection(),
   getMoaModels: (profile?: null | string) => getMoaModels(profile),
   profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
   setModelAssignment: (body: unknown) => setModelAssignment(body),
@@ -56,6 +60,8 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 }))
 
 beforeEach(() => {
+  getApiRequestConnection.mockReturnValue('local')
+  getProfiles.mockResolvedValue({ profiles: [{ name: 'default' }, { name: 'writer' }] })
   getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'hermes-4' })
   getGlobalModelOptions.mockResolvedValue({
     providers: [
@@ -102,6 +108,25 @@ async function renderModelSettings(scopeProfile?: string) {
 }
 
 describe('ModelSettings profile scope', () => {
+  it('does not treat an unresolved legacy remote identity as local for bulk apply', async () => {
+    getApiRequestConnection.mockReturnValue(null)
+    await renderModelSettings()
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply to all profiles' }))
+    expect(await screen.findByText('Select or reconnect a connection before applying to all profiles.')).toBeTruthy()
+    expect(getProfiles).not.toHaveBeenCalled()
+    expect(setModelAssignment).not.toHaveBeenCalled()
+  })
+
+  it('offers bulk application alongside individual Apply and shows each profile result', async () => {
+    await renderModelSettings()
+    expect((await screen.findByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply to all profiles' }))
+    await waitFor(() => expect(screen.getByText('writer: Applied')).toBeTruthy())
+    expect(screen.getByText('default: Applied')).toBeTruthy()
+    expect(getProfiles).toHaveBeenCalledWith({ connectionId: 'local' })
+    expect(setModelAssignment).toHaveBeenCalledTimes(2)
+  })
+
   // #90549: the API helpers treat `null` as "deliberately target the
   // primary/default profile". A page following the active profile must pass
   // `undefined`, or every read repaints the primary's model and the user's

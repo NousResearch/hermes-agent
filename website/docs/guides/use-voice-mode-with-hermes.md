@@ -168,7 +168,7 @@ voice:
   record_key: "ctrl+b"
   submit_mode: "direct"  # TUI: direct | draft
   max_recording_seconds: 120
-  auto_tts: false
+  auto_tts: false         # Keep automatic speech off by default
   beep_enabled: true
   silence_threshold: 200
   silence_duration: 3.0
@@ -185,6 +185,16 @@ tts:
 ```
 
 This is a good conservative default for most people.
+
+Leave `auto_tts` set to `false` if you want speech to remain opt-in. When it is
+`true`, the classic CLI enables TTS when you run `/voice on`, Desktop reads
+each completed assistant reply aloud outside a full voice conversation, and
+the gateway speaks every reply in chats without an explicit `/voice` setting.
+The TUI does not read this key; use `/voice tts` to control speech for the
+current runtime. See the [automatic TTS reference][automatic-tts] for the
+complete per-surface behaviour.
+
+[automatic-tts]: /user-guide/features/voice-mode#voiceauto_tts
 
 In the TUI, `voice.submit_mode` controls what happens after transcription:
 

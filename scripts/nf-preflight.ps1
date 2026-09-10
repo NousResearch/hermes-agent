@@ -15,10 +15,12 @@
          module_in_checkout   - that hermes_cli lives under THIS checkout
          marker_repo_matches  - .nf-bootstrapped's repo= is THIS checkout's path
     2. If every check passes -> exit 0, the launcher starts the agent.
-    3. If ANY check fails -> silently rebuild the venv (bootstrap-north-forge.ps1;
-       -Force when a venv is already there). The data folder is NEVER touched.
-       No dialog, no admin prompt, no user decision - the "self-healing"
-       principle already used for the drive-letter fixes. Re-probe afterwards.
+    3. If ANY check fails -> ask bootstrap-north-forge.ps1 to repair (a -Force
+       rebuild REQUEST) and re-probe. preflight never inspects the venv dir,
+       classifies ownership, or deletes anything - bootstrap is the sole cleanup
+       authority and refuses any directory it cannot prove it owns. The data
+       folder is NEVER touched. No dialog, no admin prompt, no user decision -
+       the "self-healing" principle already used for the drive-letter fixes.
     4. Always append exactly one line to the launcher log (default:
        <parent>\<checkout-name>-launcher.log, a sibling of the checkout so it
        survives a venv rebuild): timestamp, computer name, drive + repo path,
@@ -69,8 +71,8 @@ try { $driveRoot = [System.IO.Path]::GetPathRoot($RepoRoot) } catch { }
 $computer = $env:COMPUTERNAME
 if (-not $computer) { try { $computer = [System.Net.Dns]::GetHostName() } catch { $computer = 'unknown' } }
 
-$action    = 'none'          # none | rebuild-venv | bootstrap
-$result    = 'unknown'       # ready | rebuild-ok | rebuild-failed | bootstrap-ok | bootstrap-failed | not-ready-norebuild | preflight-error:<msg>
+$action    = 'none'          # none | bootstrap-repair
+$result    = 'unknown'       # ready | repair-ok | repair-incomplete | repair-refused-or-failed (...) | not-ready-norebuild | preflight-error:<msg>
 $probe     = $null
 $reprobe   = $null
 $exitCode  = 1
@@ -110,13 +112,16 @@ try {
         $action = 'none'; $result = 'not-ready-norebuild'; $exitCode = 2
     }
     else {
-        # --- silent self-heal: rebuild the venv, never the data folder --------
-        $pyExe     = Join-Path $VenvDir 'Scripts\python.exe'
+        # --- request repair - bootstrap is the sole cleanup authority --------
+        # preflight does NOT inspect the venv dir, classify ownership, choose
+        # -Force from whether python.exe exists, or delete anything. It asks
+        # bootstrap-north-forge.ps1 to repair (a -Force rebuild REQUEST) and
+        # records the outcome. bootstrap refuses to touch a directory it cannot
+        # prove it owns - -Force or not - and never touches the data folder.
         $bootstrap = Join-Path $RepoRoot 'scripts\bootstrap-north-forge.ps1'
-        $venvThere = Test-Path -LiteralPath $pyExe -PathType Leaf
-        $action    = if ($venvThere) { 'rebuild-venv' } else { 'bootstrap' }
+        $action    = 'bootstrap-repair'
 
-        Write-Host "[nf-preflight] environment not ready ($($probe.Summary)) - $action ..." -ForegroundColor Yellow
+        Write-Host "[nf-preflight] environment not ready ($($probe.Summary)) - requesting repair ..." -ForegroundColor Yellow
         foreach ($k in $probe.Details.Keys) {
             if (-not $probe.Checks[$k]) { Write-Host "[nf-preflight]   $k : $($probe.Details[$k])" }
         }
@@ -125,21 +130,21 @@ try {
             throw "cannot self-heal: '$bootstrap' is missing"
         }
 
-        if ($venvThere) {
-            & $bootstrap -Force -RepoRoot $RepoRoot -VenvDir $VenvDir -DataDir $DataDir
-        } else {
-            & $bootstrap -RepoRoot $RepoRoot -VenvDir $VenvDir -DataDir $DataDir
-        }
+        & $bootstrap -Force -RepoRoot $RepoRoot -VenvDir $VenvDir -DataDir $DataDir
         $bootExit = $LASTEXITCODE
 
         $reprobe = Test-NfVenvReady -RepoRoot $RepoRoot -VenvDir $VenvDir -ProbeTimeoutSec $ProbeTimeoutSec
         if ($reprobe.Ready) {
-            $result   = if ($action -eq 'bootstrap') { 'bootstrap-ok' } else { 'rebuild-ok' }
+            $result   = 'repair-ok'
             $exitCode = 0
-        } else {
-            $result   = if ($action -eq 'bootstrap') { 'bootstrap-failed' } else { 'rebuild-failed' }
+        } elseif ($bootExit -ne 0) {
+            $result   = "repair-refused-or-failed (bootstrap exit $bootExit)"
             $exitCode = 1
-            Write-Host "[nf-preflight] rebuild finished (bootstrap exit $bootExit) but the venv still fails the readiness probe: $($reprobe.Summary)" -ForegroundColor Red
+            Write-Host "[nf-preflight] bootstrap exited $bootExit and the venv still fails the readiness probe: $($reprobe.Summary)" -ForegroundColor Red
+        } else {
+            $result   = 'repair-incomplete'
+            $exitCode = 1
+            Write-Host "[nf-preflight] bootstrap exited 0 but the venv still fails the readiness probe: $($reprobe.Summary)" -ForegroundColor Red
         }
     }
 }

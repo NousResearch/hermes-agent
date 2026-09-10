@@ -112,15 +112,29 @@ def test_launcher_cmd_calls_preflight_before_launch_source() -> None:
     assert "LAUNCHLOG" in src
 
 
-def test_bootstrap_early_return_is_probe_gated_source() -> None:
+def test_bootstrap_decides_create_rebuild_refuse_source() -> None:
+    """bootstrap dot-sources BOTH the readiness probe and the ownership classifier,
+    keeps them as separate decisions, and drives a create / rebuild / refuse
+    outcome from a state table - it never derives 'delete' from a failed probe
+    alone, and it emits the stable venv_state=/ownership=/action=/reason= line."""
     src = BOOTSTRAP_PS1.read_text(encoding="utf-8")
-    assert "lib\\nf-readiness.ps1" in src, "bootstrap must dot-source the shared probe"
-    assert "Test-NfVenvReady" in src
+    assert "lib\\nf-readiness.ps1" in src, "bootstrap must dot-source the readiness probe"
+    assert "lib\\nf-venv-state.ps1" in src, "bootstrap must dot-source the ownership classifier"
+    assert "Test-NfVenvReady" in src and "Get-NfVenvState" in src
     # the old naive early-return (marker + hermes.exe exist => done) must be gone
     assert "-and -not $Force) {\n    New-Item -ItemType Directory -Path $DataDir -Force | Out-Null\n    Write-Host \"Already bootstrapped (pass -Force" not in src
-    # a failing probe flips into the rebuild path
-    idx = src.index("Test-NfVenvReady")
-    assert "$Force = $true" in src[idx:idx + 1200], "a failing probe must fall through to the -Force rebuild"
+    for token in ("venv_state=", "ownership=", "action=", "reason="):
+        assert token in src, f"bootstrap must emit the '{token}' diagnostic field"
+    # every one of the seven states is named in the decision
+    for state in ("Absent", "EmptyDirectory", "OwnedNorthForgeVenv", "RecognizablePythonVenv",
+                  "UnknownDirectory", "UnsafePath"):
+        assert state in src, f"decision must handle the '{state}' state"
+    # refuse is explicit, and -Force is documented as NOT a deletion override
+    assert "'refuse'" in src and "does not override" in src.lower()
+    # a re-check of ownership sits immediately before the Remove-Item
+    rm = src.index("Remove-Item -LiteralPath $VenvDir -Recurse -Force")
+    window = src[max(0, rm - 700):rm]
+    assert "Get-NfVenvState" in window, "ownership must be re-checked immediately before the delete"
 
 
 # ==========================================================================
@@ -133,7 +147,26 @@ _WINDOWS_ONLY = pytest.mark.skipif(
 _HAVE_PWSH = shutil.which("powershell") is not None
 
 
+def _toolchain_env() -> dict:
+    """A minimal-but-valid Windows env (works under the canonical runner's
+    ``env -i``) PLUS python / uv on PATH and uv's cache vars - the probe and the
+    stub bootstrap both spawn ``python``."""
+    from tests._windows_env import minimal_windows_subprocess_env
+
+    env = minimal_windows_subprocess_env()
+    extra = [str(Path(sys.executable).parent), str(Path(sys.executable).parent / "Scripts")]
+    uv = shutil.which("uv")
+    if uv:
+        extra.append(str(Path(uv).parent))
+    env["PATH"] = os.pathsep.join(extra + [env["PATH"]])
+    for key in ("LOCALAPPDATA", "APPDATA", "USERPROFILE", "UV_CACHE_DIR"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    return env
+
+
 def _pwsh(*args: str, **kw) -> subprocess.CompletedProcess:
+    kw.setdefault("env", _toolchain_env())
     return subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", *args],
         capture_output=True, text=True, timeout=180, **kw,
@@ -241,7 +274,7 @@ def test_preflight_rebuilds_foreign_venv_instead_of_launching(tmp_path: Path) ->
         "repo=D:\\north-forge-agent-on-another-pc\nbootstrapped=old\n", encoding="utf-8"
     )
 
-    env = dict(os.environ, NF_SENTINEL=str(sentinel))
+    env = dict(_toolchain_env(), NF_SENTINEL=str(sentinel))
     r = _pwsh(
         "-File", str(checkout / "scripts" / "nf-preflight.ps1"),
         "-RepoRoot", str(checkout), "-VenvDir", str(venv),
@@ -260,8 +293,10 @@ def test_preflight_rebuilds_foreign_venv_instead_of_launching(tmp_path: Path) ->
     assert len(lines) == 1, f"exactly one line per launch, got {len(lines)}: {lines}"
     line = lines[0]
     assert "marker_repo_matches=FAIL" in line, "log must record the pre-rebuild failure"
-    assert "action=rebuild-venv" in line
-    assert "result=rebuild-ok" in line
+    # preflight no longer classifies or labels the venv - it just requests a
+    # repair from bootstrap (the sole cleanup authority) and records the outcome.
+    assert "action=bootstrap-repair" in line
+    assert "result=repair-ok" in line
     for field in ("host=", "drive=", f"repo={checkout}", "venv="):
         assert field in line, f"log line missing {field!r}: {line}"
 
@@ -284,7 +319,7 @@ def test_preflight_norebuild_detects_but_leaves_repair_alone(tmp_path: Path) -> 
     (venv / "Scripts" / "hermes.exe").write_text("", encoding="utf-8")
     (venv / ".nf-bootstrapped").write_text("repo=D:\\somewhere-else\nbootstrapped=old\n", encoding="utf-8")
 
-    env = dict(os.environ, NF_SENTINEL=str(sentinel))
+    env = dict(_toolchain_env(), NF_SENTINEL=str(sentinel))
     r = _pwsh(
         "-File", str(checkout / "scripts" / "nf-preflight.ps1"),
         "-RepoRoot", str(checkout), "-VenvDir", str(venv),

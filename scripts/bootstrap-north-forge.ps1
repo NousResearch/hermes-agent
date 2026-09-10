@@ -137,6 +137,18 @@ function Invoke-NfBootstrap {
             $script:__nfExit = 1; return
         }
     }
+    # The pair loop above only checks each of venv/data against the CHECKOUT. The
+    # venv and data dirs must also never be the same path or nested in each other:
+    # a -Force rebuild recursively deletes the venv dir, and DataDir/HERMES_HOME
+    # must never be touched during repair. (R1 - this gap was previously unclosed.)
+    if (Test-PathOverlap $VenvDir $DataDir) {
+        Write-Error ("Refusing to bootstrap: the venv (-VenvDir) '$(Get-CanonicalDir $VenvDir)' " +
+            "and the data (-DataDir) '$(Get-CanonicalDir $DataDir)' are the same directory, or " +
+            "one is nested inside the other. A -Force rebuild runs 'Remove-Item -Recurse -Force' " +
+            "on the venv dir - if the data folder is that dir (or under it) the rebuild would " +
+            "destroy HERMES_HOME. Pass a -VenvDir and -DataDir that are separate siblings.")
+        $script:__nfExit = 1; return
+    }
 
     $pyExe = Join-Path $VenvDir 'Scripts\python.exe'
     $hermes = Join-Path $VenvDir 'Scripts\hermes.exe'
@@ -148,29 +160,116 @@ function Invoke-NfBootstrap {
     Write-Host "  data : $DataDir   (HERMES_HOME)"
     Write-Host ""
 
-    # --- "already bootstrapped?" - a REAL probe, not an existence check ---------
-    # hermes.exe + .nf-bootstrapped being present is NOT proof the venv can run: a
-    # venv built on another machine is not portable, and a renamed / copied /
-    # re-lettered checkout leaves both files in place while the interpreter fails or
-    # imports stale code from a path that no longer exists (ERR-2026-09-07-006). Run
-    # the same four-check readiness probe the launcher uses; only skip the rebuild
-    # when it actually passes. A failing probe falls through to the -Force path below
-    # and rebuilds the VENV ONLY - the data folder is never touched.
+    # --- decide: create / rebuild / refuse - the SINGLE cleanup authority ------
+    # bootstrap-north-forge.ps1 is the one place that inspects, classifies, and
+    # (if entitled) deletes the sibling venv dir. Readiness and ownership are
+    # SEPARATE questions (R1):
+    #   * readiness  (lib\nf-readiness.ps1)  - "can this venv run North Forge from
+    #     THIS checkout right now?"  A failure means rebuild; it does NOT by itself
+    #     authorize deleting the directory.
+    #   * ownership  (lib\nf-venv-state.ps1) - "did North Forge / a real venv tool
+    #     create this directory?"  Only ownership authorizes Remove-Item, and
+    #     -Force is a *rebuild* request that is still subject to that proof - it is
+    #     never a deletion override.
+    # The data folder / HERMES_HOME is NEVER touched here - no seeding, no skin
+    # sync (that stays on the normal launch-time path), nothing.
     . (Join-Path $PSScriptRoot 'lib\nf-readiness.ps1')
+    . (Join-Path $PSScriptRoot 'lib\nf-venv-state.ps1')
 
-    if (-not $Force -and (Test-Path -LiteralPath $hermes) -and (Test-Path -LiteralPath $marker)) {
-        $ready = Test-NfVenvReady -RepoRoot $RepoRoot -VenvDir $VenvDir
-        if ($ready.Ready) {
-            New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
-            Write-Host "Already bootstrapped; venv passes the readiness probe. Ready - run north-forge.cmd." -ForegroundColor Green
-            $script:__nfExit = 0; return
+    $venvCanon = Get-NfCanonicalDir $VenvDir
+    $vs        = Get-NfVenvState -VenvDir $VenvDir       # Absent | EmptyDirectory | OwnedNorthForgeVenv | RecognizablePythonVenv | UnknownDirectory | UnsafePath
+    $ownership = switch ($vs.State) {
+        'OwnedNorthForgeVenv'    { 'north-forge' }
+        'RecognizablePythonVenv' { 'python-venv' }
+        'UnsafePath'             { 'unsafe' }
+        default                  { 'none' }
+    }
+
+    $ready = $false
+    $probe = $null
+    if ($vs.State -eq 'OwnedNorthForgeVenv' -or $vs.State -eq 'RecognizablePythonVenv') {
+        $probe = Test-NfVenvReady -RepoRoot $RepoRoot -VenvDir $VenvDir
+        $ready = [bool]$probe.Ready
+    }
+
+    $venvState = $vs.State
+    $action    = $null
+    $reason    = $null
+    switch ($vs.State) {
+        'UnsafePath' {
+            $action = 'refuse'; $reason = "venv path is not a plain directory: $($vs.Evidence)"
         }
-        Write-Host "A venv is present but FAILS the readiness probe ($($ready.Summary)):" -ForegroundColor Yellow
-        foreach ($k in $ready.Details.Keys) {
-            if (-not $ready.Checks[$k]) { Write-Host "  $k : $($ready.Details[$k])" -ForegroundColor Yellow }
+        'UnknownDirectory' {
+            $action = 'refuse'; $reason = "directory has content but no readable .nf-bootstrapped and no valid pyvenv.cfg (-Force cannot override): $($vs.Evidence)"
         }
-        Write-Host "Rebuilding the venv (the data folder is left untouched)." -ForegroundColor Yellow
-        $Force = $true
+        'Absent' {
+            $action = 'create'; $reason = 'no venv directory yet'
+        }
+        'EmptyDirectory' {
+            $action = 'create'; $reason = 'venv directory is empty - populating in place, no deletion'
+        }
+        default {
+            # OwnedNorthForgeVenv | RecognizablePythonVenv - ownership is proven.
+            if ($ready -and -not $Force) {
+                $action = 'none'; $venvState = 'Ready'; $reason = 'venv passes the readiness probe'
+            } elseif ($Force) {
+                $action = 'rebuild'; $reason = "rebuild requested (-Force); ownership proven ($ownership)"
+            } else {
+                $action = 'rebuild'; $reason = "venv fails the readiness probe ($($probe.Summary)); ownership proven ($ownership)"
+            }
+        }
+    }
+
+    # Stable diagnostic line - one per decision, always logged plainly.
+    Write-Host ("[bootstrap] venv_state=$venvState ownership=$ownership action=$action reason=$reason")
+    if ($probe -and -not $ready) {
+        foreach ($k in $probe.Details.Keys) {
+            if (-not $probe.Checks[$k]) { Write-Host "[bootstrap]   $k : $($probe.Details[$k])" -ForegroundColor Yellow }
+        }
+    }
+
+    if ($action -eq 'refuse') {
+        Write-Error (@(
+            "REFUSING to touch the venv directory. Nothing was deleted and nothing was created.",
+            "  path       : $venvCanon",
+            "  venv_state : $venvState",
+            "  ownership  : $ownership",
+            "  reason     : $reason",
+            "",
+            "North Forge only rebuilds a venv directory it can PROVE it created (a readable",
+            ".nf-bootstrapped marker with a repo= line) or that is unmistakably a Python venv",
+            "(a pyvenv.cfg that parses with real venv keys). This directory is neither, so it",
+            "is left exactly as it is. Move it aside or delete it yourself, or point -VenvDir",
+            "at a different location, then re-run. -Force does not override this.") -join "`n")
+        $script:__nfExit = 1; return
+    }
+
+    if ($action -eq 'none') {
+        # Ensure the data dir exists so the launcher has a HERMES_HOME to point at.
+        # This is a mkdir only - never a seed / skin sync / any content write.
+        New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+        Write-Host "Already bootstrapped; venv passes the readiness probe. Ready - run north-forge.cmd." -ForegroundColor Green
+        $script:__nfExit = 0; return
+    }
+
+    # From here $action is 'create' or 'rebuild'. Keep $Force in sync for the few
+    # downstream spots that still read it.
+    $Force = ($action -eq 'rebuild')
+
+    # --- rebuild: re-check path + ownership IMMEDIATELY before Remove-Item -----
+    # INVARIANT: no unrelated work between authorization and deletion. Anything
+    # else the (re)build needs (uv detection, cache pinning) happens AFTER this.
+    if ($action -eq 'rebuild') {
+        $recheck = Get-NfVenvState -VenvDir $VenvDir
+        if ((Get-NfCanonicalDir $VenvDir) -ne $venvCanon -or
+            -not ($recheck.State -eq 'OwnedNorthForgeVenv' -or $recheck.State -eq 'RecognizablePythonVenv')) {
+            Write-Error ("Refusing to delete the venv: its state or path changed between the " +
+                "ownership check and now (was '$venvState' at '$venvCanon', is now " +
+                "'$($recheck.State)' at '$(Get-NfCanonicalDir $VenvDir)'). Nothing was deleted.")
+            $script:__nfExit = 1; return
+        }
+        Write-Host "removing the existing venv (ownership=$ownership, action=rebuild; data folder untouched)..."
+        Remove-Item -LiteralPath $VenvDir -Recurse -Force
     }
 
     $uv = Get-Command uv -ErrorAction SilentlyContinue
@@ -189,11 +288,11 @@ function Invoke-NfBootstrap {
         Write-Host "  cache: $env:UV_CACHE_DIR   (same volume as the venv -> hardlink, not copy)"
     }
 
-    # --- venv ------------------------------------------------------------
-    if ($Force -and (Test-Path -LiteralPath $VenvDir)) {
-        Write-Host "removing existing venv (-Force)..."
-        Remove-Item -LiteralPath $VenvDir -Recurse -Force
-    }
+    # --- venv ----------------------------------------------------------------
+    # The rebuild-path Remove-Item already ran above (immediately after the
+    # re-checked ownership proof, with no work in between). By here $VenvDir is
+    # either absent, an empty dir we may populate in place, or gone. NO deletion
+    # happens in this block.
     if (-not (Test-Path -LiteralPath $pyExe)) {
         Write-Host "creating venv..."
         if ($uv) {
@@ -229,12 +328,17 @@ function Invoke-NfBootstrap {
 
     # --- North Forge CLI skin -------------------------------------
     # Ship skins\north-forge.yaml into HERMES_HOME\skins\ and make it the active skin
-    # on a fresh install - this is what swaps the stock Hermes launch splash for North
+    # on a FRESH install - this is what swaps the stock Hermes launch splash for North
     # Forge's own mark (DECISION-2026-09-07-001 / CHG-2026-09-07-012; banner.py is
     # untouched - hermes_cli/banner.py already prefers skin.banner_logo/banner_hero).
-    # north-forge.cmd re-copies the file on every launch; this block only runs at
-    # bootstrap and will NOT override a skin the operator has since chosen.
-    try {
+    # north-forge.cmd re-copies the file on every launch; this block runs ONLY on a
+    # first-time create, NEVER on a venv rebuild/repair - a repair must not touch the
+    # data folder at all (R1). The normal launch-time skin sync in north-forge.cmd
+    # still keeps an established data folder current.
+    if ($action -eq 'rebuild') {
+        Write-Host "  skin : left as-is (venv rebuild - the data folder is not touched)"
+    } else {
+      try {
         $skinSrc = Join-Path $RepoRoot 'skins\north-forge.yaml'
         if (Test-Path -LiteralPath $skinSrc) {
             $skinDstDir = Join-Path $DataDir 'skins'
@@ -253,8 +357,9 @@ function Invoke-NfBootstrap {
         } else {
             Write-Host "  skin : skins\north-forge.yaml not in checkout - skipped"
         }
-    } catch {
+      } catch {
         Write-Warning "North Forge skin seed skipped: $($_.Exception.Message)"
+      }
     }
 
     # --- drive-root launcher --------------------------------------

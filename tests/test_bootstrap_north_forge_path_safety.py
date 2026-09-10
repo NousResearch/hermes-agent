@@ -21,14 +21,37 @@ Two layers here:
 
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP_PS1 = REPO_ROOT / "scripts" / "bootstrap-north-forge.ps1"
+LIB_DIR = REPO_ROOT / "scripts" / "lib"
+
+
+def _toolchain_env() -> dict:
+    """A minimal-but-valid Windows environment (works under the canonical runner's
+    ``env -i``) PLUS python / uv on PATH and uv's %LOCALAPPDATA% cache, so the
+    cases that actually build a venv run under ``scripts/run_tests.sh`` too."""
+    from tests._windows_env import minimal_windows_subprocess_env
+
+    env = minimal_windows_subprocess_env()
+    extra = [str(Path(sys.executable).parent), str(Path(sys.executable).parent / "Scripts")]
+    uv = shutil.which("uv")
+    if uv:
+        extra.append(str(Path(uv).parent))
+    env["PATH"] = os.pathsep.join(extra + [env["PATH"]])
+    for key in ("LOCALAPPDATA", "APPDATA", "USERPROFILE", "UV_CACHE_DIR"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    return env
 
 
 # --------------------------------------------------------------------------
@@ -168,3 +191,311 @@ def test_accepts_genuine_siblings(fake_checkout: Path) -> None:
     assert "is the checkout itself, is inside it, or" not in combined, (
         f"guard wrongly rejected a legitimate sibling layout:\n{combined}"
     )
+
+
+@_WINDOWS_ONLY
+@pytest.mark.parametrize("mangle", [
+    lambda p: p,                       # venv == data exactly
+    lambda p: str(p) + "\\",           # trailing separator
+    lambda p: str(p).upper(),          # case difference
+    lambda p: str(p / "sub"),          # data nested inside venv
+])
+def test_reject_venv_equals_or_contains_data(fake_checkout: Path, tmp_path: Path, mangle) -> None:
+    """R1: VenvDir and DataDir must be checked against EACH OTHER, not only each
+    against the checkout. A -Force rebuild wipes VenvDir - if DataDir is that path
+    (or under it) the rebuild would destroy HERMES_HOME."""
+    venv = tmp_path / "shared"
+    result = _run_bootstrap(fake_checkout, venv, mangle(venv))
+    combined = (result.stdout + result.stderr).lower()
+    assert result.returncode != 0, f"accepted venv/data overlap {mangle(venv)!r}:\n{result.stdout}\n{result.stderr}"
+    assert "data" in combined and ("same directory" in combined or "nested inside" in combined)
+    assert (fake_checkout / "CANARY.txt").exists()
+
+
+# ==========================================================================
+# R1 - venv ownership/state matrix: bootstrap is the single cleanup authority
+# ==========================================================================
+#
+# Behavioural only (no source-text assertions). Every case that deletes OR
+# refuses proves a binary DataDir sentinel is byte-identical and the data-dir
+# file listing is unchanged. Refusal cases additionally prove the venv dir was
+# left exactly as it was.
+
+_STATE_WINDOWS_ONLY = pytest.mark.skipif(
+    os.name != "nt", reason="bootstrap-north-forge.ps1 runs under Windows PowerShell only"
+)
+_HAVE_PWSH = shutil.which("powershell") is not None
+
+
+def _r1_fake_repo(root: Path) -> Path:
+    """A throwaway checkout that a real `uv pip install -e .` can install: a
+    valid pyproject with a `hermes` console-script, an importable ``hermes_cli``
+    package, and copies of the three scripts under test."""
+    repo = root / "north-forge-agent"
+    (repo / "scripts" / "lib").mkdir(parents=True)
+    (repo / "hermes_cli").mkdir()
+    (repo / "pyproject.toml").write_text(textwrap.dedent("""
+        [build-system]
+        requires = ["setuptools>=61"]
+        build-backend = "setuptools.build_meta"
+
+        [project]
+        name = "nf-fake"
+        version = "0.0.0"
+
+        [project.scripts]
+        hermes = "hermes_cli:main"
+
+        [tool.setuptools]
+        packages = ["hermes_cli"]
+    """).lstrip(), encoding="utf-8")
+    (repo / "hermes_cli" / "__init__.py").write_text(
+        "def main():\n    print('nf-fake hermes'); return 0\n", encoding="utf-8"
+    )
+    for name in ("nf-readiness.ps1", "nf-venv-state.ps1"):
+        shutil.copy(LIB_DIR / name, repo / "scripts" / "lib" / name)
+    shutil.copy(BOOTSTRAP_PS1, repo / "scripts" / "bootstrap-north-forge.ps1")
+    shutil.copy(REPO_ROOT / "scripts" / "nf-preflight.ps1", repo / "scripts" / "nf-preflight.ps1")
+    # bootstrap best-effort-invokes this; a no-op keeps the run quiet.
+    (repo / "scripts" / "make-drive-root-shortcut.ps1").write_text(
+        "param([string]$RepoRoot)\n", encoding="utf-8"
+    )
+    return repo
+
+
+def _data_with_sentinel(data: Path) -> tuple[str, list[str]]:
+    """Create DataDir with a non-trivial binary sentinel; return (sha256, listing)."""
+    data.mkdir(parents=True, exist_ok=True)
+    blob = (b"\x00NF-DO-NOT-TOUCH\xff\x01\x02" * 41) + bytes(range(256))
+    (data / "DO-NOT-TOUCH.bin").write_bytes(blob)
+    (data / "config.yaml").write_text("display:\n  skin: crimson\n", encoding="utf-8")
+    return _data_fingerprint(data)
+
+
+def _data_fingerprint(data: Path) -> tuple[str, list[str]]:
+    h = hashlib.sha256((data / "DO-NOT-TOUCH.bin").read_bytes()).hexdigest()
+    listing = sorted(str(p.relative_to(data)).replace("\\", "/") for p in data.rglob("*"))
+    return h, listing
+
+
+def _venv_fingerprint(venv: Path) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for p in sorted(venv.rglob("*")):
+        rel = str(p.relative_to(venv)).replace("\\", "/")
+        if p.is_file():
+            out.append((rel, hashlib.sha256(p.read_bytes()).hexdigest()))
+        else:
+            out.append((rel + "/", ""))
+    return out
+
+
+def _real_venv(venv: Path, checkout: Path, *, marker_repo: str) -> None:
+    """A genuine, importable venv: python -m venv + a .pth onto *checkout* so
+    ``import hermes_cli`` resolves there, a hermes.exe stub, and a marker."""
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         f"& (Get-Command python).Source -m venv '{venv}'"],
+        capture_output=True, text=True, timeout=120, check=True, env=_toolchain_env(),
+    )
+    sp = venv / "Lib" / "site-packages"
+    sp.mkdir(parents=True, exist_ok=True)
+    (sp / "nf_stub.pth").write_text(str(checkout), encoding="utf-8")
+    (venv / "Scripts" / "hermes.exe").write_text("", encoding="utf-8")
+    (venv / ".nf-bootstrapped").write_text(f"repo={marker_repo}\nbootstrapped=test\n", encoding="utf-8")
+
+
+def _run_bootstrap_repair(repo: Path, venv: Path, data: Path, *, force: bool = True) -> subprocess.CompletedProcess:
+    args = [
+        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", str(repo / "scripts" / "bootstrap-north-forge.ps1"),
+        "-RepoRoot", str(repo), "-VenvDir", str(venv), "-DataDir", str(data),
+    ]
+    if force:
+        args.append("-Force")
+    return subprocess.run(args, capture_output=True, text=True, timeout=300, env=_toolchain_env())
+
+
+def _diag(text: str) -> dict[str, str]:
+    """Parse the `[bootstrap] venv_state=.. ownership=.. action=.. reason=..` line."""
+    for line in text.splitlines():
+        if "[bootstrap] venv_state=" in line:
+            body = line.split("[bootstrap] ", 1)[1]
+            fields: dict[str, str] = {}
+            for key in ("venv_state", "ownership", "action"):
+                if key + "=" in body:
+                    seg = body.split(key + "=", 1)[1]
+                    fields[key] = seg.split(" ", 1)[0]
+            return fields
+    return {}
+
+
+# id, setup(venv, checkout) -> None, force, expect_rc, expect_state, expect_action, venv_frozen
+_R1_CASES = [
+    pytest.param("absent", lambda v, c: None, False, 0, "Absent", "create", False, id="absent-creates"),
+    pytest.param(
+        "empty", lambda v, c: v.mkdir(parents=True), False, 0, "EmptyDirectory", "create", False,
+        id="empty-populated-in-place",
+    ),
+    pytest.param(
+        "artifact-only",
+        lambda v, c: [(v / "Scripts").mkdir(parents=True), (v / "Scripts" / "hermes.exe").write_text("")],
+        True, 1, "UnknownDirectory", "refuse", True, id="artifact-only-partial-refused",
+    ),
+    pytest.param(
+        "occupied",
+        lambda v, c: [v.mkdir(parents=True), (v / "thesis.docx").write_bytes(b"my important work")],
+        True, 1, "UnknownDirectory", "refuse", True, id="unrelated-occupied-refused",
+    ),
+    pytest.param(
+        "junction", "JUNCTION", True, 1, "UnsafePath", "refuse", True, id="reparse-point-refused",
+    ),
+    pytest.param(
+        "interrupted-venv",
+        lambda v, c: [
+            (v / "Scripts").mkdir(parents=True),
+            (v / "pyvenv.cfg").write_text(
+                "home = C:\\Python311\ninclude-system-site-packages = false\nversion = 3.11.9\n"
+            ),
+            (v / "Scripts" / "activate").write_text("rem"),
+        ],
+        False, 0, "RecognizablePythonVenv", "rebuild", False, id="valid-pyvenv-cfg-missing-python",
+    ),
+]
+
+
+@_STATE_WINDOWS_ONLY
+@pytest.mark.skipif(not _HAVE_PWSH, reason="powershell not on PATH")
+@pytest.mark.parametrize("name,setup,force,rc,state,action,venv_frozen", _R1_CASES)
+def test_venv_state_matrix(tmp_path, name, setup, force, rc, state, action, venv_frozen):
+    repo = _r1_fake_repo(tmp_path)
+    venv = tmp_path / "north-forge-agent-venv"
+    data = tmp_path / "north-forge-agent-data"
+    before_hash, before_list = _data_with_sentinel(data)
+
+    if setup == "JUNCTION":
+        target = tmp_path / "junction-target"
+        target.mkdir()
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(venv), str(target)],
+            capture_output=True, text=True, check=True,
+        )
+    elif callable(setup):
+        setup(venv, repo)
+
+    venv_before = _venv_fingerprint(venv) if venv.exists() else None
+
+    r = _run_bootstrap_repair(repo, venv, data, force=force)
+    combined = r.stdout + r.stderr
+
+    assert r.returncode == rc, f"[{name}] rc={r.returncode} want {rc}\n{combined}"
+    diag = _diag(combined)
+    assert diag.get("venv_state") == state, f"[{name}] venv_state={diag.get('venv_state')!r} want {state!r}\n{combined}"
+    assert diag.get("action") == action, f"[{name}] action={diag.get('action')!r} want {action!r}\n{combined}"
+
+    # DataDir sentinel + listing: unchanged, every case.
+    after_hash, after_list = _data_fingerprint(data)
+    assert after_hash == before_hash, f"[{name}] DataDir sentinel bytes changed"
+    assert after_list == before_list, f"[{name}] DataDir file listing changed: {before_list} -> {after_list}"
+
+    if venv_frozen:
+        assert _venv_fingerprint(venv) == venv_before, f"[{name}] a refused venv dir was modified"
+        assert "nothing was deleted" in combined.lower()
+
+    if action == "create":
+        assert (venv / "Scripts" / "python.exe").exists(), f"[{name}] venv not created\n{combined}"
+    if action == "rebuild":
+        assert (venv / "Scripts" / "python.exe").exists(), f"[{name}] venv not rebuilt\n{combined}"
+        # a rebuild must not have re-seeded the skin into the data folder
+        assert not (data / "skins").exists(), f"[{name}] rebuild seeded skins/ into DataDir"
+
+
+@_STATE_WINDOWS_ONLY
+@pytest.mark.skipif(not _HAVE_PWSH, reason="powershell not on PATH")
+def test_healthy_venv_is_left_alone_and_second_run_is_idempotent(tmp_path):
+    """Sequence: interrupted creation -> repair rebuilds it -> a second launch is
+    a no-op (action=none, no second rebuild) -> DataDir sentinel unchanged across
+    BOTH runs."""
+    repo = _r1_fake_repo(tmp_path)
+    venv = tmp_path / "north-forge-agent-venv"
+    data = tmp_path / "north-forge-agent-data"
+    before_hash, before_list = _data_with_sentinel(data)
+
+    # interrupted: a real pyvenv.cfg + Scripts\, but no python.exe
+    (venv / "Scripts").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(
+        "home = C:\\Python311\ninclude-system-site-packages = false\nversion = 3.11.9\n", encoding="utf-8"
+    )
+
+    r1 = _run_bootstrap_repair(repo, venv, data, force=False)
+    assert r1.returncode == 0, f"first run (recovery) failed:\n{r1.stdout}\n{r1.stderr}"
+    assert _diag(r1.stdout + r1.stderr).get("action") == "rebuild"
+    assert (venv / "Scripts" / "python.exe").exists()
+
+    mid_hash, mid_list = _data_fingerprint(data)
+    assert (mid_hash, mid_list) == (before_hash, before_list), "DataDir changed during recovery"
+
+    r2 = _run_bootstrap_repair(repo, venv, data, force=False)
+    assert r2.returncode == 0, f"second run failed:\n{r2.stdout}\n{r2.stderr}"
+    d2 = _diag(r2.stdout + r2.stderr)
+    assert d2.get("action") == "none", f"second run rebuilt again: {d2}\n{r2.stdout}"
+    assert d2.get("venv_state") == "Ready"
+
+    after_hash, after_list = _data_fingerprint(data)
+    assert (after_hash, after_list) == (before_hash, before_list), "DataDir changed on the idempotent second run"
+
+
+@_STATE_WINDOWS_ONLY
+@pytest.mark.skipif(not _HAVE_PWSH, reason="powershell not on PATH")
+def test_foreign_marker_venv_is_rebuilt_not_refused(tmp_path):
+    """A venv whose ONLY defect is a foreign marker repo= is still North-Forge
+    -owned (evidence 1) -> rebuild, not refuse. DataDir untouched."""
+    repo = _r1_fake_repo(tmp_path)
+    venv = tmp_path / "north-forge-agent-venv"
+    data = tmp_path / "north-forge-agent-data"
+    before = _data_with_sentinel(data)
+    _real_venv(venv, repo, marker_repo="D:\\north-forge-agent-on-another-pc")
+
+    r = _run_bootstrap_repair(repo, venv, data, force=False)
+    diag = _diag(r.stdout + r.stderr)
+    assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
+    assert diag.get("ownership") == "north-forge"
+    assert diag.get("action") == "rebuild"
+    assert _data_fingerprint(data) == before
+
+
+@_STATE_WINDOWS_ONLY
+@pytest.mark.skipif(not _HAVE_PWSH, reason="powershell not on PATH")
+def test_venv_path_with_spaces_is_handled(tmp_path):
+    repo = _r1_fake_repo(tmp_path)
+    venv = tmp_path / "north forge agent venv"   # spaces
+    data = tmp_path / "north forge agent data"
+    before = _data_with_sentinel(data)
+
+    r = _run_bootstrap_repair(repo, venv, data, force=False)
+    combined = r.stdout + r.stderr
+    assert r.returncode == 0, combined
+    assert _diag(combined).get("action") == "create"
+    assert (venv / "Scripts" / "python.exe").exists(), combined
+    assert _data_fingerprint(data) == before
+
+
+@_STATE_WINDOWS_ONLY
+@pytest.mark.skipif(not _HAVE_PWSH, reason="powershell not on PATH")
+def test_force_does_not_override_unknown_directory(tmp_path):
+    """-Force is a rebuild REQUEST, never a deletion override: an UnknownDirectory
+    is refused even with -Force, and nothing is deleted."""
+    repo = _r1_fake_repo(tmp_path)
+    venv = tmp_path / "north-forge-agent-venv"
+    data = tmp_path / "north-forge-agent-data"
+    before = _data_with_sentinel(data)
+    venv.mkdir()
+    (venv / "someone-elses-project").mkdir()
+    (venv / "someone-elses-project" / "main.c").write_text("int main(){}", encoding="utf-8")
+    venv_before = _venv_fingerprint(venv)
+
+    r = _run_bootstrap_repair(repo, venv, data, force=True)   # -Force
+    combined = r.stdout + r.stderr
+    assert r.returncode != 0, combined
+    assert _diag(combined).get("action") == "refuse"
+    assert _venv_fingerprint(venv) == venv_before, "a -Force run deleted an UnknownDirectory"
+    assert _data_fingerprint(data) == before

@@ -350,3 +350,109 @@ def test_launcher_stops_cleanly_when_data_dir_uncreatable(tmp_path):
     assert "Could not create or open the drive-local data folder" in out
     assert "No data has been lost" in out
     assert "usage:" not in out.lower(), "hermes must not have been launched"
+
+
+# ---------------------------------------------------------------- R1: direct bootstrap
+# The GUI Setup app calls bootstrap-north-forge.ps1 DIRECTLY - only -RepoRoot,
+# no -Force, no preflight (CHG-2026-09-08-001). bootstrap must be self-sufficient:
+# its venv ownership/cleanup safety cannot depend on nf-preflight.ps1 running first.
+
+import hashlib as _hashlib   # noqa: E402
+import os as _os             # noqa: E402
+import shutil as _shutil     # noqa: E402
+
+
+def _toolchain_env() -> dict:
+    """minimal_windows_subprocess_env() + python/uv on PATH + uv's cache vars, so
+    a case that really builds a venv works under scripts/run_tests.sh's env -i."""
+    env = minimal_windows_subprocess_env()
+    extra = [str(Path(sys.executable).parent), str(Path(sys.executable).parent / "Scripts")]
+    uv = _shutil.which("uv")
+    if uv:
+        extra.append(str(Path(uv).parent))
+    env["PATH"] = _os.pathsep.join(extra + [env["PATH"]])
+    for key in ("LOCALAPPDATA", "APPDATA", "USERPROFILE", "UV_CACHE_DIR"):
+        if _os.environ.get(key):
+            env[key] = _os.environ[key]
+    return env
+
+
+def _r1_direct_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "north-forge-agent"
+    (repo / "scripts" / "lib").mkdir(parents=True)
+    (repo / "hermes_cli").mkdir()
+    (repo / "pyproject.toml").write_text(
+        "[build-system]\nrequires=['setuptools>=61']\nbuild-backend='setuptools.build_meta'\n"
+        "[project]\nname='nf-fake'\nversion='0.0.0'\n"
+        "[project.scripts]\nhermes='hermes_cli:main'\n"
+        "[tool.setuptools]\npackages=['hermes_cli']\n",
+        encoding="utf-8",
+    )
+    (repo / "hermes_cli" / "__init__.py").write_text("def main():\n    return 0\n", encoding="utf-8")
+    for name in ("nf-readiness.ps1", "nf-venv-state.ps1"):
+        (repo / "scripts" / "lib" / name).write_bytes((REPO_ROOT / "scripts" / "lib" / name).read_bytes())
+    (repo / "scripts" / "bootstrap-north-forge.ps1").write_bytes(BOOTSTRAP.read_bytes())
+    (repo / "scripts" / "make-drive-root-shortcut.ps1").write_text("param([string]$RepoRoot)\n", encoding="utf-8")
+    return repo
+
+
+def _sentinel_hash(data: Path) -> str:
+    return _hashlib.sha256((data / "SENTINEL.bin").read_bytes()).hexdigest()
+
+
+@_WINDOWS_ONLY
+def test_direct_bootstrap_refuses_unknown_venv_dir_without_preflight(tmp_path):
+    """GUI path: `bootstrap-north-forge.ps1 -RepoRoot <root>` with no -Force and
+    no preflight. If the derived sibling <leaf>-venv is an occupied directory
+    bootstrap can't prove it owns, it must REFUSE - delete nothing, and never
+    touch the sibling data folder."""
+    repo = _r1_direct_repo(tmp_path)
+    venv = tmp_path / "north-forge-agent-venv"
+    data = tmp_path / "north-forge-agent-data"
+    venv.mkdir()
+    (venv / "not-ours.txt").write_text("someone else's directory", encoding="utf-8")
+    data.mkdir()
+    (data / "SENTINEL.bin").write_bytes(bytes(range(256)) * 5)
+    before_venv = sorted(p.name for p in venv.iterdir())
+    before_hash = _sentinel_hash(data)
+
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-File", str(repo / "scripts" / "bootstrap-north-forge.ps1"), "-RepoRoot", str(repo)],
+        capture_output=True, text=True, timeout=180, env=minimal_windows_subprocess_env(),
+    )
+    combined = r.stdout + r.stderr
+    assert r.returncode != 0, combined
+    assert "action=refuse" in combined and "venv_state=UnknownDirectory" in combined
+    assert "nothing was deleted" in combined.lower()
+    assert sorted(p.name for p in venv.iterdir()) == before_venv, "refused venv dir was modified"
+    assert _sentinel_hash(data) == before_hash, "data folder touched during a refused direct bootstrap"
+
+
+@_WINDOWS_ONLY
+def test_direct_bootstrap_recovers_interrupted_venv_without_preflight(tmp_path):
+    """GUI path again: an interrupted venv (valid pyvenv.cfg, Scripts\\, no
+    python.exe) handed straight to bootstrap with no -Force and no preflight is
+    rebuilt (not silently populated in place), and the data sentinel survives."""
+    repo = _r1_direct_repo(tmp_path)
+    venv = tmp_path / "north-forge-agent-venv"
+    data = tmp_path / "north-forge-agent-data"
+    (venv / "Scripts").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(
+        "home = C:\\Python311\ninclude-system-site-packages = false\nversion = 3.11.9\n", encoding="utf-8"
+    )
+    data.mkdir()
+    (data / "SENTINEL.bin").write_bytes(bytes(range(256)) * 5)
+    before_hash = _sentinel_hash(data)
+
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-File", str(repo / "scripts" / "bootstrap-north-forge.ps1"), "-RepoRoot", str(repo)],
+        capture_output=True, text=True, timeout=300, env=_toolchain_env(),
+    )
+    combined = r.stdout + r.stderr
+    assert r.returncode == 0, combined
+    assert "venv_state=RecognizablePythonVenv" in combined and "action=rebuild" in combined
+    assert (venv / "Scripts" / "python.exe").exists(), combined
+    assert _sentinel_hash(data) == before_hash
+    assert not (data / "skins").exists(), "a rebuild via the direct path re-seeded the data folder"

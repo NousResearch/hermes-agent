@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { $desktopOnboarding } from '@/store/onboarding'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -42,11 +43,13 @@ export function useStatusSnapshot(
       }
     }
 
-    const refresh = async () => {
+    const refresh = async (force = false) => {
       // macOS commonly leaves an occluded BrowserWindow `visible`; focus is
       // the missing signal that prevents status + readiness RPCs while the
-      // user is working in another app.
-      if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+      // user is working in another app. `force` overrides the gate for a
+      // user-initiated auth transition, which must not leave a known-stale
+      // readiness result on screen just because the window is unfocused.
+      if (!force && (document.visibilityState !== 'visible' || !document.hasFocus())) {
         scheduleRefresh()
 
         return
@@ -99,12 +102,36 @@ export function useStatusSnapshot(
       }
     }
 
+    // An OAuth sign-in updates backend readiness, but ambient polling is
+    // skipped while the window is unfocused — so a stale credential failure can
+    // linger indefinitely if the user stays in the browser after completing the
+    // flow. Watch the onboarding store for the auth-success transition and force
+    // one readiness refresh that bypasses the focus gate. This does not resume
+    // background polling: the forced refresh reschedules the normal (focus-gated)
+    // cadence in its `finally`.
+    let lastFlowStatus = $desktopOnboarding.get().flow.status
+
+    const unsubscribeOnboarding = $desktopOnboarding.listen(state => {
+      const status = state.flow.status
+      const becameSuccess = status === 'success' && lastFlowStatus !== 'success'
+      lastFlowStatus = status
+
+      if (becameSuccess && !cancelled) {
+        if (timer !== undefined) {
+          window.clearTimeout(timer)
+        }
+
+        void refresh(true)
+      }
+    })
+
     document.addEventListener('visibilitychange', onReturn)
     window.addEventListener('focus', onReturn)
     void refresh()
 
     return () => {
       cancelled = true
+      unsubscribeOnboarding()
       document.removeEventListener('visibilitychange', onReturn)
       window.removeEventListener('focus', onReturn)
 

@@ -93,7 +93,7 @@ _DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
     "deepseek-chat", "deepseek-reasoner"})
 
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-v4-pro", "deepseek-v4-flash"})
+    "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"})
 
 # First-class V-series IDs incl. future ``deepseek-v5-*`` and dated variants
 # (``deepseek-v4-flash-20260423``): verified real model ids, NOT aliases of ``deepseek-chat``.

@@ -138,6 +138,24 @@ class TestDeepseekCanonicalAndReasonerMapping:
         assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
 
 
+class TestDeepseekFlashVendorId:
+    """Vendor id ``deepseek-flash`` is first-class and must not be rewritten
+    to the retired ``deepseek-v4-flash`` alias (#107206).
+    """
+
+    def test_bare_deepseek_flash_is_canonical(self):
+        assert normalize_model_for_provider("deepseek-flash", "deepseek") == "deepseek-flash"
+
+    def test_prefixed_deepseek_flash_strips_but_keeps_flash(self):
+        assert normalize_model_for_provider("deepseek/deepseek-flash", "deepseek") == "deepseek-flash"
+
+    def test_mixed_case_bare_flash_lowercases_and_keeps(self):
+        assert _normalize_for_deepseek("DeepSeek-Flash") == "deepseek-flash"
+
+    def test_retired_reasoner_still_rewrites(self):
+        assert normalize_model_for_provider("deepseek-reasoner", "deepseek") == "deepseek-v4-flash"
+
+
 # ── Regression: issue #78796 ───────────────────────────────────────────
 
 class TestIssue78796NvidiaPrefixRepair:

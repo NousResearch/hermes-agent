@@ -168,6 +168,49 @@ class TestSpawnEnvIsolation:
             "subprocesses (gh, git, aws, npm) need the user's real HOME."
         )
 
+    def test_spawn_env_drops_auto_certifi_bundle_on_windows(self, monkeypatch):
+        """Rust Codex must use the Windows native root store by default.
+
+        The gateway exports certifi's bundle for Python HTTP clients.  Codex's
+        rustls client can reject otherwise-valid new chains when it inherits
+        that override, while the same request succeeds through Windows roots.
+        """
+        import certifi
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {}).copy()
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(cas.sys, "platform", "win32")
+        monkeypatch.setenv("SSL_CERT_FILE", certifi.where())
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        assert "SSL_CERT_FILE" not in captured["env"]
+
     def test_spawn_env_sets_CODEX_HOME_when_provided(self, monkeypatch):
         """CODEX_HOME isolation must still work — that's the whole point
         of the codex_home arg."""

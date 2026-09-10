@@ -18,10 +18,10 @@ import {
   Info,
   Keyboard,
   KeyRound,
-  Package,
   RefreshCw,
   Search,
   Settings2,
+  ShieldLock,
   Upload,
   Wrench,
   Zap
@@ -31,6 +31,7 @@ import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-palette'
 import { confirm } from '@/store/confirm'
+import { $activeConnectionId } from '@/store/connections'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
@@ -40,7 +41,6 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
-import { SKILLS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
@@ -50,11 +50,12 @@ import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
+import { movedSettingsTabRedirect } from './moved-tabs'
 import { NotificationsSettings } from './notifications-settings'
-import { PluginsSettings } from './plugins-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
+import { vaultOwnerKey, VaultSettings } from './vault-settings'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
@@ -65,30 +66,28 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'connections',
   'keybinds',
   'keys',
+  'vault',
   'notifications',
   'billing',
-  'plugins',
   'sessions',
   'about'
 ]
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
+  const activeConnectionId = useStore($activeConnectionId)
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
 
-  // MCP moved out of Settings into Capabilities (/skills?tab=mcp). Keep old
-  // `/settings?tab=mcp` deep links working — `useRouteEnumParam` would silently
-  // coerce the unknown tab to the default view otherwise. Preserve `server=` so
-  // an old bookmark still lands on (and highlights) the selected server.
+  // MCP and Plugins moved out of Settings into Capabilities. Keep old
+  // `/settings?tab=mcp|plugins` deep links working — `useRouteEnumParam` would
+  // silently coerce the unknown tab to the default view otherwise.
   useEffect(() => {
-    const params = new URLSearchParams(search)
+    const redirect = movedSettingsTabRedirect(search)
 
-    if (params.get('tab') === 'mcp') {
-      const server = params.get('server')
-      const suffix = server ? `&server=${encodeURIComponent(server)}` : ''
-      navigate(`${SKILLS_ROUTE}?tab=mcp${suffix}`, { replace: true })
+    if (redirect) {
+      navigate(redirect, { replace: true })
     }
   }, [navigate, search])
 
@@ -173,16 +172,33 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
   const navGroups: OverlayNavGroup[] = useMemo(
     () => [
-      ...SECTIONS.map(s => {
+      ...SECTIONS.flatMap(s => {
         const view = `config:${s.id}` as SettingsViewId
 
-        return {
+        const entry = {
           active: activeView === view,
           icon: s.icon,
           id: view,
           label: t.settings.sections[s.id] ?? s.label,
           onSelect: () => setActiveView(view)
         }
+
+        // Credential Vault lives beside the Browser section: it feeds the
+        // browser's model-blind vault fill, so the two are one mental unit.
+        if (s.id === 'browser') {
+          return [
+            entry,
+            {
+              active: activeView === 'vault',
+              icon: ShieldLock,
+              id: 'vault',
+              label: t.settings.nav.vault,
+              onSelect: () => setActiveView('vault')
+            }
+          ]
+        }
+
+        return [entry]
       }),
       {
         active: activeView === 'notifications',
@@ -280,13 +296,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         id: 'keys',
         label: t.settings.nav.apiKeys,
         onSelect: () => setActiveView('keys')
-      },
-      {
-        active: activeView === 'plugins',
-        icon: Package,
-        id: 'plugins',
-        label: t.settings.nav.plugins,
-        onSelect: () => setActiveView('plugins')
       },
       {
         active: activeView === 'sessions',
@@ -423,8 +432,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       <NotificationsSettings />
     ) : activeView === 'billing' ? (
       <BillingSettings />
-    ) : activeView === 'plugins' ? (
-      <PluginsSettings />
+    ) : activeView === 'vault' ? (
+      <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} />
     ) : (
       <SessionsSettings />
     )

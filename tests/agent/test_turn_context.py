@@ -320,6 +320,31 @@ def test_turn_without_author_clears_previous_bot_author():
     assert kwargs["author_is_bot"] is False
 
 
+def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
+    """``AIAgent.run_conversation(turn_author=...)`` crosses the facade and the loop entry point, not only
+    ``build_turn_context``; a kwarg dropped at either hop raised TypeError on every real turn."""
+    from types import SimpleNamespace
+    from run_agent import AIAgent
+
+    class _Completions:
+        def create(self, **_kw):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="ok", tool_calls=None, reasoning=None, reasoning_content=None),
+                finish_reason="stop")], usage=None, model="test-model")
+
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI",
+                        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    agent = AIAgent(model="test-model", api_key="k", base_url="http://localhost:1/v1", platform="cli",
+                    max_iterations=2, quiet_mode=True, skip_memory=True)
+    agent._disable_streaming = True
+
+    agent.run_conversation("hi", turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})
+    assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+    agent.run_conversation("hi again")
+    assert agent._turn_author is None
+
+
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]

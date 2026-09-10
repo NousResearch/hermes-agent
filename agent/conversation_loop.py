@@ -1581,6 +1581,7 @@ def run_conversation(
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    turn_author: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
@@ -1604,6 +1605,7 @@ def run_conversation(
         persist_user_display_metadata=persist_user_display_metadata,
         persist_user_platform_id=persist_user_platform_id,
         moa_config=moa_config,
+        turn_author=turn_author,
     )
     return export_current_turn_boundary(agent, result, user_message)
 

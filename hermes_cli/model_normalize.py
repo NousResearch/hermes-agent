@@ -86,14 +86,26 @@ _CATALOGUE_PREFIX_REPAIR_PROVIDERS: frozenset[str] = frozenset({
 _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi"})
 
-# DeepSeek's direct API only accepts first-class V-series IDs after the 2026-07-24 cut-off (HTTP 400
-# otherwise). Both retired aliases map to deepseek-v4-flash per the official docs (thinking mode is
-# controlled by extra_body.thinking on the profile), so saved configs can't keep sending them.
+# DeepSeek's direct API only accepts first-class IDs — anything else returns HTTP 400 with
+# "The supported API model names are deepseek-flash, deepseek-v4-pro". ``deepseek-flash`` is the
+# canonical id of DeepSeek-V4.1-Flash (released 2026-09-10, replacing the V4 generation);
+# ``deepseek-v4-flash`` and the older ``deepseek-chat``/``deepseek-reasoner`` are retired names
+# that DeepSeek still serves — and bills at the Flash price — but can be cut off the way
+# ``deepseek-chat``/``deepseek-reasoner`` were on 2026-07-24, so nothing may leave on them.
+# Thinking mode is controlled by extra_body.thinking on the provider profile.
 _DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
     "deepseek-chat", "deepseek-reasoner"})
 
+# Retired ids that must reach the API under their current name. Must be consulted BEFORE the
+# V-series pass-through below, otherwise the retired name wins on the prefix match.
+_DEEPSEEK_RENAMED_MODELS: dict[str, str] = {
+    "deepseek-v4-flash": "deepseek-flash",
+}
+
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-v4-pro", "deepseek-v4-flash"})
+    "deepseek-v4-pro", "deepseek-flash"})
+
+_DEEPSEEK_FALLBACK_MODEL = "deepseek-flash"
 
 # First-class V-series IDs incl. future ``deepseek-v5-*`` and dated variants
 # (``deepseek-v4-flash-20260423``): verified real model ids, NOT aliases of ``deepseek-chat``.
@@ -102,12 +114,15 @@ _DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
 
 def _normalize_for_deepseek(model_name: str) -> str:
     """Map a model input to a DeepSeek-accepted id: canonicals and ``deepseek-v<digit>…`` pass
-    through (future V-series work without a release); retired aliases and everything else become
-    ``deepseek-v4-flash``."""
+    through (future V-series work without a release); renamed ids follow their rename, and retired
+    aliases / fuzzy names become ``deepseek-flash``."""
     bare = _strip_vendor_prefix(model_name).lower()
+    renamed = _DEEPSEEK_RENAMED_MODELS.get(bare)
+    if renamed:
+        return renamed
     if bare in _DEEPSEEK_CANONICAL_MODELS or _DEEPSEEK_V_SERIES_RE.match(bare):
         return bare
-    return "deepseek-v4-flash"
+    return _DEEPSEEK_FALLBACK_MODEL
 
 
 def _strip_vendor_prefix(model_name: str) -> str:

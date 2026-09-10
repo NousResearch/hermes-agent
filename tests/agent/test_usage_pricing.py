@@ -114,8 +114,9 @@ def test_deepseek_v4_pro_pricing_entry_exists():
 
     Before this fix, deepseek-v4-pro sessions showed as unknown cost
     in hermes insights because the _OFFICIAL_DOCS_PRICING table had no
-    entry for that model.  See #24218.  Rates track the 2026-07 price cut
-    ($1.74/$3.48 → $0.435/$0.87).
+    entry for that model.  See #24218.  Rates track the 2026-09-10 docs
+    page (peak / per 1M: $1.32 in, $3.96 out, $0.044 cache-hit); the model
+    is retired in favour of deepseek-flash from 2026-09-14.
     """
     entry = get_pricing_entry(
         "deepseek-v4-pro",
@@ -125,9 +126,9 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert entry is not None
     assert entry.input_cost_per_million is not None
     assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 0.435
-    assert float(entry.output_cost_per_million) == 0.87
-    assert float(entry.cache_read_cost_per_million) == 0.003625
+    assert float(entry.input_cost_per_million) == 1.32
+    assert float(entry.output_cost_per_million) == 3.96
+    assert float(entry.cache_read_cost_per_million) == 0.044
 
 
 def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
@@ -174,14 +175,14 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
 
 
 
-def test_deepseek_deprecated_aliases_price_as_v4_flash():
-    """Invariant: deepseek-chat / deepseek-reasoner are deprecated aliases for
-    deepseek-v4-flash's non-thinking / thinking modes (deprecation 2026-07-24)
-    — they must bill at identical rates to the flash entry, or sessions on the
-    legacy names over/under-report cost."""
-    flash = get_pricing_entry("deepseek-v4-flash", provider="deepseek")
+def test_deepseek_retired_names_price_as_flash():
+    """Invariant: deepseek-v4-flash / deepseek-chat / deepseek-reasoner are retired
+    names served by deepseek-flash (deepseek-chat/reasoner cut off 2026-07-24;
+    deepseek-v4-flash retired 2026-09-10) — they must bill at identical rates to
+    the canonical flash entry, or sessions on the legacy names over/under-report cost."""
+    flash = get_pricing_entry("deepseek-flash", provider="deepseek")
     assert flash is not None
-    for alias in ("deepseek-chat", "deepseek-reasoner"):
+    for alias in ("deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"):
         entry = get_pricing_entry(alias, provider="deepseek")
         assert entry is not None, alias
         assert entry.input_cost_per_million == flash.input_cost_per_million, alias

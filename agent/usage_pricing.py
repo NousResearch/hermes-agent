@@ -186,11 +186,16 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "gpt-4.1-nano": ("0.10", "0.40", "0.025"), "o3": ("10.00", "40.00", "2.50"),
         "o3-mini": ("1.10", "4.40", "0.55"),
     }),
-    # deepseek-chat / deepseek-reasoner are deprecated aliases of
-    # deepseek-v4-flash's non-thinking / thinking modes — same rates.
-    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-07", {
-        ("deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"): ("0.14", "0.28", "0.0028"),
-        "deepseek-v4-pro": ("0.435", "0.87", "0.003625"),
+    # deepseek-flash is the canonical id of DeepSeek-V4.1-Flash (2026-09-10). The retired names
+    # deepseek-v4-flash / deepseek-chat / deepseek-reasoner are still accepted but served by the
+    # same model at the same Flash price. Docs publish peak/off-peak rates (off-peak = half; peak =
+    # 01:00-04:00 + 06:00-10:00 UTC Mon-Fri) and Hermes has no time-of-day pricing, so the PEAK
+    # rate is encoded — a displayed cost never under-reports the bill.
+    # deepseek-v4-pro is retired in favour of Flash from 2026-09-14 (requests route to Flash).
+    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-09-10", {
+        ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"):
+            ("0.30", "1.20", "0.006"),
+        "deepseek-v4-pro": ("1.32", "3.96", "0.044"),
     }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),

@@ -1505,13 +1505,52 @@ class TurnRunner:
                                         persist_user_message_override, persist_user_timestamp_override):
         """Run the turn with the per-session gateway approval callback registered: dangerous-command
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
-        from gateway.run import _wrap_current_message_with_observed_context
-        from tools.approval import register_gateway_notify, unregister_gateway_notify
+        from gateway.run import (
+            _resolve_approval_session_is_guest,
+            _resolve_approval_session_is_non_admin,
+            _wrap_current_message_with_observed_context,
+        )
+        from tools.approval import (
+            mark_session_approval_blocked,
+            register_gateway_notify,
+            unmark_session_approval_blocked,
+            unregister_gateway_notify,
+        )
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
+        # Guest-mode Telegram chats (Bot API 10.0 @mention from a chat the
+        # bot isn't a member of) can never present or resolve an
+        # interactive approval prompt -- mark the session so a dangerous
+        # command denies immediately (tools/approval.py's
+        # _await_gateway_decision short-circuit) instead of blocking the
+        # agent thread for the full gateway_timeout on an approval that
+        # can structurally never arrive.
+        _session_is_guest = _resolve_approval_session_is_guest(
+            ctx._status_adapter, ctx._status_chat_id
+        )
+        # Non-admin tier: an authorized-but-non-admin user (the
+        # allow_admin_from slash-access tier) approves nothing -- only the
+        # owner/admin can grant a dangerous-command approval, same trust
+        # level as a group/guest chat. Resolved via the SAME
+        # policy_for_source().is_admin() that gates admin-only slash
+        # commands, so "who is admin" has one definition enforced across
+        # both surfaces. Guest takes precedence (a guest is in a group and
+        # has its own carve-out); the policy is a no-op (is_admin -> True)
+        # until an operator actually sets allow_admin_from, so existing
+        # single-tier installs are unaffected.
+        _session_is_non_admin = (
+            False if _session_is_guest
+            else _resolve_approval_session_is_non_admin(
+                ctx.source, getattr(self._runner, "config", None)
+            )
+        )
+        if _session_is_guest:
+            mark_session_approval_blocked(session_key, "guest")
+        elif _session_is_non_admin:
+            mark_session_approval_blocked(session_key, "non_admin")
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
@@ -1536,6 +1575,8 @@ class TurnRunner:
             return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
+            if _session_is_guest or _session_is_non_admin:
+                unmark_session_approval_blocked(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):

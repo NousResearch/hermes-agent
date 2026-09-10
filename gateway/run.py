@@ -810,6 +810,57 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     return response
 
 
+def _resolve_approval_session_is_guest(status_adapter: Any, status_chat_id: Any) -> bool:
+    """Return whether *status_chat_id* is currently a guest-mode (non-member)
+    chat, per *status_adapter*'s own ``_is_guest_chat`` predicate.
+
+    A no-op (always False) until an adapter defines ``_is_guest_chat`` --
+    today none does; the Telegram Bot API 10.0 guest-mode work (see
+    plugins/platforms/telegram/adapter.py's ``_pending_guest_queries`` /
+    ``_guest_only_chats``) supplies the real predicate. Extracted to its own
+    function so this wiring is testable against that concrete adapter
+    contract independent of driving a full gateway turn.
+    """
+    is_guest_chat_fn = getattr(status_adapter, "_is_guest_chat", None)
+    return bool(callable(is_guest_chat_fn) and is_guest_chat_fn(status_chat_id))
+
+
+def _resolve_approval_session_is_non_admin(source: Any, base_config: Any) -> bool:
+    """Return whether *source*'s user is a non-admin (tier-restricted) caller
+    per the SAME ``slash_access.policy_for_source().is_admin()`` that gates
+    admin-only typed slash commands.
+
+    ``base_config`` is the caller's ``GatewayRunner.config`` (the PRIMARY
+    profile's config). For a non-multiplexed gateway that's already correct
+    -- there's only one profile, so it's used directly with zero extra cost
+    (no disk I/O on the turn-dispatch hot path, matching original behavior
+    and every test's existing mocking of ``self.config``).
+
+    Only when ``base_config.multiplex_profiles`` is set does this pay for a
+    fresh ``gateway.config.load_gateway_config()`` call: this function runs
+    from ``_run_agent_inner``, which for a multiplexed secondary-profile turn
+    already executes inside that profile's ``_profile_runtime_scope`` (set up
+    by the ``_run_agent`` wrapper) -- so ``HERMES_HOME`` is contextvar-
+    overridden to the secondary profile's home by the time this executes, and
+    ``base_config`` would still be the PRIMARY profile's parsed config
+    (loaded once at startup), silently applying the wrong profile's
+    ``allow_admin_from`` tier. This mirrors ``_connect_profile_platforms``'s
+    own ``with _profile_runtime_scope(profile_home): load_gateway_config()``
+    -- multiplex-only cost, same as that existing call site.
+    """
+    try:
+        from gateway.slash_access import policy_for_source
+
+        gateway_config = base_config
+        if getattr(base_config, "multiplex_profiles", False):
+            from gateway.config import load_gateway_config
+            gateway_config = load_gateway_config()
+        policy = policy_for_source(gateway_config, source)
+        return bool(policy.enabled and not policy.is_admin(getattr(source, "user_id", None)))
+    except Exception:
+        return False
+
+
 def _resolve_progress_thread_id(
     platform: Any, source_thread_id: Any, event_message_id: Any, *, reply_in_thread: bool = True
 ) -> Optional[str]:

@@ -107,8 +107,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     out. Shared by the terminal command guard, the execute_code guard, the plugin
     escalation gate, and MCP elicitation. Returns ``{"resolved", "choice",
     "reason"}`` or ``{"resolved": False, "choice": None, "notify_failed": True}``
-    when the notify callback raised. Persisting the choice and building the
-    tool-facing result stay with the caller.
+    when the notify callback raised, or ``{"resolved": True, "choice": None,
+    "guest_unsupported": True}`` / ``{"resolved": True, "choice": None,
+    "non_admin_unsupported": True}`` immediately if the session is
+    approval-blocked (see :func:`mark_session_approval_blocked`) -- no queue
+    entry, no notify_cb call, no wait, and no approval hooks fire for that
+    case. Persisting the choice and building the tool-facing result stay with
+    the caller.
 
     Identical concurrent approvals (same command text + pattern-key set) are
     coalesced: parallel tool calls would otherwise fire N identical prompts
@@ -116,6 +121,22 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     the leader's ``session``/``always``/``deny``/timeout; a ``once`` covers only
     the leader, so the follower falls through to a fresh prompt."""
     from tools import approval as _approval
+
+    # Approval-blocked sessions (guest chats, or authorized-but-non-admin
+    # users -- see _gateway_approval_blocked docstring above) can never (guest)
+    # or must never (non_admin) resolve an interactive approval -- deny
+    # immediately, the same way the adapter already declines slash commands at
+    # the front door, instead of registering a queue entry and blocking the
+    # agent thread for the full gateway_timeout. Deliberately skips notify_cb
+    # and the pre/post approval hooks: this never becomes a real approval
+    # attempt, so nothing should observe it as one. Checked before the
+    # coalescing lookup below: a structurally-blocked session must never
+    # adopt another thread's in-flight decision either.
+    _block_reason = _approval.session_approval_block_reason(session_key)
+    if _block_reason == "guest":
+        return {"resolved": True, "choice": None, "guest_unsupported": True}
+    if _block_reason == "non_admin":
+        return {"resolved": True, "choice": None, "non_admin_unsupported": True}
 
     primary_key = approval_data.get("pattern_key", "")
     payload = {

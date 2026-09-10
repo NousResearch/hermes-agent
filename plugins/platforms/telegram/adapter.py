@@ -780,6 +780,59 @@ class TelegramAdapter(BasePlatformAdapter):
             return _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
         return decision
 
+    def _is_callback_user_admin(
+        self,
+        user_id: str,
+        *,
+        chat_id: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+    ) -> bool:
+        """Return whether a Telegram inline-button caller is an admin for gated
+        actions that only the owner/admin may take (e.g. approving a dangerous
+        command via the exec-approval buttons).
+
+        Resolved via ``self._is_admin_for_gated_action`` (``BasePlatformAdapter``),
+        which delegates to a profile-bound ``slash_access.policy_for_source()
+        .is_admin()`` callback GatewayRunner registers per adapter instance at
+        connection time (:meth:`set_admin_policy_check`) -- so the button and
+        the typed ``/approve`` share one definition of "is this user an admin"
+        (closing the gap where a button click skipped the admin gate the typed
+        command enforced), and a SECONDARY multiplexed adapter resolves ITS
+        OWN profile's ``allow_admin_from`` rather than introspecting
+        ``_message_handler.__self__`` (which is ``None`` for a multiplexed
+        adapter's closure-based handler, and would silently apply the
+        primary profile's tier or none at all). When the operator hasn't
+        configured ``allow_admin_from`` for the scope the policy is disabled
+        and ``is_admin`` returns True for every authorized user -- so
+        single-tier installs keep today's behavior (any authorized user may
+        approve). Caller must already have passed
+        :meth:`_is_callback_user_authorized`.
+        """
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return False
+
+        from gateway.session import SessionSource
+
+        normalized_chat_type = self._normalize_chat_type(chat_type, is_forum=thread_id is not None)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(chat_id or normalized_user_id),
+            chat_type=normalized_chat_type,
+            user_id=normalized_user_id,
+            user_name=str(user_name).strip() if user_name else None,
+            thread_id=str(thread_id) if thread_id is not None else None,
+        )
+        result = self._is_admin_for_gated_action(source)
+        if result is None:
+            # No admin-policy check registered (e.g. bare-adapter test
+            # paths) -- fall back to "authorized == allowed", no tier to
+            # enforce, matching the pre-existing single-tier behavior.
+            return True
+        return result
+
     def _source_from_message_for_auth(self, message: Message):
         """Build the SessionSource the gateway auth path expects; identity comes from ``from_user``,
         falling back to ``sender_chat`` for channel posts so an unauthorized channel can't inject."""
@@ -4281,11 +4334,32 @@ class TelegramAdapter(BasePlatformAdapter):
         except (ValueError, IndexError):
             await query.answer(text="Invalid approval data.")
             return
+        # Peek (no pop yet): the admin-tier check below must run BEFORE the
+        # entry is removed from _approval_state. Popping first and denying on
+        # the admin check would silently discard the pending approval — a
+        # later legitimate admin tap on the same button would then see
+        # "already resolved" even though resolve_gateway_approval() never ran.
         session_key = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, "⛔ You are not authorized to approve commands.",
-            "This approval has already been resolved.")
+            "This approval has already been resolved.", pop=False)
         if not session_key:
             return
+        # ...and, when a permission tier is configured, only an admin.
+        # The typed /approve command is already admin-gated via
+        # slash_access; the button must share that gate so a non-admin
+        # can't self-approve their own dangerous command by tapping the
+        # inline button instead of typing the command. No-op (allows
+        # every authorized user) until allow_admin_from is set.
+        if not self._is_callback_user_admin(
+            str(getattr(query.from_user, "id", "")),
+            chat_id=cb["chat_id"],
+            chat_type=str(cb["chat_type"]) if cb["chat_type"] is not None else None,
+            thread_id=str(cb["thread_id"]) if cb["thread_id"] is not None else None,
+            user_name=cb["user_name"],
+        ):
+            await query.answer(text="⛔ Only an admin can approve commands here.")
+            return
+        self._approval_state.pop(approval_id, None)
         user_display = getattr(query.from_user, "first_name", "User")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
         # (count == 0) must NOT claim "Approved" — the command was already denied.

@@ -70,6 +70,9 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
             assert service.calls[-1] == ('create', 'owned')
             state = await call('groups.state', room_id='owned')
             assert state['result']['driver_status'] == service.status('owned')
+            other = AuthorityConnection(authority, object(), {'user_id': 'bob'})
+            listed = await other.dispatch({'id': 1, 'method': 'groups.list', 'params': {}})
+            assert listed['result']['rooms'] == []
 
             payload = {'text': '@one hello', 'mentions': ['one']}
             sent = await call('groups.send', room_id='owned', event_id='input', payload=payload)
@@ -133,6 +136,9 @@ def test_execution_controls_reject_foreign_actor_profile_room_and_unready_servic
             assert result['error']['message'] == 'runtime_coordination_required'
             caps = await owner.dispatch({'id': 1, 'method': 'groups.capabilities', 'params': {}})
             assert caps['result']['driver'] is False
+            foreign = AuthorityConnection(authority, object(), {'user_id': 'bob'})
+            result = await foreign.dispatch({'id': 1, 'method': 'groups.state', 'params': {'room_id': 'owned'}})
+            assert result['error']['message'] == 'permission_denied'
 
             assert service.calls == []
         asyncio.run(probe())

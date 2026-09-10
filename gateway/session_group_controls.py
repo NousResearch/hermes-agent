@@ -86,7 +86,7 @@ def _group(authority, actor, home, method, params):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.approve'}
-    if service is not None and 'room_id' in params:
+    if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
         room_authorizer(actor.subject, params['room_id'], create=method == 'groups.create')
@@ -107,7 +107,21 @@ def _group(authority, actor, home, method, params):
     def listing():
         limit, offset = params.get('limit', rooms.MAX_ROOM_LIST_LIMIT), params.get('offset', 0)
         result = rooms.list_rooms(db_path, **params)
-        return {'rooms': result, 'next_offset': offset + limit if len(result) == limit else None}
+        next_offset = offset + limit if len(result) == limit else None
+        if getattr(authority, 'hosted_room_service', None) is not None:
+            visible = []
+            for room in result:
+                if room_authorizer is None:
+                    raise RuntimeStoreError('permission_denied')
+                try:
+                    room_authorizer(actor.subject, room['room_id'])
+                except RuntimeStoreError as exc:
+                    if exc.reason != 'permission_denied':
+                        raise
+                else:
+                    visible.append(room)
+            result = visible
+        return {'rooms': result, 'next_offset': next_offset}
 
     def create():
         if service is not None:

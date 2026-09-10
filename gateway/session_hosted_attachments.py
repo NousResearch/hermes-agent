@@ -101,7 +101,16 @@ def submission_payload(rpc, prompt, attachments=None):
         references.append(reference)
     paths = restore_native_media(references)
     from gateway.session_ingress_media import _ATTACHMENT_MIMES
-    images = [(ref, item['mime']) for ref, item in zip(references, manifest)
-              if item['mime'] in _ATTACHMENT_MIMES]
+    image_paths = [path for path, item in zip(paths, manifest)
+                   if item['mime'] in _ATTACHMENT_MIMES]
+    if image_paths:
+        # Keep the canonical admission shape; the authority captures these
+        # already-authorized cache paths and the normal runner restores them into
+        # native image_url parts.
+        return {'text': prompt, 'attachments': [
+            {'path': path, 'mime': item['mime']}
+            for path, item in zip(paths, manifest)
+            if item['mime'] in _ATTACHMENT_MIMES
+        ]}
     return {'text': prompt + ''.join('\n[Shared attachment] file: ' + path + '\n'
                for path in paths)}

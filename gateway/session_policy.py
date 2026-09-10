@@ -26,6 +26,7 @@ class LocalSessionPolicy:
     credential_ref: str | None = None
     config_secret_ref: str | None = None
     editor_mcp_json: str | None = None
+    kanban_json: str | None = None
     # Troubleshooting isolation is derived by the owner at creation and frozen with the
     # route; safe_mode always implies ignore_user_config (normalized once in build_policy).
     safe_mode: bool = False
@@ -77,6 +78,9 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     from hermes_constants import get_hermes_home
 
     source = params.get('source', 'cli')
+    if source == 'a2a':
+        from gateway.session_a2a import build_forward_policy
+        return build_forward_policy(params, config, private_secrets=private_secrets)
     if set(params) - CREATE_FIELDS or not isinstance(source, str) or source not in SURFACES:
         raise RuntimeStoreError('invalid_params')
     if any(name in params and type(params[name]) is not bool for name in BYPASS_FIELDS):
@@ -226,7 +230,10 @@ def restore_policy(data):
     """Reject incomplete private policy rather than rebuilding from current defaults."""
     try:
         policy = LocalSessionPolicy(**data)
-        if (policy.source not in SURFACES or policy.platform != SURFACES[policy.source]
+        from gateway.session_a2a import is_forward_policy
+        surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli'}
+        if ((not is_forward_policy(policy) and
+             (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
                 or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
                 or not Path(policy.cwd).is_dir()
                 or not isinstance(policy.model, str) or not policy.model.strip()

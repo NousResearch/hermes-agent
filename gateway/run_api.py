@@ -157,5 +157,5 @@ class GatewayRuntimeAPI:
         await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
                                           'profile_id': grant['profile_id'],
                                           'instance_id': grant['instance_id'],
-                                          'capabilities': grant['capabilities']},
+                                          'capabilities': grant['capabilities'], 'native_bootstrap': True},
                         subprotocol='hermes-gateway-v1')

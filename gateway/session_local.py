@@ -90,7 +90,7 @@ def _bypass_policy(params, *, private_secrets):
     return build_policy(params, defaults, private_secrets=private_secrets, profile_terminal=False)
 
 
-def create_local_session(authority, actor, params):
+def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
@@ -98,8 +98,10 @@ def create_local_session(authority, actor, params):
     from gateway.session_policy import build_policy, BYPASS_FIELDS
     from gateway.run import _load_gateway_config, _resolve_gateway_model
     from dataclasses import replace
-    private_secrets = {}
-    if any(params.get(name) is True for name in BYPASS_FIELDS):
+    private_secrets = dict(trusted_secrets or {})
+    if trusted_policy is not None:
+        policy = trusted_policy
+    elif any(params.get(name) is True for name in BYPASS_FIELDS):
         policy = _bypass_policy(params, private_secrets=private_secrets)
     else:
         policy = build_policy(params, _load_gateway_config(), private_secrets=private_secrets)

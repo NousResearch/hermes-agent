@@ -575,6 +575,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         _prepare_inbound_message_text buffered image paths; consume-and-clear so later turns on the
         same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
         ctx = self._ctx
+        from gateway.session_api_turn import api_execution
+        api = api_execution.get()
+        if api is not None and isinstance(api.get('content'), list):
+            return api['content']
         native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
         if not native_imgs:
             return ctx.message

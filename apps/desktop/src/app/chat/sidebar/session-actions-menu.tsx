@@ -686,12 +686,33 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-w-md">
+      <DialogContent
+        className="max-w-md"
+        // Radix focuses the first focusable element on open, but a sidebar
+        // row's focus-restore can land after that autofocus and pull focus
+        // out of the input — the user then types into the void (Space
+        // activates the row instead of typing a character, arrows scroll the
+        // list). Owning the open-autofocus here and re-claiming focus on blur
+        // (below) keeps the caret in the input for the dialog's whole life.
+        onOpenAutoFocus={event => {
+          event.preventDefault()
+          inputRef.current?.focus()
+          inputRef.current?.select()
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{r.renameTitle}</DialogTitle>
         </DialogHeader>
         <Input
           autoFocus
+          onBlur={event => {
+            // Re-claim focus while the dialog is open and not submitting —
+            // the belt-and-suspenders half of the onOpenAutoFocus fix above.
+            if (open && !submitting) {
+              event.preventDefault()
+              window.setTimeout(() => inputRef.current?.focus(), 0)
+            }
+          }}
           disabled={submitting}
           onChange={event => setValue(event.target.value)}
           onKeyDown={event => {

@@ -388,7 +388,7 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
             pass
     try:
         proc.kill()
-    except OSError:
+    except Exception:
         pass
     if IS_WINDOWS:
         # No identity guard on purpose: *proc* is our own retained Popen handle, so the PID cannot
@@ -470,4 +470,3 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()
-

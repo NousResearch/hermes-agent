@@ -612,7 +612,14 @@ def worktree_add(cwd: str, options: dict) -> dict:
     root = _main_root(cwd)
     options = options or {}
     if options.get("existingBranch"):
-        return _worktree_for_existing(root, options["existingBranch"])
+        result = _worktree_for_existing(root, options["existingBranch"])
+        if result["path"] != root:
+            from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
+            bootstrap_worktree_environments(
+                Path(root), Path(result["path"]), environment_names=(".venv",)
+            )
+        return result
 
     slug = _slugify(options.get("name") or f"work-{os.urandom(4).hex()}")
     branch = _sanitize_branch(options.get("branch") or "") or f"hermes/{slug}"
@@ -634,6 +641,9 @@ def worktree_add(cwd: str, options: dict) -> dict:
         if "already exists" not in (err or "").lower():
             raise RuntimeError(err.strip() or "git worktree add failed")
         _git_ok(root, ["worktree", "add", target, branch])
+    from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
+    bootstrap_worktree_environments(Path(root), Path(target), environment_names=(".venv",))
     return {"path": target, "branch": branch, "repoRoot": root}
 
 

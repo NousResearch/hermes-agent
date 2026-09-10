@@ -28,6 +28,7 @@ export interface FocusDetail {
 }
 
 interface InsertDetail {
+  surfaceId?: string
   mode: ComposerInsertMode
   target: ComposerTarget
   text: string
@@ -246,7 +247,11 @@ export const requestComposerFocus = (
 
 export const requestComposerInsert = (
   text: string,
-  { mode = 'block', target = 'active' }: { mode?: ComposerInsertMode; target?: ComposerTarget | 'active' } = {}
+  {
+    mode = 'block',
+    target = 'active',
+    surfaceId
+  }: { mode?: ComposerInsertMode; target?: ComposerTarget | 'active'; surfaceId?: string } = {}
 ) => {
   const trimmed = text.trim()
 
@@ -254,7 +259,18 @@ export const requestComposerInsert = (
     return
   }
 
-  dispatch<InsertDetail>(INSERT_EVENT, { mode, target: resolve(target), text: trimmed })
+  const resolvedTarget = resolve(target)
+  const detail = { mode, target: resolvedTarget, text: trimmed, surfaceId }
+
+  if (surfaceId) {
+    // Recovery belongs to the visible session at click time, before a parent
+    // handler can switch the session mounted in this same surface.
+    if (composerSurfaceIsVisible(resolvedTarget, surfaceId)) {dispatchNow<InsertDetail>(INSERT_EVENT, detail)}
+
+    return
+  }
+
+  dispatch<InsertDetail>(INSERT_EVENT, detail)
 }
 
 export const onComposerFocusRequest = (handler: (detail: FocusDetail) => void) =>

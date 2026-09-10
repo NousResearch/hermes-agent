@@ -150,6 +150,7 @@ const _chatMessageFieldsExhaustive: {
 } = {}
 
 const COMPARED_FIELDS = [
+  'displayKind',
   'asyncResult',
   'id',
   'role',
@@ -272,6 +273,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
     (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
     a.hidden !== b.hidden ||
+    a.displayKind !== b.displayKind ||
     a.branchGroupId !== b.branchGroupId ||
     a.timestamp !== b.timestamp ||
     a.completedAt !== b.completedAt ||

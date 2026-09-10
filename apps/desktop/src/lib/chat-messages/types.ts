@@ -30,6 +30,8 @@ export type ChatMessage = {
   errorSurface?: ErrorSurface
   branchGroupId?: string
   hidden?: boolean
+  /** Presentation kind from durable history (steering/scaffolding is not a missing reply). */
+  displayKind?: string
   /** Sealed mid-turn commentary (`message.interim`) — rendered without the
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */

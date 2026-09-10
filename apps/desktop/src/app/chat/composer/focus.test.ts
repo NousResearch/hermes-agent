@@ -8,9 +8,11 @@ import {
   getActiveComposer,
   markActiveComposer,
   onComposerFocusRequest,
+  onComposerInsertRequest,
   onComposerModelMenuRequest,
   releaseActiveComposer,
   requestComposerFocus,
+  requestComposerInsert,
   requestModelMenuToggle
 } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -315,5 +317,27 @@ describe('requestModelMenuToggle', () => {
     // Settings/profiles routes: no [data-composer-target] anywhere.
     expect(requestModelMenuToggle()).toBe(false)
     expect(await collectModelMenuTargets()).toEqual([])
+  })
+})
+
+describe('surface-addressed inserts', () => {
+  it('delivers synchronously only to an explicitly visible surface', () => {
+    const visible = mountSurface('main')
+    visible.dataset.composerSurfaceId = 'current'
+    const hidden = mountSurface('main', true)
+    hidden.dataset.composerSurfaceId = 'background'
+    const received: string[] = []
+    const off = onComposerInsertRequest(detail => received.push(detail.surfaceId || 'none'))
+
+    try {
+      requestComposerInsert('hello', { target: 'main', surfaceId: 'background' })
+      requestComposerInsert('hello', { target: 'main', surfaceId: 'current' })
+      expect(received).toEqual(['current'])
+      visible.parentElement!.setAttribute('data-pane-hidden', '')
+      requestComposerInsert('hello', { target: 'main', surfaceId: 'current' })
+      expect(received).toEqual(['current'])
+    } finally {
+      off()
+    }
   })
 })

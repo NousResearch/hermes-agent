@@ -128,7 +128,7 @@ def _profile_list(args):
         name = format_profile_label(p.name, p.display_name)
         model = (p.model or "—")[:26]
         gw = "running" if p.gateway_running else "stopped"
-        alias = (p.alias_name or p.name) if p.alias_path and not p.is_default else "—"
+        alias = (p.alias_name or p.name) if p.alias_path else "—"
         dist = f"{p.distribution_name}@{p.distribution_version or '?'}"[:30] if p.distribution_name else "—"
         print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
     print()

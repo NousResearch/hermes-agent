@@ -130,7 +130,7 @@ def build_models_payload(
     if include_unconfigured:
         rows = list(rows) + _without_slug(_append_unconfigured_rows(rows, ctx), "moa")
     from hermes_cli.models_openrouter_policy import apply_openrouter_picker_policy
-    apply_openrouter_picker_policy(rows, max_models=max_models)
+    apply_openrouter_picker_policy(rows, max_models=max_models, current_model=ctx.current_model)
     # Run after late rows and policy catalogs are assembled so they cannot reintroduce models
     # served by a specific user-defined provider into an aggregator's choices.
     _strip_aggregator_overlaps(rows)

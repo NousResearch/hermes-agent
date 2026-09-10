@@ -361,6 +361,88 @@ def test_shared_gateway_cli_inventory_and_options_keep_active_paid_model(profile
 
 
 @pytest.mark.parametrize("free_only", [False, True])
+@pytest.mark.parametrize("empty_catalog", [False, True])
+@pytest.mark.parametrize("custom", ["vendor/uncurated-current", "vendor/unknown"])
+def test_custom_current_model_survives_default_policy_across_picker_surfaces(
+    profile, monkeypatch, free_only, empty_catalog, custom,
+):
+    _policy(profile, str(free_only).lower())
+    _isolate_provider_sources(monkeypatch)
+    if empty_catalog:
+        monkeypatch.setattr(models, "_fetch_live_catalog_index", lambda *_a, **_kw: ([], {}))
+    kwargs = dict(current_provider="openrouter", current_model=custom, max_models=1)
+    direct = model_switch_providers.list_authenticated_providers(**kwargs)
+    picker = model_switch_providers.list_picker_providers(**kwargs)
+    ctx = inventory.ConfigContext("openrouter", custom, "", {}, [])
+    payload = inventory.build_models_payload(ctx, max_models=1)
+
+    catalog = [] if empty_catalog else ["vendor/zero" if free_only else "vendor/paid"]
+    expected = catalog if free_only else [custom, *catalog]
+    catalog_total = 0 if empty_catalog else (2 if free_only else len(CURATED))
+    selected_missing = empty_catalog or custom not in {mid for mid, _ in CURATED}
+    total = catalog_total + int(not free_only and selected_missing)
+    for surface, rows in (("direct", direct), ("picker", picker), ("inventory", payload["providers"])):
+        row = next((row for row in rows if row["slug"] == "openrouter"), None)
+        if surface == "picker" and not expected:
+            assert row is None  # Empty strict choices do not resurrect a provider row.
+            continue
+        assert row["models"] == expected
+        assert row["total_models"] == total
+        assert row["catalog_authoritative"] is True
+        assert row["free_only"] is free_only
+    assert payload["provider"] == "openrouter"
+    assert payload["model"] == custom
+    if empty_catalog:
+        # The explicit current ID is a row affordance, never a fabricated catalog fallback.
+        assert models.fetch_openrouter_models() == []
+        assert models.fetch_openrouter_models(free_only=True) == []
+
+
+@pytest.mark.parametrize("free_only", [False, True])
+@pytest.mark.parametrize("empty_catalog", [False, True])
+def test_inventory_real_unauthenticated_current_row_preserves_saved_selection(
+    profile, monkeypatch, free_only, empty_catalog,
+):
+    _policy(profile, str(free_only).lower())
+    _isolate_provider_sources(monkeypatch)
+    monkeypatch.setattr(model_switch_providers, "_lap_builtin_rows", lambda *_a: None)
+    live_calls = []
+    def fetch(*_a, **_kw):
+        live_calls.append(True)
+        return ([], {}) if empty_catalog else (LIVE, {row["id"]: row for row in LIVE})
+    monkeypatch.setattr(models, "_fetch_live_catalog_index", fetch)
+    custom = "vendor/uncurated-current"
+    ctx = inventory.ConfigContext("openrouter", custom, "", {}, [])
+    # Exercise the real explicit-only append path and its native provider/auth hint helpers.
+    saved = inventory._append_unconfigured_rows([], ctx, current_only=True)[0]
+    payload = inventory.build_models_payload(ctx, explicit_only=True, max_models=1)
+    row = next(row for row in payload["providers"] if row["slug"] == "openrouter")
+    assert row["source"] == "configured-current"
+    assert row["authenticated"] is False
+    assert row["warning"] == saved["warning"]
+    assert row["free_only"] is free_only
+    if free_only:
+        assert row["models"] == ([] if empty_catalog else ["vendor/zero"])
+        assert row["total_models"] == (0 if empty_catalog else 2)
+    else:
+        assert row["models"] == [custom]
+        assert row["total_models"] == 1
+        assert live_calls == []  # The saved-only row must not expand into a broad catalog.
+    assert payload["provider"] == "openrouter"
+    assert payload["model"] == custom
+    if free_only:
+        from hermes_cli.models_openrouter_policy import apply_openrouter_picker_policy
+        _policy(profile, "false")
+        before = list(live_calls)
+        apply_openrouter_picker_policy(payload["providers"], max_models=1, current_model=custom)
+        assert row["models"] == [custom]
+        assert row["total_models"] == 1
+        assert row["free_only"] is False
+        assert row["warning"] == saved["warning"]
+        assert live_calls == before
+
+
+@pytest.mark.parametrize("free_only", [False, True])
 def test_inventory_filters_late_unconfigured_current_row(profile, monkeypatch, free_only):
     _policy(profile, str(free_only).lower())
     _isolate_provider_sources(monkeypatch)

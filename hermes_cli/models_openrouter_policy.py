@@ -47,12 +47,22 @@ def openrouter_picker_models(*, config: dict | None = None, force_refresh: bool 
 
 
 def apply_openrouter_picker_policy(rows: list[dict], *, max_models: int | None = None,
-                                   force_refresh: bool = False) -> None:
+                                   force_refresh: bool = False, current_model: str = "") -> None:
     """Finalize choices after cached/configured/current-model rows have been assembled."""
     matching = [row for row in rows if str(row.get("slug", "")).lower() == "openrouter"]
     if not matching:
         return
     free_only = openrouter_free_only()
+    selected = str(current_model or "").strip()
+    if not free_only:
+        for row in matching:
+            if row.get("source") == "configured-current" and row.get("authenticated") is False:
+                # Inventory deliberately shows only the saved selection until reauthentication.
+                if selected:
+                    row["models"] = [selected]
+                    row["total_models"] = 1
+                row["catalog_authoritative"] = True
+                row["free_only"] = False
     matching = [row for row in matching if not (
         row.get("catalog_authoritative") and row.get("free_only") is free_only)]
     if not matching:
@@ -66,5 +76,10 @@ def apply_openrouter_picker_policy(rows: list[dict], *, max_models: int | None =
         # reinsert a paid or unknown selection into a free-only list.
         row["models"] = ids[:max_models] if max_models is not None else list(ids)
         row["total_models"] = len(ids)
+        if not free_only and row.get("is_current") and selected and not row.get("native_catalog_empty"):
+            if selected not in row["models"]:
+                row["models"] = [selected, *row["models"]]
+            if selected not in ids:
+                row["total_models"] += 1
         row["catalog_authoritative"] = True
         row["free_only"] = free_only

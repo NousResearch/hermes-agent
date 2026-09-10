@@ -89,7 +89,7 @@ def _transaction() -> Iterator[sqlite3.Connection]:
             pass
         conn.row_factory = sqlite3.Row
         try:
-            from hermes_state import apply_wal_with_fallback
+            from hermes_state_wal import apply_wal_with_fallback
 
             conn.execute("PRAGMA busy_timeout=5000")
             apply_wal_with_fallback(conn, db_label="cron/deliveries.db")
@@ -140,6 +140,9 @@ def enqueue(
 ) -> dict:
     """Persist one idempotent delivery request before the worker waits."""
     with _transaction() as conn:
+        # Serialize the tombstone check and insert with retention in other
+        # processes, which can move a terminal delivery into the tombstone table.
+        conn.execute("BEGIN IMMEDIATE")
         tombstone = conn.execute(
             "SELECT terminal_status, finished_at FROM delivery_tombstones "
             "WHERE execution_id=?",

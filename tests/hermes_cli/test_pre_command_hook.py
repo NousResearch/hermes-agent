@@ -199,7 +199,7 @@ def _make_source():
 
 
 def _make_event(text: str):
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
 
     return MessageEvent(
         text=text,

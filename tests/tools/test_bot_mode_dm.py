@@ -214,7 +214,10 @@ def _capture_spawn(monkeypatch):
 def _runner_parts(command):
     parts = shlex.split(command)
     marker = parts.index("--run-delivery")
-    return parts[marker + 1], parts[marker + 2], parts[marker + 3 :]
+    argv = parts[marker + 3 :]
+    if argv[:1] == ["--profile-home"]:
+        argv = argv[2:]
+    return parts[marker + 1], parts[marker + 2], argv
 
 
 def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
@@ -355,6 +358,54 @@ def test_spawn_failure_reports_error(tmp_path, monkeypatch):
     assert "could not be started" in result["error"]
 
 
+def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
+    from tools import bot_live_delivery as live
+
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner if Path(h) == target else None)
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "wrong-home"))
+    import tools.terminal_tool as terminal
+    monkeypatch.setattr(terminal, "terminal_tool", lambda *a, **k: json.dumps({"error": "spawn failed"}))
+
+    result = json.loads(bot_mode_dm.message_agent_tool("researcher", "hello", agent=_FakeAgent(home)))
+    assert result["status"] == "queued"
+    record = live.read_delivery_result(target, result["delivery_id"])
+    assert record is not None
+    assert record["owner"] == owner
+    assert record["message"] == "Message from 🤖 hermes (@hermes): hello"
+    assert "notification_error" in result
+
+
+def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    argv = ["hermes", "-p", "researcher"]
+    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 0
+    queued = json.loads(capsys.readouterr().out)
+    assert queued["status"] == "queued"
+    claimed = live.claim_pending_delivery(target, owner)
+    assert claimed is not None
+    live.complete_delivery(target, claimed["delivery_id"], status="failed", error="HTTP 429 rate limit")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
+    failed = json.loads(capsys.readouterr().out)
+    assert failed["status"] == "failed"
+    assert failed["delivery_id"] == queued["delivery_id"]
+    assert dm_file.read_text(encoding="utf-8") == "hello"
+
+
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────
 
 
@@ -420,6 +471,29 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
 
     assert returncode == 7
     assert not dm_file.exists()
+
+
+def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
+    """#100523: the CLI's single-owner lease refusal is a delivery FAILURE the
+    sender can read, not a raw exit-1 with the payload silently gone."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hi", encoding="utf-8")
+    child = tmp_path / "owned.py"
+    child.write_text(
+        "import sys\n"
+        "print('Session abc already has a live owner (desktop, pid 1).', file=sys.stderr)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child), "-p", "ops"], str(dm_file), stdin_file=False
+    )
+
+    assert returncode == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"] == "target_busy"
+    assert "NOT delivered" in payload["error"]
 
 
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
@@ -658,7 +732,7 @@ def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
     old = now - bot_mode_dm._DM_STALE_SECONDS - 1
     os.utime(legacy_stale, (old, old))
     os.utime(stale, (old, old))
-    bot_mode_dm._sweep_stale_dm_files(now=now)
+    bot_mode_dm.cleanup_bot_dm_cache(now=now)
 
     assert not legacy_stale.exists()
     assert not stale.exists()

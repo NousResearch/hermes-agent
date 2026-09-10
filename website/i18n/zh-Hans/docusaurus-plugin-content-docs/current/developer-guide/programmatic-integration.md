@@ -10,7 +10,7 @@ Hermes 提供三种协议，供外部程序驱动 agent——IDE 插件、自定
 
 | 协议 | 传输方式 | 适用场景 | 定义位置 |
 |----------|-----------|----------|------------|
-| **ACP** | JSON-RPC over stdio | 已支持 [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) 的 IDE 客户端（VS Code、Zed、JetBrains） | `acp_adapter/` |
+| **ACP** | JSON-RPC over stdio | 已支持 [Agent Client Protocol](https://github.com/agentclientprotocol/agent-client-protocol) 的 IDE 客户端（VS Code、Zed、JetBrains） | `acp_adapter/` |
 | **TUI gateway** | JSON-RPC over stdio（或 WebSocket） | 需要精细控制会话、slash 命令、审批及流式事件的自定义宿主 | `tui_gateway/server.py` |
 | **API server** | HTTP + Server-Sent Events | 兼容 OpenAI 的前端（Open WebUI、LobeChat、LibreChat……）及语言无关的 Web 客户端 | `gateway/platforms/api_server.py` |
 

@@ -14,6 +14,9 @@ def test_passive_check_obeys_config_before_using_cached_notice(monkeypatch):
         "ts": time.time(), "behind": 17, "rev": None, "ver": banner.VERSION,
     }), encoding="utf-8")
     monkeypatch.delenv("HERMES_REVISION", raising=False)
+    # No embedded rev and no resolvable checkout -> the cache key is None, matching the seeded
+    # entry above; this test is about the config opt-out ordering, not cache-rev resolution.
+    monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: None)
     config = home / "config.yaml"
     config.write_text("updates:\n  check: true\n", encoding="utf-8")
     assert banner.check_for_updates(passive=True) == 17

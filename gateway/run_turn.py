@@ -15,7 +15,7 @@ import os
 import queue
 import threading
 import time
-from agent.i18n import t
+from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
@@ -41,6 +41,29 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _scoped_display_language() -> str:
+    """``display.language`` for the profile currently in scope, read without the process cache.
+
+    ``agent.i18n`` memoizes ``display.language`` process-wide and ``_profile_runtime_scope`` neither
+    scopes nor clears that cache, so under multiplexing the first profile to render text would pin
+    its language for every other profile's notices. ``load_config_readonly`` is keyed on the resolved
+    config path, so reading it inside the scope gives the serving profile's own value; pass the
+    result to ``t(..., lang=...)`` to bypass the shared cache. Precedence matches
+    ``i18n.get_language()``: ``HERMES_LANGUAGE`` > ``display.language`` > English. The returned value
+    is normalized by ``t()``, so an unknown code still falls back to English.
+    """
+    env_lang = (os.environ.get("HERMES_LANGUAGE") or "").strip()
+    if env_lang:
+        return env_lang
+    try:
+        from hermes_cli.config import load_config_readonly
+        lang = (load_config_readonly().get("display") or {}).get("language")
+    except Exception as exc:
+        logger.debug("Could not read scoped display.language: %s", exc)
+        return DEFAULT_LANGUAGE
+    return lang.strip() if isinstance(lang, str) and lang.strip() else DEFAULT_LANGUAGE
 
 
 class GatewayTurnMixin:
@@ -409,15 +432,16 @@ class GatewayTurnMixin:
             should_notify = reset_reason == "suspended"
             adapter = self._adapter_for_source(source) if should_notify else None
             if adapter:
-                notice = (
-                    "◐ Session reset after being stopped. "
-                    f"Conversation history cleared.\n"
-                    f"Use /resume to browse and restore a previous session.\n"
-                )
+                # Resolve the notice's language inside the serving profile's scope, never from the
+                # process-global cache t() would otherwise consult (see _scoped_display_language).
+                lang, session_info = DEFAULT_LANGUAGE, ""
                 with suppress(Exception):
-                    session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
-                    if session_info:
-                        notice = f"{notice}\n\n{session_info}"
+                    lang, session_info = await asyncio.to_thread(
+                        self._reset_notice_locale_and_info, source
+                    )
+                notice = t("gateway.auto_reset.notice", lang=lang)
+                if session_info:
+                    notice = f"{notice}\n\n{session_info}"
                 await adapter.send(source.chat_id, notice, metadata=self._thread_metadata_for_source(source))
         except Exception as e:
             logger.debug("Auto-reset notification failed (non-fatal): %s", e)
@@ -2039,30 +2063,44 @@ class GatewayTurnMixin:
 
         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
         probes), and the scope is entered here so contextvars behave in the worker thread."""
-        with self._profile_scope_for_source(source):
-            return self._format_session_info()
+        return self._reset_notice_locale_and_info(source)[1]
 
-    def _format_session_info(self) -> str:
-        """Model / provider / context-length / endpoint block so users can spot bad context detection."""
+    def _reset_notice_locale_and_info(self, source: SessionSource) -> Tuple[str, str]:
+        """``(display language, session-info block)`` for the profile serving ``source``.
+
+        Both come out of a single scope entry: ``_profile_runtime_scope`` hydrates secrets and
+        installs terminal policy, so the notice must not pay for it twice. Call via
+        ``asyncio.to_thread`` -- resolution can block (credential refresh, context-length probes)."""
+        with self._profile_scope_for_source(source):
+            lang = _scoped_display_language()
+            return lang, self._format_session_info(lang)
+
+    def _format_session_info(self, lang: Optional[str] = None) -> str:
+        """Model / provider / context-length / endpoint block so users can spot bad context detection.
+
+        ``lang`` is the catalog to render in; omitted, it is resolved from the config currently in
+        scope. Never let ``t()`` resolve it on its own here -- see ``_scoped_display_language``."""
         from gateway.run import _resolve_gateway_model_context
+        if lang is None:
+            lang = _scoped_display_language()
         resolved = _resolve_gateway_model_context()
         context_length = resolved.context_length
         ctx_source = {
-            "config": "config",
-            "default": "default — set model.context_length in config to override",
-        }.get(resolved.context_source, "detected")
+            "config": t("gateway.session_info.ctx_source_config", lang=lang),
+            "default": t("gateway.session_info.ctx_source_default", lang=lang),
+        }.get(resolved.context_source, t("gateway.session_info.ctx_source_detected", lang=lang))
         ctx_display = (
             f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000
             else f"{context_length // 1_000}K" if context_length >= 1_000 else str(context_length)
         )
         lines = [
-            f"◆ Model: `{resolved.model}`",
-            f"◆ Provider: {resolved.provider or 'openrouter'}",
-            f"◆ Context: {ctx_display} tokens ({ctx_source})",
+            t("gateway.session_info.model", lang=lang, model=resolved.model),
+            t("gateway.session_info.provider", lang=lang, provider=resolved.provider or "openrouter"),
+            t("gateway.session_info.context", lang=lang, context=ctx_display, source=ctx_source),
         ]
         base_url = resolved.base_url
         if base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1", "0.0.0.0"):
-            lines.append(f"◆ Endpoint: {base_url}")
+            lines.append(t("gateway.session_info.endpoint", lang=lang, endpoint=base_url))
         return "\n".join(lines)
 
     async def _run_background_task(

@@ -140,3 +140,26 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+
+
+# ---------------------------------------------------------------------------
+# Gateway reset-notice catalog contract -- #57324.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+def test_auto_reset_notice_takes_no_placeholders(lang: str):
+    """The gateway renders this notice with no interpolation, so no catalog may ask for one.
+
+    The gateway notifies on one reset reason with one fixed sentence. A catalog still
+    carrying ``{reason}`` would print that token verbatim to the user, and the retired
+    ``reason_*`` entries have no call site left to fill them.
+    """
+    import re
+    flat = _flatten(_load_raw(lang))
+    notice = flat.get("gateway.auto_reset.notice")
+    assert notice, f"{lang}.yaml is missing gateway.auto_reset.notice"
+    leftover = re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", notice)
+    assert not leftover, f"{lang}.yaml gateway.auto_reset.notice still interpolates {leftover}"
+    retired = sorted(k for k in flat if k.startswith("gateway.auto_reset.reason_"))
+    assert not retired, f"{lang}.yaml still carries call-site-less keys: {retired}"

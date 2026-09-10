@@ -50,6 +50,18 @@ gateway:
   config_read_failed: "⚠️ تعذّر قراءة config.yaml: {error}"
   config_save_failed: "⚠️ تعذّر حفظ الإعدادات: {error}"
 
+  session_info:
+    model:                 "◆ النموذج: `{model}`"
+    provider:              "◆ المزوّد: {provider}"
+    context:               "◆ السياق: {context} رمزًا ({source})"
+    endpoint:              "◆ نقطة النهاية: {endpoint}"
+    ctx_source_config:     "من الإعدادات"
+    ctx_source_default:    "افتراضي - عيّن model.context_length في الإعدادات للتجاوز"
+    ctx_source_detected:   "مكتشف تلقائيًا"
+
+  auto_reset:
+    notice:                "◐ تمت إعادة تعيين الجلسة بعد إيقافها. تم مسح سجل المحادثة.\nاستخدم /resume لتصفّح جلسة سابقة واستعادتها.\n"
+
   model:
     error_prefix:           "خطأ: {error}"
     switched:               "تم التبديل إلى النموذج `{model}`"

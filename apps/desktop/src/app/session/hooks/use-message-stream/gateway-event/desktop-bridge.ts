@@ -75,11 +75,17 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const start = typeof payload?.start === 'number' ? payload.start : undefined
       const count = typeof payload?.count === 'number' ? payload.count : undefined
 
-      void readActivePreview({ count, start }).then(result => {
-        void $gateway.get()?.request('preview.read.respond', {
+      const answer = (result: unknown) =>
+        $gateway.get()?.request('preview.read.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
+      // .catch: readActivePreview rejects if the preview pane is unavailable
+      // or the webview read fails — without an empty answer the tool would
+      // stall its full 30s timeout.
+      void readActivePreview({ count, start }).then(answer, (err: unknown) => {
+        console.debug('[preview.read] readActivePreview rejected:', err)
+        answer(null)
       })
     }
 

@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://latens.local/schemas/provenance.schema.json",
+  "title": "LATENS Slice 1 Provenance Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "packet_scope",
+    "public"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "slice-1"
+    },
+    "packet_scope": {
+      "type": "string",
+      "enum": ["public", "internal_review"]
+    },
+    "public": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "prompt_seed",
+        "run_id",
+        "emotion_signature",
+        "source_refs",
+        "edition_id",
+        "artifact_id",
+        "approvals",
+        "public_private_split"
+      ],
+      "properties": {
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "name", "version"],
+          "properties": {
+            "provider": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1}
+          }
+        },
+        "prompt_seed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "redacted_summary", "hash"],
+          "properties": {
+            "id": {"type": "string", "pattern": "^prompt-[a-z0-9-]+$"},
+            "redacted_summary": {"type": "string", "minLength": 1},
+            "hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+          }
+        },
+        "run_id": {"type": "string", "pattern": "^run-[a-z0-9-]+$"},
+        "emotion_signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["labels", "intensity", "review_note"],
+          "properties": {
+            "labels": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "string", "minLength": 1},
+              "uniqueItems": true
+            },
+            "intensity": {"type": "string", "enum": ["low", "medium", "high"]},
+            "review_note": {"type": "string", "minLength": 1}
+          }
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "kind", "citation", "public_url", "claim_scope"],
+            "properties": {
+              "id": {"type": "string", "pattern": "^src-[a-z0-9-]+$"},
+              "kind": {"type": "string", "enum": ["public_url", "book", "paper", "internal_redacted", "operator_note_redacted"]},
+              "citation": {"type": "string", "minLength": 1},
+              "public_url": {"type": ["string", "null"]},
+              "claim_scope": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "edition_id": {"type": "string", "pattern": "^edition-[a-z0-9-]+$"},
+        "artifact_id": {"type": "string", "pattern": "^artifact-[a-z0-9-]+$"},
+        "approvals": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pm", "qa", "security", "founder_publication"],
+          "properties": {
+            "pm": {"$ref": "#/$defs/approval"},
+            "qa": {"$ref": "#/$defs/approval"},
+            "security": {"$ref": "#/$defs/approval"},
+            "founder_publication": {"$ref": "#/$defs/approval"}
+          }
+        },
+        "public_private_split": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["public_fields", "private_fields", "redaction_summary"],
+          "properties": {
+            "public_fields": {
+              "type": "array",
+              "items": {"type": "string"},
+              "uniqueItems": true
+            },
+            "private_fields": {
+              "type": "array",
+              "items": {"type": "string"},
+              "uniqueItems": true
+            },
+            "redaction_summary": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "private_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["access", "raw_prompt_ref", "operator_notes_ref", "credential_handling"],
+      "properties": {
+        "access": {"type": "string", "const": "internal-review-only"},
+        "raw_prompt_ref": {"type": "string", "minLength": 1},
+        "operator_notes_ref": {"type": "string", "minLength": 1},
+        "credential_handling": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["secrets_present", "notes"],
+          "properties": {
+            "secrets_present": {"type": "boolean", "const": false},
+            "notes": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"packet_scope": {"const": "internal_review"}}},
+      "then": {"required": ["private_review"]}
+    },
+    {
+      "if": {"properties": {"packet_scope": {"const": "public"}}},
+      "then": {"not": {"required": ["private_review"]}}
+    }
+  ],
+  "$defs": {
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewer", "reviewed_at", "notes"],
+      "properties": {
+        "status": {"type": "string", "enum": ["pending", "approved", "blocked"]},
+        "reviewer": {"type": ["string", "null"]},
+        "reviewed_at": {"type": ["string", "null"], "format": "date-time"},
+        "notes": {"type": "string"}
+      }
+    }
+  }
+}

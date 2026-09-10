@@ -1,0 +1,82 @@
+{
+  "schema_version": "slice-1",
+  "packet_scope": "public",
+  "public": {
+    "model": {
+      "provider": "example-provider",
+      "name": "example-model",
+      "version": "redacted-or-pinned-version"
+    },
+    "prompt_seed": {
+      "id": "prompt-slice-1-example",
+      "redacted_summary": "Public-safe prompt descriptor for a LATENS foundation artifact. Raw prompts stay in private review storage.",
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "run_id": "run-slice-1-example",
+    "emotion_signature": {
+      "labels": ["measured", "archival", "speculative"],
+      "intensity": "low",
+      "review_note": "Descriptive editorial tags only; not a user inference, diagnosis, or safety classification."
+    },
+    "source_refs": [
+      {
+        "id": "src-github-issue-2",
+        "kind": "internal_redacted",
+        "citation": "chipoto69/latens issue #2 acceptance criteria, redacted for public packet until repository access is approved.",
+        "public_url": null,
+        "claim_scope": "Supports route/provenance requirements only; does not support external factual claims."
+      }
+    ],
+    "edition_id": "edition-slice-1-example",
+    "artifact_id": "artifact-site-foundation-example",
+    "approvals": {
+      "pm": {
+        "status": "pending",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "PM gate required before publication."
+      },
+      "qa": {
+        "status": "pending",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "QA must verify links, accessibility, mobile behavior, and console cleanliness."
+      },
+      "security": {
+        "status": "pending",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Security must verify no public data leakage, unsafe claims, or credential exposure."
+      },
+      "founder_publication": {
+        "status": "pending",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Rudy explicit YES required before push, publish, deploy, merge, or production dispatch."
+      }
+    },
+    "public_private_split": {
+      "public_fields": [
+        "schema_version",
+        "packet_scope",
+        "public.model",
+        "public.prompt_seed.id",
+        "public.prompt_seed.redacted_summary",
+        "public.prompt_seed.hash",
+        "public.run_id",
+        "public.emotion_signature",
+        "public.source_refs",
+        "public.edition_id",
+        "public.artifact_id",
+        "public.approvals",
+        "public.public_private_split.redaction_summary"
+      ],
+      "private_fields": [
+        "private_review.raw_prompt_ref",
+        "private_review.operator_notes_ref",
+        "private_review.credential_handling"
+      ],
+      "redaction_summary": "Public packet excludes the private_review object, raw prompts, operator notes, credentials, private repo context, and unapproved source material."
+    }
+  }
+}

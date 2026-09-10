@@ -334,6 +334,7 @@ import {
   ensureHealthyPooledRemoteBackendForDispatch,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
+  retirePooledRemoteAfterDispatchProbe,
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection,
   revalidateSuspectPooledRemoteBackends
@@ -11760,21 +11761,22 @@ async function ensureRegistryBackend(
         probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
         reconnect: () => ensureRegistryBackend(id, profile),
         retire: async (error: any) => {
-          // A late failure from an old descriptor must never tear down a newer
-          // entry that another caller has already installed.
-          if (backendPool.get(key) !== existing) {
-            return
-          }
-
-          rememberLog(
-            `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
-          )
-          await stopPoolBackend(key)
-
-          if (source.kind === 'ssh') {
-            await sshBootstrapCoordinator.cancelAndWait(key)
-            await teardownSshConnection(key)
-          }
+          // Stop this pool entry only. Do not tear down the SSH transport:
+          // one profile's dispatch-probe hiccup used to close the control
+          // master and reload every open tab. The next dial for this key
+          // re-establishes whatever transport it needs. True transport-wide
+          // death stays with the cached-connection liveness path and its
+          // multi-strike teardown.
+          await retirePooledRemoteAfterDispatchProbe({
+            cancelSshBootstrap: scope => sshBootstrapCoordinator.cancelAndWait(scope),
+            currentEntry: () => backendPool.get(key),
+            error,
+            expectedEntry: existing,
+            key,
+            log: rememberLog,
+            sourceKind: source.kind,
+            stopPoolBackend
+          })
         }
       })
     )

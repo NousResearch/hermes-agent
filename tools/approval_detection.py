@@ -112,6 +112,12 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # kill with SIGKILL via -s/--signal (parallel to killall -s KILL).
+    # Catches: kill -s KILL -1, kill -s SIGKILL -1, kill -s 9 -1,
+    # kill --signal KILL -1, etc. The -s/--signal form is a bypass
+    # for the plain kill command that was previously uncovered.
+    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-s\s+(KILL|SIGKILL|9)\b', "force kill processes (kill -s KILL)"),
+    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*--signal\s+(KILL|SIGKILL|9)\b', "force kill processes (kill --signal KILL)"),
     (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),

@@ -54,7 +54,7 @@ def test_group_management_on_ordinary_authenticated_socket(tmp_path):
             denied = await rpc(ws, 'groups.rename', profile='foreign', room_id='room-fixture', event_id='forbidden', name='Wrong')
             assert denied['error']['message'] == 'profile_mismatch', denied
             profiles = await rpc(ws, 'profiles.list', include_sessions=False)
-            assert [p['path'] for p in profiles['result']['profiles']] == [str(home)], profiles
+            assert [p['path'] for p in profiles['result']['profiles']] == [str(home), str(home / 'profiles' / 'helper')], profiles
             disbanded = await rpc(ws, 'groups.disband', room_id='room-fixture')
             assert 'result' in disbanded, disbanded
             assert (await rpc(ws, 'groups.list'))['result']['rooms'] == []

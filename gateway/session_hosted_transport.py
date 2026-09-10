@@ -65,8 +65,13 @@ def owner_request(home, verb, params, *, timeout=30):
 
 
 def _attest(binding, operation, params):
-    result = owner_request(binding['source_home'], 'hosted-attest', {
-        'selector': binding['selector'], 'operation': operation, 'params': params})
+    try:
+        result = owner_request(binding['source_home'], 'hosted-attest', {
+            'selector': binding['selector'], 'operation': operation, 'params': params})
+    except RuntimeStoreError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise RuntimeStoreError('runtime_draining') from exc
     if not isinstance(result, dict) or not isinstance(result.get('owner'), str) or not result['owner']:
         raise RuntimeStoreError('permission_denied')
     return result['owner']

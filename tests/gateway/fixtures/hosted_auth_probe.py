@@ -187,7 +187,7 @@ def probe(tmp_path):
                 state = await rpc(ws, 'groups.state', room_id=room)
                 assert state['result']['room']['room_id'] == room, state
                 sent = await rpc(ws, 'groups.send', room_id=room, event_id='own-input',
-                                 payload={'text': 'BLOCK_' + actor, 'thread_id': 'thread'})
+                                 payload={'text': '@two BLOCK_' + actor, 'thread_id': 'thread'})
                 assert sent['result']['accepted'], sent
                 assert await asyncio.to_thread(model.blocked[actor].wait, 30), state
                 before = await rpc(ws, 'groups.log', room_id=room)
@@ -222,7 +222,7 @@ def probe(tmp_path):
                         await asyncio.sleep(.1)
             assert len(model.requests) == 2, model.requests
             sent = await rpc(alice, 'groups.send', room_id='alice-room', event_id='approval',
-                             payload={'text': 'APPROVE_HOSTED', 'thread_id': 'approval-thread'})
+                             payload={'text': '@two APPROVE_HOSTED', 'thread_id': 'approval-thread'})
             assert sent['result']['accepted'], sent
             async with asyncio.timeout(30):
                 while True:

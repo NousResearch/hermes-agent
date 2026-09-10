@@ -191,9 +191,11 @@ async def ensure_hosted_service(runner):
         loop = asyncio.get_running_loop()
         service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
         authority.hosted_room_service = service
-    from gateway.session_hosted_transport import install_hosted_transport
-    install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
-                             attest=service.attest)
+    if not getattr(service, '_transport_installed', False):
+        from gateway.session_hosted_transport import install_hosted_transport
+        install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
+                                 attest=service.attest)
+        service._transport_installed = True
     await asyncio.to_thread(service.start)
     return service
 

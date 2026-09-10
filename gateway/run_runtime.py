@@ -99,10 +99,10 @@ async def drain_gateway_runtime(runner):
     descriptor = getattr(runner, 'session_runtime_descriptor', None)
     if descriptor is None:
         return
-    from gateway.session_hosted_service import stop_hosted_service
-    await stop_hosted_service(runner)
     runner._draining = True
     descriptor.update(state='draining', capabilities=[])
+    from gateway.session_hosted_service import stop_hosted_service
+    await stop_hosted_service(runner)
     # Withdraw the public ingress callback without disconnecting egress needed
     # by already admitted work. Base adapters refuse before stamping acceptance.
     for adapter in runner.adapters.values():

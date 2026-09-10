@@ -268,4 +268,14 @@ def _profiles(authority, actor, home, params):
                 "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1", (actor.subject,)).fetchone()
         if latest:
             row['last_session'] = summary(authority.db.get_session(latest[0]))
-    return {'profiles': [row], 'bot_mode_protocol': True}
+    profiles = [row]
+    service = getattr(authority, 'hosted_room_service', None)
+    if service is not None:
+        for configured, target in service.profile_homes().items():
+            if target != home:
+                # Configured execution destinations are discovery metadata, not
+                # permission to read another owner's state/configuration.
+                profiles.append({'name': configured, 'path': str(target), 'is_default': False,
+                                 'model': '', 'provider': '', 'description': '',
+                                 'display_name': configured, 'skill_count': 0})
+    return {'profiles': profiles, 'bot_mode_protocol': True}

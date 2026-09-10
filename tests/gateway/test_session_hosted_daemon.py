@@ -128,7 +128,7 @@ def test_room_unknown_discard_releases_only_its_followers(tmp_path):
                 reply = await rpc(ws, 'groups.create', room_id=room, name=room, members=members)
                 assert 'result' in reply, reply
             reply = await rpc(ws, 'groups.send', room_id='unknown', event_id='started',
-                              payload={'text': 'BLOCK_HOSTED', 'thread_id': 'thread'})
+                              payload={'text': '@two BLOCK_HOSTED', 'thread_id': 'thread'})
             assert reply['result']['accepted'], reply
             assert await asyncio.to_thread(model.blocked.wait, 25)
             reply = await rpc(ws, 'groups.send', room_id='unknown', event_id='follower',

@@ -13,7 +13,7 @@
 import { useStore } from '@nanostores/react'
 
 import { findGroup } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree, revealTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
+import { $activeTreeGroup, $layoutTree, isEphemeralPane, PREVIEW_TILE_PANE_NAMESPACE, revealTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
 import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
@@ -169,9 +169,7 @@ function PreviewTabLead({ tabId }: { tabId: string }) {
   return <FileTypeIcon className="opacity-70" path={target.path || target.url} size="0.6875rem" />
 }
 
-const PREVIEW_TILE_PREFIX = 'preview-tile'
-
-const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
+const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PANE_NAMESPACE}:${tabId}`
 
 /** The pane a NEW preview tile should stack into: another preview tile already
  *  in the tree, else another open tab adopted earlier in the same pass (a
@@ -179,7 +177,7 @@ const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
  *  `undefined` means this is the first preview — it opens its own zone. */
 function existingPreviewAnchor(tabId: string): string | undefined {
   const own = previewPaneId(tabId)
-  const inTree = treePanesWithPrefix(`${PREVIEW_TILE_PREFIX}:`).find(id => id !== own)
+  const inTree = treePanesWithPrefix(`${PREVIEW_TILE_PANE_NAMESPACE}:`).find(id => id !== own)
 
   if (inTree) {
     return inTree
@@ -189,7 +187,6 @@ function existingPreviewAnchor(tabId: string): string | undefined {
 
   return other ? previewPaneId(other.id) : undefined
 }
-
 /** Keep pane contributions mirroring `$previewTabs`, keep the store's selection
  *  and the tree's active pane agreeing, and front a tile when its tab is
  *  selected. Call once from the root. */
@@ -210,7 +207,7 @@ export function watchPreviewTiles(): void {
     const tabId = $rightRailActiveTabId.get()
 
     if (tabId && targetFor(tabId)) {
-      revealTreePane(`${PREVIEW_TILE_PREFIX}:${tabId}`)
+      revealTreePane(`${PREVIEW_TILE_PANE_NAMESPACE}:${tabId}`)
     }
   }
 
@@ -228,11 +225,13 @@ export function watchPreviewTiles(): void {
     const groupId = $activeTreeGroup.get()
     const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
-    if (!active?.startsWith(`${PREVIEW_TILE_PREFIX}:`)) {
+    // Assert against the tree store's OWN definition — the pane this zone
+    // fronts is a preview tile only if the persisted-copy scrubber agrees.
+    if (!active || !isEphemeralPane(active)) {
       return
     }
 
-    const tabId = active.slice(PREVIEW_TILE_PREFIX.length + 1) as RightRailTabId
+    const tabId = active.slice(PREVIEW_TILE_PANE_NAMESPACE.length + 1) as RightRailTabId
 
     if (targetFor(tabId) && $rightRailActiveTabId.get() !== tabId) {
       selectRightRailTab(tabId)
@@ -250,7 +249,7 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // shows. Scoping this to `sessions` filtered the pane out of Bot Mode, so
   // `openPreview` ran and the click looked like a no-op.
   key: tab => tab.id,
-  prefix: PREVIEW_TILE_PREFIX,
+  prefix: PREVIEW_TILE_PANE_NAMESPACE,
   // The FIRST preview still opens its own zone docked beside main (identical
   // to route tiles — NOT anchored to the file tree, so ⌘J can't take it
   // along). Every SUBSEQUENT preview stacks into that zone as a center tab:

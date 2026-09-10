@@ -527,6 +527,11 @@ def calendar_create(args):
         event["description"] = args.description
     if args.attendees:
         event["attendees"] = [{"email": e.strip()} for e in args.attendees.split(",") if e.strip()]
+    if args.reminders > 0:
+        event["reminders"] = {
+            "useDefault": False,
+            "overrides": [{"method": "popup", "minutes": args.reminders}],
+        }
 
     if _gws_binary():
         result = _run_gws(
@@ -1111,6 +1116,7 @@ def main():
     p.add_argument("--location", default="")
     p.add_argument("--description", default="")
     p.add_argument("--attendees", default="", help="Comma-separated email addresses")
+    p.add_argument("--reminders", type=int, default=0, help="Popup reminder minutes before start")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_create)
 

@@ -195,8 +195,8 @@ const approval: Handler = ctx => {
   if (!request.replayed) {
     dispatchNativeNotification({
       actions: [
-        { id: 'approve', text: translateNow('notifications.native.approveAction') },
-        { id: 'reject', text: translateNow('notifications.native.rejectAction') }
+        { id: str(p.request_id) ? `approve:${str(p.request_id)}` : 'approve', text: translateNow('notifications.native.approveAction') },
+        { id: str(p.request_id) ? `reject:${str(p.request_id)}` : 'reject', text: translateNow('notifications.native.rejectAction') }
       ],
       body: command || description,
       kind: 'approval',

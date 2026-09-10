@@ -48,12 +48,10 @@ import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
-import { sessionApprovalRequest } from '@/store/prompts'
 import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $anyToolDisclosureOpen, $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
-import { APPROVAL_TOOLS, PendingToolApproval } from './approval'
 import {
   buildToolView,
   clampForDisplay,
@@ -617,7 +615,6 @@ function ToolEntry({ part }: ToolEntryProps) {
           </span>
         </DisclosureRow>
       </div>
-      {isPending && <PendingToolApproval part={part} />}
       {open && (
         <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           {copyAction.text && (
@@ -856,8 +853,6 @@ interface ToolRunState {
   key: string
   live: boolean
   startedAt?: number
-  /** A call still awaiting a result that could be the one blocking on approval. */
-  pendingApprovalTool: boolean
   summary: string
 }
 
@@ -934,9 +929,6 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
                   : Math.min(earliest, tool.timestamp),
             undefined
           ),
-          pendingApprovalTool: timelineTools.some(
-            tool => tool.result === undefined && tool.completedAt === undefined && APPROVAL_TOOLS.has(tool.toolName)
-          ),
           summary: summarizeToolRun(tools, live)
         }
       }
@@ -958,7 +950,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
  *
  * Live, the run is a summary plus the one-line ticker. Settled, the summary is
  * the whole of it until the user opens it. `ToolEmbedContext` is false so each
- * row still owns its own chrome (timer / copy / approval) when shown.
+ * row still owns its own chrome (timer / copy) when shown.
  */
 const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
@@ -967,13 +959,8 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
 }) => {
   const messageRunning = useAuiState(selectMessageRunning)
 
-  const { completedAt, count, entryIds, key, live, pendingApprovalTool, startedAt, summary } = useToolRun(
-    startIndex,
-    endIndex
-  )
+  const { completedAt, count, entryIds, key, live, startedAt, summary } = useToolRun(startIndex, endIndex)
 
-  const sessionId = useStore(useSessionView().$runtimeId)
-  const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   const disclosureId = `tool-run:${key}`
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
   const rowOpen = useStore(useMemo(() => $anyToolDisclosureOpen(entryIds), [entryIds]))
@@ -985,13 +972,8 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
     return <ToolRunDisclosureContext.Provider value={disclosureId}>{children}</ToolRunDisclosureContext.Provider>
   }
 
-  // Two things a one-line window can't hold. An approval is a question the
-  // user has to answer, and expanded output is one they went looking for —
-  // both would tick straight past, or be sliced to a single line, as the run
-  // keeps going. Either one hands the run back its full height until the run
-  // settles and the row can be reached through the summary instead.
-  const blocked = Boolean(approval) && pendingApprovalTool
-  const expanded = blocked || (persistedOpen ?? rowOpen)
+  // Expanded output stays reachable instead of ticking past in a one-line run.
+  const expanded = persistedOpen ?? rowOpen
 
   return (
     <ToolRunDisclosureContext.Provider value={disclosureId}>
@@ -1004,7 +986,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
         <ToolRunHeader
           completedAt={completedAt}
           live={live}
-          onToggle={blocked ? undefined : () => setToolDisclosureOpen(disclosureId, !expanded)}
+          onToggle={() => setToolDisclosureOpen(disclosureId, !expanded)}
           open={expanded}
           startedAt={startedAt}
           summary={summary}

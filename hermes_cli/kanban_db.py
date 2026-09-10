@@ -3321,16 +3321,34 @@ def block_task(
                 return False
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, title, idempotency_key FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
-        new_status, event_kind, set_sql, params, payload = _route_block(
-            kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
-            prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
-            pending_dependency=not _parents_satisfied(conn, task_id),
-        )
+        from hermes_cli.kanban_db_recovery import _is_machine_recoverable_pr_feedback_triage
+
+        if kind == "needs_input" and _is_machine_recoverable_pr_feedback_triage(
+            title=_row_get(cur_row, "title"),
+            idempotency_key=_row_get(cur_row, "idempotency_key"),
+            block_kind=kind,
+        ):
+            # Legacy github-pr-feedback intake used ``needs_input`` for "start
+            # validation", which is now role-owned work a machine assignee can
+            # retry immediately — never park it in the human-only block/triage
+            # lanes (see ``recompute_ready``'s auto_triage recovery for the
+            # already-stuck-in-triage counterpart of this same rule).
+            new_status, event_kind, set_sql, params, payload = (
+                "ready", "machine_handoff", "block_kind = NULL, block_recurrences = 0", (),
+                {"reason": reason, "kind": kind, "source_status": source_status},
+            )
+        else:
+            new_status, event_kind, set_sql, params, payload = _route_block(
+                kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
+                prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+                pending_dependency=not _parents_satisfied(conn, task_id),
+            )
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',

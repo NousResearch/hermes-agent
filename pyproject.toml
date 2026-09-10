@@ -154,6 +154,9 @@ dependencies = [
   # supplies the URI and async result types projected when the checker runs.
   "winrt-windows-applicationmodel>=3.2.1,<4; sys_platform == 'win32'",
   "winrt-windows-foundation>=3.2.1,<4; sys_platform == 'win32'",
+  # Store update queries and request results project collection interfaces.
+  "winrt-windows-foundation-collections>=3.2.1,<4; sys_platform == 'win32'",
+  "winrt-windows-services-store>=3.2.1,<4; sys_platform == 'win32'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
   # (>5 MB or >8000px) at embed time; without it the byte AND pixel-dimension
   # shrink paths no-op, so an oversized image bakes into immutable history and

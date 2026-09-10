@@ -26,14 +26,17 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
   const source =
     version.source === 'ci' ? 'CI' : version.source ? version.source[0].toUpperCase() + version.source.slice(1) : null
 
+  // The stamp distinguishes Store builds from sideloaded MSIX builds.
   const distribution =
     version.distribution === 'nix'
       ? 'Nix'
       : version.distribution === 'docker'
         ? 'Docker'
-        : version.distribution === 'desktop-app'
-          ? u.versionDetailsDistributionDesktop
-          : null
+        : version.updateMechanism === 'microsoft-store'
+          ? u.versionDetailsDistributionStore
+          : version.distribution === 'desktop-app'
+            ? u.versionDetailsDistributionDesktop
+            : null
 
   const runtime =
     version.hermesRuntime?.type === 'embedded'
@@ -60,6 +63,7 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
             <ExternalLink
               className="break-all font-mono text-xs"
               href={`https://github.com/NousResearch/hermes-agent/commit/${version.commit}`}
+              native
             >
               {version.commit.slice(0, 14)}
             </ExternalLink>

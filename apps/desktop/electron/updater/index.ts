@@ -3,8 +3,8 @@
 // Every install shape updates through a different owner:
 //   app-installer   out-of-store MSIX on win32 — the OS App Installer owns
 //                   the apply (the .appinstaller feed registered at install).
-//   external        Microsoft Store / steward-owned deployments — no in-app
-//                   updater at all.
+//   microsoft-store StoreContext checks and requests the package update.
+//   external        Steward-owned deployments with no in-app updater.
 //   windows-handoff git checkout on win32 — detached updater binary or the
 //                   repo hand-off script owns the swap.
 //   posix-handoff   git checkout on macOS/Linux — the repo posix hand-off
@@ -21,6 +21,7 @@ export type UpdaterMechanism =
   | 'app-installer'
   | 'electron-updater'
   | 'external'
+  | 'microsoft-store'
   | 'windows-handoff'
   | 'posix-handoff'
   | 'manual'

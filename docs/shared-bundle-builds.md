@@ -25,7 +25,7 @@ publishing their relative paths in the payload manifest. The desktop build
 bakes this launch contract into its stamp. Electron uses the declared paths
 without payload probes, adoption, or repair. Non-bundled builds carry no
 placeholder payload. The stamp also declares the update mechanism. Store
-packages use `external`, and sideload bundles use `app-installer`. The runtime
+packages use `microsoft-store`, and sideload bundles use `app-installer`. The runtime
 has no separate Store probe or compatibility fallback.
 The MSIX hook reads the declared launcher names
 rather than carrying a second entrypoint list. POSIX launchers follow

@@ -42,7 +42,7 @@ export interface InstallStamp {
   /** The steward of a sealed tree ('desktop-app' | 'docker' | 'nix'), when packaged. */
   distribution: string | null
   /** Who applies the next update. Required in every stamp. */
-  updateMechanism: 'self' | 'app-installer' | 'electron-updater' | 'external'
+  updateMechanism: 'self' | 'app-installer' | 'electron-updater' | 'external' | 'microsoft-store'
   baseVersion: string | null
   displayVersion: string | null
   distance: number | null

@@ -434,9 +434,9 @@ function ApplyingView({
   const { t } = useI18n()
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
-  const isAppInstaller = statusMechanism === 'app-installer'
+  const isWindowsPackage = statusMechanism === 'app-installer' || statusMechanism === 'microsoft-store'
 
-  const body = isAppInstaller
+  const body = isWindowsPackage
     ? u.applyingBodyAppInstaller
     : isBackend
       ? u.applyingBodyBackend

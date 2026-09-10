@@ -56,8 +56,8 @@ describe('resolveUpdateCopy', () => {
     expect(r.body).toBe(copy.availableBody)
   })
 
-  it('app-installer mechanism uses the Windows-finishes-it body, not commit vocabulary', () => {
-    const r = resolveUpdateCopy({ target: 'client', shownItems: 5, mechanism: 'app-installer', copy })
+  it.each(['app-installer', 'microsoft-store'] as const)('%s uses Windows update copy without commit vocabulary', mechanism => {
+    const r = resolveUpdateCopy({ target: 'client', shownItems: 5, mechanism, copy })
     expect(r.body).toBe(copy.availableBodyAppInstaller)
   })
 

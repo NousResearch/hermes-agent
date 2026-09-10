@@ -218,12 +218,9 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, t
     return
   }
 
-  // Eligibility is mechanism-specific: a git-style check proves an update is
-  // waiting by naming the target commit (targetSha). An App Installer check
-  // legitimately has no commit identity — the OS reports availability against
-  // the .appinstaller feed — so its eligibility signal is updateAvailable
-  // itself. Never fabricate a SHA to satisfy the key.
-  const hasTargetIdentity = Boolean(status.targetSha) || status.mechanism === 'app-installer'
+  // The package update owner reports availability without a commit SHA.
+  // Git checks must still identify their target commit.
+  const hasTargetIdentity = Boolean(status.targetSha) || status.mechanism === 'app-installer' || status.mechanism === 'microsoft-store'
 
   if (!hasTargetIdentity) {
     return
@@ -535,6 +532,8 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         // rather than stranding them on an un-closeable spinner.
         setUpdateOverlayOpen(false)
         resetUpdateApplyState()
+
+        if (result.updateAvailable === false) { return result }
         notify({
           durationMs: 8000,
           id: UPDATE_TOAST_ID,

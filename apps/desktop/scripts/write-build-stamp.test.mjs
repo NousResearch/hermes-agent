@@ -131,10 +131,10 @@ test('buildStampPayload with bundled variant declares the App Installer owner', 
   assert.equal(payload.tag, 'v0.27.1-canary.20260901072553')
 })
 
-test('macOS bundles and Light declare app-owned updates, never Store builds', () => {
+test('macOS bundles and Light declare app-owned updates; the win32 store variant is Store owned', () => {
   for (const variant of ['bundled', 'light', 'store']) {
     const stamp = buildStampPayload(baseStamp, { HERMES_DESKTOP_VARIANT: variant }, 'darwin', { runtime })
-    assert.equal(stamp.updateMechanism, variant === 'store' ? 'external' : 'electron-updater')
+    assert.equal(stamp.updateMechanism, variant === 'store' ? 'microsoft-store' : 'electron-updater')
   }
 })
 

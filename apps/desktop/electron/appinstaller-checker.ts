@@ -17,6 +17,9 @@ export const APPINSTALLER_CHECK_TIMEOUT_MS = 20_000
 export interface AppInstallerCheckerDeps {
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
+  args?: readonly string[]
+  /** Mutating helpers must exit before their caller can restore the backend. */
+  waitForExit?: boolean
   /** Diagnostic sink for checker stderr; never breaks the result. */
   onStderr?: (text: string) => void
   execFileImpl?: ExecFileImpl
@@ -69,14 +72,14 @@ export function runAppInstallerChecker(
       resolve(result)
     }
 
-    // The resolve deadline is independent of the callback below: if the
-    // killed child never emits 'close', this still fires at the deadline.
-    const deadline = setTimeout(() => finish(deadlineResult()), timeoutMs)
+    // Reads can return unknown at the deadline. Store mutations must wait for
+    // execFile's close callback after its timeout kill before recovery starts.
+    const deadline = deps.waitForExit ? undefined : setTimeout(() => finish(deadlineResult()), timeoutMs)
 
     try {
       exec(
         python,
-        [script],
+        [script, ...deps.args ?? []],
         { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, env: deps.env },
         (error, stdout, stderr) => {
           if (stderr) {

@@ -419,6 +419,7 @@ import { ExternalStrategy } from './updater/external'
 import { createMacStrategy } from './updater/mac-client'
 import { consumePendingRelaunch, registerUpdateRelaunch } from './updater/relaunch'
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
+import { createStoreStrategy } from './updater/store-client'
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
@@ -3026,10 +3027,7 @@ async function resolveHealedBranch(updateRoot, branch) {
 }
 
 async function checkUpdates() {
-  // A bundled install has no checkout to pull — resolve the updater
-  // mechanism once and delegate. Out-of-store MSIX asks the OS whether a
-  // newer package is on the registered .appinstaller source; Store installs
-  // report unsupported (the steward owns their update loop).
+  // A packaged install delegates to the update owner named by its stamp.
   let strategy: UpdaterStrategy | null = null
 
   try {
@@ -3210,6 +3208,33 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
               )
             })
         })
+    })
+
+    return packagedUpdateStrategy
+  }
+
+  if (mechanism === 'microsoft-store') {
+    const payload = bundledPayload(process.resourcesPath)!
+    packagedUpdateStrategy = createStoreStrategy({
+      python: payload.storePython,
+      script: path.join(payload.repoDir, 'apps', 'desktop', 'scripts', 'check-store-update.py'),
+      sitePackages: payload.sitePackages,
+      env: process.env,
+      windowHandle: () => (BrowserWindow.getFocusedWindow() ?? mainWindow)?.getNativeWindowHandle() ?? null,
+      appVersion: app.getVersion(),
+      teardown: teardownBundledBackend,
+      restore: restoreBundledBackend,
+      emitProgress: emitUpdateProgress,
+      quit: () => app.quit(),
+      registerPendingRelaunch: fromVersion => registerUpdateRelaunch(HERMES_HOME, fromVersion, {
+        relaunch: () => startRelaunchWaiter({
+          processId: process.pid,
+          processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
+          identityName: PRODUCT_IDENTITY.storeMsix!.identityName,
+          scriptPath: path.join(payload.repoDir, 'apps', 'desktop', 'scripts', 'update-relaunch-waiter.ps1'),
+          timeoutSeconds: 1860
+        })
+      })
     })
 
     return packagedUpdateStrategy
@@ -17352,6 +17377,7 @@ function resolveHermesVersionInfo(version: string) {
       branch: stamp.branch,
       source: stamp.source ?? undefined,
       distribution: stamp.distribution ?? undefined,
+      updateMechanism: stamp.updateMechanism,
       dirty: stamp.dirty
     }
   }

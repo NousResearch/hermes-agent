@@ -85,6 +85,29 @@ describe('runAppInstallerChecker', () => {
     expect(calls[0].options.timeout).toBe(50)
   })
 
+  it('waits for confirmed child exit when the helper can install an update', async () => {
+    vi.useFakeTimers()
+
+    try {
+      let callback: Callback | undefined
+      const { impl } = stubExecFile(call => { callback = call.callback })
+      let settled = false
+
+      const pending = runAppInstallerChecker('python.exe', 'store.py', {
+        execFileImpl: impl, timeoutMs: 50, waitForExit: true
+      }).then(result => { settled = true;
+
+ return result })
+
+      await vi.advanceTimersByTimeAsync(100)
+      expect(settled).toBe(false)
+      callback!(Object.assign(new Error('killed'), { killed: true }), '', '')
+      expect((await pending).code).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('an interpreter that cannot spawn resolves unknown, never "no update"', async () => {
     const { impl } = stubExecFile(call => call.callback(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }), '', ''))
 
@@ -116,6 +139,13 @@ describe('runAppInstallerChecker', () => {
 
     expect(result.code).toBe(1)
     expect(JSON.parse(result.stdout)).toEqual({ available: null, error: 'bad arguments' })
+  })
+
+  it('forwards the requested Store mode and window handle without a shell', async () => {
+    const { impl, calls } = stubExecFile(call => call.callback(null, '{"ok":true}', ''))
+    const args = ['--mode', 'install', '--hwnd', '1311768467139281697']
+    await runAppInstallerChecker('packaged-python.exe', 'store.py', { execFileImpl: impl, args })
+    expect(calls[0].args).toEqual(['store.py', ...args])
   })
 
   it('passes the caller env through (PYTHONPATH for the payload site-packages)', async () => {

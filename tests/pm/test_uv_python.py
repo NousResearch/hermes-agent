@@ -126,3 +126,121 @@ def test_uv_refuses_discovery_when_pm_python_is_missing(installed_uv, monkeypatc
         ensure.uv()
     assert facts.path.read_bytes() == recorded
     assert not list(entry.iterdir())
+
+
+@pytest.mark.platforms("windows")
+def test_bundled_uv_uses_a_verified_writable_python_without_changing_runtime(installed_uv, monkeypatch):
+    import pm.paths as paths
+    import pm.registry as registry
+    from pm.store import Store, tree_digest
+
+    root, uv_binary, facts, target, digest = installed_uv
+    ensure = importlib.import_module("pm.ensure")
+    shipped = uv_binary.parent.parent
+    writable = root / "writable-tools"
+    monkeypatch.setattr(paths, "writable_store_root", lambda: writable)
+    (shipped.parent / "manifest.json").write_text("{}", encoding="utf-8")
+
+    class FixturePython(Python):
+        def verify(self, entry, target):
+            return "" if self.binary(entry, target).read_bytes() == b"pinned interpreter" else "damaged Python"
+
+    class FixtureUv(Uv):
+        emulated_arch_targets = {target}
+
+    monkeypatch.setitem(registry._packages, "uv", FixtureUv())
+    facts.record("uv", "test", uv_binary.parent.name, {}, shipped,
+                 target=target, artifacts=[digest], digest=tree_digest(uv_binary.parent))
+    python = FixturePython()
+    monkeypatch.setitem(registry._packages, "python", python)
+    entry = shipped / python.store_entry("test", target)
+    entry.mkdir()
+    binary = entry / "python.exe"
+    binary.write_bytes(b"pinned interpreter")
+    (entry / "python.dll").write_bytes(b"pinned runtime")
+    facts.record("python", "test", entry.name, python.env(entry, target), shipped,
+                 target=target, artifacts=[digest], digest=tree_digest(entry))
+    before = facts.path.read_bytes()
+    shipped_digest = tree_digest(entry)
+    monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: False)
+
+    def no_download(*args, **kwargs):
+        raise AssertionError("the verified Python must be copied without downloading")
+
+    monkeypatch.setattr(Store, "fetch_many", no_download)
+    assert ensure.uv(realize=False)[0] is None
+    assert not writable.exists()
+    with pytest.raises(InstallError, match="lazy installs are disabled"):
+        ensure.uv()
+    assert not writable.exists()
+
+    resolved_uv, env = ensure.uv(explicit=True)
+    copied = writable / entry.name
+    assert resolved_uv == str(uv_binary)
+    assert env["UV_PYTHON"] == str(copied / "python.exe")
+    assert tree_digest(copied) == shipped_digest
+    copied_fact = Facts(writable / "facts.json").get("python")
+    assert copied_fact["digest"] == shipped_digest
+    assert copied_fact["artifacts"] == [digest]
+    assert copied_fact["target"] == target
+    assert ensure.installed_package("python").binary == binary
+    assert str(copied) not in ensure.env_for("python")["PATH"]
+
+    def no_copy(*args, **kwargs):
+        raise AssertionError("a matching copy must be reused")
+
+    with monkeypatch.context() as reuse:
+        reuse.setattr(shutil, "copytree", no_copy)
+        assert ensure.uv(realize=False)[1]["UV_PYTHON"] == env["UV_PYTHON"]
+        assert ensure.uv()[1]["UV_PYTHON"] == env["UV_PYTHON"]
+
+    assert facts.path.read_bytes() == before
+    assert tree_digest(entry) == shipped_digest
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("damage", ["source", "copy", "publication"])
+def test_copy_failure_preserves_previous_python(installed_uv, monkeypatch, damage):
+    import pm.registry as registry
+    from pm.store import Store, tree_digest
+
+    root, _, facts, target, digest = installed_uv
+    ensure = importlib.import_module("pm.ensure")
+    shipped = facts.path.parent
+    writable = root / "writable-tools"
+    writable.mkdir()
+    python = Python()
+    monkeypatch.setattr(python, "verify", lambda *_: "")
+    monkeypatch.setitem(registry._packages, "python", python)
+    entry_name = python.store_entry("test", target)
+    source = shipped / entry_name
+    source.mkdir()
+    (source / "python.exe").write_bytes(b"new interpreter")
+    facts.record("python", "test", entry_name, {}, shipped,
+                 target=target, artifacts=[digest], digest=tree_digest(source))
+    previous = writable / entry_name
+    previous.mkdir()
+    (previous / "python.exe").write_bytes(b"previous interpreter")
+    previous_facts = Facts(writable / "facts.json")
+    previous_facts.record("python", "previous", entry_name, {}, writable,
+                          target=target, artifacts=[digest], digest=tree_digest(previous))
+    before = previous_facts.path.read_bytes()
+    copytree = shutil.copytree
+
+    if damage == "source":
+        (source / "python.exe").write_bytes(b"damaged source")
+    elif damage == "copy":
+        def damaged_copy(src, dest, **kwargs):
+            copytree(src, dest, **kwargs)
+            (dest / "python.exe").write_bytes(b"damaged copy")
+        monkeypatch.setattr(shutil, "copytree", damaged_copy)
+    else:
+        def failed_publication(*args, **kwargs):
+            raise OSError("publication refused")
+        monkeypatch.setattr(Store, "publish", failed_publication)
+
+    with pytest.raises(InstallError, match="verification|copied bytes|publication refused"):
+        ensure._install(python, ensure._lockfile(), previous_facts, Store(writable), target,
+                        copy_from=(facts, Store(shipped)))
+    assert (previous / "python.exe").read_bytes() == b"previous interpreter"
+    assert previous_facts.path.read_bytes() == before

@@ -21,7 +21,7 @@ describe('build stamp → update ownership', () => {
 
   it.each([
     ['win32', 'bundled', 'app-installer', 'app-installer'],
-    ['win32', 'store', 'external', 'external'],
+    ['win32', 'store', 'microsoft-store', 'microsoft-store'],
     ['win32', 'light', 'external', 'external'],
     ['darwin', 'bundled', 'electron-updater', 'electron-updater'],
     ['darwin', 'light', 'electron-updater', 'electron-updater'],

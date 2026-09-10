@@ -3164,6 +3164,7 @@ export const zh: Translations = {
     versionDetailsBuildOrigin: '构建来源',
     versionDetailsDistribution: '发行版',
     versionDetailsDistributionDesktop: '桌面应用 (MSIX)',
+    versionDetailsDistributionStore: 'Microsoft Store',
     versionDetailsRuntime: '运行时',
     versionDetailsRuntimeEmbedded: '嵌入式（捆绑）',
     versionDetailsRuntimeExternal: '外部',

@@ -134,7 +134,7 @@ def default_channel(project_root: Optional[Path] = None) -> str:
     """
     root = Path(project_root) if project_root is not None else _default_root()
     stamp = _read_stamp(root)
-    if stamp.get("updateMechanism") not in ("electron-updater", "app-installer"):
+    if stamp.get("updateMechanism") not in ("electron-updater", "app-installer", "microsoft-store"):
         return CHANNEL_MAIN
     return CHANNEL_CANARY if is_canary_tag(stamp.get("tag")) else CHANNEL_STABLE
 
@@ -160,7 +160,7 @@ def resolve_update_channel(
 
     if channel == CHANNEL_CANARY:
         root = Path(project_root) if project_root is not None else _default_root()
-        if _read_stamp(root).get("updateMechanism") not in ("electron-updater", "app-installer"):
+        if _read_stamp(root).get("updateMechanism") not in ("electron-updater", "app-installer", "microsoft-store"):
             # canary→main normalization for source installs.
             return CHANNEL_MAIN
     return channel
@@ -180,8 +180,8 @@ def set_install_channel(
 ) -> str:
     """Persist ``channel`` for THIS install in config.yaml. Returns the id.
 
-    Refuses on ``external`` and ``app-installer`` mechanisms: their update
-    source belongs to the OS or package owner, not this configuration.
+    Refuses when the update source belongs to the OS or package owner,
+    including Microsoft Store, rather than this configuration.
     Raises ``ValueError`` for an invalid channel or an OS-owned install.
     """
     channel = (channel or "").strip().lower()
@@ -192,7 +192,7 @@ def set_install_channel(
 
     root = Path(project_root) if project_root is not None else _default_root()
     stamp = _read_stamp(root)
-    if stamp.get("updateMechanism") in ("external", "app-installer"):
+    if stamp.get("updateMechanism") in ("external", "app-installer", "microsoft-store"):
         distribution = stamp.get("distribution") or "an external steward"
         raise ValueError(
             f"channels don't apply here; updates are owned by {distribution}"

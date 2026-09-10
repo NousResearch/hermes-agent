@@ -211,6 +211,14 @@ describe('maybeNotifyUpdateAvailable', () => {
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 
+  it('notifies for a Store update without a commit and never for an unknown check', () => {
+    maybeNotifyUpdateAvailable(status({ mechanism: 'microsoft-store', targetSha: undefined, behind: null, updateAvailable: true }))
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    notifySpy.mockClear()
+    maybeNotifyUpdateAvailable(status({ mechanism: 'microsoft-store', targetSha: undefined, behind: null, updateAvailable: false, error: 'Store unavailable' }))
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
   it('does nothing when already up to date', () => {
     maybeNotifyUpdateAvailable(status({ behind: 0 }))
     expect(notifySpy).not.toHaveBeenCalled()
@@ -885,6 +893,14 @@ describe('applyUpdates terminal state', () => {
     // The detached relauncher will quit + reopen us; keep "applying" until then.
     expect($updateApply.get().applying).toBe(true)
     expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('does not claim an installation when the Store reports no remaining update', async () => {
+    applyMock.mockResolvedValue({ ok: true, updateAvailable: false })
+    await applyUpdates()
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateOverlayOpen.get()).toBe(false)
     expect(notifySpy).not.toHaveBeenCalled()
   })
 

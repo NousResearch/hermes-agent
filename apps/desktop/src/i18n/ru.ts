@@ -2891,6 +2891,7 @@ export const ru = defineLocale({
     unsupportedMessage: 'Эта версия Hermes не может обновлять себя из приложения.',
     connectionRetry: 'Проверьте соединение и попробуйте снова.',
     latestBody: 'У вас последняя версия.',
+    versionDetailsDistributionStore: 'Microsoft Store',
     latestBodyBackend: 'Бэкенд работает на последней версии.',
     allSetTitle: 'Всё готово',
     availableTitle: 'Доступно новое обновление',

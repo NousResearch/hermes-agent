@@ -185,7 +185,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   const updateMechanism = {
     '': 'self',
     bootstrap: 'self',
-    store: 'external',
+    store: 'microsoft-store',
     bundled: { win32: 'app-installer', darwin: 'electron-updater' }[platform] || 'external',
     light: platform === 'darwin' ? 'electron-updater' : 'external'
   }[variant]

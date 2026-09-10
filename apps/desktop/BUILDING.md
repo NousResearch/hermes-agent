@@ -188,11 +188,25 @@ update. Apply downloads the descriptor before teardown, then opens the local
 The app registers a detached relaunch waiter before handoff.
 
 The build stamp declares `updateMechanism`: `app-installer` for sideload bundles,
-`external` for Store builds, `electron-updater` for macOS packages, and `self`
-for source-built apps. The runtime does not infer Store ownership from Electron
-flags or carry a second Store boolean. Windows Light declares `external` because
-it has no bundled Python checker. Its OS-registered App Installer source still
-owns automatic updates.
+`microsoft-store` for Store builds, `electron-updater` for macOS packages, and
+`self` for source-built apps. Settings shows Microsoft Store for a Store build.
+The runtime does not infer Store ownership from Electron flags or carry a
+second Store boolean. Windows Light declares `external` because it has no
+bundled Python checker. Its OS-registered App Installer source still owns
+automatic updates.
+
+Store builds use `Windows.Services.Store.StoreContext` to check, download,
+and request installation inside Hermes. The native consent UI attaches to the
+current desktop window. Download finishes before backend shutdown; the existing
+relaunch waiter is registered before the install request. Unknown checks,
+cancellation and request failures do not count as successful updates. Native
+acceptance requires a Store-acquired package or flight, not a sideloaded MSIX.
+
+On Windows bundles, PM copies the verified pinned base Python to its writable
+store for uv builds. The app and execution aliases retain their signed bundled
+launchers and bundled Python, which load the selected dependency generation.
+The new venv's generated console scripts must not replace those launchers:
+out-of-package Python cannot launch the packaged tools.
 
 Sideload stable versions are `X.Y.Z.0`. Canary revisions derive from elapsed
 minutes after the stable baseline. The release script rejects ambiguous or

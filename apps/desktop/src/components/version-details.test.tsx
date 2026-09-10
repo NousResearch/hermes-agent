@@ -1,10 +1,36 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopVersionInfo } from '@/global'
 import { I18nProvider } from '@/i18n'
+import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import { VersionDetails } from './version-details'
+
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
+
+function installDesktopBridge() {
+  const openExternal = vi.fn().mockResolvedValue(undefined)
+
+  desktopWindow.hermesDesktop = {
+    openExternal
+  } as unknown as Window['hermesDesktop']
+
+  return openExternal
+}
+
+afterEach(() => {
+  cleanup()
+  closeRightRail()
+  vi.restoreAllMocks()
+
+  if (initialHermesDesktop) {
+    desktopWindow.hermesDesktop = initialHermesDesktop
+  } else {
+    delete desktopWindow.hermesDesktop
+  }
+})
 
 const baseVersion: DesktopVersionInfo = {
   appVersion: '0.19.0',
@@ -13,8 +39,6 @@ const baseVersion: DesktopVersionInfo = {
   nodeVersion: '22.0.0',
   platform: 'linux'
 }
-
-afterEach(cleanup)
 
 describe('VersionDetails', () => {
   it('omits the branch suffix when no branch is present', () => {
@@ -105,5 +129,24 @@ describe('VersionDetails', () => {
 
     expect(screen.getByText('Runtime')).toBeTruthy()
     expect(screen.getByText('External (uses the machine runtime)')).toBeTruthy()
+  })
+
+  it('opens the commit URL via the system-browser bridge without opening a preview tab', async () => {
+    const openExternal = installDesktopBridge()
+
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <VersionDetails version={{ ...baseVersion, commit: 'd233b6d7a9c5b79288e48dfb3b29e2ead106ac73' }} />
+      </I18nProvider>
+    )
+
+    fireEvent.click(screen.getByText('d233b6d7a9c5b7'))
+
+    await waitFor(() => {
+      expect(openExternal).toHaveBeenCalledWith(
+        'https://github.com/NousResearch/hermes-agent/commit/d233b6d7a9c5b79288e48dfb3b29e2ead106ac73'
+      )
+    })
+    expect($previewTabs.get()).toHaveLength(0)
   })
 })

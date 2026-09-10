@@ -3009,6 +3009,7 @@ export const en: Translations = {
     versionDetailsBuildOrigin: 'Build Origin',
     versionDetailsDistribution: 'Distribution',
     versionDetailsDistributionDesktop: 'Desktop app (MSIX)',
+    versionDetailsDistributionStore: 'Microsoft Store',
     versionDetailsRuntime: 'Runtime',
     versionDetailsRuntimeEmbedded: 'Embedded runtime',
     versionDetailsRuntimeExternal: 'External (uses the machine runtime)',

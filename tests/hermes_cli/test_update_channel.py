@@ -98,7 +98,7 @@ class TestResolve:
         assert resolve_update_channel({}, source) == CHANNEL_MAIN
         assert resolve_update_channel({}, bundle) == CHANNEL_STABLE
 
-    @pytest.mark.parametrize("mechanism", ["electron-updater", "app-installer"])
+    @pytest.mark.parametrize("mechanism", ["electron-updater", "app-installer", "microsoft-store"])
     def test_canary_artifact_defaults_to_its_own_feed(self, tmp_path, mechanism):
         """A canary bundle with no per-install record tracks canary.
 
@@ -226,7 +226,7 @@ class TestSetChannel:
         assert written["model"] == {"provider": "nous"}
         assert written["update"]["installs"][install_id(root)]["channel"] == "stable"
 
-    @pytest.mark.parametrize("mechanism", ["external", "app-installer"])
+    @pytest.mark.parametrize("mechanism", ["external", "app-installer", "microsoft-store"])
     def test_os_owned_mechanism_refuses_channel_writes(self, tmp_path, monkeypatch, mechanism):
         self._home(tmp_path, monkeypatch)
         root = tmp_path / "os-owned-tree"

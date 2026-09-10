@@ -40,7 +40,7 @@ export interface ResolveUpdateCopyInput {
    * 'app-installer': the OS App Installer owns the apply (out-of-store MSIX)
    * — the body names Windows as the finisher, never commit vocabulary.
    */
-  mechanism?: 'app-installer' | 'electron-updater' | 'external' | 'windows-handoff' | 'posix-handoff' | 'manual'
+  mechanism?: 'app-installer' | 'electron-updater' | 'external' | 'microsoft-store' | 'windows-handoff' | 'posix-handoff' | 'manual'
   copy: UpdateCopyStrings
 }
 
@@ -62,7 +62,7 @@ export function resolveUpdateCopy({
   // App-installer: the OS owns the apply, and there is no commit list by
   // construction (the OS checker answers yes/no). Name Windows as the
   // finisher; the tag is named when known.
-  if (mechanism === 'app-installer') {
+  if (mechanism === 'app-installer' || mechanism === 'microsoft-store') {
     return { title, body: latestTag ? copy.availableBodyRelease(latestTag) : copy.availableBodyAppInstaller }
   }
 

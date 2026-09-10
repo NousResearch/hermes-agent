@@ -46,11 +46,12 @@ def _store() -> Store:
 
 
 def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
-                        verify: bool = False, allow_outdated: bool = False):
+                        verify: bool = False, allow_outdated: bool = False,
+                        roots: tuple[Path, ...] | None = None):
     """Prefer the current pin. An explicit read may retain a prior PM install."""
-    roots = dict.fromkeys([paths.store_root(), paths.writable_store_root()])
+    search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root()))
     fallback = None
-    for root in roots:
+    for root in search_roots:
         store = Store(root)
         facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
         fact = facts.get(package.name)
@@ -216,6 +217,8 @@ def _install(
     progress=None,
     pause_event: threading.Event | None = None,
     download_progress: ProgressFn | None = None,
+    *,
+    copy_from: tuple[Facts, Store] | None = None,
 ) -> None:
     version = lockfile.version(package.name)
     if version is None:
@@ -267,24 +270,35 @@ def _install(
                     if download_progress is not None:
                         download_progress(done, total, ranges)
 
-                archives = store.fetch_many(artifacts, scratch, progress=tick, pause_event=pause_event)
-                for index, archive in enumerate(archives):
-                    if pause_event is not None and pause_event.is_set():
-                        raise DownloadPaused("install paused")
-                    label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
-                    if progress is not None:
-                        progress("unpack", 0, 0, label)
-                    if index == 0:
-                        package.unpack(archive, staged, target)
-                        continue
-                    # unpack() empties its destination; merge additional
-                    # archives only after extracting them separately.
-                    extra = scratch / f"extra-{index}"
-                    package.unpack(archive, extra, target)
-                    merge_tree(extra, staged)
+                if copy_from is not None:
+                    source_facts, source_store = copy_from
+                    source = source_facts.get(package.name)
+                    if (not source_facts.installed(package.name, version, source_store.root,
+                                                   _identity(lockfile, package.name, target))
+                            or not _entry_verified(package, source, source_store, target)):
+                        raise InstallError(package.name, "bundled copy source failed verification")
+                    shutil.copytree(source_store.entry(source["entry"]), staged, symlinks=True)
+                    if tree_digest(staged) != source["digest"]:
+                        raise InstallError(package.name, "copied bytes do not match the bundled source")
+                else:
+                    archives = store.fetch_many(artifacts, scratch, progress=tick, pause_event=pause_event)
+                    for index, archive in enumerate(archives):
+                        if pause_event is not None and pause_event.is_set():
+                            raise DownloadPaused("install paused")
+                        label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
+                        if progress is not None:
+                            progress("unpack", 0, 0, label)
+                        if index == 0:
+                            package.unpack(archive, staged, target)
+                            continue
+                        # unpack() empties its destination; merge additional
+                        # archives only after extracting them separately.
+                        extra = scratch / f"extra-{index}"
+                        package.unpack(archive, extra, target)
+                        merge_tree(extra, staged)
+                    package.stage(store, staged, version, target)
                 if pause_event is not None and pause_event.is_set():
                     raise DownloadPaused("install paused")
-                package.stage(store, staged, version, target)
                 if progress is not None:
                     progress("verify", 0, 0, "")
                 reason = package.verify(staged, target)
@@ -784,6 +798,22 @@ def uv(command: str = "uv", *, venv=None, realize: bool = True, explicit: bool =
         location = _installed_location(package, lockfile, target)
         if location is None:
             return None, env
+        if name == "python" and target.startswith("win32") and sealed():
+            # uv creates redirectors outside the MSIX. Their Python must also
+            # live outside it; the app keeps its original packaged interpreter.
+            writable = paths.writable_store_root()
+            if location[1].root != writable:
+                copied = _installed_location(package, lockfile, target, verify=explicit, roots=(writable,))
+                if copied is None:
+                    if not realize:
+                        return None, env
+                    if not explicit and not lazy_installs_allowed():
+                        raise _refuse_lazy(name, "a writable Python is required for bundled uv builds")
+                    copy_store = Store(writable)
+                    copy_facts = Facts(writable / "facts.json")
+                    _install(package, lockfile, copy_facts, copy_store, target, copy_from=location)
+                    copied = copy_facts, copy_store
+                location = copied
         facts, store = location
         binary = package.binary(store.entry(facts.get(name)["entry"]), target)
         if name == "uv" and binary is not None:

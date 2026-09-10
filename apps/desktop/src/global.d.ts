@@ -648,6 +648,10 @@ export interface DesktopVersionInfo {
   dirty?: boolean
   source?: 'build' | 'ci' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown'
   distribution?: 'desktop-app' | 'docker' | 'nix'
+  /** Who applies the next update (from the stamp). Names the Store on a
+   *  Store-identity build — the Settings label keys off this, never
+   *  process.windowsStore (which also matches sideloaded MSIX). */
+  updateMechanism?: 'self' | 'app-installer' | 'electron-updater' | 'external' | 'microsoft-store'
   /** sha16 of the canonical install-root path — the per-install channel key and
    *  the shape `hermes update --install-id` prints. */
   installId?: string
@@ -715,6 +719,7 @@ export type UpdaterMechanismClient =
   | 'app-installer'
   | 'electron-updater'
   | 'external'
+  | 'microsoft-store'
   | 'windows-handoff'
   | 'posix-handoff'
   | 'manual'
@@ -768,6 +773,8 @@ export interface DesktopUpdateApplyOptions {
 
 export interface DesktopUpdateApplyResult {
   ok: boolean
+  /** False when the apply-time check found nothing to install. */
+  updateAvailable?: boolean
   branch?: string
   error?: string
   message?: string

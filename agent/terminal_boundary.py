@@ -18,8 +18,9 @@ def enforce_public_terminal_response(result: dict[str, Any], *, platform: str = 
         return result
 
     request = {
-        "protocol_version": "hermes-core-control/v1",
+        "protocol_version": "core-control/agent/v1",
         "request_id": uuid.uuid4().hex,
+        "agent_id": "hermes",
         "source": "hermes",
         "platform": platform,
         "turn_result": result,

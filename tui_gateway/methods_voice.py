@@ -5,6 +5,9 @@ per process). Bodies are rebound onto server.py's globals (method_ctx.bind_modul
 from __future__ import annotations
 
 import contextlib
+import os
+import subprocess
+import sys
 import threading
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -773,6 +776,226 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5026, "voice module not available" if isinstance(e, ImportError) else str(e))
     threading.Thread(target=_speak_text_with_barge, args=(text,), daemon=True).start()
     return _ok(rid, {"status": "speaking"})
+
+
+# ── Apple-native read-aloud (`speak.*`): macOS Speak Selection (Option+Esc)
+# reads AXSelectedText, which fullscreen terminal apps never expose, so the
+# TUI speaks via /usr/bin/say (same Apple voices, no provider keys) instead
+# of the provider-keyed `voice.tts` path above. One utterance per process;
+# a new call barges the previous one. macOS-only by design.
+
+_SAY_MAX_CHARS = 5000
+
+_say_lock = threading.Lock()
+_say_proc = None  # Optional[subprocess.Popen] for the current utterance.
+
+
+def _say_resolve_text(arg: str, messages: list) -> str:
+    """Pick speakable text: '' → last assistant message; 'N' → Nth (1-based,
+    clamped); anything else → literal text. '' when nothing matches."""
+    arg = (arg or "").strip()
+    assistants = [
+        str(m.get("text") or m.get("context") or "").strip()
+        for m in messages or []
+        if isinstance(m, dict) and str(m.get("role") or "") == "assistant"
+    ]
+    assistants = [t for t in assistants if t]
+    if not arg:
+        return assistants[-1] if assistants else ""
+    try:
+        idx = int(arg)
+    except ValueError:
+        return arg
+    if not assistants:
+        return ""
+    return assistants[min(max(idx, 1), len(assistants)) - 1]
+
+
+def _say_spoken_script(text: str) -> str:
+    """TTS-friendly script (markdown/code stripped); raw truncated fallback."""
+    try:
+        from tools.tts_text_normalize import prepare_spoken_text
+        return prepare_spoken_text(text, max_chars=_SAY_MAX_CHARS) or text[:_SAY_MAX_CHARS]
+    except Exception:
+        return text[:_SAY_MAX_CHARS]
+
+
+def _say_stop_locked() -> bool:
+    """Terminate the current utterance. Caller holds `_say_lock`."""
+    global _say_proc
+    proc, _say_proc = _say_proc, None
+    if proc is None:
+        return False
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+    except Exception:
+        pass
+    return True
+
+
+def _say_stop_all() -> bool:
+    with _say_lock:
+        return _say_stop_locked()
+
+
+def _say_speaking() -> bool:
+    global _say_proc
+    with _say_lock:
+        proc = _say_proc
+        if proc is None:
+            return False
+        try:
+            alive = proc.poll() is None
+        except Exception:
+            alive = False
+        if not alive:
+            _say_proc = None
+        return alive
+
+
+def _say_start(text: str, voice=None, rate=None) -> int:
+    """Speak `text` via Apple `say`; barges any current utterance. Returns pid."""
+    global _say_proc
+    if sys.platform != "darwin":
+        raise RuntimeError("Apple read-aloud needs macOS (/usr/bin/say)")
+    # Fixed OS path on purpose: imported modules are NOT published onto the
+    # bound server namespace (method_ctx skips ModuleType), so no shutil.which
+    # here — and an absolute path is immune to sparse launchd PATHs anyway.
+    cmd = ["/usr/bin/say"]
+    if voice:
+        cmd += ["-v", str(voice)]
+    if rate:
+        cmd += ["-r", str(rate)]
+    cmd.append(text)
+    with _say_lock:
+        _say_stop_locked()
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _say_proc = proc
+        return proc.pid
+
+
+def _speak_session_messages(session_id: str) -> list:
+    """Normalized [{role, text}] transcript for a live session; [] when unknown."""
+    if not session_id:
+        return []
+    try:
+        with _sessions_lock:
+            session = _sessions.get(session_id)
+            history = list((session or {}).get("history", []) or [])
+    except Exception:
+        return []
+    if not history:
+        return []
+    try:
+        normalized = _history_to_messages(history)
+    except Exception:
+        normalized = history
+    out = []
+    for msg in normalized:
+        if not isinstance(msg, dict):
+            continue
+        out.append({"role": msg.get("role", ""), "text": str(msg.get("text") or msg.get("context") or "")})
+    return out
+
+
+@method("speak.say")
+def _(rid, params: dict) -> dict:
+    text = str(params.get("text") or "").strip()
+    if not text:
+        messages = _speak_session_messages(params.get("session_id", ""))
+        text = _say_resolve_text(str(params.get("arg") or ""), messages)
+    if not text:
+        return _err(rid, 4020, "nothing to speak — pass text, or start a conversation first")
+    script = _say_spoken_script(text)
+    if not script.strip():
+        return _err(rid, 4020, "nothing speakable after cleanup")
+    try:
+        pid = _say_start(script, voice=params.get("voice"), rate=params.get("rate"))
+    except RuntimeError as e:
+        return _err(rid, 5026, str(e))
+    except FileNotFoundError:
+        return _err(rid, 5026, "Apple 'say' not found — read-aloud needs macOS")
+    except Exception as e:
+        return _err(rid, 5026, f"read-aloud failed: {e}")
+    return _ok(rid, {"status": "speaking", "pid": pid})
+
+
+@method("speak.stop")
+def _(rid, params: dict) -> dict:
+    auto_was_on = _say_get_mode() == "always"
+    stopped = _say_stop_all()
+    # Stopping means silence, period — a lingering `always` would speak the
+    # very next reply. Persisting `once` never fails the stop itself.
+    try:
+        mode, _ = _say_set_mode("once")
+    except Exception:
+        mode = _say_get_mode()
+    return _ok(rid, {"status": "stopped", "stopped": stopped, "auto_was_on": auto_was_on, "mode": mode})
+
+
+_SAY_MODE_FILE = "speak-aloud.mode"
+_SAY_MODES = ("once", "always")
+
+
+def _say_home_dir():
+    # Lazy import: module objects are NOT published onto the bound server
+    # namespace, so this must resolve at call time, not module top.
+    try:
+        from hermes_constants import get_hermes_home
+        return str(get_hermes_home())
+    except Exception:
+        return None
+
+
+def _say_get_mode() -> str:
+    """Persisted auto-speak mode ('always' speaks every finished reply)."""
+    try:
+        home = _say_home_dir()
+        if not home:
+            return "once"
+        with open(os.path.join(home, _SAY_MODE_FILE), encoding="utf-8") as f:
+            mode = f.read().strip().lower()
+        return mode if mode in _SAY_MODES else "once"
+    except Exception:
+        return "once"
+
+
+def _say_set_mode(mode) -> tuple:
+    """Persist auto-speak mode. Returns (mode, stopped); setting 'once'
+    silences any current utterance."""
+    mode = str(mode or "").strip().lower()
+    if mode not in _SAY_MODES:
+        raise ValueError("mode must be 'always' or 'once'")
+    stopped = _say_stop_all() if mode == "once" else False
+    home = _say_home_dir()
+    if not home:
+        raise RuntimeError("cannot locate Hermes home to persist speak mode")
+    with open(os.path.join(home, _SAY_MODE_FILE), "w", encoding="utf-8") as f:
+        f.write(mode + "\n")
+    return mode, stopped
+
+
+@method("speak.mode")
+def _(rid, params: dict) -> dict:
+    try:
+        mode, stopped = _say_set_mode(params.get("mode", ""))
+    except ValueError as e:
+        return _err(rid, 4020, str(e))
+    except RuntimeError as e:
+        return _err(rid, 5026, str(e))
+    except Exception as e:
+        return _err(rid, 5026, f"could not persist speak mode: {e}")
+    return _ok(rid, {"ok": True, "mode": mode, "stopped": stopped})
+
+
+@method("speak.status")
+def _(rid, params: dict) -> dict:
+    return _ok(rid, {"ok": True, "speaking": _say_speaking(), "platform": sys.platform, "mode": _say_get_mode()})
 
 
 def register(server) -> None:

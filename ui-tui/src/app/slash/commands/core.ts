@@ -12,6 +12,9 @@ import type {
   SessionSteerResponse,
   SessionTitleResponse,
   SessionUndoResponse,
+  SpeakModeResponse,
+  SpeakSayResponse,
+  SpeakStopResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
@@ -434,6 +437,91 @@ export const coreCommands: SlashCommand[] = [
             sys(`copy failed: ${String(error)}`)
           }
         })
+    }
+  },
+
+  {
+    help: 'read aloud with Apple voice: [text|number|stop|always|once]',
+    name: 'say',
+    run: async (arg, ctx) => {
+      const { sys } = ctx.transcript
+      const text = (arg ?? '').trim()
+
+      if (text.toLowerCase() === 'stop') {
+        ctx.gateway
+          .rpc<SpeakStopResponse>('speak.stop', {})
+          .then(
+            ctx.guarded<SpeakStopResponse>(r => {
+              const main = r.stopped ? 'stopped.' : 'nothing playing.'
+              sys(r.auto_was_on ? `${main} Auto read-aloud OFF.` : main)
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      const mode = text.toLowerCase()
+
+      if (mode === 'always' || mode === 'once') {
+        ctx.gateway
+          .rpc<SpeakModeResponse>('speak.mode', { mode })
+          .then(
+            ctx.guarded<SpeakModeResponse>(r => {
+              if (r.mode === 'always') {
+                sys('auto read-aloud ON — future replies will be spoken. /say once to stop.')
+              } else {
+                sys(`auto read-aloud OFF — back to on-demand.${r.stopped ? ' (stopped.)' : ''}`)
+              }
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      // Mirror /copy: a composer highlight speaks directly (reading it also
+      // lands it on the clipboard — said out loud in the status line).
+      if (!text && ctx.composer.hasSelection) {
+        const selected = await ctx.composer.selection.copySelectionNoClear().catch(() => '')
+
+        if (!selected) {
+          sys('could not read selection — try selecting again')
+
+          return
+        }
+
+        ctx.gateway
+          .rpc<SpeakSayResponse>('speak.say', { text: selected })
+          .then(
+            ctx.guarded<SpeakSayResponse>(r => {
+              if (r.status === 'speaking') {
+                sys(`speaking selection… (${selected.length} chars, copied)`)
+              } else {
+                sys('backend did not start playback — see gateway logs')
+              }
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      // Bare /say and /say <n|text> resolve server-side against the live
+      // session (last / Nth assistant reply, or literal text) — the TUI
+      // mirror can lag the backend mid-stream, so don't resolve here.
+      ctx.gateway
+        .rpc<SpeakSayResponse>('speak.say', { arg: text, session_id: ctx.sid })
+        .then(
+          ctx.guarded<SpeakSayResponse>(r => {
+            if (r.status === 'speaking') {
+              sys('speaking… (Ctrl+S or /say stop to stop)')
+            } else {
+              sys('nothing to speak — start a conversation first')
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

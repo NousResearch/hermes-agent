@@ -267,6 +267,8 @@ def _(rid, params: dict) -> dict:
             items.append({**_item(extra_text, extra_meta), "kind": "command"})
     if (details_items := _details_completions(text)) is not None:
         return _ok(rid, {"items": details_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)})
+    if (say_items := _say_completions(text)) is not None:
+        return _ok(rid, {"items": say_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)})
     return _ok(rid, {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1})
 
 

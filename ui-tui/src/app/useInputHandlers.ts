@@ -9,10 +9,13 @@ import type {
   ApprovalRespondResponse,
   ConfigSetResponse,
   SecretRespondResponse,
+  SpeakSayResponse,
+  SpeakStatusResponse,
+  SpeakStopResponse,
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isMac, isSpeakAloudKey, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
@@ -361,6 +364,64 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
   }
 
+  const toggleSpeakAloud = () => {
+    // No local speaking flag — the backend owns the single utterance, so ask
+    // it: stop when something plays, otherwise speak. A highlight always wins
+    // over the whole reply. (Option+Esc can't serve here: macOS Speak Selection
+    // reads AXSelectedText, which fullscreen terminal apps never expose.)
+    gateway
+      .rpc<SpeakStatusResponse>('speak.status', {})
+      .then(status => {
+        if (!status) {
+          return
+        }
+
+        if (status.speaking) {
+          gateway.rpc<SpeakStopResponse>('speak.stop', {}).then(r => {
+            if (r) {
+              const main = r.stopped ? 'stopped.' : 'nothing playing.'
+              actions.sys(r.auto_was_on ? `${main} Auto read-aloud OFF.` : main)
+            }
+          })
+
+          return
+        }
+
+        const speakLastReply = () => {
+          gateway.rpc<SpeakSayResponse>('speak.say', { arg: '', session_id: getUiState().sid }).then(r => {
+            if (r) {
+              actions.sys(
+                r.status === 'speaking' ? 'speaking… (Ctrl+S or /say stop to stop)' : 'nothing to speak — start a conversation first'
+              )
+            }
+          })
+        }
+
+        // Transcript highlight (same selection Cmd+C copies — reading it also
+        // lands it on the clipboard, said out loud in the status line).
+        if (terminal.hasSelection) {
+          terminal.selection.copySelection().then(
+            text => {
+              if (text) {
+                gateway.rpc<SpeakSayResponse>('speak.say', { text }).then(r => {
+                  if (r && r.status === 'speaking') {
+                    actions.sys(`speaking selection… (${text.length} chars, copied)`)
+                  }
+                })
+              } else {
+                speakLastReply()
+              }
+            },
+            () => speakLastReply()
+          )
+
+          return
+        }
+
+        speakLastReply()
+      })
+  }
+
   // Double-Esc discards the draft, matching Claude Code / Gemini CLI. It
   // sits above the isBlocked early-return so a prompt overlay cannot swallow
   // it. Ctrl+C now clears a non-empty composer even mid-stream; Esc Esc is
@@ -694,6 +755,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isVoiceToggleKey(key, ch, voice.recordKey)) {
       return voiceRecordToggle()
+    }
+
+    if (isSpeakAloudKey(key, ch)) {
+      toggleSpeakAloud()
+
+      return
     }
 
     // Cmd/Ctrl+G, plus Alt+G fallback for VSCode/Cursor (they bind the

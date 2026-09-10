@@ -11,7 +11,9 @@ import type {
   DelegationStatusResponse,
   GatewayEvent,
   GatewaySkin,
-  SessionMostRecentResponse
+  SessionMostRecentResponse,
+  SpeakSayResponse,
+  SpeakStatusResponse
 } from '../gatewayTypes.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
 import { relativeLuminance } from '../lib/color.js'
@@ -1462,6 +1464,23 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (!wasInterrupted) {
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
+
+          // Auto read-aloud (`/say always`): speak the finished reply.
+          // Stateless by design — the backend owns the persisted mode, so no
+          // TUI-side flag can desync across restarts or surfaces.
+          void rpc<SpeakStatusResponse>('speak.status', {}).then(status => {
+            if (status?.mode !== 'always') {
+              return
+            }
+
+            const spoken = (
+              msgs.filter(m => m.role === 'assistant' && m.text.trim()).map(m => m.text)
+            ).join('\n\n').trim() || msgs.filter(m => m.text.trim()).map(m => m.text).join('\n\n').trim()
+
+            if (spoken) {
+              void rpc<SpeakSayResponse>('speak.say', { text: spoken })
+            }
+          })
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
           flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')

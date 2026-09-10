@@ -427,6 +427,33 @@ export interface VoiceRecordResponse {
   text?: string
 }
 
+// ── Apple-native read-aloud (speak.* — /usr/bin/say, no provider keys) ──
+
+export interface SpeakSayResponse {
+  pid?: number
+  status?: string
+}
+
+export interface SpeakStopResponse {
+  auto_was_on?: boolean
+  mode?: string
+  status?: string
+  stopped?: boolean
+}
+
+export interface SpeakModeResponse {
+  mode?: string
+  ok?: boolean
+  stopped?: boolean
+}
+
+export interface SpeakStatusResponse {
+  mode?: string
+  ok?: boolean
+  platform?: string
+  speaking?: boolean
+}
+
 // ── Wake word ────────────────────────────────────────────────────────
 
 export interface WakeStartResponse {

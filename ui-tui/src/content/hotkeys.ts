@@ -28,6 +28,7 @@ export const HOTKEYS: [string, string][] = [
   ['Ctrl+T', 'expand live agents (keeps your draft)'],
   ['F7', 'collapse / restore live agent preview'],
   ['Ctrl+O', 'open model picker (keeps your draft; applies to next turn mid-stream)'],
+  ['Ctrl+S', 'read highlight aloud, else last reply (Apple voice; again to stop; /say [text|number|stop])'],
   [action + '+A/E', 'home / end of line'],
   [action + '+Z / ' + action + '+Y', 'undo / redo input edits'],
   [action + '+W', 'delete word'],

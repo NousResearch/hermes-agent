@@ -51,6 +51,22 @@ export const isCopyShortcut = (
     (isMac && key.ctrl && (key.meta || key.super === true)))
 
 /**
+ * Apple-native read-aloud toggle (Ctrl+S) — speaks the last assistant reply
+ * (or stops playback) via the ``speak.*`` RPC backed by /usr/bin/say.
+ *
+ * Deliberately NOT Option+Esc: macOS Speak Selection reads AXSelectedText,
+ * which fullscreen terminal apps never expose, and iTerm2-style profiles
+ * deliver Option as Meta bytes to the app instead of a system hotkey.
+ * Ctrl arrives intact (raw mode disables XOFF flow control), the chord is
+ * not claimed anywhere else in the TUI, and off-macOS presses simply get
+ * the backend's macOS-only error line.
+ */
+export const isSpeakAloudKey = (
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string
+): boolean => key.ctrl && !key.meta && key.super !== true && ch.toLowerCase() === 's'
+
+/**
  * Voice recording toggle key — configurable via ``voice.record_key`` in
  * ``config.yaml`` (default ``ctrl+b``).
  *

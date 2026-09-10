@@ -26,11 +26,14 @@ import time
 import traceback
 from collections import defaultdict
 from contextlib import suppress
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, TYPE_CHECKING, Tuple
 from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
+
+if TYPE_CHECKING:
+    from discord import RawReactionActionEvent
 
 logger = logging.getLogger(__name__)
 
@@ -1197,6 +1200,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self._allowed_user_ids, self._allowed_role_ids,
             )
             intents.voice_states = True
+            # guild_reactions and dm_reactions are included in Intents.default()
+            # above; no explicit assignment is needed for inbound reaction routing.
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
             proxy_url = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
@@ -1284,6 +1289,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         else f"moved {before.channel.name} -> {after.channel.name}",
                         guild_id,
                     )
+
+            @self._client.event
+            async def on_raw_reaction_add(payload):
+                await adapter_self._handle_inbound_reaction(payload, "added")
+
+            @self._client.event
+            async def on_raw_reaction_remove(payload):
+                await adapter_self._handle_inbound_reaction(payload, "removed")
             if self._slash_commands:
                 self._register_slash_commands()
             self._disconnecting = False
@@ -2768,6 +2781,154 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await self._add_reaction(message, "✅")
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
+
+    async def _handle_inbound_reaction(
+        self,
+        payload: RawReactionActionEvent,
+        action: Literal["added", "removed"],
+    ) -> None:
+        """Route user reactions on bot messages as synthetic text events.
+
+        Mirrors the Feishu adapter's _handle_reaction_event pattern:
+        reactions on bot messages are converted to 'reaction:{action}:{emoji}'
+        synthetic text events and routed through the normal message pipeline.
+        """
+        try:
+            if not self._reactions_enabled():
+                return
+            if not self._client or not self._client.user:
+                return
+            if payload.user_id == self._client.user.id:
+                return
+            channel = self._client.get_channel(payload.channel_id)
+            if channel is None:
+                channel = await self._client.fetch_channel(payload.channel_id)
+
+            guild = getattr(channel, "guild", None)
+            is_dm = isinstance(channel, discord.DMChannel) or guild is None
+            channel_ids = {str(channel.id)}
+            parent_channel_id = None
+            if isinstance(channel, discord.Thread):
+                parent_channel_id = self._get_parent_channel_id(channel)
+                if parent_channel_id:
+                    channel_ids.add(parent_channel_id)
+            if not is_dm:
+                channel_keys = self._discord_channel_keys_from_channel(
+                    channel,
+                    parent_channel_id,
+                )
+                allowed_channels = self._get_allowed_channels()
+                if allowed_channels:
+                    if "*" not in allowed_channels and not (
+                        channel_keys & allowed_channels
+                    ):
+                        logger.debug(
+                            "[%s] Ignoring reaction in non-allowed channel: %s",
+                            self.name,
+                            channel_keys,
+                        )
+                        return
+                ignored_channels = self._get_ignored_channels()
+                if "*" in ignored_channels or channel_keys & ignored_channels:
+                    logger.debug(
+                        "[%s] Ignoring reaction in ignored channel: %s",
+                        self.name,
+                        channel_keys,
+                    )
+                    return
+            reactor = payload.member
+            if reactor is None and guild is not None:
+                get_member = getattr(guild, "get_member", None)
+                if callable(get_member):
+                    reactor = get_member(payload.user_id)
+            if reactor is None:
+                # Removal payloads carry no member, and with the Server Members intent off
+                # guild.get_member() misses uncached users. Without this the reactor reads as a
+                # human (bot=False) and slips past the bot gate below; User objects carry .bot.
+                get_user = getattr(self._client, "get_user", None)
+                if callable(get_user):
+                    reactor = get_user(payload.user_id)
+            allowed_roles = getattr(self, "_allowed_role_ids", set())
+            if getattr(reactor, "bot", False):
+                # Bot reactors gate on DISCORD_ALLOW_BOTS, matching _discord_message_admission --
+                # the user/role allowlists never admit a bot on the message path either. A
+                # reaction carries no text, so the mention-conditioned modes ("mentions" and
+                # bots_require_inline_mention) can never be satisfied and fail closed; that is
+                # the same two-bot ping-pong guard _self_is_raw_mentioned gives the message path.
+                if self._get_allow_bots() != "all":
+                    return
+                if self._discord_bots_require_inline_mention():
+                    return
+                role_authorized = False
+            else:
+                if not self._is_allowed_user(
+                    str(payload.user_id),
+                    reactor,
+                    guild=guild,
+                    is_dm=is_dm,
+                    channel_ids=channel_ids if not is_dm else None,
+                ):
+                    return
+                role_authorized = bool(allowed_roles)
+
+            # Dedup: Discord RESUME replays events after reconnects
+            emoji = str(payload.emoji)
+            dedup_key = f"reaction:{payload.message_id}:{action}:{payload.user_id}:{emoji}"
+            if self._dedup.is_duplicate(dedup_key):
+                return
+
+            message = await channel.fetch_message(payload.message_id)
+            if message.author != self._client.user:
+                return
+
+            synthetic_text = f"reaction:{action}:{emoji}"
+
+            # Resolve reactor display name. For removals payload.member is absent,
+            # so preserve the resolved guild member's identity when available.
+            user_name = getattr(reactor, "display_name", None) or str(payload.user_id)
+
+            is_thread = isinstance(channel, discord.Thread)
+            chat_type = "dm"
+            chat_name = str(payload.channel_id)
+            if guild:
+                chat_type = "thread" if is_thread else "group"
+                chat_name = (
+                    self._format_thread_chat_name(channel)
+                    if is_thread
+                    else f"{guild.name} / #{getattr(channel, 'name', channel.id)}"
+                )
+
+            source = self.build_source(
+                chat_id=str(payload.channel_id),
+                chat_name=chat_name,
+                chat_type=chat_type,
+                user_id=str(payload.user_id),
+                user_name=user_name,
+                is_bot=getattr(reactor, "bot", False),
+                guild_id=str(guild.id) if guild else None,
+                parent_chat_id=parent_channel_id,
+                thread_id=str(channel.id) if is_thread else None,
+                message_id=str(payload.message_id),
+                role_authorized=role_authorized,
+            )
+
+            event = MessageEvent(
+                text=synthetic_text,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=payload,
+                message_id=str(payload.message_id),
+            )
+            logger.info(
+                "[%s] Routing reaction %s:%s on bot message %s",
+                self.name, action, emoji, payload.message_id,
+            )
+            await self.handle_message(event)
+        except Exception:
+            logger.warning(
+                "[%s] Failed to handle inbound reaction: %s %s",
+                self.name, action, payload, exc_info=True,
+            )
 
     @staticmethod
     def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":

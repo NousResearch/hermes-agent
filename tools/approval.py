@@ -330,7 +330,23 @@ def load_permanent_allowlist() -> set:
     try:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()
-        patterns = set(config.get("command_allowlist", []) or [])
+        raw = config.get("command_allowlist")
+        legacy = isinstance(raw, str)
+        if legacy:
+            # Old config-set versions serialized list values as scalar strings.
+            import yaml
+            try:
+                raw = yaml.safe_load(raw)
+            except yaml.YAMLError:
+                raw = False
+        if raw is None and not legacy:
+            raw = []
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            logger.warning("Ignoring malformed command_allowlist; configure a list of strings.")
+            return set()
+        if legacy:
+            logger.warning("Recovered legacy string command_allowlist; re-save it as a list of strings.")
+        patterns = set(raw)
         if patterns:
             load_permanent(patterns)
         return patterns

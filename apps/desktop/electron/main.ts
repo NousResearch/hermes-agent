@@ -4049,7 +4049,15 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // ── Pre-flight state.db integrity guard (#68474) ─────────────────
     // Emergency backup and header verification before the update touches
     // anything.  Runs while the backend is still alive.
-    preflightStateDb(HERMES_HOME, rememberLog)
+    // Reuses the 'restart' stage already emitted above (no title flicker) —
+    // only the message changes — so the up-to-30s probe below doesn't leave
+    // the overlay looking frozen after promising an imminent restart.
+    emitUpdateProgress({
+      stage: 'restart',
+      message: 'Checking the local database before continuing…',
+      percent: 100
+    })
+    await preflightStateDb(HERMES_HOME, rememberLog, updateRoot)
 
     if (IS_WINDOWS && resolveUpdateScriptHandoff(updateRoot)) {
       const message = windowsUpdatePrerequisiteError(updateRoot)
@@ -4432,7 +4440,7 @@ function runningAppBundle() {
 // desktop Electron process itself, before the backend is killed and
 // before the updater is spawned — a separate safety net from the
 // Python-level pre-update snapshot inside `hermes update`.
-function preflightStateDb(hermesHome, rememberLog) {
+async function preflightStateDb(hermesHome, rememberLog, updateRoot) {
   const stateDbPath = path.join(hermesHome, 'state.db')
 
   if (!fileExists(stateDbPath)) {
@@ -4459,6 +4467,65 @@ function preflightStateDb(hermesHome, rememberLog) {
           `headerOk=${headerOk}, headerHex=${header.toString('hex')}`
       )
 
+      // Full integrity probe, not just the header (#68474 follow-up):
+      // a valid header can sit on top of corrupt B-tree/FTS pages — the
+      // "database disk image is malformed" class that slipped past this
+      // pre-flight on 2026-08-21. PRAGMA integrity_check on a ~65MB DB
+      // returns in <1s (measured 0.4s on Apple Silicon), so the cost of
+      // catching corruption before mutation is negligible. Run it through
+      // the repo's Python (stdlib sqlite3; venv may not ship a sqlite3
+      // binary) via scripts/db_integrity_probe.py, never blocking the
+      // update if the probe itself fails. Awaited (not execFileSync) so a
+      // slow probe — SQLite lock contention, a big corrupt file — can't
+      // freeze the whole Electron main process for up to the 30s cap.
+      // Three states, deliberately: "could not check" must never look like
+      // "checked, and found damaged".  Both are non-ok, but only a probe that
+      // actually RAN and returned non-ok earns the .CORRUPT tag below.  A
+      // missing interpreter would otherwise brand a perfectly healthy backup
+      // as damaged — and that filename outlives the log line explaining it.
+      // The probe never opens a read-write fallback: this runs while the
+      // backend may still hold state.db open, so a second RW connection here
+      // would recreate the exact hazard — two writers on a live database —
+      // behind the 2026-08-21 incident. A failed read-only open is reported
+      // as "unverified", not risked away with a write-capable retry.
+      const MAX_INTEGRITY_PROBLEM_CHARS = 2000
+      let integrityVerdict: 'ok' | 'corrupt' | 'unverified' = 'unverified'
+      let integrityProblem = 'not-run'
+
+      try {
+        const pythonBin = findPythonForRoot(updateRoot)
+        const probeScript = path.join(updateRoot, 'scripts', 'db_integrity_probe.py')
+
+        if (pythonBin && fileExists(probeScript)) {
+          const probe = await execText(pythonBin, [probeScript, stateDbPath], { timeout: 30_000 })
+          const lines = probe.trim().split('\n').filter(Boolean)
+
+          if (lines.length === 1 && lines[0] === 'ok') {
+            integrityVerdict = 'ok'
+            integrityProblem = ''
+          } else if (lines.length > 0 && lines[0].startsWith('UNVERIFIED:')) {
+            integrityProblem = lines[0].slice('UNVERIFIED:'.length).trim()
+          } else {
+            integrityVerdict = 'corrupt'
+            // Keep every row (not just the first) for forensics; cap the
+            // total so one badly-corrupt database can't evict the rest of
+            // the 300-line log ring buffer (see rememberLog).
+            integrityProblem = lines.join(' | ').slice(0, MAX_INTEGRITY_PROBLEM_CHARS)
+          }
+        } else {
+          integrityProblem = pythonBin ? 'no-probe-script-found' : 'no-python-found'
+        }
+      } catch (integrityErr) {
+        // A probe malfunction (spawn failure, timeout, unreadable path) says
+        // nothing about the database — the verdict stays 'unverified'.
+        integrityProblem = String(integrityErr && integrityErr.message ? integrityErr.message : integrityErr)
+      }
+
+      rememberLog(
+        `[updates] state.db pre-flight integrity: verdict=${integrityVerdict}` +
+          (integrityProblem ? `, problem=${integrityProblem}` : '')
+      )
+
       if (!headerOk) {
         rememberLog(
           '[updates] state.db header is INVALID before update — ' +
@@ -4466,10 +4533,32 @@ function preflightStateDb(hermesHome, rememberLog) {
         )
       }
 
+      if (integrityVerdict === 'corrupt') {
+        rememberLog(
+          '[updates] state.db INTEGRITY FAILED before update — ' +
+            'pre-existing corruption detected; emergency backup will be tagged .CORRUPT'
+        )
+      } else if (integrityVerdict === 'unverified') {
+        rememberLog(
+          '[updates] state.db integrity COULD NOT BE CHECKED — backup will be ' +
+            'tagged .UNVERIFIED; this is not evidence that the database is damaged'
+        )
+      }
+
       // Emergency timestamped backup, separate from the Python-level snapshot.
       const ts = new Date().toISOString().replace(/[:.]/g, '-')
 
-      const emergencyPath = path.join(hermesHome, `state.db.pre-update-emergency-${ts}.bak`)
+      const integritySuffix =
+        integrityVerdict === 'ok'
+          ? ''
+          : integrityVerdict === 'corrupt'
+            ? '.CORRUPT'
+            : '.UNVERIFIED'
+
+      const emergencyPath = path.join(
+        hermesHome,
+        `state.db.pre-update-emergency-${ts}${integritySuffix}.bak`
+      )
 
       try {
         fs.copyFileSync(stateDbPath, emergencyPath)
@@ -4540,7 +4629,17 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   // ── Pre-flight state.db integrity guard (#68474) ──
-  preflightStateDb(HERMES_HOME, rememberLog)
+  // No prior progress event exists on this path yet ('restart' isn't emitted
+  // until the hand-off script is actually spawned below) — reuse the
+  // existing 'prepare' stage instead of inventing a new one, so the overlay
+  // shows activity during the up-to-30s probe without touching the renderer
+  // stage/label plumbing.
+  emitUpdateProgress({
+    stage: 'prepare',
+    message: 'Checking the local database before continuing…',
+    percent: null
+  })
+  await preflightStateDb(HERMES_HOME, rememberLog, updateRoot)
 
   // Branch-pin so a non-main checkout doesn't get switched to main (and
   // self-heal to main when the pinned branch no longer exists on origin).

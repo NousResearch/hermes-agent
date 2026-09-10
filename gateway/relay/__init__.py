@@ -352,9 +352,12 @@ def _post_provision(
     #
     # Treat "no secret" as a value, and let the caller decide — it knows whether
     # it already holds credentials. Only a malformed body is an error.
-    if not payload.get("secret") and payload.get("secretIssued") is None:
-        # Pre-F-004 connector: no `secretIssued` key at all, and no secret. That
-        # IS the old unexpected-response case, so keep failing loudly on it.
+    if not payload.get("secret") and payload.get("secretIssued") is not False:
+        # Fail closed on the discriminator itself. The ONLY credential-less shape
+        # the connector emits is literal JSON `false`. No key at all is a
+        # pre-F-004 connector (the old unexpected-response case); `true` with no
+        # secret, or any non-boolean value, is a malformed body. Accepting those
+        # would mark the platform provisioned with no credential in hand.
         raise RuntimeError("connector returned an unexpected response (no secret)")
     return payload
 
@@ -532,6 +535,22 @@ def self_provision_relay() -> bool:
         logger.warning(
             "relay self-provision failed for ALL platforms (%s); gateway will boot without relay auth",
             ",".join(p for p, _ in identities),
+        )
+        return False
+
+    if not os.environ.get("GATEWAY_RELAY_SECRET"):
+        # Every platform answered, none issued a credential: the connector holds a
+        # binding for this gatewayId that this caller could prove neither ownership
+        # of nor possession of (F-004). The routes are bound but the WS upgrade
+        # will be refused, so this is NOT a provision — do not report one. The
+        # operator's recovery path is POST /relay/rotate (or pinning
+        # GATEWAY_RELAY_SECRET).
+        logger.warning(
+            "relay self-provision withheld credentials for ALL platforms (%s): the connector "
+            "holds a binding for gateway_id=%s this caller could not prove ownership of; "
+            "gateway will boot without relay auth. Recover with POST /relay/rotate or pin "
+            "GATEWAY_RELAY_SECRET",
+            ",".join(provisioned), gateway_id,
         )
         return False
 

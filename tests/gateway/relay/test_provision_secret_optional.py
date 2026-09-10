@@ -60,14 +60,11 @@ class _Resp:
         return False
 
 
-def _post_returning(monkeypatch, body: str):
-    import json as _json
-
+def _post_returning(monkeypatch, body: str) -> None:
     def _fake_json_post(url, token, payload, timeout):  # noqa: ANN001
         return _Resp(body.encode())
 
     monkeypatch.setattr(relay, "_json_post", _fake_json_post, raising=True)
-    return _json
 
 
 def test_secretless_provision_response_is_not_an_error(monkeypatch):
@@ -98,12 +95,26 @@ def test_secretless_provision_response_is_not_an_error(monkeypatch):
     assert payload["gatewayId"] == "gw-1"
 
 
-def test_malformed_response_still_raises(monkeypatch):
-    """No secret AND no `secretIssued` key is a pre-F-004 malformed body.
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param('{"tenant": "org-x", "gatewayId": "gw-1"}', id="no-discriminator-pre-f004"),
+        pytest.param('{"secretIssued": true, "gatewayId": "gw-1"}', id="issued-true-but-absent"),
+        pytest.param('{"secretIssued": "false", "gatewayId": "gw-1"}', id="string-false"),
+        pytest.param('{"secretIssued": 0, "gatewayId": "gw-1"}', id="falsy-non-bool"),
+        pytest.param('{"secretIssued": null, "gatewayId": "gw-1"}', id="explicit-null"),
+    ],
+)
+def test_malformed_response_still_raises(monkeypatch, body):
+    """Only literal `secretIssued: false` may stand in for a secret.
 
-    The permissive branch must not swallow the failure it replaced.
+    The discriminator is the credential-issuance trust boundary, so it is
+    matched by VALUE, not presence: no key is a pre-F-004 body, `true` with no
+    secret is a contradiction, and a non-boolean is not the connector's shape.
+    Every one of them must fail closed — accepting any would mark the platform
+    provisioned with no credential in hand.
     """
-    _post_returning(monkeypatch, '{"tenant": "org-x", "gatewayId": "gw-1"}')
+    _post_returning(monkeypatch, body)
 
     with pytest.raises(RuntimeError, match="no secret"):
         relay._post_provision(
@@ -247,10 +258,43 @@ def test_a_withheld_response_never_overwrites_credentials_in_hand(monkeypatch):
         raising=False,
     )
 
-    relay.self_provision_relay()
+    ok = relay.self_provision_relay()
 
     assert calls == ["telegram", "discord"]
     # Nothing was written, because nothing was issued.
     assert not os.environ.get("GATEWAY_RELAY_SECRET")
     assert not os.environ.get("GATEWAY_RELAY_DELIVERY_KEY")
     assert not os.environ.get("GATEWAY_RELAY_ID")
+    # And the caller must be told: routes bound but no credential in hand is not
+    # a provision — the WS upgrade will be refused, and the operator needs to hear
+    # it here, not as a 4401 later.
+    assert ok is False
+
+
+def test_all_platforms_withheld_warns_with_the_recovery_path(monkeypatch, caplog):
+    """A boot that ends with no credential must log a WARNING naming the way out.
+
+    Before this, a fully-withheld boot logged the same INFO 'self-provisioned'
+    line as a real one and returned True — a silent success in place of the
+    loud failure it replaced.
+    """
+    monkeypatch.setattr(
+        relay,
+        "_post_provision",
+        lambda **kw: {"secretIssued": False, "tenant": "org-x", "gatewayId": kw["gateway_id"], "routeKeys": []},
+        raising=True,
+    )
+    monkeypatch.setattr(relay, "_resolve_relay_identity_token", lambda: "tok", raising=True)
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example")
+    monkeypatch.setattr(relay, "relay_platform_identities", lambda: [("telegram", "BOT_T")], raising=False)
+
+    import logging
+
+    with caplog.at_level(logging.INFO, logger=relay.logger.name):
+        ok = relay.self_provision_relay()
+
+    assert ok is False
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, "a fully-withheld boot must warn"
+    assert "/relay/rotate" in warnings[-1].getMessage()
+    assert not any("self-provisioned (" in r.getMessage() for r in caplog.records)

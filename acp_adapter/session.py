@@ -100,6 +100,17 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
 
+def _clear_task_cwd(task_id: str) -> None:
+    """Remove task-specific cwd overrides for an ACP session."""
+    if not task_id:
+        return
+    try:
+        from tools.terminal_tool import clear_task_env_overrides
+        clear_task_env_overrides(task_id)
+    except Exception:
+        logger.debug("Failed to clear ACP task cwd override", exc_info=True)
+
+
 def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
                                  mcp_server_names: List[str] | None = None) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
@@ -177,6 +188,15 @@ class SessionManager:
             state = self._sessions.get(session_id)
         return state if state is not None else self._restore(session_id)
 
+    def remove_session(self, session_id: str) -> bool:
+        """Remove a session from memory and database. Returns True if it existed."""
+        with self._lock:
+            existed = self._sessions.pop(session_id, None) is not None
+        db_existed = self._delete_persisted(session_id)
+        if existed or db_existed:
+            _clear_task_cwd(session_id)
+        return existed or db_existed
+
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""
         cwd = _translate_acp_cwd(cwd)
@@ -243,6 +263,26 @@ class SessionManager:
         self._persist(state)
         return state
 
+    def cleanup(self) -> None:
+        """Remove all sessions (memory and database) and clear task-specific cwd overrides."""
+        with self._lock:
+            session_ids = list(self._sessions.keys())
+            self._sessions.clear()
+        for session_id in session_ids:
+            _clear_task_cwd(session_id)
+            self._delete_persisted(session_id)
+        # Also remove any DB-only ACP sessions not currently in memory.
+        db = self._get_db()
+        if db is not None:
+            try:
+                rows = db.search_sessions(source="acp", limit=10000)
+                for row in rows:
+                    sid = row["id"]
+                    _clear_task_cwd(sid)
+                    db.delete_session(sid)
+            except Exception:
+                logger.debug("Failed to cleanup ACP sessions from DB", exc_info=True)
+
     def save_session(self, session_id: str) -> None:
         """Persist a session; called by the server after prompt completion,
         history-mutating slash commands, and model switches."""
@@ -276,6 +316,17 @@ class SessionManager:
             except Exception:
                 logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
         return self._db_instance
+
+    def _delete_persisted(self, session_id: str) -> bool:
+        """Delete a session from the database. Returns True if it existed."""
+        db = self._get_db()
+        if db is None:
+            return False
+        try:
+            return db.delete_session(session_id)
+        except Exception:
+            logger.debug("Failed to delete ACP session %s from DB", session_id, exc_info=True)
+            return False
 
     def _persist(self, state: SessionState) -> None:
         """Create/update the session record, then sync the live message set."""

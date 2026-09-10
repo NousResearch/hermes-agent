@@ -52,6 +52,15 @@ class TestBoundedOutputCollector:
         assert "[OUTPUT TRUNCATED" in rendered
 
 
+class TestLifecycleCompatibility:
+    def test_stop_alias_calls_cleanup(self):
+        env = _TestableEnv()
+        env.cleanup = MagicMock()
+
+        assert env.stop() is None
+        env.cleanup.assert_called_once_with()
+
+
 class TestWrapCommand:
     def test_basic_shape(self):
         env = _TestableEnv()

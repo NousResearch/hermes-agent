@@ -743,6 +743,10 @@ class NoopRelayRuntime:
     profile_key: str
     reason: str
 
+    @property
+    def available(self) -> bool:
+        return False
+
     def apply_tool_request_intercepts(self, *, session_id: str, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         return args
 

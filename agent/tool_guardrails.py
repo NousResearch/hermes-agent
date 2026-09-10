@@ -439,6 +439,19 @@ class ToolCallGuardrailController:
             stub = self._build_result_reference_stub(tool_name, args)
         return IdenticalCallObservation(notice=notice, stub=stub)
 
+    def observe_identical_call(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        result: str | None,
+    ) -> str | None:
+        """Track consecutive identical calls; return a loop-breaker notice or None.
+
+        Back-compat wrapper around :meth:`observe_call` for callers that only
+        care about the loop-breaker notice.
+        """
+        return self.observe_call(tool_name, args, result).notice
+
     def record_persisted_result(self, tool_call_id: str, file_path: str) -> None:
         """Remember the spillover path a persisted result was saved to."""
         if tool_call_id and file_path:

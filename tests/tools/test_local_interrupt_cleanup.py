@@ -23,6 +23,11 @@ import pytest
 from tools.environments import local as local_mod
 from tools.environments.local import LocalEnvironment
 
+requires_posix_process_groups = pytest.mark.skipif(
+    not hasattr(os, "getpgid") or not hasattr(os, "killpg"),
+    reason="POSIX process-group cleanup semantics",
+)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_hermes_home(tmp_path, monkeypatch):
@@ -33,7 +38,7 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
 def _pgid_still_alive(pgid: int) -> bool:
     """Return True if any process in the given process group is still alive."""
     try:
-        os.killpg(pgid, 0)  # signal 0 = existence check
+        os.killpg(pgid, 0)  # signal 0 = existence check  # windows-footgun: ok
         return True
     except ProcessLookupError:
         return False
@@ -65,6 +70,7 @@ def _wait_for_pgid_exit(pgid: int, timeout: float = 60.0) -> bool:
     return not _pgid_still_alive(pgid)
 
 
+@requires_posix_process_groups
 def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     """If the shell wrapper exits before cleanup, still kill its process group.
 
@@ -97,6 +103,7 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+@requires_posix_process_groups
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""

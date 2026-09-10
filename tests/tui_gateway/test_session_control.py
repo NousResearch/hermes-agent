@@ -253,6 +253,53 @@ class TestDispatcherBackedMutations:
         cleared = _call(server, "session.control", session_id=sid, action="goal.clear")
         assert cleared["result"]["control"]["goal"] is None
 
+    def test_goal_continue_sends_the_continuation_without_spending_the_resume_reset(
+        self, server, session
+    ):
+        """The Desktop's crash-recovery button: same send envelope as goal.resume,
+        but the goal was never paused, so its budget must survive."""
+        from hermes_cli.goals import GoalManager, load_goal
+
+        sid, key, _ = session
+        _save_goal(key, status="active", turns_used=8)
+
+        response = _call(server, "session.control", session_id=sid, action="goal.continue")
+
+        dispatch = response["result"]["dispatch"]
+        assert dispatch["type"] == "send"
+        assert dispatch["message"] == GoalManager(key).next_continuation_prompt()
+        assert dispatch["display"] == "/goal continue"
+        assert load_goal(key).goal in dispatch["notice"]
+        # Unlike goal.resume, no budget refund and no status change.
+        assert load_goal(key).turns_used == 8
+        assert response["result"]["control"]["goal"]["status"] == "active"
+
+    def test_goal_continue_retires_the_interruption_it_answers(self, server, session):
+        from hermes_cli.goals import GoalManager, load_goal
+
+        sid, key, _ = session
+        _save_goal(key, status="active")
+        GoalManager(key).mark_interrupted(1234.0)
+        assert _control(server, sid)["goal"]["interrupted_at"] == 1234.0
+
+        _call(server, "session.control", session_id=sid, action="goal.continue")
+
+        assert load_goal(key).interrupted_at is None
+        assert "interrupted_at" not in _control(server, sid)["goal"]
+
+    def test_goal_continue_on_a_paused_goal_offers_no_prompt(self, server, session):
+        sid, key, _ = session
+        _save_goal(key, status="paused", turns_used=4)
+
+        response = _call(server, "session.control", session_id=sid, action="goal.continue")
+
+        dispatch = response["result"]["dispatch"]
+        assert dispatch["message"] is None
+        assert dispatch["type"] == "exec"
+        assert "continue" in dispatch["output"].lower()
+        # A refusal must not wake the goal up.
+        assert response["result"]["control"]["goal"]["status"] == "paused"
+
     def test_loop_pause_resume_stop_mutate_real_persisted_state(self, server, session):
         sid, key, _ = session
         _save_loop(key)

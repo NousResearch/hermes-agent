@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 _ACTION_COMMAND_MAP: dict[str, tuple[str, str]] = {
     "goal.pause": ("goal", "pause"),
     "goal.resume": ("goal", "resume"),
+    "goal.continue": ("goal", "continue"),
     "goal.clear": ("goal", "clear"),
     "goal.unwait": ("goal", "unwait"),
     "loop.pause": ("loop", "pause"),
@@ -77,6 +78,10 @@ def _safe_goal_snapshot(state) -> dict | None:
         snapshot["last_verdict"] = state.last_verdict
     if state.last_reason:
         snapshot["last_reason"] = state.last_reason
+    if state.interrupted_at:
+        # A turn of this goal died with the backend and was not auto-continued: the card offers
+        # `goal.continue` instead of leaving the user to retype the objective.
+        snapshot["interrupted_at"] = state.interrupted_at
     if barrier := _extract_wait_barrier(state):
         snapshot["wait_barrier"] = barrier
     return snapshot
@@ -281,8 +286,10 @@ def _(rid, params: dict) -> dict:
         if action in _ACTION_COMMAND_MAP:
             name, arg = _ACTION_COMMAND_MAP[action]
             action_result = _dispatch_command(rid, session_id=params.get("session_id") or "", name=name, arg=arg)
+            dispatched_command = f"/{name} {arg}"
         else:
             action_result = _execute_manager_action(session_key, action, validated)
+            dispatched_command = None
     except (RuntimeError, ValueError, IndexError) as exc:
         return _err(rid, 4004, _manager_error_message(action, exc))
 
@@ -301,7 +308,7 @@ def _(rid, params: dict) -> dict:
             _emit("session.control.update", params.get("session_id") or "", {"control": control})
         except Exception as exc:
             logger.debug("session.control.update emit failed (best-effort): %s", exc, exc_info=True)
-    return _ok(rid, {"control": control, "dispatch": _dispatch_envelope(action_result)})
+    return _ok(rid, {"control": control, "dispatch": _dispatch_envelope(action_result, command=dispatched_command)})
 
 
 def _validate_action_args(rid, action: str, args: dict):
@@ -385,15 +392,21 @@ def _manager_error_message(action: str, exc: Exception) -> str:
     return f"{prefixes.get(action, action)}: {exc}"
 
 
-def _dispatch_envelope(response: dict) -> dict:
-    """Keep the command result's user-visible envelope without adding model-facing data."""
+def _dispatch_envelope(response: dict, *, command: str | None = None) -> dict:
+    """Keep the command result's user-visible envelope without adding model-facing data.
+
+    ``display`` is the command the Desktop should show for a hidden prompt; the shared
+    ``/goal`` handler labels every continuation ``/goal resume``, so the action's own verb
+    wins when we know it.
+    """
     result = response.get("result") or {}
+    display = result.get("display")
     return {
         "type": result.get("type"),
         "output": result.get("output"),
         "notice": result.get("notice"),
         "message": result.get("message"),
-        "display": result.get("display"),
+        "display": command if display and command else display,
     }
 
 

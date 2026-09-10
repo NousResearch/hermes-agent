@@ -509,5 +509,164 @@ def test_failed_agent_build_leaves_marker_for_retry(
     assert read_turn_marker(marker_home, "session-key") is not None
 
 
+# ── An active /goal outranks the freshness heuristic ───────────────────
+
+
+@pytest.fixture()
+def goal_home(monkeypatch, marker_home):
+    """Persist goal state in the same temp home the markers use."""
+    import pathlib
+
+    monkeypatch.setattr(pathlib.Path, "home", lambda: marker_home)
+    monkeypatch.setenv("HERMES_HOME", str(marker_home))
+    from hermes_cli import goals
+
+    goals._DB_CACHE.clear()
+    yield marker_home
+    goals._DB_CACHE.clear()
+
+
+def _set_goal(session_key, text="ship the release", *, status="active"):
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id=session_key)
+    mgr.set(text)
+    if status != "active":
+        mgr.pause(reason="user-paused")
+    return mgr
+
+
+def _age_marker_past_freshness(monkeypatch):
+    monkeypatch.setattr(
+        server, "time", types.SimpleNamespace(time=lambda: time.time() + 3600)
+    )
+
+
+def test_stale_marker_with_active_goal_is_reported_not_discarded(
+    schedule_env, goal_home, monkeypatch
+):
+    """A goal is standing intent: the 15-minute window must not silently drop it.
+
+    Default config does not auto-resume, so resume reports the interruption instead
+    of running a turn — but it must not leave the user with nothing.
+    """
+    _set_goal("session-key", "finish the migration")
+    record_turn_start(goal_home, "session-key", "old prompt")
+    _age_marker_past_freshness(monkeypatch)
+
+    result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+
+    assert result["goal_interrupted"] is True
+    assert result["goal_title"] == "finish the migration"
+    assert result["interrupted_at"] == pytest.approx(time.time(), abs=5)
+    assert not schedule_env
+    # The goal state now carries the interruption, so the marker is redundant.
+    assert read_turn_marker(goal_home, "session-key") is None
+
+
+def test_reported_interruption_reaches_the_control_snapshot(schedule_env, goal_home):
+    """What resume reports and what the goal card reads must be the same fact."""
+    from hermes_cli.goals import load_goal
+
+    _set_goal("session-key")
+    record_turn_start(goal_home, "session-key", "prompt")
+
+    result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+
+    assert load_goal("session-key").interrupted_at == result["interrupted_at"]
+    assert server._safe_goal_snapshot(load_goal("session-key"))["interrupted_at"] == (
+        result["interrupted_at"]
+    )
+
+
+def test_opt_in_auto_resume_runs_the_goals_own_continuation_prompt(
+    emits, schedule_env, goal_home, monkeypatch
+):
+    """The structured continuation beats re-sending the raw interrupted prompt."""
+    mgr = _set_goal("session-key", "finish the migration")
+    record_turn_start(goal_home, "session-key", "the raw interrupted prompt")
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"goals": {"auto_resume_on_reconnect": True}}
+    )
+    _age_marker_past_freshness(monkeypatch)
+    session = _session()
+
+    result = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert result["attempt"] == 1
+    (text, kwargs), = schedule_env
+    assert text == mgr.next_continuation_prompt()
+    assert "finish the migration" in text
+    assert kwargs["display_kind"] == "auto_continue"
+    assert any(
+        event == "status.update" and payload["kind"] == "goal"
+        and "finish the migration" in payload["text"]
+        for event, _sid, payload in emits
+    )
+
+
+def test_auto_resumed_goal_keeps_its_budget(emits, schedule_env, goal_home, monkeypatch):
+    """Auto-resume is a continuation, not the /goal resume budget refund."""
+    from hermes_cli.goals import load_goal
+
+    mgr = _set_goal("session-key")
+    mgr.state.turns_used = 6
+    mgr._save()
+    record_turn_start(goal_home, "session-key", "prompt")
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"goals": {"auto_resume_on_reconnect": True}}
+    )
+
+    server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+
+    (text, _kwargs), = schedule_env
+    assert text == mgr.next_continuation_prompt()
+    assert load_goal("session-key").turns_used == 6
+
+
+def test_auto_resume_still_honours_the_crash_loop_breaker(
+    schedule_env, goal_home, monkeypatch
+):
+    """Attempt bookkeeping is what stops a goal from crash-looping forever."""
+    _set_goal("session-key")
+    record_turn_start(goal_home, "session-key", "crashy prompt", attempts=2)
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"goals": {"auto_resume_on_reconnect": True}}
+    )
+
+    result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+
+    assert not schedule_env
+    assert result["goal_interrupted"] is True
+
+
+def test_paused_goal_keeps_the_plain_stale_marker_behaviour(
+    schedule_env, goal_home, monkeypatch
+):
+    """Only an ACTIVE goal overrides freshness; a paused one is not standing intent."""
+    _set_goal("session-key", status="paused")
+    record_turn_start(goal_home, "session-key", "old prompt")
+    _age_marker_past_freshness(monkeypatch)
+
+    result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+
+    assert result is None
+    assert not schedule_env
+    assert read_turn_marker(goal_home, "session-key") is None
+
+
+def test_no_goal_keeps_the_plain_fresh_marker_behaviour(
+    emits, schedule_env, goal_home
+):
+    record_turn_start(goal_home, "session-key", "fix the flaky test")
+
+    result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+
+    assert result["attempt"] == 1
+    assert "goal_interrupted" not in result
+    (text, _kwargs), = schedule_env
+    assert text.startswith("[System note: Your previous turn was interrupted")
+
+
 # ── End to end: continuation runs a real turn and clears the marker ────
 

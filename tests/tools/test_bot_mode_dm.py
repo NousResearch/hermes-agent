@@ -1102,3 +1102,18 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     assert kw["display_kind"] == "process_complete"
     assert "PAYLOAD_SENTINEL_42" in kw["content"]
     assert procs[0].id in kw["content"]
+
+
+def test_local_turn_survives_undecodable_transport_output(tmp_path, capsys):
+    """A transport that exits 0 while printing a non-UTF-8 byte must still deliver.
+
+    A strict decode raised UnicodeDecodeError inside subprocess.run — a ValueError, so no
+    handler caught it and the delivery crashed instead of re-emitting the transport's
+    streams (stdout is the reply text the completion notification carries back).
+    """
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    argv = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'reply \\377')"]
+
+    assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
+    assert "reply" in capsys.readouterr().out

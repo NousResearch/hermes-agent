@@ -579,6 +579,70 @@ class TestImport:
             mode = (hermes_home / rel).stat().st_mode & 0o777
             assert mode == 0o600, f"{rel} restored with mode {oct(mode)}, expected 0o600"
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+    def test_restores_nested_provider_conf_and_directory_privately(
+        self, tmp_path, monkeypatch
+    ):
+        """A provider config may carry credentials even under a traversable home."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(mode=0o701)
+        hermes_home.chmod(0o701)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_HOME_MODE", "0701")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(
+            zip_path,
+            {
+                "config.yaml": "model: openrouter\n",
+                "openviking/ov.conf": '{"vlm":{"api_key":"secret"}}',
+                "openviking/ovcli.conf": '{"url":"http://127.0.0.1:1933"}',
+            },
+        )
+
+        from hermes_cli.backup import run_import
+
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        openviking_home = hermes_home / "openviking"
+        assert stat.S_IMODE(hermes_home.stat().st_mode) == 0o701
+        assert stat.S_IMODE(openviking_home.stat().st_mode) == 0o700
+        assert stat.S_IMODE((openviking_home / "ov.conf").stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+    def test_restoring_other_ov_conf_does_not_tighten_its_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """Credential files stay private without changing unrelated directory access."""
+        hermes_home = tmp_path / ".hermes"
+        skill_dir = hermes_home / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True, mode=0o755)
+        skill_dir.chmod(0o755)
+        skill_file = skill_dir / "SKILL.md"
+        skill_file.write_text("# My skill\n", encoding="utf-8")
+        skill_file.chmod(0o644)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_HOME_MODE", "0701")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(
+            zip_path,
+            {
+                "config.yaml": "model: openrouter\n",
+                "skills/my-skill/ov.conf": '{"vlm":{"api_key":"secret"}}',
+            },
+        )
+
+        from hermes_cli.backup import run_import
+
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert stat.S_IMODE(skill_dir.stat().st_mode) == 0o755
+        assert stat.S_IMODE(skill_file.stat().st_mode) == 0o644
+        assert stat.S_IMODE((skill_dir / "ov.conf").stat().st_mode) == 0o600
+
 
 # ---------------------------------------------------------------------------
 # Round-trip test

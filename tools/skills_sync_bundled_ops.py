@@ -7,12 +7,6 @@ from typing import List, Optional, Tuple
 from tools.skills_sync_optional import _skill_file_list, _ss
 
 
-def _is_tracked_user_modification(origin_hash: str, user_hash: str) -> bool:
-    """User modification ``hermes update`` keeps: a recorded origin hash (un-baselined v1 entries
-    don't count) AND differing content. Shared by the sync loop and list-modified (no drift)."""
-    return bool(origin_hash) and user_hash != origin_hash
-
-
 def _bundled_state():
     """``(skills_sync, manifest, bundled_dir, {skill_name: bundled_src})`` — shared op preamble."""
     ss = _ss()
@@ -75,7 +69,7 @@ def list_user_modified_bundled_skills() -> List[dict]:
     for skill_name, skill_dir in ss._discover_bundled_skills(bundled_dir):
         origin_hash = manifest.get(skill_name, "")  # empty = untracked/un-baselined v1: next sync handles it
         dest = ss._compute_relative_dest(skill_dir, bundled_dir)
-        if origin_hash and dest.exists() and _is_tracked_user_modification(origin_hash, ss._dir_hash(dest)):
+        if origin_hash and dest.exists() and not ss._matches_origin_hash(dest, origin_hash):
             modified.append({"name": skill_name, "dest": dest, "bundled_src": skill_dir})
     return sorted(modified, key=lambda e: e["name"])
 
@@ -180,7 +174,7 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
             if not dry_run:  # already gone from disk; forget the stale manifest entry
                 manifest.pop(name, None)
             continue
-        if ss._dir_hash(dest) != origin_hash:
+        if not ss._matches_origin_hash(dest, origin_hash):
             skipped.append({"name": name, "reason": "user-modified (kept)"})
             continue
         if not dry_run:

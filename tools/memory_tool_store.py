@@ -317,6 +317,17 @@ class MemoryStore:
                                            (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
+            if entries and not working:
+                # #103419: a consolidation batch that removes the last entry would
+                # commit an empty file as a normal successful write. Refuse; single
+                # remove() is the deliberate-wipe path.
+                label = self._path_for(target).name
+                return self._failure_with_entries(target, (
+                    f"Refusing to empty {label}: this batch would remove every entry from a "
+                    f"previously non-empty store. Nothing was applied (batch is all-or-nothing). "
+                    f"Keep at least one entry — merge overlapping entries into a shorter one instead "
+                    f"of removing the last one (see current_entries below). To delete the final entry "
+                    f"deliberately, use single remove() calls."))
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
             if new_total > limit:
                 return self._failure_with_entries(target, (

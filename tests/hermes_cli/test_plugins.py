@@ -1181,6 +1181,43 @@ class TestForceReloadSymmetry:
         assert len(starts) == 1
         hold.set()
 
+    def test_force_reload_does_not_duplicate_live_timed_out_worker(self, monkeypatch):
+        """Unload-all must keep the live-worker latch while an abandoned thread is still running."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05
+        )
+        monkeypatch.setattr(
+            PluginManager, "_discover_and_load_inner", lambda self_inner: None
+        )
+
+        hold = threading.Event()
+        worker_done = threading.Event()
+        starts = []
+
+        def blocker(**_kwargs):
+            starts.append(1)
+            hold.wait(timeout=2.0)
+            worker_done.set()
+            return "late"
+
+        mgr = PluginManager()
+        mgr._hook_timeout_suppression_seconds = 0.0
+        mgr._hooks["post_tool_call"] = [blocker]
+        mgr._discovered = True
+
+        assert mgr.invoke_hook("post_tool_call") == []
+        assert len(starts) == 1
+
+        mgr.discover_and_load(force=True)
+        mgr._hooks["post_tool_call"] = [blocker]
+
+        assert mgr.invoke_hook("post_tool_call") == []
+        assert len(starts) == 1
+
+        hold.set()
+        assert worker_done.wait(timeout=1.0)
+        assert len(starts) == 1
+
     def test_callback_fifo_applies_backpressure_at_capacity(self, monkeypatch):
         import hermes_cli.plugins_dispatch as dispatch_mod
 

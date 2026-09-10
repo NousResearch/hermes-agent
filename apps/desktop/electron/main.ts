@@ -6703,6 +6703,20 @@ function installBrowserNavGestures(window) {
   })
 }
 
+function sendNewTabRequested() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const webContents = mainWindow.webContents
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:new-session-tab-requested')
+}
+
 function sendOpenFolderRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
@@ -6933,6 +6947,10 @@ function buildApplicationMenu() {
       // (workspace.openFolder). Clicking runs the same open-folder-as-project
       // flow through the renderer.
       { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
+      // No accelerator for the same reason as above: ⌘T is the rebindable
+      // renderer keybind (session.newTab). Clicking fires the exact same
+      // action as the tab-strip "+" — a new session tab in the main window.
+      { click: () => sendNewTabRequested(), label: 'New Session Tab' },
       { type: 'separator' },
       IS_MAC
         ? {

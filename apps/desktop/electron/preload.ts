@@ -396,6 +396,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:open-folder-requested', listener)
   },
+  onNewSessionTabRequested: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:new-session-tab-requested', listener)
+
+    return () => ipcRenderer.removeListener('hermes:new-session-tab-requested', listener)
+  },
   onOpenUpdatesRequested: callback => {
     const listener = () => callback()
     ipcRenderer.on('hermes:open-updates', listener)

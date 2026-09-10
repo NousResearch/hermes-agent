@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { $newSessionTabAction } from '@/components/pane-shell/tree/store'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
@@ -348,6 +349,13 @@ export function useDesktopIntegrations({
   // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => void openFolderAsProject())
+
+    return () => unsubscribe?.()
+  }, [])
+
+  // File > New Session Tab — same action as the tab-strip "+" and the ⌘T keybind.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onNewSessionTabRequested?.(() => $newSessionTabAction.get()?.())
 
     return () => unsubscribe?.()
   }, [])

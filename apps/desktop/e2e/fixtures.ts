@@ -272,6 +272,9 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     // The dev-server check in main.ts looks for this env var; if it's set,
     // it loads from the vite URL instead of the local file.
     ...extra,
+    // Keep Electron fixtures off the user's desktop while Playwright drives
+    // the fully rendered page through Electron's CDP transport.
+    HERMES_DESKTOP_E2E_HIDDEN: '1',
   }
 }
 
@@ -669,7 +672,11 @@ export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFi
   // wireWindowReveal's post-load fallback in production — but the DOM can be
   // ready before that lands. Poll until the window is actually visible so
   // interactions (click, screenshot) don't hit a hidden surface.
-  if (app) {
+  const intentionallyHidden = app
+    ? await app.evaluate(() => process.env.HERMES_DESKTOP_E2E_HIDDEN === '1').catch(() => false)
+    : false
+
+  if (app && !intentionallyHidden) {
     const deadline = Date.now() + timeoutMs
 
     while (Date.now() < deadline) {

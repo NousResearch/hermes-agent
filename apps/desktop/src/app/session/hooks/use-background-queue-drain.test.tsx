@@ -258,19 +258,22 @@ describe('useBackgroundQueueDrain', () => {
 
     enqueueQueuedPrompt('stored-session-a', { text: 'send after load', attachments: [] })
 
+    const queuedId = getQueuedPrompts('stored-session-a')[0].id
+
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await new Promise(resolve => window.setTimeout(resolve, 0))
     expect(submitText).not.toHaveBeenCalled()
 
-    setSessionsLoading(false)
+    act(() => setSessionsLoading(false))
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('send after load', {
         attachments: [],
         fromQueue: true,
         sessionId: 'rt-session-a',
-        storedSessionId: 'stored-session-a'
+        storedSessionId: 'stored-session-a',
+        submission_id: queuedId
       })
     })
 

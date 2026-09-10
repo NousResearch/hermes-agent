@@ -31,6 +31,38 @@ describe('isToolEnabled', () => {
     expect(isToolEnabled(server, 'a')).toBe(true)
     expect(isToolEnabled(server, 'b')).toBe(false)
   })
+
+  it('exclude glob disables matching tools, mirroring the backend fnmatch', () => {
+    // Real catalog manifest shape: optional-mcps/betterstack excludes
+    // "*instructions*" — the backend's matches_name_filter blocks
+    // get_instructions/read_instructions_now/etc; the panel must too.
+    const server = { tools: { exclude: ['remove_dashboard', '*instructions*'] } }
+    expect(isToolEnabled(server, 'get_instructions')).toBe(false)
+    expect(isToolEnabled(server, 'read_instructions_now')).toBe(false)
+    expect(isToolEnabled(server, 'remove_dashboard')).toBe(false)
+    expect(isToolEnabled(server, 'list_dashboards')).toBe(true)
+  })
+
+  it('include glob only enables matching tools', () => {
+    const server = { tools: { include: ['agento11y_*'] } }
+    expect(isToolEnabled(server, 'agento11y_query')).toBe(true)
+    expect(isToolEnabled(server, 'agento11y_export')).toBe(true)
+    expect(isToolEnabled(server, 'other_tool')).toBe(false)
+  })
+
+  it('glob is case-sensitive and anchored, like fnmatchcase', () => {
+    const server = { tools: { exclude: ['get_*'] } }
+    expect(isToolEnabled(server, 'GET_secrets')).toBe(true)
+    expect(isToolEnabled(server, 'x_get_secrets')).toBe(true)
+    expect(isToolEnabled(server, 'get_secrets')).toBe(false)
+  })
+
+  it('supports fnmatch character classes', () => {
+    const server = { tools: { exclude: ['tool_[abc]'] } }
+    expect(isToolEnabled(server, 'tool_a')).toBe(false)
+    expect(isToolEnabled(server, 'tool_b')).toBe(false)
+    expect(isToolEnabled(server, 'tool_d')).toBe(true)
+  })
 })
 
 describe('toggleToolInServer', () => {
@@ -70,5 +102,10 @@ describe('countEnabledTools', () => {
   it('counts enabled tools out of a discovered list', () => {
     const server = { tools: { exclude: ['b'] } }
     expect(countEnabledTools(server, ['a', 'b', 'c'])).toBe(2)
+  })
+
+  it('counts a glob exclude against every matching discovered tool', () => {
+    const server = { tools: { exclude: ['*instructions*'] } }
+    expect(countEnabledTools(server, ['get_instructions', 'read_instructions_now', 'list_dashboards'])).toBe(1)
   })
 })

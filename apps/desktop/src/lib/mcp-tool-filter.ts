@@ -1,7 +1,12 @@
 // Per-tool MCP gating. A server's optional `tools.include` (whitelist) /
 // `tools.exclude` (denylist) decide which discovered tools the agent registers
-// — `include` wins, no filter means all. Mirrors `_register_server_tools` in
-// `tools/mcp_tool.py`.
+// — `include` wins, no filter means all. Entries may be exact tool names or
+// fnmatch-style globs (`*`, `?`, `[seq]`) — mirrors `_register_server_tools` /
+// `matches_name_filter` in `tools/mcp_tool.py`, including glob support: a
+// catalog manifest's `default_excluded: ["*instructions*"]` must gate the
+// same tools here that the backend actually blocks, or this panel shows the
+// wrong checkbox state and enabled-count for any server whose filter uses a
+// glob (several curated catalog entries do).
 
 export interface McpToolsFilter {
   exclude?: string[]
@@ -9,6 +14,8 @@ export interface McpToolsFilter {
 }
 
 type ServerConfig = Record<string, unknown>
+
+const GLOB_METACHARS = /[*?[]/
 
 const asNames = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : undefined
@@ -25,10 +32,79 @@ export function readToolsFilter(server: ServerConfig | null | undefined): McpToo
   return { exclude: asNames(tools.exclude), include: asNames(tools.include) }
 }
 
+// Translate one fnmatch-style pattern into a case-sensitive RegExp, mirroring
+// Python's fnmatch.translate: `*` → any run (incl. empty), `?` → any one
+// char, `[seq]`/`[!seq]` → a (negated) character class, everything else
+// literal. An unterminated `[` (no closing `]`) falls back to a literal `[`,
+// same as CPython's translate.
+function fnmatchToRegExp(pattern: string): RegExp {
+  let source = ''
+  let i = 0
+
+  while (i < pattern.length) {
+    const char = pattern[i]
+
+    i += 1
+
+    if (char === '*') {
+      source += '.*'
+    } else if (char === '?') {
+      source += '.'
+    } else if (char === '[') {
+      let j = i
+
+      if (pattern[j] === '!') {
+        j += 1
+      }
+
+      if (pattern[j] === ']') {
+        j += 1
+      }
+
+      while (j < pattern.length && pattern[j] !== ']') {
+        j += 1
+      }
+
+      if (j >= pattern.length) {
+        source += '\\['
+      } else {
+        let charClass = pattern.slice(i, j).replace(/\\/g, '\\\\')
+
+        if (charClass.startsWith('!')) {
+          charClass = `^${charClass.slice(1)}`
+        }
+
+        source += `[${charClass}]`
+        i = j + 1
+      }
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    }
+  }
+
+  return new RegExp(`^${source}$`)
+}
+
+// True if `name` matches any entry in `patterns` — exact names match
+// literally; entries containing a glob metacharacter match as a
+// case-sensitive fnmatch pattern. Exact membership is checked first, same as
+// the backend's matches_name_filter.
+function matchesNameFilter(name: string, patterns: string[]): boolean {
+  if (!patterns.length) {
+    return false
+  }
+
+  if (patterns.includes(name)) {
+    return true
+  }
+
+  return patterns.some(pattern => GLOB_METACHARS.test(pattern) && fnmatchToRegExp(pattern).test(name))
+}
+
 export function isToolEnabled(server: ServerConfig | null | undefined, name: string): boolean {
   const { exclude, include } = readToolsFilter(server)
 
-  return include?.length ? include.includes(name) : !exclude?.includes(name)
+  return include?.length ? matchesNameFilter(name, include) : !matchesNameFilter(name, exclude ?? [])
 }
 
 // Toggle one tool, preserving the config's mode (include if present, else an

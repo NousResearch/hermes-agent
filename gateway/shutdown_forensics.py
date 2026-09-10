@@ -7,9 +7,10 @@ subprocess. Anything that waits belongs in the async helper, never in the probe.
 """
 
 from __future__ import annotations
-
 import json
+import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -146,11 +147,12 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
         fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     except OSError:
         return None
+    timeout_cmd = shutil.which("timeout")
+    command = [timeout_cmd, f"{timeout_seconds:.0f}", "bash", "-c", script] if timeout_cmd else ["bash", "-c", script]
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script], stdout=fd,
-            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
-            close_fds=True).pid
+            command, stdout=fd, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True).pid
     except OSError:
         return None
     finally:

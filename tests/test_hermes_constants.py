@@ -363,6 +363,29 @@ class TestIsContainer:
 
 
 
+    def test_cgroup_v2_fallback_inspects_only_the_root_mount(self, tmp_path):
+        """#58135: a host that merely RUNS containers exposes each container's overlay lowerdir
+        (``lowerdir=/var/lib/containerd/...``) at non-root mount points; only the root ('/') line
+        says whether *this* process lives in a runtime overlay."""
+        from hermes_constants import _root_mount_has_marker
+
+        markers = ("kubepods", "containerd", "crio")
+        host = tmp_path / "host"
+        host.write_text(
+            "25 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n"
+            "469 554 0:94 / /var/lib/docker/rootfs/overlayfs/7dda83 rw,relatime shared:247 - overlay overlay "
+            "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/33509/fs\n"
+        )
+        container = tmp_path / "container"
+        container.write_text(
+            "1 0 0:50 / / rw,relatime - overlay overlay "
+            "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9/fs\n"
+            "2 1 0:51 / /proc rw,nosuid - proc proc rw\n"
+        )
+        assert _root_mount_has_marker(str(host), markers) is False
+        assert _root_mount_has_marker(str(container), markers) is True
+        assert _root_mount_has_marker(str(tmp_path / "missing"), markers) is False
+
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
         monkeypatch.setattr(hermes_constants, "_container_detected", True)
@@ -560,8 +583,61 @@ class TestSecureParentDir:
         secure_parent_dir(Path("/foo"))
         assert called_with == []
 
+    def test_install_tree_skipped(self, monkeypatch):
+        """Parent dir equal to (or inside) the install tree must NOT be chmod'd.
 
+        Regression test for #93050: secure_parent_dir() chmod'd /opt/hermes to
+        0700 because it has 3 path parts and passed the ``< 3`` guard, locking
+        out UID 10000 (hermes user) from traversing the install dir.
+        """
+        install_root = Path(hermes_constants.__file__).resolve().parent
 
+        # Directly under the install root (e.g. /opt/hermes/auth.json)
+        target = install_root / "auth.json"
+        called_with = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: called_with.append((str(p), m)))
+        secure_parent_dir(target)
+        assert called_with == [], "must not chmod the install root"
+
+        # Inside a subdirectory of the install root
+        sub = install_root / "subdir"
+        target2 = sub / "auth.json"
+        called_with2 = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: called_with2.append((str(p), m)))
+        secure_parent_dir(target2)
+        assert called_with2 == [], "must not chmod dirs inside the install tree"
+
+    def test_install_tree_siblings_still_hardened(self, monkeypatch):
+        """Paths OUTSIDE the install tree must still be chmod'd.
+
+        Negative boundary for the install-tree exclusion (#93050): the guard
+        compares path components, so a sibling directory whose name merely
+        starts with the install root's name (``<install_root>-data``) must
+        still receive parent-dir hardening. Pins that the exclusion cannot
+        silently widen into a string-prefix match.
+        """
+        install_root = Path(hermes_constants.__file__).resolve().parent
+
+        # Prefix-named sibling of the install root (/opt/hermes-data/...).
+        prefix_sibling = Path(str(install_root) + "-data")
+        called_with = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: called_with.append((str(p), m)))
+        secure_parent_dir(prefix_sibling / "auth.json")
+        assert called_with == [(str(prefix_sibling), 0o700)], (
+            "prefix-named siblings of the install root must still be hardened"
+        )
+
+        # Ordinary sibling next to the install root (same parent dir).
+        sibling = install_root.parent / "unrelated-dir"
+        if len(sibling.parts) >= 3 and install_root not in sibling.parents:
+            called_with2 = []
+            monkeypatch.setattr(
+                os, "chmod", lambda p, m: called_with2.append((str(p), m))
+            )
+            secure_parent_dir(sibling / "auth.json")
+            assert called_with2 == [(str(sibling), 0o700)], (
+                "siblings of the install root must still be hardened"
+            )
 
     @pytest.mark.require_symlinks
     def test_symlink_resolved(self, tmp_path, monkeypatch):

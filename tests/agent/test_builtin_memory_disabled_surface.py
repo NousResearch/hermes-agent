@@ -12,6 +12,9 @@ These tests exercise the real resolution chain (config on disk → check_fn →
 ``get_tool_definitions``) against a temp ``HERMES_HOME``, not mocks.
 """
 
+import json
+from unittest.mock import patch
+
 import pytest
 import yaml
 
@@ -46,6 +49,14 @@ def hermes_home(tmp_path, monkeypatch):
     return home
 
 
+def _memory_tool_definition():
+    return next(
+        tool["function"]
+        for tool in get_tool_definitions(enabled_toolsets=["memory"], quiet_mode=True)
+        if tool["function"]["name"] == "memory"
+    )
+
+
 def _memory_tool_names():
     tools = get_tool_definitions(enabled_toolsets=["memory"], quiet_mode=True)
     return {tool["function"]["name"] for tool in tools}
@@ -62,16 +73,82 @@ class TestBuiltinMemoryToolAvailability:
         _write_memory_config(
             hermes_home, memory_enabled=False, user_profile_enabled=True
         )
-        assert "memory" in _memory_tool_names()
+        definition = _memory_tool_definition()
+        assert definition["parameters"]["properties"]["target"]["enum"] == ["user"]
+        assert "only 'user' is enabled" in definition["description"]
+        assert "only 'memory' is enabled" not in definition["description"]
 
     def test_tool_present_when_only_memory_enabled(self, hermes_home):
         _write_memory_config(
             hermes_home, memory_enabled=True, user_profile_enabled=False
         )
-        assert "memory" in _memory_tool_names()
+        definition = _memory_tool_definition()
+        assert definition["parameters"]["properties"]["target"]["enum"] == ["memory"]
+        assert "only 'memory' is enabled" in definition["description"]
+        assert "only 'user' is enabled" not in definition["description"]
 
     def test_tool_present_by_default(self, hermes_home):
         """No config file at all must not strip a working tool."""
+        assert "memory" in _memory_tool_names()
+
+    def test_missing_memory_flags_fail_open_consistently(self):
+        from tools.memory_tool import get_builtin_memory_store_flags
+
+        assert get_builtin_memory_store_flags({"memory": {}}) == (True, True)
+        assert get_builtin_memory_store_flags({}) == (True, True)
+
+    def test_quoted_false_flags_are_disabled(self):
+        from tools.memory_tool import get_builtin_memory_store_flags
+
+        assert get_builtin_memory_store_flags(
+            {"memory": {"memory_enabled": "false", "user_profile_enabled": "false"}}
+        ) == (False, False)
+
+    def test_schema_reuses_availability_flag_snapshot(self, monkeypatch):
+        """One definition pass must not reread config between check and schema."""
+        from tools import memory_tool as memory_tool_module
+
+        calls = 0
+
+        def _flags():
+            nonlocal calls
+            calls += 1
+            return (False, True) if calls == 1 else (True, False)
+
+        monkeypatch.setattr(memory_tool_module, "get_builtin_memory_store_flags", _flags)
+        definition = _memory_tool_definition()
+
+        assert calls == 1
+        assert definition["parameters"]["properties"]["target"]["enum"] == ["user"]
+
+    def test_unavailable_snapshot_cannot_survive_failed_recheck(self, monkeypatch):
+        from tools import memory_tool as memory_tool_module
+
+        monkeypatch.setattr(
+            memory_tool_module,
+            "get_builtin_memory_store_flags",
+            lambda: (False, False),
+        )
+        assert memory_tool_module.check_memory_requirements() is False
+
+        def _boom():
+            raise RuntimeError("config read failed")
+
+        monkeypatch.setattr(memory_tool_module, "get_builtin_memory_store_flags", _boom)
+        with pytest.raises(RuntimeError, match="config read failed"):
+            memory_tool_module.check_memory_requirements()
+
+        assert memory_tool_module._memory_surface_flags.get() is None
+
+    def test_config_flip_updates_tool_without_manual_cache_clear(self, hermes_home):
+        _write_memory_config(
+            hermes_home, memory_enabled=False, user_profile_enabled=False
+        )
+        assert "memory" not in _memory_tool_names()
+
+        _write_memory_config(
+            hermes_home, memory_enabled=True, user_profile_enabled=False
+        )
         assert "memory" in _memory_tool_names()
 
     def test_unreadable_config_fails_open(self, hermes_home, monkeypatch):
@@ -85,6 +162,83 @@ class TestBuiltinMemoryToolAvailability:
             "hermes_cli.config.load_config_readonly", _boom, raising=False
         )
         assert memory_tool_module.check_memory_requirements() is True
+
+    def test_malformed_memory_section_normalizes_to_defaults(self):
+        from tools.memory_tool import (
+            get_builtin_memory_config,
+            get_builtin_memory_store_flags,
+        )
+
+        config = {"memory": "not-a-mapping"}
+        assert get_builtin_memory_config(config) == {}
+        assert get_builtin_memory_store_flags(config) == (True, True)
+
+
+class TestIndependentStoreWriteGates:
+    def _store(self, *, memory_enabled, user_profile_enabled):
+        from tools.memory_tool import MemoryStore
+
+        store = MemoryStore(
+            memory_char_limit=500,
+            user_char_limit=500,
+            memory_enabled=memory_enabled,
+            user_profile_enabled=user_profile_enabled,
+        )
+        store.load_from_disk()
+        return store
+
+    def test_user_profile_only_rejects_memory_write(self, hermes_home):
+        from tools.memory_tool import memory_tool
+
+        store = self._store(memory_enabled=False, user_profile_enabled=True)
+        denied = json.loads(memory_tool(action="add", target="memory", content="fact", store=store))
+        allowed = json.loads(memory_tool(action="add", target="user", content="pref", store=store))
+
+        assert denied["success"] is False
+        assert denied["target"] == "memory"
+        assert allowed["success"] is True
+
+    def test_memory_only_rejects_user_profile_write(self, hermes_home):
+        from tools.memory_tool import memory_tool
+
+        store = self._store(memory_enabled=True, user_profile_enabled=False)
+        denied = json.loads(memory_tool(action="add", target="user", content="pref", store=store))
+        allowed = json.loads(memory_tool(action="add", target="memory", content="fact", store=store))
+
+        assert denied["success"] is False
+        assert denied["target"] == "user"
+        assert allowed["success"] is True
+
+    def test_staged_write_cannot_bypass_target_gate(self, hermes_home):
+        from tools.memory_tool import apply_memory_pending
+
+        store = self._store(memory_enabled=False, user_profile_enabled=True)
+        result = apply_memory_pending(
+            {"action": "add", "target": "memory", "content": "fact"}, store
+        )
+
+        assert result["success"] is False
+        assert result["target"] == "memory"
+
+    def test_invalid_target_error_is_bounded_and_carries_recovery_hint(self, hermes_home):
+        """Model-supplied target is interpolated into the error: it must stay
+        capped at the shared tool_error bound and keep the recovery hint."""
+        from tools.memory_tool import memory_tool
+        from tools.registry import _MAX_TOOL_ERROR_CHARS
+
+        store = self._store(memory_enabled=True, user_profile_enabled=True)
+        result = json.loads(
+            memory_tool(action="add", target="x" * 10_000, content="fact", store=store)
+        )
+
+        assert result["success"] is False
+        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + 32
+
+        short = json.loads(
+            memory_tool(action="add", target="bogus", content="fact", store=store)
+        )
+        assert short["success"] is False
+        assert "Use 'memory' or 'user'" in short["error"]
 
 
 class TestExternalProviderSurvivesBuiltinDisable:

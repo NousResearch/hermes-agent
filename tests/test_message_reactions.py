@@ -152,24 +152,38 @@ def test_reacting_never_mutates_message_content(session, db):
 def test_latest_user_message_is_the_agents_default_target(session, db):
     """The agent reacts to "the message that triggered me" without an id."""
     key, rows = session
-    assert db.latest_user_message_row_id(key) == rows[0]
+    assert db.latest_message_row_id(key, role="user") == rows[0]
 
     db.append_message(key, "user", "thanks!")
     newest = db.get_messages_as_conversation(key, include_row_ids=True)[-1]["_row_id"]
 
-    assert db.latest_user_message_row_id(key) == newest
+    assert db.latest_message_row_id(key, role="user") == newest
+
+    # Role-targeting contract: a newer ASSISTANT message must not become the
+    # agent's default target — it always means the latest USER message.
+    db.append_message(key, "assistant", "you're welcome")
+    assert db.latest_message_row_id(key, role="user") == newest
+    assert db.latest_message_row_id(key, role="assistant") != newest
 
 
 def test_row_id_is_opt_in_and_never_reaches_the_provider(session, db):
     """Only include_row_ids=True consumers see _row_id — and it's underscore-
     prefixed so transports strip it before the wire even for them. Default
     consumers (ACP restore, export) get the transcript in its historical shape.
+
+    ``_db_persisted`` is the other sanctioned underscore key: stamped on every
+    loaded row (#92231) so a flush can never re-append a resumed transcript.
+    Like ``_row_id`` it is stripped before the wire by every transport.
     """
     key, _rows = session
 
     for message in db.get_messages_as_conversation(key):
         assert "_row_id" not in message
+        assert message.get("_db_persisted") is True
 
     for message in db.get_messages_as_conversation(key, include_row_ids=True):
         assert "_row_id" in message
-        assert all(not k.startswith("_") or k == "_row_id" for k in message)
+        assert all(
+            not k.startswith("_") or k in {"_row_id", "_db_persisted"}
+            for k in message
+        )

@@ -177,6 +177,84 @@ describe('host.state.focusedSessionProfile', () => {
     session.$sessions.set([])
     session.$selectedStoredSessionId.set(null)
   })
+
+  it('fails closed when duplicate stored or lineage ids resolve to different connections', async () => {
+    const { host, session } = await setup()
+
+    session.$sessions.set([
+      {
+        connection_id: 'source-a',
+        id: 'shared-tip-a',
+        _lineage_root_id: 'shared-root',
+        profile: 'worker'
+      } as never,
+      {
+        connection_id: 'source-b',
+        id: 'shared-root',
+        profile: 'worker'
+      } as never
+    ])
+    session.$selectedStoredSessionId.set('shared-root')
+
+    expect(host.state.focusedSessionOwner.get()).toBeNull()
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+  })
+
+  it('fails closed when the same focused id has ambiguous owner hints', async () => {
+    const { host, session } = await setup()
+
+    session.setSessionOwnerHint('ambiguous-hint', {
+      connectionId: 'source-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker-a'
+    })
+    session.setSessionOwnerHint('ambiguous-hint', {
+      connectionId: 'source-b',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker-b'
+    })
+    session.$sessions.set([
+      {
+        connection_id: 'source-a',
+        id: 'ambiguous-hint',
+        profile: 'worker'
+      } as never
+    ])
+    session.$selectedStoredSessionId.set('ambiguous-hint')
+
+    expect(host.state.focusedSessionOwner.get()).toBeNull()
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+  })
+
+  it('keeps the focused session connection when same-named profiles share a handle', async () => {
+    const { host, profile, session } = await setup()
+
+    profile.$activeGatewayProfile.set('default')
+    session.setConnection({ connectionId: 'source-a', mode: 'remote' } as never)
+    session.$sessions.set([
+      {
+        connection_id: 'source-b',
+        id: 'shared-default',
+        profile: 'default'
+      } as never
+    ])
+    session.$selectedStoredSessionId.set('shared-default')
+
+    expect(host.state.focusedSessionOwner.get()).toEqual({
+      connectionId: 'source-b',
+      profile: 'default'
+    })
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+    session.setConnection(null)
+  })
 })
 
 describe('host.state busy vs gateway', () => {

@@ -21,10 +21,10 @@ def _make_agent() -> AIAgent:
         }
     ]
     with (
-        patch("run_agent.get_tool_definitions", return_value=tool_defs),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.get_tool_definitions", return_value=tool_defs),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -78,7 +78,7 @@ def test_malformed_arguments_are_rejected_without_blocking_valid_sibling(
         return json.dumps({"ok": args["query"]})
 
     with (
-        patch("run_agent.handle_function_call", side_effect=fake_dispatch),
+        patch("model_tools.handle_function_call", side_effect=fake_dispatch),
         patch.object(agent, "_invoke_tool", side_effect=fake_dispatch),
         patch(
             "agent.tool_executor.maybe_persist_tool_result",

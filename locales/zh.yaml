@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…"
 
   background:
-    usage:                 "用法：/background <提示>\n示例：/background 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
+    usage:                 "用法：/bg <提示>\n示例：/bg 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
     started:               "🔄 后台任务已启动：「{preview}」\n任务 ID：{task_id}\n你可以继续聊天 — 完成后结果将在此显示。"
+
+  btw:
+    usage:                 "用法：/btw <问题>\n示例：/btw 那个错误在哪个文件？\n\n在不打断当前工作的情况下，回答关于此对话的快速问题。要运行独立的后台任务，请使用 /bg <提示>。"
+    no_history:            "还没有对话 — 请将问题作为普通消息发送。"
+    no_provider:           "❌ 无法回答问题：未配置提供商凭据。"
+    started:               "💬 顺便一问：「{preview}」\n正根据此对话的快照回答 — 当前工作继续进行。"
+    answer:                "💬 /btw:「{preview}」\n\n{answer}"
+    failed:                "❌ /btw 失败：「{preview}」\n{error}"
 
   branch:
     db_unavailable:        "会话数据库不可用。"
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression 模型配置。"
     aborted:               "⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的 auxiliary.compression 模型配置。"
     aux_failed:            "ℹ️ 配置的压缩模型 `{model}` 失败（{error}）。已使用主模型恢复 — 上下文完好 — 但您可能想检查 config.yaml 中的 `auxiliary.compression.model`。"
+    turnhold_deferred:     "ℹ️ 上下文压缩已推迟 — 摘要仍在生成中。本回合将不压缩继续。"
     failed:                "压缩失败：{error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **优先处理**\\n\\n当前模式：`{mode}`\\n\\n请选择："
     choice_fast:           "fast — 开启优先处理"
     choice_normal:         "normal — 标准处理"
+    choice_auto:           "auto — 每轮的前几秒快速"
+    choice_cold:           "cold — 仅会话的第一轮快速"
 
   footer:
     status:                "📎 运行时页脚：**{state}**\n字段：`{fields}`\n平台：`{platform}`"
@@ -166,10 +177,14 @@ gateway:
       crashed:             "崩溃（worker 异常退出），dispatcher 将重试"
       timed_out:           "超时，dispatcher 将重试"
       blocked:             "被阻塞，需要处理"
+      review_requested:    "已交付评审；实现已完成"
+      changes_requested:   "评审要求修改（BLOCK)，实现未获批准"
+      block_loop_detected: "反复阻塞后被转入待分诊，需要做出决定"
       status_default:      "状态变化"
       status_joiner:       "，"
       message:             "[kanban] 任务 {task_id} {status}。\n标题: {title}\n执行者: @{assignee}\n看板: {board}\n\n请检查结果或决定下一步动作。"
       handoff:             "结果：{summary}"
+      review_detail:       "评审反馈: {reason}\n请检查现有卡片及其当前评审运行；将工作返回同一实现任务。不要把此 BLOCK 视为批准，也不要创建重复任务。"
       guidance:            "这是自动任务状态通知，不是再次分解任务的请求。创建后续任务前请先检查当前看板；不要重复创建已存在的任务或任务图。"
 
   personality:
@@ -256,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "未找到已命名的会话。\n使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。"
+    all_requires_admin: "_注意：`--all`（跨聊天列表）需要已配置的管理员；仅显示本聊天的会话。_"
     list_header:           "📋 **已命名会话**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -280,6 +296,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "无效的检查点编号。请使用 1-{max}。"
     restored:              "✅ 已恢复到检查点 {hash}：{reason}\n已自动保存回滚前的快照。"
     kept_user_edits:       "↷ 已保留您的手动编辑：{files}\n如需一并恢复这些文件，请使用 /rollback <N> --all。"
+    kept_oversize:         "↷ 已保留（文件过大无法纳入检查点，没有可恢复的存储副本）：{files}"
+    failed_deletes:        "⚠️ 无法移除（保留原文件）：{files}"
     restore_failed:        "❌ {error}"
 
   diff:

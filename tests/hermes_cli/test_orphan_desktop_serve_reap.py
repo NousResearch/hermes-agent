@@ -84,6 +84,7 @@ def test_reap_only_kills_ppid1_local_serves():
             sleep_fn=lambda _s: None,
             signal_term=15,
             signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 600.0,
         )
 
     assert set(result["matched"]) == {111, 444}
@@ -234,6 +235,7 @@ def test_reap_spare_lock_owned_ssh_remote_backend_of_foreign_client():
             signal_term=15,
             signal_kill=9,
             lock_owned_pids_fn=lambda: lock_owned,
+            process_age_seconds_fn=lambda _pid: 600.0,
         )
 
     # Only the genuine orphan (666) is reaped; the lock-owned remote (555) lives.
@@ -241,6 +243,107 @@ def test_reap_spare_lock_owned_ssh_remote_backend_of_foreign_client():
     assert set(terms) == {666}
     assert 555 not in terms
     assert set(result["killed"]) == {666}
+
+
+def test_reap_spares_young_backend_until_desktop_can_write_lock():
+    """A concurrently-starting sibling has no lock yet but is not an orphan."""
+    scanned = [(777, "hermes serve --isolated --host 127.0.0.1 --port 0")]
+    terms: list[int] = []
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            return None
+        if sig == 15:
+            terms.append(pid)
+        return None
+
+    with (
+        patch(
+            "hermes_cli.dashboard_procs._scan_dashboard_processes",
+            return_value=scanned,
+        ),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=fake_kill),
+        patch("sys.platform", "darwin"),
+    ):
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None,
+            signal_term=15,
+            signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 2.0,
+        )
+
+    assert result["matched"] == []
+    assert result["killed"] == []
+    assert terms == []
+
+
+def test_reap_spares_backend_when_process_age_is_unknown():
+    scanned = [(778, "hermes serve --isolated --host 127.0.0.1 --port 0")]
+    terms: list[int] = []
+
+    def fake_age(_pid):
+        raise RuntimeError("process disappeared during age probe")
+
+    with (
+        patch(
+            "hermes_cli.dashboard_procs._scan_dashboard_processes",
+            return_value=scanned,
+        ),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=lambda pid, sig: terms.append(pid) if sig == 15 else None),
+        patch("sys.platform", "darwin"),
+    ):
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None,
+            signal_term=15,
+            signal_kill=9,
+            process_age_seconds_fn=fake_age,
+        )
+
+    assert result["matched"] == []
+    assert result["killed"] == []
+    assert terms == []
+
+
+def test_reap_age_boundary_makes_180_second_orphan_eligible():
+    scanned = [
+        (779, "hermes serve --isolated --host 127.0.0.1 --port 0"),
+        (780, "hermes serve --isolated --host 127.0.0.1 --port 0"),
+    ]
+    terms: list[int] = []
+    live = {779, 780}
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            if pid in live:
+                return None
+            raise ProcessLookupError()
+        if sig == 15:
+            terms.append(pid)
+            live.discard(pid)
+        return None
+
+    ages = {779: 179.999, 780: 180.0}
+    with (
+        patch(
+            "hermes_cli.dashboard_procs._scan_dashboard_processes",
+            return_value=scanned,
+        ),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=fake_kill),
+        patch("sys.platform", "darwin"),
+    ):
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None,
+            signal_term=15,
+            signal_kill=9,
+            process_age_seconds_fn=lambda pid: ages[pid],
+        )
+
+    assert result["matched"] == [780]
+    assert result["killed"] == [780]
+    assert terms == [780]
 
 
 def test_reap_spare_lock_owned_backend_even_without_exclude_match(tmp_path):

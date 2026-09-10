@@ -11,16 +11,32 @@ const getPairing = vi.fn()
 const approvePairing = vi.fn()
 const revokePairing = vi.fn()
 const openExternalLink = vi.fn()
+const runGatewayRestart = vi.fn()
+const watchGatewayRestartOutcome = vi.fn()
+const startTelegramOnboarding = vi.fn()
+const getTelegramOnboardingStatus = vi.fn()
+const applyTelegramOnboarding = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  approvePairing: (platformId: string, requestId: string) => approvePairing(platformId, requestId),
-  getMessagingPlatforms: () => getMessagingPlatforms(),
-  getPairing: () => getPairing(),
+  approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
+    approvePairing(platformId, requestId, profile),
+  getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
+  getPairing: (profile?: null | string) => getPairing(profile),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
-  revokePairing: (platformId: string, userId: string) => revokePairing(platformId, userId),
+  revokePairing: (platformId: string, userId: string, profile?: null | string) =>
+    revokePairing(platformId, userId, profile),
   setApiRequestProfile: vi.fn(),
-  updateMessagingPlatform: (id: string, body: unknown) => updateMessagingPlatform(id, body)
+  applyTelegramOnboarding: (pairingId: string, ids: string[], profile?: null | string) =>
+    applyTelegramOnboarding(pairingId, ids, profile),
+  cancelTelegramOnboarding: vi.fn(async () => ({ ok: true })),
+  getTelegramOnboardingStatus: (pairingId: string, profile?: null | string) =>
+    getTelegramOnboardingStatus(pairingId, profile),
+  startTelegramOnboarding: (botName?: string, profile?: null | string) => startTelegramOnboarding(botName, profile),
+  updateMessagingPlatform: (id: string, body: unknown, profile?: null | string) =>
+    updateMessagingPlatform(id, body, profile)
 }))
+
+vi.mock('qrcode', () => ({ toDataURL: vi.fn(async () => 'data:image/png;base64,QR') }))
 
 // Keep store/profile's side-effecting imports inert (pulled in via the shared
 // settings scope store) — same seam as store/profile.test.ts.
@@ -42,9 +58,15 @@ vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
 
-vi.mock('@/store/system-actions', () => ({
-  runGatewayRestart: vi.fn()
-}))
+vi.mock('@/store/system-actions', async () => {
+  const { atom } = await import('nanostores')
+
+  return {
+    $gatewayRestarting: atom(false),
+    runGatewayRestart: () => runGatewayRestart(),
+    watchGatewayRestartOutcome: () => watchGatewayRestartOutcome()
+  }
+})
 
 function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatformInfo {
   return {
@@ -64,6 +86,8 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
 beforeEach(() => {
   updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'teams' })
   getPairing.mockResolvedValue({ approved: [], pending: [] })
+  runGatewayRestart.mockResolvedValue(true)
+  watchGatewayRestartOutcome.mockResolvedValue(true)
 })
 
 afterEach(() => {
@@ -84,6 +108,20 @@ async function renderMessaging() {
 
   return result!
 }
+
+describe('MessagingView profile scope', () => {
+  it('follows the active profile instead of targeting primary when there is no override', async () => {
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+
+    await renderMessaging()
+
+    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(undefined))
+    expect(getPairing).toHaveBeenCalledWith(undefined)
+  })
+})
 
 describe('MessagingView setup-guide link', () => {
   it('hides the setup-guide button for a plugin platform with no docs URL', async () => {
@@ -138,7 +176,7 @@ describe('MessagingView pairing', () => {
       fireEvent.click(approve)
     })
 
-    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718'))
+    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718', undefined))
   })
 
   it('restores the pending row when approval fails', async () => {
@@ -213,5 +251,103 @@ describe('MessagingView pairing', () => {
       $platformsChangeTick.set($platformsChangeTick.get() + 1)
     })
     expect(getPairing).not.toHaveBeenCalled()
+  })
+})
+
+describe('MessagingView restart banner', () => {
+  const tokenField = {
+    advanced: false,
+    description: 'Bot token',
+    is_password: true,
+    is_set: false,
+    key: 'TEAMS_TOKEN',
+    prompt: 'Token',
+    redacted_value: null,
+    required: true,
+    url: null
+  }
+
+  it('keeps a restart banner up after a save until the restart completes', async () => {
+    // A toast vanishes; the credential still only loads on the next gateway
+    // start. The page must keep saying so — and only stop once a restart
+    // actually succeeded, not merely because one was requested.
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+    runGatewayRestart.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+
+    await renderMessaging()
+
+    fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'secret-1' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+
+    await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalled())
+    const restartNow = await screen.findByRole('button', { name: 'Restart now' })
+
+    await act(async () => {
+      fireEvent.click(restartNow)
+    })
+    // First attempt failed: banner stays.
+    expect(await screen.findByRole('button', { name: 'Restart now' })).toBeTruthy()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
+    expect(runGatewayRestart).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('MessagingView Telegram quick setup', () => {
+  it('runs the QR pairing to apply on the page scope and watches the backend restart', async () => {
+    // Every call of one pairing must hit the SAME backend (the pairing lives in
+    // that process's memory), so start/status/apply all carry the page's scope
+    // and apply names the profile the credentials land in.
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    $settingsScopeOverride.set('worker')
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({ id: 'telegram', name: 'Telegram', state: 'not_configured' })]
+    })
+    startTelegramOnboarding.mockResolvedValue({
+      deep_link: 'https://t.me/BotFather?start=abc',
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      pairing_id: 'pair-1',
+      qr_payload: 'tg://pair',
+      suggested_username: 'hermes_bot'
+    })
+    getTelegramOnboardingStatus.mockResolvedValue({
+      bot_username: 'hermes_bot',
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      owner_user_id: '8792111505',
+      status: 'ready'
+    })
+    applyTelegramOnboarding.mockResolvedValue({
+      needs_restart: false,
+      ok: true,
+      platform: 'telegram',
+      restart_started: true
+    })
+
+    try {
+      await renderMessaging()
+
+      await act(async () => {
+        fireEvent.click(await screen.findByRole('button', { name: /Create with QR/ }))
+      })
+      await waitFor(() => expect(startTelegramOnboarding).toHaveBeenCalledWith(undefined, 'worker'))
+
+      const save = await screen.findByRole('button', { name: /Save and restart/ }, { timeout: 4000 })
+      expect(getTelegramOnboardingStatus).toHaveBeenCalledWith('pair-1', 'worker')
+      expect(screen.getByText('8792111505')).toBeTruthy()
+
+      await act(async () => {
+        fireEvent.click(save)
+      })
+
+      await waitFor(() => expect(applyTelegramOnboarding).toHaveBeenCalledWith('pair-1', ['8792111505'], 'worker'))
+      await waitFor(() => expect(watchGatewayRestartOutcome).toHaveBeenCalled())
+    } finally {
+      $settingsScopeOverride.set(null)
+    }
   })
 })

@@ -8,6 +8,8 @@ import { $gateway } from '@/store/gateway'
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
+import { $tipsEnabled, type ActiveTip, showTip } from '@/store/tips'
+import { $toursEnabled } from '@/store/tours'
 
 import type { GatewayEventContext } from './types'
 
@@ -43,7 +45,7 @@ const loadPreviewEngine = () => {
  *  (terminal/preview/window), agent terminal streaming, pane reveal, and
  *  message reactions. */
 export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
-  const { event, payload, isActiveEvent } = ctx
+  const { event, payload, explicitSid, isActiveEvent } = ctx
 
   if (event.type === 'terminal.read.request') {
     // read_terminal tool: serialize the renderer's xterm buffer and answer
@@ -93,6 +95,13 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      // Every mounted desktop window can observe the same gateway event. A
+      // scoped mismatch belongs to another window, so answering here would race
+      // the owning window and could make this refusal win before its real result.
+      if (explicitSid && !isActiveEvent) {
+        return true
+      }
+
       const answer = (result: unknown) =>
         $gateway.get()?.request('preview.act.respond', {
           request_id: requestId,
@@ -177,13 +186,25 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      // As with preview actions, only the renderer that owns an explicitly
+      // scoped request may answer. Inactive windows must stay silent even when
+      // tours are disabled locally, or their refusal can beat the owner.
+      if (explicitSid && !isActiveEvent) {
+        return true
+      }
+
       const answer = (result: unknown) =>
         $gateway.get()?.request('tour.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
 
-      if (isActiveEvent) {
+      if (!$toursEnabled.get()) {
+        // Refused in words, not silently dropped: the agent asked for a
+        // walkthrough it isn't getting, and a no-op would leave it narrating
+        // a spotlight the user can't see.
+        void answer({ error: 'The user has turned guided tours off.', success: false })
+      } else if (isActiveEvent) {
         void import('@/lib/tour')
           .then(({ runTour }) =>
             runTour(
@@ -208,6 +229,32 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
           success: false
         })
       }
+    }
+
+    return true
+  }
+
+  if (event.type === 'tip.show') {
+    // tip tool: point the accent bubble at something and say one line about
+    // it. Fire-and-forget — a tip is not a question, and blocking the turn on
+    // one would stall the sentence the agent is in the middle of, so there is
+    // nothing to answer and a refusal is simply a bubble that never appears.
+    // Active session only: a background turn must never paint on the user's
+    // screen (desktop AGENTS.md: offer, don't hijack).
+    const selector = typeof payload?.selector === 'string' ? payload.selector : ''
+    const text = typeof payload?.text === 'string' ? payload.text : ''
+
+    // A tip with nothing to point at is just a notification, and the app
+    // already has those. Dropping it here also stops a malformed event from
+    // replacing a rotation tip with a bubble that dismisses itself a frame
+    // later.
+    if ($tipsEnabled.get() && isActiveEvent && selector && text) {
+      showTip({
+        side: (payload?.side as ActiveTip['side']) ?? 'top',
+        targets: [selector],
+        text,
+        title: typeof payload?.title === 'string' ? payload.title : undefined
+      })
     }
 
     return true

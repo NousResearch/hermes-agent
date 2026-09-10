@@ -402,3 +402,75 @@ export function knownGroups(metaByName: Record<string, BotMeta>) {
     })
   )
 }
+
+/** Groups a single member ACTUALLY sits in, read from BOTH sources — bot-meta
+ *  `groups` AND the room record's stored `members` — mirroring how
+ *  `groupChatMemberBots` seats the room. The settings dialog must use this
+ *  union, or a member that rides the room record alone (e.g. after a local-only
+ *  ui_meta save, or a scoped remote member) stays invisible in the
+ *  Manage-groups dialog and can never be removed back out of the group. */
+export function groupMemberGroupNames(
+  member: RosterRow,
+  meta: BotMeta | null | undefined,
+  rooms: Record<string, GroupChat>
+): string[] {
+  const names = new Set(botGroups(meta))
+  const key = botRosterKey(member)
+  const memberConnection = String(member?.connectionId || '')
+
+  // The member's own identity tokens: bare slug + every friendly/display name
+  // (same surface resolveLegacyMemberDescriptor matches against).
+  const memberTokens = new Set<string>()
+
+  for (const token of [member?.name, member?.handle, member?.display_name, ...botFriendlyNames(member)]) {
+    const trimmed = String(token || '')
+      .trim()
+      .toLowerCase()
+
+    if (trimmed) {
+      memberTokens.add(trimmed)
+    }
+  }
+
+  const seatsMember = (descriptor: GroupMember | RosterRow | null | undefined): boolean => {
+    if (!descriptor) {
+      return false
+    }
+
+    if (botRosterKey(descriptor) === key) {
+      return true
+    }
+
+    // Legacy/friendly-name descriptors: match by name, but STRICTLY within the
+    // member's connection scope — never capture a same-named row on a foreign
+    // connection (two `default`s on different machines must not merge). A
+    // descriptor WITHOUT a connectionId predates connection scoping, so only
+    // local (non-remote) members are legal matches.
+    const descriptorConnection = String(descriptor?.connectionId || '')
+    const sameConnection = descriptorConnection
+      ? descriptorConnection === memberConnection
+      : !member?.remoteSource
+
+    if (!sameConnection) {
+      return false
+    }
+
+    const descriptorName = String(descriptor?.name || '')
+      .trim()
+      .toLowerCase()
+
+    return Boolean(descriptorName && memberTokens.has(descriptorName))
+  }
+
+  for (const [group, room] of Object.entries(rooms || {})) {
+    if (room?.tombstone) {
+      continue
+    }
+
+    if (Array.isArray(room?.members) && room.members.some(seatsMember)) {
+      names.add(group)
+    }
+  }
+
+  return [...names]
+}

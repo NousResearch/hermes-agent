@@ -4577,8 +4577,14 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         if req.api_mode == "anthropic_messages":
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
         custom_key = (
-            (req.explicit_api_key or "").strip()
-            or _scoped_key_env("OPENAI_API_KEY")
+            # A callable (key_cmd token source) must reach the client uncalled:
+            # .strip() raises AttributeError (#88667) and str() would send the
+            # object repr as the bearer (#104460's class).
+            req.explicit_api_key
+            if callable(req.explicit_api_key)
+            else (req.explicit_api_key or "").strip()
+        ) or (
+            _scoped_key_env("OPENAI_API_KEY")
             or _read_main_api_key_if_same_host(custom_base)
             or "no-key-required"  # local servers don't need auth
         )
@@ -4591,7 +4597,11 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         # Re-resolution loses the provider name and falls back to OpenRouter or a wrong API-key provider —
         # the main agent already solved this, we just need to reuse its answer. (#45472)
         _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
-        _main_key = str(main_runtime.get("api_key") or "").strip()
+        _main_key = (
+            main_runtime.get("api_key")
+            if callable(main_runtime.get("api_key"))
+            else str(main_runtime.get("api_key") or "").strip()
+        )
         if _main_base and _main_key:
             custom_base, custom_key = _main_base, _main_key
     if custom_base and custom_key:
@@ -4652,7 +4662,13 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
-    custom_key = (req.explicit_api_key or "").strip() or _named_custom_api_key(custom_entry, provider, custom_base)
+    # Callable contract (key_cmd): an explicit token source is passed through
+    # uncalled; only strings are normalised (#88667).
+    custom_key = (
+        req.explicit_api_key
+        if callable(req.explicit_api_key)
+        else (req.explicit_api_key or "").strip()
+    ) or _named_custom_api_key(custom_entry, provider, custom_base)
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
@@ -4716,7 +4732,13 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     # Explicit api_key override (fallback_model / custom_providers entry) lets callers
     # authenticate where no built-in credential is registered for this alias.
     if req.explicit_api_key:
-        api_key = req.explicit_api_key.strip() or api_key
+        # Callable contract (key_cmd): pass the token source through uncalled;
+        # .strip() on it raised AttributeError (#88667, follow-up PR #105595).
+        api_key = (
+            req.explicit_api_key
+            if callable(req.explicit_api_key)
+            else req.explicit_api_key.strip() or api_key
+        )
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")

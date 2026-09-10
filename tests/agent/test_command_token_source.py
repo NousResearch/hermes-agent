@@ -305,8 +305,12 @@ class TestAuxiliaryResolverHonoursKeyCmd:
     """
 
     @staticmethod
-    def _resolve(monkeypatch, entry):
-        """Resolve *entry* as a named custom provider; return the api_key seen."""
+    def _resolve(monkeypatch, entry, explicit_api_key: object = None):
+        """Resolve *entry* as a named custom provider; return the api_key seen.
+
+        ``explicit_api_key`` is typed loosely on purpose: the ``key_cmd``
+        contract hands ``resolve_provider_client`` a callable, not a str.
+        """
         import agent.auxiliary_client as ac
         from hermes_cli import runtime_provider as rp
 
@@ -321,7 +325,7 @@ class TestAuxiliaryResolverHonoursKeyCmd:
             return SimpleNamespace(api_key=api_key, base_url=base_url)
 
         monkeypatch.setattr(ac, "_create_openai_client", _spy)
-        ac.resolve_provider_client("dbx")
+        ac.resolve_provider_client("dbx", explicit_api_key=explicit_api_key)
         return seen.get("api_key")
 
     BASE = {"base_url": "https://example.invalid/v1", "model": "m1"}
@@ -347,3 +351,68 @@ class TestAuxiliaryResolverHonoursKeyCmd:
         assert self._resolve(
             monkeypatch, {**self.BASE, "key_cmd": "   "}
         ) == "no-key-required"
+
+
+class TestExplicitCallableSurvivesCustomResolution:
+    """Callers hand ``resolve_provider_client`` a callable (key_cmd token,
+    vision auto-routing through the main runtime's callable credential) and
+    every custom branch must pass it through *uncalled*: ``.strip()`` on it
+    raised AttributeError (issue #88667), ``str()`` would send the object repr
+    as the bearer (#104460's bug class)."""
+
+    TOK = CommandTokenSource("printf minted-token", "dbx")
+
+    @staticmethod
+    def _spy_client(monkeypatch):
+        import agent.auxiliary_client as ac
+
+        seen = {}
+
+        def _spy(*, api_key, base_url, **kw):
+            seen["api_key"] = api_key
+            return SimpleNamespace(api_key=api_key, base_url=base_url)
+
+        monkeypatch.setattr(ac, "_create_openai_client", _spy)
+        return seen
+
+    def test_named_custom_branch_honours_explicit_callable(self, monkeypatch):
+        from hermes_cli import runtime_provider as rp
+
+        monkeypatch.setattr(
+            rp, "_get_named_custom_provider",
+            lambda name: {"base_url": "https://example.invalid/v1", "model": "m1",
+                          "name": "dbx"} if name == "dbx" else None,
+        )
+        seen = self._spy_client(monkeypatch)
+        import agent.auxiliary_client as ac
+
+        ac.resolve_provider_client("dbx", explicit_api_key=self.TOK)
+        assert seen.get("api_key") is self.TOK, (
+            "an explicit callable must reach the client unchanged, not be "
+            "stripped (crash) or stringified (stale-garbage bearer)"
+        )
+
+    def test_bare_custom_branch_honours_explicit_callable(self, monkeypatch):
+        seen = self._spy_client(monkeypatch)
+        import agent.auxiliary_client as ac
+
+        ac.resolve_provider_client(
+            "custom",
+            explicit_base_url="https://example.invalid/v1",
+            explicit_api_key=self.TOK,
+        )
+        assert seen.get("api_key") is self.TOK
+
+    def test_main_runtime_callable_is_not_stringified(self, monkeypatch):
+        """The main-runtime reuse branch must keep the callable; ``str()`` on
+        it would send the object repr as the bearer (the #104460 class)."""
+        seen = self._spy_client(monkeypatch)
+        import agent.auxiliary_client as ac
+
+        ac.resolve_provider_client(
+            "custom",
+            main_runtime={"base_url": "https://example.invalid/v1",
+                          "api_key": self.TOK, "model": "m1"},
+        )
+        assert seen.get("api_key") is self.TOK
+

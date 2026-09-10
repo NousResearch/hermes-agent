@@ -93,19 +93,13 @@ def test_bootstrap_accepts_the_repository_managed_sibling_environment(
     assert (target / ".venv").resolve() == managed.resolve()
 
 
-def test_venv_python_path_recognizes_native_windows_layout(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_venv_python_path_recognizes_native_windows_layout(tmp_path: Path) -> None:
     """A native Windows venv exposes Scripts/python.exe, not bin/python (#PR70).
 
-    Mocks sys.platform, not os.name: Python 3.13's Path.__new__ dispatches its concrete class
-    from os.name at call time, so mocking os.name to "nt" on a real POSIX host would make
-    venv_bin_dir()'s internal Path(venv_dir) reconstruction crash trying to build a WindowsPath.
+    Uses the _platform parameter to keep the helper pure; no monkeypatching of process-wide
+    state, so both platform branches run on any host OS without a Windows CI runner.
     """
     from hermes_cli.worktree_environment import _venv_python_path
 
-    monkeypatch.setattr("hermes_cli.worktree_environment.sys.platform", "win32")
-    assert _venv_python_path(tmp_path) == tmp_path / "Scripts" / "python.exe"
-
-    monkeypatch.setattr("hermes_cli.worktree_environment.sys.platform", "linux")
-    assert _venv_python_path(tmp_path) == tmp_path / "bin" / "python"
+    assert _venv_python_path(tmp_path, _platform="win32") == tmp_path / "Scripts" / "python.exe"
+    assert _venv_python_path(tmp_path, _platform="linux") == tmp_path / "bin" / "python"

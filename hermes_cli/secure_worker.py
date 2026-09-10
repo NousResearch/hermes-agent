@@ -378,7 +378,7 @@ def verify_context_pack(
     actual = {
         path.relative_to(pack).as_posix()
         for path in pack.rglob("*")
-        if path.is_file() and ".git" not in path.relative_to(pack).parts
+        if (path.is_file() or path.is_symlink()) and ".git" not in path.relative_to(pack).parts
     }
     if actual != set(expected):
         raise SecurityBoundaryError("pack file inventory does not match manifest")
@@ -435,7 +435,7 @@ def verify_proposed_diff(
     actual = {
         path.relative_to(pack).as_posix()
         for path in pack.rglob("*")
-        if path.is_file() and ".git" not in path.relative_to(pack).parts
+        if (path.is_file() or path.is_symlink()) and ".git" not in path.relative_to(pack).parts
     }
     extra = actual - set(expected)
     if extra:
@@ -727,6 +727,8 @@ def audit_profile_boundary(
         reasons.append("CLI toolset selection must contain only terminal and file")
     if config.get("agent") != {"disabled_toolsets": ["bfl", "kanban"]}:
         reasons.append("agent toolset disables do not match the admitted boundary")
+    if "hooks" in config or "hooks_auto_accept" in config:
+        reasons.append("executable hooks are denied in secure-worker profiles")
     try:
         from hermes_cli.tools_config import _get_platform_tools
 

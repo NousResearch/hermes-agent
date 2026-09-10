@@ -88,6 +88,7 @@ export function LunarCity({ onNewSession }: LunarCityProps) {
       return
     }
 
+    let cancelled = false
     const sink = storeWorldSyncSink()
     const dispose = bindWorldSources({}, sink)
 
@@ -95,9 +96,10 @@ export function LunarCity({ onNewSession }: LunarCityProps) {
       const current = board ?? (await fetchBoard(false))
 
       return { tasks: current.columns.flatMap(column => column.tasks) }
-    }, sink)
+    }, sink, () => cancelled)
 
     return () => {
+      cancelled = true
       dispose()
       resetWorldProjection()
     }

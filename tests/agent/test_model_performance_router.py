@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from agent.model_performance_router import (
@@ -117,3 +119,53 @@ def test_resolver_enforces_privacy_and_call_context_floor():
             privacy="sanitized",
             required_context=200_000,
         )
+
+
+def test_install_performance_route_table_wires_route_for_agent():
+    """install_performance_route_table makes _route_for_agent consult the compiled table."""
+    import agent.llm_egress_runtime as egress
+    original = egress._PERFORMANCE_ROUTE_TABLE
+    try:
+        compiled = compile_profile_routes(["default"], _artifact())
+        egress.install_performance_route_table(compiled)
+
+        agent = types.SimpleNamespace(
+            performance_surface="review",
+            profile="default",
+            privacy_class="sanitized",
+            provider="fallback-provider",
+            model="fallback-model",
+            base_url=None,
+            api_mode=None,
+        )
+        route = egress._route_for_agent(agent, None)
+
+        assert route.provider == "nous"
+        assert route.model == "fast-model"
+    finally:
+        egress._PERFORMANCE_ROUTE_TABLE = original
+
+
+def test_route_for_agent_falls_back_to_agent_defaults_when_surface_missing():
+    """_route_for_agent uses agent provider/model when no surface is set."""
+    import agent.llm_egress_runtime as egress
+    original = egress._PERFORMANCE_ROUTE_TABLE
+    try:
+        compiled = compile_profile_routes(["default"], _artifact())
+        egress.install_performance_route_table(compiled)
+
+        agent = types.SimpleNamespace(
+            performance_surface="",
+            profile="default",
+            privacy_class="sanitized",
+            provider="my-provider",
+            model="my-model",
+            base_url=None,
+            api_mode=None,
+        )
+        route = egress._route_for_agent(agent, None)
+
+        assert route.provider == "my-provider"
+        assert route.model == "my-model"
+    finally:
+        egress._PERFORMANCE_ROUTE_TABLE = original

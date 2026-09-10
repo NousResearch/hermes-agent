@@ -81,7 +81,8 @@ describe('world synchronization', () => {
     }
 
     const publish = vi.fn()
-    const dispose = bindWorldSources(doors, { getCursors: () => cursors, publish })
+    const emptyProjection = { conditions: [], recentEvents: [], sourceError: null, stale: false, transitions: [] }
+    const dispose = bindWorldSources(doors, { getCursors: () => cursors, getProjection: () => emptyProjection, publish })
 
     dispose()
 

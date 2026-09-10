@@ -171,7 +171,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
-import { ensureKanbanDispatcherReady } from './dispatcher-readiness'
+import { runDispatcherReadinessGate } from './dispatcher-readiness'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
@@ -13206,8 +13206,7 @@ async function startHermes() {
       )
     }
 
-    await advanceBootProgress('backend.dispatcher', 'Verifying Kanban dispatcher readiness', 92)
-    await ensureKanbanDispatcherReady(baseUrl, authToken, fetchJson)
+    await runDispatcherReadinessGate(baseUrl, authToken, fetchJson, advanceBootProgress)
 
     updateBootProgress({
       phase: 'backend.ready',

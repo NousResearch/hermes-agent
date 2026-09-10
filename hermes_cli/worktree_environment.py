@@ -75,7 +75,7 @@ def _same_repository_environment(
     )
 
 
-def _venv_python_path(resolved_source: Path) -> Path:
+def _venv_python_path(resolved_source: Path, *, _platform: str | None = None) -> Path:
     """The interpreter entrypoint for a virtualenv rooted at *resolved_source*.
 
     Native Windows virtualenvs use ``Scripts/python.exe`` rather than
@@ -85,10 +85,14 @@ def _venv_python_path(resolved_source: Path) -> Path:
     3.13's ``Path.__new__`` dispatches its concrete class from ``os.name`` at call time, so a test
     monkeypatching ``os.name`` to simulate Windows would make ``venv_bin_dir()``'s internal
     ``Path(venv_dir)`` reconstruction try to build a ``WindowsPath`` and crash on a real POSIX host.
+
+    *_platform* pins the platform for tests; omit in production (defaults to ``sys.platform``).
     """
     from hermes_constants import venv_bin_dir
-    python_name = "python.exe" if sys.platform == "win32" else "python"
-    return venv_bin_dir(resolved_source) / python_name
+    platform = _platform if _platform is not None else sys.platform
+    windows = platform == "win32"
+    python_name = "python.exe" if windows else "python"
+    return venv_bin_dir(resolved_source, windows=windows) / python_name
 
 
 def bootstrap_worktree_environments(

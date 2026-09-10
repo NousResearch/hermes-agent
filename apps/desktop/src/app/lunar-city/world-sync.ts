@@ -2,6 +2,7 @@ import type { AgentNoticePayload } from '@/store/agent-notices'
 import { type AgentNoticeListener, subscribeAgentNotices } from '@/store/agent-notices'
 import {
   $worldCursors,
+  $worldProjection,
   recordWorldCursor as persistWorldCursor,
   setWorldOpenedAt,
   setWorldProjection,
@@ -41,6 +42,7 @@ export interface WorldSourceDoors {
 
 export interface WorldSyncSink {
   getCursors: () => WorldCursorState
+  getProjection: () => WorldProjection
   publish: (projection: WorldProjection, cursors: WorldCursorState) => void
 }
 
@@ -139,12 +141,17 @@ export function bindWorldSources(doors: WorldSourceDoors, sink: WorldSyncSink): 
     }
 
     const current = sink.getCursors()
+    const prior = sink.getProjection()
     const transitions = events.filter(event => !wasSeen(event, current))
 
+    const merged = dedupeWorldEvents(prior.recentEvents, events)
+
     const projection = {
-      ...emptyProjection(),
-      recentEvents: events.slice(-MAX_RECENT_EVENTS),
-      transitions: transitions.slice(-MAX_TRANSITIONS_PER_REOPEN)
+      ...prior,
+      recentEvents: merged.slice(-MAX_RECENT_EVENTS),
+      transitions: transitions.slice(-MAX_TRANSITIONS_PER_REOPEN),
+      stale: false,
+      sourceError: null,
     }
 
     const cursors = updateCursors(events, current)
@@ -180,13 +187,22 @@ export function bindWorldSources(doors: WorldSourceDoors, sink: WorldSyncSink): 
 
 export async function refreshWorldProjection(
   snapshot: () => Promise<WorldSnapshot>,
-  sink: WorldSyncSink
+  sink: WorldSyncSink,
+  isCancelled?: () => boolean
 ): Promise<void> {
   try {
     const result = reconcileWorldSnapshot(await snapshot(), [], sink.getCursors())
 
+    if (isCancelled?.()) {
+      return
+    }
+
     sink.publish(result.projection, result.cursors)
   } catch (error) {
+    if (isCancelled?.()) {
+      return
+    }
+
     const prior = sink.getCursors()
     sink.publish(
       { ...emptyProjection(), sourceError: error instanceof Error ? error.message : String(error), stale: true },
@@ -198,6 +214,7 @@ export async function refreshWorldProjection(
 export function storeWorldSyncSink(): WorldSyncSink {
   return {
     getCursors: () => $worldCursors.get(),
+    getProjection: () => $worldProjection.get(),
     publish: (projection, cursors) => {
       setWorldProjection(projection)
 

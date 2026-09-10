@@ -550,7 +550,13 @@ def _write_role_config(profile_dir: Path, role: FederationRole, manifest: Federa
     # Always persist the role's declared toolsets, even when the role's
     # department has no model policy — otherwise the profile silently falls
     # back to the default toolset instead of the role's declared surface.
+    # Write to platform_toolsets["cli"] too — _get_platform_tools() reads that
+    # key, not the top-level "toolsets" list, so role declarations are inert
+    # without this second write.
     config["toolsets"] = list(role.toolsets)
+    platform_toolsets = dict(config.get("platform_toolsets") or {})
+    platform_toolsets["cli"] = list(role.toolsets)
+    config["platform_toolsets"] = platform_toolsets
 
     policy = _role_model_policy(manifest, role)
     if policy:
@@ -669,14 +675,33 @@ def seed_federation(
                 continue
             try:
                 had_identity = identity_path.is_file()
-                _write_role_config(profile_dir, role, manifest)
-                _write_role_identity(
-                    profile_dir,
-                    role,
-                    manifest,
-                    preserve_existing_soul=True,
-                )
-                skill_result = _sync_role_skills(profile_dir, role)
+                # Snapshot current on-disk content so we can roll back if skill
+                # sync fails and leaves the profile in a partially-updated state.
+                config_path = profile_dir / "config.yaml"
+                _snapshots: list[tuple[Path, bytes | None]] = []
+                for snap_path in (config_path, identity_path):
+                    _snapshots.append((snap_path, snap_path.read_bytes() if snap_path.is_file() else None))
+                try:
+                    _write_role_config(profile_dir, role, manifest)
+                    _write_role_identity(
+                        profile_dir,
+                        role,
+                        manifest,
+                        preserve_existing_soul=True,
+                    )
+                    skill_result = _sync_role_skills(profile_dir, role)
+                except Exception:
+                    # Restore every snapshotted file to its pre-refresh state so
+                    # the profile does not remain partially updated on disk.
+                    for snap_path, snap_data in _snapshots:
+                        try:
+                            if snap_data is None:
+                                snap_path.unlink(missing_ok=True)
+                            else:
+                                snap_path.write_bytes(snap_data)
+                        except OSError:
+                            pass
+                    raise
                 if skill_result["installed"]:
                     result["skills_installed"][role.id] = skill_result["installed"]
                 if skill_result["skipped"]:
@@ -786,6 +811,15 @@ def seed_federation_groups(
         snapshot = dict(existing_snapshot) if isinstance(existing_snapshot, dict) else {"version": 3, "rooms": {}}
         rooms = dict(snapshot.get("rooms")) if isinstance(snapshot.get("rooms"), dict) else {}
         changed = False
+        # Build the canonical set of group display-names each role belongs to
+        # in the current manifest, so stale groups can be removed (not just
+        # new ones appended) when a role is removed from a group or a group
+        # is renamed.
+        _role_to_groups: dict[str, list[str]] = {}
+        for _g in manifest.groups:
+            for _rid in _g.roles:
+                _role_to_groups.setdefault(_rid, []).append(_g.display_name)
+
         for group in manifest.groups:
             room_id = _group_room_id(group)
             room_key = f"id:{room_id}"
@@ -826,9 +860,9 @@ def seed_federation_groups(
                 role_doc = _read_profile_yaml(role_path)
                 role_ui_meta = dict(role_doc.get("ui_meta")) if isinstance(role_doc.get("ui_meta"), dict) else {}
                 bot_meta = dict(role_ui_meta.get("hermes-bots")) if isinstance(role_ui_meta.get("hermes-bots"), dict) else {}
-                groups = list(bot_meta.get("groups")) if isinstance(bot_meta.get("groups"), list) else []
-                if group.display_name not in groups:
-                    groups.append(group.display_name)
+                # Use the canonical manifest groups for this role — replaces any
+                # previously appended but now-removed group names.
+                groups = sorted(_role_to_groups.get(role_id, []))
                 desired_meta = dict(bot_meta)
                 desired_meta["groups"] = groups
                 desired_meta["group"] = groups[0] if groups else None

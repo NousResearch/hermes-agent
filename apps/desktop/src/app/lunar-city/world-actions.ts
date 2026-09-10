@@ -10,6 +10,7 @@ export interface WorldActionContext {
   }
   createSession?: (params: Record<string, unknown>) => Promise<unknown> | unknown
   requestApproval?: (params: Record<string, unknown>) => Promise<unknown>
+  inspect?: (target: WorldActionContextTarget) => Promise<unknown> | unknown
 }
 
 export interface WorldActionContextTarget {
@@ -75,7 +76,9 @@ export function createWorldActionRunner(context: WorldActionContext): WorldActio
           case 'inspect_blocker':
 
           case 'show_source':
-            return completed(intent.target)
+            return context.inspect
+              ? completed(await context.inspect(intent.target))
+              : failed(new Error('Inspection is unavailable'))
 
           case 'comment':
             return completed(await context.kanban.addComment(intent.taskId, intent.body))

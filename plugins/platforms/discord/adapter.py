@@ -3513,7 +3513,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
 
         if was_in_configured_channel and not is_in_configured_channel:
-            await self.leave_voice_channel(member.guild.id)
+            # Only disconnect when no other configured user remains in the channel.
+            remaining = {
+                str(getattr(m, "id", ""))
+                for m in getattr(before_channel, "members", [])
+                if str(getattr(m, "id", "")) in user_ids and str(getattr(m, "id", "")) != str(getattr(member, "id", ""))
+            }
+            if not remaining:
+                await self.leave_voice_channel(member.guild.id)
 
     async def _auto_join_configured_voice_channel_if_user_present(self) -> None:
         """Restore the configured voice session after Gateway startup."""

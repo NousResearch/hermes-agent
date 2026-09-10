@@ -1,20 +1,29 @@
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
-import { DispatcherReadinessError, ensureKanbanDispatcherReady } from './dispatcher-readiness'
+import { DispatcherReadinessError, ensureKanbanDispatcherReady, runDispatcherReadinessGate } from './dispatcher-readiness'
 
-const mainSource = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'main.ts'), 'utf8')
+test('runDispatcherReadinessGate advances the boot phase before checking readiness', async () => {
+  const events: string[] = []
 
-test('local Desktop startup gates backend.ready on dispatcher readiness', () => {
-  const readinessCall = mainSource.indexOf('await ensureKanbanDispatcherReady(baseUrl, authToken, fetchJson)')
-  const readyPhase = mainSource.indexOf("phase: 'backend.ready'", readinessCall)
+  await runDispatcherReadinessGate(
+    'http://127.0.0.1:9000',
+    'session-token',
+    async () => {
+      events.push('readiness-checked')
+      return { status: 'ready', ready: true, gateway_pid: 1, message: 'ok' }
+    },
+    async (id: string) => {
+      events.push(`phase:${id}`)
+    }
+  )
 
-  assert.ok(readinessCall > 0, 'local startup must invoke the dispatcher readiness gate')
-  assert.ok(readyPhase > readinessCall, 'backend.ready must be published only after dispatcher readiness')
+  assert.deepEqual(
+    events,
+    ['phase:backend.dispatcher', 'readiness-checked'],
+    'boot phase must be advanced before the readiness endpoint is queried'
+  )
 })
 
 test('accepts a live gateway-owned dispatcher', async () => {
@@ -69,6 +78,18 @@ test('allows Desktop startup when the embedded dispatcher is disabled', async ()
   assert.equal(result.status, 'disabled')
   assert.equal(result.ready, false)
   assert.deepEqual(calls, ['http://127.0.0.1:9000/api/plugins/kanban/dispatcher-readiness'])
+})
+
+test('allows Desktop startup when the Kanban plugin is absent (404 — not mounted)', async () => {
+  // When the Kanban plugin is explicitly disabled or removed, its API router is
+  // never mounted, so the readiness endpoint returns 404. Desktop must not treat
+  // this as a startup failure; it should behave identically to { status: "disabled" }.
+  const result = await ensureKanbanDispatcherReady('http://127.0.0.1:9000', 'session-token', async () => {
+    throw new Error('404: Not Found')
+  })
+
+  assert.equal(result.status, 'disabled')
+  assert.equal(result.ready, false)
 })
 
 test('blocks startup without starting a gateway for unknown dispatcher state', async () => {

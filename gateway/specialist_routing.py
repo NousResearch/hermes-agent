@@ -14,7 +14,10 @@ import math
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
+
+if TYPE_CHECKING:
+    from gateway.capability_registry import CapabilityRegistry
 
 
 SPECIALIST_PROFILES: dict[str, str] = {
@@ -126,7 +129,11 @@ def build_classifier_messages(request: str) -> list[dict[str, str]]:
 
 
 def parse_specialist_response(
-    raw: str, *, threshold: float = 0.80, fallback_title: str = ""
+    raw: str,
+    *,
+    threshold: float = 0.80,
+    fallback_title: str = "",
+    registry: "CapabilityRegistry | None" = None,
 ) -> SpecialistRouteDecision:
     """Validate an untrusted classifier answer without repair or coercion."""
     if not isinstance(raw, str):
@@ -163,6 +170,8 @@ def parse_specialist_response(
     if kind is RouteKind.SPECIALIST:
         if not isinstance(profile, str) or profile not in SPECIALIST_PROFILES:
             return _general("unknown_profile")
+        if registry is not None and not registry.is_profile_declared(profile):
+            return _general("registry_unresolved")
         if not title.strip():
             title = " ".join(fallback_title.split())[:_MAX_TITLE_CHARS]
             if not title:
@@ -197,6 +206,7 @@ async def classify_specialist_request(
     *,
     threshold: float = 0.80,
     timeout: float = 12.0,
+    registry: "CapabilityRegistry | None" = None,
 ) -> SpecialistRouteDecision:
     """Run one bounded classifier call and turn every failure into fallback."""
     if not isinstance(request, str) or not request.strip():
@@ -217,4 +227,4 @@ async def classify_specialist_request(
         return _general("classifier_error")
     if not isinstance(raw, str):
         return _general("invalid_classifier_output")
-    return parse_specialist_response(raw, threshold=threshold, fallback_title=request)
+    return parse_specialist_response(raw, threshold=threshold, fallback_title=request, registry=registry)

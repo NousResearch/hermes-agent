@@ -263,6 +263,12 @@ DEFAULT_CONFIG = {
         # timeout_s <= 0 disables; poll_s = sampling interval. Invalid values (NaN, Inf,
         # non-positive poll) warn and fall back to defaults. See agent/turn_liveness.py.
         "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
+        # Optional path to a benchmark-backed model performance route artifact (JSON produced by
+        # ``hermes_cli.profile_route_compiler.compile_profile_configs``). When set, the gateway
+        # compiles it at startup and installs a per-surface, per-profile model route table that
+        # ``_route_for_agent`` consults when the agent declares a ``performance_surface``.
+        # null (default) leaves the table empty so agent provider/model config stays active.
+        "performance_route_artifact": None,
     },
 
     "terminal": {

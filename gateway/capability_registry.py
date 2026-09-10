@@ -341,7 +341,41 @@ class CapabilityRegistry:
                 )
         return receipt
 
-    def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
+    def is_profile_declared(self, profile_id: str) -> bool:
+        """Return True iff this profile_id has at least one active, unexpired, non-revoked declaration.
+
+        Use this as a fast gate before routing: if it returns False, the profile has
+        no operator-approved capability on record and routing must fall back to general chat.
+        """
+        try:
+            self._validate_profile_id(profile_id)
+        except ValueError:
+            return False
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT profiles.id, profiles.expires_at
+                    FROM capability_profiles AS profiles
+                    WHERE profiles.profile_id = ? AND profiles.status = 'active'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM specialist_profile_revocations AS revocations
+                          WHERE revocations.capability_profile_id = profiles.id
+                            AND revocations.profile_id = profiles.profile_id
+                            AND revocations.signature_hash = profiles.signature_hash
+                            AND revocations.permissions_hash = profiles.permissions_hash
+                      )
+                    ORDER BY profiles.id DESC LIMIT 1
+                    """,
+                    (profile_id,),
+                ).fetchone()
+        except Exception:
+            return False
+        if row is None:
+            return False
+        return _unexpired(row["expires_at"], now=int(time.time()))
+
+        def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
         """Resolve exactly one active, unexpired, non-expanding local profile."""
         if not isinstance(signature, CapabilitySignature):
             raise TypeError("signature must be a CapabilitySignature")

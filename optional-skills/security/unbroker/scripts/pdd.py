@@ -589,6 +589,13 @@ def cmd_send_email(args) -> None:
         _out({"skipped": True, "broker": args.broker, "state": current,
               "note": "already submitted; not re-sending (idempotent). Use --force to re-send."})
         return
+    # A send is an irreversible legal request, so never let it outrun the ledger record: refuse if
+    # `current -> submitted` is not a legal transition (the recording step at the end would raise
+    # after the email had already gone out, leaving the case unrecorded and re-sendable).
+    if not ledger_mod.can_transition(current, "submitted"):
+        sys.exit(f"error: cannot file an opt-out from state {current!r} (no "
+                 f"{current} -> submitted transition); re-scan the broker to a `found`/`reappeared` "
+                 "verdict first")
     kind = getattr(args, "kind", "generic") or "generic"
     fields, disclosed = _email_request(d, b, kind, args.listing, getattr(args, "identifier", None))
     body = legal.render_optout_email(b, fields) if kind == "generic" else legal.render_request(kind, b, fields)

@@ -82,3 +82,38 @@ def test_inline_noqa_marker_exempts_a_call():
     )
     assert exempt == [], "inline marker should exempt the call"
 
+
+
+def test_splatted_kwargs_helper_counts_only_when_it_sets_stdin():
+    """``**_KW`` / ``**_kw()`` splats are safe only when the same-file definition sets stdin=."""
+    guard = _load_guard()
+    safe_const = (
+        "import subprocess\n"
+        "_KW = dict(capture_output=True, stdin=subprocess.DEVNULL)\n"
+        "subprocess.run(['ls'], **_KW)\n"
+    )
+    safe_fn = (
+        "import subprocess\n"
+        "def _kw(timeout):\n"
+        "    return dict(timeout=timeout, stdin=subprocess.DEVNULL)\n"
+        "subprocess.run(['ls'], **_kw(3))\n"
+    )
+    unsafe_const = (
+        "import subprocess\n"
+        "_KW = dict(capture_output=True, text=True)\n"
+        "subprocess.run(['ls'], **_KW)\n"
+    )
+    undefined = "import subprocess\nsubprocess.run(['ls'], **_KW)\n"
+    # A later unrelated call passing stdin= must NOT vouch for the splat (reviewer-found false negative
+    # in the 30-line text-window version).
+    unrelated_later = (
+        "import subprocess\n"
+        "kwargs = {'capture_output': True}\n"
+        "subprocess.run(['child'], **kwargs)\n"
+        "subprocess.run(['other'], stdin=subprocess.DEVNULL)\n"
+    )
+    assert guard.find_subprocess_calls(safe_const, "x.py") == []
+    assert guard.find_subprocess_calls(safe_fn, "x.py") == []
+    assert len(guard.find_subprocess_calls(unsafe_const, "x.py")) == 1
+    assert len(guard.find_subprocess_calls(undefined, "x.py")) == 1
+    assert [v["line"] for v in guard.find_subprocess_calls(unrelated_later, "x.py")] == [3]

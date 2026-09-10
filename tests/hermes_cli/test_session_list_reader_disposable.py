@@ -27,8 +27,9 @@ from __future__ import annotations
 import shutil
 
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-from hermes_cli.web_server import _open_session_db_at_path
-from hermes_state import SessionDB, _db_fingerprint
+from hermes_cli.web_server_sessions import _open_session_db_at_path
+from hermes_state import SessionDB
+from hermes_state_repair import _db_fingerprint
 
 
 def _ids(db) -> list:

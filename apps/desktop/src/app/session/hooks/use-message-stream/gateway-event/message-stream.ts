@@ -14,6 +14,7 @@ import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
+import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -387,6 +388,10 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         setCurrentUsage(current => ({ ...current, ...payload.usage }))
       }
     }
+
+    // Refresh only the structured-control sessions already proven capable.
+    // Initial hydration owns the unknown capability probe.
+    void refreshSupportedSessionControlAfterTurn(sessionId)
 
     return true
   }

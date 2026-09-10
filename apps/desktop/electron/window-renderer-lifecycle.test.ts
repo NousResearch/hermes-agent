@@ -92,27 +92,24 @@ test('pushReloadTime records the timestamp', () => {
   assert.deepEqual(pushReloadTime(times, 42), [42])
 })
 
-test('shouldReloadAfterRendererGone reloads crashed/oom on a live window', () => {
+test('shouldReloadAfterRendererGone reloads crashed/oom/killed on a live window', () => {
   assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'crashed', isDestroyed: false, recentReloadTimes: [] }), {
     reload: true
   })
   assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'oom', isDestroyed: false, recentReloadTimes: [] }), {
     reload: true
   })
+  assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'killed', isDestroyed: false, recentReloadTimes: [] }), {
+    reload: true
+  })
 })
 
 test('shouldReloadAfterRendererGone never reloads expected teardown or unknown reasons', () => {
   // A window the user closed reports reason 'killed' — reloading would pop it
-  // back up after close.
+  // back up after close. isDestroyed gates that case before reason matching.
   assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'killed', isDestroyed: true, recentReloadTimes: [] }), {
     reload: false,
     suppressedReason: 'expected-teardown'
-  })
-  // Killed on a live window is a process-initiated loss (e.g. OS reclaim);
-  // the primary window never reloaded it, so peers don't either.
-  assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'killed', isDestroyed: false, recentReloadTimes: [] }), {
-    reload: false,
-    suppressedReason: 'unrecoverable-reason'
   })
   assert.deepEqual(
     shouldReloadAfterRendererGone({ reason: 'launch-failed', isDestroyed: false, recentReloadTimes: [] }),

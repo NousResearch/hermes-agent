@@ -32,6 +32,7 @@ const renderSidebar = (pathname: string, currentView: AppView) =>
           currentView={currentView}
           onArchiveSession={noop}
           onBranchSession={noop}
+          onDeleteAllSessions={noop}
           onDeleteSession={noop}
           onLoadMoreSessions={noop}
           onManageCronJob={noop}

@@ -2041,6 +2041,15 @@ export const zhHant = defineLocale({
     projectLoadFailed: '會話載入失敗',
     noSessions: '尚無工作階段',
     noFilterMatches: '沒有工作階段符合這些篩選條件',
+    deleteAll: {
+      action: '刪除所有工作階段',
+      title: '刪除所有工作階段？',
+      body: count =>
+        `永久刪除此設定檔中的${count === 1 ? '此工作階段' : `全部 ${count} 個工作階段`}？已釘選的工作階段也會一併刪除；已封存的工作階段會保留。此操作無法復原。`,
+      confirm: '全部刪除',
+      busy: '正在刪除…',
+      done: '已刪除'
+    },
     projects: {
       showAllSessions: '顯示所有工作階段',
       sectionLabel: '專案',

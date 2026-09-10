@@ -2634,6 +2634,15 @@ export const zh: Translations = {
     projectLoadFailed: '会话加载失败',
     noSessions: '暂无会话',
     noFilterMatches: '没有会话符合这些筛选条件',
+    deleteAll: {
+      action: '删除所有会话',
+      title: '删除所有会话？',
+      body: count =>
+        `永久删除此配置文件中的${count === 1 ? '此会话' : `全部 ${count} 个会话`}？置顶会话也会一并删除；已归档的会话将保留。此操作无法撤销。`,
+      confirm: '全部删除',
+      busy: '正在删除…',
+      done: '已删除'
+    },
     projects: {
       showAllSessions: '显示所有会话',
       sectionLabel: '项目',

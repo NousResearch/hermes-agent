@@ -36,6 +36,7 @@ function makeSidebarActions(): SidebarActions {
   return {
     onArchiveSession: vi.fn(),
     onBranchSession: vi.fn(),
+    onDeleteAllSessions: vi.fn(),
     onDeleteSession: vi.fn(),
     onLoadMoreMessaging: vi.fn(),
     onLoadMoreSessions: vi.fn(),

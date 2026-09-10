@@ -13,6 +13,7 @@ export type SidebarActions = Pick<
   ComponentProps<typeof ChatSidebar>,
   | 'onArchiveSession'
   | 'onBranchSession'
+  | 'onDeleteAllSessions'
   | 'onDeleteSession'
   | 'onLoadMoreMessaging'
   | 'onLoadMoreSessions'

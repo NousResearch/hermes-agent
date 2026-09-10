@@ -1016,19 +1016,19 @@
           setActionError(tx(t, "taskCreatedWarning", "Task created, but: ") + res.warning);
         }
         const taskId = res && res.task && res.task.id;
-        const upload = taskId
-          ? uploadTaskAttachments(taskId, board, attachments)
-          : Promise.resolve();
-        return upload.catch(function (e) {
+        loadBoard();
+        loadBoardList();  // refresh counts in the switcher
+        if (!taskId || !attachments || !attachments.length) return res;
+        uploadTaskAttachments(taskId, board, attachments).catch(function (e) {
           // The task already exists; resolve so the create dialog closes rather
           // than letting a retry create a duplicate card.
           setActionError(tx(t, "taskCreatedUploadFailed",
             "Task created, but attachment upload failed: ") + String(e.message || e));
         }).then(function () {
           loadBoard();
-          loadBoardList();  // refresh counts in the switcher
-          return res;
+          loadBoardList();  // pick up attachment state after the background upload
         });
+        return res;
       });
     }, [loadBoard, loadBoardList, board, t]);
 

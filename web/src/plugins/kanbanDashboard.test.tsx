@@ -28,6 +28,7 @@ const emptyBoard = {
 
 let container: HTMLDivElement;
 let root: Root;
+let resolveUpload: ((response: { ok: boolean; status: number; text: () => Promise<string> }) => void) | undefined;
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 class FakeWebSocket {
@@ -59,11 +60,7 @@ beforeEach(async () => {
   vi.resetAllMocks();
   localStorage.clear();
   apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/plugins/kanban/events");
-  apiMocks.authedFetch.mockResolvedValue({
-    ok: false,
-    status: 413,
-    text: async () => JSON.stringify({ detail: "image too large" }),
-  });
+  apiMocks.authedFetch.mockResolvedValue({ ok: true });
 
   let boardLoads = 0;
   apiMocks.fetchJSON.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -106,19 +103,24 @@ afterEach(async () => {
 });
 
 describe("kanban dashboard clipboard uploads", () => {
-  it("keeps a post-create upload failure visible after the board reload", async () => {
+  it("refreshes after create without waiting for upload and keeps a later failure visible", async () => {
     await act(async () => click(container.querySelector('[title="Create task in this column"]')));
 
-    const textareas = Array.from(container.querySelectorAll("textarea"));
-    expect(textareas).toHaveLength(2);
-    await act(async () => setTextareaValue(textareas[0], "Task with screenshot"));
+    const description = container.querySelector<HTMLTextAreaElement>('textarea[placeholder*="Paste screenshots here"]');
+    const title = Array.from(container.querySelectorAll<HTMLTextAreaElement>("textarea"))
+      .find(element => element !== description);
+    if (!title || !description) throw new Error("create fields not rendered");
+    await act(async () => setTextareaValue(title, "Task with screenshot"));
+    apiMocks.authedFetch.mockImplementationOnce(() => new Promise(resolve => {
+      resolveUpload = resolve;
+    }));
 
     const image = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
     const paste = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(paste, "clipboardData", {
       value: { items: [], files: { 0: image, length: 1 } },
     });
-    await act(async () => textareas[1].dispatchEvent(paste));
+    await act(async () => description.dispatchEvent(paste));
 
     const form = container.querySelector("form");
     if (!form) throw new Error("create form not rendered");
@@ -128,12 +130,22 @@ describe("kanban dashboard clipboard uploads", () => {
     await waitFor(() => apiMocks.fetchJSON.mock.calls.filter(
       ([url]) => String(url).includes("/board") && !String(url).includes("/boards"),
     ).length >= 2);
+    expect(container.textContent).not.toContain("Task created, but attachment upload failed:");
 
     const taskPosts = apiMocks.fetchJSON.mock.calls.filter(
       ([url, init]) => String(url).includes("/tasks") && init?.method === "POST",
     );
     expect(taskPosts).toHaveLength(1);
     expect(apiMocks.authedFetch).toHaveBeenCalledTimes(1);
+
+    await act(async () => resolveUpload?.({
+      ok: false,
+      status: 413,
+      text: async () => JSON.stringify({ detail: "image too large" }),
+    }));
+    await waitFor(() => apiMocks.fetchJSON.mock.calls.filter(
+      ([url]) => String(url).includes("/board") && !String(url).includes("/boards"),
+    ).length >= 3);
     expect(container.textContent).toContain(
       "Task created, but attachment upload failed: image too large",
     );

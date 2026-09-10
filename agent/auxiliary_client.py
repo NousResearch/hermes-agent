@@ -811,8 +811,12 @@ def _resolve_provider_vision_default(provider: str) -> Optional[str]:
 
 
 # Endpoints that reject image input: vision auto-detect skips these to the aggregator chain
-# instead of returning a client that 404s (Kimi Coding Plan Anthropic wire has no image_in).
-_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({"kimi-coding", "kimi-coding-cn"})
+# instead of returning a client that 404s. Currently empty: the Kimi Coding Plan /coding wire
+# accepts Anthropic-format image blocks again (the /v1/models entry declares supports_image_in
+# and a live request returns a correct image description, verified 2026-09-10), so the
+# kimi-coding / kimi-coding-cn entries added for #17076 were removed. Only re-add a provider
+# here with evidence its endpoint rejects image input.
+_PROVIDERS_WITHOUT_VISION: frozenset = frozenset()
 
 # OpenRouter app attribution (always sent). `X-Title` is what the dashboard reads.
 _OR_HEADERS_BASE = {

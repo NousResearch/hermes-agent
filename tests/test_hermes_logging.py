@@ -2,6 +2,7 @@
 import io
 import logging
 import os
+import shutil
 import stat
 import sys
 import threading
@@ -168,6 +169,28 @@ class TestSetupLogging:
         ).read_text()
         default_log = hermes_home / "logs" / "agent.log"
         assert not default_log.exists() or "late profile cron record" not in default_log.read_text()
+
+        # Removing membership closes cached handlers before the profile path is
+        # deleted. Recreating the same name gets a fresh handler and file.
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home], live_membership=True
+        ) is True
+        shutil.rmtree(profile_home)
+        profile_home.mkdir()
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home], live_membership=True
+        ) is True
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("recreated profile cron record")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        recreated_log = (profile_home / "logs" / "agent.log").read_text()
+        assert "recreated profile cron record" in recreated_log
+        assert "late profile cron record" not in recreated_log
 
 
 

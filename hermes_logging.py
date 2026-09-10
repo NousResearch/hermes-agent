@@ -383,6 +383,13 @@ class _ProfileRoutingFileHandler(logging.Handler):
         homes.add(self._default_home)
         with self._profile_handlers_lock:
             self._profile_homes = homes
+            stale_handlers = [
+                self._profile_handlers.pop(home)
+                for home in list(self._profile_handlers)
+                if home not in homes
+            ]
+            for handler in stale_handlers:
+                _quietly(handler.close)
 
     def _home_for_record(self, record: logging.LogRecord) -> Path:
         raw_home = getattr(record, "hermes_home", "")
@@ -403,7 +410,11 @@ class _ProfileRoutingFileHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._handler_for_home(self._home_for_record(record)).handle(record)
+            # Keep membership refresh, handler lookup and emission atomic so a
+            # removed profile's handler cannot be closed while writing or be
+            # recreated from a record that raced the allowlist update.
+            with self._profile_handlers_lock:
+                self._handler_for_home(self._home_for_record(record)).handle(record)
         except Exception:
             self.handleError(record)
 

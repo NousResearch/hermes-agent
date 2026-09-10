@@ -1493,9 +1493,16 @@ export function useSessionActions({
       // warm path can still bail down to here — an empty-transcript drop, or the
       // cache getting purged during the profile-swap await — so the PREVIOUS
       // session's transcript would leak into this cold resume ("switching
-      // sessions shows the same messages"). Clear it so the loader/prefetch
-      // paints fresh; guarded so the normal cold path (already cleared) no-ops.
-      if (!resumedSameSelectedSession && $messages.get().length > 0) {
+      // sessions shows the same messages"). Clear that foreign view, but keep
+      // this session's scoped provisional tail continuously visible until the
+      // authoritative prefetch replaces it.
+      const coldPathMessages = $messages.get()
+
+      if (
+        !resumedSameSelectedSession &&
+        coldPathMessages.length > 0 &&
+        (cachedTailPaint === null || coldPathMessages !== cachedTailPaint)
+      ) {
         setMessages([])
       }
 

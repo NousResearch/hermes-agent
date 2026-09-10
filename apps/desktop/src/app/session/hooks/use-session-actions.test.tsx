@@ -1096,8 +1096,11 @@ describe('resumeSession failure recovery', () => {
 
   it('paints a durable tail before stored-session resolution settles', async () => {
     const storedLookup = deferred<SessionInfo>()
+    const persistedLookup = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const resumeLookup = deferred<SessionResumeResponse>()
 
     vi.mocked(getSession).mockReturnValue(storedLookup.promise)
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persistedLookup.promise)
     saveTranscriptTail(
       'stored-1',
       [
@@ -1110,7 +1113,13 @@ describe('resumeSession failure recovery', () => {
       'work'
     )
 
-    const requestGateway = vi.fn(async () => ({}) as never)
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return resumeLookup.promise as never
+      }
+
+      return {} as never
+    })
 
     let resume: ((storedSessionId: string, replaceRoute?: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>) | null =
       null
@@ -1125,8 +1134,33 @@ describe('resumeSession failure recovery', () => {
     expect(settled).toBe(false)
     expect(requestGateway).not.toHaveBeenCalled()
 
-    storedLookup.resolve(storedSession({ id: 'stored-1', profile: 'work' }))
+    storedLookup.resolve(storedSession({ id: 'stored-1', message_count: 1, profile: 'work' }))
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+
+    // Metadata and gateway readiness have settled and REST is now pending. The
+    // provisional tail must remain continuously visible rather than flickering
+    // back to the loader between the early paint and authoritative hydration.
+    expect(JSON.stringify($messages.get())).toContain('cached history paints immediately')
+    expect(settled).toBe(false)
+
+    persistedLookup.resolve({
+      messages: [{ content: 'authoritative history replaces cache', role: 'assistant', timestamp: 1 }],
+      session_id: 'stored-1'
+    })
+    resumeLookup.resolve({
+      info: {},
+      message_count: 1,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'stored-1',
+      running: false,
+      session_id: 'runtime-1',
+      session_key: 'stored-1'
+    })
     await pending
+
+    expect(JSON.stringify($messages.get())).toContain('authoritative history replaces cache')
+    expect(JSON.stringify($messages.get())).not.toContain('cached history paints immediately')
     vi.mocked(getSession).mockReset()
   })
 

@@ -816,7 +816,13 @@ class HindsightMemoryProvider(MemoryProvider):
             client = self._get_client()
             profile = self._config.get("profile", "hermes")
             # Profile .env out of sync with config -> rewrite and restart a running daemon.
-            if _load_simple_env(_embedded_profile_env_path(self._config)) != _build_embedded_profile_env(self._config):
+            # Compare ONLY plugin-managed keys: the standalone daemon's profile manager writes
+            # daemon-owned keys (HINDSIGHT_API_PORT, ...) back into the same .env file, so a
+            # full-dict comparison is never equal -> every session activation stopped the daemon
+            # and cancelled in-flight retain/recall (ASGI 500 storm).
+            actual_env = _load_simple_env(_embedded_profile_env_path(self._config))
+            expected_env = _build_embedded_profile_env(self._config)
+            if any(actual_env.get(key) != value for key, value in expected_env.items()):
                 _materialize_embedded_profile_env(self._config)
                 if client._manager.is_running(profile):
                     _log("\n=== Config changed, restarting daemon ===\n")

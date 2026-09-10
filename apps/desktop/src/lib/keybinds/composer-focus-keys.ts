@@ -11,6 +11,7 @@ import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { switcherActive } from '@/store/session-switcher'
 
+import { isConfirmChord } from './chords'
 import { isEditableTarget, isFocusWithin } from './combo'
 
 /** `composer.focus` defaults that need the surface/target gate. */
@@ -46,8 +47,10 @@ const BLOCKING_OVERLAY =
 
 // Blockers that live INSIDE a chat surface. Inactive tabs stay mounted, so this
 // one has to be visible-scoped: a clarify card waiting in a background thread
-// must not take the foreground composer's letter keys.
-const BLOCKING_IN_SURFACE = '[data-clarify-choices]'
+// must not take the foreground composer's letter keys. Batch cards (the
+// multi-question form) resolve through their own marker — they carry no
+// per-question shortcuts, so they never claim letters/digits.
+const BLOCKING_IN_SURFACE = '[data-clarify-choices],[data-clarify-batch]'
 
 /** The layout-tree zone a pane is rendered in — see `tree/renderer/tree-group`. */
 const TREE_GROUP = '[data-tree-group]'
@@ -122,8 +125,17 @@ export function clarifyCardOwnsKey(event: KeyboardEvent): boolean {
     return false
   }
 
+  // A batch card (multi-question form) binds only the confirm chord — it has
+  // no per-question rows to claim letters/digits for. Everything else falls
+  // through, so typing a message instead of answering keeps working.
+  if (card.hasAttribute('data-clarify-batch')) {
+    return isConfirmChord(event)
+  }
+
   if (event.key === 'Enter') {
-    return true
+    // Bare Enter only — the single card's own listener ignores modifier
+    // chords, and Ctrl/Cmd+Enter belongs to confirm gestures elsewhere.
+    return !event.metaKey && !event.ctrlKey && !event.altKey
   }
 
   // "Other" is the row past the last choice, hence the +1.

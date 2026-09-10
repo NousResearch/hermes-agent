@@ -610,26 +610,28 @@ def _collect_gateway_skill_entries(
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
         from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
-        _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
+        def _dir_prefix(d: str) -> str:
+            """Normalize a directory path and ensure a trailing separator so
+            ``my-skills`` does not also match ``my-skills-extra``.
+            os.path.normpath collapses mixed ``/``/``\\`` separators so
+            Windows backslash paths match the skill paths."""
+            d = os.path.normpath(str(d))
+            return d if d.endswith(os.sep) else d + os.sep
+
+        _skills_dir = _dir_prefix(str(SKILLS_DIR.resolve()))
+        _hub_dir = _dir_prefix(str((SKILLS_DIR / ".hub").resolve()))
         # Build set of allowed directory prefixes: local skills dir + any
         # user-configured ``skills.external_dirs`` + trusted project dirs.
-        # Ensure each prefix ends
-        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
         # Without this widening, external skills are visible in
         # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
         # silently excluded from gateway slash menus (#8110).
-        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
-        _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
-        )
-        _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_project_skills_dirs()
-        )
+        _allowed_prefixes = [_skills_dir]
+        _allowed_prefixes.extend(_dir_prefix(d) for d in get_external_skills_dirs())
+        _allowed_prefixes.extend(_dir_prefix(d) for d in get_project_skills_dirs())
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
-            skill_path = info.get("skill_md_path", "")
+            skill_path = os.path.normpath(info.get("skill_md_path", ""))
             if not skill_path:
                 continue
             if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):

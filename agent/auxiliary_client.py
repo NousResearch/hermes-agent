@@ -3821,12 +3821,14 @@ async def _call_fallback_candidate_async(
 
 def _try_payment_fallback(
     failed_provider: str, task: str = None, reason: str = "payment error", *,
-    failed_base_url: str = "", failure_scope: Any = None,
+    failed_base_url: str = "", failure_scope: Any = None, main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try the auto-detection chain after a payment/credit or connection error, skipping the failed
     provider (and the main-provider path when it maps to the same backend). Returns (client, model, label) or (None, None, "")."""
     skip = failed_provider.lower().strip()
-    main_provider = _read_main_provider()
+    # The SESSION's provider decides whether discovery is allowed: a live `/model xai-oauth` session
+    # over a persisted ``provider: auto`` is a selection, so the disk value alone is not the answer.
+    main_provider = _normalize_main_runtime(main_runtime).get("provider") or _read_main_provider()
     if not _discovery_chain_allowed(main_provider, task):
         return None, None, ""
     skip_labels = {skip}
@@ -6934,6 +6936,27 @@ def _ladder_credential_rungs(
     return None, first_err
 
 
+def _next_fallback_after_quarantine(
+    task: Optional[str], resolved_provider: str, is_auto: bool, route: _LadderRoute,
+    failed_model: Optional[str], failure_scope: Any,
+) -> Tuple[Optional[Any], Optional[str], str]:
+    """Next candidate after a fallback entry was quarantined mid-request: remaining configured
+    entries (task chain, then main chain on auto) before the discovery chain."""
+    reason = "stale fallback credential"
+    fb = _try_configured_fallback_chain(
+        task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
+        failed_base_url=route.base_info, failure_scope=failure_scope)
+    if fb[0] is None and is_auto:
+        fb = _try_main_fallback_chain(
+            task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
+            failed_base_url=route.base_info, failure_scope=failure_scope)
+    if fb[0] is None:
+        fb = _try_payment_fallback(
+            resolved_provider, task, reason=reason, failed_base_url=route.base_info,
+            failure_scope=failure_scope, main_runtime=route.main_runtime)
+    return fb
+
+
 def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
     chain, explicit: main-agent-model net). Returns the response or None.
@@ -6981,23 +7004,23 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         if fb_client is None:
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
-                failure_scope=_chain_failure_scope)
+                failure_scope=_chain_failure_scope, main_runtime=route.main_runtime)
     elif fb_client is None:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
     if fb_client is not None:
-        # Second pass: the candidate credential was stale and quarantined — walk the discovery
-        # chain once more (unhealthy entries are skipped).
+        # Second pass: the candidate credential was stale and quarantined — re-walk the CONFIGURED
+        # chains first (the quarantined entry is now unhealthy and skipped, so later entries get
+        # their turn), then discovery where the selection policy allows it.
         for _pass in range(2):
             _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
             fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
             if fb_resp is not None:
                 return fb_resp
             if _pass == 0:
-                fb_client, fb_model, fb_label = _try_payment_fallback(
-                    resolved_provider, task, reason="stale fallback credential",
-                    failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+                fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
+                    task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
                 if fb_client is None:
                     break
     # All fallback layers exhausted — one user-visible warning, then re-raise.

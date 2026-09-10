@@ -30,6 +30,10 @@ def test_own_vendor_id_stays_when_live_catalog_is_empty(ladder_would_hijack, pro
     assert models.detect_provider_for_model(model, provider) is None
 
 
-def test_other_vendor_id_still_remaps_to_keyed_aggregator(ladder_would_hijack):
-    assert models.detect_provider_for_model("claude-opus-4.7", "openai-codex") == (
-        "openrouter", "vendor/claude-opus-4.7")
+@pytest.mark.parametrize("provider,model", [
+    ("openai-codex", "claude-opus-4.7"),   # other vendor's id on a single-vendor provider
+    ("bedrock", "deepseek-v4-pro"),        # multi-vendor catalog whose non-deepseek ids the
+                                           # classifier cannot place: never "exclusively deepseek"
+])
+def test_non_owned_id_still_remaps_to_keyed_aggregator(ladder_would_hijack, provider, model):
+    assert models.detect_provider_for_model(model, provider) == ("openrouter", f"vendor/{model}")

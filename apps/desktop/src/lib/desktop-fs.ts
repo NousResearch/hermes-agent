@@ -163,6 +163,19 @@ export async function revealDesktopPath(path: string): Promise<void> {
   await bridge().revealPath?.(path)
 }
 
+// Create one directory inside an existing parent directory. Local only.
+export async function createDesktopDirectory(parentPath: string, newName: string): Promise<string> {
+  const desktop = bridge()
+
+  if (!desktop.createDirectory) {
+    throw new Error('New Folder is not available')
+  }
+
+  const result = await desktop.createDirectory(parentPath, newName)
+
+  return result.path
+}
+
 // Rename a file/folder in place; returns the new absolute path. Local only.
 export async function renameDesktopPath(path: string, newName: string): Promise<string> {
   const desktop = bridge()

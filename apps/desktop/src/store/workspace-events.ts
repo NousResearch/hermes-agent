@@ -26,14 +26,39 @@ export function consumeWorkspaceChange(): { dirs: string[]; full: boolean } {
   return change
 }
 
-// Parent dir of an ABSOLUTE path (POSIX or `C:/…`); null for a relative path we
-// can't anchor to the tree — the caller treats null as "rescan to be safe".
+// Parent dir of an ABSOLUTE path (POSIX or Windows); null for a relative path we
+// can't anchor to the tree. Preserve the input separator style because file-tree
+// ids come from native filesystem paths and targeted refresh compares them
+// exactly.
 function dirOf(path: string): null | string {
-  const p = path.replace(/\\/g, '/').replace(/\/+$/, '')
-  const absolute = p.startsWith('/') || /^[a-z]:\//i.test(p)
-  const slash = p.lastIndexOf('/')
+  const p = path.replace(/[\\/]+$/, '')
+  const absolute = p.startsWith('/') || p.startsWith('\\\\') || /^[a-z]:[\\/]/i.test(p)
+  const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+
+  if (slash === 0 && p.startsWith('/')) {
+    return '/'
+  }
+
+  if (slash === 2 && /^[a-z]:[\\/]/i.test(p)) {
+    return p.slice(0, 3)
+  }
 
   return absolute && slash >= 0 ? p.slice(0, slash) : null
+}
+
+function absoluteDirectory(path: string): null | string {
+  const value = String(path || '')
+  const absolute = value.startsWith('/') || value.startsWith('\\\\') || /^[a-z]:[\\/]/i.test(value)
+
+  if (!absolute) {
+    return null
+  }
+
+  if (value === '/' || /^[a-z]:[\\/]$/i.test(value)) {
+    return value
+  }
+
+  return value.replace(/[\\/]+$/, '')
 }
 
 // Throttle so a burst of edits in one turn coalesces: fire on the leading edge
@@ -48,11 +73,7 @@ function fire(): void {
   $workspaceChangeTick.set($workspaceChangeTick.get() + 1)
 }
 
-/** @param changedPath absolute path a tool touched; omit (or pass a relative /
- *  unknowable path) to force a full-tree rescan. */
-export function notifyWorkspaceChanged(changedPath?: string): void {
-  const dir = changedPath ? dirOf(changedPath) : null
-
+function queueWorkspaceChange(dir: null | string): void {
   if (dir) {
     pendingDirs.add(dir)
   } else {
@@ -74,6 +95,19 @@ export function notifyWorkspaceChanged(changedPath?: string): void {
       fire()
     }, MIN_INTERVAL_MS - since)
   }
+}
+
+/** @param changedPath absolute path a tool touched; omit (or pass a relative /
+ *  unknowable path) to force a full-tree rescan. */
+export function notifyWorkspaceChanged(changedPath?: string): void {
+  queueWorkspaceChange(changedPath ? dirOf(changedPath) : null)
+}
+
+/** Notify that one known directory's immediate children changed. Unlike
+ * `notifyWorkspaceChanged`, this keeps the directory itself as the refresh
+ * target, which is required when Electron bridged a WSL display path to UNC. */
+export function notifyWorkspaceDirectoryChanged(directoryPath: string): void {
+  queueWorkspaceChange(absoluteDirectory(directoryPath))
 }
 
 // Tool names that can touch the working tree (everything else — read_file,

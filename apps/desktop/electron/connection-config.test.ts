@@ -261,6 +261,64 @@ test('normalizeSshConfig rejects unsafe remote profile mappings', () => {
   })
 })
 
+test('normalizeSshConfig accepts a per-connection ready timeout override (#97264)', () => {
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: 180000 }), {
+    mode: 'ssh',
+    host: 'box',
+    readyTimeoutMs: 180000
+  })
+})
+
+test('normalizeSshConfig coerces a numeric-string ready timeout (#97264)', () => {
+  // Hand-edited config files carry numbers as strings; Number() accepts them
+  // the same way it does for the port field.
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: '180000' }), {
+    mode: 'ssh',
+    host: 'box',
+    readyTimeoutMs: 180000
+  })
+})
+
+test('normalizeSshConfig clamps an oversized ready timeout to the cap (#97264)', () => {
+  // A typo like 99999999 must not hang the ready wait for hours — it clamps
+  // to the 10-minute cap rather than being dropped (the intent to wait
+  // longer is real).
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: 99999999 }), {
+    mode: 'ssh',
+    host: 'box',
+    readyTimeoutMs: 600000
+  })
+
+  // Values at or below the cap pass through untouched.
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: 600000 }), {
+    mode: 'ssh',
+    host: 'box',
+    readyTimeoutMs: 600000
+  })
+
+  // The clamp applies after coercion, so an oversized string clamps too.
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: '99999999' }), {
+    mode: 'ssh',
+    host: 'box',
+    readyTimeoutMs: 600000
+  })
+})
+
+test('normalizeSshConfig rejects invalid ready timeouts (#97264)', () => {
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: 0 }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: -5 }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', readyTimeoutMs: 'soon' }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+})
+
 test('normalizeSshConfig handles IPv6 and strict port bounds', () => {
   assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: '::1', port: 22 }), {
     mode: 'ssh',

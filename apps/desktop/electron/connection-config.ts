@@ -63,6 +63,11 @@ const PRIVY_ACCESS_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-toke
 // is the built-in root alias; these names cannot be created as profiles.
 const RESERVED_REMOTE_PROFILES = new Set(['hermes', 'test', 'tmp', 'root', 'sudo'])
 
+// Upper bound for a per-connection `readyTimeoutMs` override. Generous — 10
+// minutes covers any legitimately glacial cold start — but finite, so a typo
+// like 99999999 clamps instead of hanging the ready wait (#97264).
+const READY_TIMEOUT_MS_CAP = 10 * 60_000
+
 function normalizeRemoteBaseUrl(rawUrl) {
   let value = String(rawUrl || '').trim()
 
@@ -456,6 +461,20 @@ function normalizeSshConfig(entry) {
 
   if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
     out.remoteProfile = remoteProfile
+  }
+
+  // Slow remotes can need longer than the default for a cold `hermes serve`
+  // to announce its ready port (#97264). Accepted as a positive integer
+  // number of milliseconds; a numeric string (e.g. "180000" from a hand-edited
+  // config file) is coerced via Number() like the port field above. Values
+  // above READY_TIMEOUT_MS_CAP are clamped to the cap rather than rejected —
+  // the intent (wait longer) is real, the magnitude may be a typo — and
+  // anything non-positive or non-numeric falls back to the default in
+  // remote-lifecycle.ts.
+  const readyTimeoutMs = Number(entry.readyTimeoutMs)
+
+  if (Number.isInteger(readyTimeoutMs) && readyTimeoutMs > 0) {
+    out.readyTimeoutMs = Math.min(readyTimeoutMs, READY_TIMEOUT_MS_CAP)
   }
 
   return out

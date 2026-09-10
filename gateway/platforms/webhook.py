@@ -522,6 +522,13 @@ class WebhookAdapter(BasePlatformAdapter):
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
         headers = request.headers
+        # Dedup/session identity keeps its historical fallback chain; the script-facing env var
+        # must carry ONLY a literal client-sent identifier — the epoch-ms fallback would
+        # fabricate an ID, so it never reaches HERMES_WEBHOOK_DELIVERY_ID (fail closed:
+        # deliveries without an id header see the env var absent entirely).
+        literal_delivery_id = (headers.get("X-GitHub-Delivery") or headers.get("svix-id")
+                               or headers.get("webhook-id") or headers.get("X-Request-ID") or None)
+        delivery_id = literal_delivery_id or str(int(time.time() * 1000))
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
@@ -539,9 +546,12 @@ class WebhookAdapter(BasePlatformAdapter):
             script = route_config.get("script")
             if script:
                 # Shells out (up to its timeout) — worker thread so the loop isn't blocked; to_thread
-                # copies contextvars so the profile scope follows.
+                # copies contextvars so the profile scope follows. The literal delivery ID (e.g.
+                # X-GitHub-Delivery) is derived BEFORE the script runs and passed in so the script
+                # can consume it as HERMES_WEBHOOK_DELIVERY_ID (contract: single whitelisted
+                # identifier, absent for deliveries without one — scripts fail closed on absence).
                 keep, transformed_payload = await asyncio.to_thread(
-                    self._route_processor.run_route_script, script, payload)
+                    self._route_processor.run_route_script, script, payload, literal_delivery_id)
                 if not keep:
                     logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
@@ -549,8 +559,6 @@ class WebhookAdapter(BasePlatformAdapter):
             prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
             if skills := route_config.get("skills", []):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         if not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)

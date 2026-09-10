@@ -166,11 +166,18 @@ class WebhookRouteProcessor:
             return False
         return all(self.filter_matches(spec, payload, event_type, headers) for spec in filters)
 
-    def run_route_script(self, script_value: Any, payload: dict) -> tuple[bool, Optional[dict]]:
+    def run_route_script(self, script_value: Any, payload: dict, delivery_id: Optional[str] = None) -> tuple[bool, Optional[dict]]:
         """Run a route script and return (should_continue, transformed_payload).
 
         Non-zero exit, empty/``[SILENT]`` stdout, or a ``[SILENT]``/``__hermes_ignore__`` flag drops the
         webhook; JSON-object stdout replaces the payload, other text is attached as ``script_output``.
+
+        ``delivery_id`` is the platform delivery identifier (e.g. GitHub's ``X-GitHub-Delivery``)
+        exposed to the script as the literal ``HERMES_WEBHOOK_DELIVERY_ID`` env var. It is absent for
+        deliveries without an ID (non-GitHub platforms that send none) — scripts must treat absence as
+        "no delivery identity" and fail closed on their own dedup/replay logic, never guess an ID.
+        Only this single whitelisted identifier is exposed; no other request headers or secrets reach
+        the script environment.
         """
         path, error = _resolve_script_path(script_value)
         if error or path is None:
@@ -183,10 +190,16 @@ class WebhookRouteProcessor:
             return False, None
         try:
             from tools.environments.local import build_subprocess_env
+            script_env = build_subprocess_env(extra={"HERMES_WEBHOOK_DELIVERY_ID": delivery_id} if delivery_id else None)
+            if not delivery_id:
+                # Fail closed: this delivery carries no ID header, so the var must be ABSENT.
+                # The name is not blocklisted (it is not a secret), so an ambient value inherited
+                # from the gateway's own environment would otherwise leak through the sanitizer.
+                script_env.pop("HERMES_WEBHOOK_DELIVERY_ID", None)
             popen_kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
             result = subprocess.run(
                 [interpreter, str(path)], input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=self.script_timeout_seconds, cwd=str(path.parent), env=build_subprocess_env(), **popen_kwargs,
+                timeout=self.script_timeout_seconds, cwd=str(path.parent), env=script_env, **popen_kwargs,
             )
         except subprocess.TimeoutExpired:
             logger.warning("[webhook] script timed out: %s", path)

@@ -2,7 +2,7 @@ import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import { isPaneVisible, restoreMinimizedTreeSide, revealTreePane } from '@/components/pane-shell/tree/store'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { connectionScopedAtom } from '@/lib/connection-scoped'
 import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
@@ -528,14 +528,26 @@ function revealNarrowPane(id: string, mode: 'close' | 'open' | 'toggle'): boolea
 }
 
 export function setSidebarOpen(open: boolean) {
+  if (open) {
+    restoreMinimizedTreeSide('left')
+  }
+
   setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
   revealNarrowPane(CHAT_SIDEBAR_PANE_ID, open ? 'open' : 'close')
 }
 
 export function toggleSidebarOpen() {
-  if (!revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
-    togglePane(CHAT_SIDEBAR_PANE_ID)
+  if (revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
+    return
   }
+
+  if (restoreMinimizedTreeSide('left')) {
+    setPaneOpen(CHAT_SIDEBAR_PANE_ID, true)
+
+    return
+  }
+
+  togglePane(CHAT_SIDEBAR_PANE_ID)
 }
 
 export function toggleFileBrowserOpen() {

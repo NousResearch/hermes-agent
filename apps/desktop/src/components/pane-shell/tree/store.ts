@@ -963,6 +963,39 @@ export function setTreeSideCollapsed(side: TreeSide, collapsed: boolean) {
   }
 }
 
+/** Restore minimized zones without changing their active tab (including Bots). */
+export function restoreMinimizedTreeSide(side: TreeSide): boolean {
+  const tree = $layoutTree.get()
+  const row = rootRow()
+
+  if (!tree || !row) {
+    return false
+  }
+
+  const panes = registry.getArea('panes')
+  let next = tree
+
+  for (const child of row.children) {
+    if (rootChildSide(child, id => panes.find(pane => pane.id === id)) !== side) {
+      continue
+    }
+
+    for (const id of groupLeafIds(child)) {
+      if (findGroup(next, id)?.minimized) {
+        next = setGroupMinimized(next, id, false)
+      }
+    }
+  }
+
+  if (next === tree) {
+    return false
+  }
+
+  commit(next)
+
+  return true
+}
+
 /**
  * Does the layout have a collapsible root side of `side`? ⌘J's normal target is
  * the right sidebar; a layout without one (e.g. a terminal-on-bottom preset)

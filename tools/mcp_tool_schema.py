@@ -54,11 +54,26 @@ def _rewrite_local_refs(node):
     if not isinstance(node, dict):
         return node
     normalized = {}
+    defs_members: dict = {}
+    saw_defs = False
     for key, value in node.items():
         if key in ("properties", "patternProperties") and isinstance(value, dict):
             normalized[key] = {name: _rewrite_local_refs(schema) for name, schema in value.items()}
+        elif key in ("definitions", "$defs") and isinstance(value, dict):
+            # A definition MAP's keys are member NAMES, not schema keywords. Recursing
+            # generically renames a member literally named ``definitions`` to ``$defs``,
+            # while the ``#/definitions/definitions`` reference below is rewritten to
+            # ``#/$defs/definitions`` — leaving a dangling $ref that 400s the tool array.
+            members = {name: _rewrite_local_refs(schema) for name, schema in value.items()}
+            # Coexistence: a node carrying both spellings merges into ``$defs``, and the
+            # modern ``$defs`` wins a name collision regardless of key order.
+            defs_members = ({**members, **defs_members} if key == "definitions"
+                            else {**defs_members, **members})
+            saw_defs = True
         else:
             normalized["$defs" if key == "definitions" else key] = _rewrite_local_refs(value)
+    if saw_defs:
+        normalized["$defs"] = defs_members
     ref = normalized.get("$ref")
     if isinstance(ref, str) and ref.startswith("#/definitions/"):
         normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]

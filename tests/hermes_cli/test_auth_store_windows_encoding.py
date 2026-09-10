@@ -22,6 +22,7 @@ from unittest import mock
 import pytest
 
 import hermes_cli.auth as auth
+import hermes_cli.auth_codex as auth_codex
 
 
 # --- helpers ---------------------------------------------------------------
@@ -170,6 +171,7 @@ class TestExplicitEncodingPassed:
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
         # Bypass the JWT-expiry check so a fake token doesn't short-circuit.
         monkeypatch.setattr(auth, "_codex_access_token_is_expiring", lambda *a, **k: False)
+        monkeypatch.setattr(auth_codex, "_codex_access_token_is_expiring", lambda *a, **k: False)
 
         with mock.patch.object(Path, "read_text", wraps=Path.read_text) as spy:
             auth._import_codex_cli_tokens()

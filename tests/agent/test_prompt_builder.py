@@ -586,6 +586,21 @@ class TestFindHermesMd:
 
 
 
+    def test_unreadable_parent_is_treated_as_no_git_root(self, tmp_path, monkeypatch):
+        """A parent the process cannot stat (#8751) must not raise out of prompt construction."""
+        import os as _os
+        project = tmp_path / "locked" / "proj"
+        project.mkdir(parents=True)
+        real_exists = Path.exists
+
+        def _exists(self):
+            if self.parent == tmp_path / "locked" and self.name == ".git":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", _exists)
+        assert _find_git_root(project) is None
+
     def test_walks_to_git_root(self, tmp_path):
         (tmp_path / ".git").mkdir()
         (tmp_path / ".hermes.md").write_text("root rules")
@@ -753,7 +768,7 @@ class TestEnvironmentHints:
         # Force the probe to fail so we exercise the static fallback path
         # deterministically (the live probe would try to spin up docker).
         monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
         result = _pb.build_environment_hints()
         # Host suppression: none of the local-backend lines should appear.
         assert "Host:" not in result
@@ -773,7 +788,7 @@ class TestEnvironmentHints:
         configured.mkdir()
         monkeypatch.setenv("TERMINAL_CWD", str(configured))
         monkeypatch.chdir(tmp_path)
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
         assert f"Current working directory: {configured}" in _pb.build_environment_hints()
 
     def test_build_environment_hints_falls_back_to_launch_dir(self, monkeypatch, tmp_path):
@@ -783,7 +798,7 @@ class TestEnvironmentHints:
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         monkeypatch.chdir(tmp_path)
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
 
@@ -798,7 +813,7 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
 
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
 
         class _FakeEnv:
             def execute(self, cmd, timeout=None):
@@ -816,9 +831,9 @@ class TestEnvironmentHints:
             created["env_type"] = env_type
             return _FakeEnv()
 
-        # Patch the REAL factory in tools.terminal_tool — the probe imports it
+        # Patch the REAL factory in tools.terminal_tool_backends — the probe imports it
         # locally, so the import itself must succeed (the bug was here).
-        import tools.terminal_tool as _tt
+        import tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
 
         line = _pb._probe_remote_backend("docker")
@@ -858,7 +873,7 @@ class TestEnvironmentHints:
             def cleanup(self, *, force_remove=False):
                 cleaned["force_remove"] = force_remove
 
-        import tools.terminal_tool as _tt
+        import tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _FakeEnv())
 
         assert _pb._probe_remote_backend("docker") is not None
@@ -882,7 +897,7 @@ class TestEnvironmentHints:
             def cleanup(self, *, force_remove=False):
                 cleaned.append(force_remove)
 
-        import tools.terminal_tool as _tt
+        import tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _ExplodingEnv())
 
         assert _pb._probe_remote_backend("docker") is None
@@ -911,24 +926,26 @@ class TestEnvironmentHints:
             def cleanup(self):
                 calls.append("bare")
 
-        import tools.terminal_tool as _tt
+        import tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _LegacyEnv())
 
         assert _pb._probe_remote_backend("singularity") is not None
         assert calls == ["bare"]
 
-    def test_probe_remote_backend_does_not_tear_down_ssh(self, monkeypatch):
-        """SSH has no task-scoped sandbox: its cleanup() closes a ControlMaster
-        socket shared with the agent's real environment, so the probe must
-        leave it alone (nothing leaks — ControlPersist expires the master)."""
+    def test_probe_remote_backend_ssh_is_probe_only_and_torn_down(self, monkeypatch):
+        """SSH probe: a normal SSHEnvironment would create remote dirs, force-upload
+        ~/.hermes and snapshot a session just to run `uname`, and its __del__ would
+        later sync_back() and close the ControlMaster shared with the agent's real
+        environment. The probe must request a probe-only instance (own socket, no
+        setup/sync) and tear it down itself."""
         import agent.prompt_builder as _pb
 
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         _pb._clear_backend_probe_cache()
 
-        calls = []
+        created, calls = {}, []
 
-        class _SharedSshEnv:
+        class _ProbeSshEnv:
             def execute(self, cmd, timeout=None):
                 return {
                     "returncode": 0,
@@ -941,12 +958,17 @@ class TestEnvironmentHints:
             def cleanup(self):
                 calls.append("cleanup")
 
-        import tools.terminal_tool as _tt
-        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _SharedSshEnv())
+        import tools.terminal_tool_backends as _tt
+
+        def _fake_create(**kw):
+            created.update(kw)
+            return _ProbeSshEnv()
+
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create)
 
         assert _pb._probe_remote_backend("ssh") is not None
-        assert calls == []
-
+        assert created["probe_only"] is True
+        assert calls == ["cleanup"]
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
@@ -954,7 +976,7 @@ class TestEnvironmentHints:
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", "Running inside an OpenShell sandbox.")
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
         result = _pb.build_environment_hints()
         assert "Running inside an OpenShell sandbox." in result
         # The factual host block must still come first.

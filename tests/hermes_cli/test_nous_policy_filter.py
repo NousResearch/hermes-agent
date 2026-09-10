@@ -12,12 +12,9 @@ import json
 import pytest
 
 import hermes_cli.models as models_mod
+from hermes_cli import models_pricing
 import hermes_cli.nous_account as account_mod
-from hermes_cli.models import (
-    _NOUS_POLICY_APPEND_MAX,
-    nous_policy_allowed_ids,
-    restrict_to_nous_policy,
-)
+from hermes_cli.models_pricing import _NOUS_POLICY_APPEND_MAX, nous_policy_allowed_ids, restrict_to_nous_policy
 from hermes_cli.nous_account import nous_policy_present
 
 
@@ -67,20 +64,18 @@ class TestRestrictToNousPolicy:
 class TestNousPolicyAllowedIds:
     @pytest.fixture(autouse=True)
     def _clear_cache(self):
-        models_mod._pricing_cache.clear()
-        models_mod._pricing_cache_retry_after.clear()
+        models_pricing._pricing_cache.clear()
+        models_pricing._pricing_cache_retry_after.clear()
         yield
-        models_mod._pricing_cache.clear()
-        models_mod._pricing_cache_retry_after.clear()
+        models_pricing._pricing_cache.clear()
+        models_pricing._pricing_cache_retry_after.clear()
 
     def _patch(self, monkeypatch, *, policy_present, api_key="sk-test", pricing=None):
         calls = []
         monkeypatch.setattr(
             account_mod, "nous_policy_present", lambda: policy_present
         )
-        monkeypatch.setattr(
-            models_mod,
-            "_resolve_nous_pricing_credentials",
+        monkeypatch.setattr(models_pricing, "_resolve_nous_pricing_credentials",
             lambda: (api_key, "https://inference.example.com"),
         )
 
@@ -88,7 +83,7 @@ class TestNousPolicyAllowedIds:
             calls.append(kwargs)
             return pricing if pricing is not None else {}
 
-        monkeypatch.setattr(models_mod, "fetch_models_with_pricing", _fake_fetch)
+        monkeypatch.setattr(models_pricing, "fetch_models_with_pricing", _fake_fetch)
         return calls
 
     def test_returns_the_authenticated_catalog_keys(self, monkeypatch):

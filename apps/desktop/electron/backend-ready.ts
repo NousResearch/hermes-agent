@@ -5,6 +5,12 @@ import fs from 'node:fs'
 // works against both the headless backend and old/dashboard runtimes.
 const _READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 
+// Same sentinel inside a MERGED stdout+stderr buffer (the spawn-time output tail, a remote
+// `>> log 2>&1` file): uvicorn's stderr chunks end without a newline, so the sentinel can be
+// spliced onto them (`...process [4711]HERMES_BACKEND_READY port=65238`) and `^` never lines up
+// (#103792). Match on a token boundary instead; `port=<digits>` keeps prose mentions out.
+export const READY_IN_MERGED_OUTPUT_RE = /(?<!\w)HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/
+
 // The announcement clock starts the instant the backend process is spawned —
 // before uvicorn binds its socket. On a cold install the child must first
 // compile and import the whole `hermes_cli.main` → `web_server` → FastAPI/
@@ -121,9 +127,12 @@ function waitForDashboardPort(
     // Listener is live — now recover a sentinel that was already flushed and
     // consumed before this promise existed. The snapshot is taken AFTER the
     // listener attaches, so no chunk can fall between snapshot and listener.
+    // Merged-buffer regex here (the tail interleaves both streams). Currently dormant: both
+    // main.ts callers attach the tail and build this wait in one synchronous block, so the
+    // snapshot is empty; any await reintroduced between them makes this the live path again.
     if (!done) {
       const alreadyBuffered = bufferedOutput()
-      const m = alreadyBuffered ? alreadyBuffered.match(_READY_RE) : null
+      const m = alreadyBuffered ? alreadyBuffered.match(READY_IN_MERGED_OUTPUT_RE) : null
 
       if (m) {
         cleanup()

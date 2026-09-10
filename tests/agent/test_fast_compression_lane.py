@@ -19,7 +19,7 @@ def _resolve(config, *, provider="ollama", model="qwen3:8b", requested_model=Non
         )
 
 
-def test_explicit_non_reasoning_compression_route_is_certified_and_bounded():
+def test_explicit_non_reasoning_compression_route_is_certified():
     lane = _resolve(
         {
             "provider": "ollama",
@@ -30,7 +30,6 @@ def test_explicit_non_reasoning_compression_route_is_certified_and_bounded():
     )
 
     assert lane.certified_non_reasoning is True
-    assert lane.max_tokens == 1400
     assert lane.reasoning_config == {"enabled": False, "effort": "none"}
 
 
@@ -48,7 +47,6 @@ def test_inherited_auto_or_uncertified_compression_routes_remain_uncapped():
 
     for lane in (inherited, unknown, reasoning):
         assert lane.certified_non_reasoning is False
-        assert lane.max_tokens is None
         assert lane.reasoning_config is None
 
 
@@ -99,8 +97,8 @@ def test_summary_model_override_is_certified_against_the_effective_model():
         requested_model="qwen3:14b",
     )
 
-    assert override.max_tokens == 1400
-    assert drifted.max_tokens is None
+    assert override.certified_non_reasoning is True
+    assert drifted.certified_non_reasoning is False
 
 
 def test_compression_latency_records_delayed_first_provider_chunk():
@@ -157,7 +155,7 @@ def test_compression_latency_records_delayed_first_provider_chunk():
     assert timings["summary_generation_ms"] >= timings["time_to_first_progress_ms"]
 
 
-def test_certified_fast_lane_sends_the_configured_cap_to_its_provider():
+def test_certified_fast_lane_ignores_legacy_cap_and_preserves_reasoning():
     from agent.auxiliary_client import call_llm
 
     config = {
@@ -182,7 +180,7 @@ def test_certified_fast_lane_sends_the_configured_cap_to_its_provider():
         ) is response
 
     request = client.chat.completions.create.call_args.kwargs
-    assert request["max_tokens"] == 1400
+    assert "max_tokens" not in request
     assert request["extra_body"]["reasoning"] == {"enabled": False}
 
 
@@ -219,7 +217,7 @@ def test_uncertified_effective_primary_route_does_not_receive_fast_cap():
     assert "reasoning" not in request.get("extra_body", {})
 
 
-def test_boolean_cap_drift_stays_uncapped_and_preserves_existing_reasoning():
+def test_legacy_boolean_cap_does_not_bypass_route_certification():
     from agent.auxiliary_client import call_llm
 
     config = {
@@ -249,7 +247,7 @@ def test_boolean_cap_drift_stays_uncapped_and_preserves_existing_reasoning():
     request = client.chat.completions.create.call_args.kwargs
     assert "max_tokens" not in request
     assert "max_completion_tokens" not in request
-    assert request["extra_body"]["reasoning"] == {"enabled": False}
+    assert "reasoning" not in request.get("extra_body", {})
 
 
 def test_bedrock_converse_ttfp_waits_for_the_nonstreaming_response():
@@ -322,10 +320,10 @@ def test_summary_model_override_cap_uses_the_actual_primary_request():
 
     request = client.chat.completions.create.call_args.kwargs
     assert request["model"] == "qwen3:14b"
-    assert request["max_tokens"] == 1400
+    assert "max_tokens" not in request
 
 
-def test_fallback_cap_requires_independent_route_certification():
+def test_fallback_reasoning_requires_independent_route_certification():
     from agent.auxiliary_client import _call_fallback_candidate_sync
 
     response = object()
@@ -373,7 +371,7 @@ def test_fallback_cap_requires_independent_route_certification():
     assert "max_tokens" not in uncertified
     assert "max_completion_tokens" not in uncertified
     assert "reasoning" not in uncertified.get("extra_body", {})
-    assert certified["max_tokens"] == 900
+    assert "max_tokens" not in certified
     assert certified["extra_body"]["reasoning"] == {
         "enabled": False,
         "effort": "none",
@@ -392,13 +390,11 @@ def test_reasoning_effort_aliases_certify_like_none():
     for alias in ("none", "false", "disabled", False):
         lane = _resolve({**base, "reasoning_effort": alias})
         assert lane.certified_non_reasoning is True, alias
-        assert lane.max_tokens == 1400, alias
 
     # Empty/unset (provider default) and real efforts must NOT certify.
     for not_disabled in ("", None, "low", "high", True):
         lane = _resolve({**base, "reasoning_effort": not_disabled})
         assert lane.certified_non_reasoning is False, not_disabled
-        assert lane.max_tokens is None, not_disabled
 
 
 def test_timing_hooks_propagate_to_protected_call_worker_thread():
@@ -412,7 +408,7 @@ def test_timing_hooks_propagate_to_protected_call_worker_thread():
     source both active).
     """
     from agent.auxiliary_client import (
-        _aux_timing_hook,
+        _aux_thread_local_hook,
         _aux_dispatch,
         _aux_provider_response,
         _notify_aux_dispatch,
@@ -431,8 +427,8 @@ def test_timing_hooks_propagate_to_protected_call_worker_thread():
         return "ok"
 
     with (
-        _aux_timing_hook(_aux_dispatch, lambda: seen.append("dispatch")),
-        _aux_timing_hook(_aux_provider_response, lambda: seen.append("response")),
+        _aux_thread_local_hook(_aux_dispatch, lambda: seen.append("dispatch")),
+        _aux_thread_local_hook(_aux_provider_response, lambda: seen.append("response")),
         aux_interrupt_protection(cancel_check=lambda: False),
     ):
         result = _run_protected_sync_provider_call(_callback, {})

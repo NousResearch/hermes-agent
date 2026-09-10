@@ -82,7 +82,7 @@ def _job(job_id, deliver):
 @contextlib.contextmanager
 def _bound_session_key(key):
     """Bind the approval session key contextvar (background dispatch gate)."""
-    from tools.approval import _approval_session_key
+    from tools.approval_context import _approval_session_key
 
     token = _approval_session_key.set(key)
     try:

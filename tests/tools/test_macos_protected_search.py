@@ -5,7 +5,8 @@ from pathlib import Path
 
 import tools.file_operations as file_operations
 from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations, _macos_protected_search_exclusions
+from tools.file_operations import ShellFileOperations
+from tools.file_operations_search import _macos_protected_search_exclusions
 
 
 class RecordingEnvironment:

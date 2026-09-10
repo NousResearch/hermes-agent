@@ -330,7 +330,14 @@ def _make_synthetic_lost_and_found(
     # The floor guards against accidentally reading an empty/old schema.
     current_width = len(sessions_columns)
     assert current_width >= 55
-    assert len(usage_columns) == 18
+    # A FLOOR, for the same reason the sessions width above is a floor: the
+    # comment just up there says this test "pinned 54, then 55, then 56 in one
+    # week" and was changed to derive from the live schema — but only for
+    # `sessions`. This one stayed pinned, so the fleet's five upstream-
+    # attribution columns (provider_name, native_tokens_prompt,
+    # native_tokens_cached, cache_discount, total_cost) break it at 23. The
+    # mapper is width-agnostic; what matters is that the schema is real.
+    assert len(usage_columns) >= 18
 
     max_fields = current_width
     conn = sqlite3.connect(str(path), isolation_level=None)

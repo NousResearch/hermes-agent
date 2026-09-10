@@ -2,6 +2,7 @@ import { createContext, memo, useCallback, useContext, useMemo, useRef, useState
 
 import { ChatEmptySlot } from '@/components/assistant-ui/chat-empty-slot'
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
+import { MediaCwdContext } from '@/components/assistant-ui/media-cwd-context'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
 import { BackgroundResumeNotice, CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { SystemMessage } from '@/components/assistant-ui/thread/system-message'
@@ -169,6 +170,7 @@ export const Thread = memo(function Thread({
 
   return (
     <ThreadEditContext.Provider value={editContext}>
+      <MediaCwdContext.Provider value={cwd}>
       <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
         <ThreadMessageList
           clampToComposer={clampToComposer}
@@ -190,6 +192,7 @@ export const Thread = memo(function Thread({
           title={copy.restoreTitle}
         />
       </div>
+      </MediaCwdContext.Provider>
     </ThreadEditContext.Provider>
   )
 })

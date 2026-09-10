@@ -8,8 +8,9 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, memo, useContext, useEffect, useMemo, useState } from 'react'
 
+import { MediaCwdContext } from '@/components/assistant-ui/media-cwd-context'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -31,6 +32,7 @@ import {
   mediaName,
   mediaPathFromMarkdownHref,
   resolveMediaDisplaySrc,
+  absolutizeMediaPath,
   resolveMediaPlaybackSrc
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
@@ -143,7 +145,13 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   )
 }
 
-function MediaAttachment({ path }: { path: string }) {
+function MediaAttachment({ path: rawPath }: { path: string }) {
+  // Resolve relative MEDIA paths against the owning session's cwd — including
+  // relative paths already stored in old transcripts, which start playing
+  // without the agent having to resend. Absolute/URL forms pass through
+  // untouched (absolutizeMediaPath guards itself).
+  const mediaCwd = useContext(MediaCwdContext)
+  const path = useMemo(() => absolutizeMediaPath(rawPath, mediaCwd), [rawPath, mediaCwd])
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)

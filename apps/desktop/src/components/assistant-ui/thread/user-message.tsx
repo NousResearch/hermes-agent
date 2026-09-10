@@ -393,6 +393,7 @@ export const UserMessage: FC<{
         data-slot="aui_user-message-root"
       >
         <AgentMessageNote text={messageText.trim()} />
+        <MessageTimelineTimestamp className="mt-0.5 self-start" />
       </MessagePrimitive.Root>
     )
   }

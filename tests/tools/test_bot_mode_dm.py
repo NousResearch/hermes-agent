@@ -857,11 +857,12 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
 
     if hasattr(os, "getuid"):
         assert dm_dir.name == f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}"
+        assert dm_dir.stat().st_mode & 0o777 == 0o700
     else:
         assert dm_dir.name == bot_mode_dm._DM_DIR_NAME
-    assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership contract")
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None

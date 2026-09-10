@@ -301,7 +301,10 @@ def _dm_dir() -> Path:
         raise PermissionError(f"DM temp path is not a directory: {path}")
     if uid is not None and info.st_uid != uid:
         raise PermissionError(f"DM temp directory is owned by another user: {path}")
-    if stat.S_IMODE(info.st_mode) != 0o700:
+    # Windows has no POSIX mode bits: stat() always reports directories as
+    # 0o777 regardless of chmod, so this enforcement only means something
+    # where os.getuid (and thus real ownership) exists.
+    if uid is not None and stat.S_IMODE(info.st_mode) != 0o700:
         path.chmod(0o700)
     return path
 

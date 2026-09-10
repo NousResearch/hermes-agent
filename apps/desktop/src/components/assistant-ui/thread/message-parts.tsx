@@ -9,6 +9,7 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
+import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
@@ -20,6 +21,7 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useI18n } from '@/i18n'
+import { connectorCalls } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
@@ -103,6 +105,14 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
         <ClarifyTool {...props} />
       </>
     )
+  }
+
+  if (props.toolName === 'manage_connections') {
+    return <ConnectorTool {...props} />
+  }
+
+  if (connectorCalls(props.toolName, props.args).length > 0) {
+    return <ConnectorExecution {...props} />
   }
 
   if (props.toolName === 'setup_mcp') {

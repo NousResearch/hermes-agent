@@ -51,6 +51,35 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  connectors: {
+    title: string
+    connect: string
+    skip: string
+    cancel: string
+    retry: string
+    grant: string
+    connected: string
+    skipped: string
+    disabled: string
+    failed: string
+    needsAuth: string
+    opening: string
+    waiting: string
+    timeout: string
+    keepWaiting: string
+    refresh: string
+    statusError: string
+    connectError: string
+    unavailable: string
+    ownerMissing: string
+    search: string
+    empty: string
+    continue: string
+    continueBusy: string
+    continueFailed: string
+    disclaimer: string
+    execution: string
+  }
   sessionImport: {
     title: string
     subtitle: string

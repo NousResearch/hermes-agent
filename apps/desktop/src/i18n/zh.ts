@@ -3,6 +3,36 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import type { Translations } from './types'
 
 export const zh: Translations = {
+  connectors: {
+    title: "连接你的应用",
+    connect: "连接",
+    skip: "暂不连接",
+    cancel: "停止等待",
+    retry: "重试",
+    grant: "重新连接",
+    connected: "已连接",
+    skipped: "已跳过",
+    disabled: "不可用",
+    failed: "连接失败",
+    needsAuth: "授权已过期",
+    opening: "正在打开登录…",
+    waiting: "请在浏览器中完成连接…",
+    timeout: "仍在等待授权。",
+    keepWaiting: "继续等待",
+    refresh: "刷新状态",
+    statusError: "无法检查连接，请刷新重试。",
+    connectError: "无法开始授权，请重试。",
+    unavailable: "此会话暂时无法使用连接器。",
+    ownerMissing: "请重新打开此对话以管理连接。",
+    search: "查找应用",
+    empty: "没有匹配的应用",
+    continue: "在对话中继续",
+    continueBusy: "等待当前操作完成",
+    continueFailed: "无法继续，请重试。",
+    disclaimer: "连接为可选操作。请仅授权你希望 Hermes 使用的应用。",
+    execution: "连接器工具",
+  },
+
   sessionImport: {
     title: '从其他应用继续',
     subtitle: '将对话导入 Hermes，接着上次的进度继续。',

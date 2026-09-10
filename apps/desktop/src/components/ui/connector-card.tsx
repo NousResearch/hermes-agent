@@ -200,6 +200,7 @@ export interface ConnectorCardProps {
   /** A sibling card is mid-flight. Two sign-in tabs racing for focus is
    *  hostile, so the action waits — but the decline never does. */
   otherBusy?: boolean
+  actionDisabled?: boolean
   outcome?: ConnectorCardOutcome
   /** Present only while working; replaces the resting state label. */
   phase?: string
@@ -224,6 +225,7 @@ export function ConnectorCard({
   onDismiss,
   onEnvChange,
   otherBusy = false,
+  actionDisabled = false,
   outcome,
   phase,
   state
@@ -250,98 +252,70 @@ export function ConnectorCard({
   const envFields = fixable ? (connector.requiredEnv ?? []) : []
   const steps = fixable ? (connector.setup ?? []) : []
 
-  // Logo owns the left rail; everything the card says and every control it
-  // offers shares the one text column, so the buttons sit on the copy's grid
-  // line instead of hanging off the card's edge under the mark.
+  // Keep the subject in its shell and the consent actions just below it.
   return (
-    <div className={cn(SHELL_CLASS, 'flex items-start gap-3')} data-slot="connector-card">
-      <ConnectorLogo connector={connector} />
+    <div className="grid gap-2" data-slot="connector-card">
+      <div className={cn(SHELL_CLASS, 'flex items-start gap-3')}>
+        <ConnectorLogo connector={connector} />
 
-      <div className="grid min-w-0 flex-1 gap-0.5">
-        <div className="flex flex-wrap items-baseline gap-x-1.5">
-          <span className="font-medium">{connector.title}</span>
-          {/* While the card is working its phase replaces the resting state —
-              "Signing in…" is the one the user needs, because the browser tab
-              that just took focus is otherwise unexplained. */}
-          {working ? (
-            <span className="text-[0.6875rem] text-(--ui-text-tertiary)">{phase}</span>
-          ) : (
-            stateLabel && <span className="text-[0.6875rem] text-(--ui-text-tertiary)">{stateLabel}</span>
+        <div className="grid min-w-0 flex-1 gap-0.5">
+          <div className="flex flex-wrap items-baseline gap-x-1.5">
+            <span className="font-medium">{connector.title}</span>
+            {/* While the card is working its phase replaces the resting state —
+                "Signing in…" is the one the user needs, because the browser tab
+                that just took focus is otherwise unexplained. */}
+            {working ? (
+              <span className="text-[0.6875rem] text-(--ui-text-tertiary)">{phase}</span>
+            ) : (
+              stateLabel && <span className="text-[0.6875rem] text-(--ui-text-tertiary)">{stateLabel}</span>
+            )}
+            <TrustBadge connector={connector} copy={copy} />
+          </div>
+
+          {connector.description ? <p className="text-(--ui-text-secondary)">{connector.description}</p> : null}
+
+          {failed && outcome.detail ? <p className="text-[0.6875rem] text-destructive">{outcome.detail}</p> : null}
+
+          {/* The part we cannot do. Numbered because order matters, linked
+              because the whole cost of these steps is finding the page. */}
+          {steps.length > 0 && (
+            <ol className="mt-1.5 grid gap-1" data-slot="connector-card-steps">
+              {steps.map((step, index) => (
+                <li className="flex gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)" key={step}>
+                  <span className="tabular-nums text-(--ui-text-tertiary)">{index + 1}.</span>
+                  <MarkdownLinkText text={step} />
+                </li>
+              ))}
+            </ol>
           )}
-          <TrustBadge connector={connector} copy={copy} />
+
+          {envOpen && envFields.length > 0 && (
+            <div className="mt-1 grid gap-2" data-slot="connector-card-env">
+              <p className="text-[0.6875rem] text-(--ui-text-tertiary)">{copy.envRequired}</p>
+              {envFields.map(env => (
+                <label className="grid gap-1" key={env.name}>
+                  <span className="text-[0.6875rem] text-(--ui-text-secondary)">
+                    {env.prompt || env.name}
+                    {env.required ? ' *' : ''}
+                  </span>
+                  <Input
+                    className="h-7 text-xs"
+                    onChange={event => onEnvChange?.(env.name, event.currentTarget.value)}
+                    type="password"
+                    value={envDraft[env.name] ?? ''}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
+
         </div>
-
-        {connector.description ? <p className="text-(--ui-text-secondary)">{connector.description}</p> : null}
-
-        {failed && outcome.detail ? <p className="text-[0.6875rem] text-destructive">{outcome.detail}</p> : null}
-
-        {/* The part we cannot do. Numbered because order matters, linked
-            because the whole cost of these steps is finding the page. */}
-        {steps.length > 0 && (
-          <ol className="mt-1.5 grid gap-1" data-slot="connector-card-steps">
-            {steps.map((step, index) => (
-              <li className="flex gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)" key={step}>
-                <span className="tabular-nums text-(--ui-text-tertiary)">{index + 1}.</span>
-                <MarkdownLinkText text={step} />
-              </li>
-            ))}
-          </ol>
-        )}
-
-        {envOpen && envFields.length > 0 && (
-          <div className="mt-1 grid gap-2" data-slot="connector-card-env">
-            <p className="text-[0.6875rem] text-(--ui-text-tertiary)">{copy.envRequired}</p>
-            {envFields.map(env => (
-              <label className="grid gap-1" key={env.name}>
-                <span className="text-[0.6875rem] text-(--ui-text-secondary)">
-                  {env.prompt || env.name}
-                  {env.required ? ' *' : ''}
-                </span>
-                <Input
-                  className="h-7 text-xs"
-                  onChange={event => onEnvChange?.(env.name, event.currentTarget.value)}
-                  type="password"
-                  value={envDraft[env.name] ?? ''}
-                />
-              </label>
-            ))}
-          </div>
-        )}
-
-        {/* Same strip as the tool approval bar (tool/approval.tsx), down to its
-            `mt-2` stand-off: a bordered primary-tinted action plus a quiet
-            ghost decline. One consent vocabulary across the transcript. */}
-        <div className="mt-2 flex items-center gap-2.5">
-          <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
-            <Button
-              className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
-              disabled={working || otherBusy}
-              onClick={onConnect}
-              size="xs"
-              variant="ghost"
-            >
-              {working ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : outcome?.needsAuth ? (
-                copy.grantAction
-              ) : failed ? (
-                copy.retryAction
-              ) : (
-                copy.connectAction
-              )}
-            </Button>
-          </div>
-          {/* Never disabled: while a connect is in flight this is the way out
-              of a stuck sign-in tab or a hung install. */}
-          <Button
-            className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
-            onClick={onDismiss}
-            size="xs"
-            variant="ghost"
-          >
-            {copy.decline}
-          </Button>
-        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button disabled={working || otherBusy || actionDisabled} onClick={onConnect} size="sm" variant="secondary">
+          {working ? <Loader2 className="animate-spin" /> : outcome?.needsAuth ? copy.grantAction : failed ? copy.retryAction : copy.connectAction}
+        </Button>
+        <Button onClick={onDismiss} size="sm" variant="text">{copy.decline}</Button>
       </div>
     </div>
   )

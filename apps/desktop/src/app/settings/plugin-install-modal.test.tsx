@@ -3,7 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { requestGateway } = vi.hoisted(() => ({ requestGateway: vi.fn() }))
+// The host tab lists installed plugins on mount; only an `install` action counts as installing.
+const { requestGateway } = vi.hoisted(() => ({ requestGateway: vi.fn(async () => ({ plugins: [] })) }))
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
@@ -21,17 +22,18 @@ import {
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
+import { PluginsTab } from '../skills/plugins-tab'
+
 import { PluginInstallModal } from './plugin-install-modal'
-import { PluginsSettings } from './plugins-settings'
 
 const probePluginRepo = vi.fn()
 const installDesktopPlugin = vi.fn()
 
 const renderFlow = () =>
   render(
-    <MemoryRouter initialEntries={['/settings?tab=plugins']}>
+    <MemoryRouter initialEntries={['/skills?tab=plugins']}>
       <QueryClientProvider client={queryClient}>
-        <PluginsSettings />
+        <PluginsTab profile={null} />
         <PluginInstallModal />
       </QueryClientProvider>
     </MemoryRouter>
@@ -79,7 +81,7 @@ describe('Install from Git entry flow', () => {
         )
       ).toBeTruthy()
       expect(screen.getByText("Installs into this app's local desktop-plugins folder")).toBeTruthy()
-      expect(requestGateway).not.toHaveBeenCalled()
+      expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
       expect(installDesktopPlugin).not.toHaveBeenCalled()
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
       expect($pluginInstallRequest.get()).toBeNull()
@@ -106,7 +108,7 @@ describe('Install from Git entry flow', () => {
     const boxes = screen.getAllByRole('checkbox')
     expect(boxes.map(box => box.getAttribute('aria-checked'))).toEqual(['false', 'true'])
     expect(probePluginRepo).toHaveBeenCalledTimes(1)
-    expect(requestGateway).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
     expect(installDesktopPlugin).not.toHaveBeenCalled()
   })
 })

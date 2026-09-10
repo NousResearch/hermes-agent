@@ -228,14 +228,21 @@ def _billing_pending_change(result: dict) -> dict:
 
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
-                    copy_fields=(), compensate: bool = False) -> None:
+                    copy_fields=(), compensate: bool = False, origin_json: str = None) -> None:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
     row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
-    IGNORE first-prompt seed) — except on disk-full, where the delete cannot land."""
+    IGNORE first-prompt seed) — except on disk-full, where the delete cannot land.
+
+    ``origin_json`` (default None) is the parent's gateway routing identity — branch children must inherit it
+    explicitly here because ``_INHERIT_PARENT_ROUTING_SQL`` only fires when the parent's ``end_reason =
+    'compression'`` (a crash before the gateway re-records a compression-fork peer would strand it unroutable;
+    branch children whose parent ended normally fall outside that gate and would otherwise be left without
+    a recoverable routing mapping)."""
     db.create_session(new_key, source=source, model=_resolve_model(), model_config={"_branched_from": parent_key},
-                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name)
+                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name,
+                      origin_json=origin_json)
     try:
         # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
         # committed, the durable-but-empty row would defeat the lazy first-prompt fallback
@@ -261,14 +268,25 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
 def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: list, source: str, profile_home):
     """Persist a seeded desktop branch child NOW (the one session.create exception to lazy rows): the
     renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
-    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback."""
+    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback.
+
+    Mirrors ``session.branch`` (above) on three points it was missing: passes ``_BRANCH_COPY_FIELDS`` so the
+    copied transcript keeps its real timestamps / display markers / reasoning (the default ``copy_fields=()``
+    drops every field past ``role``+``content`` and ``_insert_message_rows`` collapses the survivors to one
+    ``time.time()`` per batch — observable as three identical timestamps across the seeded history), and
+    threads the parent's ``origin_json`` so the gateway can still route to the child on a fresh process
+    (the sibling compression-fork path inherits it via ``_INHERIT_PARENT_ROUTING_SQL``; this branch path
+    does not — parent ended with a normal ``end_reason``, not ``'compression'``)."""
     try:
         with _session_db(record) as db:
             if db is None:
                 return
+            parent = db.get_session(parent_session_id) or {}
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
-                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(), compensate=True)
+                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
+                            copy_fields=_BRANCH_COPY_FIELDS, origin_json=parent.get("origin_json"),
+                            compensate=True)
             record["pending_title"] = None
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,

@@ -86,14 +86,14 @@ _CATALOGUE_PREFIX_REPAIR_PROVIDERS: frozenset[str] = frozenset({
 _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi"})
 
-# DeepSeek's direct API only accepts first-class V-series IDs after the 2026-07-24 cut-off (HTTP 400
-# otherwise). Both retired aliases map to deepseek-v4-flash per the official docs (thinking mode is
+# DeepSeek's direct API accepts V-series IDs and the versionless deepseek-flash ID.
+# Both retired aliases map to deepseek-v4-flash per the official docs (thinking mode is
 # controlled by extra_body.thinking on the profile), so saved configs can't keep sending them.
 _DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
     "deepseek-chat", "deepseek-reasoner"})
 
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-v4-pro", "deepseek-v4-flash"})
+    "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"})
 
 # First-class V-series IDs incl. future ``deepseek-v5-*`` and dated variants
 # (``deepseek-v4-flash-20260423``): verified real model ids, NOT aliases of ``deepseek-chat``.

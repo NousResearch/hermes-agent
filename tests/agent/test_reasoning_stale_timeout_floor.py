@@ -55,6 +55,8 @@ import pytest
     ("deepseek/deepseek-reasoner", 600.0),
     ("deepseek/deepseek-v4-flash", 600.0),
     ("deepseek/deepseek-v4-pro", 600.0),
+    ("deepseek/deepseek-v4.1-flash", 600.0),
+    ("deepseek-flash", 600.0),   # OpenCode Go slug for V4.1 Flash
     ("deepseek-v4-flash-free", 600.0),   # catalog -free variant inherits via separator anchor
     # Qwen QwQ + Qwen3 thinking variants (qwen3 family entry matches all).
     ("qwen/qwq-32b-preview", 300.0),

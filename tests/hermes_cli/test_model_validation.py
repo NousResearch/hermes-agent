@@ -259,6 +259,7 @@ class TestCopilotNormalization:
         # DeepSeek / MiMo on Go are OpenAI-compatible chat completions.
         assert opencode_model_api_mode("opencode-go", "deepseek-v4-pro") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "deepseek-v4-flash") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "deepseek-flash") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "mimo-v2.5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "kimi-k2.7-code") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "glm-5.2") == "chat_completions"

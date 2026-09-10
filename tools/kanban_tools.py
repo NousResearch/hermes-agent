@@ -640,6 +640,14 @@ def _handle_request_review(args: dict, **kw) -> str:
     metadata = _stamp_worker_session_metadata(tid, metadata)
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
+    if reviewer:
+        from hermes_cli.profiles import list_profile_names, profile_exists
+
+        # A non-profile reviewer would park the card in `review` on an assignee
+        # the dispatcher can never spawn (#106163).
+        _check(profile_exists(reviewer),
+               f"reviewer profile {reviewer!r} is not installed. "
+               f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
@@ -815,8 +823,8 @@ def _handle_create(args: dict, **kw) -> str:
     # mutate review evidence or race its checkout). Project identity is the one safe thing
     # to inherit implicitly (the DB turns it into a fresh per-task worktree).
     workspace_kind, workspace_path = args.get("workspace_kind"), args.get("workspace_path")
-    # See #67567.
-    project_id = args.get("project") or args.get("project_id")
+    # See #67567. ``project=""`` is an explicit "no project" (no ``or`` collapse, #106342).
+    project_id = args["project"] if "project" in args else args.get("project_id")
     project_source_task_id = None
     triage, skills, goal_mode = (
         _parse_bool_arg(args, "triage"), _coerce_str_list(args.get("skills"), "skills", "skill names"),
@@ -839,8 +847,10 @@ def _handle_create(args: dict, **kw) -> str:
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
             priority=_opt_int(args.get("priority"), 0),
-            workspace_kind=str(workspace_kind if workspace_kind is not None else "scratch"),
-            workspace_path=workspace_path, project_id=project_id,
+            workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
+            # Board-project inheritance must read the board this call opened, not the
+            # session's current board.
+            board=args.get("board"),
             project_source_task_id=project_source_task_id, triage=triage,
             creator_task_id=self_tid,
             idempotency_key=args.get("idempotency_key"),

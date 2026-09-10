@@ -401,6 +401,9 @@ _servers: Dict[str, MCPServerTask] = {}
 # Profile registry scope per live connection (None outside multiplex) so a multiplexed
 # /reload-mcp tears down only its own profile's servers.
 _server_scope_keys: Dict[str, Optional[str]] = {}
+# Registry scopes that have adopted a live server connection. The owning scope above remains
+# authoritative for connection teardown; this set preserves visibility for shared connections.
+_server_tool_scopes: Dict[str, set] = {}
 _server_connecting: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
 # Lazy startup: servers registered from the schema cache without connecting; popped on
@@ -625,6 +628,14 @@ def _server_registry_scope(name: str) -> Optional[str]:
     if name in _server_scope_keys:
         return _server_scope_keys[name]
     return _mcp_registry_scope()
+
+
+def _server_visible_in_scope(name: str, scope: Optional[str]) -> bool:
+    """Whether a live server is visible from ``scope`` without changing its teardown owner."""
+    if scope is None:
+        return True
+    return (_server_scope_keys.get(name) == scope
+            or scope in _server_tool_scopes.get(name, ()))
 
 
 # Cross-process discovery guard: advisory file lock so gateway + CLI + TUI don't all discover.

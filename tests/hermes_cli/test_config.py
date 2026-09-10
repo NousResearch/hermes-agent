@@ -299,7 +299,7 @@ class TestLoadConfigParseFailure:
             load_config()
             err = capsys.readouterr().err
 
-            baks = list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+            baks = list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
             assert len(baks) == 1, f"expected one backup, got {baks}"
             # Backup preserves the original broken content verbatim
             assert baks[0].read_text() == broken
@@ -452,7 +452,7 @@ class TestSaveAndLoadRoundtrip:
                 set_config_value("model.default", "gpt-4o")
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*")), (
             "parse-failure path should snapshot a corrupt backup before refusing"
         )
 
@@ -469,7 +469,7 @@ class TestSaveAndLoadRoundtrip:
 
         assert config_path.read_text(encoding="utf-8") == original
         assert (tmp_path / ".env").read_text(encoding="utf-8") == "TERMINAL_TIMEOUT=30\n"
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*")), (
             "unset parse-failure path should snapshot a corrupt backup before refusing"
         )
 
@@ -484,7 +484,7 @@ class TestSaveAndLoadRoundtrip:
                 set_config_value("model.default", "gpt-4o")
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*")), (
             "non-mapping root should snapshot a corrupt backup before refusing"
         )
 
@@ -499,7 +499,7 @@ class TestSaveAndLoadRoundtrip:
                 unset_config_value("model.default")
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
 
     def test_config_set_allows_valid_empty_mapping(self, tmp_path):
         """A genuine empty {} config must still be writable (not a false refuse)."""
@@ -524,7 +524,7 @@ class TestSaveAndLoadRoundtrip:
             atomic_config_write(config_path, {"model": {"provider": "openai"}})
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
 
 class TestSaveEnvValueSecure:
 

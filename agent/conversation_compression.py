@@ -1934,8 +1934,8 @@ def _steer_markers() -> Tuple[str, str]:
 
 def _message_contains_busy_steer(message: Any) -> bool:
     """Return whether *message* carries a busy-steer marker.
-    Steer follow-ups live as markers inside ``role=tool`` results, so they carry user intent that
-    ``_is_real_user_message`` alone would miss."""
+    Steer follow-ups are now their own ``role=user`` rows (caught by ``_is_real_user_message``); in
+    transcripts persisted before that they ride inside ``role=tool`` results, so those still count."""
     text = _message_text(message)
     if not text:
         return False

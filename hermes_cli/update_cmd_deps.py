@@ -802,11 +802,13 @@ def _defer_update_for_self_lock(loaded: list[str]) -> None:
 
 
 def _desktop_app_present(desktop_dir: Path) -> bool:
-    """Return whether a packaged or source Desktop build exists."""
+    """Return whether a packaged, source, or installed macOS Desktop app exists."""
     from hermes_cli.update_cmd import _m
     return (
         _m()._desktop_packaged_executable(desktop_dir) is not None
-        or _m()._desktop_dist_exists(desktop_dir))
+        or _m()._desktop_dist_exists(desktop_dir)
+        or bool(_m()._desktop_macos_installed_app_candidates())
+    )
 
 
 def _rebuild_desktop_after_update(
@@ -857,6 +859,7 @@ def _rebuild_desktop_after_update(
         from hermes_constants import display_hermes_home as _dhh
         print(f"  Full build log: {_dhh()}/logs/update.log")
         return False
+    _m()._sync_macos_installed_desktop_app(desktop_dir)
     print("  ✓ Desktop app up to date")
     return True
 

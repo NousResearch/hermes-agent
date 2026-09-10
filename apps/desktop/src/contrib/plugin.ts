@@ -86,7 +86,8 @@ export interface PluginContext {
   /** REST to this plugin's own backend namespace (`/api/plugins/<id>`); `path`
    *  is relative ('/board'). The sanctioned door for a plugin that ships a
    *  `plugin_api.py` — profile-aware, namespace-scoped by construction. Use
-   *  `host.request` for gateway JSON-RPC. */
+   *  `host.request` for gateway JSON-RPC. `opts.source` pins a registered
+   *  connection and backend profile without switching the foreground. */
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live twin of `rest`: a WebSocket to this plugin's own namespace
    *  ('/events'), JSON frames to `onMessage`, auto-reconnect, disposer

@@ -78,6 +78,7 @@ import {
   PROFILES_KEY
 } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { CardFace } from './card-face'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
@@ -257,19 +258,17 @@ function Card({
   const k = useKanban()
   const [dragging, setDragging] = useState(false)
   const meta = columnMeta(task.status)
-  const summary = task.latest_summary || task.body
   const fallback = useDefaultAssignee()
   const arc = arcState(task, fallback)
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div
+        <CardFace
           className={cn(
-            'group relative flex cursor-grab flex-col gap-2 rounded-md border border-(--ui-stroke-tertiary) border-l-2 bg-(--ui-bg-elevated) p-2.5',
             // Hover matches the provider-picker rows: a quiet primary fill;
             // selected = the theme's focus color (same as a focused input).
-            'transition-colors hover:bg-primary/[0.06] active:cursor-grabbing',
+            'cursor-grab active:cursor-grabbing',
             selected && 'border-(--dt-composer-ring) bg-[color-mix(in_srgb,var(--dt-composer-ring)_7%,transparent)]',
             dragging && 'opacity-40'
           )}
@@ -285,6 +284,7 @@ function Card({
             setDragging(true)
           }}
           style={{ '--kanban-tone': meta.tone, borderLeftColor: meta.tone } as CSSProperties}
+          task={task}
         >
           {/* Machine-activity arc: animates ONLY while an agent is actually on
               the card (claimed + working; amber when the heartbeat is gone).
@@ -294,14 +294,8 @@ function Card({
           {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
           )}
-          <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
-            {task.title || task.id}
-          </span>
-          {summary && (
-            <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
-          )}
           <CardFooter arc={arc} task={task} />
-        </div>
+        </CardFace>
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onOpen(task.id)}>
@@ -1329,6 +1323,10 @@ export function KanbanBoardPage() {
 
       <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
         <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
+        <Button onClick={() => host.navigate('/kanban/hosts')} size="sm" variant="ghost">
+          <Codicon name="server" />
+          {k.browser.browse}
+        </Button>
         <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
           {total}
         </span>

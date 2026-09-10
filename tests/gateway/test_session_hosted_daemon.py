@@ -49,7 +49,7 @@ def test_native_room_service_local_member_and_restart(tmp_path):
     base = f'http://127.0.0.1:{model.server_port}/v1'
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False}, 'hosted_rooms': {'profiles': {'two': str(target)}},
-        'model': {'provider': 'custom', 'default': 'loopback-room', 'base_url': base},
+        'model': {'provider': 'custom', 'default': 'gpt-4o', 'base_url': base},
         'platform_toolsets': {'gui': [], 'bot_room': []},
         'auxiliary': {'title_generation': {'enabled': False}},
         'terminal': {'cwd': str(home)},
@@ -59,6 +59,9 @@ def test_native_room_service_local_member_and_restart(tmp_path):
         PYTHONPATH=str(root), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=base, PYTHONUNBUFFERED='1')
     members = [{'member_id': 'one', 'profile': 'default', 'handle': 'one'},
                {'member_id': 'two', 'profile': 'two', 'handle': 'two'}]
+    import base64
+    image = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP1sAAAAASUVORK5CYII=')
+    saved = {}
     async def probe(desc, restart):
         async with websocket(home, desc) as ws:
             capabilities = await rpc(ws, 'groups.capabilities')
@@ -70,10 +73,15 @@ def test_native_room_service_local_member_and_restart(tmp_path):
                 assert 'error' in rejected, rejected
                 created = await rpc(ws, 'groups.create', room_id='owned', name='Owned', members=members)
                 assert 'result' in created, created
+            if not restart:
+                uploaded = await rpc(ws, 'groups.attachment.upload', room_id='owned', upload_id='image',
+                    kind='image', name='pixel.png', mime='image/png', data_base64=base64.b64encode(image).decode())
+                assert 'result' in uploaded, uploaded
+                saved['manifest'] = [{k: uploaded['result'][k] for k in ('attachment_id', 'kind', 'name', 'size', 'mime')}]
             sent = await rpc(ws, 'groups.send', room_id='owned', event_id='input-one',
-                             payload={'text': 'LOCAL_HOSTED_PROOF', 'thread_id': 'thread'})
+                             payload={'text': 'LOCAL_HOSTED_PROOF', 'thread_id': 'thread', 'attachments': saved['manifest']})
             assert sent['result']['accepted'], sent
-            async with asyncio.timeout(25):
+            async with asyncio.timeout(45):
                 while True:
                     log = await rpc(ws, 'groups.log', room_id='owned')
                     if sum(e['kind'] == 'turn.settled' for e in log['result']['events']) >= 2:
@@ -82,6 +90,14 @@ def test_native_room_service_local_member_and_restart(tmp_path):
             state = await rpc(ws, 'groups.state', room_id='owned')
             assert state['result']['driver_status']['counts'].get('settled') == 2, state
             assert len(model.requests) == 2, model.requests
+            downloaded = await rpc(ws, 'groups.attachment.download', room_id='owned',
+                event_id=sent['result']['event']['event_id'], attachment_id=saved['manifest'][0]['attachment_id'])
+            assert base64.b64decode(downloaded['result']['data_base64']) == image
+            for request in model.requests:
+                images = [b for m in request['messages'] if isinstance(m.get('content'), list)
+                          for b in m['content'] if b.get('type') == 'image_url']
+                assert images, request
+                assert base64.b64decode(images[0]['image_url']['url'].split(',')[1]) == image
     try:
         for restart in (False, True):
             with daemon(root, target, env | {'HERMES_HOME': str(target)}, barrier=False), daemon(root, home, env, barrier=False) as (_, desc):
@@ -104,7 +120,7 @@ def test_room_unknown_discard_releases_only_its_followers(tmp_path):
     base = f'http://127.0.0.1:{model.server_port}/v1'
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False}, 'hosted_rooms': {'profiles': {'two': str(target)}},
-        'model': {'provider': 'custom', 'default': 'loopback-room', 'base_url': base},
+        'model': {'provider': 'custom', 'default': 'gpt-4o', 'base_url': base},
         'platform_toolsets': {'gui': [], 'bot_room': []},
         'auxiliary': {'title_generation': {'enabled': False}},
         'terminal': {'cwd': str(home)},

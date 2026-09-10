@@ -76,10 +76,19 @@ def submission_payload(rpc, prompt, attachments=None):
     manifest = validate_bound_task_manifest(attachments)
     store = HostedRoomAttachmentStore(rpc.authority.db.db_path)
     references = []
-    for item in manifest:
-        saved = store.read(room_id=rpc.room_id, attachment_id=item['attachment_id'],
-                           event_id=item['event_id'], recipient_member_id=rpc.member_id)
-        if any(saved.attachment[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
+    transferred = getattr(rpc, 'hosted_attachment_data', None)
+    if transferred is not None and [item for item, data in transferred] != manifest:
+        raise RuntimeStoreError('permission_denied')
+    for index, item in enumerate(manifest):
+        if transferred is None:
+            saved = store.read(room_id=rpc.room_id, attachment_id=item['attachment_id'],
+                               event_id=item['event_id'], recipient_member_id=rpc.member_id)
+            if any(saved.attachment[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
+                raise RuntimeStoreError('permission_denied')
+            data = saved.data
+        else:
+            data = transferred[index][1]
+        if len(data) != item['size']:
             raise RuntimeStoreError('permission_denied')
         # Retained native-inputs are excluded from age-only document cleanup. The
         # content-addressed destination is stable on retry and refuses corruption.
@@ -87,8 +96,12 @@ def submission_payload(rpc, prompt, attachments=None):
             path = Path(directory) / item['name']
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, 'wb') as output:
-                output.write(saved.data)
+                output.write(data)
             reference = capture_native_media([path])[0]
         references.append(reference)
     paths = restore_native_media(references)
-    return {'text': prompt + ''.join('\n[Shared attachment] file: ' + path + '\n' for path in paths)}
+    from gateway.session_ingress_media import _ATTACHMENT_MIMES
+    images = [(ref, item['mime']) for ref, item in zip(references, manifest)
+              if item['mime'] in _ATTACHMENT_MIMES]
+    return {'text': prompt + ''.join('\n[Shared attachment] file: ' + path + '\n'
+               for path in paths)}

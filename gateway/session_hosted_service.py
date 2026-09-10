@@ -167,6 +167,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         """Reconstruct the private producer from durable task state before claim."""
         import json
         from gateway.hosted_room_driver import TaskIdentity, list_tasks
+        from gateway.session_hosted_attachments import submission_payload
         from tui_gateway.hosted_room_driver import HostedRoomBinding
         try:
             if not row['request_id'].startswith('hosted:'):
@@ -184,7 +185,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             rpc = self._resolve_member_transport(HostedRoomBinding(identity.room_id,
                 room['authority_gateway_id'], room['authority_epoch']), task)
             if (getattr(rpc, 'ref', None) != ref or task['status'] != 'running'
-                    or row['payload'] != {'text': task['payload']['prompt']}
+                    or row['payload'] != submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'))
                     or rpc.authorizer('execute', identity, generation) is not True):
                 raise ValueError('changed hosted binding')
             return task

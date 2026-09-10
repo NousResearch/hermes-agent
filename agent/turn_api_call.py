@@ -42,12 +42,15 @@ class ApiCallVerdict:
 
 def _should_stream(agent: Any) -> bool:
     """Streaming is preferred even without consumers (stale-stream / read-timeout health
-    checks); disabled on provider signal, ACP schemes, MoA without a display consumer, or
-    Mock clients in tests (SimpleNamespace, not stream iterators)."""
+    checks); disabled on provider signal, ACP providers (``acp://`` scheme or an
+    external-process provider profile), MoA without a display consumer, or Mock clients in
+    tests (SimpleNamespace, not stream iterators)."""
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()
-    if agent.provider in {"copilot-acp"} or _base.startswith(("acp://", "acp+tcp://")):
+    from providers import is_external_process_provider
+
+    if _base.startswith(("acp://", "acp+tcp://")) or is_external_process_provider(agent.provider):
         return False
     if not agent._has_stream_consumers():
         if agent.provider == "moa":

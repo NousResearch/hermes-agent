@@ -89,3 +89,94 @@ def test_an_acp_provider_turn_never_asks_for_a_stream(monkeypatch):
     assert result["final_response"].startswith("ok")
     assert client.chat.completions.calls, "the client was never called"
     assert not any(c.get("stream") for c in client.chat.completions.calls)
+
+
+def _register_acp_profile(
+    monkeypatch,
+    name: str,
+    *,
+    auth_type: str = "external_process",
+    process_command: str = "",
+    process_args: tuple = (),
+    process_command_env_vars: tuple = (),
+) -> None:
+    """Register a profile through the real registry, auto-removed by monkeypatch."""
+    from providers import _REGISTRY
+    from providers.base import ProviderProfile
+
+    monkeypatch.setitem(
+        _REGISTRY,
+        name,
+        ProviderProfile(
+            name=name,
+            auth_type=auth_type,
+            base_url=f"acp://{name}",
+            process_command=process_command,
+            process_args=process_args,
+            process_command_env_vars=process_command_env_vars,
+        ),
+    )
+
+
+def _launch_kwargs(provider: str):
+    from types import SimpleNamespace
+
+    from agent.agent_init import _explicit_client_kwargs
+
+    agent = SimpleNamespace(provider=provider, acp_command=None, acp_args=None)
+    return _explicit_client_kwargs(agent, "placeholder", f"acp://{provider}", None)
+
+
+def test_an_external_process_profile_supplies_the_launch_command(monkeypatch):
+    """Any ACP provider is driven from its own profile — core must not match on one name."""
+    _register_acp_profile(
+        monkeypatch, "fake-acp", process_command="/usr/bin/fake-acp", process_args=("acp", "--stdio")
+    )
+
+    kwargs = _launch_kwargs("fake-acp")
+
+    assert kwargs["command"] == "/usr/bin/fake-acp"
+    assert kwargs["args"] == ["acp", "--stdio"]
+
+
+def test_the_profile_env_override_wins_over_its_static_command(monkeypatch):
+    monkeypatch.setenv("HERMES_FAKE_ACP_COMMAND", "/opt/elsewhere/fake-acp")
+    _register_acp_profile(
+        monkeypatch,
+        "fake-acp-env",
+        process_command="/usr/bin/fake-acp",
+        process_args=("acp",),
+        process_command_env_vars=("HERMES_FAKE_ACP_COMMAND",),
+    )
+
+    assert _launch_kwargs("fake-acp-env")["command"] == "/opt/elsewhere/fake-acp"
+
+
+def test_an_http_provider_gets_no_launch_command(monkeypatch):
+    """Guard against the ACP branch widening onto ordinary API-key providers."""
+    _register_acp_profile(
+        monkeypatch, "fake-http", auth_type="api_key", process_command="/usr/bin/nope"
+    )
+
+    kwargs = _launch_kwargs("fake-http")
+
+    assert "command" not in kwargs
+    assert "args" not in kwargs
+
+
+def test_an_external_process_provider_never_streams_or_upgrades(monkeypatch):
+    """Streaming and the Responses upgrade follow the profile, not the base_url scheme."""
+    from types import SimpleNamespace
+
+    from agent.turn_api_call import _should_stream
+
+    _register_acp_profile(
+        monkeypatch, "fake-acp-plain", process_command="/usr/bin/fake-acp", process_args=("acp",)
+    )
+
+    assert not _should_stream(
+        SimpleNamespace(provider="fake-acp-plain", base_url="https://example.invalid/v1")
+    )
+
+    agent, _ = _agent(monkeypatch, "https://example.invalid/v1", provider="fake-acp-plain")
+    assert agent.api_mode == "chat_completions"

@@ -35,6 +35,8 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
+import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -81,6 +83,39 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     if profile is None and isinstance(name, str) and name.lower().startswith("custom:"):
         profile = _REGISTRY.get("custom")
     return profile
+
+
+def is_external_process_provider(name: str) -> bool:
+    """True when ``name`` resolves to a profile that launches an external ACP CLI.
+
+    Call sites keyed on the hardcoded ``"copilot-acp"`` name instead of this
+    predicate break every other ACP provider: their launch command never reaches
+    the client, they inherit the Responses-API upgrade, and their turns try to
+    stream a completion object that is not iterable.
+    """
+    profile = get_provider_profile(name)
+    return bool(profile) and getattr(profile, "auth_type", "") == "external_process"
+
+
+def acp_launch_spec(profile: ProviderProfile | None) -> tuple[str, list[str]] | None:
+    """Launch command/args for an external-process profile.
+
+    Env overrides named by the profile win over its static defaults; ``None``
+    when the profile describes no launchable command (e.g. a remote
+    ``acp+tcp://`` endpoint the caller resolves elsewhere).
+    """
+    if profile is None or getattr(profile, "auth_type", "") != "external_process":
+        return None
+    env_names = tuple(getattr(profile, "process_command_env_vars", ()) or ())
+    command = next(
+        (os.environ[n].strip() for n in env_names if os.environ.get(n, "").strip()), ""
+    ) or str(getattr(profile, "process_command", "") or "")
+    args_env = str(getattr(profile, "process_args_env_var", "") or "")
+    raw_args = os.environ.get(args_env, "").strip() if args_env else ""
+    args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
+    if not command and not args:
+        return None
+    return command, args
 
 
 def list_providers() -> list[ProviderProfile]:

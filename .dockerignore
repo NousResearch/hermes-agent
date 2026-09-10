@@ -84,8 +84,16 @@ tests/
 website/
 docs/
 
-# Assets only used by the GitHub README
+# Keep the source artwork needed by web's icon-generation prebuild.
 assets/
+!assets/
+assets/*
+!assets/nous-girl-black.svg
+!assets/nous-girl-white.svg
+!assets/backgrounds/
+assets/backgrounds/*
+!assets/backgrounds/squircle-light.svg
+!assets/backgrounds/squircle-dark.svg
 infographic/
 
 # Plugin-level docs (hermes-achievements ships docs/ but the runtime doesn't read them)

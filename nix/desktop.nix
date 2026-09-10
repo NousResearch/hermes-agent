@@ -15,6 +15,7 @@
   electron,
   hermesAgent,
   installStampFile,
+  generatedIcons,
   python3,
   # Environment to bake into the launcher. A GUI launcher reads none of the
   # shell profile, so a variable that an interactive shell exports does not
@@ -79,6 +80,7 @@ let
 
       mkdir -p apps/desktop/build
       cp ${installStampFile} apps/desktop/build/install-stamp.json
+      cp -r ${generatedIcons}/apps/desktop/public/. apps/desktop/public/
 
       patchShebangs .
 
@@ -195,7 +197,7 @@ stdenv.mkDerivation {
 
     # XDG launcher entry
     mkdir -p $out/share/applications $out/share/icons/hicolor/1024x1024/apps
-    install -m 0644 ${../apps/desktop/assets/icon.png} \
+    install -m 0644 ${generatedIcons}/apps/desktop/assets/icon.png \
       $out/share/icons/hicolor/1024x1024/apps/hermes.png
     export PYTHONPATH=$(mktemp -d)
     cp ${../hermes_cli/linux_desktop_entry.py} "$PYTHONPATH/linux_desktop_entry.py"

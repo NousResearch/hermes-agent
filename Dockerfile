@@ -209,12 +209,21 @@ COPY hermes_cli/__init__.py hermes_cli/runtime_paths.py hermes_cli/runtime_state
 RUN set -eu; \
     python3 -m pm.cli install uv chromium chromium-headless-shell; \
     ln -sf /opt/hermes/tools/uv-*/uv /usr/local/bin/uv; \
+    python3 -c 'from pathlib import Path; from pm.lock import Facts; from pm.registry import get_package; from pm.store import current_target; root = Path("/opt/hermes/tools"); fact = Facts(root / "facts.json").get("python"); binary = get_package("python").binary(root / fact["entry"], current_target()); Path("/usr/local/bin/python3").symlink_to(binary)'; \
     uv --version; \
     browser_bin="$(find /opt/hermes/tools/chromium-* -type f \( -name chrome -o -name chromium \) -print -quit)"; \
     test -n "$browser_bin"; \
     "$browser_bin" --version; \
     mkdir -p /etc/hermes; \
     printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path
+
+# Raw uv commands must use PM's staged interpreter, not download another
+# under /root where the unprivileged runtime user cannot traverse it.
+ENV UV_PYTHON=/usr/local/bin/python3
+ENV UV_PYTHON_DOWNLOADS=never
+# The standalone interpreter records its builder's clang toolchain;
+# native extensions must use the compiler installed in this image.
+ENV CC=gcc CXX=g++
 
 # ---------- Layer-cached dependency install ----------
 # Copy only package manifests first so npm install is cached unless the
@@ -316,8 +325,11 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 COPY web/ web/
 COPY ui-tui/ ui-tui/
 COPY apps/shared/ apps/shared/
+COPY scripts/generate-icons.mjs scripts/generate_icons.py scripts/
+COPY assets/ assets/
 RUN cd web && npm run build && \
-    cd ../ui-tui && npm run build
+    cd ../ui-tui && npm run build && \
+    rm -rf /opt/hermes/.cache/icon-build
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -333,7 +345,7 @@ COPY --link --chmod=a+rX,go-w . .
 # Link hermes-agent itself (editable). Deps are already installed in the
 # cached layer above; `--no-deps` makes this a fast egg-link creation with no
 # resolution or downloads.
-RUN uv pip install --no-cache-dir --no-deps -e "."
+RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir --no-deps -e "."
 
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
 # already root-owned (COPY, uv sync, npm install all run as root) and
@@ -458,7 +470,9 @@ COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-di
 # binary by absolute path, so this PATH ordering is transparent to
 # every other consumer.
 ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
-RUN mkdir -p /opt/data
+# PM's atomic writer creates private facts for source installs. In the
+# image these are shared, non-secret package metadata, read by UID 10000.
+RUN mkdir -p /opt/data && chmod 0644 /opt/hermes/tools/facts.json
 VOLUME [ "/opt/data" ]
 
 # The image ENTRYPOINT is a tiny dispatcher rather than `/init` directly.

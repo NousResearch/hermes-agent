@@ -64,7 +64,17 @@ let
           "alibabacloud-gateway-spi"
           "alibabacloud-tea"
         ] (_: null)
-      );
+      )
+    // {
+      # The locked sdist has no build-system metadata; setup.py imports
+      # setuptools and uses CFFI to compile the bundled libolm.
+      python-olm = prev.python-olm.overrideAttrs (old: {
+        nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ final.resolveBuildSystem {
+          setuptools = [ ];
+          cffi = [ ];
+        };
+      });
+    };
 
   pythonPackageOverrides =
     final: _prev:
@@ -154,6 +164,11 @@ let
 in
 {
   inherit python;
+
+  # Equivalent to uv's --only-group: use the lock-derived dependency spec,
+  # without installing Hermes or its runtime dependencies in the build env.
+  iconBuildVenv = pythonSet.mkVirtualEnv "hermes-icon-build-env"
+    pythonSet.hermes-agent.dependency-groups.icon-build;
 
   venv = pythonSet.mkVirtualEnv "hermes-agent-env" {
     hermes-agent = dependency-groups;

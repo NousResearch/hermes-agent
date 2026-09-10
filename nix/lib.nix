@@ -209,6 +209,11 @@ let
   # keep in sync with it.
   npmDeps = importNpmLock.importNpmLock {
     npmRoot = npmDepsSrc;
+    # The lock already records override resolutions. importNpmLock changes
+    # direct specs to file:/nix/store tarballs, which conflict with the
+    # original semver overrides (EOVERRIDE). Drop them only from this offline
+    # build manifest; the hook restores the repository manifest afterwards.
+    package = builtins.removeAttrs rootPackageJson [ "overrides" ];
   };
 
   # Build a per-package npm source: workspace resolution files + the

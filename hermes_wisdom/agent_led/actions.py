@@ -89,4 +89,4 @@ def current_install_view(target, service, context):
     controller = WisdomCommandController()
     if context.is_group:
         return controller.execute(f"{operation} {reference}", service, context)
-    return controller.review_install(service, reference, kind=operation)
+    return controller.review_install(service, reference, kind=operation, context=context)

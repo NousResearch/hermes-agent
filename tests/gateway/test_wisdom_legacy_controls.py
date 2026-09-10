@@ -19,15 +19,20 @@ from tests.gateway.test_telegram_wisdom_command import _adapter as telegram_adap
 @pytest.mark.parametrize("platform", ["telegram", "slack"])
 @pytest.mark.parametrize("operation", ["install", "update"])
 @pytest.mark.parametrize("expire_review", [False, True])
+@pytest.mark.parametrize("entrypoint", ["legacy", "command"])
 async def test_unversioned_button_requires_fresh_review_before_exact_apply(
-    monkeypatch, tmp_path, platform, operation, expire_review,
+    monkeypatch, tmp_path, platform, operation, expire_review, entrypoint,
 ):
     from pathlib import Path
+    from gateway import wisdom_command
+    from hermes_wisdom.mediation_store import MediationStore
     from hermes_wisdom.package import verify_content_files
     from tests.wisdom.test_service import InstallClient, _install_service
 
     clock = [100.0]
     monkeypatch.setattr("gateway.wisdom_command.time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr("hermes_wisdom.consent.MediationStore",
+                        lambda store, **_: MediationStore(store, clock=lambda: clock[0]))
 
     class VersionedClient(InstallClient):
         latest = 2
@@ -101,12 +106,27 @@ async def test_unversioned_button_requires_fresh_review_before_exact_apply(
         return call.args[1] if call else None
 
     # The old notification named v1; only its skill ID survived in the callback.
-    view = await click(f"wi:plan:{operation}:skill-1")
+    if entrypoint == "legacy":
+        view = await click(f"wi:plan:{operation}:skill-1")
+    else:
+        prepare_name = "_prepare_wisdom_command_view" if platform == "telegram" else "_prepare_wisdom_view"
+        prepare = AsyncMock(wraps=getattr(adapter, prepare_name))
+        setattr(adapter, prepare_name, prepare)
+        source = adapter.build_source(
+            chat_id="42" if platform == "telegram" else "D1", user_id="user",
+            thread_id="thread", scope_id="T1" if platform == "slack" else None,
+        )
+        source.profile = "selected"
+        await adapter.send_wisdom_command(f"{operation} skill-1", source=source)
+        view = prepare.call_args.args[0]
+        if operation == "install":
+            view = await click(next(a.callback_data for a in view.actions if a.arguments.get("update_mode") == "MANUAL"))
     service.install_apply.assert_not_called()
     service.update_apply.assert_not_called()
-    assert "v2" in view.summary
-    confirm = next(a.callback_data for a in view.actions if a.operation == operation + "_apply")
+    assert "Version: v2" in view.items[0].detail
+    confirm = next(a.callback_data for a in view.actions if (a.callback_data or "").startswith("wi:agent:confirm:"))
     assert confirm and "wip_" not in confirm and "wup_" not in confirm
+    monkeypatch.setattr(wisdom_command, "CALLBACK_TOKENS", wisdom_command._CallbackTokens())
     await click(confirm, user="someone-else")
     await click(confirm, thread="other-thread")
     if platform == "slack":
@@ -114,34 +134,38 @@ async def test_unversioned_button_requires_fresh_review_before_exact_apply(
     service.install_apply.assert_not_called()
     service.update_apply.assert_not_called()
     if expire_review:
-        clock[0] = 650.0
-        expanded = await click(next(a.callback_data for a in view.actions if a.operation == "plan_checks"))
-        confirm = next(a.callback_data for a in expanded.actions if a.operation == operation + "_apply")
-        clock[0] = 701.0
+        identity = confirm.rsplit(":", 1)[1]
+        with service.store.transaction() as db:
+            deadline = db.execute("SELECT expires_at FROM wisdom_consent WHERE id=?", (identity,)).fetchone()[0]
+        clock[0] = deadline - 1
+        expanded = await click(next(a.callback_data for a in view.actions if (a.callback_data or "").startswith("wi:agent:checks.show:")))
+        assert any(a.callback_data == confirm for a in expanded.actions)
+        clock[0] = deadline + 1
         expired = await click(confirm)
         service.install_apply.assert_not_called()
         service.update_apply.assert_not_called()
         assert client.records == []
         baseline = service.store.installation("skill-1")
         assert baseline is None if operation == "install" else baseline["version"] == 1
-        refreshed = await click(next(a.callback_data for a in expired.actions if a.operation == operation + "_plan"))
+        refreshed = await click(next(a.callback_data for a in expired.actions if (a.callback_data or "").startswith("wi:agent:recheck:")))
         service.install_apply.assert_not_called()
         service.update_apply.assert_not_called()
-        confirm = next(a.callback_data for a in refreshed.actions if a.operation == operation + "_apply")
+        confirm = next(a.callback_data for a in refreshed.actions if (a.callback_data or "").startswith("wi:agent:confirm:"))
     # A later publication must not replace the package this confirmation covers.
     client.latest = 3
     await click(confirm)
-    getattr(service, operation + "_apply").assert_called_once()
     expected_version = 2
     if operation == "update":
         # Update policy rejects a superseded review. It must not silently apply v3.
         assert service.store.installation("skill-1")["version"] == 1
         assert client.records == []
+        service.update_apply.assert_not_called()
         view = await click("wi:plan:update:skill-1")
-        assert "v3" in view.summary
-        confirm = next(a.callback_data for a in view.actions if a.operation == "update_apply")
+        assert "Version: v3" in view.items[0].detail
+        confirm = next(a.callback_data for a in view.actions if (a.callback_data or "").startswith("wi:agent:confirm:"))
         await click(confirm)
         expected_version = 3
+    getattr(service, operation + "_apply").assert_called_once()
     installed = service.store.installation("skill-1")
     assert installed["version"] == client.installed == expected_version
     assert (Path(installed["target_path"]) / "SKILL.md").read_text() == f"# Managed v{expected_version}\n"

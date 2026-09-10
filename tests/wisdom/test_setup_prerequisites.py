@@ -47,6 +47,7 @@ def test_missing_prerequisite_can_be_rechecked_without_secret_or_command(setup, 
 
     def version_detail(skill, version):
         value = original_version(skill, version).version
+        value["security_check"] = {"status": "pass"}
         return SimpleNamespace(version=value, model_dump=lambda **kwargs: {"version": {**value, "version": version}})
 
     monkeypatch.setattr(service.client, "version", version_detail)

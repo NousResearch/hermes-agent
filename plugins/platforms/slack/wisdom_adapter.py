@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 import aiohttp
 
 from gateway.platforms.base import gateway_trust_env
+from gateway.wisdom_command_consent import surface_context
 
 try:
     from .block_kit import sanitize_blocks
@@ -215,7 +216,6 @@ class SlackWisdomMixin:
     async def send_wisdom_command(self, raw_args: str, *, source) -> None:
         """Execute and render `/wisdom` inside this Slack adapter's profile."""
         from gateway.wisdom_command import (
-            WisdomCommandContext,
             WisdomCommandController,
             command_error_text,
         )
@@ -230,7 +230,7 @@ class SlackWisdomMixin:
 
         def command_action():
             service = WisdomService()
-            context = WisdomCommandContext(
+            context = surface_context(self,
                 user_id=user_id,
                 chat_id=channel_id,
                 profile=profile,
@@ -589,12 +589,11 @@ class SlackWisdomMixin:
         try:
             if value.startswith("wa:"):
                 def current_controls():
-                    from gateway.wisdom_command import WisdomCommandContext
                     from hermes_wisdom.agent_led.actions import current_action_view
                     from hermes_wisdom.service import WisdomService
 
                     service = WisdomService()
-                    context = WisdomCommandContext(
+                    context = surface_context(self,
                         user_id=user_id, chat_id=channel_id, profile=profile,
                         organization_id=service.store.active_org_id(),
                         is_group=self._wisdom_is_group_channel(channel_id),
@@ -623,7 +622,6 @@ class SlackWisdomMixin:
                 return
             if value.startswith("wi:continue:"):
                 from gateway.wisdom_command import (
-                    WisdomCommandContext,
                     WisdomCommandController,
                     resolve_continuation,
                 )
@@ -636,7 +634,7 @@ class SlackWisdomMixin:
 
                 def continue_action():
                     service = WisdomService()
-                    context = WisdomCommandContext(
+                    context = surface_context(self,
                         user_id=user_id,
                         chat_id=dm_channel,
                         profile=profile,
@@ -671,7 +669,6 @@ class SlackWisdomMixin:
 
             if value.startswith("wi:cmd:"):
                 from gateway.wisdom_command import (
-                    WisdomCommandContext,
                     WisdomCommandController,
                 )
                 from hermes_wisdom.service import WisdomService
@@ -680,7 +677,7 @@ class SlackWisdomMixin:
 
                 def command_action():
                     service = WisdomService()
-                    context = WisdomCommandContext(
+                    context = surface_context(self,
                         user_id=user_id,
                         chat_id=channel_id,
                         profile=profile,
@@ -705,12 +702,11 @@ class SlackWisdomMixin:
 
             if value.startswith(("wi:plan:", "wi:confirm:")):
                 def review():
-                    from gateway.wisdom_command import WisdomCommandContext
                     from hermes_wisdom.agent_led.actions import current_install_view
                     from hermes_wisdom.service import WisdomService
 
                     service = WisdomService()
-                    context = WisdomCommandContext(
+                    context = surface_context(self,
                         user_id=user_id, chat_id=channel_id, profile=profile,
                         organization_id=service.store.active_org_id(),
                         is_group=self._wisdom_is_group_channel(channel_id),

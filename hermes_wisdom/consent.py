@@ -843,9 +843,11 @@ class WisdomConsent:
                     "update_mode": plan.get("update_mode"),
                 }
                 operation, refreshed = self._plan(ref)
-                if "confirm" not in self.project({**value, "plan": refreshed})["actions"] or operation != value["operation"] or _signature(
-                    refreshed
-                ) != _signature(plan):
+                if (
+                    "confirm" not in self.project({**value, "plan": refreshed})["actions"]
+                    or operation != value["operation"]
+                    or _signature(refreshed) != _signature(plan)
+                ):
                     raise WisdomConflict("the exact plan changed; review again")
                 self.queue._require_org(org)
                 if self.queue.clock() >= value["expires_at"]:

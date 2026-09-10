@@ -8,6 +8,7 @@ import html as _html
 import logging
 from typing import Any, Dict, List, Optional, cast
 
+from gateway.wisdom_command_consent import surface_context
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
@@ -30,12 +31,11 @@ class TelegramWisdomMixin:
             await query.answer(text="You are not authorized to manage skills.")
             return
         def run():
-            from gateway.wisdom_command import WisdomCommandContext
             from hermes_wisdom.agent_led.actions import current_action_view
             from hermes_wisdom.service import WisdomService
 
             service = WisdomService()
-            context = WisdomCommandContext(
+            context = surface_context(self,
                 user_id=caller_id, chat_id=str(chat_id or caller_id),
                 profile=getattr(self, "_owner_profile", None),
                 organization_id=service.store.active_org_id(),
@@ -67,7 +67,6 @@ class TelegramWisdomMixin:
         query_user_name,
     ) -> None:
         """Run a user-selected managed Wisdom operation in this bot's profile."""
-        from telegram.constants import ParseMode
         from plugins.platforms.telegram.adapter import _redact_telegram_error_text
 
         caller_id = str(getattr(query.from_user, "id", ""))
@@ -106,13 +105,12 @@ class TelegramWisdomMixin:
 
                 def command_action():
                     from gateway.wisdom_command import (
-                        WisdomCommandContext,
                         WisdomCommandController,
                     )
                     from hermes_wisdom.service import WisdomService
 
                     service = WisdomService()
-                    context = WisdomCommandContext(
+                    context = surface_context(self,
                         user_id=caller_id,
                         chat_id=str(query_chat_id or caller_id),
                         profile=getattr(self, "_owner_profile", None),
@@ -275,12 +273,11 @@ class TelegramWisdomMixin:
         await query.answer(text="Checking current state...")
         try:
             def review():
-                from gateway.wisdom_command import WisdomCommandContext
                 from hermes_wisdom.agent_led.actions import current_install_view
                 from hermes_wisdom.service import WisdomService
 
                 service = WisdomService()
-                context = WisdomCommandContext(
+                context = surface_context(self,
                     user_id=caller_id, chat_id=str(query_chat_id or caller_id),
                     profile=getattr(self, "_owner_profile", None),
                     organization_id=service.store.active_org_id(),
@@ -542,7 +539,6 @@ class TelegramWisdomMixin:
         from plugins.platforms.telegram.adapter import _redact_telegram_error_text
 
         from gateway.wisdom_command import (
-            WisdomCommandContext,
             WisdomCommandController,
         )
         from hermes_wisdom.service import WisdomService
@@ -558,7 +554,7 @@ class TelegramWisdomMixin:
 
         def command_action():
             service = WisdomService()
-            context = WisdomCommandContext(
+            context = surface_context(self,
                 user_id=user_id,
                 chat_id=chat_id,
                 profile=getattr(self, "_owner_profile", None),
@@ -623,14 +619,13 @@ class TelegramWisdomMixin:
     async def send_wisdom_continuation(self, token: str, *, source) -> None:
         """Resume a user-bound group `/wisdom` request inside its DM."""
         from gateway.wisdom_command import (
-            WisdomCommandContext,
             resolve_continuation,
         )
         from hermes_wisdom.service import WisdomService
 
         def continuation_action() -> str:
             service = WisdomService()
-            context = WisdomCommandContext(
+            context = surface_context(self,
                 user_id=str(getattr(source, "user_id", None) or ""),
                 chat_id=str(source.chat_id),
                 profile=getattr(self, "_owner_profile", None),

@@ -2221,6 +2221,7 @@ _SECURITY_COMMENT = """
 #
 # security:
 #   redact_secrets: true
+#   allowed_private_ips: []   # IPs, CIDRs, or hostnames allowed through SSRF blocking
 #   tirith_enabled: true
 #   tirith_path: "tirith"
 #   tirith_timeout: 5

@@ -715,7 +715,29 @@ security:
 
 When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT / cloud-metadata destinations. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
 
-The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
+#### Selectively whitelisting specific private destinations
+
+If you only need a handful of internal services reachable (a NAS, a router, one internal wiki), keep `allow_private_urls` off and whitelist just those destinations:
+
+```yaml
+security:
+  allowed_private_ips:
+    - "10.0.1.125"          # exact IP
+    - "192.168.1.0/24"      # CIDR range
+    - "nas.lan"             # hostname — trusts its DNS answer (split-horizon DNS)
+    - "@strict-host.lan"    # hostname match only; resolved IP must ALSO be whitelisted
+```
+
+Rules:
+
+- An **exact IP** entry allows both literal-IP URLs and any hostname whose DNS answer is that IP.
+- A **CIDR** entry allows any IP inside the range.
+- A **plain hostname** entry allows the hostname and trusts its DNS answers — useful when local DNS resolves a name into private space.
+- An **`@`-prefixed hostname** matches the name only; the resolved IP must independently match an IP/CIDR entry. Use this when you want DNS-poisoning resistance for a public-DNS name.
+- Cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, etc.) are **always** blocked and cannot be whitelisted.
+- `security.allow_private_urls: true` (the global opt-out) takes precedence over the whitelist — the list is for narrower, per-destination exceptions.
+
+The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of these settings.
 
 ### Tirith Pre-Exec Security Scanning
 

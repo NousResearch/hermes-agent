@@ -194,8 +194,11 @@ Prompt 使用点号表示法访问 webhook payload 中的嵌套字段：
 - `{pull_request.title}` 解析为 `payload["pull_request"]["title"]`
 - `{repository.full_name}` 解析为 `payload["repository"]["full_name"]`
 - `{__raw__}` — 特殊 token，将**整个 payload** 以缩进 JSON 格式转储（截断至 4000 个字符）。适用于监控告警或通用 webhook，agent 需要完整上下文时使用。
+- `{event_type}` — 特殊 token，解析为匹配到的事件类型（`X-GitHub-Event` / `X-GitLab-Event` 请求头的值，或 payload 中的 `event_type` / `type` 字段）。
 - 缺失的键保留为字面量 `{key}` 字符串（不报错）
 - 嵌套的 dict 和 list 会被 JSON 序列化并截断至 2000 个字符
+
+`{payload}` **不是**特殊 token。与其他名称一样，它只是普通点号字段引用，用于查找 webhook 请求体中字面名为 `payload` 的顶层键。对于没有该键的扁平 payload（例如 CrowdSec 的 `{"alerts": [...]}`），`{payload}` 会渲染为字面字符串 `{payload}`。要包含完整 payload（无论其结构如何），请改用 `{__raw__}`。
 
 可以将 `{__raw__}` 与常规模板变量混合使用：
 

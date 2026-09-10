@@ -72,6 +72,16 @@ def test_tool_progress_off_keeps_interim_consumer(cli_shell):
     assert printed == []
 
 
+def test_parseable_quiet_suppresses_interim_output(cli_shell):
+    shell, printed, _ = cli_shell
+    shell.agent = SimpleNamespace(suppress_status_output=True)
+
+    shell._on_interim_assistant("Must stay out of -Q stdout.")
+
+    assert printed == []
+    assert shell._stream_started is False
+
+
 def test_explicit_interim_opt_out_does_not_install_consumer(cli_shell):
     shell, printed, cli_mod = cli_shell
     cli_mod.CLI_CONFIG["display"] = {"interim_assistant_messages": False}

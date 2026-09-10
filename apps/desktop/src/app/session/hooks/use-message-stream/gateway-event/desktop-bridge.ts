@@ -10,8 +10,27 @@ import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
 import { $tipsEnabled, type ActiveTip, showTip } from '@/store/tips'
 import { $toursEnabled } from '@/store/tours'
+import type { RpcEvent } from '@/types/hermes'
 
+import { respondOnOwnedGateway } from './desktop-bridge-respond'
 import type { GatewayEventContext } from './types'
+
+/**
+ * Answer a blocking desktop-bridge RPC on the socket that raised it.
+ *
+ * Same client half as clarify/approval (#91684): `$gateway` follows the
+ * foreground profile, so a Rosie Bot Chat's `preview.*.respond` sent there
+ * lands on the default serve and the bot serve waits out the 45s tool timeout.
+ * The in-app browser looks live; this chat cannot read or click it.
+ */
+export function respondOnEventGateway(event: RpcEvent, method: string, params: Record<string, unknown>): void {
+  const gateway = $gateway.get()
+  const ambientRequest = gateway
+    ? (gateway.request.bind(gateway) as typeof gateway.request)
+    : null
+
+  void respondOnOwnedGateway(event, method, params, ambientRequest).catch(() => undefined)
+}
 
 /** The preview engine, loaded on demand so ~25KB of page-injectable source stays
  *  off the boot path.
@@ -57,7 +76,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const count = typeof payload?.count === 'number' ? payload.count : undefined
       const result = readActiveTerminal({ start, count })
 
-      void $gateway.get()?.request('terminal.read.respond', {
+      respondOnEventGateway(event, 'terminal.read.respond', {
         request_id: requestId,
         text: result ? JSON.stringify(result) : ''
       })
@@ -76,7 +95,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const count = typeof payload?.count === 'number' ? payload.count : undefined
 
       void readActivePreview({ count, start }).then(result => {
-        void $gateway.get()?.request('preview.read.respond', {
+        respondOnEventGateway(event, 'preview.read.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
@@ -96,7 +115,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
 
     if (requestId) {
       const answer = (result: unknown) =>
-        $gateway.get()?.request('preview.act.respond', {
+        respondOnEventGateway(event, 'preview.act.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
@@ -140,7 +159,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const read = window.hermesDesktop?.readWindowBelow
 
       const answer = (result: unknown) =>
-        $gateway.get()?.request('window.read.respond', {
+        respondOnEventGateway(event, 'window.read.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
@@ -180,7 +199,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
 
     if (requestId) {
       const answer = (result: unknown) =>
-        $gateway.get()?.request('tour.respond', {
+        respondOnEventGateway(event, 'tour.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })

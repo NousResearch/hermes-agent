@@ -16,7 +16,8 @@ import {
   psLiteral,
   reusableWindowsLock,
   terminateOwnedWindowsDashboardForUpdate,
-  validLock
+  validLock,
+  windowsLockSkewReason
 } from './windows-remote-lifecycle'
 
 const ownershipId = '0123456789abcdef0123456789abcdef'
@@ -258,6 +259,165 @@ test('Windows lock validation is scoped and exact', () => {
   // on it) but the reuse gate must reject it separately.
   assert.equal(validLock({ ...lock, port: 0 }, ownershipId), true)
   assert.equal(validLock({ ...lock, port: -1 }, ownershipId), false)
+})
+
+test('windowsLockSkewReason names the failing field, mirroring validLock condition order', () => {
+  const lock = {
+    schemaVersion: 2,
+    protocolVersion: 1,
+    ownershipId,
+    spawnNonce: '0123456789abcdef',
+    pid: 10,
+    creationTimeNs: '1784219690452757504',
+    port: 1234,
+    tokenFingerprint: 'a'.repeat(32),
+    hermesPath: 'C:\\h\\hermes.exe',
+    hermesHome: 'C:\\h'
+  }
+
+  assert.match(windowsLockSkewReason({ ...lock, schemaVersion: 99 }, ownershipId), /schema-version/)
+  assert.match(windowsLockSkewReason({ ...lock, protocolVersion: 99 }, ownershipId), /protocol-version/)
+  assert.equal(windowsLockSkewReason({ ...lock, ownershipId: 'b'.repeat(32) }, ownershipId), 'ownership-mismatch')
+  assert.equal(windowsLockSkewReason({ ...lock, pid: -1 }, ownershipId), 'malformed-pid')
+})
+
+test('Windows connect fails closed on a foreign ownershipId lockfile instead of removing it (#95532 parity)', async () => {
+  // A DIFFERENT desktop build's ownership record: same remote, wrong id.
+  // validLock() rejects it; pre-fix, the caller unconditionally removed it
+  // and spawned over the foreign build's state.
+  const foreignLock = {
+    schemaVersion: 2,
+    protocolVersion: 1,
+    ownershipId: 'f'.repeat(32),
+    spawnNonce: '0123456789abcdef',
+    pid: 10,
+    creationTimeNs: '1784219690452757504',
+    port: 1234,
+    profile: 'default',
+    tokenFingerprint: 'a'.repeat(32),
+    hermesPath: 'C:\\h\\hermes.exe',
+    hermesHome: 'C:\\h'
+  }
+
+  const operations: string[] = []
+
+  const ssh = sshWith(async command => {
+    const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    operations.push(script)
+
+    if (script.includes('Get-Command hermes.exe')) {
+      return JSON.stringify({
+        os: 'Windows',
+        arch: 'AMD64',
+        hermesHome: 'C:\\h',
+        hermesPath: 'C:\\h\\hermes.exe',
+        python: 'C:\\h\\python.exe'
+      })
+    }
+
+    if (script.includes('.hermes-update-in-progress')) {
+      return 'CLEAR'
+    }
+
+    if (script.includes("'inspect'")) {
+      return JSON.stringify({ supported: true, path: 'C:\\h\\hermes.exe', version: '1.0.0' })
+    }
+
+    if (script.includes("'read-lock'")) {
+      return JSON.stringify(foreignLock)
+    }
+
+    throw new Error(`unexpected command after lock read: ${script}`)
+  })
+
+  await assert.rejects(
+    () =>
+      connectWindowsRemote({
+        ssh,
+        ownershipId,
+        pickLocalPort: async () => 50000,
+        forward: async () => {},
+        cancelForward: async () => {},
+        waitForHermes: async () => {},
+        probeReuseProof: async () => 'authenticated-ok'
+      }),
+    (error: any) => error.kind === 'remote-lockfile-skew' && /ownership-mismatch/.test(error.message)
+  )
+
+  assert.equal(
+    operations.some(script => script.includes("'remove-lock'")),
+    false
+  )
+  assert.equal(
+    operations.some(script => script.includes("'write-lock'")),
+    false
+  )
+})
+
+test('Windows connect fails closed on an unknown lockfile schema version (a newer/forked build) instead of removing it', async () => {
+  const futureLock = {
+    schemaVersion: 999,
+    protocolVersion: 1,
+    ownershipId,
+    spawnNonce: '0123456789abcdef',
+    pid: 10,
+    creationTimeNs: '1784219690452757504',
+    port: 1234,
+    profile: 'default',
+    tokenFingerprint: 'a'.repeat(32),
+    hermesPath: 'C:\\h\\hermes.exe',
+    hermesHome: 'C:\\h'
+  }
+
+  const operations: string[] = []
+
+  const ssh = sshWith(async command => {
+    const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    operations.push(script)
+
+    if (script.includes('Get-Command hermes.exe')) {
+      return JSON.stringify({
+        os: 'Windows',
+        arch: 'AMD64',
+        hermesHome: 'C:\\h',
+        hermesPath: 'C:\\h\\hermes.exe',
+        python: 'C:\\h\\python.exe'
+      })
+    }
+
+    if (script.includes('.hermes-update-in-progress')) {
+      return 'CLEAR'
+    }
+
+    if (script.includes("'inspect'")) {
+      return JSON.stringify({ supported: true, path: 'C:\\h\\hermes.exe', version: '1.0.0' })
+    }
+
+    if (script.includes("'read-lock'")) {
+      return JSON.stringify(futureLock)
+    }
+
+    throw new Error(`unexpected command after lock read: ${script}`)
+  })
+
+  await assert.rejects(
+    () =>
+      connectWindowsRemote({
+        ssh,
+        ownershipId,
+        pickLocalPort: async () => 50000,
+        forward: async () => {},
+        cancelForward: async () => {},
+        waitForHermes: async () => {},
+        probeReuseProof: async () => 'authenticated-ok'
+      }),
+    (error: any) => error.kind === 'remote-lockfile-skew' && /schema-version/.test(error.message)
+  )
+
+  assert.equal(
+    operations.some(script => script.includes("'remove-lock'")),
+    false
+  )
 })
 
 test('Windows SSH reuse requires the requested remote profile to match the lock', () => {

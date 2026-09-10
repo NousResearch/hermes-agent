@@ -14,7 +14,7 @@ export function EmptyState({
   className?: string
 }) {
   return (
-    <div className={cn('grid min-h-48 place-items-center text-center', className)}>
+    <div className={cn('fade-in grid min-h-48 place-items-center text-center', className)}>
       <div>
         <div className="text-sm font-medium">{title}</div>
         {description && <div className="mt-1 text-xs text-muted-foreground">{description}</div>}

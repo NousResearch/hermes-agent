@@ -45,7 +45,7 @@ export interface ErrorStateProps {
 // Dialog callers can pass DialogTitle/DialogDescription for accessibility.
 export function ErrorState({ children, className, description, icon, title }: ErrorStateProps) {
   return (
-    <div className={cn('grid gap-5', className)}>
+    <div className={cn('fade-in grid gap-5', className)}>
       <div className="flex flex-col items-center gap-3 text-center">
         {icon ?? <ErrorIcon />}
 

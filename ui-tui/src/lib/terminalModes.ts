@@ -1,5 +1,7 @@
 import { writeSync } from 'node:fs'
 
+export const POST_ALT_SCREEN_CURSOR_RESTORE = '\x1b[999E'
+
 export const TERMINAL_MODE_RESET =
   "\x1b[0'z" + // DEC locator reporting
   "\x1b[0'{" + // selectable locator events
@@ -16,6 +18,7 @@ export const TERMINAL_MODE_RESET =
   '\x1b[?1004l' + // focus events
   '\x1b[?2004l' + // bracketed paste
   '\x1b[?1049l' + // alternate screen
+  POST_ALT_SCREEN_CURSOR_RESTORE + // park cursor on the main screen's bottom line
   '\x1b[<u' + // kitty keyboard
   '\x1b[>4m' + // modifyOtherKeys
   '\x1b[0m' + // attributes

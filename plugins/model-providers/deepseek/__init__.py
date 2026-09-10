@@ -21,7 +21,9 @@ class DeepSeekProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        m = (model or "").strip().lower()
+        # Strip an aggregator-style vendor prefix ("deepseek/deepseek-v4-flash")
+        # so thinking controls do not depend on which spelling reached the profile.
+        m = (model or "").strip().lower().rsplit("/", 1)[-1]
         if not m.startswith("deepseek-v") or m.startswith("deepseek-v3"):  # v4+ only; v3 excluded
             return {}, {}
         rc = reasoning_config if isinstance(reasoning_config, dict) else None

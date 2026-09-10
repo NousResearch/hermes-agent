@@ -108,6 +108,8 @@ class TestDeepSeekModelGating:
             "deepseek-v4-flash",
             "deepseek-v4-future-variant",
             "DEEPSEEK-V4-PRO",  # case-insensitive
+            "deepseek/deepseek-v4-pro",  # aggregator spelling reaches the profile
+            "deepseek/deepseek-v4.1-flash",
         ],
     )
     def test_thinking_capable_models_emit_thinking(self, deepseek_profile, model):

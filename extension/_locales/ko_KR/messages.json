@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "홈 호출 인스턴스에 상관없이 Mastodon에 대한 1-클릭, 즐겨찾기, 부스트 및 책갈피를 클릭한다.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "사용자의 Mastodon 인스턴스 이름",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "도움말이 필요합니까?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "연결 계정",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "이전 계정",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "아직 마스토돈에 있지 않아요?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "이 인스턴스를 찾을 수 없습니다. 주소를 확인한 후 다시 시도하십시오.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "계정"
+  },
+  "add_account": {
+    "message": "+계정 추가",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "알림 표시",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "취소",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "탈퇴",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "기준"
+  },
+  "or": {
+    "message": "과"
+  },
+  "send_feedback": {
+    "message": "피드백 보내기",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "버그 리포트",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "지원받기",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "후원하기",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "마스토돈을 사용할 준비가 되어 있습니다!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "이 탭은 다음과 같이 닫힙니다",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "초",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "예:",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "추적하기",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "여러분을 따르는 사람들",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "다음과 같은",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "멘션",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "직접 메시지",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "공유",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "음소거",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "블록",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "보고서",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "블록 도메인",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "원본 페이지 열기",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "포스트에 대한 링크 복사",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "수용하기",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "프로파일 기능",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "등록된 언어 변경",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "다음에서 부스팅을 숨기기",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "목록에서 추가 또는 제거하기",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "시간",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "아래",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "당신은 이 대답에 투표했습니다.",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "설정",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "테마"
+  },
+  "graze_theme_p": {
+    "message": "Graze는 테마와 자동으로 일치하므로 원하는 경우 이를 재정의할 수 있다.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "마스토돈 암흑",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "마스토돈 라이트",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "마스토돈 테마 엑센트 색상 대체",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "언어"
+  },
+  "Afrikaans": {
+    "message": "아프리칸스"
+  },
+  "Arabic": {
+    "message": "아랍어"
+  },
+  "Bengali": {
+    "message": "벵골어"
+  },
+  "Bulgarian": {
+    "message": "불가리아어"
+  },
+  "Chinese_Simplified": {
+    "message": "중국어 간체"
+  },
+  "Chinese_Traditional": {
+    "message": "중국어 번체"
+  },
+  "Czech": {
+    "message": "체코어"
+  },
+  "Danish": {
+    "message": "덴마크어"
+  },
+  "Dutch": {
+    "message": "네덜란드어"
+  },
+  "English": {
+    "message": "영어"
+  },
+  "Finnish": {
+    "message": "핀란드어"
+  },
+  "French": {
+    "message": "프랑스어"
+  },
+  "German": {
+    "message": "독일어"
+  },
+  "Greek": {
+    "message": "그리스어"
+  },
+  "Hawaiian": {
+    "message": "하와이"
+  },
+  "Hebrew": {
+    "message": "히브리어"
+  },
+  "Hindi": {
+    "message": "힌두어"
+  },
+  "Hungarian": {
+    "message": "헝가리어"
+  },
+  "Icelandic": {
+    "message": "아이슬란드"
+  },
+  "Indonesian": {
+    "message": "인도네시아어"
+  },
+  "Italian": {
+    "message": "이탈리아어"
+  },
+  "Japanese": {
+    "message": "일본의"
+  },
+  "Korean": {
+    "message": "한국어"
+  },
+  "Malay": {
+    "message": "말레이"
+  },
+  "Maori": {
+    "message": "마오리족"
+  },
+  "Norwegian": {
+    "message": "노르웨이어"
+  },
+  "Polish": {
+    "message": "폴란드어"
+  },
+  "Portuguese": {
+    "message": "포르투갈어"
+  },
+  "Portuguese_Brazilian": {
+    "message": "포르투갈어 (브라질)"
+  },
+  "Romanian": {
+    "message": "루마니아어"
+  },
+  "Russian": {
+    "message": "러시아어"
+  },
+  "Serbian_Cyrillic": {
+    "message": "세르비아 (키릴어)"
+  },
+  "Spanish_Modern": {
+    "message": "스페인어 (현대)"
+  },
+  "Swedish": {
+    "message": "스웨덴어"
+  },
+  "Tamil": {
+    "message": "타밀"
+  },
+  "Thai": {
+    "message": "태국어"
+  },
+  "Turkish": {
+    "message": "터키어"
+  },
+  "Ukrainian": {
+    "message": "우크라이나의"
+  },
+  "Urdu_India": {
+    "message": "우르두어 (인도)"
+  },
+  "Vietnamese": {
+    "message": "베트남어"
+  },
+  "Welsh": {
+    "message": "웰시"
+  },
+  "convenience": {
+    "message": "편리한"
+  },
+  "graze_convenience_p": {
+    "message": "Graze는 웹 주위의 링크에 대해 mastodon 사용자 이름을 작성할 수 있다.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Mastodon 사용자 이름의 Linkify",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze는 웹 주위의 링크에 대해 mastodon 사용자 이름을 작성할 수 있다.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "디스플레이 하버카드",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "이름 위에 마우스를 올려 놓으면 사용자에 대한 빠른 정보를 표시할 수 있습니다.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "페더레이션되지 않은 인스턴스에 대한 팝업 표시",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "방문 시 페더레이션할 인스턴스 제안하기",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "그레이즈에 추가되지 않은 계정으로 로그인 시 팝업 표시",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "계정 추가 빠른 로그인 팝업 표시",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Graze 에서 자동 언어 대체하기",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "원격 서버에서 응답을 클릭하거나 \"이 페이지로 이동\" 을 클릭하면 빠른 응답을 열거나 홈 인스턴스로 이동할 수 있습니다.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Graze의 회신",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "홈 인스턴스 회신",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "원격 인스턴스에서 로컬 타임라인은 해당 인스턴스의 사용자 및 컨텐츠를 더 자세히 반영합니다.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "<strong>탐색</strong> - <strong>로컬</strong> 타임라인",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "내용",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "원격 인스턴스 컨텐츠 표시가 사용자의 것과 일치하도록 하거나 이를 혼합하십시오.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "컨텐츠 경고 뒤에 컨텐츠 표시 (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "GIF 자동 재생",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "NSFW/민감한 이미지 표시하기",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "활성 계정 설정",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "재주문하려면 드래그",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "{username}에 대한 메시지",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "{username}에 대한 알림",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "이 계정에서 조치 수행",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "{username}로 조치 수행",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "원형 아바타 이미지 표시",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "웹의 컨텍스트 메뉴에서 링크, 이미지 및 텍스트 스니펫 공유를 표시합니다.",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Graze 컨텍스트 메뉴 표시",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "비어 있는 (연합되지 않은) 프로파일을 홈 인스턴스로 경로 재지정하여 안전하게 클릭",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "자동으로 직접",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "타임라인에 있는 Mastodon 포스트에 대한 링크 확장",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "확장된 인라인 포스트를 표시합니다.",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "게시물 이미지 및 링크 미리보기 중복 제거",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "기본 링크 미리보기를 더 큰 이미지 및 전체 스니펫 텍스트로 바꾸기",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "리치 링크 미리보기 표시",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze는 보다 쉽게 읽을 수 있도록 도구 팁에 있는 이미지 아래에 이미지 디스크립터 \"Alt Text\" 를 표시할 수 있다.",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "이미지 아래에 이미지 설명 표시",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze는 Mastodon version 4.0.0이상을 실행하는 인스턴스와 호환 가능하다.",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "이 인스턴스를 찾을 수 없습니다. 주소를 확인한 후 다시 시도하십시오.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "오류가 발생했습니다. 나중에 다시 시도해 주세요.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "게시글",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "팔로워",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "추종",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "아니요, 괜찮습니다",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "프로필 디렉토리로 이동",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "로컬 타임라인으로 이동",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "로컬 피드에서 계정을 팔로우하면 홈 피드에서 콘텐츠를 볼 수 있습니다.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "$username$에 페더레이션되어 있지 않습니다.",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "이 계정으로 모든 인스턴스에서 작업을 수행할 수 있습니다.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "$display_name$ 를 추가하시겠습니까?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Graze에 추가하기",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

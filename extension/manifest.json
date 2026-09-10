@@ -1,0 +1,64 @@
+{
+    "name": "graze",
+    "version": "1.5.2",
+    "description": "Graze is 1-click follow, favorite, boost, bookmark, and reply for Mastodon, no matter what instance you call home.",
+    "author": "Jared Zimmerman",
+    "manifest_version": 3,
+    "permissions": [
+        "storage",
+        "alarms",
+        "contextMenus",
+        "commands"
+    ],
+    "background": {
+        "service_worker": "js/background.js"
+    },
+    "default_locale": "en_US",
+    "homepage_url": "https://graze.jaredzimmerman.com/",
+    "content_scripts": [
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "css": [
+                "css/all.css"
+            ],
+            "js": [
+                "js/all.js"
+            ],
+            "run_at": "document_start"
+        }
+    ],
+    "commands": {
+        "_execute_action": {
+            "suggested_key": {
+                "default": "Ctrl+Shift+Up",
+                "mac": "Command+Shift+Up"
+            }
+        }
+    },
+    "host_permissions": [
+        "<all_urls>"
+    ],
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "*.html",
+                "assets/*"
+            ],
+            "matches": [
+                "<all_urls>"
+            ]
+        }
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_title": "Graze"
+    },
+    "icons": {
+        "16": "assets/Toolbar Icons/global/toolbar_icon_selected_16_default.png",
+        "32": "assets/Toolbar Icons/global/toolbar_icon_selected_32_default.png",
+        "48": "assets/Toolbar Icons/global/toolbar_icon_selected_48_default.png",
+        "128": "assets/Toolbar Icons/global/toolbar_icon_selected_128_default.png"
+    }
+}

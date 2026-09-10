@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "είναι 1-κλικ ακολουθήστε, το αγαπημένο, ώθηση, και σελιδοδείκτη για Mastodon, δεν έχει σημασία ποια χρήση θα καλέσετε στο σπίτι.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Όνομα χρήσης του Mastodon",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "-Θες Βοήθεια;",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Λογαριασμός σύνδεσης",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Επιστροφή Στους Λογαριασμούς",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Όχι ακόμα, στο Mastodon;",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Δεν βρέθηκε αυτή η χρήση. Ελέγξτε τη διεύθυνση και προσπαθήστε ξανά.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Λογαριασμοί"
+  },
+  "add_account": {
+    "message": "+ ΠΡΟΣΘΉΚΗ ΛΟΓΑΡΙΑΣΜΟΎ",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Εμφάνιση ειδοποιήσεων",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Ποτέ",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Αφαίρεση λογαριασμού",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "από"
+  },
+  "or": {
+    "message": "ή"
+  },
+  "send_feedback": {
+    "message": "Αποστολή σχολίων",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Αναφορά Σφάλματος",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Λάβετε Υποστήριξη",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Δότη",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze για Mastodon είναι έτοιμο για χρήση!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Αυτή η καρτέλα θα κλείσει.",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "δευτερόλεπτα",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "π.χ.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Ακολούθη",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Σε ακολουθεί.",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Ακολούθησε",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Αναφορά",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Άμεσο μήνυμα",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Μοίρασμα",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Σιγή",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Μπλοκ",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Αναφορά",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Αποκλεισμός τομέα",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Άνοιγμα αρχικής σελίδας",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Αντιγραφή διασύνδεσης προς δημοσίευση",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Ενσωμάτωση",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Λειτουργία στο προφίλ",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Είστε συνδρομητής",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Απόκρυψη εκκίνησης από",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Προσθήκη ή Αφαίρεση από λίστες",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "ώρα",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "στο",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Ψηφίσατε αυτή την απάντηση",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Ρυθμίσεις:",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "-Θέμα"
+  },
+  "graze_theme_p": {
+    "message": "Το Graze συμφωνεί αυτόματα με το θέμα σας, μπορείτε να το αντικαταστήσετε αν θέλετε.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Mastodon Dark",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Mastodon Φως",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Αντικατάσταση χρωματικού χρώματος Mastodon",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "-γλώσσα"
+  },
+  "Afrikaans": {
+    "message": "Afrikaans"
+  },
+  "Arabic": {
+    "message": "Αραβικά:"
+  },
+  "Bengali": {
+    "message": "Bengali:"
+  },
+  "Bulgarian": {
+    "message": "Βουλγαρικά."
+  },
+  "Chinese_Simplified": {
+    "message": "Κινεζικά απλοποιημένα"
+  },
+  "Chinese_Traditional": {
+    "message": "Κινεζική παραδοσιακή"
+  },
+  "Czech": {
+    "message": "Τσεχικά."
+  },
+  "Danish": {
+    "message": "'"
+  },
+  "Dutch": {
+    "message": "' Ολλανδικά"
+  },
+  "English": {
+    "message": "Αγγλικά:"
+  },
+  "Finnish": {
+    "message": "-φινλανδικά"
+  },
+  "French": {
+    "message": "Γαλλικά:"
+  },
+  "German": {
+    "message": "Γερμανικά:"
+  },
+  "Greek": {
+    "message": "-Ελληνικά"
+  },
+  "Hawaiian": {
+    "message": "Χαβανέζα."
+  },
+  "Hebrew": {
+    "message": "Εβραϊκά."
+  },
+  "Hindi": {
+    "message": "Χίντι!"
+  },
+  "Hungarian": {
+    "message": ")."
+  },
+  "Icelandic": {
+    "message": "Ισλανδία,"
+  },
+  "Indonesian": {
+    "message": "Ινδονησιακά:"
+  },
+  "Italian": {
+    "message": "' Ιταλικά"
+  },
+  "Japanese": {
+    "message": "' Ιαπωνικά"
+  },
+  "Korean": {
+    "message": "Κορεατικά."
+  },
+  "Malay": {
+    "message": "Μαλέ!"
+  },
+  "Maori": {
+    "message": "Maori."
+  },
+  "Norwegian": {
+    "message": "Νορβηγία:"
+  },
+  "Polish": {
+    "message": "Πολωνικά."
+  },
+  "Portuguese": {
+    "message": "' Ιταλικά"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Πορτογαλικά, Βραζιλίας"
+  },
+  "Romanian": {
+    "message": "Ρουμανικά."
+  },
+  "Russian": {
+    "message": "Ρωσικά!"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Σερβικά (Κυριλλικά)"
+  },
+  "Spanish_Modern": {
+    "message": "Ισπανικά (Μοντέρνα)"
+  },
+  "Swedish": {
+    "message": "Σουηδικά"
+  },
+  "Tamil": {
+    "message": "Ταμίλ!"
+  },
+  "Thai": {
+    "message": "Ταϊλάνδης."
+  },
+  "Turkish": {
+    "message": "Τουρκικά."
+  },
+  "Ukrainian": {
+    "message": "Ουκρανικά:"
+  },
+  "Urdu_India": {
+    "message": "Ουρντού (Ινδία)"
+  },
+  "Vietnamese": {
+    "message": "' Α."
+  },
+  "Welsh": {
+    "message": "Welsh"
+  },
+  "convenience": {
+    "message": "ευκολία."
+  },
+  "graze_convenience_p": {
+    "message": "Το Graze μπορεί να κάνει το όνομα χρήστη mastodon σε συνδέσμους στο διαδίκτυο.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Linkify ονόματα χρηστών Mastodon",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Το Graze μπορεί να κάνει το όνομα χρήστη mastodon σε συνδέσμους στο διαδίκτυο.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Εμφάνιση καρτών Hovercards",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Οι Hovercards μπορούν να εμφανίζουν γρήγορες πληροφορίες σχετικά με το χρήστη όταν αναδυθείτε με το όνομά τους.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Εμφάνιση αναδυόμενου παραθύρου για τις περιπτώσεις στις οποίες δεν είστε ομοσπονδείς",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Προτείνετε παρουσίες σε ομοσπονδιακές όταν επισκέπτεστε",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Εμφάνιση αναδυόμενου παράθυρου όταν συνδεθείτε σε λογαριασμό που δεν προστέθηκε στο Graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Εμφάνιση αναδυόμενου παραθύρου προσθήκης λογαριασμού",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Αντικατάσταση αυτόματης γλώσσας στο Graze",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Όταν πατήσετε απάντηση σε έναν απομακρυσμένο εξυπηρετητή ή \"toot this page\", ο Graze μπορεί να ανοίξει μια γρήγορη απάντηση ή να σας μεταφέρει στην αρχική σας χρήση.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Απάντηση από Graze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Απάντηση από την αρχική χρήση",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "Στην απομακρυσμένη χρήση, η τοπική χρονολογική σειρά αντικατοπτρίζει καλύτερα τους χρήστες και το περιεχόμενο αυτής της χρήσης.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Explore</strong> έως <strong>Τοπική ώρα</strong>",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "περιεχομενο:",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Η εμφάνιση του περιεχομένου απομακρυσμένης χρήσης ταιριάζει με τη δική σας ή ανακατέψτε την.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Εμφάνιση περιεχομένου πίσω από Προειδοποιήσεις περιεχομένου (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Αυτόματη αναπαραγωγή GIF",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "Εμφάνιση εικόνων NSFW/Sensitive",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "ορισμός ενεργού λογαριασμού",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Σύρετε για αναδιάταξη.",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Μηνύματα για {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Ειδοποιήσεις για {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "ΛΉΨΗ ΕΝΕΡΓΕΙΏΝ ΑΠΌ ΑΥΤΌ ΤΟ ΛΟΓΑΡΙΑΣΜΌ",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Λήψη ενεργειών ως {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Εμφάνιση στρογγυλών εικόνων avatar",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Εμφάνιση διασύνδεσης, εικόνας και τμημάτων κώδικα κειμένου από το μενού περιβάλλοντος στο διαδίκτυο",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Εμφάνιση μενού περιβάλλοντος Graze",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Ανακατεύθυνση κενών (unfederated) προφίλ σε χρήσεις στο σπίτι για την ασφαλή χρήση ενός κουμπιών",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Αυτόματη ανακατεύθυνση:",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Επεκτείνετε τις συνδέσεις στις θέσεις Mastodon στα χρονοδιαγράμματα σας",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Εμφάνιση ανεπτυγμένων γραμμών σε γραμμή",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe post εικόνες και προεπισκοπήσεις συνδέσμου",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Αντικατάσταση προεπιλεγμένων προβολών διασυνδέσεων με μεγαλύτερες εικόνες και κείμενο πλήρους τμήματος κώδικα",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Εμφάνιση προεπισκοπήσεων της διασύνδεσης",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze μπορεί να δείξει εικόνες περιγραφής \"Alt Text\" κάτω από εικόνες rathrer από ό, τι ακριβώς σε ένα tooltip για ευκολότερη ανάγνωση",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Εμφάνιση περιγραφών εικόνων κάτω από εικόνες",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Το Graze είναι συμβατό μόνο με περιπτώσεις που τρέχουν Mastodon έκδοση 4.0.0 ή νεότερη",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Δεν είναι δυνατή η εύρεση αυτής της περίπτωσης, παρακαλώ ελέγξτε τη διεύθυνση και προσπαθήστε ξανά.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Παρουσιάστηκε σφάλμα. Παρακαλώ προσπαθήστε ξανά αργότερα.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Αναρτήσεις",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Ακόλουθοι",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Ακολουθεί",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Όχι Ευχαριστώ",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Πηγαίνετε στον κατάλογο προφίλ",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Μετάβαση στην τοπική χρονολόγηση",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Ακολουθήστε έναν λογαριασμό από την τοπική ροή για να αρχίσετε να βλέπετε περιεχόμενο στην αρχική σας ροή.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Δεν είστε ομοσπονδιακός στο $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Θα είστε σε θέση να λάβετε μέτρα από αυτόν τον λογαριασμό σε οποιοδήποτε Instance.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Προσθήκη $display_name$ στο Graze?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Προσθήκη στο Graze",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

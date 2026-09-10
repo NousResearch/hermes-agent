@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
+import { updateFailureDetail } from '@/lib/update-failure-detail'
 import { cn } from '@/lib/utils'
 import {
   $desktopVersion,
@@ -83,7 +84,7 @@ export function AboutSettings() {
     statusLine = status?.message ?? a.cantUpdate
     statusTone = 'error'
   } else if (status?.error) {
-    statusLine = a.cantReach
+    statusLine = updateFailureDetail(status, a.cantReach)
     statusTone = 'error'
   } else if (applying) {
     statusLine = a.installing

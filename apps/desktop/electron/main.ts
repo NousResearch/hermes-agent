@@ -391,6 +391,7 @@ import {
   resolveCommitLogSelection,
   shouldCountCommits
 } from './update-count'
+import { describeUpdateCheckFailure } from './update-diagnostics'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -3174,7 +3175,12 @@ async function checkUpdates() {
         supported: true,
         branch,
         error: 'fetch-failed',
-        message: firstLine(target.stderr) || 'git ls-remote failed.',
+        message: describeUpdateCheckFailure({
+          remote: OFFICIAL_REPO_HTTPS_URL,
+          branch,
+          code: target.code,
+          stderr: target.stderr
+        }),
         hermesRoot: updateRoot,
         fetchedAt: Date.now()
       }
@@ -3223,7 +3229,12 @@ async function checkUpdates() {
       supported: true,
       branch,
       error: 'fetch-failed',
-      message: firstLine(fetched.stderr) || 'git fetch failed.',
+      message: describeUpdateCheckFailure({
+        remote: originUrl || 'origin',
+        branch,
+        code: fetched.code,
+        stderr: fetched.stderr
+      }),
       hermesRoot: updateRoot,
       fetchedAt: Date.now()
     }

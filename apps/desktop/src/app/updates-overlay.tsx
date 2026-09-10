@@ -19,6 +19,7 @@ import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { updateFailureDetail } from '@/lib/update-failure-detail'
 import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
@@ -214,7 +215,7 @@ function IdleView({
             {u.tryAgain}
           </Button>
         }
-        body={u.connectionRetry}
+        body={updateFailureDetail(status, u.connectionRetry)}
         icon={<ErrorIcon />}
         title={u.checkFailedTitle}
       />

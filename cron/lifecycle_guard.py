@@ -15,7 +15,7 @@ import re
 import shlex
 import stat
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,8 @@ _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
+# ``--rcfile``/``--init-file`` spend the next token the same way ``-o`` does.
+_SHELL_OPTIONS_WITH_ARG = _SHELL_OPTIONS_WITH_VALUES | frozenset({"--rcfile", "--init-file"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
@@ -745,6 +747,88 @@ def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -
             yield from _references_at(segment, peeled, cwd)
 
 
+def _looks_like_option(arguments: Sequence[str], index: int) -> bool:
+    """True when the token at *index* is itself an option rather than a preceding option's value."""
+    return index < len(arguments) and arguments[index].startswith(("-", "+"))
+
+
+def _shell_command_string(arguments: Sequence[str]) -> Optional[str]:
+    """Return the command string a shell's ``-c`` owns, or None.
+
+    Scans options the way a shell does rather than matching ``-c`` exactly: the flag counts wherever
+    it appears among the short-option letters (``bash -lc``, ``sh -ec``, ``bash -euc``), and the
+    payload is the first non-option OPERAND rather than whichever token follows the ``-c`` -- real
+    bash runs the payload for ``bash -c -l 'cmd'`` too. ``tools/approval_detection`` has a sibling
+    parser in ``_bash_exec_payload``; the guard cannot reuse it, because that module defers TO this
+    one as the non-bypassable block, and the two do not agree on every spelling -- the sibling
+    filters bundles through a known-letter alphabet and always charges ``-o`` a following token,
+    both of which are measurably wrong against the real binaries (see the option handling below).
+    """
+    saw_command_flag = False
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith(("-", "+")):
+            break
+        if token in _SHELL_COMMAND_FLAGS:
+            saw_command_flag = True
+            index += 1
+            continue
+        if token in _SHELL_OPTIONS_WITH_ARG:
+            # Only a token that does not itself look like an option can be this one's value. ksh and
+            # zsh do not insist on a value here -- ``ksh -o -c 'payload'`` and ``zsh -O -c
+            # 'payload'`` print the option table and then RUN the payload -- so charging the option
+            # a following ``-c`` goes blind on a command the shell executes. Real option names
+            # (pipefail, errexit, noglob) never start with ``-`` or ``+``, so nothing legitimate is
+            # lost by declining to consume one.
+            index += 1 if _looks_like_option(arguments, index + 1) else 2
+            continue
+        if token.startswith("--"):
+            index += 1
+            continue
+        letters = token[1:]
+        # ``c`` ANYWHERE in the bundle counts, and the bundle is not filtered against a known-letter
+        # alphabet first. Measured across sh/bash/dash/zsh/ksh, the shell that runs the next token
+        # differs per spelling and no single one of them is authoritative:
+        #
+        #     -c  all five     -Wc  zsh     -Zc  zsh     -oc  ksh     -Oc  zsh
+        #
+        # ``-W`` is a real zsh option (AUTO_RESUME); for a letter it does not know zsh prints
+        # ``bad option`` and then honours the rest of the
+        # bundle anyway, so an alphabet gate lets ``zsh -Zc`` through; ksh accepts ``-oc``
+        # where zsh and bash reject it. The spellings this over-counts (``-ocpipefail``,
+        # ``-onocaseglob``, ``-co``) are run by none of the five, and over-counting costs only
+        # a scan of a string that was never executed. Under-counting misses a payload that runs.
+        if "c" in letters:
+            saw_command_flag = True
+        # ``-o``/``-O`` take a value, and it is ATTACHED when anything follows the letter inside the
+        # same token. ``zsh -opipefail`` and ``ksh -opipefail`` are one token; only ``-euo`` spends
+        # the next one. Charging the attached spelling a second token would swallow the ``-c``
+        # behind it. (The scan this replaced had no option grammar at all -- it took the token after
+        # any literal ``-c`` -- so it never had this failure mode; the option walk introduces the
+        # risk, and the guards here are what keep it from costing coverage.)
+        consumes_next_token = False
+        for position, letter in enumerate(letters):
+            if letter in ("o", "O"):
+                # A trailing ``o``/``O`` takes the next token as its value -- but not when this same
+                # bundle already carried the command flag. ``zsh -cO 'payload'`` runs the payload;
+                # letting the ``O`` charge for it would scan nothing and miss a command that runs.
+                # And the value can never be an option token (see above).
+                consumes_next_token = (
+                    position == len(letters) - 1
+                    and "c" not in letters
+                    and not _looks_like_option(arguments, index + 1)
+                )
+                break
+        index += 1 + int(consumes_next_token)
+    if not saw_command_flag or index >= len(arguments):
+        return None
+    return arguments[index]
+
+
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
     """Yield code passed through ``sh|bash|... -c`` (and ``su -c`` / ``env -S``) for recursive
     scanning."""
@@ -758,11 +842,9 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
         index = _executed_command_index(segment)
         if index is None or _executable_name(segment[index]) not in _SHELL_EXECUTABLES:
             continue
-        arguments = segment[index + 1 :]
-        for arg_index, argument in enumerate(arguments[:-1]):
-            if argument in _SHELL_COMMAND_FLAGS:
-                yield arguments[arg_index + 1]
-                break
+        payload = _shell_command_string(segment[index + 1 :])
+        if payload is not None:
+            yield payload
 
 
 # --- referenced-script reading ----------------------------------------------------------------

@@ -1284,24 +1284,32 @@ def _windows_stop_drain_timeout() -> float:
     return max(1.0, min(configured, 30.0))
 
 
-def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
-    """Force-kill known gateway PIDs without a broad process sweep."""
+def _force_terminate_known_gateway_pids(pids: list[tuple[int, int | None]]) -> int:
+    """Force-kill known gateway PIDs without a broad process sweep.
+
+    ``pids`` carries each PID's start time as captured at *discovery* time (see
+    ``_collect_gateway_stop_pids``). We must not re-read the start time here: between
+    discovery and this call the drain wait can run up to ``_windows_stop_drain_timeout()``
+    seconds, and re-reading at kill time would fingerprint whatever process currently holds
+    the PID rather than the gateway we originally found — defeating the identity guard against
+    PID reuse (see #99558).
+    """
     try:
-        from gateway.status import _pid_exists, get_process_start_time, terminate_pid
+        from gateway.status import _pid_exists, terminate_pid
     except ImportError:
         return 0
 
     own_pid = os.getpid()
     killed = 0
     seen: set[int] = set()
-    for pid in pids:
+    for pid, expected_start_time in pids:
         if pid <= 0 or pid == own_pid or pid in seen:
             continue
         seen.add(pid)
         try:
             if not _pid_exists(pid):
                 continue
-            terminate_pid(pid, force=True, expected_start_time=get_process_start_time(pid))
+            terminate_pid(pid, force=True, expected_start_time=expected_start_time)
             killed += 1
         except ProcessLookupError:
             continue
@@ -1312,15 +1320,26 @@ def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
     return killed
 
 
-def _collect_gateway_stop_pids(primary_pid: int | None = None) -> list[int]:
-    """Collect gateway PIDs for the active profile, preserving primary first."""
-    pids: list[int] = []
+def _collect_gateway_stop_pids(primary_pid: int | None = None) -> list[tuple[int, int | None]]:
+    """Collect gateway PIDs for the active profile, preserving primary first.
+
+    Captures each PID's start time here, at discovery time, rather than leaving it to be
+    re-read later at kill time — the whole point of the start-time guard is to catch a PID
+    that got reassigned to a different process during the drain wait between discovery and
+    kill (see ``_force_terminate_known_gateway_pids``).
+    """
+    from gateway.status import get_process_start_time
+
+    pids: list[tuple[int, int | None]] = []
+    seen: set[int] = set()
     if primary_pid is not None and primary_pid > 0:
-        pids.append(primary_pid)
+        pids.append((primary_pid, get_process_start_time(primary_pid)))
+        seen.add(primary_pid)
     try:
         for pid in _gateway_pids():
-            if pid > 0 and pid not in pids:
-                pids.append(pid)
+            if pid > 0 and pid not in seen:
+                pids.append((pid, get_process_start_time(pid)))
+                seen.add(pid)
     except Exception:
         pass
     return pids
@@ -1350,7 +1369,8 @@ def stop() -> None:
             print(f"⚠ schtasks /End returned code {code}: {err.strip()}")
 
     # No generic process sweep: starts are profile-scoped and stop must stay bounded even if wedged.
-    stop_pids.extend(pid for pid in _collect_gateway_stop_pids() if pid not in stop_pids)
+    known_pids = {p for p, _ in stop_pids}
+    stop_pids.extend(entry for entry in _collect_gateway_stop_pids() if entry[0] not in known_pids)
     killed = _force_terminate_known_gateway_pids(stop_pids)
     if killed:
         stopped_any = True

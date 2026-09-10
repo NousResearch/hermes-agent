@@ -91,14 +91,26 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             and _session_live_title(
                 record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
         # The sender fields are whatever the relaying client says. The author labels memory only and grants nothing.
-        from tools.bot_relay import DeliveryAuthor, delivery_env, delivery_turn_author
-        from tui_gateway.methods_browser_control import _is_authenticated_identity
+        from tools.bot_relay import (
+            DeliveryAuthor, delivery_env, delivery_turn_author, relaying_principal_author)
+        from tui_gateway.methods_browser_control import _is_authenticated_identity, _principal_digest
         sender_fields = ("from_profile", "from_handle", "from_connection")
-        # A logged-in browser never relays for another connection; only the Desktop and server-internal callers do.
-        if (any(params.get(k) for k in sender_fields)
-                and _is_authenticated_identity(getattr(current_transport(), "auth_identity", None))):
-            return _err(rid, 4095, "a logged-in client cannot name the sender of a relayed dm")
-        author = delivery_turn_author(*(params.get(k) for k in sender_fields))
+        identity = getattr(current_transport(), "auth_identity", None)
+        if _is_authenticated_identity(identity):
+            # A logged-in client's sender fields are NOT trusted — but the delivery is not refused
+            # either: the Desktop is itself a logged-in client on every gateway that requires sign-in
+            # (it mints a ws-ticket carrying the signed-in {user_id, provider} —
+            # hermes_cli/dashboard_auth/routes.py), so refusing took cross-connection relay offline
+            # for exactly the auth-gated gateways it serves; only ``?internal=`` callers are
+            # identity-exempt and the Desktop cannot present one. Nor is the author dropped: an
+            # unattributed turn is the HUMAN's to the recipient's memory (Honcho routes it into the
+            # human session and allows conclusion / profile / mirror writes), so a bot DM must stay
+            # bot-authored. The author is derived from the caller's minted identity instead — stable,
+            # unspoofable, and ``is_bot`` — whether or not the client named a sender. The human-facing
+            # "Message from 🤖 …" signature stays in the text the sender composed.
+            author = relaying_principal_author(_principal_digest(identity))
+        else:
+            author = delivery_turn_author(*(params.get(k) for k in sender_fields))
         if live_sid:
             # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
             # turn in flight (the default busy mode does); arrivals queue in order.

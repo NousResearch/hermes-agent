@@ -128,6 +128,21 @@ class TestSetupLogging:
         ) is True
 
         logger = logging.getLogger("cron.scheduler.profile-routing-test")
+
+        # The default home's agent.log must exist before the negative
+        # assertion can mean anything. On Windows the rotating handler is
+        # concurrent-log-handler's ConcurrentRotatingFileHandler (see the
+        # import alias in hermes_logging), which opens LAZILY — a handler
+        # that never emitted has not created its file, and read_text()
+        # would FileNotFoundError before the routing contract is checked.
+        # Emit one default-home record first so the file exists on every
+        # platform, then verify the routed record lands only in the
+        # profile home.
+        default_log = hermes_home / "logs" / "agent.log"
+        logger.info("profile-routing default-home probe record")
+        hermes_logging.flush_log_queue()
+        assert "default-home probe record" in default_log.read_text()
+
         token = set_hermes_home_override(profile_home)
         try:
             logger.info("profile-routed cron record")
@@ -138,9 +153,7 @@ class TestSetupLogging:
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
         ).read_text()
-        assert "profile-routed cron record" not in (
-            hermes_home / "logs" / "agent.log"
-        ).read_text()
+        assert "profile-routed cron record" not in default_log.read_text()
 
 
 

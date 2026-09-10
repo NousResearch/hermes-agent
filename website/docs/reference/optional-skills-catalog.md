@@ -129,6 +129,7 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**minecraft-modpack-server**](/docs/user-guide/skills/optional/gaming/gaming-minecraft-modpack-server) | Host modded Minecraft servers (CurseForge, Modrinth). |
 | [**pokemon-player**](/docs/user-guide/skills/optional/gaming/gaming-pokemon-player) | Play Pokemon via headless emulator + RAM reads. |
+| [**steam-intel-vulkan-fix**](/docs/user-guide/skills/optional/gaming/gaming-steam-intel-vulkan-fix) | Fix Steam game crashes on Intel GPUs by forcing D3D11. |
 
 ## health
 

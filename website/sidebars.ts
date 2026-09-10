@@ -444,6 +444,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/gaming/gaming-minecraft-modpack-server',
                     'user-guide/skills/optional/gaming/gaming-pokemon-player',
+                    'user-guide/skills/optional/gaming/gaming-steam-intel-vulkan-fix',
                   ],
                 },
                 {

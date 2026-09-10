@@ -334,8 +334,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   // Fake search pill riding the card's top edge, dead-center and half off it.
   // Clicking (or just typing) opens the ⌘K palette scoped to settings; while
   // the palette is up the pill hands over to it — grows slightly and fades,
-  // then fades back when the palette closes. It renders as chrome, not an
-  // input — no border, recessed fill, live ⌘K hint.
+  // then fades back when the palette closes. It sits outside the raised card,
+  // so it needs its own opaque glass surface to mask the content underneath.
   const searchCombo = bindingsFor('nav.commandPalette')[0]
   const paletteOpen = useStore($commandPaletteOpen)
 
@@ -345,6 +345,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         'flex h-(--titlebar-control-height) items-center gap-1.5 rounded-full border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) px-2.5 text-(--ui-text-tertiary) shadow-sm transition-all duration-200 ease-out hover:text-foreground motion-reduce:transition-none',
         paletteOpen && 'pointer-events-none scale-110 opacity-0'
       )}
+      data-glass-opaque=""
       onClick={() => {
         triggerHaptic('open')
         openCommandPalettePage('settings')

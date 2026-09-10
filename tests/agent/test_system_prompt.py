@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
@@ -53,6 +55,28 @@ def _captured_context_cwd(agent):
     ):
         build_system_prompt_parts(agent)
     return captured["cwd"]
+
+
+@pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
+@pytest.mark.parametrize("names", [
+    set(), {"memory"}, {"memory", "skill_view", "skills_list"},
+    {"memory", "skill_view", "skills_list", "skill_manage"},
+])
+def test_memory_guidance_respects_available_writes(stores, names, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    agent = _make_agent(valid_tool_names=names, skip_context_files=True,
+                        _memory_enabled=stores[0], _user_profile_enabled=stores[1])
+    prompt = build_system_prompt(agent)
+    enabled = "memory" in names and any(stores)
+    assert ("Memory is the narrow exception" in prompt) == enabled
+    assert ("(skill_manage)" in prompt) == (enabled and "skill_manage" in names)
+    if enabled:
+        assert "EVERY session regardless of task" in prompt
+        assert "procedures and workflows belong in skills" in prompt
+        if "skill_manage" not in names:
+            assert "not in memory" in prompt
+    if enabled and not stores[0]:
+        assert "never target='memory'" in prompt
 
 
 class TestContextFileCwd:

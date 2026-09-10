@@ -278,7 +278,7 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
     and external callers on the web_deps late-binding seam; do not add new uses.
     """
     _profile_name, home = _cron_profile_home(profile)
-    from cron.scheduler_provider import provider_supports_force_fire, resolve_cron_scheduler
+    from cron.scheduler_provider import provider_fire_due_accepts, provider_supports_force_fire, resolve_cron_scheduler
     with _cron_store_scope(home):
         provider = resolve_cron_scheduler()
         if force:
@@ -289,6 +289,10 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
                         f"Cron provider '{getattr(provider, 'name', 'custom')}' "
                         "does not support atomic forced firing of paused jobs"))
             return bool(provider.fire_due(job_id, adapters=None, loop=None, force=True))
+        # Off-tick run-now: never stamp next_run_at as the occurrence (#104790); third-party
+        # providers without the kwarg keep the legacy call.
+        if provider_fire_due_accepts(provider, "manual"):
+            return bool(provider.fire_due(job_id, adapters=None, loop=None, manual=True))
         return bool(provider.fire_due(job_id, adapters=None, loop=None))
 
 

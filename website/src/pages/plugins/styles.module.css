@@ -1,0 +1,734 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+.page {
+  font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  min-height: 100vh;
+}
+
+.hero {
+  position: relative;
+  overflow: hidden;
+  padding: 4rem 2rem 2.5rem;
+  text-align: center;
+}
+
+.heroGlow {
+  position: absolute;
+  top: -120px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 400px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 215, 0, 0.07) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+}
+
+.heroContent {
+  position: relative;
+  z-index: 1;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.heroEyebrow {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(255, 215, 0, 0.5);
+  margin-bottom: 0.75rem;
+}
+
+.heroTitle {
+  font-size: 3rem;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  margin: 0 0 0.75rem;
+}
+
+[data-theme="dark"] .heroTitle {
+  color: #fafaf6;
+}
+
+.heroSub {
+  font-size: 1.05rem;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  line-height: 1.5;
+  margin: 0 0 1.5rem;
+}
+
+/* Cross-nav between the Skills Hub and Plugin Catalog pages. */
+.crossNav {
+  display: inline-flex;
+  gap: 0.35rem;
+  margin: 0 0 1.25rem;
+  padding: 0.25rem;
+  border: 1px solid rgba(255, 215, 0, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.crossNavLink {
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+  padding: 0.3rem 0.9rem;
+  border-radius: 7px;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  text-decoration: none;
+  transition: all 0.15s;
+}
+
+.crossNavLink:hover {
+  color: #ffd700;
+  text-decoration: none;
+}
+
+.crossNavActive {
+  background: rgba(255, 215, 0, 0.08);
+  color: #ffd700;
+}
+
+.statsRow {
+  display: flex;
+  justify-content: center;
+  gap: 2.5rem;
+  flex-wrap: wrap;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.statValue {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.statLabel {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ifm-font-color-secondary, #9a968e);
+}
+
+.controlsBar {
+  position: sticky;
+  top: 60px; /* below Docusaurus navbar */
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 1rem 2rem;
+  backdrop-filter: blur(16px) saturate(1.4);
+  border-bottom: 1px solid rgba(255, 215, 0, 0.06);
+}
+
+[data-theme="dark"] .controlsBar {
+  background: rgba(7, 7, 13, 0.85);
+}
+
+.searchWrap {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+}
+
+.searchIcon {
+  position: absolute;
+  left: 0.85rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: rgba(255, 215, 0, 0.35);
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  padding: 0.7rem 2.5rem 0.7rem 2.6rem;
+  font-size: 0.95rem;
+  font-family: "DM Sans", sans-serif;
+  border: 1px solid rgba(255, 215, 0, 0.12);
+  border-radius: 10px;
+  background: rgba(15, 15, 24, 0.6);
+  color: var(--ifm-font-color-base, #e8e4dc);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.searchInput:focus {
+  border-color: rgba(255, 215, 0, 0.4);
+  box-shadow: 0 0 0 3px rgba(255, 215, 0, 0.06);
+}
+
+.searchInput::placeholder {
+  color: var(--ifm-font-color-secondary, #9a968e);
+  opacity: 0.5;
+}
+
+.clearBtn {
+  position: absolute;
+  right: 0.6rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--ifm-font-color-secondary);
+  cursor: pointer;
+  padding: 0.15rem;
+  display: flex;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.clearBtn:hover {
+  opacity: 1;
+  color: #ffd700;
+}
+
+/* Tier tabs: All / Official / Community (skills page's source-pill pattern). */
+.tierPills {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.tierBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.tierBtn:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--ifm-font-color-base);
+}
+
+.tierBtnActive {
+  border-color: var(--pill-border, rgba(255, 215, 0, 0.3));
+  background: var(--pill-bg, rgba(255, 215, 0, 0.06));
+  color: var(--pill-color, #ffd700);
+}
+
+.tierCount {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.05rem 0.35rem;
+  border-radius: 8px;
+}
+
+.tierBtnActive .tierCount {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem 2rem 3rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 0.75rem;
+}
+
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.card {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+  animation: cardIn 0.35s ease both;
+}
+
+[data-theme="dark"] .card {
+  background: #0c0c16;
+}
+
+.card:hover {
+  border-color: rgba(255, 215, 0, 0.15);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 215, 0, 0.05);
+  transform: translateY(-1px);
+}
+
+.cardExpanded {
+  border-color: rgba(255, 215, 0, 0.2);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 215, 0, 0.08);
+}
+
+.cardAccent {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 100%;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.card:hover .cardAccent {
+  opacity: 1;
+}
+
+.cardInner {
+  padding: 1rem 1rem 0.85rem 1.15rem;
+}
+
+.cardTop {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+}
+
+.cardIcon {
+  font-size: 1.15rem;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+  opacity: 0.7;
+}
+
+.cardTitleGroup {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.cardTitle {
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0;
+  word-break: break-word;
+  color: var(--ifm-font-color-base);
+}
+
+.tierPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 500;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.cardDesc {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  margin: 0 0 0.6rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.cardDescFull {
+  -webkit-line-clamp: unset;
+}
+
+.cardMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+/* Capability chips: tools/hooks/middleware counts. */
+.capChip {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid rgba(255, 215, 0, 0.12);
+  border-radius: 3px;
+  background: rgba(255, 215, 0, 0.04);
+  color: rgba(255, 215, 0, 0.7);
+}
+
+/* Required env var chips. */
+.envChip {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  padding: 0.12rem 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(255, 215, 0, 0.6);
+}
+
+.platformPill {
+  font-size: 0.66rem;
+  padding: 0.12rem 0.4rem;
+  border-radius: 3px;
+  background: rgba(96, 165, 250, 0.06);
+  color: rgba(96, 165, 250, 0.8);
+  border: 1px solid rgba(96, 165, 250, 0.1);
+}
+
+.cardDetail {
+  margin-top: 0.75rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  animation: cardIn 0.2s ease both;
+}
+
+.metaRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+}
+
+.metaLabel {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ifm-font-color-secondary);
+  opacity: 0.5;
+  min-width: 4.5rem;
+  padding-top: 0.15rem;
+}
+
+.metaValue {
+  font-size: 0.78rem;
+  color: var(--ifm-font-color-base);
+}
+
+.metaValue code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+}
+
+.chipList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.shaLink {
+  color: rgba(96, 165, 250, 0.9);
+  text-decoration: none;
+}
+
+.shaLink:hover {
+  color: rgba(96, 165, 250, 1);
+  text-decoration: none;
+}
+
+.installHint {
+  margin-top: 0.65rem;
+  padding: 0.45rem 0.65rem;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 215, 0, 0.06);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.installHint code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: rgba(255, 215, 0, 0.7);
+  background: none;
+  padding: 0;
+  flex: 1;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.installHint code::-webkit-scrollbar {
+  display: none;
+}
+
+.copyBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid rgba(255, 215, 0, 0.18);
+  border-radius: 4px;
+  background: rgba(255, 215, 0, 0.06);
+  color: rgba(255, 215, 0, 0.85);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.copyBtn:hover {
+  background: rgba(255, 215, 0, 0.14);
+  color: rgba(255, 215, 0, 1);
+}
+
+.copyBtnLabel {
+  line-height: 1;
+}
+
+.cardLinks {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.cardLinks .docsLink {
+  flex: 1;
+}
+
+.docsLink {
+  display: block;
+  margin-top: 0.65rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  border-radius: 5px;
+  background: rgba(96, 165, 250, 0.06);
+  color: rgba(96, 165, 250, 0.9);
+  font-size: 0.78rem;
+  text-decoration: none;
+  text-align: center;
+  transition: all 0.15s;
+}
+
+.docsLink:hover {
+  background: rgba(96, 165, 250, 0.12);
+  color: rgba(96, 165, 250, 1);
+  border-color: rgba(96, 165, 250, 0.35);
+  text-decoration: none;
+}
+
+.highlight {
+  background: rgba(255, 215, 0, 0.2);
+  color: #ffd700;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.loadingSpinner {
+  width: 2.25rem;
+  height: 2.25rem;
+  margin: 0 auto 1rem;
+  border: 3px solid rgba(255, 215, 0, 0.15);
+  border-top-color: rgba(255, 215, 0, 0.7);
+  border-radius: 50%;
+  animation: pluginsSpin 0.8s linear infinite;
+}
+
+@keyframes pluginsSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 5rem 2rem;
+  text-align: center;
+}
+
+.emptyIcon {
+  font-size: 2.5rem;
+  margin-bottom: 1rem;
+  opacity: 0.6;
+}
+
+.emptyTitle {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+  color: var(--ifm-font-color-base);
+}
+
+.emptyDesc {
+  font-size: 0.85rem;
+  color: var(--ifm-font-color-secondary);
+  margin: 0 0 1.25rem;
+  max-width: 480px;
+  line-height: 1.6;
+}
+
+.emptyActions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.emptyCta {
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.55rem 1.25rem;
+  border: 1px solid rgba(255, 215, 0, 0.3);
+  border-radius: 6px;
+  background: rgba(255, 215, 0, 0.06);
+  color: #ffd700;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.emptyCta:hover {
+  background: rgba(255, 215, 0, 0.12);
+  color: #ffd700;
+  text-decoration: none;
+}
+
+.emptyCtaSecondary {
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.85rem;
+  padding: 0.55rem 1.25rem;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+  border-radius: 6px;
+  background: rgba(96, 165, 250, 0.05);
+  color: rgba(96, 165, 250, 0.9);
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.emptyCtaSecondary:hover {
+  background: rgba(96, 165, 250, 0.1);
+  color: rgba(96, 165, 250, 1);
+  text-decoration: none;
+}
+
+.emptyReset {
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.85rem;
+  padding: 0.5rem 1.25rem;
+  border: 1px solid rgba(255, 215, 0, 0.25);
+  border-radius: 6px;
+  background: transparent;
+  color: #ffd700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.emptyReset:hover {
+  background: rgba(255, 215, 0, 0.08);
+}
+
+@media (max-width: 900px) {
+  .hero {
+    padding: 2.5rem 1.25rem 1.75rem;
+  }
+
+  .heroTitle {
+    font-size: 2rem;
+  }
+
+  .statsRow {
+    gap: 1.5rem;
+  }
+
+  .statValue {
+    font-size: 1.25rem;
+  }
+
+  .controlsBar {
+    padding: 0.75rem 1rem;
+  }
+
+  .main {
+    padding: 0.75rem 1rem 2rem;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* ── Picker embed mode (?embed=picker, iframed by the desktop app) ────── */
+
+.pickerMode .hero {
+  display: none;
+}
+
+.pickerMode {
+  padding-top: 0.5rem;
+}
+
+/* The navbar is hidden in picker mode, so the sticky controls bar must pin
+   to the frame top — its normal 60px navbar offset would float it over the
+   first card row. */
+.pickerMode .controlsBar {
+  top: 0;
+}
+
+:global(html):has(.pickerMode) :global(.navbar),
+:global(html):has(.pickerMode) :global(footer) {
+  display: none;
+}
+
+.pickBtn {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--ifm-color-primary);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ifm-color-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pickBtn:hover {
+  background: var(--ifm-color-primary);
+  color: #fff;
+}

@@ -44,6 +44,7 @@ export type {
   AutomationBlueprint,
   AutomationBlueprintField,
   AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
   BackendUpdateCheckResponse,
   ComputerUseCheck,
   ComputerUsePermissionSource,

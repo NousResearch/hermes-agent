@@ -107,6 +107,16 @@ class HermesProviderMixin:
             self._hermes_logger.warning("Invalid refresh response: %s", response.status_code)
             self.context.clear_tokens()
             return False
+        # RFC 6749 §6: a refresh response may omit refresh_token (AS does not rotate) and scope
+        # (unchanged). The SDK's own _handle_refresh_response carries both forward; this override
+        # must too, or every non-rotating refresh erases the stored refresh_token and the server
+        # dies at the NEXT expiry with a forced browser re-auth (#62333).
+        prior = self.context.current_tokens
+        if prior is not None:
+            if token_response.refresh_token is None:
+                token_response.refresh_token = prior.refresh_token
+            if token_response.scope is None:
+                token_response.scope = prior.scope
         await self._store_tokens(token_response)
         return True
 

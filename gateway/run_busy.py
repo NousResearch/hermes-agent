@@ -1204,6 +1204,29 @@ class GatewayBusySessionMixin:
                 )
                 if button_result and getattr(button_result, "success", False):
                     return None  # buttons rendered — no redundant text ack
+                # P5(b): distinguish a connector egress DECLINE from a lane
+                # failure. On a decline the connector refused this destination,
+                # so returning `message` as the direct reply would deliver the
+                # very content it refused, as text, to the same chat. Suppress
+                # the fallback and tear down the registration — no card
+                # rendered, so a later reply must not be captured as an answer
+                # to an invisible prompt.
+                #
+                # Classify the STRUCTURED response (see _approval_send_outcome):
+                # a code-only decline has no marker colon in its rendered text,
+                # and an ambiguous result must not be treated as a definite
+                # refusal.
+                from gateway.relay.egress import declined_send
+
+                _confirm_err = getattr(button_result, "error", None)
+                if declined_send(button_result):
+                    logger.warning(
+                        "slash-confirm DECLINED by the connector's egress "
+                        "guard for %s on %s — suppressing the text fallback: %s",
+                        command, source.platform, _confirm_err,
+                    )
+                    _slash_confirm_mod.clear(session_key)
+                    return None
             except Exception as exc:
                 logger.debug("send_slash_confirm failed for %s on %s: %s", command, source.platform, exc)
         # Text fallback — the prompt message itself is the direct reply.

@@ -161,26 +161,30 @@ def _set_model(rid, params, key, value, session):
             except Exception:
                 pass
     else:
-        # A session-scoped write for a session that is not live in this process:
-        # persist as explicit row override instead of a GLOBAL config.yaml write.
-        if params.get("session_id"):
-            try:
-                from hermes_cli.model_switch import parse_model_switch_args as _parse_switch
-                parsed_flags = _parse_switch(value)
-                if getattr(parsed_flags, "is_session", False) and not getattr(parsed_flags, "is_global", False):
-                    model_input = str(getattr(parsed_flags, "model_input", "") or "").strip()
-                    provider = str(getattr(parsed_flags, "explicit_provider", "") or "").strip()
-                    if model_input:
-                        _persist_session_row_override(
-                            params.get("session_id", ""),
-                            {"model": model_input, "provider": provider},
-                            model=model_input,
-                        )
-                        return _kv(rid, key, model_input, warning="", confirm_required=False,
-                                         confirm_message="", scope="session", deferred=True)
-            except Exception:
-                pass
-        result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        # --once keeps its specific 5001; other sessionless model sets 4001 so
+        # --global cannot persist profile defaults before session.create (#106397:
+        # an older Desktop client sent a fresh-draft pick this way).
+        from hermes_cli.model_switch import parse_model_switch_args
+        _parsed = parse_model_switch_args(str(value))
+        if _parsed.is_once:
+            result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        elif getattr(_parsed, "is_session", False) and not getattr(_parsed, "is_global", False) \
+                and params.get("session_id") and str(getattr(_parsed, "model_input", "") or "").strip():
+            # Reap-safe: a deliberate session-scoped pin for a session that is not
+            # live in this process persists as an explicit row override instead of
+            # a global config.yaml write or an error.
+            _model_input = str(getattr(_parsed, "model_input", "") or "").strip()
+            _persist_session_row_override(
+                params.get("session_id", ""),
+                {"model": _model_input,
+                 "provider": str(getattr(_parsed, "explicit_provider", "") or "").strip()},
+                model=_model_input,
+            )
+            return _kv(rid, key, _model_input, warning="", confirm_required=False,
+                       confirm_message="", scope="session", deferred=True)
+        else:
+            return _err(rid, 4001, "config.set model requires a live session; "
+                        "use Settings -> Models to change the profile default")
     return _kv(rid, key, result["value"], warning=result["warning"],
                confirm_required=result.get("confirm_required", False),
                confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"))

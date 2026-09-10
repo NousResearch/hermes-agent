@@ -441,21 +441,18 @@ export const zh: Translations = {
       failed: '失败',
       empty: '尚未安装桌面插件。',
       kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
+      agentHalfMissing: '此处缺少 agent 部分',
+      agentHalfMissingTip:
+        '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
       agent: {
-        title: '智能体插件',
-        blurb:
-          '你安装到 Hermes 后端的插件——工具、技能、MCP 服务器、钩子和斜杠命令。「便携」插件是 Agent Plugins 标准包（技能 + MCP 组合，也可在其他智能体中使用）。开关在新会话中生效。',
-        appliesTo: '应用于：',
-        empty: '尚未安装智能体插件。',
-        loadFailed: '无法加载智能体插件',
-        portable: '便携',
-        search: '搜索插件…',
-        noMatches: '没有匹配的插件。',
-        toggleFailed: (name: string) => `无法切换 ${name}`,
-        updateBackendToManage: '请更新 Hermes 后端以便在桌面端管理此插件。',
-        sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
+        title: 'Agent 插件',
+        movedToCapabilities: 'Agent 插件按配置在「能力」页管理 — 已安装列表、开关和插件目录都在那里。',
+        openCapabilities: '打开 能力 → 插件'
       },
       installModal: {
+        installFromGit: '从 Git 安装',
+        reviewRepository: '检查仓库',
+        repoPlaceholder: 'https://github.com/owner/repo',
         title: '安装插件',
         description: '在安装前查看此仓库包含哪些组件。',
         repoLabel: '仓库',
@@ -464,6 +461,14 @@ export const zh: Translations = {
         desktopLabel: '桌面 UI',
         agentTargetLocal: profile => `安装到 ${profile} 后端（~/.hermes/plugins/）`,
         agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
+        catalogPinned: (name, sha) =>
+          `Hermes 目录条目「${name}」— agent 部分将安装在经过审核的固定提交${sha ? ` ${sha}` : ''}，而不是分支最新代码。`,
+        reviewedHeading: '经过审核的目录条目',
+        reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
+        restartToApply: '重启网关后插件才会生效。',
+        restartNow: '重启网关',
+        missingEnvAction: '去设置',
+        alreadyInstalled: (name: string) => `${name} 已安装。`,
         desktopTarget: '安装到此应用的本地 desktop-plugins 文件夹',
         desktopOnlyNote: '仅桌面包不会安装后端智能体插件。',
         insecureWarning: '此 URL 使用了不安全的本地 scheme。生产环境请优先使用 https:// 或 git@。',
@@ -1114,6 +1119,10 @@ export const zh: Translations = {
       },
       cloudRefresh: '刷新',
       cloudConnect: '连接',
+      cloudSavedTitle: '已保存的云网关',
+      cloudSavedDesc: '使用已保存的网关，不更改默认网关。在下方登录以添加实例。在已保存的连接列表中管理名称和登录。',
+      cloudUseSaved: '使用网关',
+      cloudActive: '当前窗口正在使用',
       cloudConnecting: '正在连接…',
       cloudDiscoverFailed: '无法加载你的 Hermes Cloud 智能体',
       cloudConnectFailed: '无法连接到该智能体',
@@ -1670,6 +1679,27 @@ export const zh: Translations = {
     archive: '归档',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
+    tabPlugins: '插件',
+    plugins: {
+      empty: '此配置尚未安装任何 agent 插件',
+      emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
+      loadFailed: '无法加载 agent 插件',
+      toggleFailed: (name: string) => `无法切换 ${name}`,
+      legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
+      portableBadge: '便携',
+      catalogTitle: '插件目录',
+      catalogBrowse: '浏览',
+      catalogHide: '隐藏目录浏览器',
+      catalogHint:
+        '点击任意插件上的「+ Add to this Agent」— 经过审核的条目会以其固定提交安装到所选配置。捆绑的 agent+桌面插件会同时提供两部分。',
+      alreadyInstalled: (name: string) => `${name} 已安装在此配置中。`,
+      catalogProvenance: (sha: string) => `从 Hermes 目录安装${sha ? `，固定提交 ${sha}` : ''}。`,
+      tierOfficial: '官方',
+      tierCommunity: '社区',
+      updateToPin: (sha: string) => `更新到 ${sha}`,
+      updateFailed: (name: string) => `无法更新 ${name}`,
+      updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`
+    },
     officialCatalog: '可安装',
     officialPill: '官方',
     hub: {
@@ -1754,6 +1784,10 @@ export const zh: Translations = {
     resetToMine: '返回我的图谱'
   },
   agents: {
+    extendedTranscript: '扩展记录',
+    transcriptTruncated: '显示最新 16 KiB',
+    transcriptUnavailable: '实时记录不可用',
+
     close: '关闭代理',
     title: '派生树',
     subtitle: '当前回合的子代理实时活动。',
@@ -1765,6 +1799,14 @@ export const zh: Translations = {
     streaming: '流式传输',
     files: '文件',
     moreFiles: count => `还有 ${count} 个文件`,
+    moreAgents: count => `还有 ${count} 个子代理`,
+    queued: '排队中',
+    waitingActivity: '等待活动',
+    steer: '引导',
+    steerPlaceholder: '此子代理的指令',
+    steerQueued: '已排队，等待下一个检查点',
+    stopRequested: '已请求停止',
+    requestRejected: '子代理未接受请求',
     delegation: index => `派发 ${index}`,
     workers: count => `${count} 个工作单元`,
     workersActive: count => `${count} 个活跃`,
@@ -2321,8 +2363,8 @@ export const zh: Translations = {
     title: '定时任务',
     count: count => `${count} 个任务`,
     modelImpact: {
-      title: '定时任务需要检查',
-      message: count => `在您检查模型设置之前，${count} 个定时任务将被跳过。`,
+      title: '定时任务将继续使用原模型',
+      message: count => `${count} 个未固定的定时任务将继续使用创建时的模型运行。固定它们或设置 cron.model 以迁移。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 个`,
       review: '检查定时任务',
       saveFailed: 'Hermes 未保存该模型更改。',
@@ -2518,13 +2560,23 @@ export const zh: Translations = {
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: '网关与配置',
+      rename: '重命名分组',
+      aliasLabel: '显示名称',
+      aliasHint: '仅更改显示名称；网关和配置档名称保持不变。',
+      resetName: '重置名称',
+      moveUp: '上移',
+      moveDown: '下移',
+      reorder: '调整分组顺序',
+      actions: '分组操作'
+    },
     nav: {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
-      cron: '定时任务',
-      'session-import': '导入会话'
+      cron: '定时任务'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',
@@ -2548,8 +2600,10 @@ export const zh: Translations = {
     noSessions: '暂无会话',
     noFilterMatches: '没有会话符合这些筛选条件',
     projects: {
+      showAllSessions: '显示所有会话',
       sectionLabel: '项目',
       home: '主页',
+      autoDiscovered: '自动发现',
       newButton: '新建项目',
       createTitle: '新建项目',
       createDesc: '为工作区命名并添加一个或多个文件夹。',
@@ -3663,7 +3717,10 @@ export const zh: Translations = {
         streaming: '流式连接错误'
       },
       errorRetry: '重试',
+      errorStartNewSession: '开始新会话',
       errorSwitchProvider: '切换服务商',
+      errorSignInAgain: provider => `重新登录 ${provider}`,
+      errorOauthExpired: provider => `您的 ${provider} 登录已过期或被撤销。请重新登录以继续对话。`,
       errorOpenLogs: '打开日志',
       errorOpenLogsFailed: '无法打开日志文件夹',
       errorOpenDesktopLogs: '打开桌面端日志',

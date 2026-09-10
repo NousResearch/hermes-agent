@@ -454,21 +454,19 @@ export const en: Translations = {
       failed: 'failed',
       empty: 'No desktop plugins installed yet.',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
+      agentHalfMissing: 'agent half missing here',
+      agentHalfMissingTip:
+        'This is the desktop half of a bundled plugin, but its agent half is not installed on the currently connected backend/profile. Install it from Capabilities → Plugins.',
       agent: {
         title: 'Agent plugins',
-        blurb:
-          'Plugins you installed into the Hermes backend — tools, skills, MCP servers, hooks, and slash commands. Portable ones are Agent Plugins packages (skills + MCP bundles that work in other agents too). Toggles apply to new sessions.',
-        appliesTo: 'Applies to:',
-        empty: 'No agent plugins installed yet.',
-        loadFailed: 'Could not load agent plugins',
-        portable: 'portable',
-        search: 'Search plugins…',
-        noMatches: 'No plugins match your search.',
-        toggleFailed: (name: string) => `Could not toggle ${name}`,
-        updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
-        sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
+        movedToCapabilities:
+          'Agent plugins are managed per profile in Capabilities — installed list, toggles, and the plugin catalog live there.',
+        openCapabilities: 'Open Capabilities → Plugins'
       },
       installModal: {
+        installFromGit: 'Install from Git',
+        reviewRepository: 'Review repository',
+        repoPlaceholder: 'https://github.com/owner/repo',
         title: 'Install plugin',
         description: 'Review what this repository contains before installing anything.',
         repoLabel: 'Repository',
@@ -477,6 +475,15 @@ export const en: Translations = {
         desktopLabel: 'Desktop UI',
         agentTargetLocal: profile => `Installs into the ${profile} backend (~/.hermes/plugins/)`,
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
+        catalogPinned: (name, sha) =>
+          `Hermes catalog entry "${name}" — the agent component installs at the reviewed pin${sha ? ` ${sha}` : ''}, not the branch tip.`,
+        reviewedHeading: 'Reviewed catalog entry',
+        reviewedIntro:
+          'This entry was human-reviewed at its pinned commit. You can still inspect the exact code below.',
+        restartToApply: 'Restart the gateway for the plugin to take effect.',
+        restartNow: 'Restart gateway',
+        missingEnvAction: 'Set it up',
+        alreadyInstalled: (name: string) => `${name} is already installed.`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",
         desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
         insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
@@ -919,6 +926,11 @@ export const en: Translations = {
       },
       cloudRefresh: 'Refresh',
       cloudConnect: 'Connect',
+      cloudSavedTitle: 'Saved Cloud gateways',
+      cloudSavedDesc:
+        'Use a saved gateway without changing your default. Sign in below to add instances. Manage names and sign-in in the saved connections list.',
+      cloudUseSaved: 'Use gateway',
+      cloudActive: 'Active in this window',
       cloudConnecting: 'Connecting…',
       cloudDiscoverFailed: 'Could not load your Hermes Cloud agents',
       cloudConnectFailed: 'Could not connect to that agent',
@@ -1496,6 +1508,27 @@ export const en: Translations = {
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
+    tabPlugins: 'Plugins',
+    plugins: {
+      empty: 'No agent plugins installed for this profile',
+      emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
+      loadFailed: 'Could not load agent plugins',
+      toggleFailed: (name: string) => `Could not toggle ${name}`,
+      legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
+      portableBadge: 'portable',
+      catalogTitle: 'Plugin catalog',
+      catalogBrowse: 'Browse',
+      catalogHide: 'Hide the catalog browser',
+      catalogHint:
+        'Hit "+ Add to this Agent" on any plugin — reviewed entries install at their pinned commit into the selected profile. Bundled agent+desktop plugins offer both halves.',
+      alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
+      catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
+      tierOfficial: 'official',
+      tierCommunity: 'community',
+      updateToPin: (sha: string) => `Update to ${sha}`,
+      updateFailed: (name: string) => `Could not update ${name}`,
+      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`
+    },
     officialCatalog: 'Available to install',
     officialPill: 'Official',
     hub: {
@@ -1582,6 +1615,10 @@ export const en: Translations = {
     resetToMine: 'Back to my map'
   },
   agents: {
+    extendedTranscript: 'Extended transcript',
+    transcriptTruncated: 'Showing the latest 16 KiB',
+    transcriptUnavailable: 'Live transcript unavailable',
+
     close: 'Close agents',
     title: 'Spawn tree',
     subtitle: 'Live subagent activity for the current turn.',
@@ -1593,6 +1630,14 @@ export const en: Translations = {
     streaming: 'Streaming',
     files: 'Files',
     moreFiles: count => `+${count} more files`,
+    moreAgents: count => `+${count} more agents`,
+    queued: 'Queued',
+    waitingActivity: 'Waiting for activity',
+    steer: 'Steer',
+    steerPlaceholder: 'Instructions for this subagent',
+    steerQueued: 'Queued for the next checkpoint',
+    stopRequested: 'Stop requested',
+    requestRejected: 'The subagent did not accept the request',
     delegation: index => `Delegation ${index}`,
     workers: count => `${count} workers`,
     workersActive: count => `${count} active`,
@@ -2154,9 +2199,9 @@ export const en: Translations = {
     title: 'Scheduled jobs',
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
     modelImpact: {
-      title: 'Scheduled jobs need review',
+      title: 'Scheduled jobs stay on their original model',
       message: count =>
-        `${count} scheduled ${count === 1 ? 'job' : 'jobs'} will be skipped until you review their model settings.`,
+        `${count} unpinned scheduled ${count === 1 ? 'job keeps' : 'jobs keep'} running on the model ${count === 1 ? 'it was' : 'they were'} created under. Pin ${count === 1 ? 'it' : 'them'} or set cron.model to move ${count === 1 ? 'it' : 'them'}.`,
       detailMore: (names, remaining) => `${names} and ${remaining} more`,
       review: 'Review scheduled jobs',
       saveFailed: 'Hermes did not save that model change.',
@@ -2352,13 +2397,23 @@ export const en: Translations = {
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: 'Gateway & profile',
+      rename: 'Rename group',
+      aliasLabel: 'Display name',
+      aliasHint: 'Display name only; gateway and profile names stay unchanged.',
+      resetName: 'Reset name',
+      moveUp: 'Move up',
+      moveDown: 'Move down',
+      reorder: 'Reorder group',
+      actions: 'Group actions'
+    },
     nav: {
       'new-session': 'New session',
       skills: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
-      cron: 'Scheduled jobs',
-      'session-import': 'Import session'
+      cron: 'Scheduled jobs'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',
@@ -2382,8 +2437,10 @@ export const en: Translations = {
     noSessions: 'No sessions yet',
     noFilterMatches: 'No sessions match these filters',
     projects: {
+      showAllSessions: 'Show all sessions',
       sectionLabel: 'Projects',
       home: 'Home',
+      autoDiscovered: 'Auto-discovered',
       newButton: 'New project',
       createTitle: 'New project',
       createDesc: 'Name a workspace and add one or more folders.',
@@ -3520,7 +3577,11 @@ export const en: Translations = {
         streaming: 'Streaming connection error'
       },
       errorRetry: 'Retry',
+      errorStartNewSession: 'Start new session',
       errorSwitchProvider: 'Switch provider',
+      errorSignInAgain: provider => `Sign in to ${provider} again`,
+      errorOauthExpired: provider =>
+        `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
       errorOpenLogsFailed: 'Could not open the logs folder',
       errorOpenDesktopLogs: 'Open Desktop logs',

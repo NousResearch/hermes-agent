@@ -45,6 +45,7 @@ import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
+import { discardLostPrompt } from './discard-lost-prompt'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
@@ -68,6 +69,7 @@ import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
+import { PreparedImageRecovery } from './prepared-image-recovery'
 import { QueuePanel } from './queue-panel'
 import {
   beginComposerComposition,
@@ -1207,6 +1209,12 @@ export function ChatBar({
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
             <ActionBadges sessionId={statusSessionId} />
             <SuggestionPills sessionId={statusSessionId} />
+            <PreparedImageRecovery
+              occupied={hasText || attachments.length > 0 || busy || disabled}
+              onRestore={loadIntoComposer}
+              request={requestBusyConfig}
+              sessionKey={activeQueueSessionKey}
+            />
           </div>
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). An in-flow dock child: the dock is bottom-anchored, so it
@@ -1230,7 +1238,7 @@ export function ChatBar({
                     // from the queue once the acknowledgement commits. Canonical
                     // local sessions key the queue by their own session id, so the
                     // stored key stands in when the runtime id is not bound yet.
-                    gateway.request('prompt.resolve_unknown', { session_id: sessionId ?? activeQueueSessionKey, admission_id: id })
+                    discardLostPrompt(sessionId, activeQueueSessionKey, id, gateway.request.bind(gateway))
                       .catch((error: unknown) => notifyError(error, t.composer.queueLostDiscard))
                   } : undefined}
                   onEdit={beginQueuedEdit}

@@ -52,6 +52,19 @@ export function preparedSubmissionKey(
   ])
 }
 
+export async function listPreparedImageDrafts(target: string, scopeKey: string) {
+  return Object.entries(await readJournal()).flatMap(([key, entry]) => {
+    const [scope, session, text, , displayKind, fromQueue, submissionId] = JSON.parse(key)
+
+    // Restoring an ordinary draft must recreate its exact retry key. Queue and
+    // slash submissions have additional intent fields and own their recovery.
+    return scope === scopeKey && session === target && !displayKind && !fromQueue && !submissionId &&
+      !entry.legacyAttempted && entry.attachments.some(attachment => attachment.kind === 'image')
+      ? [{ key, text: String(text), attachments: entry.attachments }]
+      : []
+  })
+}
+
 export async function readPreparedSubmission(key: string): Promise<PreparedSubmission | undefined> {
   return (await readJournal())[key]
 }

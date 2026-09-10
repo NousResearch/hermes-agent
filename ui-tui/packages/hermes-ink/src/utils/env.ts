@@ -52,10 +52,18 @@ export const env = {
 // is unreliable) are not on this list. Users on those terminals keep the
 // existing behaviour (native safety net fires alongside OSC 52).
 //
+// xterm.js hosts (VS Code, Cursor) are deliberately excluded: their OSC 52
+// handler decoded the base64 payload one byte per code unit, so every UTF-8
+// continuation byte reached the clipboard as its own Latin-1 character — an
+// em dash (E2 80 94) pastes as "â€”". Fixed upstream in xterm.js #6002, but
+// these hosts pin the addon, so a given build stays broken for its lifetime.
+// Suppressing the native tool there would make the corruption unrecoverable,
+// since the mangled OSC 52 write would be the only path to the clipboard.
+//
 // Lives here in utils/env.ts (rather than ink/terminal.ts) so that
 // ink/termio/osc.ts can import it without creating a circular dependency:
 // ink/terminal.ts already imports `link` from ink/termio/osc.ts.
-const OSC52_CAPABLE_TERMINALS = ['ghostty', 'kitty', 'WezTerm', 'windows-terminal', 'vscode']
+const OSC52_CAPABLE_TERMINALS = ['ghostty', 'kitty', 'WezTerm', 'windows-terminal']
 
 /** True if this terminal is known to correctly handle OSC 52 clipboard
  *  writes, so setClipboard() can skip the native-tool safety net.

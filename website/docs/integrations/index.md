@@ -123,4 +123,5 @@ Each platform's setup page walks through what to do once you're there.
 
 ## Training & Evaluation
 
+- **[RL Training](/user-guide/features/rl-training)** — Generate trajectory data from agent sessions for reinforcement learning and model fine-tuning. Supports Atropos environments with customizable reward functions.
 - **[Batch Processing](/user-guide/features/batch-processing)** — Run the agent across hundreds of prompts in parallel, generating structured ShareGPT-format trajectory data for training data generation or evaluation.

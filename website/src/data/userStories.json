@@ -3584,5 +3584,16 @@
     "headline": "Recursively built a Supabase-backed CRM dashboard where each build reuses prior components",
     "quote": "Used the Hermes Desktop App to recursively generate a CRM dashboard where each build reuses components from prior generations; it can also build full videos using official HyperFrame skills — HTML-native, full control over scenes, animations, and rendering.",
     "size": "sm"
+  },
+  {
+    "id": "blog-marc-bara-obsidian-control-plane",
+    "source": "blog",
+    "author": "Marc Bara (Medium)",
+    "url": "https://medium.com/@marc.bara.iniesta/obsidian-as-a-durable-control-plane-for-sequential-hermes-jobs-6a60bf8a593c",
+    "date": "2026-09-02",
+    "category": "dev-workflow",
+    "headline": "Independent Hermes cron jobs coordinate through an Obsidian control note",
+    "quote": "Obsidian works as the control plane here: the one artifact every job has to read from and write to, and the one place I have to look to know what happened.",
+    "size": "md"
   }
 ]

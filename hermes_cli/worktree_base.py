@@ -50,7 +50,15 @@ def resolve_worktree_base(
         except Exception:
             return False
 
-    def _fetch_head_age() -> float | None:
+    def _fetch_head_age_for_branch(branch: str) -> float | None:
+        """Age of the most recent fetch that actually refreshed *branch*, or None.
+
+        ``FETCH_HEAD`` is repo-wide: a plain ``git fetch <remote> <branch>`` overwrites it with
+        only the ref(s) named in THAT invocation, so its mtime alone is a false-fresh signal
+        whenever unrelated fetch activity (a different branch, a different remote) touched it
+        more recently than we last fetched the branch we actually care about. Require the
+        content to mention this branch, not just a recent mtime.
+        """
         try:
             result = _git(["rev-parse", "--git-path", "FETCH_HEAD"])
             if result.returncode != 0:
@@ -60,12 +68,14 @@ def resolve_worktree_base(
                 fetch_head = Path(repo_root) / fetch_head
             if not fetch_head.exists():
                 return None
+            if f"'{branch}'" not in fetch_head.read_text(encoding="utf-8", errors="replace"):
+                return None
             return max(0.0, time.time() - fetch_head.stat().st_mtime)
         except Exception:
             return None
 
     def _refresh(remote: str, branch: str, ref: str) -> tuple[str, str]:
-        age = _fetch_head_age()
+        age = _fetch_head_age_for_branch(branch)
         if age is not None and age < freshness_window and _ref_exists(ref):
             return ref, f"{ref} (fetched {int(age)}s ago)"
         try:

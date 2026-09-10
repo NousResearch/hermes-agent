@@ -1595,6 +1595,16 @@ def _open_cron_session_db(job: dict):
     # no timeout of its own against a wedged sqlite3.connect (e.g. a stale flock left by a crashed sibling
     # process). An unbounded hang here would wedge the job's worker thread, so the init is bounded and a
     # timeout proceeds without a session store instead of blocking the run forever.
+    from gateway.session_cron import current_execution
+    owner = current_execution()
+    if owner is not None:
+        from hermes_state_registry import acquire
+        db = acquire(Path(owner[0].db.db_path))
+        if db is not owner[0].db:
+            from hermes_state_registry import release_or_close
+            release_or_close(db)
+            raise RuntimeError('cron requires the canonical owner store')
+        return db
     from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
     if is_worker_process():
         # Do not turn an unsupported worker assignment into the legacy None
@@ -2232,6 +2242,14 @@ def run_job(
     ``extra_prompt``: optional per-run context from ``cronjob(action='run', prompt=...)`` (#57331). Appended
     to the stored prompt for this fire only — never persisted to the job definition.
     """
+    from gateway.session_cron import current_execution
+    owner_execution = current_execution()
+    if owner_execution is not None and owner_execution[2:] != (job['id'], execution_id):
+        owner_execution = None
+    if not job.get("no_agent") and owner_execution is None:
+        from cron.scheduler_authority import run_canonical_job
+        return run_canonical_job(job, extra_prompt=extra_prompt, cancel_event=cancel_event,
+                                 execution_id=execution_id)
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
@@ -2240,7 +2258,8 @@ def run_job(
         return early
     from run_agent import AIAgent
 
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _cron_session_id = (owner_execution[1] if owner_execution is not None else
+                        f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}")
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
@@ -2919,6 +2938,12 @@ def _run_one_job_body(
         return _finish_completed_run(d, fire_owner, execution_id)
 
     except BaseException as e:  # noqa: BLE001 — deliberate: see below
+        from cron.scheduler_authority import CronExecutionUnknown
+        if isinstance(e, CronExecutionUnknown):
+            from cron.jobs import pause_job
+            pause_job(job["id"], reason=str(e))
+            logger.error("Cron %s paused with unverified admission: %s", job["id"], e)
+            return False
         # BaseException, not Exception: CancelledError/KeyboardInterrupt/SystemExit propagate here.
         # Without mark_job_run(False) a finite one-shot is wedged: claim_dispatch consumed
         # repeat.completed but last_run_at is never written. Record first, then re-raise

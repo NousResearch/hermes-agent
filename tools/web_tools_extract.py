@@ -13,7 +13,9 @@ from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request, sensitive_query_param_name
-from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
+from tools.web_tools_rescue import (
+    _backstop_eligible, _backstop_extract, _policy_blocked_result, _rescue_eligible, _rescue_extract,
+)
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -143,7 +145,9 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
 
     Rescue fires on a raised exception or when the WHOLE batch failed (backend outage, not per-page
-    problems). Rescued batches are never cached.
+    problems). Rescued batches are never cached. The mirror case — the batch rode the keyless ring
+    and every vendor throttled — gets a one-shot keyed backstop instead, and IS cacheable because
+    the answer came from the configured backend's own key (it falls through to the loop below).
     """
     import inspect
     from tools.web_result_cache import extract_cache_put
@@ -157,8 +161,15 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
-    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+    if results and all(r.get("error") for r in results):
+        if _rescue_eligible(provider):
+            return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+        # Policy blocks are intentional refusals and are never backstopped.
+        from plugins.web.keyless_mcp import extract_ring_exhausted
+        if not any(_policy_blocked_result(r) for r in results) and _backstop_eligible(
+            provider, "", exhausted=extract_ring_exhausted(results)
+        ):
+            results = await asyncio.to_thread(_backstop_extract, provider, fetch_urls, results)
 
     # Cache each successful fetch's full clean text (best-effort; oversized skipped).
     for url, fetched in zip(fetch_urls, results):

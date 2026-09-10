@@ -2,12 +2,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { $notifications, clearNotifications } from '@/store/notifications'
 
-import { CopyButton } from './copy-button'
+import { CopyButton, copyTextWithFeedback } from './copy-button'
 
 describe('CopyButton i18n', () => {
   afterEach(() => {
     cleanup()
+    clearNotifications()
     vi.restoreAllMocks()
   })
 
@@ -32,5 +34,26 @@ describe('CopyButton i18n', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('hello'))
     await waitFor(() => expect(screen.getByRole('button', { name: '已复制' })).toBeTruthy())
     expect(screen.getByRole('button', { name: '已复制' }).textContent).toContain('已复制')
+  })
+
+  it('posts a success notification after a clipboard write resolves', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText }
+    })
+
+    await copyTextWithFeedback('hello', {
+      haptic: false,
+      successMessage: 'Copied session ID',
+      successTitle: 'Copy ID'
+    })
+
+    expect(writeText).toHaveBeenCalledWith('hello')
+    expect($notifications.get()[0]).toMatchObject({
+      kind: 'success',
+      message: 'Copied session ID',
+      title: 'Copy ID'
+    })
   })
 })

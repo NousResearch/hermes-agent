@@ -35,9 +35,12 @@ jobs:
       - name: Locked native JavaScript environment
         timeout-minutes: 10
         run: npm ci
+      - name: Build real Desktop package entry and renderer
+        timeout-minutes: 8
+        run: npm run build --workspace apps/desktop
       - name: Run actual Electron main and ordinary daemons
-        timeout-minutes: 6
-        run: uv run --no-sync python evals/desktop_gateway_ticket_native/run.py --output native-ticket-results
+        timeout-minutes: 8
+        run: uv run --no-sync python evals/desktop_gateway_ticket_native/run.py --output native-ticket-results --full-app
       - name: Real Windows cross-token SID boundary
         if: always() && runner.os == 'Windows'
         timeout-minutes: 5

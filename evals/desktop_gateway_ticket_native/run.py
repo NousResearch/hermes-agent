@@ -62,6 +62,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--python', default=sys.executable)
     parser.add_argument('--electron', help='Native Electron binary, not electron/index.js')
+    parser.add_argument('--full-app', action='store_true')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     # Keep the venv launcher path; resolving symlinks would discard the venv.
@@ -114,7 +115,8 @@ def main():
         input_file.write_text(json.dumps({
             'repo': str(REPO), 'python': python, 'endpoint': endpoints[0],
             'sibling': endpoints[1], 'userData': str(base / 'user-data'),
-            'receipt': str(output / 'receipt.json')}), encoding='utf-8')
+            'receipt': str(output / 'receipt.json'),
+            'fullReceipt': str(output / 'full-app.json')}), encoding='utf-8')
         electron_log = (output / 'electron.log').open('w', encoding='utf-8')
         logs.append(electron_log)
         # Linux's headless Ozone backend is a real native Electron runtime.
@@ -127,6 +129,17 @@ def main():
         receipt = json.loads((output / 'receipt.json').read_text(encoding='utf-8'))
         if status or not receipt.get('passed'):
             raise RuntimeError(f'Electron probe failed: exit={status}')
+        if args.full_app:
+            full_log = (output / 'full-app.log').open('w', encoding='utf-8')
+            logs.append(full_log)
+            full = subprocess.Popen([node, str(Path(__file__).with_name('full-app.mjs'))],
+                                    cwd=REPO, env={**env, 'NATIVE_TICKET_INPUT': str(input_file)},
+                                    stdin=subprocess.DEVNULL, stdout=full_log, stderr=subprocess.STDOUT)
+            processes.append(full)
+            full_status = full.wait(timeout=180)
+            receipt['fullApp'] = json.loads((output / 'full-app.json').read_text(encoding='utf-8'))
+            if full_status or not receipt['fullApp'].get('passed'):
+                raise RuntimeError(f'Full Electron app failed: exit={full_status}')
     except Exception as error:
         receipt['passed'] = False
         receipt['harnessError'] = str(error)

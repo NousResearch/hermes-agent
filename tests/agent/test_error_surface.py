@@ -177,6 +177,16 @@ def test_exception_non_api_is_gateway_layer():
     assert surface["retryable"] is True
 
 
+@pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit])
+def test_control_flow_exceptions_are_not_retryable(exc_type):
+    surface = build_error_surface_from_exception(exc_type())
+    assert surface == {
+        "layer": LAYER_GATEWAY,
+        "code": exc_type.__name__,
+        "retryable": False,
+    }
+
+
 def test_exception_disk_full_is_disk_layer():
     surface = build_error_surface_from_exception(OSError(28, "No space left on device"))
     assert surface["layer"] == LAYER_DISK

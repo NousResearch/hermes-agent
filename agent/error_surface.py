@@ -169,7 +169,9 @@ def build_error_surface_from_exception(exc: BaseException, provider: str = "", m
         if _disk_full(exc):
             return _surface(LAYER_DISK, "disk_full", False, provider, model)
         api_like = (type(exc).__module__ or "").split(".")[0] in _API_EXC_MODULE_PREFIXES or hasattr(exc, "status_code")
-        if not api_like or not isinstance(exc, Exception):
+        if not isinstance(exc, Exception):
+            return _surface(LAYER_GATEWAY, type(exc).__name__, False, provider, model)
+        if not api_like:
             return _surface(LAYER_GATEWAY, type(exc).__name__, True, provider, model)
 
         from agent.error_classifier import classify_api_error

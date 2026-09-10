@@ -61,8 +61,9 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 @method("bot_relay.deliver")
 def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
     """Deliver a relayed DM (``profile``, attribution-prefixed ``message``) into a Bot Chat ON THIS
-    GATEWAY via the one-turn ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use →
-    ``{reply}``. Blocking by design (Desktop relay worker; the RPC pool keeps it off the reader)."""
+    GATEWAY → ``{reply}``. Prefers the gateway HTTP API (no subprocess; see #95741) and falls back
+    to the one-turn ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use. Blocking by
+    design (Desktop relay worker; the RPC pool keeps it off the reader)."""
     import tempfile
     profile = str(params.get("profile") or "").strip()
     message = str(params.get("message") or "").strip()
@@ -70,7 +71,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         return _err(rid, 4090, "profile and message required")
     try:
         from tools.bot_mode_dm import MESSAGE_MAX_CHARS
-        from tools.bot_relay import acquire_turn_lock
+        from tools.bot_relay import acquire_turn_lock, deliver_via_gateway_api
         if len(message) > MESSAGE_MAX_CHARS + 200:  # + attribution headroom
             return _err(rid, 4091, "message too long")
         root = _root()
@@ -113,10 +114,12 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             # Per-profile turn lock serializes with any other delivery turn into this profile and
             # covers only the turn window. Worst-case hold is lock wait (bot_mode.turn_wait_seconds,
             # default 120s) + the 600s turn timeout, doubled on one retry — callers tolerate ~1320s.
-            # Worst-case handler hold is lock wait (bot_mode.turn_wait_seconds, default 120s) + the 600s
-            # turn timeout below — doubled when the retry policy grants one bounded re-run — so clients
-            # calling bot_relay.deliver must tolerate ~1320s before assuming failure. See #93091.
+            # See #93091.
             with acquire_turn_lock(root, resolved):
+                # #95741: prefer gateway API (httpx, no subprocess); None → subprocess fallback.
+                reply = deliver_via_gateway_api(resolved, message, timeout=600)
+                if reply is not None:
+                    return _ok(rid, {"reply": reply})
                 proc = _run(resolved, tmp)
                 if proc.returncode != 0:
                     # Retry policy: transient classes re-run the SAME session once; context_overflow

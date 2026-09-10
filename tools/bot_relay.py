@@ -356,6 +356,144 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     return f"{shlex.quote(sys.executable or 'python3')} -c {shlex.quote(code)}"
 
 
+# ── gateway API delivery (replaces CLI spawn — #95741) ───────────────────────
+# ponytail: reuses httpx already in dependencies; one helper, no new deps.
+# HTTP to local gateway's api_server (POST /api/sessions/{id}/chat) avoids
+# spawning a full `hermes -p <profile> chat` subprocess per relayed DM.
+
+
+def _gateway_api_base_url() -> str | None:
+    """Resolve local gateway api_server base URL, or None if not configured."""
+    import os as _os
+
+    port_raw = (_os.getenv("API_SERVER_PORT") or "").strip()
+    try:
+        port = int(port_raw) if port_raw else 0
+    except ValueError:
+        port = 0
+    host = ""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        host = str(
+            cfg_get(
+                load_config_readonly(),
+                "platforms",
+                "api_server",
+                "extra",
+                "host",
+                default="",
+            )
+            or ""
+        ).strip()
+    except Exception:
+        host = ""
+    if not host:
+        host = (_os.getenv("API_SERVER_HOST") or "").strip()
+    if not host or host in ("0.0.0.0", "::", "*"):
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if port:
+        return f"http://{host}:{port}"
+    # No explicit port: only return a URL if api_server is actually
+    # configured (otherwise we'd probe a default port that may not be
+    # listening and waste the 5s connect timeout on every relay).
+    try:
+        from hermes_cli.config import load_config_readonly as _lc
+
+        cfg = _lc() or {}
+        plats = cfg.get("platforms") if isinstance(cfg, dict) else None
+        if isinstance(plats, dict) and "api_server" in plats:
+            return f"http://{host}:8642"
+    except Exception:
+        pass
+    return None
+
+
+def deliver_via_gateway_api(
+    profile: str, message: str, *, timeout: float = 600
+) -> str | None:
+    """Deliver ``message`` to ``profile``'s Bot Chat via gateway HTTP API.
+
+    Returns the reply text on success, or ``None`` when the gateway API is
+    unavailable / not configured (caller falls back to CLI spawn).
+
+    Uses ``httpx`` (already in dependencies) — no new deps. One helper;
+    all relay delivery paths benefit from the single replacement.
+    """
+    base = _gateway_api_base_url()
+    if not base:
+        return None
+    try:
+        from agent.secret_scope import get_secret
+
+        key = (get_secret("API_SERVER_KEY", "") or "").strip()
+    except Exception:
+        import os as _os
+
+        key = (_os.getenv("API_SERVER_KEY") or "").strip()
+    # Quick liveness probe — if the gateway isn't listening, fall back fast
+    # instead of blocking the full turn timeout on a dead socket.
+    try:
+        import httpx
+    except ImportError:
+        return None
+    try:
+        # Resolve Bot Chat session id, then POST the turn.
+        import urllib.parse as _up
+
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers["Content-Type"] = "application/json"
+        # Find existing Bot Chat (include_hidden — Bot Chats are hidden).
+        q = _up.urlencode({"limit": 200, "title": "Bot Chat", "include_hidden": 1})
+        # Profile multiplex: /p/<profile>/api/sessions when not default.
+        prefix = f"/p/{_up.quote(profile, safe='')}" if profile != "default" else ""
+        listing_url = f"{base}{prefix}/api/sessions?{q}"
+        with httpx.Client(timeout=5.0) as _client:
+            resp = _client.get(listing_url, headers=headers)
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+            sid = None
+            for s in data.get("data") or []:
+                if isinstance(s, dict) and (s.get("title") or "").strip() == "Bot Chat":
+                    sid = str(s.get("id") or "")
+                    break
+            if not sid:
+                # Create it
+                create_url = f"{base}{prefix}/api/sessions"
+                cr = _client.post(
+                    create_url,
+                    headers=headers,
+                    json={"title": "Bot Chat", "source": "bot_relay_gateway_api"},
+                )
+                if cr.status_code >= 400:
+                    return None
+                cj = cr.json()
+                sess = cj.get("session") if isinstance(cj.get("session"), dict) else cj
+                sid = str(sess.get("id") or sess.get("session_id") or "")
+                if not sid:
+                    return None
+            chat_url = f"{base}{prefix}/api/sessions/{_up.quote(sid, safe='')}/chat"
+            cr = _client.post(
+                chat_url, headers=headers, json={"message": message}, timeout=timeout
+            )
+            if cr.status_code >= 400:
+                return None
+            cj = cr.json()
+            msg = cj.get("message") if isinstance(cj.get("message"), dict) else None
+            if isinstance(msg, dict):
+                return str(msg.get("content") or "").strip() or None
+            return str(cj.get("reply") or cj.get("content") or "").strip() or None
+    except Exception:
+        logger.debug("gateway API deliver failed for profile=%s", profile, exc_info=True)
+        return None
+
+
+# ── delivery command (used by the deliver RPC on the TARGET gateway) ────────
+
+
 def _hermes_cli() -> str:
     """hermes CLI beside this interpreter, then ``shutil.which``, then the bare name
     (service contexts lack PATH, so a bare "hermes" died with ENOENT).

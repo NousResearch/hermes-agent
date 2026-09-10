@@ -13,8 +13,10 @@ relay adds to message_agent:
 """
 
 import json
+import os
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -29,6 +31,104 @@ from tools.bot_mode_dm import (
 @pytest.fixture()
 def root(tmp_path):
     return tmp_path
+
+
+@pytest.mark.parametrize("target", ["default", "researcher"])
+def test_local_delivery_uses_target_profile_cwd(tmp_path, monkeypatch, target):
+    """The recipient owns project context, even when the gateway serves another profile."""
+    home = tmp_path / ".hermes"
+    sender = home / "profiles" / "sender"
+    recipient = home if target == "default" else home / "profiles" / target
+    sender.mkdir(parents=True)
+    recipient.mkdir(parents=True, exist_ok=True)
+    sender_repo = tmp_path / "sender-repo"
+    sender_repo.mkdir()
+    target_repo = tmp_path / "recipient repo"
+    target_repo.mkdir()
+    (sender / "config.yaml").write_text(
+        json.dumps({"terminal": {"cwd": str(sender_repo)}}), encoding="utf-8"
+    )
+    (recipient / "config.yaml").write_text(
+        json.dumps({"terminal": {"cwd": str(target_repo)}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(sender))
+    monkeypatch.setenv("TERMINAL_CWD", str(sender_repo))
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.chdir(sender_repo)
+
+    argv = bot_relay.local_delivery_command(target, "payload.txt")
+
+    assert argv[argv.index("--in") + 1] == str(target_repo)
+    assert argv[argv.index("-p") + 1] == target
+    assert argv[argv.index("-c") + 1] == "Bot Chat"
+    assert "--create-if-missing" in argv and "-Q" in argv
+    assert argv[argv.index("--query-file") + 1] == "payload.txt"
+
+    # Run the real CLI resume chain against the recipient's existing canonical
+    # row: --in must override its old directory without creating another chat.
+    from types import SimpleNamespace
+    from hermes_cli.main import _resolve_chat_session_args
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(recipient))
+    db = SessionDB()
+    try:
+        db.create_session("recipient-chat", source="cli", cwd=str(sender_repo))
+        db.set_session_title("recipient-chat", "Bot Chat")
+        args = SimpleNamespace(
+            in_dir=argv[argv.index("--in") + 1], continue_last="Bot Chat",
+            create_if_missing=True, resume=None,
+        )
+        _resolve_chat_session_args(args, use_tui=False)
+        assert Path.cwd() == target_repo
+        assert args.resume == "recipient-chat"
+        assert db.resolve_session_by_title("Bot Chat") == args.resume
+        # The CLI config bridge and tool/context resolver must agree with
+        # --in even when the parent process is a messaging gateway.
+        import cli as cli_mod
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        monkeypatch.setattr(cli_mod, "_hermes_home", recipient)
+        monkeypatch.setenv("TERMINAL_CWD", str(sender_repo))
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        with patch.dict(os.environ, bot_relay.bot_chat_subprocess_env(), clear=True):
+            cli_mod.load_cli_config()
+            assert resolve_agent_cwd() == target_repo
+        assert os.environ["_HERMES_GATEWAY"] == "1"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "config",
+    [None, "terminal: [", "[]", "terminal: null", "terminal: nope",
+     "terminal: {cwd: 42}", "terminal: {cwd: ''}", "terminal: {cwd: .}",
+     "terminal: {cwd: relative/repo}", "terminal: {cwd: auto}",
+     "missing-directory", "file-path", "nul-path"],
+)
+def test_local_delivery_invalid_target_cwd_never_inherits_sender(tmp_path, monkeypatch, config):
+    home = tmp_path / ".hermes"
+    recipient = home / "profiles" / "researcher"
+    recipient.mkdir(parents=True)
+    config_path = recipient / "config.yaml"
+    if config == "missing-directory":
+        config = json.dumps({"terminal": {"cwd": str(tmp_path / "missing")}})
+    elif config == "file-path":
+        config = json.dumps({"terminal": {"cwd": str(config_path)}})
+    elif config == "nul-path":
+        config = json.dumps({"terminal": {"cwd": str(tmp_path) + "\0bad"}})
+    if config is not None:
+        config_path.write_text(config, encoding="utf-8")
+    (home / "config.yaml").write_text(
+        json.dumps({"terminal": {"cwd": str(tmp_path)}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    argv = bot_relay.local_delivery_command("researcher", "payload.txt")
+
+    assert argv[argv.index("--in") + 1] == "~"
 
 
 def _rows():

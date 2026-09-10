@@ -7,6 +7,8 @@ and the delivery-targets listing used by UI pickers.
 """
 
 import subprocess
+import json
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -118,9 +120,22 @@ def _completed(returncode=0, stderr=""):
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
 
 
-def test_deliver_runs_canonical_bot_chat_lane():
+@pytest.mark.parametrize("target", ["", "default", "research"])
+def test_deliver_runs_canonical_bot_chat_lane(tmp_path, monkeypatch, target):
     """The subprocess must use the Bot Mode agent-to-agent chat lane:
-    chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>."""
+    chat --in <recipient cwd> -c "Bot Chat" --create-if-missing -Q --query-file <tmp>."""
+    root = tmp_path / ".hermes"
+    sender = root / "profiles" / "sender"
+    home = sender if not target else root if target == "default" else root / "profiles" / target
+    sender.mkdir(parents=True)
+    home.mkdir(parents=True, exist_ok=True)
+    cwd = tmp_path / "recipient project"
+    cwd.mkdir()
+    (home / "config.yaml").write_text(json.dumps({"terminal": {"cwd": str(cwd)}}), encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(sender))
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
     calls = {}
 
     def fake_run(argv, **kwargs):
@@ -130,12 +145,17 @@ def test_deliver_runs_canonical_bot_chat_lane():
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
          mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
-        err = _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the output", "")
+        err = _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the output", target)
 
     assert err is None
     argv = calls["argv"]
     assert argv[0] == "/usr/bin/hermes"
-    assert "-p" not in argv  # own profile: subprocess inherits HERMES_HOME
+    if target:
+        assert argv[argv.index("-p") + 1] == target
+    else:
+        assert "-p" not in argv  # own profile: subprocess inherits HERMES_HOME
+    assert argv[argv.index("--in") + 1] == str(cwd)
+    assert "_HERMES_GATEWAY" not in calls["kwargs"]["env"]
     assert "chat" in argv
     assert "Bot Chat" in argv
     assert "--create-if-missing" in argv

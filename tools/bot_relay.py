@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from tools.bot_mode_probe import _default_home, _hermes_root
+from tools.bot_mode_probe import BOT_CHAT_TITLE, _default_home, _hermes_root, _read_yaml_dict
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +66,38 @@ class EnvelopeRefusedError(RuntimeError):
 # ``message_agent`` target grammar in ``tools/bot_mode_dm.py``).
 _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
-# One turn in a profile's canonical Bot Chat: ``hermes -p <profile> *BOT_CHAT_TURN_ARGS``.
-# ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
-BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
+
+def bot_chat_turn_args(profile: str, *, root: Path | None = None) -> tuple[str, ...]:
+    """Pin a DM's project context to the recipient's configured directory.
+
+    Read the target file directly: the sender's config loader and terminal env
+    belong to another profile. Relative paths would also inherit sender context,
+    so missing/invalid directories retain the existing HOME fallback.
+    """
+    root = root if root is not None else _hermes_root(Path(_default_home()))
+    home = root if profile == "default" else root / "profiles" / profile
+    terminal = (_read_yaml_dict(home / "config.yaml") or {}).get("terminal")
+    configured = terminal.get("cwd") if isinstance(terminal, dict) else None
+    cwd = "~"
+    if isinstance(configured, str) and configured.strip():
+        try:
+            path = Path(configured).expanduser()
+            if path.is_absolute() and path.is_dir():
+                cwd = str(path)
+        except (OSError, RuntimeError, ValueError):
+            logger.debug("Bot Chat cwd unavailable for profile %s", profile, exc_info=True)
+    return ("chat", "--in", cwd, "-c", BOT_CHAT_TITLE, "--create-if-missing", "-Q")
+
+
+def bot_chat_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Let the child CLI bridge its own cwd instead of preserving gateway env.
+
+    The gateway marker makes the CLI config loader preserve TERMINAL_CWD;
+    inherited by a delivery child, it would keep the sender's project context.
+    """
+    child_env = dict(os.environ if env is None else env)
+    child_env.pop("_HERMES_GATEWAY", None)
+    return child_env
 
 
 def relay_root(root: Path | str) -> Path:
@@ -373,7 +402,7 @@ def _hermes_cli() -> str:
 
 def local_delivery_command(profile: str, query_file: str) -> list[str]:
     """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
-    return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
+    return [_hermes_cli(), "-p", profile, *bot_chat_turn_args(profile), "--query-file", query_file]
 
 
 # Two deliveries into the SAME profile must never run Bot Chat turns concurrently.

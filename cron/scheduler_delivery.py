@@ -654,6 +654,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     import uuid
     from hermes_constants import get_hermes_home
     from hermes_cli.profiles import get_profile_dir
+    from tools.bot_mode_probe import _hermes_root, _profile_name
+    from tools.bot_relay import bot_chat_subprocess_env, bot_chat_turn_args
     from tools.bot_live_delivery import (
         deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
     )
@@ -721,7 +723,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         return msg
 
     from agent.delegation_context import delegated_child_subprocess_env
-    env = delegated_child_subprocess_env(os.environ)
+    env = bot_chat_subprocess_env(delegated_child_subprocess_env(os.environ))
     if profile:
         argv += ["-p", profile]
         # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.
@@ -739,8 +741,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             query_file = fh.name
 
         argv += [
-            "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
-            "-Q", "--query-file", query_file,
+            *bot_chat_turn_args(_profile_name(home), root=_hermes_root(home)),
+            "--query-file", query_file,
         ]
         result = subprocess.run(
             argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,

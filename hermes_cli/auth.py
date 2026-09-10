@@ -31,10 +31,11 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tup
 from urllib.parse import urlparse
 
 from hermes_cli.config import (
-    get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
+    atomic_config_write, get_hermes_home, get_config_path, read_raw_config,
+    require_readable_config_before_write)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
+from utils import atomic_replace, env_float, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -2153,11 +2154,6 @@ def _update_config_for_provider(
     finishes and send an OpenRouter-style ``vendor/model`` name to a direct API. *clear_default*
     removes ``model.default`` in that same write, for a caller that has no model to offer and must
     not leave the previous provider's model paired with the new host."""
-    with _auth_store_lock():  # so auto-resolution picks this provider
-        auth_store = _load_auth_store()
-        auth_store["active_provider"] = provider_id
-        _save_auth_store(auth_store)
-
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     require_readable_config_before_write(config_path)
@@ -2187,7 +2183,14 @@ def _update_config_for_provider(
     elif clear_default:
         model_cfg.pop("default", None)
     config["model"] = model_cfg
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    # config.yaml first: it is the write the operator settings lock may refuse, and a refusal must
+    # not leave auth.json already pointing at a provider the config does not select.
+    atomic_config_write(config_path, config, sort_keys=False)
+
+    with _auth_store_lock():  # so auto-resolution picks this provider
+        auth_store = _load_auth_store()
+        auth_store["active_provider"] = provider_id
+        _save_auth_store(auth_store)
     return config_path
 
 
@@ -2217,12 +2220,16 @@ def _logout_default_provider_from_config() -> Optional[str]:
     return provider if flow and flow.logout_from_config else None
 
 
-def _reset_config_provider() -> Path:
-    """Reset config.yaml provider back to auto after logout."""
+def _reset_config_provider(*, dry_run: bool = False) -> Path:
+    """Reset config.yaml provider back to auto after logout.
+
+    ``dry_run=True`` writes nothing and only asks the operator settings lock whether the reset
+    would be refused — ``logout_command`` asks before it clears auth state, so a refusal cannot
+    leave a logged-out provider still selected in config.yaml."""
     config_path = get_config_path()
     if not config_path.exists():
         return config_path
-    require_readable_config_before_write(config_path)
+    before = require_readable_config_before_write(config_path)
     config = read_raw_config()
     if not config:
         return config_path
@@ -2231,7 +2238,12 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    if dry_run:
+        from hermes_cli.settings_lock import check_config_write
+
+        check_config_write(config_path, before, config)
+        return config_path
+    atomic_config_write(config_path, config, sort_keys=False)
     return config_path
 
 
@@ -2274,6 +2286,8 @@ def logout_command(args) -> None:
             return
     should_reset_config = _should_reset_config_provider_on_logout(target)
     provider_name = get_auth_provider_display_name(target)
+    if should_reset_config:
+        _reset_config_provider(dry_run=True)  # settings lock: refuse before auth state is cleared
     if not (clear_provider_auth(target) or should_reset_config):
         print(f"No auth state found for {provider_name}.")
         return

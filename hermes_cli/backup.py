@@ -1458,9 +1458,10 @@ def restore_config_model_settings_if_rewritten(
     if not restored_keys:
         return None
     try:
-        from utils import atomic_yaml_write
-        atomic_yaml_write(live_path, live)
-    except (OSError, PermissionError) as exc:
+        from hermes_cli.config import atomic_config_write
+        from hermes_cli.settings_lock import SettingsLockError
+        atomic_config_write(live_path, live)
+    except (OSError, PermissionError, SettingsLockError) as exc:
         logger.error("config.yaml model settings were rewritten during update but auto-restore failed: %s", exc)
         return None
     logger.warning(

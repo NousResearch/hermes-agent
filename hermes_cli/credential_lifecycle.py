@@ -78,18 +78,25 @@ def _prune_env_pool_entries(env_var: str) -> List[str]:
     return pruned
 
 
-def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[str]:
+def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None, *, dry_run: bool = False) -> List[str]:
     """Reconcile config.yaml api_key mirrors holding ``old_value``; return dotted paths touched.
 
     Value-matched on purpose: only an entry holding the SAME credential that just changed in
     ``.env`` is touched. ``new_value=None`` removes the field. Operates on the RAW user config
     so defaults are never baked into the user's file.
+
+    ``dry_run=True`` writes nothing and only asks the operator settings lock whether the write
+    WOULD be refused — for callers that must find out before an earlier side effect (the ``.env``
+    rotation): a refused mirror after a rotated ``.env`` would leave the stale, higher-precedence
+    inline key shadowing the new one, which is the #62269 bug this scrub exists to prevent.
     """
     if not old_value:
         return []
-    from utils import atomic_yaml_write, fast_safe_load
+    import copy
 
-    from hermes_cli.config import get_config_path, require_readable_config_before_write
+    from utils import fast_safe_load
+
+    from hermes_cli.config import atomic_config_write, get_config_path
 
     config_path = get_config_path()
     if not config_path.exists():
@@ -101,6 +108,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
         return []
     if not isinstance(user_config, dict):
         return []
+    before = copy.deepcopy(user_config)
 
     touched: List[str] = []
 
@@ -138,8 +146,12 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
         _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
     if touched:
-        require_readable_config_before_write(config_path)
-        atomic_yaml_write(config_path, user_config, sort_keys=False)
+        if dry_run:
+            from hermes_cli.settings_lock import check_config_write
+
+            check_config_write(config_path, before, user_config)
+        else:
+            atomic_config_write(config_path, user_config, sort_keys=False)
     return touched
 
 
@@ -183,10 +195,14 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     from hermes_cli.config import load_env, save_env_value
 
     old_value = load_env().get(env_var)
+    rotates_mirrors = bool(value and old_value and old_value != value)
+    if rotates_mirrors:
+        # Settings lock: refuse BEFORE .env changes when a locked config.yaml mirror would change.
+        _scrub_config_yaml_mirrors(old_value, value, dry_run=True)
     save_env_value(env_var, value)
 
     config_updates: List[str] = []
-    if value and old_value and old_value != value:
+    if rotates_mirrors:
         config_updates = _scrub_config_yaml_mirrors(old_value, value)
 
     # A prior removal may have suppressed this env source; a fresh save is an explicit re-add.
@@ -206,6 +222,9 @@ def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
     from hermes_cli.config import load_env, remove_env_value
 
     old_value = load_env().get(env_var)
+    if old_value:
+        # Settings lock: refuse BEFORE .env changes when a locked config.yaml mirror would change.
+        _scrub_config_yaml_mirrors(old_value, None, dry_run=True)
     removed_from_env = remove_env_value(env_var)
     refs = purge_env_credential_references(env_var)
     config_scrubbed = _scrub_config_yaml_mirrors(old_value, None) if old_value else []

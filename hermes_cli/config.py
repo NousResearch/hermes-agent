@@ -1957,8 +1957,16 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
 
 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
-    """Fail-closed atomic write for ``config.yaml`` (``require_readable_config_before_write`` first)."""
-    require_readable_config_before_write(config_path)
+    """Fail-closed atomic write for ``config.yaml``: ``require_readable_config_before_write`` first,
+    then the operator settings lock against the document on disk (``hermes_cli.settings_lock``).
+
+    Every whole-document config.yaml write lands here or in the ruamel round-trip writers
+    ``utils.atomic_roundtrip_yaml_save`` / ``utils.atomic_roundtrip_yaml_update``, and all three run
+    the lock check — so a writer added later is covered by using any of them."""
+    before = require_readable_config_before_write(config_path)
+    from hermes_cli.settings_lock import check_config_write
+
+    check_config_write(config_path, before, data)
     atomic_yaml_write(config_path, data, **kwargs)
 
 
@@ -2302,14 +2310,6 @@ def save_config(
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 
-        # Operator settings lock. Enforced HERE rather than in each writer: every config write in
-        # the tree lands in this function, so `hermes config set`, the desktop's config.set RPC and
-        # the web Config page are all covered, and so is a writer added later. Compared against the
-        # on-disk raw config, so a save that leaves every locked path alone still goes through.
-        from hermes_cli.settings_lock import check_write
-
-        check_write(_raw_for_paths, config)
-
         current_normalized = _canonicalize_config(config)
         normalized = current_normalized
         if _raw_for_paths:
@@ -2322,7 +2322,9 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
+        # The operator settings lock is enforced inside atomic_config_write — the seam every
+        # whole-document config.yaml write passes through — not here.
+        atomic_config_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
@@ -3393,7 +3395,7 @@ def _exit_invalid(msg: str) -> None:
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    atomic_config_write(config_path, user_config, sort_keys=False)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:

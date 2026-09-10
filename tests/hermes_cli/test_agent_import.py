@@ -667,7 +667,7 @@ class TestExistingConfigPreserved:
         def boom(*_args, **_kwargs):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(agent_import, "atomic_yaml_write", boom)
+        monkeypatch.setattr("hermes_cli.config.atomic_yaml_write", boom)  # dump_yaml_file → atomic_config_write → here
         with pytest.raises(OSError):
             agent_import.dump_yaml_file(config_path, {"model": "replacement"})
 

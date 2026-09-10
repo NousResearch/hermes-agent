@@ -45,6 +45,16 @@ _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL",
 })
 
+# Channel ownership stamps a hosting layer injects into the process env (hermes_cli.managed_platforms).
+# The launch value is the authority: a user .env assigning one of these would otherwise win on the next
+# override=True load and switch the dashboard lock off, so it is re-asserted after every load. The portal
+# URL joins the host-owned record only while a declaration exists; without one it stays a user setting
+# (self-hosted dashboard registration writes it).
+_HOST_DECLARATION_KEY = "HERMES_MANAGED_PLATFORMS"
+_HOST_STAMP_KEYS: tuple[str, ...] = (_HOST_DECLARATION_KEY, "HERMES_MANAGED_PLATFORMS_LABEL")
+_HOST_LINK_KEY = "HERMES_DASHBOARD_PORTAL_URL"
+_HOST_STAMPS_AT_LAUNCH: dict[str, str | None] | None = None
+
 
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     """KEY names assigned in a dotenv file (including empty ``KEY=``). A fast line scanner (works in early
@@ -65,6 +75,31 @@ def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
         if key:
             keys.add(key)
     return keys
+
+
+def _snapshot_host_stamps() -> None:
+    """Capture the host stamps from the process env once, before the first user .env load."""
+    global _HOST_STAMPS_AT_LAUNCH
+    if _HOST_STAMPS_AT_LAUNCH is None:
+        _HOST_STAMPS_AT_LAUNCH = {key: os.environ.get(key) for key in (*_HOST_STAMP_KEYS, _HOST_LINK_KEY)}
+
+
+def _reassert_host_stamps(*paths: Path) -> None:
+    """Restore the launch value of every host stamp a loaded dotenv file assigned (absent at launch: removed)."""
+    if _HOST_STAMPS_AT_LAUNCH is None:
+        return
+    owned = list(_HOST_STAMP_KEYS)
+    if _HOST_STAMPS_AT_LAUNCH[_HOST_DECLARATION_KEY]:
+        owned.append(_HOST_LINK_KEY)
+    assigned = set().union(*(_env_keys_defined_in_dotenv(path) for path in paths))
+    for key in owned:
+        if key not in assigned:
+            continue
+        launch_value = _HOST_STAMPS_AT_LAUNCH[key]
+        if launch_value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = launch_value
 
 
 def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
@@ -317,6 +352,7 @@ def load_hermes_dotenv(
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    _snapshot_host_stamps()
 
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
     # into os.environ would expose its credentials to sibling turns and every spawned child. Unscoped
@@ -361,6 +397,7 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
+    _reassert_host_stamps(*loaded)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing

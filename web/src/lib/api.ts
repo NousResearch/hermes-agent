@@ -1559,6 +1559,13 @@ export interface MessagingPlatformEnvVar {
   advanced: boolean;
 }
 
+/** Set when a hosting layer owns this channel (HERMES_MANAGED_PLATFORMS). */
+export interface ManagedPlatformInfo {
+  kind: "native" | "relay";
+  label: string;
+  url: string | null;
+}
+
 export interface MessagingPlatform {
   id: string;
   name: string;
@@ -1582,12 +1589,15 @@ export interface MessagingPlatform {
     home_channel_set?: boolean;
   } | null;
   env_vars: MessagingPlatformEnvVar[];
+  /** Present only when the server has a host ownership declaration. */
+  managed?: ManagedPlatformInfo | null;
 }
 
 export interface MessagingPlatformsResponse {
   env_path: string;
   gateway_start_command: string;
   platforms: MessagingPlatform[];
+  managed_by?: { label: string; url: string | null };
 }
 
 export interface MessagingPlatformUpdate {

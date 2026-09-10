@@ -1584,9 +1584,11 @@ def _init_cron_mcp_tools(job_id: str) -> None:
 
 
 def _open_cron_session_db(job: dict):
-    """Open the SQLite session store under its own timeout (HERMES_CRON_TIMEOUT only watches
-    run_conversation). A wedged sqlite3.connect returns None (no session store) instead of
-    wedging the worker thread."""
+    """Bound store acquisition separately from the conversation watchdog.
+
+    Canonical runs borrow the owner's exact store and fail closed on acquisition
+    errors. Only the legacy non-owner helper path may return no session store.
+    """
     # Initialize the SQLite session store so cron job messages are persisted and discoverable via
     # session_search (same pattern as gateway/run.py) — only now, after every early-return path (wake-gate,
     # prompt validation, drift skip) has passed, so a gated run never opens state.db just to abandon the
@@ -1597,16 +1599,8 @@ def _open_cron_session_db(job: dict):
     # timeout proceeds without a session store instead of blocking the run forever.
     from gateway.session_cron import current_execution
     owner = current_execution()
-    if owner is not None:
-        from hermes_state_registry import acquire
-        db = acquire(Path(owner[0].db.db_path))
-        if db is not owner[0].db:
-            from hermes_state_registry import release_or_close
-            release_or_close(db)
-            raise RuntimeError('cron requires the canonical owner store')
-        return db
     from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
-    if is_worker_process():
+    if owner is None and is_worker_process():
         # Do not turn an unsupported worker assignment into the legacy None
         # fallback: that would run billed inference without durable persistence.
         raise WorkerPersistenceError('worker_cron_registration_required')
@@ -1614,13 +1608,23 @@ def _open_cron_session_db(job: dict):
     try:
         from hermes_state_registry import acquire
 
+        def acquire_store():
+            if owner is None:
+                return acquire()
+            db = acquire(Path(owner[0].db.db_path))
+            if db is not owner[0].db:
+                from hermes_state_registry import release_or_close
+                release_or_close(db)
+                raise RuntimeError('cron requires the canonical owner store')
+            return db
+
         if _session_db_timeout <= 0:
-            return acquire()
+            return acquire_store()
         _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Copy the context so a profile run resolves ITS OWN home/state.db on the worker thread
         # instead of the process-global default.
         _session_db_context = contextvars.copy_context()
-        _session_db_future = _session_db_pool.submit(_session_db_context.run, acquire)
+        _session_db_future = _session_db_pool.submit(_session_db_context.run, acquire_store)
         try:
             return _session_db_future.result(timeout=_session_db_timeout)
         except concurrent.futures.TimeoutError:
@@ -1635,11 +1639,15 @@ def _open_cron_session_db(job: dict):
             # Abandon a wedged connect() rather than blocking shutdown on it.
             _session_db_pool.shutdown(wait=False)
     except concurrent.futures.TimeoutError:
+        if owner is not None:
+            raise TimeoutError("Canonical cron session store acquisition timed out")
         logger.error(
             "Job '%s': SessionDB init did not return within %.0fs — proceeding "
             "without a session store for this run instead of blocking it forever",
             job.get("id", "?"), _session_db_timeout)
     except Exception as e:
+        if owner is not None:
+            raise
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
     return None
 

@@ -642,6 +642,9 @@
     const [taskEventTick, setTaskEventTick] = useState({});
 
     const cursorRef = useRef(0);
+    const boardRequestRef = useRef(0);
+    const boardScopeRef = useRef("");
+    boardScopeRef.current = JSON.stringify([board, tenantFilter, includeArchived]);
     const reloadTimerRef = useRef(null);
     const wsRef = useRef(null);
     const wsBackoffRef = useRef(1000);
@@ -664,20 +667,28 @@
 
     // --- fetch full board ---------------------------------------------------
     const loadBoard = useCallback(() => {
+      const requestId = ++boardRequestRef.current;
+      const requestScope = boardScopeRef.current;
       const qs = new URLSearchParams();
       if (tenantFilter) qs.set("tenant", tenantFilter);
       if (includeArchived) qs.set("include_archived", "true");
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
       return SDK.fetchJSON(withBoard(url, board))
         .then(function (data) {
+          if (requestId !== boardRequestRef.current || requestScope !== boardScopeRef.current) return;
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
           setError(null);
         })
         .catch(function (err) {
+          if (requestId !== boardRequestRef.current || requestScope !== boardScopeRef.current) return;
           setError(String(err && err.message ? err.message : err));
         })
-        .finally(function () { setLoading(false); });
+        .finally(function () {
+          if (requestId === boardRequestRef.current && requestScope === boardScopeRef.current) {
+            setLoading(false);
+          }
+        });
     }, [tenantFilter, includeArchived, board]);
 
     // --- load list of boards for the switcher ------------------------------
@@ -823,6 +834,7 @@
     //           — ignored when count >  1 (bulk endpoint uses selectedIds)
     //   summary — completion summary string, or null/undefined to skip
     const performMoveTask = useCallback(function (taskId, newStatus, count, summary) {
+      const moveScope = boardScopeRef.current;
       const patch = { status: newStatus };
       const finalPatch = summary
         ? Object.assign({}, patch, { result: summary, summary: summary })
@@ -835,7 +847,13 @@
           const columns = b.columns.map(function (col) {
             const kept = [];
             for (const tk of col.tasks) {
-              if (selectedIds.has(tk.id)) moved.push(Object.assign({}, tk, { status: newStatus }));
+              if (selectedIds.has(tk.id)) {
+                moved.push(Object.assign({}, tk, {
+                  status: newStatus,
+                  diagnostics: [],
+                  warnings: null,
+                }));
+              }
               else kept.push(tk);
             }
             return Object.assign({}, col, { tasks: kept });
@@ -850,6 +868,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(Object.assign({ ids: ids }, finalPatch)),
         }).then(function (res) {
+          if (moveScope !== boardScopeRef.current) return;
           const failed = (res.results || []).filter(function (r) { return !r.ok; });
           if (failed.length > 0) {
             setError(`Bulk move: ${failed.length} of ${res.results.length} failed`);
@@ -861,6 +880,7 @@
           setLastSelectedId(null);
           loadBoard();
         }).catch(function (err) {
+          if (moveScope !== boardScopeRef.current) return;
           setError(`Move failed: ${err.message || err}`);
           setFailedIds(new Set(selectedIds));
           loadBoard();
@@ -873,7 +893,14 @@
         let moved = null;
         const columns = b.columns.map(function (col) {
           const next = col.tasks.filter(function (tk) {
-            if (tk.id === taskId) { moved = Object.assign({}, tk, { status: newStatus }); return false; }
+            if (tk.id === taskId) {
+              moved = Object.assign({}, tk, {
+                status: newStatus,
+                diagnostics: [],
+                warnings: null,
+              });
+              return false;
+            }
             return true;
           });
           return Object.assign({}, col, { tasks: next });
@@ -888,7 +915,13 @@
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPatch),
+      }).then(function () {
+        // Diagnostics are derived from current backend state. Reload even if
+        // the event socket is disconnected so an old ready-age cannot linger
+        // on a card after a status transition.
+        if (moveScope === boardScopeRef.current) loadBoard();
       }).catch(function (err) {
+        if (moveScope !== boardScopeRef.current) return;
         setError(tx(t, "moveFailed", "Move failed: ") + parseApiErrorMessage(err));
         loadBoard();
       });

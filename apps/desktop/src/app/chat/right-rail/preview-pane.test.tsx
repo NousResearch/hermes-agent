@@ -119,6 +119,29 @@ describe('PreviewPane console state', () => {
     forgetPreviewConsole(tabId)
   })
 
+  // Electron returns null from guest window.open() unless allowpopups is set.
+  // OAuth SDKs (Google Sign-In) bail when the popup handle is null (#100996).
+  it('marks the preview webview popup-capable for window.open()', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174',
+            url: 'http://localhost:5174'
+          }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview')
+
+    expect(webview).toBeInstanceOf(HTMLElement)
+    expect(webview?.hasAttribute('allowpopups')).toBe(true)
+  })
+
   // The bar is chrome for a LIVE page. A file peek, an artifact, and remote
   // HTML in a sandboxed iframe have no webview to navigate.
   it('shows the browser bar only for a live webview preview', async () => {

@@ -85,3 +85,47 @@ describe('system message timestamp text separation', () => {
     expectTimestampSeparated(container, 'rerun tests')
   })
 })
+
+describe('slash report presentation', () => {
+  it('renders headed reports without changing escaped values or treating provider labels as markup', async () => {
+    const output = [
+      '## Analysis receipt',
+      'Status: ANALYSIS\\_ONLY\\_COMPLETE',
+      'Decision: NO\\_BET; reason: edge\\_insufficient',
+      'Report: /tmp/home\\_vs\\_away/report\\_v38.json',
+      'Team: \\<script\\> FC \\*United\\*',
+      '',
+      '### Markets',
+      '- H2H: SILVER',
+      '- Totals: BET\\_CANDIDATE',
+      '',
+      '`literal\\_value`'
+    ].join('\n')
+
+    const { container, findByRole } = render(<Harness text={`slash:/report\n${output}`} />)
+
+    await findByRole('heading', { name: 'Analysis receipt', level: 2 })
+    await findByRole('heading', { name: 'Markets', level: 3 })
+    const row = container.querySelector('[data-role="system"]')!
+
+    expect(row.textContent).toContain('ANALYSIS_ONLY_COMPLETE')
+    expect(row.textContent).toContain('NO_BET; reason: edge_insufficient')
+    expect(row.textContent).toContain('/tmp/home_vs_away/report_v38.json')
+    expect(row.textContent).toContain('Team: <script> FC *United*')
+    expect(row.querySelector('script')).toBeNull()
+    expect(row.querySelector('em')).toBeNull()
+    expect(row.querySelectorAll('li')).toHaveLength(2)
+    expect(row.querySelector('code')?.textContent).toBe('literal\\_value')
+    expect(row.textContent).not.toContain('## Analysis receipt')
+  })
+
+  it('preserves unheaded status tables and literal punctuation as plain text', () => {
+    const output = 'Role      State\nworker_a  NO_BET\nworker_b  *idle*\npath      C:\\reports\\_current'
+    const { container } = render(<Harness text={`slash:/status\n${output}`} />)
+    const row = container.querySelector('[data-role="system"]')!
+
+    expect(row.textContent).toContain(output)
+    expect(row.querySelector('h1, h2, em, strong, table')).toBeNull()
+    expect(row.querySelector('.whitespace-pre-wrap')?.textContent).toBe(output)
+  })
+})

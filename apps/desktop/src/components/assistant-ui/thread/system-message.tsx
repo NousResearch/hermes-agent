@@ -102,6 +102,9 @@ export const SystemMessage: FC = () => {
 
   if (slashStatus?.groups) {
     const output = slashStatus.groups.output.trim()
+    // Headed command reports are Markdown; ordinary status tables still need
+    // literal spacing. Render at the display boundary, not in stored receipts.
+    const report = /^#{1,6}[ \t]+\S/.test(output)
     // Single-line status (e.g. "model → x") reads best centered inline; padded
     // multiline output (catalogs, usage tables) needs left-aligned, wider room
     // or the column alignment breaks.
@@ -110,14 +113,22 @@ export const SystemMessage: FC = () => {
     return (
       <MessagePrimitive.Root
         className={cn(
-          'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60',
+          'max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60',
+          report ? 'w-full min-w-0' : 'w-[60%]',
           multiline ? 'text-left' : 'text-center'
         )}
         data-role="system"
         data-slot="aui_system-message-root"
       >
         <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
-        {multiline ? (
+        {report ? (
+          <MarkdownTextContent
+            containerClassName="mt-2 [&_p]:whitespace-pre-wrap"
+            disableArtifacts
+            isRunning={false}
+            text={output}
+          />
+        ) : multiline ? (
           <LinkifiedText className="mt-0.5 block whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
         ) : (
           <>

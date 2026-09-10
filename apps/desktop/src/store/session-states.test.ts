@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
-import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { $layoutTree, closeableTreeSiblings, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
   forgetActivePane,
@@ -22,6 +22,7 @@ import {
   blankDraftTile,
   clearAllSessionStates,
   closeAllOpenSessionTiles,
+  closeOpenSessionTilesForPanes,
   focusedSessionNeedsRoute,
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
@@ -852,6 +853,56 @@ describe('dropTilesForProfile', () => {
       /route without profile/
     )
     expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-remote'])
+  })
+})
+
+describe('closeOpenSessionTilesForPanes persists Bot Mode Close Others / Close to Right (sibling of #94137)', () => {
+  afterEach(() => {
+    $activeGatewayProfile.set('default')
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('Close Others drops the persisted twins so a profile rehydrate cannot restore them, keeping the anchor tile', () => {
+    openSessionTile('chat-a', 'center', 'workspace', undefined, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:a' })
+    openSessionTile('chat-b', 'center', 'workspace', undefined, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:b' })
+    openSessionTile('chat-c', 'center', 'workspace', undefined, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:c' })
+    $layoutTree.set(
+      group(['workspace', tilePane('chat-a'), tilePane('chat-b'), tilePane('chat-c')], {
+        active: 'workspace',
+        id: 'main'
+      })
+    )
+
+    // Mirrors the menu handler: gather the sibling ids before dismissing the
+    // tree panes, exactly like the already-fixed Close All does.
+    closeOpenSessionTilesForPanes(closeableTreeSiblings(tilePane('chat-b')).others)
+
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['chat-b'])
+
+    // Profile swap re-reads the shared Bot bucket. A tree-only dismiss would
+    // leave chat-a/chat-c registered there and rehydrate them.
+    $activeGatewayProfile.set('other-profile')
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['chat-b'])
+  })
+
+  it('Close to Right drops only the persisted tiles positioned after the anchor', () => {
+    openSessionTile('chat-a', 'center', 'workspace', undefined, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:a' })
+    openSessionTile('chat-b', 'center', 'workspace', undefined, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:b' })
+    openSessionTile('chat-c', 'center', 'workspace', undefined, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:c' })
+    $layoutTree.set(
+      group(['workspace', tilePane('chat-a'), tilePane('chat-b'), tilePane('chat-c')], {
+        active: 'workspace',
+        id: 'main'
+      })
+    )
+
+    closeOpenSessionTilesForPanes(closeableTreeSiblings(tilePane('chat-a')).right)
+
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['chat-a'])
+
+    $activeGatewayProfile.set('other-profile')
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['chat-a'])
   })
 })
 

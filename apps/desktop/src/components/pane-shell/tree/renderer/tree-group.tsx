@@ -30,7 +30,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
-import { closeAllOpenSessionTiles } from '@/store/session-states'
+import { closeAllOpenSessionTiles, closeOpenSessionTilesForPanes } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -53,6 +53,7 @@ import {
   $treeDragging,
   $treePaneEpochs,
   activateTreePane,
+  closeableTreeSiblings,
   closeAllTreeTabs,
   closeOtherTreeTabs,
   closeTabPane,
@@ -156,8 +157,18 @@ function ZoneMenu({
             closeAllOpenSessionTiles(targetId)
             closeAllTreeTabs(targetId)
           },
-          onCloseOthers: () => closeOtherTreeTabs(targetId),
-          onCloseToRight: () => closeTreeTabsToRight(targetId)
+          onCloseOthers: () => {
+            // Same persist-close as onCloseAll — otherwise Bot Mode
+            // rehydrates the "closed" others from the shared tile bucket.
+            closeOpenSessionTilesForPanes(closeableTreeSiblings(targetId).others)
+            closeOtherTreeTabs(targetId)
+          },
+          onCloseToRight: () => {
+            // Same persist-close as onCloseAll — otherwise Bot Mode
+            // rehydrates the "closed" tabs from the shared tile bucket.
+            closeOpenSessionTilesForPanes(closeableTreeSiblings(targetId).right)
+            closeTreeTabsToRight(targetId)
+          }
         })}
         {(() => {
           // Show/hide rows for the zone's hide-only chrome tabs (sessions /

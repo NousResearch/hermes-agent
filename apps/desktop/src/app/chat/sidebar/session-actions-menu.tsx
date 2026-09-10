@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { openSession } from '@/app/open-session'
 import {
+  closeableTreeSiblings,
   closeAllTreeTabs,
   closeOtherTreeTabs,
   closeTreeTabsToRight,
@@ -44,7 +45,7 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { $sessionTiles, closeAllOpenSessionTiles, closeOpenSessionTilesForPanes } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -397,6 +398,10 @@ function useSessionActions({
                   label: t.zones.closeOthers,
                   onSelect: () => {
                     triggerHaptic('selection')
+                    // Persist-close session tiles before dismissing the
+                    // other tree panes, or Bot Mode rehydrates them from the
+                    // shared tile bucket — the same gap Close All had (#94137).
+                    closeOpenSessionTilesForPanes(closeableTreeSiblings(tabPaneId).others)
                     closeOtherTreeTabs(tabPaneId)
                   }
                 }),
@@ -406,6 +411,10 @@ function useSessionActions({
                   label: t.zones.closeToRight,
                   onSelect: () => {
                     triggerHaptic('selection')
+                    // Persist-close session tiles before dismissing the tree
+                    // panes to the right, or Bot Mode rehydrates them from the
+                    // shared tile bucket — the same gap Close All had (#94137).
+                    closeOpenSessionTilesForPanes(closeableTreeSiblings(tabPaneId).right)
                     closeTreeTabsToRight(tabPaneId)
                   }
                 }),

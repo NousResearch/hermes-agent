@@ -595,8 +595,10 @@ export function closeFocusedToolTab(): boolean {
 }
 
 /** Closeable siblings of `paneId` within its group, split by position — powers
- *  the tab menu's Close-others / Close-to-the-right verbs (and their enablement). */
-function closeableTreeSiblings(paneId: string): { others: string[]; right: string[] } {
+ *  the tab menu's Close-others / Close-to-the-right verbs (and their enablement).
+ *  Exported so callers can persist-close a matching set of Bot Mode session
+ *  tiles (see closeOpenSessionTilesForPanes) before dismissing the tree panes. */
+export function closeableTreeSiblings(paneId: string): { others: string[]; right: string[] } {
   const tree = $layoutTree.get()
   const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
   const idx = panes.indexOf(paneId)

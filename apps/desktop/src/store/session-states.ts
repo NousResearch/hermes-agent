@@ -1747,25 +1747,30 @@ export function closeSessionTile(storedSessionId: string) {
   }
 }
 
-/** Persist-close every session tile whose pane lives in `paneId`'s group.
- *
- * Close All used to only dismiss layout-tree panes. Bot Mode tiles are
- * stored in the shared `__bots_workspace__` bucket, so a later roster
- * click or profile swap rehydrated `$sessionTiles` and the closed tabs
- * came back (#94137). Routing through {@link closeSessionTile} writes that
- * bucket, so the closed set survives those rehydrations and a restart.
+/** Persist-close the session tile behind each pane id in `paneIds` that is a
+ * tile pane. Bot Mode tiles live in the shared `__bots_workspace__` bucket
+ * (see loadTilesByProfile), so dismissing only the layout-tree pane leaves
+ * the tile itself registered — a later roster click or profile swap
+ * rehydrates `$sessionTiles` and the "closed" tab comes back (#94137).
+ * Routing through {@link closeSessionTile} writes that bucket, so the
+ * closed set survives those rehydrations and a restart.
  */
-export function closeAllOpenSessionTiles(paneId: string): void {
-  const tree = $layoutTree.get()
-  // Copy the live group list. closeSessionTile can rewrite the layout
-  // tree; iterating the original array would skip every other pane.
-  const panes = [...((tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? [])]
-
-  for (const id of panes) {
+export function closeOpenSessionTilesForPanes(paneIds: readonly string[]): void {
+  // Copy the input. closeSessionTile can rewrite the layout tree, but that
+  // never touches this already-captured id list.
+  for (const id of [...paneIds]) {
     if (id.startsWith(TILE_PANE_PREFIX)) {
       closeSessionTile(id.slice(TILE_PANE_PREFIX.length))
     }
   }
+}
+
+/** Persist-close every session tile whose pane lives in `paneId`'s group. */
+export function closeAllOpenSessionTiles(paneId: string): void {
+  const tree = $layoutTree.get()
+  const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
+
+  closeOpenSessionTilesForPanes(panes)
 }
 
 /** Drop a DEAD tile — a persisted tile whose session no longer exists on the

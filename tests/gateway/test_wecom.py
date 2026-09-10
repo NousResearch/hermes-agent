@@ -1554,3 +1554,228 @@ class TestFinalFrameAckTimeoutSemantics:
                 {"msgtype": "stream", "stream": {"id": "stream_x", "content": "x", "finish": True}},
                 is_final=True,
             )
+
+
+class TestWeComInstantAck:
+    """Instant acknowledgment on accepted inbound messages (#16676).
+
+    The ack must be: fire-and-forget (never block the read loop), correlated
+    to the inbound request via APP_CMD_RESPONSE (the only send mode WeCom AI
+    Bots may use in group chats), skipped for slash commands / blocked
+    senders, and must never break the pipeline when the send itself fails.
+    """
+
+    @staticmethod
+    def _text_payload(*, msgid, req_id, chat_id, chat_type, content):
+        return {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": req_id},
+            "body": {
+                "msgid": msgid,
+                "chatid": chat_id,
+                "chattype": chat_type,
+                "from": {"userid": chat_id},
+                "msgtype": "text",
+                "text": {"content": content},
+            },
+        }
+
+    @staticmethod
+    async def _drain_acks(adapter):
+        while adapter._ack_tasks:
+            await asyncio.gather(*list(adapter._ack_tasks))
+
+    @pytest.mark.asyncio
+    async def test_dm_text_ack_correlates_to_inbound_request(self):
+        from plugins.platforms.wecom.adapter import (
+            APP_CMD_RESPONSE,
+            WECOM_INSTANT_ACK_PHRASES,
+            WeComAdapter,
+        )
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"dm_policy": "open"})
+        )
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._send_json = AsyncMock()
+
+        payload = self._text_payload(
+            msgid="msg-dm-1", req_id="req-dm-1",
+            chat_id="user-dm", chat_type="single", content="hello",
+        )
+
+        await adapter._on_message(payload)
+        adapter.handle_message.assert_awaited_once()
+        await self._drain_acks(adapter)
+
+        adapter._send_json.assert_awaited_once()
+        frame = adapter._send_json.await_args.args[0]
+        assert frame["cmd"] == APP_CMD_RESPONSE
+        assert frame["headers"]["req_id"] == "req-dm-1"
+        phrase = frame["body"]["markdown"]["content"]
+        assert phrase in WECOM_INSTANT_ACK_PHRASES
+
+    @pytest.mark.asyncio
+    async def test_group_ack_uses_reply_mode_not_proactive_send(self):
+        from plugins.platforms.wecom.adapter import (
+            APP_CMD_RESPONSE,
+            APP_CMD_SEND,
+            WeComAdapter,
+        )
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._send_json = AsyncMock()
+
+        payload = self._text_payload(
+            msgid="msg-g-1", req_id="req-g-1",
+            chat_id="group-1", chat_type="group", content="hi",
+        )
+
+        await adapter._on_message(payload)
+        adapter.handle_message.assert_awaited_once()
+        await self._drain_acks(adapter)
+
+        adapter._send_json.assert_awaited_once()
+        frame = adapter._send_json.await_args.args[0]
+        assert frame["cmd"] == APP_CMD_RESPONSE
+        assert frame["cmd"] != APP_CMD_SEND
+        assert frame["headers"]["req_id"] == "req-g-1"
+
+    @pytest.mark.asyncio
+    async def test_slash_command_skips_ack(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"dm_policy": "open"})
+        )
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._send_json = AsyncMock()
+
+        payload = self._text_payload(
+            msgid="msg-cmd-1", req_id="req-cmd-1",
+            chat_id="user-cmd", chat_type="single", content="/new",
+        )
+
+        await adapter._on_message(payload)
+        adapter.handle_message.assert_awaited_once()
+        await self._drain_acks(adapter)
+        adapter._send_json.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_blocked_group_skips_ack_and_handler(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-ok"]},
+            )
+        )
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._send_json = AsyncMock()
+
+        payload = self._text_payload(
+            msgid="msg-blocked-1", req_id="req-blocked-1",
+            chat_id="group-blocked", chat_type="group", content="hi",
+        )
+
+        await adapter._on_message(payload)
+        adapter.handle_message.assert_not_awaited()
+        await self._drain_acks(adapter)
+        adapter._send_json.assert_not_awaited()
+        assert "group-blocked" not in adapter._last_chat_req_ids
+
+    @pytest.mark.asyncio
+    async def test_ack_send_failure_never_breaks_pipeline(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"dm_policy": "open"})
+        )
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._send_json = AsyncMock(side_effect=RuntimeError("ws closed"))
+
+        payload = self._text_payload(
+            msgid="msg-fail-1", req_id="req-fail-1",
+            chat_id="user-fail", chat_type="single", content="hello",
+        )
+
+        await adapter._on_message(payload)
+        adapter.handle_message.assert_awaited_once()
+        await self._drain_acks(adapter)  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_batched_flush_acks_once_for_merged_text(self):
+        from gateway.platforms.event import MessageEvent, MessageType
+        from plugins.platforms.wecom.adapter import (
+            APP_CMD_RESPONSE,
+            WeComAdapter,
+        )
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"dm_policy": "open"})
+        )
+        adapter.handle_message = AsyncMock()
+        adapter._send_json = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+
+        payload = self._text_payload(
+            msgid="msg-batch-1", req_id="req-batch-1",
+            chat_id="user-batch", chat_type="single", content="part one",
+        )
+        key = "batch-session"
+        event = MessageEvent(
+            text="part one", message_type=MessageType.TEXT, raw_message=payload
+        )
+        adapter._pending_text_batches[key] = event
+        task = asyncio.create_task(adapter._flush_text_batch(key))
+        adapter._pending_text_batch_tasks[key] = task
+
+        await asyncio.sleep(0.12)
+        assert adapter.handle_message.await_count == 1
+        await self._drain_acks(adapter)
+
+        adapter._send_json.assert_awaited_once()
+        frame = adapter._send_json.await_args.args[0]
+        assert frame["cmd"] == APP_CMD_RESPONSE
+        assert frame["headers"]["req_id"] == "req-batch-1"
+
+    @pytest.mark.asyncio
+    async def test_env_toggle_disables_ack(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WECOM_INSTANT_ACK", "false")
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"dm_policy": "open"})
+        )
+        assert adapter._instant_ack_enabled is False
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._send_json = AsyncMock()
+
+        payload = self._text_payload(
+            msgid="msg-off-1", req_id="req-off-1",
+            chat_id="user-off", chat_type="single", content="hello",
+        )
+
+        await adapter._on_message(payload)
+        adapter.handle_message.assert_awaited_once()
+        await self._drain_acks(adapter)
+        adapter._send_json.assert_not_awaited()

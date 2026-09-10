@@ -15,6 +15,12 @@ def test_wsl_windows_manifest_path_translates_to_drvfs():
         ) == "/mnt/c/Users/Fernando/AppData/Local/cua-driver/cua-driver.exe"
 
 
+def test_non_wsl_windows_manifest_path_is_unchanged():
+    path = r"C:\Users\Fernando\AppData\Local\cua-driver\cua-driver.exe"
+    with patch("hermes_constants.is_wsl", return_value=False):
+        assert cua_backend_driver._wsl_windows_path_to_posix(path) == path
+
+
 
 
 

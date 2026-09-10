@@ -247,12 +247,19 @@ async def _expand_reference(
             return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens)
         if ref.kind in _GIT_REFERENCE_ARGS:
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)
-            return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args))
+            return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args),
+                                         max_inline_tokens=max_inline_tokens)
         if ref.kind == "url":
             content = await _fetch_url_content(ref.target, url_fetcher=url_fetcher)
             if not content:
                 return f"{ref.raw}: no content extracted", None
-            return None, f"🌐 {ref.raw} ({estimate_tokens_rough(content)} tokens)\n{content}"
+            url_tokens = estimate_tokens_rough(content)
+            if max_inline_tokens is not None and url_tokens > max_inline_tokens:
+                return None, _oversized_inline_reference_block(
+                    ref, "web page", url_tokens,
+                    "Fetch a narrower URL or a specific section with web_extract; "
+                    "do not load the whole page into context.")
+            return None, f"🌐 {ref.raw} ({url_tokens} tokens)\n{content}"
     except Exception as exc:
         return f"{ref.raw}: {exc}", None
     provider = _context_reference_providers.get(ref.kind)
@@ -260,7 +267,12 @@ async def _expand_reference(
         try:
             plugin_content = await provider.expand(ref.target)
             if plugin_content is not None:
-                return None, f"📌 {ref.raw} ({estimate_tokens_rough(plugin_content)} tokens)\n{plugin_content}"
+                plugin_tokens = estimate_tokens_rough(plugin_content)
+                if max_inline_tokens is not None and plugin_tokens > max_inline_tokens:
+                    return None, _oversized_inline_reference_block(
+                        ref, f"{ref.kind} reference", plugin_tokens,
+                        "Request a narrower slice of this reference instead of the whole thing.")
+                return None, f"📌 {ref.raw} ({plugin_tokens} tokens)\n{plugin_content}"
         except Exception as exc:
             return f"{ref.raw}: plugin expansion error: {exc}", None
     return f"{ref.raw}: unsupported reference type", None
@@ -306,7 +318,8 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
                           timeout=timeout, stdin=subprocess.DEVNULL, **popen_kwargs, **({} if env is None else {"env": env}))
 
 
-def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
+def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str, *,
+                          max_inline_tokens: int | None = None) -> Expansion:
     try:
         # Repo-supplied config/attributes must never execute code (GHSA-7x36-8jrh-v4pw).
         result = _run_quiet(["git", *harden_git_argv(args)], cwd, 30, env=noninteractive_git_env())
@@ -315,7 +328,13 @@ def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], lab
     if result.returncode != 0:
         return f"{ref.raw}: {(result.stderr or '').strip() or 'git command failed'}", None
     content = result.stdout.strip() or "(no output)"
-    return None, f"🧾 {label} ({estimate_tokens_rough(content)} tokens)\n```diff\n{content}\n```"
+    git_tokens = estimate_tokens_rough(content)
+    if max_inline_tokens is not None and git_tokens > max_inline_tokens:
+        return None, _oversized_inline_reference_block(
+            ref, f"`{label}` output", git_tokens,
+            f"Re-run `{label}` in the terminal with a path filter or `--stat` first, "
+            "then inspect only the files that matter.")
+    return None, f"🧾 {label} ({git_tokens} tokens)\n```diff\n{content}\n```"
 
 
 async def _fetch_url_content(url: str, *, url_fetcher: UrlFetcher = None) -> str:
@@ -452,6 +471,17 @@ def _agent_visible_path(path: Path) -> str:
         return to_agent_visible_cache_path(str(path))
     except Exception:
         return str(path)
+
+
+def _oversized_inline_reference_block(ref: ContextReference, descriptor: str, tokens: int,
+                                      guidance: str) -> str:
+    """📎 shape for refs with no on-disk path (url/git/plugin). #61987 stopped one
+    oversized ``@file:`` from poisoning the aggregate budget and refusing the whole turn;
+    the sibling kinds kept the dead end, so the same block shape covers them here."""
+    return (
+        f"📎 {ref.raw} ({descriptor}, approximately {tokens} tokens) "
+        f"— too large to inline safely. {guidance}"
+    )
 
 
 def _on_disk_reference_block(ref: ContextReference, path: Path, descriptor: str, reason: str, guidance: str) -> str:

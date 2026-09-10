@@ -74,6 +74,19 @@ export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 
  *  louder cue and two treatments at once fight each other. */
 export const showsRunningArc = (state: SessionDotState): boolean => state === 'stalled' || state === 'working'
 
+/** Product limit for simultaneous running-ring motion, not a benchmark result.
+ *  The ring remains visible for every running row. Above the limit all rings
+ *  become still together, preserving state cues without selecting by row order. */
+export const MAX_ANIMATED_RUNNING_ARCS = 4
+
+/** False once more rows are running than `MAX_ANIMATED_RUNNING_ARCS`. All rings
+ *  then go still together — never a subset, which would make the sidebar's
+ *  motion depend on list order and flicker as rows re-sort. */
+export const $runningArcsAnimated = computed(
+  [$workingSessionIds, $stalledSessionIds],
+  (working, stalled) => new Set([...working, ...stalled]).size <= MAX_ANIMATED_RUNNING_ARCS
+)
+
 /** Whether this turn is the session's own, live: brighter title, and the row's
  *  age yields to the actions menu. Wider than the arc — a turn waiting on an
  *  answer has not ended. */

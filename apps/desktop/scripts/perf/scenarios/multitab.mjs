@@ -20,9 +20,11 @@
 // flush performs — via the __HERMES_SESSION_TILES__ hook.
 //
 //   node scripts/perf/run.mjs multitab --spawn [--tiles 5] [--tokens 240]
+//   node scripts/perf/run.mjs multitab --spawn --tiles 5 --busy 16   # many agents working
 //   node scripts/perf/run.mjs multitab --spawn --tiles 16 --zones 4 --sessions 300
 
 import { sleep } from '../lib/cdp.mjs'
+import { endLayerSnapshot, layerSnapshot, watchLayerTreeRate, withCompositingTrace } from '../lib/compositing.mjs'
 import { frameHistogram, percentile } from '../lib/stats.mjs'
 
 // Same recorder pattern as stream.mjs (generation-guarded rAF + longtasks).
@@ -71,7 +73,7 @@ const COLLECT = `
  *  (wiring cache + in-flight journal + publish + view sync). Driving
  *  `hook.publish` alone under-models a stream: it skips the journal and the
  *  cache, which is exactly where multi-session cost used to hide. */
-const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead, tools) => `
+const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead, tools, busy) => `
   (() => {
     const hook = window.__HERMES_SESSION_TILES__
     if (!hook) return 'no-hook'
@@ -140,7 +142,7 @@ const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dea
     // A populated recents list (--sessions): every store publish re-runs the
     // busy/attention/draft projections against it, so an empty list hides
     // that scaling. Restored by CLEANUP.
-    if (${seedSessions} > 0) {
+    if (${seedSessions} > 0 || ${busy} > 0) {
       window.__MT_SAVED_SESSIONS__ = hook.sessions()
       const rows = []
       for (let i = 0; i < ${seedSessions}; i++) {
@@ -151,7 +153,39 @@ const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dea
           model: 'hermes-4', preview: 'seeded row', cwd: '/tmp/proj-' + (i % 7)
         })
       }
+      // --busy: sidebar rows in a RUNNING state. Each one renders an
+      // .arc-border ring, and a running ring is an active transform animation
+      // -> its own compositing layer, plus every row it overlaps (the Overlap
+      // promotion reason). This is the axis the scenario was missing: tiles
+      // model what is on screen, --busy models how many agents are working,
+      // and the second number is what a real multi-agent session looks like.
+      for (let i = 0; i < ${busy}; i++) {
+        rows.push({
+          id: 'perf-busy-' + i, title: 'Working session ' + i, ended_at: null,
+          input_tokens: 5200, output_tokens: 900, is_active: false,
+          last_active: Date.now() - i * 1000, message_count: 40,
+          model: 'hermes-4', preview: 'working', cwd: '/tmp/busy-' + i
+        })
+      }
       hook.seedSessions(rows)
+      window.__MT_BUSY__ = []
+      for (let i = 0; i < ${busy}; i++) {
+        const sid = 'perf-busy-' + i
+        const rid = 'perf-busy-rt-' + i
+        window.__MT_BUSY__.push(rid)
+        hook.publish(rid, {
+          storedSessionId: sid,
+          messages: [
+            { id: sid + '-u', role: 'user', timestamp: Date.now(), parts: [{ type: 'text', text: 'Review this diff.' }] },
+            { id: sid + '-a', role: 'assistant', timestamp: Date.now(), pending: true, parts: [{ type: 'text', text: 'Working.' }] }
+          ],
+          branch: '', cwd: '', model: '', provider: '', reasoningEffort: '', serviceTier: '',
+          fast: false, yolo: false, personality: '', busy: true, awaitingResponse: false,
+          streamId: sid + '-stream', sawAssistantPayload: true, pendingBranchGroup: null,
+          interrupted: false, interimBoundaryPending: false, needsInput: false,
+          turnStartedAt: Date.now(), usage: null
+        })
+      }
     }
 
     // Leaked residue (--dead): sessions that ran with no surface referencing
@@ -283,6 +317,13 @@ const CLEANUP = `
       }
       window.__MT__ = null
     }
+    if (window.__MT_BUSY__) {
+      for (const rid of window.__MT_BUSY__) {
+        hook.update(rid, prev => ({ ...prev, busy: false, streamId: null }))
+        hook.drop?.(rid)
+      }
+      window.__MT_BUSY__ = null
+    }
     if (window.__MT_SAVED_SESSIONS__) {
       hook.seedSessions(window.__MT_SAVED_SESSIONS__)
       window.__MT_SAVED_SESSIONS__ = null
@@ -302,6 +343,10 @@ export default {
     const seedSessions = Number(opts.sessions ?? 0)
     const streaming = Math.min(Number(opts.streaming ?? tiles), tiles)
     const dead = Number(opts.dead ?? 0)
+    // --busy N: sidebar rows in a running state (animated rings), independent
+    // of how many tiles are on screen. Defaults to `streaming` so the scenario
+    // models the sidebar a real working session shows.
+    const busy = Number(opts.busy ?? streaming)
     // --tools: seeded turns carry settled tool rounds and the live stream
     // opens/completes tool calls between text — an agent working, not talking.
     const tools = Boolean(opts.tools)
@@ -319,7 +364,7 @@ export default {
 
     await cdp.send('Runtime.enable')
 
-    const ok = await cdp.eval(setup(tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead, tools))
+    const ok = await cdp.eval(setup(tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead, tools, busy))
 
     if (ok !== 'ok') {
       throw new Error(`multitab setup failed (${ok}) — dev hooks missing? (needs a dev/probe renderer)`)
@@ -357,11 +402,28 @@ export default {
     }
 
     await sleep(1000)
-    await cdp.eval(RECORDERS)
-    await cdp.eval(drive(chunk, intervalMs, tokens, tools))
-    await sleep(tokens * intervalMs + 1500)
 
+    // Layer-tree shape BEFORE the stream: promotion is a property of what is
+    // mounted, so this is the honest count. Taken first because enabling the
+    // LayerTree domain mid-trace would attribute its own churn to the run.
+    const layers = await layerSnapshot(cdp)
+
+    await cdp.eval(RECORDERS)
+
+    // Tree churn is counted across the STREAM, not the settle above.
+    const stopTreeRate = watchLayerTreeRate(cdp)
+
+    // Everything the compositor does during the stream. Layerize is main-thread
+    // work between paint and commit: it competes with keystrokes, and no other
+    // metric in this harness can see it.
+    const { compositing } = await withCompositingTrace(cdp, async () => {
+      await cdp.eval(drive(chunk, intervalMs, tokens, tools))
+      await sleep(tokens * intervalMs + 1500)
+    })
+
+    const treeChurn = stopTreeRate()
     const data = JSON.parse(await cdp.eval(COLLECT))
+    await endLayerSnapshot(cdp)
     await cdp.eval(CLEANUP)
 
     // Drop the first 500ms (recorder install + settle).
@@ -404,7 +466,11 @@ export default {
         frame_p95_ms: Math.round(percentile(frames, 0.95) * 10) / 10,
         frame_p99_ms: Math.round(percentile(frames, 0.99) * 10) / 10,
         slow_frames_33: frames.filter(f => f > 33).length,
-        reveal_max_ms: Math.round(Math.max(...revealMs) * 10) / 10
+        reveal_max_ms: Math.round(Math.max(...revealMs) * 10) / 10,
+        layerize_pct: compositing.layerize_pct,
+        layer_count: layers.layer_count,
+        layer_area_mp: layers.layer_area_mp,
+        layer_tree_rate: treeChurn.layer_tree_rate
       },
       detail: {
         tiles,
@@ -414,7 +480,10 @@ export default {
         sessions: seedSessions,
         tools,
         turns: seedTurns,
+        busy,
         code: Boolean(opts.code),
+        compositing,
+        compositingReasons: layers.reasons,
         windowS: Math.round(windowS * 10) / 10,
         avgFps: Math.round(avgFps * 10) / 10,
         worstSecondFps: Math.round(worstFps * 10) / 10,

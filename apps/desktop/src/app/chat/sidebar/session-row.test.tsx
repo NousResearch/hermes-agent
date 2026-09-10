@@ -9,13 +9,16 @@ import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
-import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import { $stalledSessionIds, clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 
 import { SidebarSessionRow } from './session-row'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $stalledSessionIds.set([])
+})
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -178,6 +181,7 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
 // the wiring rather than the predicate — the arc has gone missing before.
 describe('SidebarSessionRow running arc', () => {
   afterEach(() => {
+    cleanup()
     clearAllSessionStates()
   })
 
@@ -195,6 +199,74 @@ describe('SidebarSessionRow running arc', () => {
     const { container } = renderRow(makeSession({ title: 'Running' }))
 
     expect(arc(container)).toBeTruthy()
+  })
+
+  it('keeps the visible running ring animated for three stalled working rows', () => {
+    for (let i = 0; i < 3; i++) {
+      publishSessionState(`rt${i}`, { ...createClientSessionState(`s${i}`), busy: true })
+    }
+
+    $stalledSessionIds.set(['s0', 's1', 's2'])
+
+    const { container } = render(
+      <>
+        {[0, 1, 2].map(i => (
+          <SidebarSessionRow
+            isPinned={false}
+            isSelected={false}
+            key={i}
+            onArchive={noop}
+            onDelete={noop}
+            onPin={noop}
+            onResume={noop}
+            onToggleUnread={noop}
+            session={makeSession({ id: `s${i}`, title: `Stalled ${i}` })}
+            unread={false}
+          />
+        ))}
+      </>
+    )
+
+    const arcs = container.querySelectorAll<HTMLElement>('.arc-row')
+    expect(arcs).toHaveLength(3)
+
+    for (const ring of arcs) {
+      expect(ring.classList.contains('arc-still')).toBe(false)
+      expect(ring.getAttribute('aria-hidden')).toBe('true')
+    }
+  })
+
+  it('keeps every running ring and makes all five still above the cap', () => {
+    for (let i = 0; i < 5; i++) {
+      publishSessionState(`rt${i}`, { ...createClientSessionState(`s${i}`), busy: true })
+    }
+
+    const { container } = render(
+      <>
+        {[0, 1, 2, 3, 4].map(i => (
+          <SidebarSessionRow
+            isPinned={false}
+            isSelected={false}
+            key={i}
+            onArchive={noop}
+            onDelete={noop}
+            onPin={noop}
+            onResume={noop}
+            onToggleUnread={noop}
+            session={makeSession({ id: `s${i}`, title: `Working ${i}` })}
+            unread={false}
+          />
+        ))}
+      </>
+    )
+
+    const arcs = container.querySelectorAll<HTMLElement>('.arc-row')
+    expect(arcs).toHaveLength(5)
+
+    for (const ring of arcs) {
+      expect(ring.classList.contains('arc-still')).toBe(true)
+      expect(ring.getAttribute('aria-hidden')).toBe('true')
+    }
   })
 
   // The row owns its status subscription so a turn starting repaints that row

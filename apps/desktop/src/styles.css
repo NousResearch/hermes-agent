@@ -55,6 +55,12 @@
   animation-play-state: paused !important;
 }
 
+/* Withdraw the transform optimization hint while renderer animations are paused.
+   This does not promise a particular compositor layer count or speedup. */
+:root[data-renderer-animations-paused] .arc-border::before {
+  will-change: auto !important;
+}
+
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
    (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));
@@ -1057,6 +1063,13 @@
     linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
+}
+
+/* Keep the running-state ring visible above MAX_ANIMATED_RUNNING_ARCS, but
+   disable its motion and withdraw the transform optimization hint. */
+.arc-border.arc-still::before {
+  animation: none;
+  will-change: auto;
 }
 
 :root.dark .arc-border {

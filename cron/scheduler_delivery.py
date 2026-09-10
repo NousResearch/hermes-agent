@@ -1366,14 +1366,15 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
 
 
 def _deliver_via_live_adapter(
-    t: _TargetDelivery, cleaned_text: str, media_files: list, *, target_errors: list,
-    delivery_errors: list, unverified_targets: list,
+    t: _TargetDelivery, cleaned_text: str, media_files: list, *, delivery_metadata: dict,
+    target_errors: list, delivery_errors: list, unverified_targets: list,
 ) -> bool:
     """Deliver one target via the live gateway adapter; True once delivered. ``target_errors`` =
     this lane's soft failures (surfaced only if standalone also fails); ``delivery_errors`` =
     partial failures (media, thread fallback) that surface even on success."""
     job = t.job
     route_thread_id, route_metadata, media_metadata = _live_route_metadata(t)
+    route_metadata = {**(route_metadata or {}), **delivery_metadata}
     delivered = False
     try:
         # Send cleaned text (MEDIA tags stripped) through the gateway's DeliveryRouter so it gets
@@ -1431,7 +1432,8 @@ def _deliver_via_live_adapter(
 
 
 def _standalone_send(
-    t: _TargetDelivery, content: str, media_files: list) -> tuple[Any, Optional[str]]:
+    t: _TargetDelivery, content: str, media_files: list, delivery_metadata: dict,
+) -> tuple[Any, Optional[str]]:
     """Run the standalone sender for one target: ``(result, None)`` or ``(None, error)`` (already
     logged — WARNING for a shutdown race, ERROR with traceback otherwise)."""
     from tools.send_message_tool import _send_to_platform
@@ -1441,7 +1443,7 @@ def _standalone_send(
     def _send():
         return _send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+            media_files=media_files, metadata=delivery_metadata)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1487,7 +1489,8 @@ def _standalone_send(
 
 
 def _deliver_standalone(
-    t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
+    t: _TargetDelivery, content: str, media_files: list, delivery_metadata: dict,
+    target_errors: list, delivery_errors: list,
 ) -> None:
     """Standalone fallback for a target the live lane did not deliver."""
     job = t.job
@@ -1497,7 +1500,7 @@ def _deliver_standalone(
             target_errors.append(f"relay delivery to {t.where} failed")
         delivery_errors.extend(target_errors)
         return
-    result, err = _standalone_send(t, content, media_files)
+    result, err = _standalone_send(t, content, media_files, delivery_metadata)
     if err is None and result and result.get("error"):
         # Not inside an except block — the error comes from the result dict, no traceback.
         err = f"delivery error: {result['error']} (target {t.where})"
@@ -1533,7 +1536,11 @@ def _prepare_target_delivery(
 
     origin = _resolve_origin(job) or {}
     origin_thread = origin.get("thread_id")
-    if origin_thread and not thread_id:
+    same_origin_conversation = (
+        origin.get("platform") == platform_name
+        and str(origin.get("chat_id") or "") == str(chat_id)
+    )
+    if origin_thread and not thread_id and same_origin_conversation:
         logger.warning(
             "Job '%s': origin has thread_id=%s but delivery target lost it (deliver=%s, target=%s)",
             job["id"], origin_thread, job.get("deliver", "local"), target)
@@ -1693,8 +1700,9 @@ def _deliver_result(
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
+    task_name = job.get("name", job["id"])
+    delivery_metadata = {"hermes_cron_delivery": {"subject": task_name}}
     if wrap_response:
-        task_name = job.get("name", job["id"])
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job.get('id', '')})\n"
@@ -1762,13 +1770,13 @@ def _deliver_result(
             continue
         target_errors: list = []
         delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
+            t, cleaned_delivery_content, media_files, delivery_metadata=delivery_metadata,
             target_errors=target_errors, delivery_errors=delivery_errors,
             unverified_targets=unverified_targets,
         )
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, cleaned_delivery_content, media_files, delivery_metadata, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once.
     delivery_errors.extend(policy_drop_errors)

@@ -382,6 +382,21 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["References"], "<original@test.com>")
             self.assertIn("Date", send_call)
 
+    def test_cron_text_without_scheduler_metadata_remains_threaded(self):
+        """An ordinary reply must not be reclassified from its body text."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+        }
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email("user@test.com", "Cronjob Response: quoted text", None)
+        sent = mock_server.send_message.call_args[0][0]
+        self.assertEqual(sent["Subject"], "Re: Project question")
+        self.assertEqual(sent["In-Reply-To"], "<original@test.com>")
+
 
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""
@@ -832,6 +847,35 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    })
+    def test_cron_metadata_uses_a_dated_non_reply_subject(self):
+        """Only explicit scheduler metadata may make a standalone email a new report."""
+        import asyncio
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _standalone_send as email_send
+
+        with patch("plugins.platforms.email.adapter._open_smtp") as open_smtp:
+            server = MagicMock()
+            open_smtp.return_value = server
+            result = asyncio.run(
+                email_send(
+                    SimpleNamespace(extra={"address": "hermes@test.com", "smtp_host": "smtp.test.com"}),
+                    "user@test.com",
+                    "unwrapped report body",
+                    metadata={"hermes_cron_delivery": {"subject": "Daily Hermes log health check", "date": "2026-09-04"}},
+                )
+            )
+        self.assertTrue(result["success"])
+        sent = server.send_message.call_args.args[0]
+        self.assertEqual(sent["Subject"], "Daily Hermes log health check — 2026-09-04")
+        self.assertNotIn("In-Reply-To", sent)
+        self.assertNotIn("References", sent)
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):

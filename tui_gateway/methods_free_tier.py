@@ -1,6 +1,7 @@
 """Nous free-tier JSON-RPC handlers: a renderer reads the profile's local auth state (pull); nothing
-is pushed. ``free_tier.status`` answers from the auth store with zero network; ``free_tier.provision``
-is the explicit set-up request (the guided setup's first step); ``free_tier.ack_notice``
+is pushed except the boot bootstrap's one ``setup.ready`` event. ``free_tier.status`` answers from the
+auth store with zero network and zero side effects; ``free_tier.provision`` is the explicit retry when
+the boot bootstrap could not create the identity (desktop-only entry); ``free_tier.ack_notice``
 persists the one-time notice flag on the free-tier identity itself, so it dies with that identity.
 Bodies are rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
 """
@@ -19,23 +20,17 @@ _profile_scoped = _registry.profile_scoped
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """``{has_guest, enabled, available, notice_pending, model, label}`` for the focused profile.
-    ``available`` = an identity exists AND ``nous.guest`` is on: the free tier (connectors, and the
-    model when nothing else carries inference) is there for this install. Whether inference actually
-    runs on it is a ROUTE question answered by ``setup.runtime_check.free_tier``, never by this flag.
-    ``notice_pending`` is true until ``free_tier.ack_notice`` ran for this identity."""
+    ``available`` = an identity exists AND the tier is on: the free tier (connectors, and the model
+    when nothing else carries inference) is there for this install. Whether inference actually runs
+    on it is a ROUTE question answered by ``setup.runtime_check.free_tier``, never by this flag.
+    ``notice_pending`` is true until ``free_tier.ack_notice`` ran for this identity.
+
+    A pure read. The identity is created by the boot bootstrap (``free_tier_bootstrap``), never as
+    a side effect of a client polling this method (NS-845 Q1.2)."""
     try:
         from hermes_cli import anon_auth
         has_guest = anon_auth.has_guest()
         enabled = anon_auth.guest_enabled()
-        if enabled and not has_guest:
-            # The CLI sets the free tier up in the background beside an explicit provider at session
-            # setup (cli_agent_setup_mixin); a served backend has no such moment, so this read is the
-            # desktop's. One attempt per process, nothing waits on it: the answer below is the state
-            # as it stands, and a later read sees the identity once it lands.
-            try:
-                anon_auth.ensure_portal_identity(blocking=False)
-            except Exception as exc:
-                logger.debug("free tier background setup skipped: %s", exc)
         return _ok(rid, {
             "has_guest": has_guest, "enabled": enabled, "available": has_guest and enabled,
             "notice_pending": bool(has_guest and enabled and anon_auth.guest_notice_pending()),
@@ -47,17 +42,18 @@ def _(rid, params: dict) -> dict:
 @method("free_tier.provision")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Set the free tier up NOW for the focused profile: adopt the shared store's identity, else mint
-    one (blocking, short timeout). The guided setup on Hermes Desktop calls this before creating its
-    first chat, so the identity exists before any session asks for ``nous/welcome``.
-    ``{has_guest, enabled}``; ``error`` when the portal refused."""
+    """Explicit retry of the free-tier set-up for the focused profile: adopt the shared store's
+    identity, else mint one (blocking, short timeout). The boot bootstrap normally did this already;
+    the desktop calls this when the record says the identity is missing (portal down at boot, gate
+    turned on later) and the user asks again. ``{has_guest, enabled}``; ``error`` when the portal
+    refused."""
     try:
         from hermes_cli import anon_auth
         enabled = anon_auth.guest_enabled()
         error = None
         if enabled and not anon_auth.has_guest():
             try:
-                anon_auth.provision_free_tier()
+                anon_auth.ensure_portal_identity(explicit=True)
             except Exception as exc:
                 logger.info("free tier provisioning failed: %s", exc)
                 error = str(exc)

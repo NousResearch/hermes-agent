@@ -1,12 +1,14 @@
-"""Nous guest identity: the ``anonymous`` auth method of the ``nous`` provider.
+"""Nous free-tier identity: the ``anonymous`` auth method of the ``nous`` provider.
 
-A fresh install mints an anonymous Nous account (``POST /api/anonymous/create``) and exchanges its
-``anon_`` credential for short-lived JWTs (``POST /api/anonymous/token``). The result is persisted
-through the same ``persist_nous_credentials`` a real login uses, so it is the singleton
-``providers.nous`` *and* ``active_provider``. In the resolver ladder (``resolve_provider``) the free
-tier sits directly above the implicit AWS Bedrock chain (NS-829): any explicit provider (env key,
-``model.provider``, OpenRouter pool, a logged-in ``active_provider``) beats the guest for inference,
-while the guest keeps carrying the tool-gateway JWT for connectors.
+The identity is created in exactly one place, at boot (``hermes_cli.free_tier_bootstrap``), and only
+while ``HERMES_GUEST_ONBOARDING=1`` (see ``guest_enabled``). The bootstrap mints an anonymous Nous
+account (``POST /api/anonymous/create``); its ``anon_`` credential is later exchanged for short-lived
+JWTs (``POST /api/anonymous/token``). The result is persisted as the singleton ``providers.nous``; it
+becomes ``active_provider`` only when the bootstrap's inventory found nothing else usable, so an
+install with its own key keeps that key for inference and uses the identity for connectors only. In
+the resolver ladder (``resolve_provider``) an existing free-tier identity sits directly above the
+implicit AWS Bedrock chain (NS-829): any explicit provider (env key, ``model.provider``, OpenRouter
+pool, a logged-in ``active_provider``) beats it, and the ladder never creates one.
 
 Only two mechanics differ from an OAuth login and both are isolated behind ``is_guest_state``:
 token acquisition (re-exchange the ``anon_`` credential; there is no refresh token) and routing
@@ -25,7 +27,6 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
@@ -254,11 +255,17 @@ def _shared_identity_key(state: Any) -> Optional[str]:
     return state.get("anon_token") if is_guest_state(state) else state.get("refresh_token")
 
 
-def _mint_locked(client: httpx.Client, portal: str, auth_store: Dict[str, Any]) -> Dict[str, Any]:
+def _mint_locked(
+    client: httpx.Client, portal: str, auth_store: Dict[str, Any], *, carries_inference: bool = True,
+) -> Dict[str, Any]:
     """Mint under the caller's locks. The identity is persisted as soon as ``create`` succeeds, BEFORE
     the exchange: a 429 or timeout on the exchange must not lose a credential NAS still honours (the
-    next attempt exchanges the stored one instead of minting again)."""
-    from hermes_cli.auth import _save_provider_state, _save_auth_store
+    next attempt exchanges the stored one instead of minting again).
+
+    ``carries_inference`` decides whether the new identity also becomes ``active_provider``. The
+    bootstrap passes False when its inventory found another usable provider: the identity exists for
+    connectors, the user's own provider keeps carrying inference (NS-845 Q1.3)."""
+    from hermes_cli.auth import _store_provider_state, _save_auth_store
     from hermes_cli.auth_nous import _write_shared_nous_state
     minted = mint_guest(client, portal)
     state: Dict[str, Any] = {
@@ -268,33 +275,32 @@ def _mint_locked(client: httpx.Client, portal: str, auth_store: Dict[str, Any]) 
         "user_id": minted.get("user_id"), "org_id": minted.get("org_id"),
         "idle_ttl_days": minted.get("idle_ttl_days"),
     }
-    _save_provider_state(auth_store, "nous", state)
+    _store_provider_state(auth_store, "nous", state, set_active=carries_inference)
     _save_auth_store(auth_store)
     _write_shared_nous_state(state)
     logger.info("Nous free tier ready (identity minted)")
     return state
 
 
-_background_lock = threading.Lock()
-_background_started = False
-# Per-process memo for the blocking path: one failed mint is enough for a process (several bootstrap
-# sites call in sequence; a 429 or a closed gate must not be hit twice); ``clear_dead_guest`` resets
-# it because a retired credential is a reason to mint again.
+# Per-process memo: one failed mint is enough for a process (a 429 or a closed gate must not be hit
+# twice); ``clear_dead_guest`` resets it because a retired credential is a reason to mint again.
 _mint_failed = False
 
 
-def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[Dict[str, Any]]:
+def _reconcile_and_provision(*, timeout_seconds: float, carries_inference: bool = True) -> Optional[Dict[str, Any]]:
     """The lifecycle body, run under profile lock THEN shared lock (the documented order).
 
     1. The shared store is the identity of record for this Hermes root. If it holds an identity
        that differs from the profile's, the profile adopts it (a stale guest never outlives a
-       sibling profile's sign-in, and never overwrites it).
+       sibling profile's sign-in, and never overwrites it). An adopted free-tier identity claims
+       ``active_provider`` under the same rule as a mint; an adopted ACCOUNT always does (the user
+       signed in somewhere on this machine).
     2. Otherwise the profile's own identity stands.
     3. Nothing anywhere: mint, persisting the credential before exchanging it.
     """
     from hermes_cli.auth import (
         _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
-        _save_provider_state, _resolve_verify)
+        _store_provider_state, _resolve_verify)
     from hermes_cli.auth_nous import (
         _nous_http_client, _nous_shared_store_lock, _read_shared_nous_state, _write_shared_nous_state)
     portal = _portal_base_url()
@@ -305,7 +311,9 @@ def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[Dict[str, An
             shared = _read_shared_nous_state()
             if shared and _shared_identity_key(shared) != _shared_identity_key(profile_state):
                 state = dict(shared)
-                _save_provider_state(auth_store, "nous", state)
+                _store_provider_state(
+                    auth_store, "nous", state,
+                    set_active=carries_inference or not is_guest_state(state))
                 _save_auth_store(auth_store)
                 logger.debug("Nous identity adopted from the shared store")
                 return state
@@ -315,68 +323,40 @@ def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[Dict[str, An
                 return profile_state
             verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
             with _nous_http_client(timeout_seconds, verify) as client:
-                return _mint_locked(client, portal, auth_store)
+                return _mint_locked(client, portal, auth_store, carries_inference=carries_inference)
 
 
 def ensure_portal_identity(
-    *, blocking: bool = True, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS,
+    *, explicit: bool, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS,
+    carries_inference: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Make sure this profile has a Nous identity (guest or account); mint a guest only if the shared
-    store has none. Returns the ``providers.nous`` state, or None (disabled / non-blocking / failed).
+    store has none. Returns the ``providers.nous`` state, or None (disabled / failed once already).
+
+    ``explicit`` is required and must be True: the only callers are the boot bootstrap
+    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, and the
+    dead-credential replacements (``auth_nous.resolve_nous_runtime_credentials``,
+    ``managed_tool_gateway._replace_dead_guest_token``). Nothing creates an identity as a side effect
+    of reading status, resolving a provider or fetching a connector bearer (NS-845 Q1.2).
 
     Order: ``guest_enabled`` gate -> reconcile with the shared store -> mint. Locks are taken profile
-    first, then shared, matching every other Nous path. Non-blocking mode runs on a daemon thread
-    and returns None immediately; a failure there is logged at DEBUG (the guest is a fallback; a
-    fallback failing is not an error).
+    first, then shared, matching every other Nous path. ``carries_inference=False`` leaves
+    ``active_provider`` alone (the identity is for connectors; another provider does inference).
+    Blocking, bounded by ``timeout_seconds``; the bootstrap puts it on its own thread.
     """
+    if not explicit:
+        raise ValueError("ensure_portal_identity: only explicit creators may call this (explicit=True)")
     global _mint_failed
     if not guest_enabled():
         return None
     if _mint_failed and not current_nous_state():
         return None  # this process already tried and failed; do not hammer the portal
-
-    if blocking:
-        try:
-            return _reconcile_and_provision(timeout_seconds=timeout_seconds)
-        except Exception:
-            _mint_failed = True
-            raise
-
-    global _background_started
-    with _background_lock:
-        if _background_started:
-            return None
-        _background_started = True
-
-    def _run() -> None:
-        global _background_started
-        try:
-            _reconcile_and_provision(timeout_seconds=timeout_seconds)
-        except Exception as exc:
-            logger.debug("Nous free tier background setup skipped: %s", exc)
-            # A transient failure must not consume the process's only attempt: release the latch
-            # so a later non-blocking call can try again (still one setup in flight at a time).
-            with _background_lock:
-                _background_started = False
-
     try:
-        threading.Thread(target=_run, name="nous-guest-identity", daemon=True).start()
-    except Exception as exc:  # thread limit / interpreter shutdown: release so a later call can retry
-        with _background_lock:
-            _background_started = False
-        logger.debug("Nous free tier background setup could not start: %s", exc)
-    return None
-
-
-def provision_free_tier(*, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS) -> Optional[Dict[str, Any]]:
-    """The one explicit "set up the free tier now" entry point: adopt what the shared store holds,
-    else mint. ``nous.guest: false`` still wins (None).
-
-    The guided setup on Hermes Desktop calls it (``free_tier.provision``) before creating its first
-    chat, so the identity exists before any session asks for ``nous/welcome``; a concurrent implicit
-    caller then adopts that identity under the shared-store lock instead of minting a second one.
-    """
-    return ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds)
+        return _reconcile_and_provision(
+            timeout_seconds=timeout_seconds, carries_inference=carries_inference)
+    except Exception:
+        _mint_failed = True
+        raise
 
 
 def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:

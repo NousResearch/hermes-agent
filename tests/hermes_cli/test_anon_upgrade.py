@@ -115,7 +115,6 @@ def portal(monkeypatch, tmp_path):
             kw["transport"] = httpx.MockTransport(fake.handler)
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
-    anon_auth._background_started = False
     anon_auth._mint_failed = False
     return fake
 
@@ -131,7 +130,7 @@ def _args():
 
 class TestUpgrade:
     def test_intent_carries_both_device_codes_from_the_code_request(self, portal):
-        anon_auth.ensure_portal_identity(blocking=True)
+        anon_auth.ensure_portal_identity(explicit=True)
         anon_auth.upgrade_guest(_args())
         assert len(portal.intent_bodies) == 1
         body = portal.intent_bodies[0]
@@ -143,7 +142,7 @@ class TestUpgrade:
         assert paths.index("/api/anonymous/promotion-intent") < paths.index("/api/oauth/token")
 
     def test_declined_in_browser_prints_copy_and_leaves_auth_store_untouched(self, portal, capsys, tmp_path):
-        anon_auth.ensure_portal_identity(blocking=True)
+        anon_auth.ensure_portal_identity(explicit=True)
         before = _auth_file_path().read_bytes()
         shared_before = _shared_store(tmp_path)
         portal.status_sequence = [{"status": "pending"}, {"status": "voided", "reason": "user_declined"}]
@@ -156,7 +155,7 @@ class TestUpgrade:
         assert _shared_store(tmp_path) == shared_before
 
     def test_completed_promotion_signs_in_and_keeps_no_free_tier_fields(self, portal, capsys, tmp_path):
-        guest = anon_auth.ensure_portal_identity(blocking=True)
+        guest = anon_auth.ensure_portal_identity(explicit=True)
         assert _shared_store(tmp_path).get("anon_token") == guest["anon_token"]
         code = anon_auth.upgrade_guest(_args())
         out = capsys.readouterr().out
@@ -208,7 +207,7 @@ def _model_config() -> dict:
 class TestSignInCompletionSettlesTheModel:
     def test_config_on_the_free_tier_route_moves_to_the_account_host_and_the_recommended_free_model(
             self, portal, free_account, capsys):
-        anon_auth.ensure_portal_identity(blocking=True)
+        anon_auth.ensure_portal_identity(explicit=True)
         # What picking the free-tier row leaves behind: the welcome model pinned to the welcome host.
         _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
         assert anon_auth.upgrade_guest(_args()) == 0
@@ -219,7 +218,7 @@ class TestSignInCompletionSettlesTheModel:
         assert f"Default model is now {FREE_PICK}." in capsys.readouterr().out
 
     def test_config_on_the_users_own_model_is_left_alone(self, portal, free_account, capsys):
-        anon_auth.ensure_portal_identity(blocking=True)
+        anon_auth.ensure_portal_identity(explicit=True)
         own = {"provider": "openrouter", "default": "anthropic/claude-sonnet-4"}
         _write_model_config(own)
         assert anon_auth.upgrade_guest(_args()) == 0
@@ -229,7 +228,7 @@ class TestSignInCompletionSettlesTheModel:
     def test_no_eligible_recommendation_leaves_no_default_rather_than_a_model_the_account_may_not_use(
             self, portal, free_account, monkeypatch, capsys):
         from hermes_cli import models as m
-        anon_auth.ensure_portal_identity(blocking=True)
+        anon_auth.ensure_portal_identity(explicit=True)
         _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
         def _portal_down():
             raise RuntimeError("recommended models unavailable")

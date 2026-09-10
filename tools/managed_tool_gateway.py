@@ -98,23 +98,16 @@ def peek_nous_access_token() -> Optional[str]:
 def read_nous_access_token() -> Optional[str]:
     """Read a Nous Subscriber OAuth access token from auth store or env override.
 
-    With no Nous identity at all, the free tier is set up here (blocking, short timeout): this is
-    the guarantee that managed-tool and connector calls always have a bearer once the free tier is
-    on, whichever surface booted the process.
+    A read: with no Nous identity there is no bearer and the answer is None. The free-tier identity
+    is created by the boot bootstrap (``hermes_cli.free_tier_bootstrap``), never on a token-read
+    path (NS-845 Q1.2). A retired free-tier credential IS replaced here, once: that is the explicit
+    dead-credential rule, shared with inference.
     """
     if explicit := _read_user_token_override():
         return explicit
     nous_provider = _read_nous_provider_state() or {}
     if not nous_provider:
-        try:
-            from hermes_cli.anon_auth import ensure_portal_identity
-
-            nous_provider = ensure_portal_identity(blocking=True) or {}
-        except Exception as exc:
-            logger.debug("Nous free tier setup from tool gateway skipped: %s", exc)
-            nous_provider = {}
-        if not nous_provider:
-            return None
+        return None
     cached_token = peek_nous_access_token()
     if cached_token and not _access_token_is_expiring(nous_provider.get("expires_at"), _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
         return cached_token
@@ -140,7 +133,7 @@ def _replace_dead_guest_token(dead_state: dict) -> Optional[str]:
 
     clear_dead_guest("anon_credential_dead", dead_token=dead_state.get("anon_token"))
     try:
-        if ensure_portal_identity(blocking=True) is None:
+        if ensure_portal_identity(explicit=True) is None:
             return None
         return _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS))
     except Exception as exc:

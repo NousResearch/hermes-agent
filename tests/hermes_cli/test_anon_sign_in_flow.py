@@ -28,7 +28,7 @@ def _drain(**kwargs):
 
 
 def _seed_free_tier() -> dict:
-    return anon_auth.ensure_portal_identity(blocking=True)
+    return anon_auth.ensure_portal_identity(explicit=True)
 
 
 def _stub_wait(monkeypatch, outcome, *, before=None):
@@ -249,42 +249,20 @@ def test_free_tier_off_yields_unavailable(portal, monkeypatch):
     assert portal.calls == []
 
 
-def test_an_auth_error_while_provisioning_names_the_cause_in_the_terminal_form_only(portal, monkeypatch):
-    def _closed(**kwargs):
-        raise AuthError("gate closed")
-    monkeypatch.setattr(anon_auth, "ensure_portal_identity", _closed)
-
-    state = _drain()[-1]
-
-    assert state.kind == "unavailable"
-    assert state.copy_terminal == f"{anon_auth.UPGRADE_UNAVAILABLE} (gate closed)"
-    assert state.copy == anon_auth.UPGRADE_UNAVAILABLE_CHAT
-
-
-def test_a_transport_failure_while_provisioning_yields_unavailable_rather_than_raising(portal, monkeypatch):
-    def _offline(**kwargs):
-        raise httpx.ConnectError("connection refused")
-    monkeypatch.setattr(anon_auth, "ensure_portal_identity", _offline)
+def test_no_identity_on_disk_yields_unavailable_without_touching_the_portal(portal, monkeypatch):
+    """A sign-in never creates the identity it signs in from: the boot bootstrap is the only creator.
+    With nothing on disk the flow yields ``Unavailable`` and makes no portal call and no mint attempt."""
+    monkeypatch.setattr(anon_auth, "ensure_portal_identity",
+                        lambda **kwargs: (_ for _ in ()).throw(AssertionError("run_sign_in must not mint")))
+    monkeypatch.setattr(anon_auth, "mint_guest",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("run_sign_in must not mint")))
 
     states = _drain()
 
     assert [s.kind for s in states] == ["unavailable"]
-    assert states[-1].copy_terminal == f"{anon_auth.UPGRADE_UNAVAILABLE} (connection refused)"
+    assert states[-1].copy_terminal == anon_auth.UPGRADE_UNAVAILABLE
     assert states[-1].copy == anon_auth.UPGRADE_UNAVAILABLE_CHAT
-
-
-def test_a_transport_failure_while_minting_yields_unavailable(portal, monkeypatch):
-    # ``mint_guest`` is called positionally from inside the store lock, so the stub takes *args:
-    # the failure under test must be the transport error, not a signature mismatch.
-    def _offline(*args, **kwargs):
-        raise httpx.ConnectError("connection refused")
-    monkeypatch.setattr(anon_auth, "mint_guest", _offline)
-
-    states = _drain()
-
-    assert [s.kind for s in states] == ["unavailable"]
-    assert states[-1].copy_terminal == f"{anon_auth.UPGRADE_UNAVAILABLE} (connection refused)"
-    assert states[-1].copy == anon_auth.UPGRADE_UNAVAILABLE_CHAT
+    assert portal.calls == []
 
 
 def test_cancelling_before_the_wait_persists_nothing(portal, tmp_path):

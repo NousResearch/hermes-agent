@@ -76,19 +76,20 @@ def test_billing_state_answers_the_free_tier_locally(guest, monkeypatch):
     assert res["free_tier"] is False and res["free_tier_model"] is None
 
 
-def test_status_without_an_identity_starts_the_background_setup_once(tmp_path, monkeypatch):
+def test_status_without_an_identity_is_a_pure_read(tmp_path, monkeypatch):
+    """The desktop polls ``free_tier.status`` every status round; a poll must never create the identity
+    (that is the boot bootstrap's job)."""
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
     monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-    calls = []
-    monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: calls.append(kw) or None)
+    monkeypatch.setattr(anon_auth, "ensure_portal_identity",
+                        lambda **kw: (_ for _ in ()).throw(AssertionError("free_tier.status must not mint")))
     status = _call("free_tier.status")
-    assert status["has_guest"] is False and status["available"] is False
-    assert calls == [{"blocking": False}]
+    assert status["has_guest"] is False and status["available"] is False and status["enabled"] is True
 
 
 def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_path, monkeypatch):
-    """``free_tier.provision`` is the guided setup's explicit request: it calls provision_free_tier
-    (the one explicit minting entry point) only when no identity exists, and reports the outcome."""
+    """``free_tier.provision`` is the desktop's explicit retry: it calls the one creator
+    (``ensure_portal_identity(explicit=True)``) only when no identity exists, and reports the outcome."""
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
     monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     calls = []
@@ -102,9 +103,9 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
             _save_auth_store(store)
         return store["providers"]["nous"]
 
-    monkeypatch.setattr(anon_auth, "provision_free_tier", fake_provision)
+    monkeypatch.setattr(anon_auth, "ensure_portal_identity", fake_provision)
     assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
-    assert len(calls) == 1
+    assert calls == [{"explicit": True}]
     assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
     assert len(calls) == 1                       # idempotent: an identity exists, nothing is minted
 
@@ -113,10 +114,10 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
 
     with _auth_store_lock():
         store = _load_auth_store(); store["providers"].pop("nous"); _save_auth_store(store)
-    monkeypatch.setattr(anon_auth, "provision_free_tier", refused)
+    monkeypatch.setattr(anon_auth, "ensure_portal_identity", refused)
     result = _call("free_tier.provision")
     assert result["has_guest"] is False and "not open" in result["error"]
 
     _set_guest_off(monkeypatch)
-    monkeypatch.setattr(anon_auth, "provision_free_tier", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))
     assert _call("free_tier.provision") == {"has_guest": False, "enabled": False}

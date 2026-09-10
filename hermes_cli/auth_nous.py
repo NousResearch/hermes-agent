@@ -981,7 +981,7 @@ def resolve_nous_runtime_credentials(
         from hermes_cli.auth import get_provider_auth_state
         dead = get_provider_auth_state("nous") or {}
         clear_dead_guest("anon_credential_dead", dead_token=dead.get("anon_token"))
-        if ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds) is None:
+        if ensure_portal_identity(explicit=True, timeout_seconds=timeout_seconds) is None:
             raise
         return _resolve_nous_runtime_credentials(
             timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle)

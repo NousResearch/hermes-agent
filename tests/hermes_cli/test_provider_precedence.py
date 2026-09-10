@@ -98,35 +98,30 @@ def _logged_out(monkeypatch):
 
 
 def _free_tier(monkeypatch, *, on=True, identity=False):
-    """Free tier switch + whether a free-tier identity already exists; counts mints."""
+    """Free tier switch + whether a free-tier identity already exists. The resolver is a READ: any
+    call into the creator from inside it is a bug, so the stub fails loudly."""
     monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: on)
     monkeypatch.setattr("hermes_cli.anon_auth.has_guest", lambda: identity)
-    calls = {"mint": 0}
-
-    def _ensure(*, blocking=True, timeout_seconds=None):
-        calls["mint"] += 1
-        return {"auth_method": "anonymous"} if on else None
-
-    monkeypatch.setattr("hermes_cli.anon_auth.ensure_portal_identity", _ensure)
-    return calls
+    monkeypatch.setattr("hermes_cli.anon_auth.ensure_portal_identity",
+                        lambda **kw: (_ for _ in ()).throw(AssertionError("resolve_provider must not mint")))
 
 
 class TestFreeTierBeatsImplicitHostCredentials:
     """NS-829: a leftover ~/.aws profile must not pre-empt the free tier on a fresh install.
 
-    Two invariants. (1) The ladder: explicit intent still wins, the free tier sits above the
-    implicit Bedrock chain, and the free tier off restores Bedrock. (2) A failed mint, whether it
-    returns None or raises, falls through to Bedrock."""
+    The ladder: explicit intent still wins, an EXISTING free-tier identity sits above the implicit
+    Bedrock chain, the free tier off (or its identity absent) restores Bedrock. The resolver never
+    creates the identity; the boot bootstrap does, before any turn asks."""
 
-    @pytest.mark.parametrize("free_tier_on, identity, env_key, login, expected, mints", [
-        (True, True, None, None, "nous", 0),          # existing identity beats the AWS chain
-        (True, False, None, None, "nous", 1),         # fresh install mints before Bedrock
-        (False, False, None, None, "bedrock", 0),     # free tier off: Bedrock as before
-        (True, True, "OPENAI_API_KEY", None, "openrouter", 0),  # env key still wins
-        (True, True, None, "anthropic", "anthropic", 0),        # a sign-in still wins
+    @pytest.mark.parametrize("free_tier_on, identity, env_key, login, expected", [
+        (True, True, None, None, "nous"),                 # existing identity beats the AWS chain
+        (True, False, None, None, "bedrock"),             # no identity yet: Bedrock, nothing minted
+        (False, True, None, None, "bedrock"),             # free tier off: Bedrock as before
+        (True, True, "OPENAI_API_KEY", None, "openrouter"),  # env key still wins
+        (True, True, None, "anthropic", "anthropic"),        # a sign-in still wins
     ])
     def test_free_tier_sits_above_the_bedrock_chain(self, monkeypatch, free_tier_on, identity,
-                                                     env_key, login, expected, mints):
+                                                     env_key, login, expected):
         _clear_provider_env(monkeypatch)
         _config(monkeypatch, "")
         if login:
@@ -136,23 +131,17 @@ class TestFreeTierBeatsImplicitHostCredentials:
         if env_key:
             monkeypatch.setenv(env_key, "sk-test-key")
         monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: True)
-        calls = _free_tier(monkeypatch, on=free_tier_on, identity=identity)
+        _free_tier(monkeypatch, on=free_tier_on, identity=identity)
         assert resolve_provider("auto") == expected
-        assert calls["mint"] == mints
 
-    @pytest.mark.parametrize("failure", ["returns_none", "raises"])
-    def test_failed_mint_falls_through_to_bedrock(self, monkeypatch, failure):
+    def test_skip_free_tier_answers_what_else_would_carry_inference(self, monkeypatch):
+        """The bootstrap's question: with the free tier hidden, an existing identity is not an
+        answer and the ladder falls through to the next real rung."""
         _clear_provider_env(monkeypatch)
         _config(monkeypatch, "")
         _logged_out(monkeypatch)
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: True)
-        monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: True)
-        monkeypatch.setattr("hermes_cli.anon_auth.has_guest", lambda: False)
-
-        def _mint(**kw):
-            if failure == "raises":
-                raise RuntimeError("portal 429")
-            return None
-
-        monkeypatch.setattr("hermes_cli.anon_auth.ensure_portal_identity", _mint)
-        assert resolve_provider("auto") == "bedrock"
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+        _free_tier(monkeypatch, on=True, identity=True)
+        assert resolve_provider("auto") == "nous"
+        with pytest.raises(AuthError):
+            resolve_provider("auto", skip_free_tier=True)

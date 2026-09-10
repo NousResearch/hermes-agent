@@ -37,7 +37,7 @@ def _wait_for_terminal(session_id: str, timeout: float = 10.0) -> dict:
 
 
 def test_start_registers_the_transfer_and_completion_settles_the_account(portal, free_account):
-    anon_auth.ensure_portal_identity(blocking=True)
+    anon_auth.ensure_portal_identity(explicit=True)
     _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
 
     resp = client.post("/api/providers/oauth/nous/start", headers=HEADERS)
@@ -62,7 +62,7 @@ def test_start_registers_the_transfer_and_completion_settles_the_account(portal,
 
 
 def test_a_transfer_the_user_declined_is_reported_with_its_reason_and_keeps_the_free_tier(portal, free_account):
-    guest = anon_auth.ensure_portal_identity(blocking=True)
+    guest = anon_auth.ensure_portal_identity(explicit=True)
     portal.status_sequence = [{"status": "voided", "reason": "user_declined"}]
 
     start = client.post("/api/providers/oauth/nous/start", headers=HEADERS).json()
@@ -75,7 +75,7 @@ def test_a_transfer_the_user_declined_is_reported_with_its_reason_and_keeps_the_
 
 
 def test_status_routes_report_the_free_tier(portal):
-    anon_auth.ensure_portal_identity(blocking=True)
+    anon_auth.ensure_portal_identity(explicit=True)
     portal_status = client.get("/api/portal", headers=HEADERS).json()
     assert portal_status["free_tier"] is True
     assert portal_status["account_tier"] == "anonymous"
@@ -89,7 +89,7 @@ def test_a_sign_in_cancelled_while_waiting_never_persists_the_account(portal, fr
     nothing may reach the auth store."""
     import threading
     from hermes_cli import web_server_oauth
-    guest = anon_auth.ensure_portal_identity(blocking=True)
+    guest = anon_auth.ensure_portal_identity(explicit=True)
     release = threading.Event()
 
     def _wait_until_released(client, portal_base_url, claim_code, *, expires_in, interval, cancelled=None):

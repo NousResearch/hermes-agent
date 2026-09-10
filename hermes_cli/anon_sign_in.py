@@ -288,8 +288,10 @@ def run_sign_in(
     post_promotion_cancelled = is_cancelled if cancel_wins_after_promotion else (lambda: False)
     open_scope = scope or contextlib.nullcontext
 
-    # Preconditions and the mint run inside the scope; the state they produce is yielded outside
-    # it, because a scope must never be held across a ``yield``.
+    # Preconditions run inside the scope; the state they produce is yielded outside it, because a
+    # scope must never be held across a ``yield``. A sign-in never creates the identity it signs in
+    # from: with none on disk there is nothing to promote and the answer is ``Unavailable`` (the boot
+    # bootstrap is the only creator, NS-845 Q1.2).
     precondition_state: Optional[SignInState] = None
     state: Optional[Dict[str, Any]] = None
     try:
@@ -297,20 +299,12 @@ def run_sign_in(
             state = _core.current_nous_state()
             if state and not _core.is_guest_state(state):
                 precondition_state = AlreadySignedIn()
-            elif not state:
-                if not _core.guest_enabled():
-                    precondition_state = Unavailable()
-                else:
-                    state = _core.ensure_portal_identity(blocking=True, timeout_seconds=timeout_seconds)
-                    if not _core.is_guest_state(state):
-                        # The free tier is off (or not set up), or an account appeared mid-flight.
-                        precondition_state = Unavailable()
+            elif not state or not _core.guest_enabled():
+                precondition_state = Unavailable()
     except Exception as exc:
-        # An AuthError (gate closed, rate limited) and an ordinary failure -- a cold install whose
-        # mint cannot reach the portal, an unreadable auth store -- mean the same thing here: there
-        # is no free tier to sign in from. Both become the one precondition state, so nothing
-        # escapes ``next()``. KeyboardInterrupt and GeneratorExit are not Exceptions: they still
-        # propagate.
+        # An unreadable auth store means the same thing here: there is no free tier to sign in from.
+        # It becomes the one precondition state, so nothing escapes ``next()``. KeyboardInterrupt
+        # and GeneratorExit are not Exceptions: they still propagate.
         precondition_state = Unavailable(detail=str(exc))
     if precondition_state is not None:
         yield precondition_state

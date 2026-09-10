@@ -199,16 +199,9 @@ class CLIAgentSetupMixin:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         if resolved_provider != "nous":
-            # Explicit provider carries inference; the free tier still sets itself up (background,
-            # nothing waits) so connectors have a bearer. No-op when an identity exists or the
-            # free tier is off.
-            try:
-                from hermes_cli.anon_auth import ensure_portal_identity
-                ensure_portal_identity(blocking=False)
-            except Exception as exc:
-                logger.debug("free tier background setup skipped: %s", exc)
-            # The mint above may land after this turn, so the one-time "free tier is here" notice is
-            # checked on every credential resolve and printed the first time an identity is seen.
+            # An explicit provider carries inference. The free-tier identity (for connectors) was
+            # created by the boot bootstrap before this point, never here; this prints the one-time
+            # "free tier is here" notice the first time an identity is seen beside an own key.
             self._maybe_print_free_tier_available_notice()
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),

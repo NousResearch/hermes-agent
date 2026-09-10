@@ -958,7 +958,9 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable.
+    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
+    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
+    is the only thing that creates it; ``cmd_chat`` runs the bootstrap before asking.
 
     ``strict_profile_scope``: the caller has bound a NAMED profile's home and
     secret scope and wants an answer for that profile only — launch-process
@@ -1043,14 +1045,12 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
-    # Nothing explicit anywhere: the Nous free tier counts as configured once its identity exists.
-    # Setting it up here (blocking, short timeout) is the first-run path for a fresh install; any
-    # failure means "not configured" and the setup guard takes over as before.
+    # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
     try:
-        from hermes_cli.anon_auth import ensure_portal_identity
-        return ensure_portal_identity(blocking=True) is not None
+        from hermes_cli.anon_auth import guest_enabled, has_guest
+        return guest_enabled() and has_guest()
     except Exception as exc:
-        logger.debug("free tier setup on first run skipped: %s", exc)
+        logger.debug("free tier check on first run skipped: %s", exc)
     return False
 
 
@@ -1695,7 +1695,11 @@ def cmd_chat(args):
 
     _warn_retired_xai_models()
 
-    # First-run guard: check if any provider is configured before launching
+    # First-run guard: the free-tier bootstrap runs first (synchronously here; it is the only thing
+    # that may create the identity), then the inventory decides whether setup is needed.
+    from hermes_cli.free_tier_bootstrap import run_bootstrap
+
+    run_bootstrap(announce=False)
     if not _has_any_provider_configured():
         _first_run_setup_guard(args)
         return

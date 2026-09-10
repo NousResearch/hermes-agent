@@ -266,12 +266,26 @@ def _readiness_check(rid, params, probe):
 
 @method("setup.status")
 def _(rid, params: dict) -> dict:
-    """Loose provider check; ``profile`` (optional) scopes it to that profile's home."""
+    """Loose provider check; ``profile`` (optional) scopes it to that profile's home.
+
+    For the launch profile the answer is the boot bootstrap's record (``free_tier_bootstrap``):
+    the call blocks up to ``SETUP_READY_WAIT_SECONDS`` for it, so a client's first poll lands after
+    the free-tier identity exists (or has been refused) rather than racing the mint. If the record
+    is still missing after the wait, or a named profile is asked about, today's live probe answers.
+    The record's fields ride along additively (``ready``, ``free_tier``, ``other_providers``)."""
     try:
         from hermes_cli.main import _has_any_provider_configured
-        return _readiness_check(rid, params, lambda profile, scoped: {
-            "provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
-            **scoped})
+        from hermes_cli.free_tier_bootstrap import wait_for_record
+
+        def probe(profile, scoped):
+            record = None if profile else wait_for_record()
+            if record is None:
+                return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
+                        **scoped}
+            return {"provider_configured": record.provider_configured, "ready": True,
+                    "free_tier": record.free_tier, "other_providers": record.other_providers,
+                    "inference_provider": record.inference_provider, **scoped}
+        return _readiness_check(rid, params, probe)
     except Exception as e:
         return _err(rid, 5016, str(e))
 

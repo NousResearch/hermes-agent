@@ -834,12 +834,16 @@ def _persist_provider_state_to_store(
 def _save_provider_state_to_source(
     auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any], source_path: Optional[Path],
 ) -> None:
-    """Persist provider state back to the auth store it was read from."""
+    """Persist provider state back to the auth store it was read from.
+
+    A token refresh rewrites credentials, not the user's choice of provider: ``active_provider`` is
+    left as it is (a Nous free-tier identity refreshed for a connector call must not become the
+    inference provider of an install that has its own key)."""
     if source_path is None or _same_path(source_path, _auth_file_path()):
-        _save_provider_state(auth_store, provider_id, state)
+        _store_provider_state(auth_store, provider_id, state, set_active=False)
         _save_auth_store(auth_store)
     else:
-        _persist_provider_state_to_store(provider_id, state, source_path, set_active=True)
+        _persist_provider_state_to_store(provider_id, state, source_path, set_active=False)
 
 
 def mark_provider_active_if_unset(provider_id: str) -> None:
@@ -1367,14 +1371,14 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
         return False
 
 
-def _logged_in_oauth_active_provider() -> Optional[str]:
+def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optional[str]:
     """auth.json ``active_provider`` when it is a registry provider that reports logged in."""
     try:
         _maybe = _load_auth_store().get("active_provider")
         if _maybe == "nous":
             from hermes_cli.anon_auth import guest_enabled, has_guest
-            if has_guest() and not guest_enabled():
-                return None  # nous.guest: false — the free tier is off, so a guest is not a login
+            if has_guest() and (skip_free_tier or not guest_enabled()):
+                return None  # the free tier is off (or being discounted), so a guest is not a login
         if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
             return _maybe
     except Exception as e:
@@ -1432,14 +1436,19 @@ def resolve_provider(
     requested: Optional[str] = None,
     *,
     explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None) -> str:
+    explicit_base_url: Optional[str] = None,
+    skip_free_tier: bool = False) -> str:
     """Determine which inference provider to use.
 
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
     "openrouter"; 2. config.yaml ``model.provider``; 3. OPENAI_API_KEY / OPENROUTER_API_KEY ->
     "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
-    7. Nous free tier when ``nous.guest`` is on (existing identity, else a blocking mint);
+    7. Nous free tier when it is on and its identity exists (never created here);
     8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
+
+    ``skip_free_tier`` hides rungs 6-for-a-free-tier-identity and 7: the boot bootstrap asks
+    "what would carry inference if the free tier did not exist?" to decide whether a fresh identity
+    may become ``active_provider``.
 
     1. 3. 4. 5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider 7. 8. Error (no
     provider configured) See #29285.
@@ -1469,7 +1478,7 @@ def resolve_provider(
 
     # Determined up front so the env-key tier can warn when an exported key preempts it; the actual
     # OAuth fallback still happens after the env-key tier.
-    _oauth_active = _logged_in_oauth_active_provider()
+    _oauth_active = _logged_in_oauth_active_provider(skip_free_tier=skip_free_tier)
     env_pid = _env_key_auto_detected(_scoped_key_env, _oauth_active)
     if env_pid:
         return env_pid
@@ -1487,18 +1496,19 @@ def resolve_provider(
                 _oauth_active)
         return _oauth_active
 
-    # Nous free tier, when it is on: an existing free-tier identity, else mint one (blocking, short
-    # timeout). This rung sits ABOVE the Bedrock chain on purpose. Every rung above this line is
-    # explicit user intent (CLI creds, config, env keys, a sign-in); the boto chain below is implicit
-    # host state, and a leftover ~/.aws profile used to win the first turn of a fresh install and
-    # fail 403 while the free tier was being minted in the background (NS-829). ``nous.guest: false``
-    # skips this rung. A failed mint is not an error: it falls through to Bedrock and the guidance.
-    try:
-        from hermes_cli.anon_auth import ensure_portal_identity, guest_enabled, has_guest
-        if guest_enabled() and (has_guest() or ensure_portal_identity(blocking=True) is not None):
-            return "nous"
-    except Exception as exc:
-        logger.debug("free tier setup during provider resolution skipped: %s", exc)
+    # Nous free tier, when it is on and its identity already exists. This rung sits ABOVE the Bedrock
+    # chain on purpose: every rung above this line is explicit user intent (CLI creds, config, env
+    # keys, a sign-in); the boto chain below is implicit host state, and a leftover ~/.aws profile
+    # used to win the first turn of a fresh install (NS-829). The rung never CREATES the identity:
+    # that is the boot bootstrap's job (free_tier_bootstrap), so provider resolution stays free of
+    # network and a fresh install without the bootstrap resolves exactly as upstream does.
+    if not skip_free_tier:
+        try:
+            from hermes_cli.anon_auth import guest_enabled, has_guest
+            if guest_enabled() and has_guest():
+                return "nous"
+        except Exception as exc:
+            logger.debug("free tier check during provider resolution skipped: %s", exc)
     # AWS Bedrock via the boto3 credential chain (IAM roles, SSO, env vars): implicit host state,
     # below explicit keys and below the free tier.
     try:

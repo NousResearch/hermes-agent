@@ -1,38 +1,35 @@
 import assert from 'node:assert/strict'
+import { X509Certificate } from 'node:crypto'
 
-import { test, vi } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 
-vi.mock('node:crypto', () => ({
-  X509Certificate: class {
-    fingerprint256: string
-    validToDate: Date
-    validTo = 'not a parseable display date'
+import { bundledRoot, expiredRoot, privateRoot } from './fixtures/windows-system-ca'
+import { installWindowsSystemCaTrust, type NodeTlsCaApi } from './windows-system-ca'
 
-    constructor(pem: string) {
-      if (!pem.startsWith('cert:')) throw new Error('unparseable certificate')
-      const [, fingerprint, expiry] = pem.split(':')
-      this.fingerprint256 = fingerprint
-      this.validToDate = new Date(Number(expiry))
-    }
-  }
-}))
+afterEach(() => vi.restoreAllMocks())
 
-test('excludes expired system roots and deduplicates by fingerprint with defaults first', () => {
-  const future = Date.now() + 86_400_000
-  const past = Date.now() - 86_400_000
-  const bundled = `cert:shared:${future}`
-  const privateRoot = `cert:private:${future}`
+test('excludes expired roots and deduplicates real certificates with defaults first', () => {
+  vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-01-01T00:00:00Z').getTime())
   const tlsApi = fakeTlsApi(
-    [bundled, 'unparseable-default'],
-    [`cert:expired:${past}`, `${bundled}:alternate-pem`, privateRoot, privateRoot, 'unparseable-system']
+    [expiredRoot, bundledRoot, bundledRoot, 'unparseable-default'],
+    [expiredRoot, bundledRoot.replaceAll('\n', '\r\n'), privateRoot, privateRoot, 'unparseable-system']
   )
+
   const result = installWindowsSystemCaTrust(tlsApi, 'win32')
-  assert.deepEqual(tlsApi.installed, [[bundled, 'unparseable-default', privateRoot, 'unparseable-system']])
-  assert.equal(result.systemCertificateCount, 2)
-  assert.equal(result.totalCertificateCount, 4)
+
+  assert.deepEqual(tlsApi.installed, [[bundledRoot, 'unparseable-default', privateRoot, 'unparseable-system']])
+  assert.deepEqual(result, { applied: true, systemCertificateCount: 2, totalCertificateCount: 4 })
 })
 
-import { installWindowsSystemCaTrust, type NodeTlsCaApi } from './windows-system-ca'
+test('excludes a root at its exact expiry while retaining valid defaults', () => {
+  vi.spyOn(Date, 'now').mockReturnValue(new X509Certificate(expiredRoot).validToDate.getTime())
+  const tlsApi = fakeTlsApi([bundledRoot], [expiredRoot])
+
+  const result = installWindowsSystemCaTrust(tlsApi, 'win32')
+
+  assert.deepEqual(tlsApi.installed, [[bundledRoot]])
+  assert.deepEqual(result, { applied: true, systemCertificateCount: 0, totalCertificateCount: 1 })
+})
 
 function fakeTlsApi(
   defaults: string[] = ['bundled-ca', 'extra-ca'],

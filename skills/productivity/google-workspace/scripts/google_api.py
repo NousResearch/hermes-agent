@@ -12,6 +12,7 @@ Usage:
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
+  python google_api.py calendar update EVENT_ID [--summary "New title"] [--location "Room 2"]
   python google_api.py drive search "budget report" [--max 10]
   python google_api.py contacts list [--max 20]
   python google_api.py sheets get SHEET_ID RANGE
@@ -551,6 +552,137 @@ def calendar_create(args):
         "htmlLink": result.get("htmlLink", ""),
     }, indent=2))
 
+
+def _calendar_update_datetime(value: str, field: str) -> str:
+    """Require an ISO 8601 date-time with an explicit UTC offset."""
+    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except (TypeError, ValueError):
+        raise SystemExit(f"ERROR: --{field} must be an ISO 8601 date-time with timezone")
+    if "T" not in value or parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise SystemExit(f"ERROR: --{field} must include a timezone")
+    return value
+
+
+def _calendar_update_body(args) -> dict:
+    """Build a partial event patch while preserving omitted versus empty values."""
+    body = {}
+    for field in ("summary", "location", "description"):
+        value = getattr(args, field, None)
+        if value is not None:
+            body[field] = value
+
+    for field in ("start", "end"):
+        value = getattr(args, field, None)
+        if value is not None:
+            body[field] = {"dateTime": _calendar_update_datetime(value, field)}
+
+    attendees = getattr(args, "attendees", None)
+    if attendees is not None:
+        body["attendees"] = [
+            {"email": email.strip()}
+            for email in attendees.split(",")
+            if email.strip()
+        ]
+
+    if not body:
+        raise SystemExit("ERROR: at least one field must be supplied for calendar update")
+    return body
+
+
+def _calendar_update_uses_gws(args) -> bool:
+    backend = getattr(args, "backend", "auto")
+    if backend == "native":
+        return False
+    if backend == "gws" and not _gws_binary():
+        raise SystemExit("ERROR: --backend gws requested but gws is not installed")
+    return bool(_gws_binary())
+
+
+def _calendar_update_field_matches(field: str, expected, event: dict) -> bool:
+    if field in {"summary", "location", "description"}:
+        return event.get(field, "") == expected
+    if field in {"start", "end"}:
+        actual = event.get(field)
+        if not isinstance(actual, dict) or not isinstance(expected, dict):
+            return False
+        actual_value = actual.get("dateTime")
+        expected_value = expected.get("dateTime")
+        if not isinstance(actual_value, str) or not isinstance(expected_value, str):
+            return False
+        try:
+            actual_dt = datetime.fromisoformat(actual_value.replace("Z", "+00:00"))
+            expected_dt = datetime.fromisoformat(expected_value.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return actual_dt == expected_dt
+    if field == "attendees":
+        actual = event.get("attendees", [])
+        if not isinstance(actual, list) or not isinstance(expected, list):
+            return False
+        actual_emails = [
+            item.get("email") for item in actual if isinstance(item, dict)
+        ]
+        expected_emails = [
+            item.get("email") for item in expected if isinstance(item, dict)
+        ]
+        return actual_emails == expected_emails
+    return False
+
+
+def _verify_calendar_update(event_id: str, body: dict, event) -> None:
+    if not isinstance(event, dict) or event.get("id") != event_id:
+        raise RuntimeError("Calendar update read-back returned an unexpected event ID")
+    mismatches = [
+        field
+        for field, expected in body.items()
+        if not _calendar_update_field_matches(field, expected, event)
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Calendar update read-back mismatch for: " + ", ".join(sorted(mismatches))
+        )
+
+
+def calendar_update(args):
+    body = _calendar_update_body(args)
+    use_gws = _calendar_update_uses_gws(args)
+    params = {"calendarId": args.calendar, "eventId": args.event_id}
+
+    if use_gws:
+        result = _run_gws(
+            ["calendar", "events", "patch"],
+            params=params,
+            body=body,
+        )
+        readback = _run_gws(
+            ["calendar", "events", "get"],
+            params=params,
+        )
+    else:
+        events = build_service("calendar", "v3").events()
+        result = events.patch(
+            calendarId=args.calendar,
+            eventId=args.event_id,
+            body=body,
+        ).execute()
+        readback = events.get(
+            calendarId=args.calendar,
+            eventId=args.event_id,
+        ).execute()
+
+    if not isinstance(result, dict) or result.get("id") != args.event_id:
+        raise RuntimeError("Calendar update returned an unexpected event ID")
+    _verify_calendar_update(args.event_id, body, readback)
+    print(json.dumps({
+        "status": "updated",
+        "id": readback["id"],
+        "summary": readback.get("summary", ""),
+        "htmlLink": readback.get("htmlLink", ""),
+        "changedFields": sorted(body),
+        "verified": True,
+    }, indent=2, ensure_ascii=False))
 
 
 def calendar_delete(args):
@@ -1113,6 +1245,18 @@ def main():
     p.add_argument("--attendees", default="", help="Comma-separated email addresses")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_create)
+
+    p = cal_sub.add_parser("update")
+    p.add_argument("event_id")
+    p.add_argument("--summary", default=None, help="New title; pass an empty string to clear")
+    p.add_argument("--start", default=None, help="New start (ISO 8601 with timezone)")
+    p.add_argument("--end", default=None, help="New end (ISO 8601 with timezone)")
+    p.add_argument("--location", default=None, help="New location; pass an empty string to clear")
+    p.add_argument("--description", default=None, help="New description; pass an empty string to clear")
+    p.add_argument("--attendees", default=None, help="Comma-separated emails; pass an empty string to clear")
+    p.add_argument("--calendar", default="primary")
+    p.add_argument("--backend", choices=["auto", "native", "gws"], default="auto")
+    p.set_defaults(func=calendar_update)
 
     p = cal_sub.add_parser("delete")
     p.add_argument("event_id")

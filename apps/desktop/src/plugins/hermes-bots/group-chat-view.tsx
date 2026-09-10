@@ -14,6 +14,7 @@ import * as sdk from '@hermes/plugin-sdk'
 import {
   atom,
   Button,
+  Checkbox,
   cn,
   Codicon,
   ConfirmDialog,
@@ -43,7 +44,9 @@ import {
   $lastRoster,
   botHandle,
   botMetaV2Active,
+  botRosterKey,
   botSourceStatus,
+  filterBots,
   noteBotMetaWrite,
   persistBotMetaSnapshot,
   ROSTER_KEY,
@@ -63,6 +66,7 @@ import {
   $groupChatWorkspace,
   $groupClarify,
   $groupNeedsYou,
+  GROUP_CHAT_MAX_MEMBERS,
   groupSpeakerLabel,
   groupThreadOf,
   scheduleGroupChatServerSync,
@@ -78,7 +82,8 @@ import {
   groupChatMemberBots,
   groupDisbandMetadataPlan,
   groupWorkspaceOwnerKey,
-  liveGroupChatNames
+  liveGroupChatNames,
+  replaceGroupChatMembers
 } from './group-membership'
 import {
   clearGroupComposerDraft,
@@ -360,33 +365,87 @@ interface GroupChatSettingsDialogProps {
   open: boolean
 }
 
-/** Edit an existing group chat's name and picture. Renames re-key the room
- *  and every local member's membership (renameGroupChat); the picture rides
- *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
+/** Edit an existing group chat's name, picture and MEMBERS. Renames re-key the
+ *  room and every local member's membership (renameGroupChat); the picture
+ *  rides the room record; the member set is replaced wholesale so a removal
+ *  actually un-seats the bot. All three apply on Save so a cancelled dialog
+ *  changes nothing. */
+export function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
+  const allMeta = useValue($botMeta)
+  const roster = useValue($lastRoster)
   const current = (rooms[group] || {}).image || null
   const [name, setName] = useState(group)
-  const [image, setImage] = useState(current)
+  const [image, setImage] = useState<null | string>(current)
+  const [checked, setChecked] = useState<Record<string, boolean>>({})
+  const [query, setQuery] = useState('')
+  // A rename that succeeds followed by a member write that fails must not
+  // leave Save retrying against the OLD room key — that room no longer
+  // exists, so the dialog would be unrecoverable without closing it.
+  const [workingGroup, setWorkingGroup] = useState(group)
+
+  const candidatesByKey = new Map<string, RosterRow>()
+
+  for (const member of members || []) {
+    candidatesByKey.set(botRosterKey(member), member as RosterRow)
+  }
+
+  // Prefer a live roster row over its persisted descriptor, while retaining
+  // offline members that exist only in the room record.
+  for (const bot of roster || []) {
+    candidatesByKey.set(botRosterKey(bot), bot)
+  }
+
+  const candidates = [...candidatesByKey.values()]
+  const selected = candidates.filter(bot => checked[botRosterKey(bot)])
+  const visible = filterBots(candidates, allMeta, query)
+  const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
+
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
+      setChecked(Object.fromEntries((members || []).map(member => [botRosterKey(member), true])))
+      setQuery('')
+      setWorkingGroup(group)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
 
   const save = async () => {
-    const finalName = await renameGroupChat(group, name, members)
+    if (!selected.length || selected.length > GROUP_CHAT_MAX_MEMBERS) {
+      host.notifyError(new Error(`Group chats require 1–${GROUP_CHAT_MAX_MEMBERS} bots`), 'Could not save group')
 
-    if (finalName === null) {
-      return // collision — dialog stays open for a different name
+      return
+    }
+
+    let finalName = workingGroup
+
+    // Only rename while the room still answers to the name this dialog opened
+    // with; after a successful rename a retry must target the new key.
+    if (workingGroup === group) {
+      const renamed = await renameGroupChat(group, name, members)
+
+      if (renamed === null) {
+        return // collision — dialog stays open for a different name
+      }
+
+      finalName = renamed
+      setWorkingGroup(renamed)
     }
 
     if (image !== current) {
       setGroupChatImage(finalName, image)
+    }
+
+    try {
+      await replaceGroupChatMembers(finalName, selected)
+    } catch (error) {
+      host.notifyError(error, 'Could not save group members')
+
+      return
     }
 
     onClose()
@@ -430,11 +489,64 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
             value={name}
           />
         </form>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)">
+            {b.group.searchToAdd}
+          </span>
+          <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">
+            {b.group.memberCount(selected.length)}
+          </span>
+        </div>
+        <Input
+          aria-label={b.group.searchToAdd}
+          maxLength={64}
+          onChange={event => setQuery(event.target.value)}
+          placeholder={b.group.searchToAddPlaceholder}
+          value={query}
+        />
+        <div className="max-h-56 min-h-0 overflow-y-auto overscroll-contain">
+          <div className="grid gap-0.5 pr-2">
+            {visible.length ? (
+              visible.map(bot => {
+                const key = botRosterKey(bot)
+                const meta = botRosterMeta(bot, allMeta)
+                const isChecked = Boolean(checked[key])
+                const disabled = !isChecked && atCap
+
+                return (
+                  <label
+                    className={cn(
+                      'flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-(--chrome-action-hover)',
+                      disabled && 'cursor-not-allowed opacity-50'
+                    )}
+                    key={key}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs text-foreground">{displayName(bot, meta)}</div>
+                      <div className="truncate text-[0.625rem] text-(--ui-text-quaternary)">
+                        {`@${botHandle(bot.name, bot)}${bot.remoteSource && bot.connectionLabel ? ` · ${bot.connectionLabel}` : ''}`}
+                      </div>
+                    </div>
+                    <Checkbox
+                      checked={isChecked}
+                      disabled={disabled}
+                      onCheckedChange={value => setChecked(prev => ({ ...prev, [key]: Boolean(value) }))}
+                    />
+                  </label>
+                )
+              })
+            ) : (
+              <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
+                {query.trim() ? `No bots match “${query.trim()}”` : 'No bots yet — create one first.'}
+              </div>
+            )}
+          </div>
+        </div>
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
-          <Button disabled={!name.trim()} onClick={() => void save()}>
+          <Button disabled={!name.trim() || !selected.length} onClick={() => void save()}>
             {t.common.save}
           </Button>
         </DialogFooter>

@@ -536,6 +536,36 @@ describe('attachments', () => {
     expect(staged?.data).toBe(pdf.data)
   })
 
+  it('stages group PDFs via file.attach and puts the workspace ref in the member prompt', async () => {
+    const room = await loadRoom()
+    const pdf: Attachment = { data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf', name: 'spec.pdf' }
+
+    room.rounds.sendToGroupChat('PdfFile', [{ name: 'research', title: '' }], 'read this', null, [pdf])
+    await settle(room, 'PdfFile')
+
+    expect(room.gateway.attaches.some(attach => attach.method === 'file.attach' && attach.filename === 'spec.pdf')).toBe(
+      true
+    )
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.gateway.calls[0].prompt).toContain('Attached files staged in your session workspace:')
+    expect(room.gateway.calls[0].prompt).toContain('spec.pdf → @file:attachments/spec.pdf')
+  })
+
+  it('names a failed group PDF attach in the member prompt instead of pretending the file is there', async () => {
+    const room = await loadRoom({
+      failAttach: { 'file.attach': Object.assign(new Error('pdftoppm not installed'), { code: 5028 }) }
+    })
+    const pdf: Attachment = { data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf', name: 'notes.pdf' }
+
+    room.rounds.sendToGroupChat('PdfFail', [{ name: 'research', title: '' }], 'summarize this', null, [pdf])
+    await settle(room, 'PdfFail')
+
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.gateway.calls[0].prompt).toContain('could not be staged into your session')
+    expect(room.gateway.calls[0].prompt).toContain('notes.pdf')
+    expect(room.gateway.calls[0].prompt).not.toContain('Attached files staged in your session workspace:')
+  })
+
   it('appends the file.attach ref_text to the member turn prompt', async () => {
     const room = await loadRoom()
     const doc: Attachment = { data: 'data:text/plain;base64,aGVsbG8=', kind: 'file', name: 'notes.txt' }

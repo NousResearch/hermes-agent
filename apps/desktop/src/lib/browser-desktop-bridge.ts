@@ -12,6 +12,7 @@ import type {
 } from '@/global'
 import { translateNow } from '@/i18n'
 import { bytesToBase64 } from '@/lib/base64'
+import { createBrowserZoom } from '@/lib/browser-zoom'
 import { createGitRestBridge } from '@/lib/git-rest'
 import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -1310,11 +1311,7 @@ export function installBrowserDesktopBridge(): boolean {
 
       return { path: result.path || path }
     },
-    zoom: {
-      get: async () => ({ level: 0, percent: Math.round(window.devicePixelRatio * 100) || 100 }),
-      onChanged: noopUnsubscribe,
-      setPercent: () => undefined
-    }
+    zoom: createBrowserZoom(bootstrap.basePath)
   }
 
   win.hermesDesktop = bridge

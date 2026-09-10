@@ -35,6 +35,8 @@
 
 import { execFileSync } from 'node:child_process'
 
+import { windowsShellCommand } from './windows-child-options'
+
 /** Default probe budget. 5s false-negativeed healthy Windows cold starts (#61764). */
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000
 
@@ -196,7 +198,7 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   }
 
   try {
-    execProbeSync(hermesCommand, ['--version'], {
+    execProbeSync(windowsShellCommand(hermesCommand, Boolean(opts?.shell)), ['--version'], {
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
       shell: Boolean(opts?.shell),

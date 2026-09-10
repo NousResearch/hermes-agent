@@ -13,21 +13,59 @@ import * as jsxRuntime from 'react/jsx-runtime'
 
 import * as sdk from './index'
 
-const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
-} as const
+type GlobalKey =
+  | '__HERMES_PLUGIN_SDK__'
+  | '__HERMES_REACT__'
+  | '__HERMES_REACT_JSX__'
+  | '__HERMES_REACT_JSX_DEV__'
+
+// NOTE: resolve namespaces at call time, never at module scope. The bundler
+// may evaluate this module before the sdk barrel's namespace binding is
+// initialized (a hoisted `var` still reads as undefined), which silently
+// empties ({...undefined} === {}) or crashes (Object.keys(undefined)) every
+// runtime plugin load. Both consumers run long after boot, so laziness is
+// free and always safe.
+function resolveNamespace(key: GlobalKey): Record<string, unknown> | null | undefined {
+  switch (key) {
+    case '__HERMES_PLUGIN_SDK__':
+      // Spread into a plain object: the loader re-exports these members
+      // dynamically (Object.keys), invisible to tree-shaking, so a static
+      // use of every member keeps plugin-facing exports in the bundle.
+      return { ...sdk }
+    case '__HERMES_REACT__':
+      return React as unknown as Record<string, unknown>
+    case '__HERMES_REACT_JSX__':
+      return jsxRuntime as unknown as Record<string, unknown>
+    case '__HERMES_REACT_JSX_DEV__':
+      return jsxDevRuntime as unknown as Record<string, unknown> | null | undefined
+  }
+}
 
 export function installPluginSdk(): void {
-  Object.assign(globalThis, GLOBALS)
+  Object.assign(globalThis, {
+    __HERMES_PLUGIN_SDK__: resolveNamespace('__HERMES_PLUGIN_SDK__'),
+    __HERMES_REACT__: resolveNamespace('__HERMES_REACT__'),
+    __HERMES_REACT_JSX__: resolveNamespace('__HERMES_REACT_JSX__'),
+    __HERMES_REACT_JSX_DEV__: resolveNamespace('__HERMES_REACT_JSX_DEV__')
+  })
 }
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.
  *  Export names come from the namespace itself, so the list can't drift. */
-function shimUrl(globalKey: keyof typeof GLOBALS): string {
-  const names = Object.keys(GLOBALS[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
+function shimUrl(globalKey: GlobalKey): string {
+  const ns = resolveNamespace(globalKey)
+
+  // A nullish namespace (e.g. a bundler-mangled react/jsx-dev-runtime) must
+  // not break every plugin load: emit a module that throws only if imported.
+  if (ns == null) {
+    return URL.createObjectURL(
+      new Blob([`throw new Error('unavailable runtime namespace: ${globalKey}')`], {
+        type: 'text/javascript'
+      })
+    )
+  }
+
+  const names = Object.keys(ns).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
 
   const source =
     `const m = globalThis.${globalKey};\n` +

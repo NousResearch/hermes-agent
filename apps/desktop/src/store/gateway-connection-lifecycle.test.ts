@@ -53,6 +53,7 @@ vi.mock('@/store/session-states', () => reconnectStateMocks)
 
 const {
   activeGateway,
+  activeGatewayConnectionId,
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
@@ -66,7 +67,8 @@ const {
   reconnectSecondaryGateways,
   retainGatewayForAgent,
   retireLocalProfileGateways,
-  setPrimaryGateway
+  setPrimaryGateway,
+  setPrimaryGatewayConnection
 } = await import('./gateway')
 
 function installDesktop(stub: Record<string, unknown>): void {
@@ -95,6 +97,25 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+})
+
+describe('primary connection identity', () => {
+  it('does not reuse a stale secondary descriptor after the primary explicitly publishes an unqualified route', () => {
+    configureGatewayRegistry({
+      activeConnectionId: () => 'legacy-remote-profile',
+      onEvent: vi.fn()
+    } as never)
+
+    // Before Electron publishes the primary descriptor, the renderer may use
+    // the ambient descriptor as a boot-time compatibility fallback.
+    expect(activeGatewayConnectionId()).toBe('legacy-remote-profile')
+
+    // A published descriptor without connectionId is authoritative: this is a
+    // legacy/local primary, not the stale registry source the window just left.
+    setPrimaryGatewayConnection(null)
+
+    expect(activeGatewayConnectionId()).toBeNull()
+  })
 })
 
 describe('disposeSecondariesForConnection', () => {

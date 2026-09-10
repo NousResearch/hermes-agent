@@ -12,7 +12,8 @@ import { mintGatewayTicketWithPython } from './local-gateway-python'
 test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, owner, protocol and purpose', async () => {
   const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gw-bridge-')))
   const root = path.resolve('../..')
-  const python = process.env.HERMES_TEST_PYTHON || path.join(root, '.venv/bin/python')
+  // The JS-only CI runner has no repository venv; this helper uses stdlib only.
+  const python = process.env.HERMES_TEST_PYTHON || 'python3'
   const endpoint = { profile_id: home, instance_id: 'owner', runtime_protocol: 1 }
   const requests: any[] = []
   let override = {}

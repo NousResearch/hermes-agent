@@ -1,10 +1,9 @@
 import { BrowserWindow, ipcMain, Notification } from 'electron'
 
-import type { HermesNotification } from '../src/global'
-
 import { createEventDeduper } from './event-dedupe'
 import { resolveNotificationAction } from './notification-actions'
 import { createNotificationRegistry } from './notification-registry'
+import type { HermesNotification } from './notification-types'
 
 interface NotificationHost {
   getMainWindow: () => BrowserWindow | null
@@ -31,6 +30,7 @@ export function registerNativeNotifications({ getMainWindow, focusWindow }: Noti
 
     const actions = Array.isArray(payload?.actions) ? payload.actions : []
     const icon = typeof payload?.icon === 'string' && payload.icon.trim() ? payload.icon.trim() : undefined
+
     const notification = new Notification({
       title: payload?.title || 'Hermes',
       body: payload?.body || '',

@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import { beforeEach, expect, it, vi } from 'vitest'
 
-import type { HermesNotification } from '../src/global'
+import type { HermesNotification } from './notification-types'
 
 const host = vi.hoisted(() => ({
   handle: vi.fn(),

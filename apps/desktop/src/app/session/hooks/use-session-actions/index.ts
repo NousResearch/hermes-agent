@@ -758,10 +758,7 @@ export function useSessionActions({
         const cwd =
           options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
 
-        const params = {
-          ...(await desktopSessionCreateParams(cwd, capturedRoute)),
-          ...(workspaceScope.workspaceMode === 'bots' ? { hidden: true } : {})
-        }
+        const params = await desktopSessionCreateParams(cwd, capturedRoute)
 
         // Same lease chain as createBackendSessionForSend: owner socket held
         // across the create, then the foreground hold carries it until the

@@ -4138,6 +4138,33 @@ describe('openNewSessionTile workspace target', () => {
     })
 
     expect(createParams).not.toHaveProperty('cwd')
+    expect(createParams).not.toHaveProperty('hidden')
+  })
+
+  it('does not pass hidden:true for generic New session tile in bots workspace (#107016)', async () => {
+    let createParams: Record<string, unknown> | undefined
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+        return {
+          info: { cwd: '', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-bots-generic-tile'
+        } as never
+      }
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+    await act(async () => {
+      await handle!.openNewSessionTile('center', {
+        listed: false,
+        workspaceScope: { workspaceMode: 'bots', workspaceOwnerKey: 'bot:default' }
+      })
+    })
+    expect(createParams).toBeDefined()
+    expect(createParams).not.toHaveProperty('hidden')
   })
 })
 describe('selectSidebarItem', () => {

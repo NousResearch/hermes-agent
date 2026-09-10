@@ -692,6 +692,14 @@ class TestTwoFactor:
         assert normalize_otp_secret("otpauth://totp/GitHub:tek?secret=jbsw y3dp ehpk3pxp&issuer=GitHub") == "JBSWY3DPEHPK3PXP"
         with pytest.raises(VaultError):
             normalize_otp_secret("not base32!")
+        # Non-default otpauth parameters are kept and honoured (RFC 6238 SHA-256 / 8-digit vector at T=59).
+        stored = normalize_otp_secret(f"otpauth://totp/x?secret={'GEZDGNBVGY3TQOJQ' * 2}&digits=8&period=30&algorithm=SHA256")
+        assert stored.endswith("|8|30|SHA256")
+        sha256_seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA"  # "1234567890" * 3.2 -> RFC 32-byte seed
+        assert totp_now(sha256_seed + "|8|30|SHA256", at=59) == "46119246"
+        assert totp_now("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ|6|60|SHA1", at=119) == totp_now("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", period=60, at=119)
+        with pytest.raises(VaultError):
+            normalize_otp_secret("otpauth://hotp/x?secret=JBSWY3DPEHPK3PXP&counter=1")
 
     def test_saved_authenticator_key_mints_codes_without_asking(self, store, monkeypatch):
         """The whole point: with a seed on the login, enter_code never prompts and the code never comes back."""
@@ -729,7 +737,8 @@ class TestTwoFactor:
         from tools import browser_vault_tool
 
         unlock_mod.set_code_prompt_callback(lambda site, hint: "246 810")
-        boxes = [{"index": i, "type": "tel", "name": f"digit{i}", "label": "", "autocomplete": "one-time-code"} for i in range(6)]
+        boxes = [{"index": i, "type": "tel", "name": f"digit{i}", "label": "", "autocomplete": "one-time-code",
+                  "formIndex": 0, "maxLength": 1} for i in range(6)]
         seen = {}
         fake_eval = lambda t, e: {"success": True, "result": json.dumps(boxes) if "querySelectorAll" in e else "https://acme.test/2fa"}
 
@@ -748,6 +757,24 @@ class TestTwoFactor:
         assert out["success"] and out["source"] == "user" and out["filled_fields"] == 6
         assert re.findall(r'"value": "(\d)"', seen["expr"]) == list("246810")
         assert declined["error_type"] == "code_declined"
+
+    def test_several_code_like_inputs_that_are_not_a_digit_widget_get_one_field(self):
+        """Reviewer case: a page with 4+ code-ish inputs (promo code, zip code, a real OTP box...) must never
+        get a digit sprayed across them. Only an unmistakable maxlength=1 same-form adjacent group splits."""
+        from agent.vault_login_classifier import ClassifiedLoginControl, LoginControl, build_otp_fills
+
+        def ctl(i, form=0, maxlen=None, score=70):
+            return ClassifiedLoginControl(LoginControl("", form, i, "", f"code{i}", "text", maxlen), score, "one-time-code")
+
+        scattered = [ctl(0), ctl(3), ctl(7), ctl(9, form=1), ctl(12, score=100)]
+        assert build_otp_fills(scattered, "246810") == [{"index": 12, "token": "one-time-code", "value": "246810"}]
+        # maxlength=1 but different forms / non-adjacent: still one field
+        assert len(build_otp_fills([ctl(i, form=i % 2, maxlen=1) for i in range(6)], "246810")) == 1
+        assert len(build_otp_fills([ctl(i * 2, maxlen=1) for i in range(6)], "246810")) == 1
+        # five boxes for a six-digit code: one field
+        assert len(build_otp_fills([ctl(i, maxlen=1) for i in range(5)], "246810")) == 1
+        # the real widget
+        assert [f["value"] for f in build_otp_fills([ctl(i + 4, maxlen=1) for i in range(6)], "246810")] == list("246810")
 
     def test_no_code_field_points_at_passkey_or_device_approval(self):
         from tools import browser_vault_tool

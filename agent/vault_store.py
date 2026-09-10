@@ -67,34 +67,57 @@ class VaultError(Exception):
     """Vault failure that is safe to surface (never contains secret values)."""
 
 
+_OTP_ALGOS = {"SHA1": "sha1", "SHA256": "sha256", "SHA512": "sha512"}
+
+
 def normalize_otp_secret(value: str) -> str:
-    """Accept a raw base32 seed or an ``otpauth://totp/...?secret=...`` URI; return the bare base32 seed
-    (uppercase, no spaces) or "" when empty/unusable. Only the seed is stored; issuer/digits/period use
-    RFC 6238 defaults, which every mainstream site uses."""
+    """Accept a raw base32 seed or an ``otpauth://totp/...`` URI. Returns the canonical stored form:
+    the bare uppercase base32 seed, followed by ``|digits|period|algo`` ONLY when the URI departs from
+    the RFC 6238 defaults (6 / 30 / SHA1), so a plain seed stays a plain seed. Non-default parameters
+    are honoured, not dropped: an 8-digit or 60-second authenticator would otherwise get wrong codes."""
     value = (value or "").strip()
     if not value:
         return ""
+    digits, period, algo = 6, 30, "SHA1"
     if value.lower().startswith("otpauth://"):
         from urllib.parse import parse_qs, urlparse
-        qs = parse_qs(urlparse(value).query)
-        value = (qs.get("secret") or [""])[0]
+        parsed = urlparse(value)
+        if parsed.netloc.lower() != "totp":
+            raise VaultError("only otpauth://totp links are supported (counter-based HOTP is not)")
+        qs = {k.lower(): v[0] for k, v in parse_qs(parsed.query).items()}
+        value = qs.get("secret", "")
+        try:
+            digits = int(qs.get("digits", digits))
+            period = int(qs.get("period", period))
+        except ValueError:
+            raise VaultError("otpauth:// digits/period must be integers")
+        algo = qs.get("algorithm", algo).upper().replace("-", "")
+        if digits not in (6, 7, 8) or period <= 0 or algo not in _OTP_ALGOS:
+            raise VaultError("unsupported otpauth:// parameters (digits 6-8, period > 0, SHA1/SHA256/SHA512)")
     seed = re.sub(r"[\s-]", "", value).upper().rstrip("=")
     if not seed or re.search(r"[^A-Z2-7]", seed):
         raise VaultError("authenticator key must be a base32 secret or an otpauth:// URI")
-    return seed
+    if (digits, period, algo) == (6, 30, "SHA1"):
+        return seed
+    return f"{seed}|{digits}|{period}|{algo}"
 
 
 def totp_now(seed: str, *, digits: int = 6, period: int = 30, at: Optional[float] = None) -> str:
-    """RFC 6238 TOTP (SHA-1) for a base32 seed. Stdlib only: no dependency for six digits."""
+    """RFC 6238 TOTP for a stored seed (see normalize_otp_secret for the ``seed|digits|period|algo``
+    form). Stdlib only."""
     import base64
     import hashlib
     import hmac
     import struct
     import time as _time
 
+    algo = "sha1"
+    if "|" in seed:
+        seed, d, p, a = seed.split("|", 3)
+        digits, period, algo = int(d), int(p), _OTP_ALGOS.get(a.upper(), "sha1")
     key = base64.b32decode(seed + "=" * (-len(seed) % 8), casefold=True)
     counter = int((at if at is not None else _time.time()) // period)
-    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    digest = hmac.new(key, struct.pack(">Q", counter), getattr(hashlib, algo)).digest()
     offset = digest[-1] & 0x0F
     code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
     return str(code).zfill(digits)

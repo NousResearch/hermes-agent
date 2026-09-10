@@ -72,10 +72,12 @@ class LoginControl:
     label: str
     name: str
     type: str
+    max_length: Optional[int] = None
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "LoginControl":
         form_index = raw.get("formIndex", raw.get("form_index"))
+        max_length = raw.get("maxLength", raw.get("max_length"))
         return cls(
             autocomplete=str(raw.get("autocomplete") or ""),
             form_index=int(form_index) if form_index is not None else None,
@@ -83,6 +85,7 @@ class LoginControl:
             label=str(raw.get("label") or ""),
             name=str(raw.get("name") or ""),
             type=str(raw.get("type") or ""),
+            max_length=int(max_length) if max_length is not None else None,
         )
 
 
@@ -223,12 +226,18 @@ INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
 
 
 def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> List[Dict[str, Any]]:
-    """One fill per box: a single input takes the whole code; N single-char boxes (maxlength=1 pattern,
-    detected as N>=4 same-form OTP controls) each take one digit in DOM order."""
-    boxes = sorted(otp_controls, key=lambda c: c.control.index)
-    if len(boxes) >= 4 and len(boxes) <= len(code):
+    """One fill per box. Default: the single best-scoring code field takes the whole code.
+
+    Per-digit entry only when the page unmistakably uses it: exactly len(code) OTP controls that are all
+    ``maxlength=1``, all in the same form, and adjacent in DOM order (the classic N-box widget). Anything
+    looser (several code-like inputs scattered over a page) gets ONE field, never a digit sprayed across
+    unrelated inputs."""
+    best = max(otp_controls, key=lambda c: c.score)
+    boxes = sorted((c for c in otp_controls if c.control.max_length == 1), key=lambda c: c.control.index)
+    if (len(boxes) == len(code)
+            and len({b.control.form_index for b in boxes}) == 1
+            and all(b.control.index - a.control.index == 1 for a, b in zip(boxes, boxes[1:]))):
         return [{"index": b.control.index, "token": "one-time-code", "value": ch} for b, ch in zip(boxes, code)]
-    best = max(boxes, key=lambda c: c.score)
     return [{"index": best.control.index, "token": "one-time-code", "value": code}]
 
 
@@ -256,6 +265,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
       autocomplete: element.autocomplete || "",
       formIndex: resolvedFormIndex >= 0 ? resolvedFormIndex : null,
       index,
+      maxLength: element.maxLength > 0 ? element.maxLength : null,
       label: [
         ...labels,
         element.getAttribute("aria-label") || "",

@@ -272,7 +272,15 @@ export const sessionVaultCodeRequest = (sessionId: string | null) =>
 // suppress "thinking" indicators and the Esc-to-interrupt shortcut while you
 // decide, instead of treating the wait as an in-flight turn.
 export const $activeSessionAwaitingInput = computed(
-  [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest, $vaultUnlockRequest, $vaultSaveLoginRequest, $vaultCodeRequest],
+  [
+    $clarifyRequest,
+    $approvalRequest,
+    $sudoRequest,
+    $secretRequest,
+    $vaultUnlockRequest,
+    $vaultSaveLoginRequest,
+    $vaultCodeRequest
+  ],
   (clarify, approval, sudo, secret, vault, save, code) =>
     Boolean(clarify || approval || sudo || secret || vault || save || code)
 )

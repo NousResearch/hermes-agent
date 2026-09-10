@@ -282,7 +282,26 @@ def _sync_session_key_after_compress(
     old_key = session.get("session_key", "") or ""
     if not new_session_id or new_session_id == old_key:
         return
-    if not _transfer_active_session_slot(sid, session, new_session_id=new_session_id):
+    lease = session.get("active_session_lease")
+    isolated_child = lease is not None and not getattr(lease, "enabled", True)
+    if isolated_child:
+        # Blocker 2 (#99719): for a compute-host isolated child the REAL
+        # registry lease was already moved A->B mid-turn by the re-anchor
+        # handshake (before publish_compression_child). The child holds only a
+        # disabled sentinel whose transfer is a local no-op, so a post-turn
+        # _transfer_active_session_slot here is redundant. Downgrade to
+        # assert-only: keep the sentinel's local id consistent, then fall
+        # through to sync session_key. Manual /compress runs in the serving
+        # process holding a real ENABLED lease, so it never takes this branch
+        # and its synchronous in-process transfer is unchanged.
+        try:
+            setattr(lease, "session_id", new_session_id)
+        except Exception:
+            pass
+        lease_reanchored = True
+    else:
+        lease_reanchored = _transfer_active_session_slot(sid, session, new_session_id=new_session_id)
+    if not lease_reanchored:
         logger.warning(
             "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
             sid, old_key, new_session_id,

@@ -373,6 +373,12 @@ def _print_ticker_health(pids: list) -> None:
             elif _cron_is_fd_exhaustion_text(last_error):
                 print(color(_FD_EXHAUSTION_HINT, Colors.YELLOW))
         print("  Check the gateway log for 'Cron tick error'.")
+    elif ok_age is None and pid_line is None:
+        # A fresh heartbeat with no PID (Desktop-embedded ticker, #87033) and no success marker
+        # ever recorded is liveness only, not proof jobs can fire — unlike a PID-bearing gateway
+        # just past a restart, there is no "process just started" grace period to lean on here.
+        _warn("⚠ A cron ticker is alive, but no tick has succeeded yet.")
+        print("  Cron jobs will fire once the first tick succeeds.")
     else:
         print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
         if pid_line:
@@ -409,7 +415,14 @@ def cron_status():
                 gateway_alive_via_lock = is_gateway_runtime_lock_active()
                 lock_pid = get_running_pid() if gateway_alive_via_lock else None
                 pids = [lock_pid] if lock_pid else pids
-        if pids or gateway_alive_via_lock:
+        desktop_ticker_alive = False
+        if not (pids or gateway_alive_via_lock):
+            # A Desktop `serve` backend owns the ticker in-process without registering gateway
+            # PID/lock state at all; a heartbeat (fresh or stale) is that ticker's only liveness
+            # signal, and _print_ticker_health already distinguishes fresh/stale/failing on its own.
+            from cron.jobs import get_ticker_heartbeat_age
+            desktop_ticker_alive = get_ticker_heartbeat_age() is not None
+        if pids or gateway_alive_via_lock or desktop_ticker_alive:
             _print_ticker_health(pids)
         else:
             print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))

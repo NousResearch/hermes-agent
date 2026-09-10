@@ -184,6 +184,9 @@ async def test_native_http_preserves_gated_auth_and_actual_socket_boundary(tmp_p
     runner = GatewayRunner(GatewayConfig())
     try:
         await initialize_gateway_runtime(runner)
+        from gateway.control_socket import GatewayControlServer
+        runner.session_control_server = GatewayControlServer()
+        assert await runner.session_control_server.start()
         runner.session_api = await start_gateway_api(runner, host='0.0.0.0')
         port = runner.session_api.socket.getsockname()[1]
         def mint():
@@ -225,6 +228,7 @@ async def test_native_http_preserves_gated_auth_and_actual_socket_boundary(tmp_p
             assert (await client.get('/api/config', headers=headers(mint()))).status_code == 503
     finally:
         await runner.stop()
+        await runner.session_control_server.stop()
         process_ownership.close()
         clear_providers()
     print(json.dumps({'normal_oauth_bearer_cookie': 'passed',

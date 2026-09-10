@@ -108,3 +108,46 @@ async def test_exact_legacy_webhook_retry_keeps_receipt_without_inference():
         changed = json.dumps({'text': 'changed'}).encode()
         headers['X-Hub-Signature-256'] = 'sha256=' + hmac.new(b'owned-secret', changed, hashlib.sha256).hexdigest()
         assert (await client.post('/webhooks/fixture', data=changed, headers=headers)).status == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fence', ['draining', 'epoch'])
+async def test_fenced_webhook_retry_only_observes_existing_receipt(fence):
+    config = PlatformConfig(enabled=True, extra={'secret': 'owned-secret', 'routes': {
+        'fixture': {'prompt': '{text}', 'deliver': 'log'}}})
+    adapter = WebhookAdapter(config)
+    app = web.Application()
+    mount_authority(app, adapter)
+    app.router.add_post('/webhooks/{route_name}', adapter._handle_webhook)
+    async with TestClient(TestServer(app)) as client:
+        body = json.dumps({'text': 'already committed'}).encode()
+        headers = {'X-GitHub-Delivery': 'observed-one', 'X-Hub-Signature-256':
+                   'sha256=' + hmac.new(b'owned-secret', body, hashlib.sha256).hexdigest()}
+        assert (await client.post('/webhooks/fixture', data=body, headers=headers)).status == 202
+        authority = adapter._message_handler.__self__.session_authority
+        if fence == 'draining':
+            authority.runner._draining = True
+        else:
+            from hermes_state_runtime import begin_runtime_epoch
+            begin_runtime_epoch(authority.db, instance_id='replacement-owner')
+        schedules = []
+        authority._schedule = schedules.append
+        async def forbidden_admission(event):
+            pytest.fail('observing a receipt must not admit new work')
+        original_admit = authority.admit_native
+        authority.admit_native = forbidden_admission
+        with authority.db._read_ctx() as conn:
+            before = tuple(conn.iterdump())
+        adapter._seen_deliveries.clear()
+        response = await client.post('/webhooks/fixture', data=body, headers=headers)
+        assert response.status == 200, await response.text()
+        with authority.db._read_ctx() as conn:
+            assert tuple(conn.iterdump()) == before
+        assert schedules == []
+        row = authority.db._read_one('SELECT status FROM session_admissions')
+        assert row['status'] == 'queued'
+        authority.admit_native = original_admit
+        headers['X-GitHub-Delivery'] = 'never-accepted'
+        assert (await client.post('/webhooks/fixture', data=body, headers=headers)).status == 503
+        assert len(authority.db._read_all('SELECT admission_id FROM session_admissions')) == 1
+        assert schedules == []

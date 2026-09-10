@@ -857,6 +857,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # migration idempotent.
     cols = _column_names(conn, "tasks")
 
+    # KENSEI COMBINE: last_ping_event_id (independent ping cursor) added after
+    # v1 — legacy DBs get it via ADD COLUMN so notifier pings checkpoint cleanly.
+    if "last_ping_event_id" not in _column_names(conn, "kanban_notify_subs"):
+        _add_column_if_missing(conn, "kanban_notify_subs", "last_ping_event_id",
+                               "INTEGER NOT NULL DEFAULT 0")
+
     # Legacy renames via ADD-then-copy rather than ``RENAME COLUMN``: very old
     # DBs may lack the legacy column entirely (RENAME raises "no such column"),
     # and RENAME reparses the whole schema, failing if views/triggers reference

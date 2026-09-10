@@ -161,16 +161,16 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         task_id = "finished-task"
         file_state.record_read(task_id, p)
 
-        from tools import file_tools
+        from tools import file_tools_read_tracking as rt
 
-        file_tools._read_tracker[task_id] = {"dedup": {}}
-        file_tools._patch_failure_tracker[task_id] = {p: 2}
+        rt._read_tracker[task_id] = {"dedup": {}}
+        rt._patch_failure_tracker[task_id] = {p: 2}
 
         clear_file_ops_cache(task_id)
 
         self.assertEqual(file_state.known_reads(task_id), [])
-        self.assertNotIn(task_id, file_tools._read_tracker)
-        self.assertNotIn(task_id, file_tools._patch_failure_tracker)
+        self.assertNotIn(task_id, rt._read_tracker)
+        self.assertNotIn(task_id, rt._patch_failure_tracker)
 
 
     def test_kill_switch_env_var(self):

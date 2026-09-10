@@ -442,15 +442,20 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
         # ZAI_REPROBE_CAP_SECONDS so a premature stamp cannot strand a working
         # key for hours, while a genuine throttle costs at most one failing
         # probe per cap window. Other zai 429s (1302 rate-limit, no usable
-        # stamp) re-probe at once. The old TZ-local text-stamp fix is moot on
-        # this upstream: absolute stamps are no longer parsed from message
-        # text, and naive ISO stamps parse as LOCAL time natively.
+        # stamp) re-probe at once only for a sole key. In a multi-key pool,
+        # bench the failed entry for the same bounded interval so selection
+        # can advance to the fallback instead of immediately re-leasing it.
+        # The old TZ-local text-stamp fix is moot on this upstream: absolute
+        # stamps are no longer parsed from message text, and naive ISO stamps
+        # parse as LOCAL time natively.
         reason = (entry.last_error_reason or "").strip()
         if reason == "1310" and reset_at is not None:
             return reset_at
         if reason == "1308" and reset_at is not None:
             return min(reset_at, time.time() + ZAI_REPROBE_CAP_SECONDS)
-        return None
+        if sole_credential:
+            return None
+        return (entry.last_status_at or time.time()) + ZAI_REPROBE_CAP_SECONDS
     if reset_at is not None:
         return reset_at
     if entry.last_status_at:

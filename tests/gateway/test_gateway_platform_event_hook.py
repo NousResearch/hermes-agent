@@ -672,12 +672,11 @@ class TestRegisterHandlers:
         app = MagicMock()
         a._register_handlers(app)
 
-        # Six core handlers (default group, no group kwarg — incl. the
-        # inline command picker) plus the gateway_platform_event observer
-        # alone in group 99, so it observes alongside rather than
-        # displacing the core handlers.
+        # The reservation must run before group-zero handlers, and the
+        # platform observer must remain independent of guest/core handlers.
         calls = app.add_handler.call_args_list
-        assert len(calls) == 7
+        assert calls[0].kwargs.get("group") == -1
+        assert len([c for c in calls if c.kwargs.get("group") == -1]) == 1
         assert len([c for c in calls if c.kwargs.get("group") == 99]) == 1
         assert len([c for c in calls if not c.kwargs]) == 6
 
@@ -691,7 +690,7 @@ class TestRegisterHandlers:
         a._register_handlers(first_app)
         a._register_handlers(rebuilt_app)  # the rebuild path
 
-        assert rebuilt_app.add_handler.call_count == 7
+        assert rebuilt_app.add_handler.call_args_list == first_app.add_handler.call_args_list
         assert len(self._observer_calls(rebuilt_app)) == 1
 
     def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):

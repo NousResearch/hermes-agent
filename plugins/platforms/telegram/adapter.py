@@ -4733,6 +4733,44 @@ class TelegramAdapter(BasePlatformAdapter):
             },
         }
 
+    def _ingress_coordinator(self):
+        from .ingress import TelegramIngress
+        coordinator = getattr(self, "_telegram_ingress", None)
+        if coordinator is None:
+            coordinator = self._telegram_ingress = TelegramIngress(self)
+        return coordinator
+
+    def _ingress_media_allowed(self, msg):
+        if msg is None or getattr(msg, "sticker", None):
+            return False
+        if getattr(msg, "photo", None):
+            return True
+        doc = getattr(msg, "document", None)
+        if doc:
+            return bool(doc.file_size and doc.file_size <= self._max_doc_bytes)
+        for name in ("voice", "audio", "video"):
+            media = getattr(msg, name, None)
+            if media:
+                return self._telegram_media_size_allowed(media, name)[0]
+        return False
+
+    async def _reserve_media_ingress(self, update, context):
+        """Reserve before PTB schedules a nonblocking download callback."""
+        msg = update.message
+        if (msg is None or not self._is_user_authorized_from_message(msg)
+                or not self._should_process_message(msg)
+                or not self._ingress_media_allowed(msg)):
+            return
+        event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
+        self._ingress_coordinator().reserve(update.update_id, event)
+
+    def is_ingress_event_current(self, event, session_key):
+        coordinator = getattr(self, "_telegram_ingress", None)
+        return coordinator is None or coordinator.current(event, session_key)
+
+    async def _dispatch_ingress_event(self, event):
+        await self._ingress_coordinator().offer(event)
+
     def _register_handlers(self, app) -> None:
         """Register every PTB handler on ``app``.
 
@@ -4741,6 +4779,10 @@ class TelegramAdapter(BasePlatformAdapter):
         the ``gateway_platform_event`` observer (group 99) in lockstep with the
         core handlers.
         """
+        app.add_handler(TelegramMessageHandler(
+            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL,
+            self._reserve_media_ingress,
+        ), group=-1)
         app.add_handler(TelegramMessageHandler(
             filters.TEXT & ~filters.COMMAND,
             self._handle_text_message
@@ -4755,7 +4797,7 @@ class TelegramAdapter(BasePlatformAdapter):
         ))
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-            self._handle_media_message
+            self._handle_media_message, block=False,
         ))
         # Bot API 10.0 guest_message is not yet modeled by PTB handlers.
         app.add_handler(TypeHandler(Update, self._handle_guest_update), group=1)
@@ -5479,6 +5521,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batches.clear()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
+        coordinator = getattr(self, "_telegram_ingress", None)
+        if coordinator is not None:
+            await coordinator.close()
         if getattr(self, "_polling_error_task", None) is not current_task:
             self._polling_error_task = None
         if getattr(self, "_polling_progress_verifier_task", None) is not current_task:
@@ -10766,6 +10811,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        if event.get_command() in {"stop", "new", "reset"}:
+            coordinator = self._ingress_coordinator()
+            coordinator.invalidate(self._text_batch_key(event))
+            event._telegram_ingress_token = None
+            coordinator.stamp(event)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         # Telegram clients split messages above 4096 chars into multiple
@@ -10857,6 +10907,11 @@ class TelegramAdapter(BasePlatformAdapter):
         concatenates them and waits for a short quiet period before
         dispatching the combined message.
         """
+        coordinator = self._ingress_coordinator()
+        coordinator.stamp(event)
+        if not coordinator.current(event):
+            return
+        coordinator.inline_forward(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="text-enqueue")
             return
@@ -10929,7 +10984,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
-            await self.handle_message(event)
+            await self._dispatch_ingress_event(event)
             event = None
         except asyncio.CancelledError:
             # Cancelled after pop but before durable dispatch — hold, don't lose.
@@ -10972,7 +11027,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event = None
                 return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
-            await self.handle_message(event)
+            await self._dispatch_ingress_event(event)
             event = None
         except asyncio.CancelledError:
             if event is not None:
@@ -10984,6 +11039,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
+        coordinator = self._ingress_coordinator()
+        coordinator.stamp(event)
+        if not coordinator.current(event):
+            return
+        coordinator.inline_forward(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="photo-enqueue")
             return
@@ -11039,7 +11099,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._hold_inbound_event(event, where="voice-batch-flush")
                 event = None
                 return
-            await self.handle_message(event)
+            await self._dispatch_ingress_event(event)
             event = None
         except asyncio.CancelledError:
             if event is not None:
@@ -11058,6 +11118,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _enqueue_voice_event(self, event: MessageEvent) -> None:
         """Coalesce adjacent voice updates for one session, preserving source order."""
+        coordinator = self._ingress_coordinator()
+        coordinator.stamp(event)
+        if not coordinator.current(event):
+            return
+        coordinator.inline_forward(event)
         batch_key = self._text_batch_key(event)
         self._pending_voice_batches.setdefault(batch_key, []).append(event)
 
@@ -11069,6 +11134,20 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        coordinator = self._ingress_coordinator()
+        token = coordinator.downloads.get(update.update_id)
+        try:
+            if token is None:
+                await self._reserve_media_ingress(update, context)
+                token = coordinator.downloads.get(update.update_id)
+            if token is not None and coordinator.epochs.get(token.key, 0) != token.epoch:
+                return
+            await self._download_media_message(update, context)
+        finally:
+            if token is not None:
+                coordinator.finish(update.update_id, token)
+
+    async def _download_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
@@ -11292,7 +11371,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
                     event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
-                    await self.handle_message(event)
+                    await self._dispatch_ingress_event(event)
                     return
 
                 # NOTE: image-document handling is performed earlier in this
@@ -11371,7 +11450,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._enqueue_voice_event(event)
             return
 
-        await self.handle_message(event)
+        await self._dispatch_ingress_event(event)
 
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.
@@ -11381,6 +11460,11 @@ class TelegramAdapter(BasePlatformAdapter):
         new user message and interrupts the first. We debounce briefly and merge the
         attachments into a single MessageEvent.
         """
+        coordinator = self._ingress_coordinator()
+        coordinator.stamp(event)
+        if not coordinator.current(event):
+            return
+        coordinator.inline_forward(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="media-group-enqueue")
             return
@@ -11414,7 +11498,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._hold_inbound_event(event, where="media-group-flush")
                 event = None
                 return
-            await self.handle_message(event)
+            await self._dispatch_ingress_event(event)
             event = None
         except asyncio.CancelledError:
             # Cancelled after pop but before durable dispatch — hold, don't lose.
@@ -11818,7 +11902,7 @@ class TelegramAdapter(BasePlatformAdapter):
             _chat_id_str if thread_id_str else None,
         )
 
-        return MessageEvent(
+        event = MessageEvent(
             text=message.text or "",
             message_type=msg_type,
             source=source,
@@ -11833,6 +11917,9 @@ class TelegramAdapter(BasePlatformAdapter):
             metadata=event_metadata,
             timestamp=message.date,
         )
+
+        self._ingress_coordinator().stamp(event, update_id)
+        return event
 
     @staticmethod
     def _telegram_forward_origin_type(origin: Any) -> str:

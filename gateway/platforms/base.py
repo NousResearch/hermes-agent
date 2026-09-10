@@ -6297,6 +6297,10 @@ class BasePlatformAdapter(ABC):
             )
             return
 
+        ingress_check = getattr(type(self), "is_ingress_event_current", None)
+        if ingress_check is not None and not ingress_check(self, event, session_key):
+            return
+
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
         # cancelled), the lock is stale.  Clear it and fall through to

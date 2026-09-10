@@ -15,7 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
@@ -476,7 +477,10 @@ class TestTelegramPhotoBatching:
         adapter._pending_photo_batches[batch_key] = MessageEvent(
             text="",
             message_type=MessageType.PHOTO,
-            source=SimpleNamespace(channel_id="chat-1"),
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="chat-1", chat_type="dm",
+            ),
             media_urls=["/tmp/a.jpg"],
             media_types=["image/jpeg"],
         )

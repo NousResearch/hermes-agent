@@ -155,7 +155,9 @@ def test_default_spawn_routes_fable_task_to_the_launcher(
     monkeypatch.setattr("subprocess.Popen", _fake_popen)
 
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title="read the repo", assignee="fable")
+        tid = kb.create_task(
+            conn, title="read the repo", assignee="fable", classification="deep",
+        )
         task = kb.get_task(conn, tid)
 
     pid = kb._default_spawn(task, str(kanban_home))
@@ -252,7 +254,9 @@ def test_default_spawn_raises_instead_of_falling_back(
     monkeypatch.setattr("subprocess.Popen", _explode)
 
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title="read the repo", assignee="fable")
+        tid = kb.create_task(
+            conn, title="read the repo", assignee="fable", classification="deep",
+        )
         task = kb.get_task(conn, tid)
 
     with pytest.raises(kf.FableLaneUnavailable):
@@ -381,9 +385,14 @@ def test_prompt_carries_the_read_only_notice(tmp_path, monkeypatch):
 # 3. Kanban lifecycle
 # ---------------------------------------------------------------------------
 
-def _claimed_fable_task(title: str = "read the repo") -> str:
+def _claimed_fable_task(
+    title: str = "read the repo",
+    classification: str = "deep",
+) -> str:
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title=title, assignee="fable")
+        tid = kb.create_task(
+            conn, title=title, assignee="fable", classification=classification,
+        )
         assert kb.claim_task(conn, tid) is not None
     return tid
 
@@ -467,7 +476,9 @@ def test_run_task_blocks_a_task_that_pins_another_model(
     _stub_claude(monkeypatch)
 
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title="pinned", assignee="fable")
+        tid = kb.create_task(
+            conn, title="pinned", assignee="fable", classification="deep",
+        )
         conn.execute(
             "UPDATE tasks SET model_override = ? WHERE id = ?",
             ("claude-opus-5", tid),
@@ -520,6 +531,156 @@ def test_canary_reports_a_disabled_lane(kanban_home, tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["ok"] is False
     assert "not enabled" in report["reason"]
+
+
+# ---------------------------------------------------------------------------
+# 4. Classification-gated dispatch
+# ---------------------------------------------------------------------------
+
+def test_task_has_fable_classification():
+    """``task_has_fable_classification`` normalizes and matches only the allowed tags."""
+    for tag in kf.FABLE_ALLOWED_CLASSIFICATIONS:
+        assert kf.task_has_fable_classification(tag) is True
+        assert kf.task_has_fable_classification(tag.upper()) is True
+        assert kf.task_has_fable_classification(f"  {tag}  ") is True
+    assert kf.task_has_fable_classification(None) is False
+    assert kf.task_has_fable_classification("") is False
+    assert kf.task_has_fable_classification("random-tag") is False
+
+
+def test_create_task_persists_classification(kanban_home):
+    """``classification`` round-trips through create → get."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="classified", assignee="fable", classification="Deep")
+        task = kb.get_task(conn, tid)
+    assert task.classification == "deep"  # normalized
+
+
+def test_create_task_persists_none_classification(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="plain", assignee="fable")
+        task = kb.get_task(conn, tid)
+    assert task.classification is None
+
+
+def test_unclassified_fable_task_uses_normal_worker(
+    kanban_home, tmp_path, monkeypatch,
+):
+    """A task assigned to fable but with no classification keeps the normal worker path."""
+    launcher = _make_launcher(tmp_path, _ok_payload())
+    _write_lane_config(kanban_home, "fable", launcher=str(launcher))
+    _stub_claude(monkeypatch)
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 4242
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", _fake_popen)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="unclassified work", assignee="fable")
+        task = kb.get_task(conn, tid)
+
+    kb._default_spawn(task, str(kanban_home))
+
+    # Normal hermes worker, NOT the fable supervisor.
+    assert "hermes_cli.kanban_fable" not in captured["cmd"]
+    assert "-p" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("-p") + 1] == "fable"
+
+
+@pytest.mark.parametrize("tag", sorted(kf.FABLE_ALLOWED_CLASSIFICATIONS))
+def test_classified_fable_task_routes_to_launcher(
+    kanban_home, tmp_path, monkeypatch, tag,
+):
+    """Each allowed classification tag engages the Fable lane."""
+    launcher = _make_launcher(tmp_path, _ok_payload())
+    _write_lane_config(kanban_home, "fable", launcher=str(launcher))
+    _stub_claude(monkeypatch)
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 5150
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs.get("env") or {})
+        return _FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", _fake_popen)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title=f"task-{tag}", assignee="fable", classification=tag,
+        )
+        task = kb.get_task(conn, tid)
+
+    pid = kb._default_spawn(task, str(kanban_home))
+
+    assert pid == 5150
+    assert captured["cmd"][:4] == [
+        sys.executable, "-m", "hermes_cli.kanban_fable", "run",
+    ]
+    assert "ANTHROPIC_API_KEY" not in captured["env"]
+
+
+def test_run_task_blocks_when_classification_missing(
+    kanban_home, tmp_path, monkeypatch,
+):
+    """Supervisor fails closed when the task has no Fable classification."""
+    launcher = _make_launcher(tmp_path, _ok_payload("must not run"))
+    _write_lane_config(kanban_home, "fable", launcher=str(launcher))
+    _stub_claude(monkeypatch)
+
+    def _explode(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("supervisor must not invoke launcher without classification")
+
+    monkeypatch.setattr(kf.subprocess, "run", _explode)
+
+    # Create WITHOUT classification, then claim so the supervisor can run.
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="unclassified", assignee="fable")
+        assert kb.claim_task(conn, tid) is not None
+
+    assert kf.run_task(tid, str(tmp_path)) == 1
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        reason = kb.latest_summary(conn, tid)
+    assert task.status == "blocked"
+    assert "classification" in (reason or "").lower()
+
+
+def test_run_task_blocks_when_classification_is_invalid_tag(
+    kanban_home, tmp_path, monkeypatch,
+):
+    """Supervisor fails closed when the task has an unrecognised classification."""
+    launcher = _make_launcher(tmp_path, _ok_payload("must not run"))
+    _write_lane_config(kanban_home, "fable", launcher=str(launcher))
+    _stub_claude(monkeypatch)
+
+    def _explode(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("supervisor must not invoke launcher with wrong tag")
+
+    monkeypatch.setattr(kf.subprocess, "run", _explode)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="bad tag", assignee="fable", classification="random-tag",
+        )
+        assert kb.claim_task(conn, tid) is not None
+
+    assert kf.run_task(tid, str(tmp_path)) == 1
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status == "blocked"
 
 
 @pytest.mark.skipif(

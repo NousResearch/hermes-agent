@@ -3,9 +3,10 @@
 Normal kanban workers are spawned by :func:`hermes_cli.kanban_db._default_spawn`
 as ``hermes -p <assignee> chat -q ...`` — a full Hermes agent running the
 assignee profile's configured model. The Fable lane replaces *only* that argv,
-for *only* the tasks whose assignee is the configured lane profile, with an
-**external OAuth-only Claude Code launcher** that runs the exact model
-``claude-fable-5[1m]`` with a read-only tool surface.
+for *only* the tasks whose assignee is the configured lane profile **and** whose
+``classification`` is one of the allowed tags, with an **external OAuth-only
+Claude Code launcher** that runs the exact model ``claude-fable-5[1m]`` with a
+read-only tool surface.
 
 Everything else about dispatch is unchanged: the task is claimed, the workspace
 is resolved, the same env pins (``HERMES_KANBAN_DB`` / ``_BOARD`` / ``_TASK`` /
@@ -17,11 +18,14 @@ performs the ``complete`` / ``block`` transition itself.
 
 Design rules (all load-bearing — do not relax without re-reading them):
 
-* **Opt-in and default-disabled.** The lane engages only when the assignee
-  profile's own ``config.yaml`` has ``kanban.fable_lane.enabled: true`` *and*
-  the task's assignee matches the configured lane name (default ``fable``).
-  With no such config every profile — including one literally named ``fable`` —
-  keeps the normal Hermes worker path.
+* **Two-key opt-in and default-disabled.** The lane engages only when *both*:
+  (a) the assignee profile's own ``config.yaml`` has
+  ``kanban.fable_lane.enabled: true`` and the task's assignee matches the
+  configured lane name (default ``fable``), **and** (b) the task's
+  ``classification`` field carries one of the allowed tags
+  (``deep``, ``investigation``, ``challenger``, ``review-complejo``).
+  With no such config or classification every task — including one assigned to
+  a profile literally named ``fable`` — keeps the normal Hermes worker path.
 * **Fail closed.** Once the lane engages, a missing launcher, a missing
   ``claude`` binary, an auth failure, a nonzero exit, a timeout, or an output
   that does not prove the Fable model ran all end the same way: an error. The
@@ -42,6 +46,17 @@ Example profile-local ``config.yaml`` (``~/.hermes/profiles/fable/config.yaml``)
         # assignee: fable          # lane name; defaults to "fable"
         # max_turns: 5
         # timeout_seconds: 300
+
+The task must also carry one of the allowed classification tags::
+
+    kanban create "deep-dive on auth module" --assignee fable --classification deep
+
+Allowed classification tags (see :data:`FABLE_ALLOWED_CLASSIFICATIONS`):
+
+* ``deep`` — deep-dive analysis or architecture review
+* ``investigation`` — root-cause / forensic investigation
+* ``challenger`` — adversarial / devil's advocate review
+* ``review-complejo`` — complex multi-file or cross-cutting code review
 
 Read-only canary (no DB writes, no task, safe to run by hand)::
 
@@ -71,6 +86,24 @@ FABLE_MODEL = "claude-fable-5[1m]"
 DEFAULT_LANE_ASSIGNEE = "fable"
 DEFAULT_MAX_TURNS = 5
 DEFAULT_TIMEOUT_SECONDS = 300
+
+# Explicit task-level classification tags that enable Fable lane dispatch.
+# A task must carry one of these in its ``classification`` field for the lane
+# to accept it — even when the assignee profile has ``fable_lane.enabled``.
+# This is the second half of the two-key opt-in: the *profile* enables the
+# lane, and the *task* declares intent via classification. Tasks without a
+# classification (the common case) always keep the normal Hermes worker path.
+#
+# * ``deep``             – deep-dive analysis or architecture review
+# * ``investigation``    – root-cause / forensic investigation
+# * ``challenger``       – adversarial / devil's advocate review
+# * ``review-complejo``  – complex multi-file or cross-cutting code review
+FABLE_ALLOWED_CLASSIFICATIONS: frozenset[str] = frozenset({
+    "deep",
+    "investigation",
+    "challenger",
+    "review-complejo",
+})
 
 # The launcher refuses to do anything without this flag. Passing it is the
 # explicit local opt-in; it still enables no paid usage credits.
@@ -231,6 +264,18 @@ def lane_for_assignee(assignee: Optional[str]) -> Optional[FableLaneConfig]:
     if cfg is None or cfg.assignee != canon:
         return None
     return cfg
+
+
+def task_has_fable_classification(classification: Optional[str]) -> bool:
+    """Return True when *classification* is one of the allowed Fable tags.
+
+    The check is case-insensitive and strips whitespace.  ``None`` or empty
+    strings return ``False`` — the common (unclassified) case keeps the
+    normal worker path.
+    """
+    if not classification:
+        return False
+    return classification.strip().lower() in FABLE_ALLOWED_CLASSIFICATIONS
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +531,22 @@ def run_task(
             reason = (
                 f"fable lane not enabled for assignee {task.assignee!r}; refusing "
                 "to run the task with any other model"
+            )
+            _log.error("kanban fable lane: %s", reason)
+            if not kb.block_task(
+                conn, task_id, reason=reason, kind="capability",
+                expected_run_id=run_id,
+            ):
+                return 2
+            return 1
+        if not task_has_fable_classification(task.classification):
+            # Classification was removed or never matched between dispatch
+            # and supervisor run.  Fail closed — this supervisor must not
+            # fall back to the normal worker path.
+            reason = (
+                f"task classification {task.classification!r} is not a recognised "
+                f"Fable tag ({', '.join(sorted(FABLE_ALLOWED_CLASSIFICATIONS))}); "
+                "refusing to run the task with any other model"
             )
             _log.error("kanban fable lane: %s", reason)
             if not kb.block_task(

@@ -366,6 +366,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Initial card status. Use 'blocked' for cards "
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
+    p_create.add_argument("--classification", default=None,
+                          help="Task classification tag (e.g. deep, investigation, "
+                               "challenger, review-complejo). Enables specialised "
+                               "dispatch lanes for matching assignees.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
@@ -1347,6 +1351,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            classification=getattr(args, "classification", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

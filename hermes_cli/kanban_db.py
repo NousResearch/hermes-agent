@@ -915,6 +915,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Explicit task classification tag. Enables specialised dispatch lanes
+    # (e.g. Fable lane only accepts allowed tags). None = unclassified.
+    classification: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -998,6 +1001,9 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            classification=(
+                row["classification"] if "classification" in keys and row["classification"] else None
             ),
         )
 
@@ -1176,7 +1182,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit task classification tag. When set, enables specialised dispatch
+    -- lanes (e.g. the Fable lane only accepts tasks whose classification is one
+    -- of its allowed tags). NULL = unclassified (the default); unclassified
+    -- tasks always take the normal Hermes worker path.
+    classification       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1987,6 +1998,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "classification" not in cols:
+        # Explicit task classification tag for specialised lane dispatch.
+        # Existing rows get NULL (unclassified) — same as never being tagged.
+        _add_column_if_missing(conn, "tasks", "classification", "classification TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2408,6 +2424,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    classification: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2537,6 +2554,12 @@ def create_task(
             )
         skills_list = cleaned
 
+    # Normalise classification: strip + lowercase. Arbitrary explicit values
+    # are allowed (they persist on the task), but only the tags in
+    # FABLE_ALLOWED_CLASSIFICATIONS actually engage specialised lanes.
+    if classification is not None:
+        classification = str(classification).strip().lower() or None
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -2636,8 +2659,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        classification
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2660,6 +2684,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        classification,
                     ),
                 )
                 for pid in parents:
@@ -2679,6 +2704,7 @@ def create_task(
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "classification": classification,
                     },
                 )
             return task_id
@@ -7784,7 +7810,7 @@ def _default_spawn(
     # the caller. We never fall through to the normal worker path, which
     # would answer the task with the profile's ordinary model.
     fable_cfg = kanban_fable.lane_for_assignee(profile_arg)
-    if fable_cfg is not None:
+    if fable_cfg is not None and kanban_fable.task_has_fable_classification(task.classification):
         kanban_fable.preflight(fable_cfg, env=env)
         env = kanban_fable.sanitize_env(env)
         cmd = kanban_fable.supervisor_argv(

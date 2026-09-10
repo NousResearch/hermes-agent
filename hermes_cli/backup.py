@@ -1545,17 +1545,31 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
 
 
 def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional[Path]:
+    """Stream the walk straight into the archive (one directory's files written before the
+    walk descends into the next) instead of materializing the whole tree first — the automatic
+    path runs unattended and has no progress UI reason to front-load the scan."""
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
+    walker = _iter_backup_files(hermes_root, out_path)
     try:
-        files_to_add = list(_iter_backup_files(hermes_root, out_path))
+        first_entry = next(walker)
+    except StopIteration:
+        logger.info("automatic backup phase=scan status=empty duration_ms=%.1f",
+                    (time.monotonic() - scan_started) * 1000)
+        return None
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None
-    if not files_to_add:
-        return None
-    logger.info("automatic backup phase=scan status=complete duration_ms=%.1f files=%d",
-                (time.monotonic() - scan_started) * 1000, len(files_to_add))
+
+    file_count = 0
+
+    def _counted(entries) -> Iterator[Tuple[Path, Path]]:
+        nonlocal file_count
+        for entry in entries:
+            file_count += 1
+            yield entry
+
+    files_to_add = _counted(chain([first_entry], walker))
 
     def _db_failure(rel_path: Path) -> None:
         logger.warning("Full-zip backup aborted: SQLite snapshot failed for %s", rel_path)
@@ -1569,13 +1583,13 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
                 on_error=lambda rel, exc: logger.debug("Skipping %s in zip backup: %s", rel, exc),
                 on_progress=lambda i: logger.info(
-                    "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))
+                    "automatic backup phase=archive status=progress completed=%d", i))
     except (OSError, _SQLiteSnapshotError) as exc:
         # The hidden partial is already gone; ``out_path`` may be a previous valid backup: keep it.
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         return None
     logger.info("automatic backup phase=archive status=complete duration_ms=%.1f files=%d bytes=%d",
-                (time.monotonic() - archive_started) * 1000, len(files_to_add),
+                (time.monotonic() - archive_started) * 1000, file_count,
                 out_path.stat().st_size)
     return out_path
 

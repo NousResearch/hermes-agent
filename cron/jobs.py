@@ -1152,11 +1152,20 @@ def record_ticker_heartbeat(success: bool = False) -> None:
         _write_marker("ticker_last_success", str(time.time()), ".hb_")
 
 
+_FUTURE_STAMP_TOLERANCE_S = 1.0
+
+
 def _epoch_file_age(name: str) -> Optional[float]:
-    """Seconds since the epoch stamp stored in ``<cron_dir>/<name>``; None = missing/unreadable."""
+    """Seconds since the epoch stamp stored in ``<cron_dir>/<name>``; None = missing/unreadable,
+    or meaningfully in the future (a restored/replayed marker or gross clock skew) — clamping
+    that to 0.0 like ordinary sub-second jitter would read a stale-or-forged stamp as "just
+    ticked", the opposite of what a liveness check needs."""
     try:
         raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8").strip()
-        return max(0.0, time.time() - float(raw))
+        age = time.time() - float(raw)
+        if age < -_FUTURE_STAMP_TOLERANCE_S:
+            return None
+        return max(0.0, age)
     except Exception:
         return None
 

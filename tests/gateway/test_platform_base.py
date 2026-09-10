@@ -934,6 +934,11 @@ class TestDockerContainerMediaPathTranslation:
         (secret / "auth.json").write_text('{"token": "SECRET"}')
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
+        # Isolate HOME from the runner's real home (#98879): with HOME=/root
+        # the literal below resolves to an existing host file and the /root
+        # denylist prefix is waived as "the running user's own home", so the
+        # assertion would track runner state instead of the guard.
+        monkeypatch.setenv("HOME", str(tmp_path / "isolated-home"))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
@@ -1440,11 +1445,16 @@ class TestDockerProfileSandboxMediaTranslation:
             "/root/note.txt", session_key=self.SESSION_KEY
         ) == str(produced.resolve())
 
-    def test_home_credential_surface_still_refused(self, monkeypatch):
+    def test_home_credential_surface_still_refused(self, monkeypatch, tmp_path):
         """The /root/.hermes exclusion survives profile scoping: translating
         the home mount must never expose the container's secret surface —
         in the profile layout AND the legacy session layout."""
         self._enable_docker(monkeypatch)
+        # Isolate HOME from the runner's real home (#98879): on a root-homed
+        # runner (/root/.hermes/auth.json exists, HOME=/root) the literal
+        # below passes the existence check and the /root denylist prefix is
+        # waived as "the running user's own home", flipping the verdict.
+        monkeypatch.setenv("HOME", str(tmp_path))
         for task in ("default", f"session:{self.SESSION_KEY}"):
             secrets = self._sandbox_dir(task) / "home" / ".hermes"
             secrets.mkdir(parents=True, exist_ok=True)

@@ -4,7 +4,7 @@
 Both structures are process-lifetime singletons that previously grew
 unbounded in long-running CLI / gateway sessions:
 
-  file_tools._read_tracker[task_id]
+  file_tools_read_tracking._read_tracker[task_id]
     ├─ read_history (set)      — one entry per unique (path, offset, limit)
     ├─ dedup (dict)            — one entry per unique (path, offset, limit)
     └─ read_timestamps (dict)  — one entry per unique resolved path
@@ -21,17 +21,18 @@ These tests pin the new caps + prune hooks.
 
 class TestReadTrackerCaps:
     def setup_method(self):
-        from tools import file_tools
+        from tools import file_tools_read_tracking as rt
 
         # Clean slate per test.
-        with file_tools._read_tracker_lock:
-            file_tools._read_tracker.clear()
+        with rt._read_tracker_lock:
+            rt._read_tracker.clear()
 
     def test_read_history_capped(self, monkeypatch):
         """read_history set is bounded by _READ_HISTORY_CAP."""
         from tools import file_tools as ft
+        from tools import file_tools_read_tracking as rt
 
-        monkeypatch.setattr(ft, "_READ_HISTORY_CAP", 10)
+        monkeypatch.setattr(rt, "_READ_HISTORY_CAP", 10)
         task_data = {
             "last_key": None,
             "consecutive": 0,
@@ -39,17 +40,18 @@ class TestReadTrackerCaps:
             "dedup": {},
             "read_timestamps": {},
         }
-        ft._cap_read_tracker_data(task_data)
+        rt._cap_read_tracker_data(task_data)
         assert len(task_data["read_history"]) == 10
 
 
     def test_live_cap_applied_after_read_add(self, tmp_path, monkeypatch):
         """Live read_file path enforces caps."""
         from tools import file_tools as ft
+        from tools import file_tools_read_tracking as rt
 
-        monkeypatch.setattr(ft, "_READ_HISTORY_CAP", 3)
-        monkeypatch.setattr(ft, "_DEDUP_CAP", 3)
-        monkeypatch.setattr(ft, "_READ_TIMESTAMPS_CAP", 3)
+        monkeypatch.setattr(rt, "_READ_HISTORY_CAP", 3)
+        monkeypatch.setattr(rt, "_DEDUP_CAP", 3)
+        monkeypatch.setattr(rt, "_READ_TIMESTAMPS_CAP", 3)
 
         # Create 10 distinct files and read each once.
         for i in range(10):
@@ -57,8 +59,8 @@ class TestReadTrackerCaps:
             p.write_text(f"content {i}\n" * 10)
             ft.read_file_tool(path=str(p), task_id="long-session")
 
-        with ft._read_tracker_lock:
-            td = ft._read_tracker["long-session"]
+        with rt._read_tracker_lock:
+            td = rt._read_tracker["long-session"]
             assert len(td["read_history"]) <= 3
             assert len(td["dedup"]) <= 3
             # read_timestamps is populated lazily (via setdefault) only

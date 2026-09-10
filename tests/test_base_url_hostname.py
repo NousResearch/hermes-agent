@@ -120,17 +120,10 @@ class TestOllamaUrlHostCheck:
 
 
 
-def test_loopback_aliases_match_each_other():
-    from utils import base_url_host_matches
-
+def test_local_host_aliases_match_without_weakening_offhost_boundary():
     assert base_url_host_matches("http://localhost:11434/v1", "127.0.0.1")
     assert base_url_host_matches("http://127.0.0.1:11434/v1", "localhost")
     assert base_url_host_matches("http://[::1]:11434/v1", "127.0.0.1")
     assert base_url_host_matches("http://0.0.0.0:11434/v1", "localhost")
-
-
-def test_loopback_does_not_match_offhost():
-    from utils import base_url_host_matches
-
     assert not base_url_host_matches("http://localhost:11434/v1", "evil.example")
     assert not base_url_host_matches("https://evil.example/v1", "127.0.0.1")

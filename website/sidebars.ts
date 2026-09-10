@@ -205,6 +205,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'devops',
+                  key: 'skills-bundled-devops',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/devops/devops-termux-gateway-keepalive',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'email',
                   key: 'skills-bundled-email',
                   collapsed: true,

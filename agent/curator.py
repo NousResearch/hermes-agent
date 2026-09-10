@@ -1047,6 +1047,17 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # write guards (external/bundled/hub) fire; turn_context binds this onto
         # the write-origin ContextVar at turn start.
         review_agent._memory_write_origin = "background_review"
+        # Seed the fork's read-mark store in THIS context. Tool calls run in worker
+        # threads that copy the context at submit time, so a mark created lazily
+        # inside a thread is discarded when that call ends: every skill_view →
+        # skill_manage pair was then refused with "the current SKILL.md content has
+        # not been loaded in this review turn" and the whole pass died on the
+        # repeat-failure guardrail. Seeding here makes the copied contexts share one
+        # marks object (the same call background_review.py makes).
+        with contextlib.suppress(Exception):
+            from tools.skill_manager_guards import _reset_background_review_read_marks
+
+            _reset_background_review_read_marks()
         # Silence the fork's tool-call chatter (CLI synchronous foreground runs).
         with open(os.devnull, "w", encoding="utf-8") as devnull, \
              contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):

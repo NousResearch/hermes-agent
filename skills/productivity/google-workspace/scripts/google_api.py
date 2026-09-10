@@ -9,7 +9,7 @@ Usage:
   python google_api.py gmail search "is:unread" [--max 10]
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
-  python google_api.py gmail reply MESSAGE_ID --body "Thanks"
+  python google_api.py gmail reply MESSAGE_ID --body "Thanks"  # Reply All by default: keeps original To/Cc (minus your own address); --no-reply-all for sender-only
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
@@ -29,6 +29,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
+from email.utils import getaddresses
 from pathlib import Path
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
@@ -134,6 +135,39 @@ def _headers_dict(msg: dict) -> dict[str, str]:
         for h in msg.get("payload", {}).get("headers", [])
         if h.get("name")
     }
+
+
+def _reply_all_recipients(headers, self_address, extra_to="", extra_cc="", reply_all=True):
+    """Compute (To, Cc) header strings for a reply.
+
+    With reply_all=True (the default) every recipient of the original message
+    is kept: the original sender is promoted onto To, everyone already on To
+    stays on To, and everyone on Cc stays on Cc. Your own address is dropped
+    (case-insensitively) so you never reply to yourself, and addresses are
+    de-duplicated first-seen. extra_to/extra_cc are appended on top. With
+    reply_all=False only the original sender is used (extras still apply).
+    """
+    self_norm = (self_address or "").strip().lower()
+    seen = set()
+    to_list = []
+    cc_list = []
+
+    def add(target, raw):
+        for _name, addr in getaddresses([raw or ""]):
+            norm = addr.strip().lower()
+            if not norm or norm == self_norm or norm in seen:
+                continue
+            seen.add(norm)
+            target.append(addr.strip())
+
+    add(to_list, headers.get("from", ""))
+    if reply_all:
+        add(to_list, headers.get("to", ""))
+    add(to_list, extra_to)
+    if reply_all:
+        add(cc_list, headers.get("cc", ""))
+    add(cc_list, extra_cc)
+    return ", ".join(to_list), ", ".join(cc_list)
 
 
 def _extract_message_body(msg: dict) -> str:
@@ -359,6 +393,13 @@ def gmail_send(args):
 
 
 def gmail_reply(args):
+    # Reply All by default so recipients already on the thread are never
+    # silently dropped; --no-reply-all falls back to sender-only.
+    reply_all = not getattr(args, "no_reply_all", False)
+    extra_to = getattr(args, "to", "") or ""
+    extra_cc = getattr(args, "cc", "") or ""
+    meta_headers = ["From", "To", "Cc", "Subject", "Message-ID"]
+
     if _gws_binary():
         original = _run_gws(
             ["gmail", "users", "messages", "get"],
@@ -366,17 +407,29 @@ def gmail_reply(args):
                 "userId": "me",
                 "id": args.message_id,
                 "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Message-ID"],
+                "metadataHeaders": meta_headers,
             },
         )
         headers = _headers_dict(original)
+        # Best-effort: our own address, so Reply All never echoes back to us.
+        try:
+            self_address = _run_gws(
+                ["gmail", "users", "getProfile"], params={"userId": "me"}
+            ).get("emailAddress", "")
+        except Exception:
+            self_address = ""
 
         subject = headers.get("subject", "")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
 
+        to_hdr, cc_hdr = _reply_all_recipients(
+            headers, self_address, extra_to, extra_cc, reply_all
+        )
         message = MIMEText(args.body)
-        message["To"] = headers.get("from", "")
+        message["To"] = to_hdr
+        if cc_hdr:
+            message["Cc"] = cc_hdr
         message["Subject"] = subject
         if args.from_header:
             message["From"] = args.from_header
@@ -390,22 +443,32 @@ def gmail_reply(args):
             params={"userId": "me"},
             body={"raw": raw, "threadId": original["threadId"]},
         )
-        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", ""), "to": to_hdr, "cc": cc_hdr}, indent=2))
         return
 
     service = build_service("gmail", "v1")
     original = service.users().messages().get(
         userId="me", id=args.message_id, format="metadata",
-        metadataHeaders=["From", "Subject", "Message-ID"],
+        metadataHeaders=meta_headers,
     ).execute()
     headers = _headers_dict(original)
+    # Best-effort: our own address, so Reply All never echoes back to us.
+    try:
+        self_address = service.users().getProfile(userId="me").execute().get("emailAddress", "")
+    except Exception:
+        self_address = ""
 
     subject = headers.get("subject", "")
     if not subject.startswith("Re:"):
         subject = f"Re: {subject}"
 
+    to_hdr, cc_hdr = _reply_all_recipients(
+        headers, self_address, extra_to, extra_cc, reply_all
+    )
     message = MIMEText(args.body)
-    message["To"] = headers.get("from", "")
+    message["To"] = to_hdr
+    if cc_hdr:
+        message["Cc"] = cc_hdr
     message["Subject"] = subject
     if args.from_header:
         message["From"] = args.from_header
@@ -417,7 +480,7 @@ def gmail_reply(args):
     body = {"raw": raw, "threadId": original["threadId"]}
 
     result = service.users().messages().send(userId="me", body=body).execute()
-    print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+    print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", ""), "to": to_hdr, "cc": cc_hdr}, indent=2))
 
 
 
@@ -1082,6 +1145,9 @@ def main():
     p.add_argument("message_id", help="Message ID to reply to")
     p.add_argument("--body", required=True)
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
+    p.add_argument("--to", default="", help="Extra To recipients (comma-separated), added on top of Reply All")
+    p.add_argument("--cc", default="", help="Extra Cc recipients (comma-separated), added on top of Reply All")
+    p.add_argument("--no-reply-all", action="store_true", help="Reply to the original sender only; do NOT keep the other To/Cc recipients")
     p.set_defaults(func=gmail_reply)
 
     p = gmail_sub.add_parser("labels")

@@ -102,6 +102,16 @@ For more context, see the upstream Astral reports: [astral-sh/uv#13553](https://
 
 ---
 
+## Deploy on Railway
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.com/deploy/hermes-agent-1)
+
+Optional **community** one-click template for hosting the messaging gateway (Telegram/Discord/Slack, etc.) on Railway: [`Lukem121/hermes-agent-railway-template`](https://github.com/Lukem121/hermes-agent-railway-template). This is not an official Nous Research deployment path — review the template (maintenance, pinned Hermes version, and HTTP setup flow) before using it.
+
+After deploy, complete the web `/setup` flow, then chat on a messaging platform. This is not a hosted interactive `hermes` TUI. For the canonical container setup — and if you expose the OpenAI-compatible API publicly, required auth via `API_SERVER_ENABLED`, `API_SERVER_HOST=0.0.0.0`, and `API_SERVER_KEY` — see the [Docker deployment guide](https://hermes-agent.nousresearch.com/docs/user-guide/docker).
+
+---
+
 ## Getting Started
 
 ```bash

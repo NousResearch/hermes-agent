@@ -341,7 +341,7 @@ class MCPServerRunMixin:
             logger.warning(
                 "MCP server '%s' failed initial connection after %d attempts, parking until a reconnect is "
                 "requested (state: connecting → parked): %s: %s",
-                self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__, root)
+                self.name, budget.initial_retries, type(root).__name__, root)
             return await self._park_initial_failure(exc, "after initial connection failures", budget)
         logger.debug(
             "MCP server '%s' initial connection failed (attempt %d/%d), retrying in %.0fs: %s: %s",

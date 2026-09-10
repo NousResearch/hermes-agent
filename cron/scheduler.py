@@ -2701,6 +2701,8 @@ def _save_compose_deliver(
         if d.failure_incident_id:
             queued_job["_failure_incident_id"] = d.failure_incident_id
         queued = enqueue(execution_id, queued_job, deliver_content, for_failure=not d.success)
+        # The queue owns this send even if subsequent bookkeeping fails.
+        d.delivery_attempted = True
         job['last_delivery_queued'] = {'canonical': {'status': queued['status'], 'execution_id': execution_id}}
         return
     d.unresolved_origin = (

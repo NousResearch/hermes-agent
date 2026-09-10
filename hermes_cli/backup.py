@@ -1029,12 +1029,13 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
 
     Bot tokens and cron jobs are inert without a gateway (a platform-less gateway is supported, so
     this is safe for any backup); failures print a manual fallback, never fail the import. Only
-    revived when the restore landed in the default home or no other install exists: a sandbox or
-    profile restore must not install a second gateway on the default service name.
+    revived when the restore landed in the default home: a sandbox or profile restore must not
+    install a second gateway on the default service name, whether or not the default home
+    happens to be configured yet (an empty default home is not evidence the restore target is
+    safe to treat as it).
     """
     native_default = _get_platform_default_hermes_home()
-    if hermes_root != native_default and any(
-            (native_default / marker).exists() for marker in ("config.yaml", ".env", "state.db")):
+    if hermes_root != native_default:
         print("\nRestored into a non-default home; leaving the gateway service alone to avoid clashing "
               f"with the install at {native_default}.\n"
               "To start a gateway for this home, run:  hermes gateway install")

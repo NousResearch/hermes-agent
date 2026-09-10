@@ -22,7 +22,8 @@
  * Versioning: bump ``HermesPluginSDK["sdkVersion"]`` (and the
  * ``SDK_CONTRACT_VERSION`` const the host exposes) on any
  * backwards-incompatible change to this surface. Additive changes
- * (new optional fields, new helpers) don't require a major bump.
+ * (new optional fields / helpers) take a minor bump so a runtime compat
+ * gate can advertise the new capability; never a major bump.
  *
  * OPEN QUESTIONS for productionising this spike (do not block the auth fix):
  *   - Ship as a published ``@hermes/dashboard-plugin-sdk`` types package, or
@@ -85,6 +86,50 @@ export interface PluginRegistry {
   register(name: string, component: ComponentType<Record<string, never>>): void;
   /** Register a component into a named host slot. */
   registerSlot(slot: string, name: string, component: ComponentType): void;
+}
+
+// ---------------------------------------------------------------------------
+// Profile scope surface (read + subscribe)
+// ---------------------------------------------------------------------------
+
+/**
+ * Live, read-only view of the host's management-profile switcher, plus a
+ * ``subscribe`` to react when an operator flips it.
+ *
+ * Hand-authored inline (NOT imported from ``@/contexts/...``) so no
+ * host-internal module path leaks into this versioned contract.
+ *
+ * Shape is an OBJECT with live getters + ``subscribe``, deliberately not a
+ * bare hook: it must serve non-React consumers (plain-JS plugin bundles that
+ * probe ``typeof sdk.profileScope === "object"`` and call ``.subscribe``) as
+ * well as React plugins (read the fields, ``subscribe`` inside a ``useEffect``).
+ *
+ * Freshness: the getters re-read the host's live store on each access, so a
+ * consumer that RE-READS after a change sees the new value. Before the host
+ * provider mounts, the fields read a safe empty default (``profile: ""``,
+ * ``currentProfile: ""``, ``profiles: []``) which is indistinguishable from
+ * a genuine "no profiles / own-profile" state. Subscribing alone is
+ * sufficient to never latch that seed: ``subscribe`` fires the callback once
+ * immediately with whatever is current at subscribe time, and again on every
+ * later change, so there is no missable window for a consumer that loads
+ * after the host booted (plugin bundles load asynchronously). ``profiles``
+ * is returned frozen; treat it as read-only (mutating it does not affect
+ * host state).
+ */
+export interface ProfileScopeValue {
+  /** Profile every management surface reads/writes ("" = the dashboard's own). */
+  readonly profile: string;
+  /** The profile the dashboard process itself runs under. */
+  readonly currentProfile: string;
+  /** Known profile names (frozen; treat as read-only). */
+  readonly profiles: readonly string[];
+  /**
+   * Register a zero-arg callback; returns an unsubscribe thunk. The callback
+   * fires once immediately at subscribe time (bootstrap: read the getters
+   * inside it for the current state) and again on any change to the fields
+   * above. Call the returned thunk on plugin teardown.
+   */
+  subscribe(cb: () => void): () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +217,14 @@ export interface HermesPluginSDK {
    * ``I18nContextValue`` shape. Plugins typically call ``useI18n().t(...)``.
    */
   useI18n: () => unknown;
+
+  /**
+   * Live view of the host's management-profile switcher (read + subscribe).
+   * OPTIONAL: a plugin compiled against this type may run on an older host that
+   * predates the field, so probe ``sdk.profileScope`` (or gate on
+   * ``sdkVersion``) before use. Added in SDK contract 1.2.0.
+   */
+  profileScope?: ProfileScopeValue;
 }
 
 declare global {

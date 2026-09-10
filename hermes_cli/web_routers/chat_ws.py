@@ -579,6 +579,7 @@ async def gateway_ws(ws: WebSocket) -> None:
     await handle_ws(
         ws,
         auth_identity=identity,
+        operator=True,  # The dashboard upgrade gate above has verified this operator.
         subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
     )
 

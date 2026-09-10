@@ -271,13 +271,19 @@ def _profiles(authority, actor, home, params):
 
         # The named registry is not a recency window and canonical chats are hidden.
         canonical = authority.db.get_session_by_title('Bot Chat')
-        if (canonical and canonical.get('user_id') == actor.subject
+        if (canonical and (canonical.get('user_id') == actor.subject
+                           or 'session:operator' in actor.capabilities)
                 and str(canonical.get('chat_id') or '').startswith('local-') and not canonical.get('archived')):
             row['canonical_session'] = summary(canonical)
+        if 'session:operator' in actor.capabilities:
+            owner_filter, owner_params = '', ()
+        else:
+            owner_filter, owner_params = 'user_id=? AND ', (actor.subject,)
         with authority.db._lock:
             latest = authority.db._conn.execute(
-                "SELECT id FROM sessions WHERE user_id=? AND chat_id LIKE 'local-%' AND archived=0 "
-                "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1", (actor.subject,)).fetchone()
+                f"SELECT id FROM sessions WHERE {owner_filter}chat_id LIKE 'local-%' AND archived=0 "
+                "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1",
+                owner_params).fetchone()
         if latest:
             row['last_session'] = summary(authority.db.get_session(latest[0]))
     profiles = [row]

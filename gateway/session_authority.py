@@ -70,7 +70,8 @@ class SessionAuthority:
                 restore_api_session(self, ref.session_id)
         from gateway.config import Platform
         source = self.sessions[ref.session_id].source
-        if source is not None and source.platform == Platform.LOCAL and source.user_id != actor.subject:
+        if (source is not None and source.platform == Platform.LOCAL
+                and source.user_id != actor.subject and 'session:operator' not in actor.capabilities):
             raise RuntimeStoreError('permission_denied')
 
     def _require_admission_open(self):
@@ -237,6 +238,14 @@ class SessionAuthority:
         finite = admit_finite(request.payload)
         payload = {'text': request.payload['text'], **finite,
                    **admit_attachments(request.payload.get('attachments'))}
+        from gateway.config import Platform
+        source = self.sessions[request.ref.session_id].source
+        if source is not None and source.platform == Platform.LOCAL and source.user_id != actor.subject:
+            # Durable server authorization, not a client payload field. The original
+            # principal remains the admission/retry identity across owner restarts.
+            payload['local_operator_v1'] = {
+                'profile_id': self.profile_id, 'session_id': request.ref.session_id,
+                'principal_id': actor.subject}
         row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                   session_id=request.ref.session_id, request_id=request.request_id,
                                   payload=payload, intent=request.intent)
@@ -349,9 +358,9 @@ class SessionAuthority:
                     if 'local_automation_v1' in first['payload']:
                         from gateway.session_automation import check_local_automation
                         check_local_automation(self, ref, first)
-                    elif (first['principal_id'] != live.source.user_id
-                          or not {'text'} <= set(first['payload']) <= {'text', 'attachments_v1', 'finite'}):
-                        raise RuntimeStoreError('permission_denied')
+                    else:
+                        from gateway.session_operator import check_local_input
+                        check_local_input(self, ref, first)
                 if first is not None and 'native_text_v1' in first['payload']:
                     from gateway.session_envelope import check_native_route
                     await check_native_route(self.runner, first['payload'], ref.session_id, live.source,

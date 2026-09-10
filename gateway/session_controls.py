@@ -9,7 +9,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 class AuthorityConnection:
-    def __init__(self, authority, transport, identity):
+    def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
         self.transport = transport
         capabilities = frozenset({'session:read', 'session:submit', 'session:control',
@@ -18,6 +18,10 @@ class AuthorityConnection:
             capabilities |= {'session:create'}
         if 'capabilities' in identity:
             capabilities = frozenset(identity['capabilities'])
+        # Only verified transport gates may issue this capability, never identity data.
+        capabilities -= {'session:operator'}
+        if operator is True:
+            capabilities |= {'session:operator'}
         if (not identity.get('user_id')
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()

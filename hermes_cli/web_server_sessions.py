@@ -103,7 +103,7 @@ def _session_mutation_context(request, profile):
     if native is not None and native['profile_id'] != authority.profile_id:
         raise HTTPException(status_code=403, detail='profile_mismatch')
     return authority, Principal(subject, authority.profile_id,
-        frozenset({'session:read', 'session:control', 'session:create'}), 'http')
+        frozenset({'session:read', 'session:control', 'session:create', 'session:operator'}), 'http')
 
 
 async def _mutate_session_request(request, profile, session_id, *, request_id,

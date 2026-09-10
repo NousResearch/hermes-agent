@@ -141,9 +141,11 @@ class GatewayRuntimeAPI:
                 or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):
             await ws.close(code=4403)
             return
+        operator = True
         try:
             grant = self.runner.session_ticket_store.redeem(ticket, profile_id=None, purpose='interactive')
         except PermissionError:
+            operator = False
             try:
                 grant = self.runner.session_ticket_store.redeem(ticket, profile_id=None, purpose='worker-adoption')
             except PermissionError:
@@ -164,4 +166,4 @@ class GatewayRuntimeAPI:
                                               'profile_id': grant['profile_id'],
                                               'instance_id': grant['instance_id'],
                                               'capabilities': grant['capabilities'], 'native_bootstrap': True},
-                            subprotocol=CANONICAL_GATEWAY_PROTOCOL)
+                            subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)

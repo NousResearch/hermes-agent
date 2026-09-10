@@ -124,7 +124,11 @@ def test_busy_policy_is_authorized_session_scoped_and_not_inference(tmp_path):
                     for method in ('config.get', 'config.set'):
                         params = {'value': 'queue'} if method == 'config.set' else {}
                         result = await rpc(other, method, session_id=ids[0], key='busy', **params)
-                        assert result.get('error', {}).get('message') == 'permission_denied', result
+                        # This configured dashboard token is another verified operator.
+                        assert result.get('result') == {
+                            'key': 'busy', 'value': 'queue', 'scope': 'session'}, result
+                assert (await rpc(ws, 'config.get', session_id=ids[0], key='busy'))['result']['value'] == 'queue'
+                assert (await rpc(ws, 'config.get', session_id=ids[1], key='busy'))['result']['value'] == 'steer'
                 assert (home / 'config.yaml').read_bytes() == config_before
                 assert not admissions(home) and not peer.requests
         asyncio.run(probe())
@@ -153,11 +157,12 @@ def test_corrections_are_generation_fenced_and_consumed_by_same_provider_loop(tm
                         assert denied.get('error', {}).get('message') == reason, denied
                     other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=other-controls-actor'
                     async with connect(other_url) as other:
+                        # Operator sharing does not bypass the execution-generation fence.
                         denied = await rpc(other, 'session.' + verb, session_id=sid,
-                                           execution_generation=generation, text='DENIED_MARKER')
-                        assert denied.get('error', {}).get('message') == 'permission_denied', denied
-                    result = await rpc(ws, 'session.' + verb, session_id=sid,
-                                       execution_generation=generation, text='CORRECT_' + verb.upper())
+                                           execution_generation=generation - 1, text='DENIED_MARKER')
+                        assert denied.get('error', {}).get('message') == 'stale_generation', denied
+                        result = await rpc(other, 'session.' + verb, session_id=sid,
+                                           execution_generation=generation, text='CORRECT_' + verb.upper())
                     assert result.get('result', {}).get('status') == status, result
                     assert result['result']['execution_generation'] == generation
                     queue = await rpc(ws, 'prompt.submit', session_id=sid, input_id=verb + '-queue', text='FIFO_' + verb.upper())

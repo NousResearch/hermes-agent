@@ -50,8 +50,8 @@ def test_static_token_http_mutations_reuse_ws_owner(tmp_path):
                 else:
                     saved.update(sid=sid, receipt=result)
             async with websocket(home, desc) as native:
-                denied = await rpc(native, 'session.resume', session_id=sid)
-                assert denied['error']['message'] == 'permission_denied', denied
+                resumed = await rpc(native, 'session.resume', session_id=sid)
+                assert resumed.get('result', {}).get('session_id') == sid, resumed
 
     for _ in range(2):
         with daemon(root, home, env, barrier=False) as (_, desc):

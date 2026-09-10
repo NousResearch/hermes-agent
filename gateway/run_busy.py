@@ -689,6 +689,14 @@ class GatewayBusySessionMixin:
         if getattr(event, "internal", False):
             self._queue_or_replace_pending_event(session_key, event)
             return True
+        # Persistent webhook deliveries are ordered conversation turns, not live keystrokes
+        # steering an in-flight run. Put each delivery into the gateway FIFO rather than the
+        # adapter's single pending slot: merging would collapse message IDs and lose the later
+        # delivery's response target (deliver_extra).
+        if (event.source.platform == Platform.WEBHOOK
+                and bool((event.metadata or {}).get("webhook_persistent_session"))):
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
         if (
             event.message_type == MessageType.TEXT
             and self._effective_busy_text_mode(event.source) == "queue"

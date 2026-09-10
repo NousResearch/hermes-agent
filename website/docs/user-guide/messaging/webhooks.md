@@ -84,6 +84,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
 | `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
+| `session_key` | No | Template string (same `{dot.notation}` syntax as `prompt`) that pins all deliveries with the same rendered value to one **persistent session**, instead of the default new-session-per-delivery. E.g. `"{satellite}"` gives each satellite its own ongoing conversation. If unset, or if the template doesn't resolve for a given payload, that delivery falls back to per-delivery behavior. See [Persistent Sessions](#persistent-sessions). |
 | `skills` | No | List of skill names to load for the agent run. |
 | `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
@@ -226,6 +227,36 @@ webhooks:
 ```
 
 If `chat_id` is not provided in `deliver_extra`, the delivery falls back to the home channel configured for the target platform.
+
+---
+
+## Persistent Sessions {#persistent-sessions}
+
+By default, every webhook delivery runs in a fresh session — delivery identity *is* conversation identity. That's correct for event streams (each PR event is independent), but wrong for conversational sources like voice satellites or chat bridges, where each POST is one turn in an ongoing dialogue and the agent needs memory of previous turns.
+
+Setting `session_key` on a route separates the two: the rendered template becomes the conversation identity, so repeat events from the same source share one session — like a Telegram or WhatsApp thread.
+
+```yaml
+routes:
+  customer-chat:
+    secret: "chat-bridge-secret"
+    session_key: "{tenant_id}:{account_id}:{conversation_id}"
+    prompt: "Customer message: {message}"
+    deliver: telegram
+```
+
+Two POSTs with the same tenant, account, and conversation IDs land in the same session. Changing any one of those IDs creates an isolated session. Session count is bounded by distinct rendered keys, not by delivery count.
+
+Behavior notes:
+
+- **Idempotency is unchanged** — duplicate deliveries are still deduplicated by delivery ID, regardless of `session_key`.
+- **Fallback** — if the template doesn't resolve against a payload (e.g. the field is missing), that delivery gets a per-delivery session, same as an unconfigured route. A rendered key containing `{` is also treated as unresolved, so use stable opaque IDs that do not contain braces.
+- **Lifecycle** — persistent sessions are not auto-closed after each event (they expect follow-up turns). Manage them with `hermes sessions prune` or your idle-timeout policy.
+- **Ordering vs. concurrency** — deliveries sharing a `session_key` are processed sequentially on that session. For conversational sources this is what you want (turns stay ordered); routes that need concurrent processing should leave `session_key` unset.
+- **Delivery routing stays per request** — `session_key` identifies the conversation only. Each delivery keeps its own rendered `deliver_extra`, so overlapping turns cannot redirect an earlier response.
+- **Profile isolation is additional** — a route bound to a multiplexed `profile` is automatically namespaced to that profile. Use `session_key` for application boundaries such as tenant, account, and conversation; use profiles for isolated persona, memory, skills, tools, and credentials.
+- **Use stable opaque IDs** — include every application isolation boundary, and avoid names, secrets, email addresses, or other raw personal data. If any template field is unresolved, Hermes safely falls back to a one-shot session for that delivery.
+- **Sender-controlled** — the key is rendered from the payload, so a sender chooses which of the route's sessions their event joins. This is scoped to the route (the route name is part of the session identity) and gated by the route's HMAC secret; the [untrusted-content warning](#authenticated-does-not-mean-trusted) applies to session_key values as it does to every payload field.
 
 ---
 

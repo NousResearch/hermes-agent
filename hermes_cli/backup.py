@@ -60,14 +60,16 @@ _EXCLUDED_DIRS = {
     ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 }
 
-# Hermes-managed runtime downloads (GGUF models, llama.cpp runtimes, managed Node): re-downloaded
-# on demand and routinely tens to hundreds of GB. Matched ONLY at the root of HERMES_HOME and at
-# ``profiles/<name>/`` — a deeper dir of the same name (a skill's ``models/``) is user data.
-_EXCLUDED_ROOT_DIRS = {"models", "runtimes", "node"}
+# Hermes-managed runtime downloads (GGUF models, llama.cpp runtimes, managed Node) and caches are
+# regenerable. Runtime trees routinely reach tens to hundreds of GB; live browser/tool caches may
+# also contain locked SQLite databases that cannot be snapshotted consistently. Match these names
+# ONLY at the root of HERMES_HOME and at ``profiles/<name>/`` — a deeper directory of the same name
+# (for example, a skill's ``models/`` or ``cache/``) is user data and must survive.
+_EXCLUDED_ROOT_DIRS = {"cache", "models", "runtimes", "node"}
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True when *rel_path* is, or sits inside, a managed runtime tree at a profile-home root."""
+    """True when *rel_path* is inside a regenerable tree at a profile-home root."""
     parts = rel_path.parts
     return bool(parts) and (
         parts[0] in _EXCLUDED_ROOT_DIRS

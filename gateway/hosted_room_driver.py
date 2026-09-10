@@ -13,6 +13,7 @@ import json
 import math
 import sqlite3
 from contextlib import closing
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Literal, get_args
@@ -35,7 +36,7 @@ TASK_STATUSES = frozenset(get_args(TaskStatus))
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({"target_profile", "prompt", "source_event_seq"})
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "input_context"})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "input_context", "attachments"})
 _LEASE_COLUMNS = frozenset({
     "room_id", "gateway_id", "authority_epoch", "process_generation", "lease_generation", "expires_at", "acquired_at",
     "updated_at", "released_at"})
@@ -142,6 +143,23 @@ def _lease_window(ttl_seconds: Any, clock: Clock) -> tuple[float, float]:
     return now, now + ttl
 
 
+def validate_bound_task_manifest(value: Any) -> list[dict[str, Any]]:
+    """Validate store metadata plus the exact source event for each task input."""
+    from gateway.hosted_room_attachments import validate_task_manifest
+
+    if not isinstance(value, list) or not value:
+        raise DriverValidationError("attachments must be a non-empty list")
+    if any(not isinstance(item, Mapping) or "event_id" not in item for item in value):
+        raise DriverValidationError("task attachment requires event_id")
+    event_ids = [_identifier(item["event_id"], label="attachment event_id") for item in value]
+    try:
+        manifest = validate_task_manifest([
+            {key: val for key, val in item.items() if key != "event_id"} for item in value])
+    except ValueError as exc:
+        raise DriverValidationError(str(exc)) from exc
+    return [{**item, "event_id": event_id} for item, event_id in zip(manifest, event_ids)]
+
+
 def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
     if not isinstance(value, dict):
         raise DriverValidationError("payload must be an object")
@@ -165,6 +183,8 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
             raise DriverValidationError(str(exc)) from exc
     if "target_member_id" in value:
         normalized["target_member_id"] = _identifier(value["target_member_id"], label="target_member_id")
+    if "attachments" in value:
+        normalized["attachments"] = validate_bound_task_manifest(value["attachments"])
     encoded = compact_json(normalized)
     return normalized, encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

@@ -52,10 +52,11 @@ def _compute_host_turn_frame(
     queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
+        session_token = session.setdefault("_compute_host_session_token", uuid.uuid4().hex)
         history_version = int(session.get("history_version", 0))
         attached_images = list(image_paths if image_paths is not None else session.get("attached_images", []))
     return {
-        "type": "turn.start", "sid": sid, "request_id": rid,
+        "type": "turn.start", "sid": sid, "request_id": rid, "session_token": session_token,
         "session_key": session.get("session_key") or sid, "text": text,
         **({"display_kind": display_kind} if display_kind else {}), "history": history,
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
@@ -67,6 +68,15 @@ def _compute_host_turn_frame(
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
         "queued_prompt_generation": queued_prompt_generation}
+
+
+def _compute_host_has_background_work(sid: str, session: dict) -> bool:
+    token = session.get("_compute_host_session_token")
+    # Reapers may hold session locks: inspect the existing host only, without
+    # loading configuration, acquiring its startup lock, or spawning a host.
+    supervisor = _compute_host_supervisor
+    return bool(token and supervisor is not None and supervisor.has_background_work(
+        sid, token, include_running=not session.get("running")))
 
 
 def _metadata_mirror(session: dict | None) -> dict:

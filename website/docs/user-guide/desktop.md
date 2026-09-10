@@ -468,7 +468,10 @@ Hermes, in two sections on one page:
 Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
 picker installs reviewed entries at their pinned commit into the selected
 profile, and **Install from Git** takes any other repository through the same
-review-then-install dialog. Old `Settings → Plugins` links redirect here.
+review-then-install dialog; its optional **Pin to commit** field installs one
+exact 40-character commit SHA (private repos included), and pinned plugins
+carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
+redirect here.
 
 ## Troubleshooting
 

@@ -378,19 +378,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
         sessionTileDelegate()?.updateSession(sessionId, updater)
 
-      // Match the primary composer: record the correction in arrival order —
-      // sealed already-streamed output above, correction below, post-redirect
-      // deltas below that — before awaiting the redirect RPC, whose completion
-      // can race us. The old insert-before-the-active-reply splice put the
-      // bubble above output the user had already read (#73793), and its
-      // last-assistant fallback could land it mid-thread when the stream id
-      // was missing or stale (#83151).
+      // Reserve the correction's arrival position without sealing the stream.
+      // Deltas arriving during a refused RPC must keep their live bubble.
       mutate(state => {
         const message = { id: messageId, role: 'user' as const, parts: [textPart(text)] }
 
-        return mode === 'interrupt'
-          ? appendMidTurnUserMessage(state, message)
-          : { ...state, messages: [...state.messages, message] }
+        return { ...state, messages: [...state.messages, message] }
       })
 
       const discardOptimisticMessage = () =>
@@ -424,6 +417,19 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         )
 
         if (result?.status === 'redirected') {
+          if (mode === 'interrupt') {
+            mutate(state => {
+              const message = state.messages.find(candidate => candidate.id === messageId)
+
+              return message
+                ? appendMidTurnUserMessage(
+                    { ...state, messages: state.messages.filter(candidate => candidate.id !== messageId) },
+                    message
+                  )
+                : state
+            })
+          }
+
           triggerHaptic('submit')
 
           return true

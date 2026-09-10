@@ -797,14 +797,9 @@ export function usePromptActions({
       // message after the interrupted checkpoint, matching the durable core
       // transcript rather than a system note that changes role after reload.
       const send = async (id: string): Promise<boolean> => {
-        // Redirect aborts the model request, so the completion event can race
-        // its RPC response. Record the correction *before* awaiting the
-        // gateway, in arrival order: sealed already-streamed output above,
-        // correction bubble below it, post-redirect deltas below that
-        // (#73793, #83151).
-        const messageId = appendSessionTextMessage(id, 'user', text, undefined, {
-          appendAfterActiveReply: mode === 'interrupt'
-        })
+        // Reserve the correction's arrival position, but do not seal the live
+        // stream until acceptance: a refusal must leave in-flight deltas intact.
+        const messageId = appendSessionTextMessage(id, 'user', text)
 
         const discardOptimisticMessage = () =>
           updateSessionState(id, state => ({
@@ -828,6 +823,19 @@ export function usePromptActions({
           )
 
           if (result?.status === 'redirected') {
+            if (mode === 'interrupt') {
+              updateSessionState(id, state => {
+                const message = state.messages.find(candidate => candidate.id === messageId)
+
+                return message
+                  ? appendMidTurnUserMessage(
+                      { ...state, messages: state.messages.filter(candidate => candidate.id !== messageId) },
+                      message
+                    )
+                  : state
+              })
+            }
+
             triggerHaptic('submit')
 
             return true

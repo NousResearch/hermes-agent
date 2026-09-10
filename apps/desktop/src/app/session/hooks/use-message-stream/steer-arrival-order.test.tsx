@@ -19,10 +19,13 @@ import { act, cleanup, render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
+import { useSessionTileActions } from '@/app/chat/session-tile-actions'
 import { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import type { ClientSessionState } from '@/app/types'
 import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { setSessionTileDelegate } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 import { STREAM_DELTA_FLUSH_MS } from './utils'
@@ -35,7 +38,7 @@ let handleEvent: ((event: RpcEvent) => void) | null = null
 let redirect: ((text: string) => Promise<boolean>) | null = null
 let states: Map<string, ClientSessionState>
 
-/** The gateway accepts every redirect — these suites pin CLIENT ordering. */
+/** Stub only the RPC boundary; both action handlers and streaming reducers are real. */
 const requestGatewayMock = vi.fn(async (method: string): Promise<unknown> =>
   method === 'session.redirect' ? { status: 'redirected' } : {}
 )
@@ -46,7 +49,7 @@ const requestGateway = requestGatewayMock as unknown as <T>(
   timeoutMs?: number
 ) => Promise<T>
 
-function Harness() {
+function Harness({ tile = false }: { tile?: boolean }) {
   const activeSessionIdRef = useRef<null | string>(SID)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const queryClientRef = useRef(new QueryClient())
@@ -93,18 +96,35 @@ function Harness() {
     updateSessionState
   })
 
+  const tileActions = useSessionTileActions({
+    requestGateway,
+    runtimeId: SID,
+    storedSessionId: SID,
+    scope: MAIN_COMPOSER_SCOPE
+  })
+
   useEffect(() => {
+    setSessionTileDelegate({
+      archiveSession: async () => undefined,
+      branchSession: async () => undefined,
+      deleteSession: async () => undefined,
+      executeSlash: async () => undefined,
+      interruptSession: async () => undefined,
+      resumeTile: async () => SID,
+      submitToSession: async () => undefined,
+      updateSession: updateSessionState
+    })
     handleEvent = stream.handleGatewayEvent
-    redirect = actions.redirectPrompt
+    redirect = tile ? tileActions.steerPrompt : actions.redirectPrompt
     states = sessionStateByRuntimeIdRef.current
-  }, [stream.handleGatewayEvent, actions.redirectPrompt])
+  }, [stream.handleGatewayEvent, actions.redirectPrompt, tileActions.steerPrompt, tile])
 
   return null
 }
 
-async function mountHarness() {
+async function mountHarness(tile = false) {
   vi.useFakeTimers()
-  render(<Harness />)
+  render(<Harness tile={tile} />)
   await act(async () => {
     await Promise.resolve()
   })
@@ -253,6 +273,50 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
       'user:second correction',
       'assistant:final output'
     ])
+  })
+
+  it.each([false, true])('a refused redirect preserves the continuing stream (tile=%s)', async tile => {
+    await mountHarness(tile)
+
+    for (const refusal of ['not_running', 'error'] as const) {
+      emit({ payload: {}, session_id: SID, type: 'message.start' })
+      emit({ payload: { text: 'before' }, session_id: SID, type: 'message.delta' })
+      await flushDeltas()
+      const originalId = states.get(SID)!.streamId
+      const priorCount = states.get(SID)!.messages.length
+      let refuse!: () => void
+      requestGatewayMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            refuse = () =>
+              refusal === 'error' ? reject(new Error('correction refused')) : resolve({ status: refusal })
+          })
+      )
+      let pending!: Promise<unknown>
+      act(() => {
+        pending = redirect!('not accepted').catch(error => error)
+      })
+      emit({ payload: { text: ' during' }, session_id: SID, type: 'message.delta' })
+      await flushDeltas()
+      await act(async () => {
+        refuse()
+        const outcome = await pending
+
+        if (refusal === 'error') {expect(outcome).toBeInstanceOf(Error)}
+        else {expect(outcome).toBe(false)}
+      })
+      emit({ payload: { text: ' after' }, session_id: SID, type: 'message.delta' })
+      await flushDeltas()
+      const current = states.get(SID)!
+      expect(current.messages).toHaveLength(priorCount)
+      expect(current.streamId).toBe(originalId)
+      expect(current.interimBoundaryPending).toBe(false)
+      expect(current.messages.at(-1)).toMatchObject({ id: originalId, pending: true })
+      expect(chatMessageText(current.messages.at(-1)!)).toBe('before during after')
+      emit({ payload: { text: 'before during after done' }, session_id: SID, type: 'message.complete' })
+      expect(states.get(SID)!.messages).toHaveLength(priorCount)
+      expect(chatMessageText(states.get(SID)!.messages.at(-1)!)).toBe('before during after done')
+    }
   })
 
   it('a redirect the gateway rejects discards the optimistic bubble instead of stranding it', async () => {

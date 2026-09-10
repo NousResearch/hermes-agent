@@ -14,6 +14,7 @@ class GatewayChatView:
         self.generation = snapshot.get("execution_generation", 0)
         self.prompts = {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
         self.quiet = quiet
+        self.finite = False
         self.streams = {}
         self.completions = {}
         self.changed = asyncio.Event()
@@ -77,7 +78,8 @@ class GatewayChatView:
 
     async def submit(self, text):
         return await self.client.rpc("prompt.submit", session_id=self.session_id,
-                                     input_id=uuid.uuid4().hex, text=text)
+                                     input_id=uuid.uuid4().hex, text=text,
+                                     **({"finite": True} if self.finite else {}))
 
     async def command(self, text):
         command, _, rest = text.partition(" ")
@@ -128,6 +130,7 @@ class GatewayChatView:
 
     async def run(self, query=None, *, oneshot=False):
         self.quiet = self.quiet or oneshot
+        self.finite = oneshot
         for prompt in self.prompts.values():
             self.show_prompt(prompt)
         renderer = asyncio.create_task(self.render())

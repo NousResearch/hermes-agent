@@ -158,16 +158,20 @@ final response before the CLI exits.
 
 - **Automatic joining:** no opt-in or background-mode override is needed.
   Interactive TTY chat and messaging sessions keep background delegation.
-- **Existing safeguards:** delegation limits, timeouts, cancellation, and
-  `approvals.single_query_mode` still apply. Joining does not auto-approve commands
-  or guarantee successful child outcomes. Inspect results and verify artifacts.
-- **Terminal completions:** this does not change background terminal notification
-  behavior or the bounded `terminal.oneshot_completion_wait_seconds` exit wait.
-  That setting is not a delegation timeout.
+- **Per-input policy:** the CLI records finite consumption with the admitted prompt,
+  including when resuming an interactive session. It does not change that session's
+  creation policy, sibling viewers, or the daemon environment.
+- **Existing safeguards:** delegation limits, timeouts, and cancellation still apply.
+  Joining does not auto-approve commands or guarantee successful child outcomes.
+  Inspect results and verify artifacts. Managed/safe workers still reject child
+  delegation until their child-registration contract is available.
+- **Separate limits:** `--run-budget` remains unsupported by gateway chat; it is not
+  required for joining. `terminal.oneshot_completion_wait_seconds` is not a
+  delegation timeout. Canonical terminal notifications remain gateway-owned.
 
-Delegation remains process-local. Interrupting or terminating the parent can
-cancel unfinished children. Use a durable scheduler for work that must survive
-the initiating process.
+Closing the CLI detaches rather than terminating its gateway-owned turn. Child
+execution is still process-local to that owner: use a durable scheduler for work
+that must survive an owner restart.
 
 ### `hermes -z <prompt>` — scripted one-shot
 

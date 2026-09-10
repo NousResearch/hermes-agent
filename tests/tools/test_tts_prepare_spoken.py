@@ -12,6 +12,7 @@ import json
 from tools.tts_text_normalize import (
     flatten_newlines_for_payload,
     prepare_spoken_text,
+    strip_leading_reasoning_label,
     strip_nonspoken_blocks,
 )
 
@@ -139,3 +140,55 @@ class TestSharedCleanerWiring:
         spoken = adapter.prepare_tts_text("<think>plan</think>Hello there")
         assert "plan" not in spoken
         assert "Hello there" in spoken
+
+
+class TestLeadingReasoningLabelStrip:
+    """A visible leading ``Reasoning:`` / ``思考：`` label is a UI affordance, not speech (#107044)."""
+
+    def test_english_label_stripped(self):
+        spoken = prepare_spoken_text("Reasoning: This is the visible answer.")
+        assert spoken.startswith("This is the visible answer")
+        assert "Reasoning" not in spoken
+
+    def test_fullwidth_colon_label_stripped(self):
+        spoken = prepare_spoken_text("thinking：请继续。")
+        assert spoken.startswith("请继续")
+        assert "thinking" not in spoken
+
+    def test_chinese_label_stripped(self):
+        spoken = prepare_spoken_text("推理：今天天气晴朗。")
+        assert spoken.startswith("今天天气晴朗")
+        assert "推理" not in spoken
+
+    def test_label_on_its_own_line_stripped(self):
+        # A bare ``Analysis`` heading line followed by content is also a leading label.
+        raw = "Analysis\nThe first step is to gather data."
+        spoken = prepare_spoken_text(raw)
+        assert "Analysis" not in spoken
+        assert "first step" in spoken
+
+    def test_label_with_surrounding_whitespace_stripped(self):
+        spoken = prepare_spoken_text("  Reasoning:  Answer here.")
+        assert spoken.startswith("Answer here")
+        assert "Reasoning" not in spoken
+
+    def test_label_word_in_prose_kept(self):
+        # The same word must remain audible when it is not a leading label.
+        spoken = prepare_spoken_text("The reasoning is clear.")
+        assert "reasoning" in spoken.lower()
+
+    def test_think_block_then_leading_label_stripped(self):
+        # After the tagged block is removed, a leading label must still be stripped.
+        raw = "Reasoning: The plan.\nThe answer is 42."
+        spoken = prepare_spoken_text(raw)
+        assert "Reasoning" not in spoken
+        assert "plan" in spoken and "42" in spoken
+
+    def test_no_label_untouched(self):
+        spoken = prepare_spoken_text("Just a normal reply.")
+        assert "normal reply" in spoken
+
+    def test_direct_function_strips_once(self):
+        assert strip_leading_reasoning_label("Reasoning: x") == "x"
+        assert strip_leading_reasoning_label("The reasoning is clear.") == "The reasoning is clear."
+        assert strip_leading_reasoning_label("") == ""

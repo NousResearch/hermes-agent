@@ -186,6 +186,27 @@ def strip_nonspoken_blocks(text: str) -> str:
     return text
 
 
+# A visible leading section label such as ``Reasoning:`` / ``思考：`` (some reply shapers
+# prepend it as a UI affordance) is not speech. Strip it only when it appears at the very
+# start of the text so the same word stays audible in normal prose. See #107044
+# (complements the tagged-block handling above).
+_LEADING_REASONING_LABEL_RE = re.compile(
+    r"^\s*(?:reasoning|thinking|analysis|推理|思考|分析)\s*[:：\n][ \t\r]*",
+    flags=re.IGNORECASE,
+)
+
+
+def strip_leading_reasoning_label(text: str) -> str:
+    """Remove a leading ``Reasoning:`` / ``思考：`` label that some reply shapers prepend.
+
+    Only a label at the very start of the text is removed; the same word in normal
+    prose (``The reasoning is clear.``) is kept intact.
+    """
+    if not text:
+        return ""
+    return _LEADING_REASONING_LABEL_RE.sub("", text, count=1)
+
+
 def flatten_newlines_for_payload(text: str) -> str:
     """Collapse newlines into sentence breaks for single-line TTS payloads: some OpenAI-compatible
     backends (e.g. Kokoro) truncate at the first newline; smoothing already ends each line with
@@ -206,7 +227,8 @@ def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     Pipeline: non-spoken blocks > Markdown > symbols/units > line formatting into sentence
     pauses > single line (for newline-sensitive providers), then ``max_chars``."""
     spoken = text
-    for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
+    for step in (strip_nonspoken_blocks, strip_leading_reasoning_label,
+                 strip_markdown_for_tts, normalize_symbols_for_tts,
                  smooth_whitespace_for_tts, flatten_newlines_for_payload):
         spoken = step(spoken)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:

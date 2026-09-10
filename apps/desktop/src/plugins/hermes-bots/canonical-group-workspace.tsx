@@ -3,11 +3,13 @@ import { useEffect, useRef, useState } from 'react'
 
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
+import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction } from './canonical-groups'
 
 interface RoomEvent { seq: number; kind: string; payload: { text?: string; content?: string }; actor?: { member_id?: string } }
+interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface RoomState { room: { name: string }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
@@ -27,7 +29,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [error, setError] = useState('')
   const [readError, setReadError] = useState('')
   const [draft, setDraft] = useState('')
-  const [attachments, setAttachments] = useState<Record<string, unknown>[]>([])
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [restored, setRestored] = useState(false)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
   const [busy, setBusy] = useState(false)
@@ -46,7 +48,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       if (entry) {
         setPending(entry)
         setDraft(String(entry.params.payload.text ?? ''))
-        setAttachments((entry.params.payload.attachments as Record<string, unknown>[] | undefined) ?? [])
+        setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])
       }
 
       setRestored(true)
@@ -122,7 +124,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       if (!alive.current) {return}
       setPending(exact)
       setDraft(String(exact.params.payload.text ?? ''))
-      setAttachments((exact.params.payload.attachments as Record<string, unknown>[] | undefined) ?? [])
+      setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
       await canonicalGroupRequest(exact.binding, 'groups.send', exact.params)
       await retireCanonicalGroupSend(exact.binding, exact.params.event_id)
 
@@ -158,6 +160,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     </div>}
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
+      <CanonicalGroupAttachments binding={binding} attachments={attachments} onChange={setAttachments} disabled={!restored || busy || !!pending} />
       <textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={!restored || busy || !!pending} onChange={e => setDraft(e.target.value)} value={draft} />
       <Button disabled={!restored || busy || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>

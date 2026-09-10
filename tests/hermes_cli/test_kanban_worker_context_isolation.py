@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import pytest
@@ -91,6 +92,51 @@ def test_task_isolation_preserves_explicit_context_and_gates_worker_argv(
     assert args.command == "chat"
     assert args.ignore_rules is True
     assert args.query == f"work kanban task {task_id}"
+
+
+def test_unknown_stored_policy_fails_closed_without_assignee_history(
+    kanban_home, monkeypatch
+):
+    with kbc.connect() as conn:
+        prior_id = _completed_task(
+            conn, title="prior work", summary="PRIVATE_ASSIGNEE_HISTORY"
+        )
+        task_id = kb.create_task(conn, title="future policy", assignee="kai")
+        conn.execute(
+            "UPDATE tasks SET context_isolation = ? WHERE id = ?",
+            ("future-policy", task_id),
+        )
+        conn.commit()
+        task = kb.get_task(conn, task_id)
+        context = kb.build_worker_context(conn, task_id)
+
+    assert task is not None
+    assert "## Recent work by @kai" not in context
+    assert prior_id not in context
+    assert "PRIVATE_ASSIGNEE_HISTORY" not in context
+    assert task.context_isolation == "task"
+    command, args = _worker_cli_args(monkeypatch, task, kanban_home)
+    assert "--ignore-rules" in command
+    assert args.ignore_rules is True
+
+
+def test_task_isolation_descriptions_include_preloaded_skills():
+    root = argparse.ArgumentParser()
+    kanban_parser = kc.build_parser(root.add_subparsers())
+    actions = next(
+        action
+        for action in kanban_parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    create_help = actions.choices["create"].format_help().lower()
+
+    from tools import kanban_tools as kt
+
+    policy_schema = kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"][
+        "context_isolation"
+    ]
+    assert "preloaded skills" in policy_schema["description"].lower()
+    assert "preloaded skills" in create_help
 
 
 def test_create_tool_roundtrips_policy_and_defaults_to_legacy_context(

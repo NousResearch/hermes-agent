@@ -222,6 +222,31 @@ def _capture_tasks(conn, room_id):
     return tasks, receipts, None
 
 
+def capture_transition_locked(conn, room_id):
+    """Observe committed driver facts, without making evidence an execution gate.
+
+    The caller's transaction owns both facts and evidence. A rejected evidence
+    write rolls back only its savepoint; malformed retained bytes are classified
+    in place, never replaced with a fabricated current snapshot.
+    """
+    import logging
+    owner = conn.execute(
+        "SELECT authority_gateway_id FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL",
+        (room_id,)).fetchone()
+    if owner is None:
+        return
+    conn.execute("SAVEPOINT work_transition_capture")
+    try:
+        capture_locked(conn, room_id=room_id, local_gateway_id=owner[0])
+    except InvalidStoredWorkRecord:
+        logging.getLogger(__name__).warning("Hosted work evidence invalid for room %s", room_id)
+    except (WorkRecordError, sqlite3.Error):
+        conn.execute("ROLLBACK TO work_transition_capture")
+        logging.getLogger(__name__).warning("Hosted work evidence unavailable for room %s", room_id, exc_info=True)
+    finally:
+        conn.execute("RELEASE work_transition_capture")
+
+
 def capture(db_path, *, room_id: str, local_gateway_id: str, through_seq: int | None = None) -> dict:
     """Commit a new revision only when one consistent source view changes."""
     with rooms._transaction(db_path, immediate=True) as conn:

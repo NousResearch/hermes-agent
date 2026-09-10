@@ -474,6 +474,8 @@ def _transition(
         if guard is not None:
             guard(row)
         fenced_update(conn, sql, params, StaleTaskError(stale))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 
 
@@ -608,6 +610,8 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
             (
                 *dataclasses.astuple(identity), normalized_payload["source_event_seq"], payload_json, payload_digest,
                 now, now))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 
 
@@ -642,6 +646,8 @@ def start_task(
             (
                 execution_generation, *_run_fence(lease), now, now, identity.room_id, identity.task_id,
                 expected_cancel_generation), StaleTaskError("task changed during start"))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, identity.room_id)
         return TaskAttempt(
             identity=identity, lease=lease, execution_generation=execution_generation,
             cancel_generation=expected_cancel_generation)
@@ -813,6 +819,8 @@ def recover_room(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[s
             conn.execute(
                 f"""UPDATE hosted_room_driver_tasks SET status='indeterminate', indeterminate_at=?, updated_at=?
                     WHERE {foreign_running}""", (now, now, *fence))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, lease.room_id)
         return {
             status: [_task_identity_from_row(row) for row in _tasks_in_order(conn, lease.room_id, status)]
             for status in ("queued", "indeterminate")}

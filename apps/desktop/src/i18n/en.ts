@@ -3361,6 +3361,7 @@ export const en: Translations = {
     closePane: 'Close preview pane',
     loading: 'Loading preview',
     unavailable: 'Preview unavailable',
+    fileGoneBody: 'This file may have been moved, renamed, or deleted.',
     opening: 'Opening...',
     hide: 'Hide',
     openPreview: 'Open preview',

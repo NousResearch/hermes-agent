@@ -109,6 +109,8 @@ class TurnRunner:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+        if ctx.native_cot is not None and event_type in {"tool.started", "tool.completed"}:
+            return
         if not ctx.progress_queue or not ctx._run_still_current():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
@@ -743,12 +745,54 @@ class TurnRunner:
             "type": "tool.completed", "tool_call_id": str(call_id or ""), "tool_name": name, "is_error": bool(is_error),
         })
 
+    def combined_tool_complete_callback(self, call_id, tool_name, args, result):
+        if self._ctx.native_cot is not None:
+            self._ctx.native_cot.tool_completed(call_id, tool_name, args, result)
+        if self._ctx._native_slack_task_cards:
+            self.native_tool_complete_callback(call_id, tool_name, args, result)
+
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
         if self._ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
+        if self._ctx.native_cot is not None:
+            self._ctx.native_cot.tool_started(call_id, tool_name, args)
+
+    def native_cot_commentary(self, text: str) -> None:
+        if self._ctx.native_cot is not None and self._ctx._run_still_current():
+            self._ctx.native_cot.commentary(text)
+
+    async def start_native_cot(self) -> None:
+        ctx = self._ctx
+        if ctx.native_cot_mode == "off":
+            return
+        adapter = self._runner._adapter_for_source(ctx.source)
+        try:
+            ctx.native_cot = await adapter.start_native_cot(
+                ctx.source.chat_id,
+                ctx.inbound_message_id or ctx.event_message_id,
+                ctx.native_cot_mode,
+                str(ctx.message or ""),
+            )
+        except Exception as exc:
+            logger.warning("Native COT create failed: type=%s", type(exc).__name__)
+
+    async def finish_native_cot(self, result) -> None:
+        cot = self._ctx.native_cot
+        if cot is None:
+            return
+        reason = "error"
+        if isinstance(result, dict):
+            if result.get("interrupted"):
+                reason = "interrupted"
+            elif not result.get("failed") and not result.get("error"):
+                reason = "done"
+        try:
+            await cot.finish(reason)
+        except Exception as exc:
+            logger.warning("Native COT finish failed: type=%s", type(exc).__name__)
 
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────
 
@@ -759,6 +803,10 @@ class TurnRunner:
         # prev_tools may be list[str] or list[dict] with "name"/"result" keys. Normalise so
         # "tool_names" stays backward-compatible for user hooks that do ', '.join(tool_names).
         names = [(t.get("name") or "") if isinstance(t, dict) else str(t) for t in (prev_tools or [])]
+        if ctx.native_cot is not None:
+            ctx.native_cot.step(iteration, names)
+        if not ctx._hooks_ref.loaded_hooks:
+            return
         self._schedule(
             ctx._hooks_ref.emit("agent:step", {
                 "platform": ctx.source.platform.value if ctx.source.platform else "",
@@ -848,11 +896,11 @@ class TurnRunner:
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = (
+        want_stream_deltas = ctx.native_cot is None and (
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
-        want_interim_messages = ctx.interim_assistant_messages_enabled
-        if want_stream_deltas or want_interim_messages:
+        want_interim_messages = ctx.interim_assistant_messages_enabled or ctx.native_cot is not None
+        if ctx.native_cot is None and (want_stream_deltas or want_interim_messages):
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._adapter_for_source(ctx.source)
@@ -890,6 +938,10 @@ class TurnRunner:
                 if not already_streamed:
                     stts.on_delta(text)
                     stts.on_delta(None)
+            if ctx.native_cot is not None:
+                if not already_streamed:
+                    self.native_cot_commentary(text)
+                return
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
@@ -1150,6 +1202,7 @@ class TurnRunner:
         baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
+        native_cot = getattr(ctx, "native_cot", None)
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
@@ -1157,10 +1210,12 @@ class TurnRunner:
         # callback, so neither infers identity from tool names.
         agent.tool_start_callback = (
             (ctx.native_tool_start_callback or ctx.voice_ack_callback)
-            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards) else None
+            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards or native_cot is not None) else None
         )
-        agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
-        agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
+        agent.tool_complete_callback = (
+            ctx.native_tool_complete_callback if (ctx._native_slack_task_cards or native_cot is not None) else None
+        )
+        agent.step_callback = ctx._step_callback_sync if (ctx._hooks_ref.loaded_hooks or native_cot is not None) else None
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync

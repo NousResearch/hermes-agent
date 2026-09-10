@@ -15,6 +15,7 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
+    "cot_messages": "off",
     "show_reasoning": False,
     "reasoning_style": "code",  # "code" (💭 **Reasoning:** + fence), "blockquote" ("> "), "subtext" ("-# " Discord)
     "tool_preview_length": 0,
@@ -132,6 +133,19 @@ def _norm_cleanup_progress(value: Any) -> bool:
     return value.lower() in _TRUTHY if isinstance(value, str) else bool(value)
 
 
+def _norm_cot_messages(value: Any) -> str:
+    if value is None or value is False:
+        return "off"
+    if value is True:
+        return "brief"
+    normalized = str(value).strip().lower()
+    if normalized in {"off", "false", "no", "0"}:
+        return "off"
+    if normalized in {"detailed", "verbose"}:
+        return "detailed"
+    return "brief" if normalized in {"brief", "simple", "on", "true", "yes", "1"} else "off"
+
+
 def _norm_choice(choices: tuple[str, ...]) -> Any:
     def norm(value: Any) -> str:
         val = str(value).lower()
@@ -149,6 +163,7 @@ def _norm_int(value: Any) -> int:
 
 _NORMALISERS: dict[str, Any] = {
     "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log"}),
+    "cot_messages": _norm_cot_messages,
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,

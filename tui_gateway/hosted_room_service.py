@@ -374,9 +374,15 @@ class HostedRoomService:
                 execution_generation=execution_generation):
                 continue
             task_events = self.policy_checkpoint.events_for_task(
-                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]))
+                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
+                input_context=task["payload"].get("input_context"), task_id=task["identity"].task_id)
             plan = discussion.reconstruct_task_plan(
                 room, task_events, task, local_profiles=local_profiles)
+            message_id = f"dmessage:{task['identity'].task_id.removeprefix('dtask:')}"
+            if any(event.get("event_id") == message_id and event["kind"] == "message.member" for event in task_events):
+                # Finish an already visible immutable reply even if a later request arrived.
+                task_events = [event for event in task_events if event["kind"] != "message.user"
+                               or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
             publication = discussion.plan_publication(
                 room, task_events, plan, status=status, result=task.get("result"),
                 execution_generation=execution_generation if status == "deferred" else None,
@@ -415,16 +421,31 @@ class HostedRoomService:
                 return
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.local_profiles(),
-                initial_watermarks=snapshot.watermarks)
+                initial_watermarks=snapshot.watermarks, freeze_input_context=True)
             if decision.status == "task" and decision.task is not None:
-                driver.admit_task(
-                    self.db_path, decision.task.identity, payload=decision.task.payload,
-                    clock=time.time)
+                existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
+                legacy_payload = dict(decision.task.payload)
+                legacy_payload.pop("input_context", None)
+                if existing is not None and "input_context" in existing["payload"]:
+                    # A rebuilt cache may add older committed context. The slot
+                    # already belongs to its original, frozen admission.
+                    prior_events = self.policy_checkpoint.events_for_task(
+                        room_id=binding.room_id, source_event_seq=existing["payload"]["source_event_seq"],
+                        input_context=existing["payload"]["input_context"], task_id=existing["identity"].task_id)
+                    discussion.reconstruct_task_plan(room, prior_events, existing, local_profiles=self.local_profiles())
+                    admitted = existing
+                elif existing is not None and existing["payload"] == legacy_payload:
+                    discussion.reconstruct_task_plan(room, list(snapshot.events), existing,
+                                                     local_profiles=self.local_profiles())
+                    admitted = existing
+                else:
+                    admitted = driver.admit_task(
+                        self.db_path, decision.task.identity, payload=decision.task.payload, clock=time.time)
                 # A stop can race the policy read from another process: re-read after admission
                 # and cancel a task whose source event is now behind the room stop fence.
                 fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
                 if decision.source_event_seq is not None and decision.source_event_seq < fence:
-                    self.runtime.cancel(decision.task.identity, cancel_id=f"stop-fence:{fence}")
+                    self.runtime.cancel(admitted["identity"], cancel_id=f"stop-fence:{fence}")
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 

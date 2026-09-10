@@ -18,6 +18,7 @@ from typing import Any, Literal
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway import hosted_rooms_common as common
+from gateway.hosted_room_task_input import validate_task_input
 from gateway.hosted_rooms_common import compact_json
 
 
@@ -539,19 +540,23 @@ def _build_prompt(
 
 def _make_task_plan(
     *, room: DiscussionRoom, discussion_event: _ValidatedEvent, member: DiscussionMember, member_index: int,
-    round_index: int, seen_through_seq: int, prompt: str) -> DiscussionTaskPlan:
+    round_index: int, seen_through_seq: int, prompt: str,
+    input_context: Mapping[str, Any] | None = None) -> DiscussionTaskPlan:
     turn_id = f"d{discussion_event.seq}.r{round_index}.p{member_index}.s{seen_through_seq}.m{_member_digest(member)}"
     seed = compact_json({
         "discussion_event_id": discussion_event.event_id, "member_id": member.member_id, "member_index": member_index,
         "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(), "room_id": room.room_id,
         "round_index": round_index, "seen_through_seq": seen_through_seq, "source_event_seq": discussion_event.seq,
-        "thread_id": discussion_event.payload["thread_id"]})
+        "thread_id": discussion_event.payload["thread_id"],
+        **({"input_context": input_context} if input_context is not None else {})})
     identity = driver.TaskIdentity(
         room_id=room.room_id, task_id=f"dtask:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:48]}",
         thread_id=str(discussion_event.payload["thread_id"]), turn_id=turn_id)
     payload = {
         "target_member_id": member.member_id, "target_profile": member.profile, "prompt": prompt,
         "source_event_seq": discussion_event.seq}
+    if input_context is not None:
+        payload["input_context"] = dict(input_context)
     return DiscussionTaskPlan(
         identity, payload, discussion_event.event_id, member, member_index, round_index, seen_through_seq)
 
@@ -604,7 +609,8 @@ def _effective_watermarks(
 
 def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
-    initial_watermarks: Mapping[tuple[str, str], int] | None = None) -> DiscussionDecision:
+    initial_watermarks: Mapping[tuple[str, str], int] | None = None,
+    freeze_input_context: bool = False) -> DiscussionDecision:
     """Replay the complete room log and return at most one next member task."""
     room = validate_room(room_value, local_profiles=local_profiles)
     validated = _validated_events(events, room=room)
@@ -642,7 +648,10 @@ def plan_next_task(
                 seen_through_seq=seen_through_seq)
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
-                round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt))
+                round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt,
+                input_context=(validate_task_input({"watermark": watermark, "event_seqs": [
+                    event.seq for event in thread_messages if watermark < event.seq <= seen_through_seq]})
+                    if freeze_input_context else None)))
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             return decide("settled", "silent_round")
         if round_index == MAX_DISCUSSION_ROUNDS - 1:
@@ -683,9 +692,23 @@ def reconstruct_task_plan(
         raise DiscussionReconstructionError("task prompt is missing")
     if len(prompt.encode("utf-8")) > driver.MAX_PROMPT_BYTES:
         raise DiscussionReconstructionError("task prompt exceeds the driver limit")
+    input_context = None
+    if "input_context" in payload:
+        try:
+            input_context = validate_task_input(payload["input_context"])
+        except ValueError as exc:
+            raise DiscussionReconstructionError(str(exc)) from exc
+        if input_context["event_seqs"][-1] != int(match.group("seen")):
+            raise DiscussionReconstructionError("task input does not match turn_id")
+        message_seqs = {event.seq for event in validated
+                        if event.kind in {"message.user", "message.member"}
+                        and event.payload.get("thread_id") == identity.thread_id}
+        if any(seq not in message_seqs for seq in input_context["event_seqs"]):
+            raise DiscussionReconstructionError("task input message is missing")
     reconstructed = _make_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
-        round_index=int(match.group("round")), seen_through_seq=int(match.group("seen")), prompt=prompt)
+        round_index=int(match.group("round")), seen_through_seq=int(match.group("seen")), prompt=prompt,
+        input_context=input_context)
     if reconstructed.identity != identity or dict(reconstructed.payload) != dict(payload):
         raise DiscussionReconstructionError("driver task failed deterministic reconstruction")
     return reconstructed

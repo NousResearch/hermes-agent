@@ -1469,6 +1469,18 @@ show_manual_install_hint() {
 # Installation
 # ============================================================================
 
+# Name work the update path stashed, when that update is about to abort. The
+# stash is taken several steps before the block that restores it; bailing out in
+# between leaves the working tree quietly clean, with nothing on screen saying
+# where the changes went. Silent on a checkout that had nothing to stash.
+log_autostash_recovery() {
+    local ref="$1"
+    local name="$2"
+    [ -n "$ref" ] || return 0
+    log_warn "Your local changes were stashed before the update: $name"
+    log_warn "Restore them with: git stash apply $ref"
+}
+
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
@@ -1517,8 +1529,24 @@ clone_repo() {
             # branches — on a non-single-branch checkout that turns each update
             # into a multi-minute download that can stall the installer.
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
-            git fetch origin "$BRANCH"
-            git checkout "$BRANCH"
+            # Both of these must be checked explicitly. `set -e` is not in force
+            # here: run_stage runs the stage body in a subshell that inherits
+            # its `set +e`, so an unguarded failure falls through to
+            # "Repository ready" and exit 0 -- reporting an update that never
+            # fetched anything, and handing the JSON contract {ok: true}.
+            # A github.com rate limit (HTTP 429) is the failure seen in practice.
+            if ! git fetch origin "$BRANCH"; then
+                log_error "Failed to fetch $BRANCH from origin."
+                log_info "This is usually transient — a network blip, or a rate limit"
+                log_info "from github.com (HTTP 429). Retrying shortly usually works."
+                log_autostash_recovery "$autostash_ref" "$stash_name"
+                exit 1
+            fi
+            if ! git checkout "$BRANCH"; then
+                log_error "Failed to check out $BRANCH."
+                log_autostash_recovery "$autostash_ref" "$stash_name"
+                exit 1
+            fi
             # Managed installs should follow origin/$BRANCH exactly. If the
             # checkout has diverged (or has local-only commits), ff-only pull
             # cannot succeed — mirror ``hermes update`` and reset to the

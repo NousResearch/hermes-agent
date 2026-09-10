@@ -2084,43 +2084,9 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
 
 
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
-    """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
-    cmd = [
-        *_resolve_hermes_argv(),
-        "-p", profile_arg,
-        # A worker must NEVER boot the interactive TUI: its no-TTY bail-out
-        # exits 0 without doing the task → "protocol violation" every attempt.
-        "--cli",
-        # Workers run under a profile-scoped HERMES_HOME and so see that
-        # profile's shell-hook allowlist; pass --accept-hooks explicitly so
-        # configured hooks still register.
-        "--accept-hooks",
-    ]
-    # One `--skills X` pair per name: easier to read in `ps` and avoids quoting
-    # ambiguity if a skill name contains unusual chars.
-    for sk in task.skills or ():
-        if sk:
-            cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-        # Pin the provider too so the worker resolves the model against the
-        # intended backend (model X with provider Y is the classic board-stall).
-        if task.provider_override:
-            cmd.extend(["--provider", task.provider_override])
-    # Independent of the model override — a task can run the profile's own
-    # model at a different depth.
-    if task.reasoning_effort:
-        cmd.extend(["--reasoning", task.reasoning_effort])
-    worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
-    if task.goal_mode:
-        # The kanban goal-loop hook only runs in cli.py's fully-quiet branch.
-        # Without -Q the worker gets one turn, prints text, exits rc=0, and the
-        # dispatcher records a protocol violation.
-        cmd.append("-Q")
-    return cmd
+    """The profile owner executes; this subprocess only waits for its receipt."""
+    import sys
+    return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
 
 
 def _open_worker_log(task: Task, board: Optional[str]):
@@ -2239,7 +2205,6 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # match after `hermes -p` rewrites HERMES_HOME (symlink / Docker layouts).
     env["HERMES_KANBAN_DB"] = str(_kb.kanban_db_path(board=board))
     env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(_kb.workspaces_root(board=board))
-    _retag_legacy_worker_sessions(env["HERMES_KANBAN_WORKSPACES_ROOT"])
     # Board slug — defense-in-depth pin if a path is resolved without the
     # DB / workspaces env vars.
     env["HERMES_KANBAN_BOARD"] = _kb._normalize_board_slug(board) or _kb.get_current_board()

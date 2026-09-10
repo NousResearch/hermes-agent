@@ -25,14 +25,7 @@ def _make_task(kb, *, assignee: str):
 
 
 def test_default_spawn_pins_assignee_profile_cli_toolsets(monkeypatch, tmp_path):
-    """Manual profile assignment should keep that profile's CLI tools.
-
-    Regression guard for dispatcher-spawned workers that boot with
-    HERMES_KANBAN_TASK: the worker must not collapse to only kanban lifecycle
-    tools when the assigned profile's top-level ``toolsets`` is the default
-    composite. The spawned CLI gets an explicit --toolsets pin resolved from
-    platform_toolsets.cli; model_tools appends task-scoped kanban tools later.
-    """
+    """The transport client reaches the assigned profile with its exact run claim."""
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "elias"
     profile.mkdir(parents=True)
@@ -84,19 +77,13 @@ agent:
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
-    assert "--toolsets" in captured["cmd"]
-    pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
-    for required in ("terminal", "web", "file", "skills", "code_execution", "delegation"):
-        assert required in pinned
+    assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
+    assert captured["env"]["HERMES_KANBAN_RUN_ID"] == "7"
+    assert captured["env"]["HERMES_KANBAN_CLAIM_LOCK"] == "lock"
 
 
-def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_path):
-    """The dispatcher's pre-``chat`` model flag must reach ``args.model``.
-
-    This is an integration contract between Kanban's worker argv builder and
-    the real CLI parser. A parser default once erased the explicit override,
-    silently sending the worker to its profile default or fallback instead.
-    """
+def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_path):
+    """Owner policy reads overrides from the claimed card, not executable argv."""
     root = tmp_path / ".hermes"
     (root / "profiles" / "elias").mkdir(parents=True)
     root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
@@ -104,7 +91,6 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
 
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
-    from hermes_cli._parser import build_top_level_parser
 
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
@@ -124,16 +110,9 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
     task.model_override = "gpt-5.6-sol"
     kbd._default_spawn(task, str(workspace))
 
-    parser, _subparsers, _chat_parser = build_top_level_parser()
-    # Profile selection is attached by the outer CLI bootstrap rather than
-    # build_top_level_parser(); remove that already-validated prefix and parse
-    # the worker flags/subcommand through the real shared parser.
-    assert captured["cmd"][1:3] == ["-p", "elias"]
-    args = parser.parse_args(captured["cmd"][3:])
-
-    assert args.command == "chat"
-    assert args.model == "gpt-5.6-sol"
-    assert args.query == "work kanban task t_spawn_tools"
+    # Mutable model strings are not launch authority; the owner reads the claimed card.
+    assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
+    assert task.model_override not in captured["cmd"]
 
 
 def test_resolve_worker_cli_toolsets_uses_profile_home_not_parent_config(monkeypatch, tmp_path):

@@ -20,14 +20,44 @@ describe('wheelAccel — native path', () => {
     expect(computeWheelStep(s, 1, 1060)).toBeGreaterThanOrEqual(1)
   })
 
-  it('gap beyond window resets mult to base', () => {
+  it('gap ≥500ms (idle) resets mult to base', () => {
     const s = initWheelAccel(false, 1)
 
     for (let t = 1000; t < 1100; t += 20) {
       computeWheelStep(s, 1, t)
     }
 
+    // 900ms gap — well past the 500ms sustained window → hard reset.
     expect(computeWheelStep(s, 1, 2000)).toBe(1)
+  })
+
+  // Regression for #98295: modern terminals (Windows Terminal, Ghostty,
+  // iTerm2, Alacritty) quantise touchpad deltas and emit SGR events at
+  // ~80-300ms intervals — well above the old 40ms fast-burst window.
+  // Before the fix, every such event would hard-reset mult to base (1),
+  // so acceleration never engaged.
+  it('sustained scroll at ~120ms intervals ramps above base (#98295)', () => {
+    const s = initWheelAccel(false, 1)
+
+    // Simulate 10 scroll events at 120ms cadence (typical Windows Terminal).
+    computeWheelStep(s, 1, 1000)
+    for (let i = 1; i <= 9; i++) {
+      computeWheelStep(s, 1, 1000 + i * 120)
+    }
+
+    // After 9 sustained same-direction events the multiplier must be > 1.
+    expect(s.mult).toBeGreaterThan(1)
+  })
+
+  it('sustained scroll stays within cap', () => {
+    const s = initWheelAccel(false, 1)
+
+    // 30 events at 100ms each — multiplier must never exceed WHEEL_ACCEL_MAX (6).
+    computeWheelStep(s, 1, 1000)
+    for (let i = 1; i <= 30; i++) {
+      const rows = computeWheelStep(s, 1, 1000 + i * 100)
+      expect(rows).toBeLessThanOrEqual(6)
+    }
   })
 
   it('direction flip defers one event for bounce detection', () => {

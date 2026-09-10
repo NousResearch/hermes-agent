@@ -86,31 +86,19 @@ _CATALOGUE_PREFIX_REPAIR_PROVIDERS: frozenset[str] = frozenset({
 _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi"})
 
-# DeepSeek's direct API only accepts first-class ids after the 2026-07-24 cut-off (HTTP 400
-# otherwise). Retired aliases fold onto the version-less ``deepseek-flash`` (V4.1-Flash, 2026-09-10;
-# thinking mode is controlled by extra_body.thinking on the profile), so saved configs can't keep
-# sending them.
-_DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
-    "deepseek-chat", "deepseek-reasoner"})
-
-# ``deepseek-flash`` carries no ``v<N>`` marker, so it needs an entry here or the V-series regex
-# below misses it and the id the user picked is rewritten before it reaches the wire.
-_DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-flash", "deepseek-v4-pro"})
-
-# First-class V-series IDs incl. future ``deepseek-v5-*`` and dated variants
-# (``deepseek-v4-flash-20260423``): verified real model ids, NOT aliases of ``deepseek-chat``.
-_DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
+# DeepSeek retired ``deepseek-chat`` / ``deepseek-reasoner`` on 2026-07-24 (HTTP 400 since); saved
+# configs still carry them, so they fold onto the current Flash id (thinking mode is controlled by
+# extra_body.thinking on the profile). Every other id is the user's call and goes to the wire as typed:
+# a shape-based allow-list swallowed the vendor's own ``deepseek-flash`` the day it shipped (#107206),
+# and any new id without a ``v<N>`` marker would have met the same fate.
+_DEEPSEEK_RETIRED_ALIASES: dict[str, str] = {
+    "deepseek-chat": "deepseek-flash", "deepseek-reasoner": "deepseek-flash"}
 
 
 def _normalize_for_deepseek(model_name: str) -> str:
-    """Map a model input to a DeepSeek-accepted id: canonicals and ``deepseek-v<digit>…`` pass
-    through (dated variants and future V-series work without a release); retired aliases and
-    everything else become ``deepseek-flash``."""
+    """Fold retired DeepSeek aliases onto their replacement; pass everything else through."""
     bare = _strip_vendor_prefix(model_name).lower()
-    if bare in _DEEPSEEK_CANONICAL_MODELS or _DEEPSEEK_V_SERIES_RE.match(bare):
-        return bare
-    return "deepseek-flash"
+    return _DEEPSEEK_RETIRED_ALIASES.get(bare, bare)
 
 
 def _strip_vendor_prefix(model_name: str) -> str:

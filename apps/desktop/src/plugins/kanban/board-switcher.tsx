@@ -349,7 +349,7 @@ export function BoardSwitcher() {
           {boards.boards.map(meta => (
             <DropdownMenuItem
               key={meta.slug}
-              onSelect={() => $boardSlug.set(meta.slug === boards.current ? '' : meta.slug)}
+              onSelect={() => $boardSlug.set(meta.slug)} // never '' — empty follows server current
             >
               {meta.name || meta.slug}
               {typeof meta.total === 'number' && (

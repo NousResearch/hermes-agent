@@ -41,7 +41,10 @@ type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
 let rest: null | Rest = null
 let os: null | PluginOs = null
 
-/** Selected board slug ('' = the server's current board). Persisted. */
+/** Selected board slug. Empty only on first paint (follow server current).
+ *  After the user picks a board, always store the explicit slug — never '' —
+ *  or cards fetch live `/board` while the header still shows a stale
+ *  `boards.current` (drivers call `boards switch` every tick). */
 export const $boardSlug = atom<string>('')
 
 /** Whether the "how this board works" intro was dismissed. Persisted. */

@@ -16,8 +16,8 @@
 import { atom } from 'nanostores'
 
 import { requestComposerDraftSync } from '@/store/composer'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $sessions, rememberedSessionProfile } from '@/store/session'
+import { $activeGatewayProfile, normalizeProfileKey, resolveNewChatOwnerRoute } from '@/store/profile'
+import { $sessions, knownSessionOwner, rememberedSessionProfile } from '@/store/session'
 import { isHudWindow } from '@/store/windows'
 
 /** Whether a HUD window is currently up. In the HUD's own renderer this is
@@ -56,19 +56,23 @@ export function openHud(sessionId?: null | string): void {
   requestComposerDraftSync('flush')
 
   // Which backend the HUD must boot against. The HUD is a full renderer that
-  // adopts the PRIMARY backend's profile by default, so handing it a session
-  // from a non-primary profile without saying so resolves the id against the
+  // adopts the PRIMARY backend route by default, so handing it a session from
+  // another connection/profile without saying so resolves the id against the
   // wrong backend — the lookup misses and the HUD falls back to the default
   // profile's last session (#82285). Same ladder the remembered-navigation key
   // uses: the session's stamped owner wins, and a fresh/unstamped/uncached
   // target inherits the profile the user is looking at.
-  const profile = normalizeProfileKey(
-    rememberedSessionProfile($sessions.get(), sessionId ?? null, $activeGatewayProfile.get())
-  )
+  const targetSessionId = sessionId ?? null
+  const sessions = $sessions.get()
+  const owner = knownSessionOwner(sessions, targetSessionId)
+  const profile = normalizeProfileKey(rememberedSessionProfile(sessions, targetSessionId, $activeGatewayProfile.get()))
+
+  const connectionId =
+    typeof owner === 'object' && owner ? owner.connectionId : (resolveNewChatOwnerRoute(profile)?.connectionId ?? null)
 
   $hudActive.set(true)
-  $hudSession.set(sessionId ?? null)
-  void api.open({ sessionId: sessionId ?? null, profile })
+  $hudSession.set(targetSessionId)
+  void api.open({ sessionId: targetSessionId, profile, ...(connectionId ? { connectionId } : {}) })
 }
 
 /** Leave HUD mode. Callable from either window — main closes the child, the

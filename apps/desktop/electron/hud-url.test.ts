@@ -11,11 +11,16 @@ test('buildHudWindowUrl puts win=hud before the hash route (dev server)', () => 
   assert.ok(url.indexOf('?win=hud') < url.indexOf('#'))
 })
 
-test('buildHudWindowUrl carries the handoff profile in the query before the hash', () => {
-  const url = buildHudWindowUrl('sess-1', { devServer: 'http://localhost:5173', profile: 'work' })
+test('buildHudWindowUrl carries the handoff route in the query before the hash', () => {
+  const url = buildHudWindowUrl('sess-1', {
+    connectionId: 'remote gateway',
+    devServer: 'http://localhost:5173',
+    profile: 'work'
+  })
 
-  assert.equal(url, 'http://localhost:5173/?win=hud&profile=work#/sess-1')
+  assert.equal(url, 'http://localhost:5173/?win=hud&profile=work&connectionId=remote%20gateway#/sess-1')
   assert.ok(url.indexOf('profile=work') < url.indexOf('#'))
+  assert.ok(url.indexOf('connectionId=remote%20gateway') < url.indexOf('#'))
 })
 
 test('buildHudWindowUrl encodes the profile and the session id', () => {

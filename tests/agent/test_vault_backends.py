@@ -167,3 +167,37 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.release_session("sess-A")
         assert not backend.is_unlocked()
         unlock_mod.set_current_session_id(None)
+
+
+def test_unlock_from_a_tool_worker_thread_still_records_the_calling_sessions_ownership(fake_bw):
+    """browser_vault_unlock (the model-facing tool) runs on a ThreadPoolExecutor worker via
+    tools.thread_context.propagate_context_to_thread, never on the thread that bound the session id
+    in tui_gateway/agent_callbacks.py's _wire_callbacks. The worker must still see that session id so
+    release_session() actually finds and drops the token it created — otherwise every real unlock is
+    recorded under a None owner and only ever clears via the idle TTL or an explicit Lock, no matter
+    how long ago the owning session ended."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tools.browser_vault_tool import browser_vault_unlock
+    from tools.thread_context import propagate_context_to_thread
+
+    exe, _log = fake_bw
+    patcher, backend = _enabled(exe)
+    unlock_mod.set_unlock_prompt_callback(lambda name, display: "correct horse")
+    unlock_mod.set_current_session_id("sess-A")
+    try:
+        with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                out = executor.submit(propagate_context_to_thread(browser_vault_unlock), "bitwarden").result(timeout=5)
+
+            assert json.loads(out)["success"] is True
+            assert backend.is_unlocked()
+
+            unlock_mod.release_session("sess-A")
+            assert not backend.is_unlocked(), (
+                "the worker thread did not see the calling session's id, so the token was recorded "
+                "under no owner and release_session('sess-A') could not find it"
+            )
+    finally:
+        unlock_mod.set_current_session_id(None)
+        unlock_mod.set_unlock_prompt_callback(None)

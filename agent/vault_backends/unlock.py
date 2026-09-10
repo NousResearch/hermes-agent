@@ -71,6 +71,15 @@ def set_current_session_id(session_id: Optional[str]) -> None:
     _current_session_tls.sid = session_id
 
 
+def get_current_session_id() -> Optional[str]:
+    """The session id bound to the calling thread, if any. Paired with ``set_current_session_id``
+    so ``tools.thread_context.propagate_context_to_thread`` can carry it onto a tool's worker
+    thread the same way it carries the unlock/save-login prompt callbacks — otherwise an unlock
+    performed from a worker thread always records ``None`` as its owner and outlives the session
+    that made it (see ``store_session_token``/``release_session``)."""
+    return getattr(_current_session_tls, "sid", None)
+
+
 def _live(backend: str, *, touch: bool) -> Optional[str]:
     key = _key(backend)
     with _lock:

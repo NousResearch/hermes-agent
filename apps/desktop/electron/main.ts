@@ -18,6 +18,7 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
+  nativeImage,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
@@ -26,7 +27,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
@@ -1405,6 +1407,56 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+let systemTray: Tray | null = null
+// Track notification count for tray badge
+let unreadNotificationCount = 0
+/** Rebuild the tray context menu reflecting current window/notification state */
+function rebuildContextMenu() {
+  if (!systemTray) return
+  const isHidden = !mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized() || !mainWindow.isVisible()
+  systemTray.setContextMenu(Menu.buildFromTemplate([
+    {
+      label: isHidden ? '打开 Hermes' : '最小化到托盘',
+      click: () => {
+        if (isHidden) {
+          mainWindow?.show()
+          mainWindow?.focus()
+        } else {
+          mainWindow?.minimize()
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: '设置',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.show()
+        mainWindow.focus()
+        mainWindow.webContents.executeJavaScript(`(function(){ window.location.hash="#/settings"; })()`)
+      }
+    },
+    {
+      label: unreadNotificationCount > 0
+        ? `通知 (${unreadNotificationCount})`
+        : '查看通知',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.show()
+        mainWindow.focus()
+        mainWindow.webContents.send('hermes:tray-notify-click', { count: unreadNotificationCount })
+      }
+    },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        if (mainWindow) { mainWindow.destroy(); mainWindow = null }
+        app.quit()
+      }
+    }
+  ]))
+}
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
@@ -6946,7 +6998,15 @@ function buildApplicationMenu() {
             click: () => sendClosePreviewRequested(),
             label: 'Close'
           }
-        : { role: 'quit' }
+        : {
+            label: '退出',
+            click: () => {
+              // Only allow quit when no tray is present (macOS) or via tray menu
+              if (systemTray && !IS_MAC) return
+              if (mainWindow) { mainWindow.destroy(); mainWindow = null }
+              app.quit()
+            }
+          }
     ]
   })
   template.push({
@@ -14726,7 +14786,15 @@ function createWindow() {
   bindGeometryPersistence(mainWindow, schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', (event) => {
+    // When tray is available, close button should hide to tray instead of quitting
+    if (systemTray && !IS_MAC) {
+      event.preventDefault()
+      mainWindow.hide()
+      return
+    }
+    schedulePersistWindowState.flush()
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
@@ -18106,6 +18174,57 @@ app.whenReady().then(() => {
   void resumeManagedSshRecoveries()
   createWindow()
 
+  // Enhanced System tray icon for Windows (minimize-to-tray + notification state)
+  if (IS_WINDOWS) {
+    const TRAY_ENABLED = process.env.HERMES_DESKTOP_TRAY !== 'false'
+    console.log('[hermes] [tray] Windows tray check: TRAY_ENABLED=' + TRAY_ENABLED)
+    if (TRAY_ENABLED) {
+      try {
+        // Packaged: APP_ROOT = 'resources/app.asar', assets at 'resources/app.asar.unpacked/assets/'
+        // Dev: APP_ROOT = 'dist', assets at project root 'assets/'
+        let appRootForTray
+        if (IS_PACKAGED) {
+          const resourcesDir = APP_ROOT.endsWith('app.asar') ? APP_ROOT.replace(/app\.asar$/, '') : APP_ROOT
+          appRootForTray = require('path').join(resourcesDir, 'app.asar.unpacked')
+        } else {
+          appRootForTray = require('path').resolve(APP_ROOT, '../..')
+        }
+        const trayIconPath = require('path').join(appRootForTray, 'assets', 'icon-tray.png')
+        const iconExists = require('fs').existsSync(trayIconPath)
+        console.log('[hermes] [tray] Creating tray with icon: ' + trayIconPath)
+        console.log('[hermes] [tray] Icon exists: ' + iconExists)
+        if (iconExists) {
+          systemTray = new Tray(nativeImage.createFromPath(trayIconPath))
+          console.log('[hermes] [tray] Tray created successfully')
+
+          systemTray.setToolTip('Hermes Agent — 点击打开')
+          rebuildContextMenu()
+          systemTray.on('click', () => {
+            if (!mainWindow || mainWindow.isDestroyed()) {
+              createWindow()
+            } else if (mainWindow.isMinimized() || !mainWindow.isVisible()) {
+              mainWindow.show()
+              mainWindow.focus()
+            } else {
+              mainWindow.minimize()
+            }
+          })
+          // Double-click always restores the window
+          systemTray.on('double-click', () => {
+            if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+            else { mainWindow.show(); mainWindow.focus() }
+          })
+        } else {
+          console.warn('[hermes] [tray] Icon file not found!')
+        }
+      } catch (e) {
+        console.error('[hermes] [tray] Failed to create tray:', e)
+      }
+    }
+  }
+
+  // Win/Linux cold start: the launching hermes:// URL is in our own argv.
+
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
 
@@ -18343,6 +18462,11 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
+  // Also: when tray is present (non-macOS), keep process alive so tray remains
+  // accessible for quit via menu.
+  if (process.platform !== 'darwin' && systemTray) {
+    return // Keep alive, tray handles exit
+  }
   if (process.platform !== 'darwin' || isQuittingForHandoff) {
     app.quit()
   }

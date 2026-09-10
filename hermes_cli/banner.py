@@ -755,6 +755,16 @@ def _active_profile_name() -> Optional[str]:
     return get_active_profile_name()
 
 
+def _route_model_for_banner(provider: Any) -> str:
+    """The model the resolved route will actually serve when config names none: today only the Nous
+    free tier (welcome host -> ``nous/welcome``). Read from the boot record and local auth state;
+    no network. Empty when nothing resolves, so the caller keeps its "no model configured" line."""
+    if (provider or "auto").strip().lower() not in ("auto", "nous"):
+        return ""
+    from hermes_cli.anon_auth import GUEST_MODEL, guest_carries_inference
+    return GUEST_MODEL if guest_carries_inference() else ""
+
+
 def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str) -> list:
     """Model / cwd / session lines under the hero art."""
     def _dim_sep(label: str) -> str:
@@ -762,6 +772,10 @@ def _banner_left_lines(model: str, cwd: str, session_id, context_length, provide
     lines = []
     ctx_str = _dim_sep(f"{_format_context_length(context_length)} context") if context_length else ""
     nous_str = _dim_sep("Nous Research")
+    if not (model or "").strip():
+        # Credentials resolve lazily on the first message; the banner prints first. Ask the route
+        # the same question so a fresh free-tier install shows its model, not a red "unconfigured".
+        model = _quiet(lambda: _route_model_for_banner(provider), "") or model
     if (provider or "").strip().lower() == "moa":
         # MoA virtual provider: ``model`` is a preset name; show it with its aggregator.
         agg_label = _quiet(lambda: _moa_aggregator_label(model), "")

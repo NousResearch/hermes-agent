@@ -147,7 +147,7 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
 
         {state.status === 'completed' && (
           <Screen
-            body={copy.connectorsKept}
+            body={copy.completedBody}
             heading={state.email ? copy.signedInAs(state.email) : copy.signedIn}
             icon={CheckCircle2}
           >

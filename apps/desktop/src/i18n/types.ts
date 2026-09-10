@@ -2829,7 +2829,7 @@ export interface Translations {
     finishingBody: string
     signedInAs: (email: string) => string
     signedIn: string
-    connectorsKept: string
+    completedBody: string
     defaultModel: string
     change: string
     done: string

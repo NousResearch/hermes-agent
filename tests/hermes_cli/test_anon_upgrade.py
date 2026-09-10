@@ -160,7 +160,7 @@ class TestUpgrade:
         code = anon_auth.upgrade_guest(_args())
         out = capsys.readouterr().out
         assert code == 0
-        assert f"Signed in as {EMAIL}. Your connectors are kept." in out
+        assert f"Signed in as {EMAIL}." in out
         lowered = out.lower()
         for banned in ("guest", "anonymous", "claim"):
             assert banned not in lowered, f"{banned!r} leaked into user-facing output:\n{out}"

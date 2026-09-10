@@ -74,7 +74,7 @@ describe('FreeTierSignInDialog', () => {
     })
 
     await waitFor(() => expect(screen.getByText('Signed in as someone@example.com')).toBeTruthy())
-    expect(screen.getByText('Your connectors are kept.')).toBeTruthy()
+    expect(screen.getByText('Your account now carries inference and tools.')).toBeTruthy()
     expect(screen.getByText('Hermes-4-405B')).toBeTruthy()
   })
 })

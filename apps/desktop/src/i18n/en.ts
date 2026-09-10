@@ -3276,7 +3276,7 @@ export const en: Translations = {
 
   freeTier: {
     providerRowTitle: 'Nous · free tier',
-    providerRowPitch: 'Sign in to keep your connectors and unlock more.',
+    providerRowPitch: 'Sign in with a Nous account to unlock more models and tools.',
     readyTitle: 'Hermes is ready.',
     readyCaption: 'Free · connectors included',
     begin: 'Begin',
@@ -3288,7 +3288,7 @@ export const en: Translations = {
     dismiss: 'Dismiss',
     statusLabel: model => `Nous · free tier · ${model}`,
     signIn: 'Sign in',
-    signInHeading: 'Sign in to keep your connectors and unlock more.',
+    signInHeading: 'Sign in with a Nous account to unlock more models and tools.',
     settingUp: 'Setting up free inference…',
     codeBody: 'Enter this code in your browser to finish signing in.',
     copyLink: 'Copy link',
@@ -3298,7 +3298,7 @@ export const en: Translations = {
     finishingBody: 'Approved in the browser. Collecting your account tokens.',
     signedInAs: email => `Signed in as ${email}`,
     signedIn: 'Signed in.',
-    connectorsKept: 'Your connectors are kept.',
+    completedBody: 'Your account now carries inference and tools.',
     defaultModel: 'Default model',
     change: 'Change',
     done: 'Done',
@@ -3310,7 +3310,7 @@ export const en: Translations = {
     supersededBody: 'A newer sign-in code replaced this one.',
     timedOutHeading: 'Sign-in timed out',
     timedOutBody: 'The code was not used in time. You are still on the free tier.',
-    retiredBody: 'This free-tier identity was already used or expired; a new one is set up on next use.',
+    retiredBody: 'This free-tier identity was already used or expired; a new one is set up on the next start.',
     errorBody: 'Sign-in did not complete; run it again.',
     alreadySignedInHeading: 'Already signed in.',
     alreadySignedInBody: 'This Hermes is already signed in to a Nous account.'

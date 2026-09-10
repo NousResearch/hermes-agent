@@ -331,7 +331,7 @@ function freeTierView(billing: BillingStateResponse): BillingView {
   return {
     notice: {
       action: { label: 'Sign in', onSelect: openFreeTierSignIn },
-      message: 'Sign in to keep your connectors and unlock more.',
+      message: 'Sign in with a Nous account to unlock more models and tools.',
       title: "You're on the Nous free tier",
       tone: 'info'
     },

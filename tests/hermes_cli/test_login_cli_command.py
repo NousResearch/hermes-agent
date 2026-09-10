@@ -59,7 +59,7 @@ def test_the_cli_handler_prints_the_code_then_drains_off_thread(monkeypatch):
     ]
     assert workers[0][0].started is True
     assert workers[0][0].target() == (
-        "Signed in as person@example.test. Your connectors are kept.\nDefault model is now model-1.")
+        "Signed in as person@example.test.\nDefault model is now model-1.")
 
 
 @pytest.mark.parametrize(
@@ -178,7 +178,7 @@ def test_the_drain_writes_to_the_console_captured_at_start(monkeypatch):
     gate.set()
     threads[0].join(timeout=2)
 
-    assert "Signed in as person@example.test. Your connectors are kept." in old_buf.getvalue()
+    assert "Signed in as person@example.test." in old_buf.getvalue()
     assert new_buf.getvalue() == ""
 
 
@@ -225,7 +225,7 @@ def test_the_live_tui_drain_prints_through_cprint_instead_of_the_captured_consol
     assert old_buf.getvalue() == ""
     assert new_buf.getvalue() == ""
     assert "  Sign-in" in output
-    assert any("Signed in as person@example.test. Your connectors are kept." in line for line in output)
+    assert any("Signed in as person@example.test." in line for line in output)
 
 
 def test_upgrade_guest_keeps_the_terminal_timeout(monkeypatch):
@@ -255,6 +255,6 @@ def test_the_terminal_renderer_keeps_the_original_line_sequence(monkeypatch, cap
         "  2. If prompted, enter code: CODE-1",
         f"  {anon_auth.UPGRADE_DO_NOT_SHARE}",
         anon_auth.UPGRADE_WAITING,
-        "Signed in as person@example.test. Your connectors are kept.",
+        "Signed in as person@example.test.",
         "Default model is now model-1.",
     ]

@@ -11,7 +11,7 @@ from typing import Any, Callable, ClassVar, ContextManager, Dict, Iterator, Opti
 from hermes_cli.auth_constants import httpx
 
 
-UPGRADE_START = "Sign in to keep your connectors and unlock more."
+UPGRADE_START = "Sign in with a Nous account to unlock more models and tools."
 UPGRADE_ALREADY_SIGNED_IN = "Already signed in."
 UPGRADE_DO_NOT_SHARE = "Do not share this code."
 UPGRADE_TIMED_OUT = "Sign-in timed out; run the command again."
@@ -20,8 +20,8 @@ UPGRADE_UNAVAILABLE = "The free tier is not available right now; run `hermes aut
 UPGRADE_REASON_COPY = {
     "user_declined": "Sign-in was rejected in the browser.",
     "superseded": "A newer sign-in code replaced this one.",
-    "account_retired": "This free-tier identity was already used or expired; a new one is set up on next use.",
-    "account_not_anonymous": "This free-tier identity was already used or expired; a new one is set up on next use.",
+    "account_retired": "This free-tier identity was already used or expired; a new one is set up on the next start.",
+    "account_not_anonymous": "This free-tier identity was already used or expired; a new one is set up on the next start.",
     "account_busy": "The transfer could not run; run the command again.",
 }
 _RETIRED_REASONS = frozenset({"account_retired", "account_not_anonymous"})
@@ -116,8 +116,7 @@ class Completed(SignInState):
     ok: ClassVar[bool] = True
 
     def _lines(self, no_default: str) -> str:
-        lines = [f"Signed in as {self.email}. Your connectors are kept." if self.email
-                 else "Signed in. Your connectors are kept."]
+        lines = [f"Signed in as {self.email}." if self.email else "Signed in."]
         if self.model_changed:
             lines.append(f"Default model is now {self.model}." if self.model else no_default)
         return "\n".join(lines)

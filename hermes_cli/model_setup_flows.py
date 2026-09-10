@@ -292,7 +292,7 @@ def _model_flow_nous(config, current_model="", args=None):
     from hermes_cli.model_switch_providers import _free_tier_nous_row
     tier_row = _free_tier_nous_row({"name": "Nous Portal", "models": []})
     if tier_row is None:
-        print("Nous free tier is switched off (nous.guest: false); sign in with `hermes auth upgrade` to use Nous models.")
+        print("The Nous free tier is off for this install; sign in with `hermes auth upgrade` to use Nous models.")
         return
     if tier_row["models"]:
         # Free-tier identity: the welcome host serves the single pinned model; no Portal catalog,

@@ -6,10 +6,17 @@ description: "What Hermes gives you before you add a key or sign in, how the fre
 
 # Free tier and signing in
 
-A fresh Hermes install works before you paste an API key or sign in anywhere. The first time you
-run a command, Hermes sets up the **Nous free tier** (a few seconds, shown as "Setting up free
-inference…") and answers on the `nous/welcome` model. Nothing to configure, no wizard to click
-through. `hermes setup` is still there when you want it; it is never forced.
+:::note Not on yet
+The free tier is being rolled out. Until it is on for everyone, nothing on this page happens
+unless the process was started with `HERMES_GUEST_ONBOARDING=1` in its environment; without it a
+fresh install behaves exactly as before (the provider picker on first run). This note goes away
+when the rollout completes.
+:::
+
+A fresh Hermes install works before you paste an API key or sign in anywhere. When Hermes starts
+it sets up the **Nous free tier** (a few seconds, shown as "Setting up free inference…") and
+answers on the `nous/welcome` model. Nothing to configure, no wizard to click through.
+`hermes setup` is still there when you want it; it is never forced.
 
 ## What you get out of the box
 
@@ -54,9 +61,9 @@ The free tier is the last resort, never a preference. Any provider you configure
 | `model.provider` set in `config.yaml` | That provider | Free tier |
 | A Nous Portal sign-in | Nous Portal | Your account |
 
-On an install that already has a provider, the free tier sets itself up quietly in the
-background on the next start so connectors have something to authenticate with, and prints a
-one-time notice:
+On an install that already has a provider, Hermes still sets the free tier up once at start so
+connectors have something to authenticate with; your provider keeps doing inference. A one-time
+notice says so:
 
 ```text
 Free Nous inference and connectors are now available. /model to try them, /login to sign in.
@@ -95,12 +102,12 @@ hermes auth upgrade
 1. Hermes prints a URL and a short code, and opens the browser unless you pass `--no-browser`
    or you are in an SSH session. Never share the code.
 2. Sign in to Nous Portal in the browser and confirm.
-3. Back in the terminal: `Signed in as you@example.com. Your connectors are kept.`
-   If your default model was `nous/welcome`, a fourth line names the model your account now
+3. Back in the terminal: `Signed in as you@example.com.`
+   If your default model was `nous/welcome`, a second line names the model your account now
    uses, for example `Default model is now upstage/solar-pro4:free.`
 
-Connectors you linked on the free tier carry over. Inference moves to the Nous Portal catalog,
-paid tools unlock, and `hermes auth status` shows your account instead of the free-tier line.
+Inference moves to your account's model catalog, paid tools unlock, and `hermes auth status`
+shows your account instead of the free-tier line.
 `nous/welcome` stays with the free tier: an account that was using it lands on the recommended
 model for its plan (the same one a fresh `hermes model` pick would suggest), and a default model
 you chose yourself is left alone. If no recommendation is available at that moment, no default is
@@ -129,7 +136,7 @@ The desktop app runs on the same free tier as the CLI and shows it in four place
 
 Signing in from any of those places opens one dialog. It shows a code and a link; open the link
 (or the browser the app opened), confirm in the portal, and the dialog ends with "Signed in as
-you@example.com. Your connectors are kept." and the default model your account now uses. A
+you@example.com." and the default model your account now uses. A
 sign-in you reject in the browser, a code that timed out, or a code replaced by a newer one each
 show their own message and leave you on the free tier. The model picker lists the free tier as one
 row, "Nous · free tier", with the single model `nous/welcome`; there is no sign-in action inside the
@@ -165,7 +172,7 @@ needs it.
 | Situation | Result |
 |---|---|
 | Only the free tier is present | Nothing is cleared. Hermes prints: `You're not signed in. Free inference and connectors are always on. Run hermes auth to sign in with a Nous account.` |
-| Signed in with a Nous account | The sign-in is removed from this profile and from the shared store, so no other profile on this machine picks it back up. With `nous.guest: true` the install returns to the free tier the next time it needs inference or a connector. |
+| Signed in with a Nous account | The sign-in is removed from this profile and from the shared store, so no other profile on this machine picks it back up. With `nous.guest: true` the install returns to the free tier at its next start. |
 | Another provider is active | Unchanged behaviour: that provider's stored credential is cleared. |
 
 There is no command to reset or recreate the free tier. It is created once and looks after
@@ -180,7 +187,7 @@ itself.
 | `Nous free tier is rate limited; try again shortly.` | The portal is throttling new free-tier setups at the moment. | Wait a few minutes and retry, or add your own key with `hermes setup`. |
 | `This needs a Nous account.` | You called a paid Tool Gateway tool on the free tier. | `/login` in a chat, `hermes auth upgrade` in a terminal, or configure that tool with your own key in `hermes tools`. |
 | Model picker shows only `nous/welcome` under Nous | Expected on the free tier. | Sign in for the full catalog, or add an API key for another provider. |
-| The free tier stopped working after two weeks away | The free-tier identity expired (see below) and is replaced on next use. | Nothing; run any command. Connectors linked before the gap need to be linked again unless you had signed in. |
+| The free tier stopped working after two weeks away | The free-tier identity expired (see below) and is replaced at the next start, or the next time a turn or connector finds it retired. | Nothing; start Hermes again. Connectors linked before the gap need to be linked again unless you had signed in. |
 
 ## Privacy
 

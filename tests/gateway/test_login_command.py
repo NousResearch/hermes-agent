@@ -188,7 +188,7 @@ async def test_a_failed_code_push_does_not_abort_the_drain(monkeypatch, caplog):
 
     assert delivered[-2:] == [
         "Do not share this code. Waiting for sign-in, up to 1 minute.",
-        "Signed in as person@example.test. Your connectors are kept.\nDefault model is now model-1.",
+        "Signed in as person@example.test.\nDefault model is now model-1.",
     ]
     assert "push failed" in caplog.text
 
@@ -447,7 +447,7 @@ async def test_the_sweep_is_skipped_when_the_model_did_not_change(monkeypatch):
     runner._evict_cached_agent.assert_not_called()
     runner.async_session_store.set_model_override.assert_not_awaited()
     assert runner._deliver_platform_notice.await_args_list[-1].args[1] == (
-        "Signed in as person@example.test. Your connectors are kept.")
+        "Signed in as person@example.test.")
 
 
 @pytest.mark.asyncio
@@ -460,7 +460,7 @@ async def test_a_completion_with_no_default_names_the_slash_command(monkeypatch)
     )
 
     assert runner._deliver_platform_notice.await_args_list[-1].args[1] == (
-        "Signed in as person@example.test. Your connectors are kept.\n"
+        "Signed in as person@example.test.\n"
         "No default model is set yet; run /model to pick one.")
 
 

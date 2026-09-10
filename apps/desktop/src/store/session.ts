@@ -26,9 +26,10 @@ const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 // The composer's model/effort/fast is sticky UI state, NOT the profile default
 // (that lives in Settings → Model). Persisting it in localStorage makes a pick
 // follow across Cmd+N and app restarts instead of snapping back to the default.
-// Model/provider/source are scoped to the remote (connection, profile) owner so
-// a provider authenticated on one profile cannot contaminate another profile's
-// session.create. Local/single-backend users retain the historical bare keys.
+// Model/provider/source are scoped to the (connection, profile) owner — including
+// local multi-profile — so a sticky pick on one profile cannot contaminate
+// another profile's session.create (#101091). Legacy bare keys are not migrated:
+// ownership is unknowable.
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
@@ -46,18 +47,19 @@ function composerScopeForConnection(connection: HermesConnection | null): string
     return null
   }
 
-  // Electron may infer the sole `local` registry id onto the ordinary primary
-  // descriptor. That remains the legacy single-backend path: only an explicit
-  // registry-scoped route earns a new namespace.
-  if (connection.mode !== 'remote' && !connection.registryScoped) {
-    return ''
-  }
+  const profile = (connection.profile || 'default').trim() || 'default'
 
+  // Registry identities (including an explicit `local` id Electron may infer onto
+  // the primary descriptor) isolate by (connectionId, profile).
   if (connection.connectionId) {
-    return `.registry.${encodeURIComponent(connection.connectionId)}.${encodeURIComponent(connection.profile || 'default')}`
+    return `.registry.${encodeURIComponent(connection.connectionId)}.${encodeURIComponent(profile)}`
   }
 
-  return connectionScopeSuffix(connection)
+  if (connection.mode === 'remote') {
+    return connectionScopeSuffix(connection)
+  }
+
+  return `.local.${encodeURIComponent(profile)}`
 }
 
 function composerSelectionKey(base: string): string | null {

@@ -812,6 +812,30 @@ describe('createBackendSessionForSend profile routing', () => {
     })
   })
 
+  it('does not ship a prior profile manual pick after activating another profile', async () => {
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(async profile => {
+      const target = String(profile)
+      setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: target } as never)
+      setCurrentModel('mimo-v2.5-pro')
+      setCurrentProvider('xiaomi')
+      setCurrentModelSource('default')
+      $activeGatewayProfile.set(target)
+    })
+
+    const params = await createWith(() => {
+      $activeGatewayProfile.set('default')
+      $newChatProfile.set('dev')
+      setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
+      setCurrentModel('deepseek-v4-pro')
+      setCurrentProvider('deepseek')
+      setCurrentModelSource('manual')
+    })
+
+    expect(params).toMatchObject({ profile: 'dev' })
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('provider')
+  })
+
   // An unset source is the first-run/cleared state — nothing the user picked,
   // so it must not pin the session either.
   it('omits the model when no selection source is recorded', async () => {

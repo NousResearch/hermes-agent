@@ -602,6 +602,141 @@ def warn_dangerous(tool_name, **kwargs):
 def register(ctx):
     ctx.register_hook("pre_tool_call", warn_dangerous)
 ```
+**Example — content-addressed patch anchors (`anchored_patch` tool + `hashline_compute`):**
+
+Exact-match counts are not enough when `old_string` appears multiple times or
+when a sibling writer changes the surrounding context without touching the
+anchor text itself. The `hashline-guard` plugin (see `plugins/hashline-guard/`)
+extends the hook with content-addressed pins: a SHA-256 of the anchor plus its
+surrounding context window, versioned as `hashline:v1`.
+
+```python
+import hashlib
+from typing import Any, Dict, Optional, Tuple
+
+
+def find_all(file_text: str, old_string: str) -> list[tuple[int, int, int]]:
+    """Return (start, end, line_number) for every non-overlapping match."""
+    out, start = [], 0
+    while True:
+        idx = file_text.find(old_string, start)
+        if idx == -1:
+            break
+        end = idx + len(old_string)
+        out.append((idx, end, file_text[:idx].count("\n") + 1))
+        start = end
+    return out
+
+
+def compute_hashline(file_text: str, old_string: str,
+                     occurrence_index: int, window: int = 2) -> str:
+    """SHA-256 of a versioned window around the occurrence_index-th match."""
+    matches = find_all(file_text, old_string)
+    if not matches or not (0 <= occurrence_index < len(matches)):
+        return hashlib.sha256(old_string.encode("utf-8")).hexdigest()
+    lines = file_text.replace("\r\n", "\n").splitlines()
+    anchor_line = matches[occurrence_index][2] - 1
+    start = max(0, anchor_line - window)
+    end = min(len(lines), anchor_line + old_string.count("\n") + 1 + window)
+    payload = f"hashline:v1:{occurrence_index}:" + "\n".join(lines[start:end])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def verify_anchor_by_hash(file_text: str, old_string: str,
+                          expected_hashline: str,
+                          window: int = 2) -> Tuple[str, Any]:
+    """Pin an exact occurrence by hashline. Returns ('ok', index) or
+    ('block', {'reason', 'found', 'lines'}) so the agent can re-pin."""
+    matches = find_all(file_text, old_string)
+    if not matches:
+        return "block", {"reason": "anchor drifted", "found": [], "lines": []}
+    found = [compute_hashline(file_text, old_string, i, window) for i in range(len(matches))]
+    exact = [i for i, h in enumerate(found) if h == expected_hashline]
+    if len(exact) == 1:
+        return "ok", exact[0]
+    reason = "no match" if not exact else f"ambiguous: matched {len(exact)}"
+    return "block", {"reason": reason, "found": found,
+                     "lines": [m[2] for m in matches]}
+```
+
+Plugins can register tools so the agent can discover and apply pins. The
+`anchored_patch` handler reads the file, verifies the hashline, applies the
+replacement at the pinned occurrence, and writes back atomically:
+
+```python
+def handle_anchored_patch(args: Dict[str, Any]) -> Dict[str, Any]:
+    path = args["path"]
+    old_string = args["old_string"]
+    new_string = args["new_string"]
+    expected_hashline = args["expected_hashline"]
+    window = int(args.get("window", 2))
+
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    status, payload = verify_anchor_by_hash(text, old_string,
+                                            expected_hashline, window)
+    if status == "block":
+        return {"applied": False,
+                "error": {"code": "422", "message": payload["reason"],
+                          "details": {"found": payload["found"],
+                                      "lines": payload["lines"]}}}
+    start, end, _ = find_all(text, old_string)[payload]
+    Path(path).write_text(text[:start] + new_string + text[end:],
+                          encoding="utf-8", newline="")
+    return {"applied": True, "occurrence": payload,
+            "hashline": expected_hashline}
+```
+
+A companion `hashline_compute` tool returns every occurrence's hashline, line
+number, and context snippet so the agent can discover the pin:
+
+```python
+def hashline_compute(args: Dict[str, Any]) -> Dict[str, Any]:
+    path = args["path"]
+    old_string = args["old_string"]
+    window = int(args.get("window", 2))
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    matches = find_all(text, old_string)
+    return {
+        "hashlines": [
+            {"line": m[2],
+             "hashline": compute_hashline(text, old_string, i, window)}
+            for i, m in enumerate(matches)
+        ],
+        "count": len(matches),
+    }
+
+
+def register(ctx):
+    ctx.register_hook("pre_tool_call", on_pre_tool_call)
+    ctx.register_tool(
+        name="anchored_patch",
+        toolset="file",
+        schema={
+            "path": {"type": "string"},
+            "old_string": {"type": "string"},
+            "new_string": {"type": "string"},
+            "expected_hashline": {"type": "string"},
+            "window": {"type": "integer", "default": 2},
+        },
+        handler=handle_anchored_patch,
+    )
+    ctx.register_tool(
+        name="hashline_compute",
+        toolset="file",
+        schema={
+            "path": {"type": "string"},
+            "old_string": {"type": "string"},
+            "window": {"type": "integer", "default": 2},
+        },
+        handler=hashline_compute,
+    )
+```
+
+Workflow: `hashline_compute` -> pin the target occurrence -> `anchored_patch`.
+If the file drifted, `anchored_patch` blocks with the found hashlines and line
+numbers so the agent can re-pin in the same turn. Canonicalization is CRLF -> LF
+(keep trailing whitespace byte-exact), so git autocrlf does not invalidate pins.
+
 
 ---
 

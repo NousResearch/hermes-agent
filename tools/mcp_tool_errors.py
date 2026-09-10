@@ -9,7 +9,7 @@ import logging
 import os
 import re
 from typing import Any, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from tools.mcp_tool_common import _sanitize_error, _core
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -116,6 +116,35 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     if not parsed.hostname:  # ``urlparse`` accepts ``http://:8080`` (empty host, explicit port)
         raise _bad(f"missing hostname ({stripped!r})")
     return stripped
+
+
+def _mcp_url_with_token(url: str, token: Any) -> str:
+    """Append or replace ``token=<token>`` as a query parameter on *url*.
+
+    Windmill-style Streamable HTTP and SSE MCP endpoints require the token in
+    the query string. Keeping the token as a separate config field lets the
+    dashboard display the URL without exposing the secret, and redaction logic
+    can safely mask any token that is still embedded in a saved URL.
+    """
+    if token is None or token == "":
+        return url
+    token_str = str(token)
+    try:
+        scheme, netloc, path, query, fragment = urlsplit(url)
+    except (ValueError, TypeError):
+        # urlparse is very permissive, so this is a last-resort fallback.
+        if "?" in url:
+            return f"{url}&token={token_str}"
+        return f"{url}?token={token_str}"
+
+    # parse_qsl preserves existing query parameters and ordering.
+    params = parse_qsl(query, keep_blank_values=True)
+    # Remove any existing ``token`` query parameter (case-insensitive) so the
+    # configured value is authoritative and we never send duplicate tokens.
+    params = [(k, v) for k, v in params if k.lower() != "token"]
+    params.append(("token", token_str))
+    query = urlencode(params)
+    return urlunsplit((scheme, netloc, path, query, fragment))
 
 
 def _resolve_client_cert(server_name: str, config: dict):

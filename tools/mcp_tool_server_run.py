@@ -169,15 +169,21 @@ class MCPServerRunMixin:
                            "('url'). Remove 'command' to silence this warning.", self.name)
         if not self._is_http():
             return True
+        # Windmill-style MCP endpoints require ``?token=<token>``. Build the
+        # effective URL once so validation, preflight and the SDK all see
+        # the same request target.
+        _url_with_token = _errors._mcp_url_with_token(
+            config.get("url"), config.get("token"),
+        )
         try:
-            _errors._validate_remote_mcp_url(self.name, config.get("url"))
+            _errors._validate_remote_mcp_url(self.name, _url_with_token)
             # Content-type preflight (Streamable HTTP only; SSE serves text/event-stream): a
             # web-app root returns HTML and would hang the SDK for connect_timeout. Skipped once
             # _ready was ever set and for OAuth servers (a token-less probe sees HTML/401).
             if (config.get("transport") != "sse" and not config.get("skip_preflight")
                     and not self._ready.is_set() and self._auth_type != "oauth"):
                 await self._preflight_content_type(
-                    config["url"], headers=dict(config.get("headers") or {}),
+                    _url_with_token, headers=dict(config.get("headers") or {}),
                     ssl_verify=config.get("ssl_verify", True),
                     client_cert=_errors._resolve_client_cert(self.name, config))
         except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError) as exc:

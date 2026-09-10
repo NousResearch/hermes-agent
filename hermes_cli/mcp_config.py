@@ -174,6 +174,11 @@ def _bearer_auth_headers(name: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer ${{{_env_key_for_server(name)}}}"}
 
 
+def _bearer_auth_token_ref(name: str) -> str:
+    """Return the profile-scoped environment reference for a URL token."""
+    return f"${{{_env_key_for_server(name)}}}"
+
+
 def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
     """Persist a normalized Bearer token to ``.env`` and return the header template for config.yaml."""
     normalized = _strip_bearer_prefix(token)
@@ -380,16 +385,25 @@ def _configure_http_auth(
 
     _info(f"Connecting to {url}")
     needs_auth = _confirm("Does this server require authentication?", default=True)
-    if needs_auth and (auth_type == "header" or not auth_type):
+    if needs_auth and (auth_type in {"header", "query"} or not auth_type):
+        if auth_type == "query":
+            server_config["auth"] = "query"
+            server_config["token"] = _bearer_auth_token_ref(name)
         env_key = _env_key_for_server(name)
         if get_env_value(env_key):
             _success(f"{env_key}: already configured")
-            server_config["headers"] = _bearer_auth_headers(name)
+            if auth_type == "header" or not auth_type:
+                server_config["headers"] = _bearer_auth_headers(name)
         else:
             from hermes_cli.cli_output import prompt
             api_key = prompt("API key / Bearer token", default="", password=True)
             if api_key:
-                server_config["headers"] = _save_bearer_auth_token(name, api_key)
+                saved_headers = _save_bearer_auth_token(name, api_key)
+                if auth_type == "query":
+                    server_config["auth"] = "query"
+                    server_config["token"] = _bearer_auth_token_ref(name)
+                else:
+                    server_config["headers"] = saved_headers
                 _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
     return True
 

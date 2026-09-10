@@ -7,7 +7,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _mcp_url_with_token, _resolve_client_cert
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -396,7 +396,7 @@ class MCPServerTransportMixin:
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
                               "mcp.client.streamable_http is not available. "
                               "Upgrade the mcp package to get HTTP support.")
-        url = config["url"]
+        url = _mcp_url_with_token(config["url"], config.get("token"))
         headers = dict(config.get("headers") or {})
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — capture their names BEFORE client-generated headers are merged in.

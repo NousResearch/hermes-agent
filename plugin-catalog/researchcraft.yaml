@@ -23,7 +23,6 @@ capabilities:
     - scientific_result
     - sci_inspect
     - pdf_to_markdown
-    - image_generate
     - workflow
   provides_hooks: []
   provides_middleware: []

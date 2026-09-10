@@ -71,8 +71,18 @@ export function errText(err: unknown): string {
   return raw
 }
 
-/** Backend timestamps are epoch SECONDS; the canonical formatter takes ms. */
-export const ago = (seconds?: null | number): null | string => (seconds ? relativeTime(seconds * 1000) : null)
+/** Backend timestamps are epoch SECONDS; the canonical formatter takes ms.
+ *  Anything that is not a finite number of seconds renders as nothing: a
+ *  raw-SQL bypass once wrote created_at as a 'YYYY-MM-DD HH:MM:SS' string,
+ *  and feeding it down the formatter chain made
+ *  Intl.RelativeTimeFormat.format throw a page-killing RangeError. */
+export const ago = (seconds?: null | number): null | string => {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds === 0) {
+    return null
+  }
+
+  return relativeTime(seconds * 1000)
+}
 
 const ELAPSED_SUFFIX = { day: 'd', hour: 'h', minute: 'm', second: 's' } as const
 

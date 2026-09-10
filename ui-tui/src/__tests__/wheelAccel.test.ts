@@ -20,6 +20,38 @@ describe('wheelAccel — native path', () => {
     expect(computeWheelStep(s, 1, 1060)).toBeGreaterThanOrEqual(1)
   })
 
+  it('same-direction mechanical wheel events accelerate without encoder bounce', () => {
+    const s = initWheelAccel(false, 1)
+    const rows = [1000, 1080, 1160, 1240, 1320].map(now => computeWheelStep(s, 1, now))
+
+    expect(rows.some(row => row > 1)).toBe(true)
+    expect(rows.every(row => row <= 6)).toBe(true)
+    expect(s.wheelMode).toBe(false)
+  })
+
+  it('deliberate mechanical wheel clicks stay at the base rate', () => {
+    const s = initWheelAccel(false, 1)
+    const rows = [1000, 1180, 1360, 1540, 1720, 1900].map(now => computeWheelStep(s, 1, now))
+
+    expect(rows).toEqual([1, 1, 1, 1, 1, 1])
+    expect(s.mult).toBe(1)
+  })
+
+  it('decays at the idle boundary and resets just beyond it', () => {
+    const atBoundary = initWheelAccel(false, 1)
+    const beyondBoundary = initWheelAccel(false, 1)
+
+    for (let t = 1000; t <= 1200; t += 20) {
+      computeWheelStep(atBoundary, 1, t)
+      computeWheelStep(beyondBoundary, 1, t)
+    }
+
+    expect(computeWheelStep(atBoundary, 1, 1400)).toBeGreaterThan(1)
+    expect(atBoundary.mult).toBeGreaterThan(atBoundary.base)
+    expect(computeWheelStep(beyondBoundary, 1, 1401)).toBe(1)
+    expect(beyondBoundary.mult).toBe(beyondBoundary.base)
+  })
+
   it('gap beyond window resets mult to base', () => {
     const s = initWheelAccel(false, 1)
 

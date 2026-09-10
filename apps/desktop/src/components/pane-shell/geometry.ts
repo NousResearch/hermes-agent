@@ -41,6 +41,22 @@ export function intersect(a: Rect, b: Rect): Rect | null {
   return { x, y, width: right - x, height: bottom - y }
 }
 
+/**
+ * CSS length that starts a titlebar drag fill after the fixed window-control
+ * cluster. When the zone already begins past the cluster (`--workspace-left`
+ * ≥ cluster right edge) this is 0. Cut the strip — Electron's no-drag
+ * carve-out of fixed/transformed elements is unreliable.
+ *
+ * start = max(0, controlsLeft + controlsWidth - workspaceLeft)
+ */
+export const TITLEBAR_DRAG_FILL_INSET =
+  'max(0px, calc(var(--titlebar-controls-left, 0px) + var(--titlebar-controls-width, 0px) - var(--workspace-left, 0px)))'
+
+/** Pixel form of `TITLEBAR_DRAG_FILL_INSET` for callers with resolved lengths. */
+export function titlebarDragFillStart(controlsLeft: number, controlsWidth: number, workspaceLeft: number): number {
+  return Math.max(0, controlsLeft + controlsWidth - workspaceLeft)
+}
+
 // ---------------------------------------------------------------------------
 // Native window controls rect
 // ---------------------------------------------------------------------------

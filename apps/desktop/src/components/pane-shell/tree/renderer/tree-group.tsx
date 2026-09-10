@@ -34,7 +34,7 @@ import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
-import { useWindowControlsOverlap } from '../../geometry'
+import { TITLEBAR_DRAG_FILL_INSET, useWindowControlsOverlap } from '../../geometry'
 import { emptyPaneLifecycleState, reconcilePaneLifecycle } from '../../pane-lifecycle'
 import { hiddenPaneProps, PaneGroupContext, PaneLifecycleContext, PaneVisibleContext } from '../../pane-visibility'
 import {
@@ -357,6 +357,12 @@ export function TreeGroup({
   const verticalCollapse = Boolean(node.minimized) && parentAxis === 'row' && !isEmpty && shown.length <= 1
   // A minimized group IS its header, so it shows one regardless.
   const headerVisible = !isEmpty && !verticalCollapse && (Boolean(node.minimized) || stripVisible)
+  // Left-edge titlebar shares the traffic lights + control cluster; laying
+  // the tab strip in that same flex row leaves crumbs (~26px in a 260px
+  // sidebar) and clips labels (SESSIONS → ONS). Keep the spacers in the
+  // band and drop the strip to the normal h-7 header. topEdge && !leftEdge
+  // still hosts tabs in the titlebar (bbe212de9b).
+  const tabsInTitlebar = topEdge && !leftEdge
 
   // Keep the activated tab — and, on the last one, the trailing "+" — inside
   // the strip's scroll window. Opening a tab past the right edge otherwise
@@ -500,23 +506,52 @@ export function TreeGroup({
           bounds, strip refs, focus ownership and split geometry as the body. */}
       {(headerVisible || topEdge) && (
         <div
-          className="flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
+          className="flex min-w-0 shrink-0 flex-col bg-(--ui-sidebar-surface-background)"
           data-panel-header=""
-          style={topEdge ? { height: TITLEBAR_HEIGHT } : undefined}
         >
-          {topEdge && leftEdge && (
-            <div className="flex shrink-0">
-              <div className="w-(--titlebar-controls-left,14px) [-webkit-app-region:drag]" data-window-drag-handle="" />
-              <div className="relative w-(--titlebar-controls-width,96px)">
-                <div
-                  className="absolute inset-x-0 top-0 h-(--titlebar-controls-top,5px) [-webkit-app-region:drag]"
-                  data-window-drag-handle=""
-                />
-              </div>
-              <div className="w-3 [-webkit-app-region:drag]" data-window-drag-handle="" />
+          {topEdge && !(headerVisible && tabsInTitlebar) && (
+            <div className="flex min-w-0" data-titlebar-band="" style={{ height: TITLEBAR_HEIGHT }}>
+              {leftEdge && (
+                <div className="flex shrink-0">
+                  <div className="w-(--titlebar-controls-left,14px) [-webkit-app-region:drag]" data-window-drag-handle="" />
+                  <div className="relative w-(--titlebar-controls-width,96px)">
+                    <div
+                      className="absolute inset-x-0 top-0 h-(--titlebar-controls-top,5px) [-webkit-app-region:drag]"
+                      data-window-drag-handle=""
+                    />
+                  </div>
+                  <div className="w-3 [-webkit-app-region:drag]" data-window-drag-handle="" />
+                </div>
+              )}
+              {/* Cut so the fill never covers the fixed window-control cluster.
+                  Electron's no-drag carve-out of fixed/transformed elements is
+                  unreliable — same invariant as the pre-bbe212de9b drag strips. */}
+              <div
+                className="min-w-0 flex-1 [-webkit-app-region:drag]"
+                data-titlebar-drag-fill=""
+                style={{ marginLeft: TITLEBAR_DRAG_FILL_INSET }}
+              />
+              {rightEdge && (
+                <div className="flex shrink-0">
+                  <div
+                    className="w-6"
+                    data-window-drag-handle=""
+                    style={{ WebkitAppRegion: dragging ? 'no-drag' : 'drag' } as CSSProperties}
+                  />
+                  <div className="w-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,24px))] [-webkit-app-region:no-drag]" />
+                </div>
+              )}
             </div>
           )}
-          {headerVisible ? (
+          {headerVisible && (
+            <div
+              className="flex min-w-0"
+              style={
+                tabsInTitlebar
+                  ? { height: TITLEBAR_HEIGHT, marginLeft: TITLEBAR_DRAG_FILL_INSET }
+                  : undefined
+              }
+            >
             <ZoneMenu {...zoneMenu}>
               <PaneTabStrip
                 className="flex-1"
@@ -537,7 +572,7 @@ export function TreeGroup({
                 }}
                 ref={stripRef}
                 style={{ cursor: 'grab', WebkitAppRegion: dragging ? 'no-drag' : undefined } as CSSProperties}
-                titlebar={topEdge}
+                titlebar={tabsInTitlebar}
                 trailing={
                   <>
                     {minimizable && (
@@ -694,17 +729,16 @@ export function TreeGroup({
                 )}
               </PaneTabStrip>
             </ZoneMenu>
-          ) : (
-            <div className="min-w-0 flex-1 [-webkit-app-region:drag]" />
-          )}
-          {topEdge && rightEdge && (
-            <div className="flex shrink-0">
-              <div
-                className="w-6"
-                data-window-drag-handle=""
-                style={{ WebkitAppRegion: dragging ? 'no-drag' : 'drag' } as CSSProperties}
-              />
-              <div className="w-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,24px))] [-webkit-app-region:no-drag]" />
+              {tabsInTitlebar && rightEdge && (
+                <div className="flex shrink-0">
+                  <div
+                    className="w-6"
+                    data-window-drag-handle=""
+                    style={{ WebkitAppRegion: dragging ? 'no-drag' : 'drag' } as CSSProperties}
+                  />
+                  <div className="w-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,24px))] [-webkit-app-region:no-drag]" />
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -781,7 +815,11 @@ export function TreeGroup({
             className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
             onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, active?.title ?? activeId)}
             style={{
-              top: topEdge ? TITLEBAR_HEIGHT : headerVisible ? 28 : 0,
+              top: topEdge
+                ? TITLEBAR_HEIGHT + (headerVisible && leftEdge ? 28 : 0)
+                : headerVisible
+                  ? 28
+                  : 0,
               background:
                 'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
               outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'

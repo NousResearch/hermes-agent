@@ -10316,6 +10316,61 @@ def test_config_set_model_once_requires_live_session(monkeypatch):
     assert "/model --once requires a live session" in resp["error"]["message"]
 
 
+def test_config_set_model_sessionless_rejected(monkeypatch):
+    """Sessionless config.set model must 4001 before _apply_model_switch.
+
+    Missing session_id and a stale session_id miss both take the sessionless
+    branch; unscoped values and legacy --global must be rejected the same way
+    so a Desktop client cannot persist model.default before session.create.
+    """
+    called = {"n": 0}
+
+    def boom(*a, **k):
+        called["n"] += 1
+        raise AssertionError("_apply_model_switch must not run")
+
+    monkeypatch.setattr(server, "_apply_model_switch", boom)
+    for value in ["some-model", "some-model --provider openai-codex --global"]:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {"key": "model", "value": value},
+        })
+        assert resp["error"]["code"] == 4001
+        assert called["n"] == 0
+
+    resp = server.handle_request({
+        "id": "1", "method": "config.set",
+        "params": {"session_id": "missing-sid", "key": "model", "value": "some-model --global"},
+    })
+    assert resp["error"]["code"] == 4001
+    assert called["n"] == 0
+
+
+def test_config_set_model_live_session_still_applies_switch(monkeypatch):
+    """CONTROL: a live session still reaches _apply_model_switch, including --global."""
+    called = {"raw": []}
+
+    def fake_apply(sid, session, raw, **_kwargs):
+        called["raw"].append(raw)
+        return {"value": "some-model", "warning": "", "scope": "global"}
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_apply_model_switch", fake_apply)
+    try:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "some-model --provider openai-codex --global",
+            },
+        })
+        assert "error" not in resp
+        assert called["raw"] == ["some-model --provider openai-codex --global"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch):
     class Agent:
         model = "temp/model"

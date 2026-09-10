@@ -169,6 +169,10 @@ desktop:
 
 That bridges to `ELECTRON_OZONE_PLATFORM_HINT` at launch (an explicit env var still wins). The trade: X11 cannot restore a window that has ignored the mouse, so the HUD stays a solid window instead of click-through. Some KDE setups also report keyboard breakage with the X11 ozone backend — leave the hint on `auto` unless you need always-on-top.
 
+#### WSLg (Windows GPU from WSL2)
+
+When `hermes gui` runs inside WSL2 with `/dev/dxg` present and Mesa's `d3d12_dri.so` installed, the launcher sets `GALLIUM_DRIVER=d3d12` for Electron so rendering uses the Windows GPU instead of the llvmpipe software rasterizer; an explicit `GALLIUM_DRIVER`, `MESA_LOADER_DRIVER_OVERRIDE`, `LIBGL_ALWAYS_SOFTWARE`, or `LIBGL_DRIVERS_PATH` in your environment is left untouched (for example `GALLIUM_DRIVER=llvmpipe hermes gui` keeps software rendering).
+
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
@@ -204,7 +208,7 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron).
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
-- **Messaging** — set up gateway channels.
+- **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
 ### Bot Mode (built in)
@@ -256,7 +260,7 @@ and the eye shows a dot when a hidden bot has unread activity. Hidden
 state is stored in the bot's profile, so it follows the bot across
 machines.
 
-Don't want it? Flip it off in **Settings → Plugins → Bots** — the roster,
+Don't want it? Flip it off in **Capabilities → Plugins → Desktop plugins → Bots** — the roster,
 routines pane, and composer middleware unregister live, no restart needed.
 
 Full guide — creating agents (including the multi-machine **Create on**
@@ -441,20 +445,30 @@ The desktop app is contribution-driven — panes, pages, sidebar nav, status-bar
 items, palette commands, keybinds, and themes all register through one SDK, and
 you can add your own. A plugin is a single ESM file dropped in
 `$HERMES_HOME/desktop-plugins/<id>/plugin.js`; the app loads it within seconds and
-hot-reloads every save. Manage installed plugins live in **Settings → Plugins**.
+hot-reloads every save. Manage installed plugins live in **Capabilities → Plugins**.
 
 See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
 reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
 
-The **Agent plugins** section on the same Settings → Plugins page manages
-backend (agent-side) [plugins](./features/plugins.md) you installed — user,
-git, project, pip, and portable installs. Repo-bundled built-ins (platform
-adapters, provider plugins, and similar) are not listed there: they ship
-enabled by default and are configured from their own surfaces, so the section
-stays focused on what you added yourself. With two or more profiles the
-section also has its own **Applies to** selector, so you can list and toggle
-another profile's agent plugins without switching the whole app (the backend
-`plugins.manage` RPC accepts an optional `profile` parameter for this).
+**Capabilities → Plugins** is the one place for everything that extends
+Hermes, in two sections on one page:
+
+- **Agent plugins** — backend (agent-side) [plugins](./features/plugins.md)
+  you installed for the selected profile: user, git, project, pip, and
+  portable installs, with enable/disable toggles and an **Update** chip when a
+  catalog pin moved. The page's profile selector picks which agent you are
+  configuring (the backend `plugins.manage` RPC takes a `profile` parameter).
+  Repo-bundled built-ins (platform adapters, provider plugins) are not listed:
+  they ship enabled and are configured from their own surfaces.
+- **Desktop plugins** — extensions loaded into this app, the same for every
+  profile. Toggles apply live; the desktop half of a bundled agent+desktop
+  package shows an **agent half missing here** chip when the selected
+  profile's backend does not have its agent half, with a one-click repair.
+
+Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
+picker installs reviewed entries at their pinned commit into the selected
+profile, and **Install from Git** takes any other repository through the same
+review-then-install dialog. Old `Settings → Plugins` links redirect here.
 
 ## Troubleshooting
 
@@ -538,6 +552,8 @@ To **choose your own mirror** (e.g. a corporate/trusted one), set `ELECTRON_MIRR
 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
   bash -c 'cd "$HOME/.hermes/hermes-agent/apps/desktop" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'
 ```
+
+**Other native downloads (e.g. the `get-windows` prebuilt on Windows) that need a mirror:** put the npm keys in `$HERMES_HOME/npmrc` (`%LOCALAPPDATA%\hermes\npmrc` on Windows, `~/.hermes/npmrc` elsewhere) — for example `node_get_windows_binary_host_mirror=https://<mirror>/sindresorhus/get-windows/releases/download/`. Every `npm ci`/`npm run` the updater spawns (desktop, web and TUI builds) points `NPM_CONFIG_USERCONFIG` at that file when it exists, so the config survives `hermes update`; the repo-root `.npmrc` is git-tracked and gets autostashed on every update, and `~/.npmrc` may be missed because the desktop hand-off inherits the GUI's environment. An `NPM_CONFIG_USERCONFIG` you set yourself is never overridden.
 
 To clear a corrupt cached zip by hand:
 

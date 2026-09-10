@@ -125,6 +125,7 @@ _RATE_LIMIT_PATTERNS = (
 _OVERLOADED_PATTERNS = (
     "overloaded", "temporarily overloaded", "service is temporarily overloaded",
     "service may be temporarily overloaded", "server is overloaded", "server overloaded",
+    "server overload", "server_overload",
     "service overloaded", "service is overloaded", "upstream overloaded", "currently overloaded",
     "at capacity", "over capacity",
 )
@@ -150,9 +151,14 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # Per-image size/dimension 400s (Anthropic 5 MB / 8000 px; MiniMax "media
 # exceeds size limit" #76039) — a specific 400 before the request hits 413. A
 # non-image media hit is harmless: the shrink pass finds no image parts.
+# "patches after processing": OpenAI Codex Responses rejects an image whose
+# tile-patch budget (ceil(w/32)×ceil(h/32)) exceeds its 30000-patch ceiling
+# with wording that names no image-size vocabulary — without this pattern it
+# fell to format_error (non-retryable), bypassing the shrink recovery (#106337).
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
+    "patches after processing",
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings
@@ -717,7 +723,10 @@ def _classify_400(c: _Ctx) -> Verdict:
     # overflow because "encrypted content … could not be verified" trips it.
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
         "encrypted content for item" in msg and "could not be verified" in msg
-    ) or "could not decrypt the provided encrypted_content" in msg:
+    ) or "could not decrypt the provided encrypted_content" in msg or (
+        # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
+        "conflicting authenticated continuation identities" in msg
+    ):
         return _V_INVALID_ENCRYPTED
     # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
     # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops

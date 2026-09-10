@@ -422,8 +422,7 @@ export const ru = defineLocale({
       archivedChats: 'Архив чатов',
       about: 'О программе',
       billing: 'Оплата',
-      notifications: 'Уведомления',
-      plugins: 'Плагины'
+      notifications: 'Уведомления'
     },
     plugins: {
       title: 'Плагины приложения',
@@ -437,26 +436,6 @@ export const ru = defineLocale({
       failed: 'ошибка',
       empty: 'Плагины приложения пока не установлены.',
       kinds: { bundled: 'встроенный', disk: 'на диске', runtime: 'runtime' },
-      agent: {
-        title: 'Плагины агента',
-        blurb:
-          'Плагины, установленные в бэкенд Hermes — инструменты, навыки, MCP-серверы, хуки и slash-команды. Переносимые — пакеты Agent Plugins (навыки + MCP-бандлы, работающие и в других агентах). Переключатели действуют для новых сеансов.',
-        appliesTo: 'Применяется к:',
-        empty: 'Плагины агента пока не установлены.',
-        loadFailed: 'Не удалось загрузить плагины агента',
-        portable: 'переносимый',
-        search: 'Поиск плагинов…',
-        noMatches: 'Плагины, подходящие под поиск, не найдены.',
-        toggleFailed: name => `Не удалось переключить ${name}`,
-        updateBackendToManage: 'Обновите бэкенд Hermes, чтобы управлять этим плагином из приложения.',
-        sources: {
-          bundled: 'встроенный',
-          user: 'пользовательский',
-          git: 'git',
-          project: 'проектный',
-          entrypoint: 'pip'
-        }
-      },
       installModal: {
         title: 'Установка плагина',
         description: 'Перед установкой посмотрите, что содержит этот репозиторий.',
@@ -1961,6 +1940,41 @@ export const ru = defineLocale({
     failedRevoke: name => `Не удалось отозвать ${name}`,
     pairingLockedOut: 'Слишком много неудачных одобрений — эта платформа заблокирована. Попробуйте позже.',
     waitingSince: minutes => (minutes < 1 ? 'только что' : `${minutes}м назад`),
+    restartNeeded: 'Сохранено. Перезапустите шлюз сообщений, чтобы применить новые настройки.',
+    restartNow: 'Перезапустить',
+    restarting: 'Перезапуск…',
+    restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
+    telegramQr: {
+      title: 'Выберите способ подключения Telegram-бота',
+      subtitle:
+        'Оба способа подключают бота под вашим контролем и сохраняют его данные только в этой установке Hermes.',
+      quickSetup: 'Быстрая настройка',
+      recommended: 'Рекомендуется',
+      quickHelp:
+        'Отсканируйте QR-код и подтвердите в Telegram. Hermes создаст бота и определит ваш Telegram ID автоматически.',
+      createWithQr: 'Создать по QR',
+      starting: 'Запуск…',
+      replaceWarning:
+        'Данные Telegram уже настроены. Новая QR-настройка или токен заменят текущего бота при сохранении.',
+      scanHint: 'Отсканируйте в приложении Telegram на телефоне или откройте ссылку на этом компьютере.',
+      waiting: 'Ожидание Telegram…',
+      expiresIn: remaining => `Истекает через ${remaining}`,
+      expired: 'Истёк',
+      openTelegram: 'Открыть Telegram',
+      ready: 'Бот создан',
+      allowedUsers: 'Разрешённые пользователи',
+      ownerDetected: 'Владелец определён',
+      addAtLeastOne: 'Добавьте хотя бы один Telegram ID.',
+      userIdPlaceholder: 'Telegram ID пользователя',
+      add: 'Добавить',
+      numericOnly: 'Telegram ID должны быть числовыми.',
+      saveAndRestart: 'Сохранить и перезапустить',
+      applying: 'Сохранение…',
+      pairingExpired: 'Срок QR-настройки истёк. Начните новую.',
+      stillWaiting: detail => `Всё ещё ждём Telegram. Повтор после: ${detail}`,
+      savedRestarting: 'Telegram сохранён; шлюз перезапускается…',
+      savedRestartFailed: detail => `Telegram сохранён; перезапуск шлюза не удался${detail}`
+    },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Токен бота',
@@ -2445,6 +2459,7 @@ export const ru = defineLocale({
     noSessions: 'Сеансов пока нет',
     noFilterMatches: 'Нет сеансов по этим фильтрам',
     projects: {
+      showAllSessions: 'Показать все сессии',
       sectionLabel: 'Проекты',
       home: 'Главная',
       newButton: 'Новый проект',
@@ -3463,7 +3478,7 @@ export const ru = defineLocale({
     closeAll: 'Закрыть все',
     newSessionTab: 'Вкладка нового сеанса',
     pluginDisabled: pluginId => `Плагин «${pluginId}» отключён`,
-    pluginDisabledBody: 'Включите его снова в Настройки → Плагины, чтобы вернуть панель.',
+    pluginDisabledBody: 'Включите его снова в Возможности → Плагины, чтобы вернуть панель.',
     missingPane: paneId => `нет панели: ${paneId}`,
     editTitle: 'Раскладки',
     editHint: 'Выберите раскладку или перетащите панели между зонами.',

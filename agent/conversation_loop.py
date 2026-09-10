@@ -1304,6 +1304,11 @@ class _LoopState:
     failed: bool = False
     codex_ack_continuations: int = 0
     length_continue_retries: int = 0
+    # Per-turn backstop for the refunding restarts (redirect / rebuilt-for-fallback).
+    # Unlike ``retry_count`` (rebound to 0 each iteration) this accumulates for the whole
+    # turn so a runaway interrupt/redirect that keeps re-arming a restart flag cannot
+    # refund the iteration budget forever and hold the turn lease indefinitely.
+    restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
     truncated_response_parts: List[str] = field(default_factory=list)

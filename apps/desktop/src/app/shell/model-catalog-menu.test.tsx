@@ -100,44 +100,68 @@ describe('the catalog owns model curation', () => {
     expect(screen.queryByText(/Gemini 3\.1 Pro/i)).toBeNull()
   })
 
-  it('drops subscription-locked models once the free tier is known', async () => {
+  it('drops subscription-locked Nous models once the free tier is known', async () => {
     getGlobalModelOptions.mockResolvedValue({
       providers: [
         {
           free_tier: true,
-          models: ['gemini-3.1-pro', 'gemini-2.5-flash'],
-          name: 'Google',
-          slug: 'google',
-          unavailable_models: ['gemini-3.1-pro']
+          models: ['anthropic/claude-opus-5', 'stepfun/step-3.7-flash:free'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          unavailable_models: ['anthropic/claude-opus-5']
         }
       ]
     })
 
     renderMenu()
 
-    await screen.findByText(/Gemini 2\.5 Flash/i)
-    expect(screen.queryByText(/Gemini 3\.1 Pro/i)).toBeNull()
+    await screen.findByText(/Step 3\.7 Flash/i)
+    expect(screen.queryByText(/Opus 5/i)).toBeNull()
   })
 
-  it('keeps every model listed while entitlement is still pending (fail-closed marker is not a filter)', async () => {
-    // Cold cache: the backend marks ALL models unavailable until the tier
-    // resolves. Blanking the section then is worse than briefly listing them.
+  it('falls back to the :free suffix while Nous pricing is still pending', async () => {
+    // Tier is known (free) but pricing hasn't loaded, so the backend fails
+    // closed and marks EVERY model unavailable — that list is useless as a
+    // filter. The free picks are exactly the `:free` ids, so gate on shape
+    // instead of showing paid models a free account cannot spend on.
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          free_tier: true,
+          models: ['anthropic/claude-opus-5', 'stepfun/step-3.7-flash:free'],
+          name: 'Nous Portal',
+          pricing_pending: true,
+          slug: 'nous',
+          unavailable_models: ['anthropic/claude-opus-5', 'stepfun/step-3.7-flash:free']
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText(/Step 3\.7 Flash/i)
+    expect(screen.queryByText(/Opus 5/i)).toBeNull()
+  })
+
+  it('keeps every model listed while the Nous tier itself is still pending', async () => {
+    // Cold cache: the backend doesn't know the tier yet. Blanking the section
+    // then is worse than briefly listing locked models, so nothing is filtered.
     getGlobalModelOptions.mockResolvedValue({
       providers: [
         {
           free_tier_pending: true,
-          models: ['gemini-3.1-pro', 'gemini-2.5-flash'],
-          name: 'Google',
-          slug: 'google',
-          unavailable_models: ['gemini-3.1-pro', 'gemini-2.5-flash']
+          models: ['anthropic/claude-opus-5', 'stepfun/step-3.7-flash:free'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          unavailable_models: ['anthropic/claude-opus-5', 'stepfun/step-3.7-flash:free']
         }
       ]
     })
 
     renderMenu()
 
-    await screen.findByText(/Gemini 2\.5 Flash/i)
-    expect(screen.getByText(/Gemini 3\.1 Pro/i)).toBeTruthy()
+    await screen.findByText(/Step 3\.7 Flash/i)
+    expect(screen.getByText(/Opus 5/i)).toBeTruthy()
   })
 
   it('still finds a hidden model by search — curation narrows the default view, not the catalog', async () => {

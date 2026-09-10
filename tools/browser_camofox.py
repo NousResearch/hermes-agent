@@ -107,18 +107,18 @@ def check_camofox_available() -> bool:
     if not url:
         return False
     try:
-        resp = requests.get(f"{url}/health", timeout=5)
+        with requests.get(f"{url}/health", timeout=5) as resp:
+            if resp.status_code == 200 and not _vnc_url_checked:
+                try:
+                    vnc_port = resp.json().get("vncPort")
+                    if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
+                        _vnc_url = f"http://{urlsplit(url).hostname or 'localhost'}:{vnc_port}"
+                except (ValueError, KeyError):
+                    pass
+                _vnc_url_checked = True
+            return resp.status_code == 200
     except Exception:
         return False
-    if resp.status_code == 200 and not _vnc_url_checked:
-        try:
-            vnc_port = resp.json().get("vncPort")
-            if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
-                _vnc_url = f"http://{urlsplit(url).hostname or 'localhost'}:{vnc_port}"
-        except (ValueError, KeyError):
-            pass
-        _vnc_url_checked = True
-    return resp.status_code == 200
 
 
 def get_vnc_url() -> Optional[str]:

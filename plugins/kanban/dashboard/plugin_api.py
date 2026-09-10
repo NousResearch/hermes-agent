@@ -1761,4 +1761,13 @@ async def stream_events(ws: WebSocket):
         except Exception:
             pass
     finally:
-        await tail.shutdown()
+        # A cancellation delivered while ``await run_in_executor(...)`` (baseline/poll) was
+        # mid-flight on the executor thread can leave a second CancelledError pending for the
+        # very next await -- landing here, outside the try/except above (a `finally` body's own
+        # exceptions are never caught by its own try's `except` clauses). Swallow it exactly like
+        # the sibling ``except asyncio.CancelledError: return`` above: this is still just a normal
+        # shutdown, not a crash.
+        try:
+            await tail.shutdown()
+        except asyncio.CancelledError:
+            pass

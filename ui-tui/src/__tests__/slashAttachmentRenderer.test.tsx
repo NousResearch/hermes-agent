@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -14,7 +14,7 @@ import { useSubmission } from '../app/useSubmission.js'
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
 
-function mount() {
+function mount(canonical = false) {
   const home = mkdtempSync(join(tmpdir(), 'ink-slash-attachment-'))
   vi.stubEnv('HERMES_HOME', home)
   resetUiState()
@@ -23,6 +23,8 @@ function mount() {
   const pending: Array<{ sid: string; finish: (path: string) => void }> = []
 
   const request = vi.fn((method: string, params: any) => {
+    if (method === 'prompt.submit' && canonical) { return Promise.resolve({ status: 'started' }) }
+
     if (method === 'image.attach' || method === 'clipboard.paste') {
       return new Promise(resolve => {
         pending.push({ sid: params.session_id, finish(path) {
@@ -41,7 +43,7 @@ function mount() {
     return Promise.resolve({})
   })
 
-  const gw = { request } as any
+  const gw = { request, isCanonical: canonical } as any
   const submitRef = { current: (_value: string) => {} }
   const slashRef = { current: (_value: string) => false }
   const slashFlightRef = { current: 0 }
@@ -66,7 +68,7 @@ function mount() {
     stderr: new PassThrough() as any, patchConsole: false })
 
   return {
-    images, pending, request,
+    home, images, pending, request,
     get composer() { return composer },
     get output() { return output },
     async submit(command: string) {
@@ -84,6 +86,33 @@ function mount() {
     }
   }
 }
+
+it('canonical slash images submit staged bytes and deleting tokens removes payload without RPC detach', async () => {
+  const h = mount(true)
+  vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
+  const path = join(h.home, 'shot.png')
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64')
+  writeFileSync(path, bytes)
+
+  try {
+    await h.submit(`/image ${path}`)
+    await vi.waitFor(() => expect(h.composer.state.input).toContain('[[ Image 1 ]]'))
+    const token = h.composer.refs.tokensRef.current[0]!
+    expect(token).toMatchObject({ mime: 'image/png' })
+    expect(readFileSync(token.path!)).toEqual(bytes)
+    await h.submit('caption [[ Image 1 ]]')
+    await vi.waitFor(() => expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true))
+    const wire = h.request.mock.calls.find(([method]) => method === 'prompt.submit')![1]
+    expect(wire.attachments).toEqual([{ path: token.path, mime: 'image/png' }])
+    expect(wire.text).toBe('caption')
+    expect(h.request.mock.calls.some(([method]) => method === 'image.attach')).toBe(false)
+    await h.submit(`/image ${path}`)
+    await vi.waitFor(() => expect(h.composer.refs.tokensRef.current).toHaveLength(1))
+    h.composer.actions.syncTokens('')
+    expect(h.composer.refs.tokensRef.current).toEqual([])
+    expect(h.request.mock.calls.some(([method]) => method === 'image.detach')).toBe(false)
+  } finally { h.close() }
+})
 
 it('slash attachment submission leaves a visible removable image in the cleared composer', async () => {
   for (const command of ['/image /owned.png', '/paste']) {

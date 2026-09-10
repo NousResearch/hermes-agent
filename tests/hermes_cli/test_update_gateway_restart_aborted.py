@@ -12,9 +12,11 @@ gateway kept serving pre-update modules and died on the next turn with
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 
+from hermes_cli import update_abort_recovery
 from hermes_cli.update_cmd import _restart_phase_failure_is_incomplete, _surviving_gateway_pids_after_failed_restart, _warn_gateway_restart_phase_aborted
 
 
@@ -99,3 +101,70 @@ class TestAbortedRestartWarning:
         assert "Update incomplete" in out
         assert "systemctl exploded" in out
         assert "hermes gateway restart" in out
+
+
+class TestFreshRecoveryUserBusEnv:
+    """#107614 — the fresh recovery child must inherit a user-bus env it cannot build itself.
+
+    ``update_restart_recovery`` deliberately imports no gateway code (a broken freshly pulled
+    import graph is what aborts the phase), so it can never call ``_ensure_user_systemd_env``
+    itself. Under a bus-less dispatcher (``sudo -u``, cron) every ``systemctl --user`` probe of the
+    child then fails: a healthy gateway reads ``relaunch_attempted`` and the update exits 1 — the
+    same false negative #107477 fixed at the in-process listing helper.
+    """
+
+    def _spawn_capturing(self, monkeypatch):
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        captured = {}
+
+        class _Completed:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        def fake_run(_command, **kwargs):
+            captured["env"] = kwargs["env"]
+            return _Completed()
+
+        monkeypatch.setattr(update_abort_recovery.subprocess, "run", fake_run)
+        result = update_abort_recovery._run_fresh_recovery_process(
+            ["default"], {"default": "systemd"},
+            gateway_mode=False, recover_serve=False, skip_units=())
+        return result, captured
+
+    def test_child_env_adopts_user_bus_before_spawn(self, monkeypatch):
+        fake = types.ModuleType("hermes_cli.gateway")
+
+        def _adopt():
+            os.environ["XDG_RUNTIME_DIR"] = "/run/user/501"
+            os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/user/501/bus"
+
+        fake._ensure_user_systemd_env = _adopt
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway", fake)
+
+        result, captured = self._spawn_capturing(monkeypatch)
+
+        assert result is not None
+        assert captured["env"]["XDG_RUNTIME_DIR"] == "/run/user/501"
+        assert captured["env"]["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/501/bus"
+        # The recovery self-identification markers stay independent of the adoption.
+        assert captured["env"]["HERMES_UPDATE_RESTART_RECOVERY"] == "1"
+        assert "_HERMES_GATEWAY" not in captured["env"]
+
+    def test_spawn_survives_a_broken_gateway_module(self, monkeypatch):
+        """A gateway module that cannot even import must not cancel the recovery spawn (#78574 shape)."""
+
+        def _boom():
+            raise ImportError("cannot import name '_ensure_user_systemd_env'")
+
+        fake = types.ModuleType("hermes_cli.gateway")
+        fake._ensure_user_systemd_env = _boom
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway", fake)
+
+        result, captured = self._spawn_capturing(monkeypatch)
+
+        assert result is not None
+        # Nothing was fabricated for a bus the host never advertised — fail closed stays intact.
+        assert "XDG_RUNTIME_DIR" not in captured["env"]
+        assert "DBUS_SESSION_BUS_ADDRESS" not in captured["env"]

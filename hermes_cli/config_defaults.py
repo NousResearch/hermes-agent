@@ -1457,6 +1457,16 @@ DEFAULT_CONFIG = {
         # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and
         # extends this floor so long TTS isn't cut off.
         "voice_playback_timeout_seconds": 120,
+        # Custom rich presence / bot activity status. Disabled by default.
+        "activity": {
+            "enabled": False,        # Must be explicitly True to activate
+            "type": "watching",      # playing | watching | listening | competing
+            "state": "{{model}}",    # Text shown after the verb; supports {{model}} and {{profile}} templates
+            "details": ""            # Secondary info line; supports the same templates
+        },
+        # How often (seconds) the activity watchdog re-reads config and
+        # re-syncs presence. 5s floor. Raise in rate-limit-sensitive setups.
+        "activity_check_interval_seconds": 60,
         # Voice-channel software mixer (plugins/platforms/discord/voice_mixer.py): ambient
         # "thinking" bed, verbal acks and TTS OVERLAP (ambient ducked) vs stop-and-swap.
         "voice_fx": {

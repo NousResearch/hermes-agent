@@ -722,8 +722,35 @@ class GatewayConfig:
 
         from gateway.profile_routing import parse_profile_routes
 
+        # by_platform() cannot recover a bare string home_channel (it hands the parse
+        # callback the block without the platform name), so build the map inline.
+        platforms: Dict[Platform, PlatformConfig] = {}
+        for platform_name, platform_data in _coerce_dict(data.get("platforms", {})).items():
+            if not isinstance(platform_data, dict):
+                continue
+            try:
+                platform = Platform(platform_name)
+            except ValueError:
+                continue  # unknown platform
+            platform_cfg = PlatformConfig.from_dict(platform_data)
+            if (
+                platform_cfg.home_channel is None
+                and isinstance(platform_data.get("home_channel"), str)
+                and str(platform_data["home_channel"]).strip()
+            ):
+                # Bare chat-id string form (e.g. discord
+                # home_channel: "123..."). Without this coercion a string
+                # home_channel is silently dropped and the gateway
+                # treats the platform as having no home channel.
+                platform_cfg.home_channel = HomeChannel(
+                    platform=platform,
+                    chat_id=str(platform_data["home_channel"]).strip(),
+                    name="Home",
+                )
+            platforms[platform] = platform_cfg
+
         return cls(
-            platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
+            platforms=platforms,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=_coerce_dict(data.get("quick_commands", {})),
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",

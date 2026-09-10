@@ -233,6 +233,44 @@ class TestGatewayConfigRoundtrip:
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_from_dict_coerces_string_home_channel(self):
+        config = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "discord": {
+                        "enabled": True,
+                        "home_channel": "1533548236919541850",
+                    },
+                },
+            }
+        )
+
+        home = config.get_home_channel(Platform.DISCORD)
+        assert home is not None
+        assert home.chat_id == "1533548236919541850"
+        assert home.platform == Platform.DISCORD
+
+    def test_from_dict_string_home_channel_does_not_override_dict(self):
+        config = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "discord": {
+                        "enabled": True,
+                        "home_channel": {
+                            "platform": "discord",
+                            "chat_id": "111",
+                            "name": "ops",
+                        },
+                    },
+                },
+            }
+        )
+
+        home = config.get_home_channel(Platform.DISCORD)
+        assert home is not None
+        assert home.chat_id == "111"
+        assert home.name == "ops"
+
     def test_email_defaults_to_ignore_for_unauthorized_dm_behavior(self):
         config = GatewayConfig(
             platforms={Platform.EMAIL: PlatformConfig(enabled=True)},

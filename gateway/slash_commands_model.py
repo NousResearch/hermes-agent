@@ -290,6 +290,10 @@ class GatewayModelCommandsMixin:
             except Exception:
                 logger.debug("Failed to persist session model override", exc_info=True)
         self._evict_cached_agent(ctx.session_key)  # next turn builds fresh from the override
+
+        # Refresh Discord activity so it stays in sync with the new model.
+        self._refresh_discord_activity()
+
         if ctx.persist_global:
             try:
                 await _persist_model_switch_to_config(result, ctx.config_path)
@@ -346,6 +350,26 @@ class GatewayModelCommandsMixin:
         else:
             lines.append(t("gateway.model.session_only_hint"))
         return "\n".join(lines)
+
+    def _refresh_discord_activity(self) -> None:
+        """Trigger an immediate Discord activity update if the adapter is connected.
+
+        Called after model switches so the bot status stays in sync with
+        the active model without waiting for the 60s watchdog cycle.
+        """
+        from gateway.config import Platform
+
+        adapter = self.adapters.get(Platform.DISCORD) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return
+        try:
+            apply_activity = getattr(adapter, "_apply_activity", None)
+            if callable(apply_activity):
+                # Fire-and-forget on the loop so the switch reply isn't
+                # awaited against the presence update.
+                asyncio.create_task(apply_activity())
+        except Exception:
+            logger.debug("Discord activity refresh failed", exc_info=True)
 
     async def _commit_model_switch(
         self, result, ctx: _ModelSwitchContext, *, source, picker: bool = False

@@ -355,6 +355,11 @@ discord:
     roles: false                  # @role pings (default: false)
     users: true                   # @user pings (default: true)
     replied_user: true            # reply-reference pings the author (default: true)
+  activity:                       # Custom rich presence status (default: disabled)
+    enabled: false
+    type: watching                # playing | watching | listening | competing
+    state: "{{model}}"            # Supports {{model}} and {{profile}} templates
+    details: ""                   # Optional secondary line; same templates
 
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
@@ -549,6 +554,49 @@ group_sessions_per_user: true
 ```
 
 See the [Session Model](#session-model-in-discord) section above for the full implications of each mode.
+
+#### `discord.activity`
+
+**Type:** object — **Default:** `activity.enabled: false`
+
+Sets a custom rich presence activity (status) that appears under the bot name in Discord. Disabled by default — set `enabled: true` to activate. Applied on connect, and a background watchdog re-checks the config every 60 seconds (configurable via `discord.activity_check_interval_seconds`, minimum 5s), so edits to `discord.activity` (or a model switch) pick up without a restart; the presence is only re-sent to Discord when the rendered text actually changes.
+
+```yaml
+discord:
+  activity:
+    enabled: true
+    type: watching          # playing | watching | listening | competing
+    state: "{{model}}"      # supports {{model}} and {{profile}} templates
+```
+
+- **`enabled`** — `true` to activate, `false` (default) to disable.
+- **`type`** — One of `playing`, `watching`, `listening`, or `competing`. Determines the verb shown before `state` in the activity (e.g., "Watching Qwen3.6-27B").
+- **`state`** — The text displayed after the verb. Supports template variables:
+  - `{{model}}` — Resolved to the global model from `model.default` in config.yaml (per-session `/model` overrides do not change the presence). Empty string if not configured.
+  - `{{profile}}` — The profile the gateway is running as (inferred from the active profile, e.g. `coder`). Non-standard `HERMES_HOME` directories render as the literal string `custom`.
+- **`details`** — Optional secondary info line under the activity text; supports the same templates.
+
+Rendered `state` and `details` are truncated to 128 characters (Discord's API limit), so long `{{model}}` values won't cause presence updates to fail. If the rendered `state` is empty (e.g. `state: "{{model}}"` with no `model.default` configured), the presence is cleared and no update is sent — Discord rejects empty activity names, and the adapter won't retry until the rendered text changes.
+
+**Example:** Show "Playing gpt-4o" under the bot name:
+
+```yaml
+discord:
+  activity:
+    enabled: true
+    type: playing
+    state: "{{model}}"
+```
+
+**Example:** Show "Running hermes-agent on default profile":
+
+```yaml
+discord:
+  activity:
+    enabled: true
+    type: listening
+    state: "hermes-agent on {{profile}}"
+```
 
 #### `display.tool_progress`
 

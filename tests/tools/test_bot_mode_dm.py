@@ -959,6 +959,46 @@ def test_canonical_name_outranks_a_colliding_display_slug(tmp_path):
     assert bot_mode_dm._resolve_local_name("cto", list(no_rival), no_rival) == "default"
 
 
+def _rename_teammate(home: Path, name: str, display_name: str) -> None:
+    with open(home / "profiles" / name / "profile.yaml", "a", encoding="utf-8") as fh:
+        fh.write(f"display_name: {display_name}\n")
+
+
+def test_message_agent_delivers_to_a_teammate_addressed_by_display_slug(tmp_path, monkeypatch):
+    """The resolver honours a display slug only when message_agent_tool hands it the roster's
+    directories. The helper tests above stay green if that call site stops passing them —
+    which is exactly what a refactor of this function did — so drive the real tool."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    _rename_teammate(home, "researcher", "Research Lead")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="@research-lead", message="hi", agent=_FakeAgent(home))
+    )
+
+    assert result["status"] == "sent"
+    # The delivery label is the teammate's own display handle, while the transport still
+    # addresses the canonical profile.
+    assert result["to"] == "@research-lead"
+    _mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
+    assert transport_argv[:3] == ["hermes", "-p", "researcher"]
+
+
+def test_unknown_target_lists_teammates_by_their_own_display_handles(tmp_path, monkeypatch):
+    """The roster in a resolution error must name each teammate by ITS display handle —
+    reading it without the teammate's directory falls back to the canonical name."""
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    _rename_teammate(home, "researcher", "Research Lead")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="@nobody", message="hi", agent=_FakeAgent(home))
+    )
+
+    assert "research-lead" in result["teammates"]
+    assert "researcher" not in result["teammates"]
+
+
 def test_reserved_handles_match_the_desktop_source():
     """Drift between the two reserved lists must fail CI, not surprise a user.
 

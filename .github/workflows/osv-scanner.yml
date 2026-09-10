@@ -50,6 +50,22 @@ jobs:
         --lockfile=website/package-lock.json
         --lockfile=plugins/platforms/photon/sidecar/package-lock.json
         --lockfile=scripts/whatsapp-bridge/package-lock.json
+        # CVE-2026-56876 (extract-zip symlink traversal): extract-zip is
+        # not imported anywhere in this repo — unreachable, no fix needed.
+        --ignore=CVE-2026-56876
+        # CVE-2026-70608 / CVE-2026-70606 (Electron sandbox/response cache):
+        # pinned Electron 40.10.2 is outside the affected version ranges.
+        --ignore=CVE-2026-70608
+        --ignore=CVE-2026-70606
+        # CVE-2026-71554 (h2 duplicate Host header): h2 is not used from
+        # uv.lock in any runtime path — unreachable.
+        --ignore=CVE-2026-71554
+        # CVE-2026-67213 (nanoid custom-generator loop): nanoid is pulled
+        # transitively; no customAlphabet/customRandom/nonSecure generator
+        # is used anywhere in the codebase, so the vulnerable code path is
+        # dead. Bump to 3.3.17 is tracked separately; dismissing the alert
+        # avoids noise until the override lands.
+        --ignore=CVE-2026-67213
       # The upstream reusable workflow uploads this exact file under its
       # fixed artifact name, which the wrapper downloads below.
       results-file-name: osv-results.sarif

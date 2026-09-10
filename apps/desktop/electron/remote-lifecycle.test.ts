@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { exec as execCallback, spawn } from 'node:child_process'
+import { exec as execCallback, execFileSync, spawn } from 'node:child_process'
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -826,6 +826,167 @@ test('buildSpawnCommand atomically reserves the ownership slot through spawn and
   assert.match(cmd, /trap .*rm -rf/)
   assert.ok(cmd.indexOf('lock_json') > cmd.indexOf('serve --isolated'))
 })
+
+// #95532 taught every OTHER lockfile consumer in this file (connect,
+// disconnect, cleanupStale) to fail closed on a lockfile that exists but
+// isn't in our recognized shape — a state that most likely means a
+// different/modified desktop build shares this remote, not "no owner".
+// buildSpawnCommand's own reservation script re-checks for a lock inside its
+// atomic mkdir-mutex (closing the TOCTOU gap between the TS-side check in
+// connect() and this remote exec), but did its own crude sed-only parse and
+// deleted anything it couldn't read a pid from — silently reaping a foreign
+// build's live lockfile and spawning on top of it.
+//
+// This extracts the exact `if [ -f "$lock" ]; then ...; fi;` block straight
+// out of a real buildSpawnCommand() string (not retyped by hand — this test
+// exists to catch a parsing/quoting bug, and a hand-copy risks reintroducing
+// one) and runs it standalone through a real shell against real lock files,
+// so it proves runtime behavior rather than trusting the source read. It
+// does not go through the surrounding reservation mkdir-mutex: that stage
+// has its own $HOME-expansion plumbing (covered by the string assertions in
+// the "atomically reserves" test above) that is orthogonal to the lock
+// classification logic under test here.
+// buildSpawnCommand's return value is `python3 -c <shq script> <shq mutex>
+// <shq payload>` (withRemoteUpdateMutex) — the actual reservation/lock-check
+// shell source is single-quote-escaped (shq()) as one argv element, not
+// present as directly-executable text. Recover it by having a REAL shell
+// parse the command line (shadowing `python3` to just print its last
+// argument) instead of reimplementing shq's escaping by hand here, which
+// is exactly the kind of quoting mistake this test exists to catch.
+function extractInnerPayload(command: string): string {
+  return execFileSync(
+    'bash',
+    ['-c', 'python3() { printf %s "${@: -1}"; }; eval "$1"', 'extract-inner-payload', command],
+    { encoding: 'utf8' }
+  )
+}
+
+function extractLockCheckFragment(command: string): string {
+  const payload = extractInnerPayload(command)
+  const start = payload.indexOf('if [ -f "$lock" ]; then ')
+
+  assert.ok(start !== -1, 'buildSpawnCommand output must contain the lock-check block')
+
+  // The block contains one nested `if kill -0 ...; then ...; fi;` (inside the
+  // case's non-empty-pid arm) before its own closing `fi;` — skip the inner
+  // one to find the block's actual end.
+  const innerEnd = payload.indexOf('; fi; ', start)
+
+  assert.ok(innerEnd !== -1, 'lock-check block must contain the nested kill -0 check')
+
+  const end = payload.indexOf('; fi; ', innerEnd + '; fi; '.length)
+
+  assert.ok(end !== -1, 'lock-check block must be closed with its own fi;')
+
+  return payload.slice(start, end + '; fi;'.length)
+}
+
+function buildReservationCommand() {
+  return buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    reservationNonce: SPAWN_NONCE,
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
+    lockMetadata: {
+      ownershipId: OWNERSHIP_ID,
+      spawnNonce: SPAWN_NONCE,
+      port: 0,
+      profile: 'work',
+      hermesPath: '/x/hermes',
+      hermesHome: '~/.hermes',
+      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+      tokenFingerprint: fingerprintToken('stored-token'),
+      protocolVersion: PROTOCOL_VERSION,
+      startedAt: '2026-07-14T00:00:00.000Z'
+    }
+  })
+}
+
+test.skipIf(process.platform === 'win32')(
+  'reservation script refuses to delete a lockfile it cannot parse a pid from',
+  async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-lockfile-skew-'))
+
+    try {
+      const lockPath = path.join(directory, 'backend.lock.json')
+      // A shape our sed extraction can't match (space after the colon) —
+      // e.g. a different JSON serializer/build, not a corrupt/empty file.
+      const foreignLock = '{"pid": 999999, "schemaVersion": 2, "note": "written by another build"}'
+
+      await writeFile(lockPath, foreignLock)
+
+      const fragment = extractLockCheckFragment(buildReservationCommand())
+      const script = `lock=${JSON.stringify(lockPath)}\n${fragment}\n`
+
+      await assert.rejects(
+        () => exec(script, { shell: '/bin/bash' }),
+        'the block must refuse to proceed (nonzero exit), not silently reap the foreign lock and spawn on top of it'
+      )
+
+      const survivingLock = await readFile(lockPath, 'utf8')
+
+      assert.equal(survivingLock, foreignLock, 'a lockfile the script cannot parse must be left completely untouched')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+)
+
+test.skipIf(process.platform === 'win32')(
+  'reservation script reaps a lockfile it CAN parse once that pid is confirmed dead',
+  async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-lockfile-skew-'))
+
+    try {
+      const lockPath = path.join(directory, 'backend.lock.json')
+      // A pid essentially guaranteed not to be alive.
+      const staleLock = '{"pid":999999999,"schemaVersion":2}'
+
+      await writeFile(lockPath, staleLock)
+
+      const fragment = extractLockCheckFragment(buildReservationCommand())
+      const script = `lock=${JSON.stringify(lockPath)}\n${fragment}\n`
+
+      await exec(script, { shell: '/bin/bash' })
+
+      await assert.rejects(() => readFile(lockPath, 'utf8'), 'a genuinely stale (parseable, dead-pid) lock must still be reaped')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+)
+
+test.skipIf(process.platform === 'win32')(
+  'reservation script reports EXISTING and leaves the lockfile alone when the owning pid is alive',
+  async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-lockfile-skew-'))
+
+    try {
+      const lockPath = path.join(directory, 'backend.lock.json')
+      // The current shell's own pid is guaranteed alive for the duration of
+      // this `sh -c` invocation.
+      const liveLock = '{"pid":$$,"schemaVersion":2}'
+
+      const fragment = extractLockCheckFragment(buildReservationCommand())
+      // $$ must expand inside the script (the real owning process's pid is
+      // never known ahead of time either), so the lock is written at runtime
+      // rather than via writeFile with a literal pid.
+      const script = `lock=${JSON.stringify(lockPath)}\nprintf '%s' ${JSON.stringify(liveLock)} > "$lock"\n${fragment}\n`
+
+      const { stdout } = await exec(script, { shell: '/bin/bash' })
+
+      assert.equal(stdout, 'EXISTING')
+
+      const survivingLock = await readFile(lockPath, 'utf8')
+
+      assert.match(survivingLock, /"pid":\d+/, 'the live-owner lock must survive untouched')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+)
 
 test.skipIf(process.platform === 'win32')('detached backend does not inherit the update mutex descriptor', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-update-mutex-'))

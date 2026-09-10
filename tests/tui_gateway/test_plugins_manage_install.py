@@ -38,6 +38,7 @@ def test_plugins_manage_install_success():
         force=True,
         enable=False,
         catalog_name=None,
+        ref=None,
     )
 
 
@@ -99,6 +100,7 @@ def test_plugins_manage_install_catalog_name_only():
         force=False,
         enable=False,
         catalog_name="weather-plugin",
+        ref=None,
     )
 
 

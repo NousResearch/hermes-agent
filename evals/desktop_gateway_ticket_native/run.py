@@ -53,7 +53,7 @@ def ready(process, home):
                     raise ValueError('Daemon did not publish exactly our profile')
                 return {**endpoint, 'profile_id': profiles[0]['profile_id']}
         except (OSError, ValueError) as error:
-            last = type(error).__name__
+            last = f'{type(error).__name__}: {error}'
         time.sleep(0.2)
     raise RuntimeError(f'Owned daemon not ready: exit={process.poll()}, last={last}')
 

@@ -38,6 +38,10 @@ jobs:
       - name: Run actual Electron main and ordinary daemons
         timeout-minutes: 6
         run: uv run --no-sync python evals/desktop_gateway_ticket_native/run.py --output native-ticket-results
+      - name: Real Windows cross-token SID boundary
+        if: always() && runner.os == 'Windows'
+        timeout-minutes: 5
+        run: uv run --no-sync python evals/desktop_gateway_ticket_native/windows_sid.py --output native-ticket-results/windows-sid --electron-auto
       - name: Preserve native receipts and owned daemon logs
         if: always()
         timeout-minutes: 3

@@ -126,3 +126,42 @@ class TestGenericFailureRegression:
 
         assert "context window" in response
         assert "/compact" in response
+
+
+class TestNonempty400EnvelopeOverflowReply:
+    """Failed turns that already carry the HTTP 400 envelope as
+    ``final_response`` must still get the session-too-large rewrite.
+
+    Production order is normalize then Telegram sanitizer. The empty-response
+    rewriter used to return the 56-char envelope unchanged, and the sanitizer
+    then replaced it with a generic 'provider failed' — so users never saw
+    /compact even though the gateway already classified the turn as overflow.
+    """
+
+    _ENVELOPE = 'HTTP 400: {"object":"error","model":"deepseek-v4-flash"}'
+
+    def _failed_400(self):
+        return {
+            "final_response": self._ENVELOPE,
+            "failed": True,
+            "error": self._ENVELOPE,
+            "api_calls": 1,
+        }
+
+    def test_long_history_rewrites_envelope_to_session_too_large(self):
+        response = _normalize_empty_agent_response(
+            self._failed_400(), self._ENVELOPE, history_len=138,
+        )
+        assert "context window" in response.lower()
+        assert "/compact" in response
+        assert self._ENVELOPE not in response
+
+    def test_telegram_sanitizer_keeps_overflow_rewrite(self):
+        from gateway.run import _sanitize_gateway_final_response
+
+        rewritten = _normalize_empty_agent_response(
+            self._failed_400(), self._ENVELOPE, history_len=138,
+        )
+        delivered = _sanitize_gateway_final_response("telegram", rewritten)
+        assert "/compact" in delivered
+        assert "provider failed after retries" not in delivered.lower()

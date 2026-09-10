@@ -28,13 +28,13 @@ const DRAWER_SELECTOR = '[data-slot="composer-completion-drawer"]'
  * untinted frost on screen — a grey blurred rectangle that pops out at the end
  * instead of a band fading away.
  *
- * Engaged means the caret is in the composer, and it is the SAME gate the
- * `[data-hud-glass]` scrim runs on — the frost is what that scrim is painted
- * over, so a frost the scrim doesn't cover is bare material. The caller used
- * to widen this to "recent or held", which put the window's material up for
- * the whole of a turn while the scrim stayed down: on a light theme that is a
- * white slab under the band's unconditionally white ink, and there is nothing
- * to read. One gate, or the two drift again.
+ * Engaged means the caret is in the composer. Native frost stays on that
+ * gate even though the CSS sheet also paints while `data-hud-recent` is set:
+ * the sheet is opaque theme paper now, so unfocused streaming does not need
+ * vibrancy. Raising frost without the user sitting down in the composer is
+ * what washed unfocused HUD text into the desktop. The caller used to widen
+ * frost to "recent or held", which put the window's material up for the whole
+ * of a turn. Frost stays focus-only.
  *
  * Merely holding window focus does not count: activating a window restores
  * focus to whatever had it last, so grabbing the bar to drag the HUD would

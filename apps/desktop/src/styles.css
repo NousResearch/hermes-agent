@@ -2663,14 +2663,13 @@ button[data-slot='aui_msg-reactions'] svg {
 
      No fill of its own — the sheet is its own layer ([data-hud-glass]) so it
      can animate independently of the text. */
-  inset: auto var(--hud-band-inset) var(--hud-bar-height, var(--composer-fallback-height)) var(--hud-band-inset) !important;
-  height: var(--hud-band-height, 0px) !important;
+  inset: 0 0 var(--hud-bar-height, var(--composer-fallback-height)) 0 !important;
+  height: auto !important;
   width: auto !important;
   max-width: none !important;
   flex: none !important;
   border: 0 !important;
-  /* Rounded away from the bar, square where it meets it. */
-  border-radius: 0.75rem 0.75rem 0 0;
+  border-radius: 0;
   background: transparent !important;
   /* Three opacity states: gone at rest, half strength when a turn is recent or
      you've just let go of the composer (there to glance at, not to demand
@@ -2719,20 +2718,28 @@ button[data-slot='aui_msg-reactions'] svg {
    no blur to separate the band from what it lies over, the sheet is the only
    thing keeping half-opacity text off someone else's UI. Fade the words, keep
    the paper. */
-/* A DARK scrim, not the theme's card. The band's ink is white unconditionally
-   (see above), so the sheet it lands on has to be dark in every theme —
-   `--dt-card` is near-white on a light theme and would put white text on a white
-   panel. This is the overlay's own surface, the way a game's chat backdrop is
-   its own thing rather than a piece of the desktop UI. */
+/* Opaque theme paper, not a dark overlay scrim. Forced white ink on a 62%
+   dark sheet mixed with the desktop (and macOS vibrancy) is what washed
+   unfocused HUD text the wrong colour. Game overlay keeps the translucent
+   scrim below. */
 [data-hud-shell] [data-hud-glass] {
   position: absolute;
-  right: var(--hud-band-inset);
+  /* Flush to the window. An inset sheet left gutters of empty transparent
+     chrome — and because the window is taller than the message rows, a
+     content-sized band left a hole under the last line where the desktop
+     (and whatever serif headline sat there) showed through. The card is
+     the window below the bar. */
+  top: 0;
+  right: 0;
   bottom: var(--hud-bar-height, var(--composer-fallback-height));
-  left: var(--hud-band-inset);
+  left: 0;
   z-index: 0;
   pointer-events: none;
-  border-radius: 0.75rem 0.75rem 0 0;
-  background: rgb(12 14 18 / 0.62);
+  border-radius: 0;
+  /* Opaque theme paper. A 62% dark scrim mixed with the desktop behind it
+     and macOS's always-active vibrancy, which is why unfocused HUD text
+     came out the wrong colour — washed, grey-green, not the theme. */
+  background: var(--ui-bg-elevated);
   /* Slides down behind the bar as it fades. A TRANSFORM, not height: it is
      composited, so it stays smooth where animating height re-lays-out the panel
      every frame and looked coarse — and it leaves the box alone, which matters
@@ -2740,10 +2747,10 @@ button[data-slot='aui_msg-reactions'] svg {
      messages spilled out of a zero-height box. Translate rather than scale: the
      panel keeps its proportions on the way out instead of being squashed.
  
-     The height below still tracks the transcript; only the offset animates on
-     exit, and it finishes ahead of the fade so the panel has left while the last
-     of the text is still going. */
-  height: var(--hud-band-height, 0px);
+     Height is auto so the card fills to the bar instead of shrinking to the
+     message rows (that leftover hole showed the desktop under the last
+     line). Only the offset animates on exit. */
+  height: auto;
   translate: 0 var(--hud-exit-shift, 2.5rem);
   opacity: 0;
   transform-origin: bottom center;
@@ -2752,15 +2759,17 @@ button[data-slot='aui_msg-reactions'] svg {
     translate var(--hud-collapse) var(--hud-ease-exit),
     scale var(--hud-dim) var(--hud-ease-enter),
     filter var(--hud-dim) var(--hud-ease-enter),
-    height var(--hud-reveal) var(--hud-ease-enter),
     background-color var(--hud-dim) var(--hud-ease-enter);
 }
 
-/* The sheet is FOCUS-ONLY. A turn landing brings the text up (see
-   `composer-bounds` below) but must not paint a panel behind it: over a game
-   the tinted sheet is the thing that reads as a desktop window parked on the
-   action, and it is most of the HUD's rectangle. Streaming shows words on the
-   game; sitting down to read promotes the surface. */
+/* Desktop sheet rides the band: visible while a turn is recent/held OR while
+   the composer has the caret. Focus-only left the text up (data-hud-recent)
+   with the paper gone — white overlay ink on whatever was behind the window.
+
+   Games are excluded: they pin data-hud-recent for the whole overlay session
+   (useHudHeld), and a sheet that follows recent would park a panel on the
+   action. Over a game the sheet stays focus-only, same as before. */
+[data-hud-shell][data-hud-recent]:not([data-hud-game]) [data-hud-glass],
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
   translate: none;
   opacity: 1;
@@ -2777,10 +2786,9 @@ button[data-slot='aui_msg-reactions'] svg {
    transparent window that owns its own backgrounds (isChatWindow). Two flags,
    because the HUD wants the setting without the rewrite. */
 :root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
-  /* Same dark scrim under Glass. The docked thread's `--ui-bg-chrome` follows
-     the theme and goes near-white on a light one, which is the wrong paper for
-     this band's white ink — the HUD is over a game, not inside the app. */
-  background: rgb(12 14 18 / 0.55);
+  /* Same opaque theme paper under Glass. The previous 55% dark scrim plus
+     live vibrancy is what washed the unfocused HUD into the desktop. */
+  background: var(--ui-bg-elevated);
 }
 
 /* The band spans the window edge to edge under glass. The 8px side inset keeps
@@ -2803,18 +2811,19 @@ button[data-slot='aui_msg-reactions'] svg {
    radius set here unqualified wins everywhere and rounds the corners that meet
    the bar while squaring the free ones. */
 :root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
-  border-radius: 0.75rem 0.75rem 0 0;
+  border-radius: 0;
 }
 
 :root[data-hermes-glass-on] [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
-  border-radius: 0 0 0.75rem 0.75rem;
+  border-radius: 0;
 }
 
-/* Engaged, the field steps up the same way the docked thread's does — but
-   never below the resting tint, so a high lever cannot make focusing the
-   composer paint MORE transparent than glancing at it. */
-:root[data-hermes-glass-on] [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
-  background: rgb(12 14 18 / 0.72);
+/* Engaged, the field stays the same opaque paper — focusing must not punch
+   a hole back through to the desktop. Games are excluded so overlay ink
+   cannot land on --ui-bg-elevated. */
+:root[data-hermes-glass-on] [data-hud-shell][data-hud-recent]:not([data-hud-game]) [data-hud-glass],
+:root[data-hermes-glass-on] [data-hud-shell]:not([data-hud-game]):has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+  background: var(--ui-bg-elevated);
 }
 
 /* Engaged means the caret is in the composer, not merely that the window holds
@@ -2823,16 +2832,17 @@ button[data-slot='aui_msg-reactions'] svg {
    to use it, and the transcript flew open every time it was moved. Hit-testing
    below stays on :focus-within — being permissive about what can be clicked is
    harmless, being permissive about what lights up is not. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
-  background: rgb(12 14 18 / 0.82);
+[data-hud-shell][data-hud-recent]:not([data-hud-game]) [data-hud-glass],
+[data-hud-shell]:not([data-hud-game]):has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+  background: var(--ui-bg-elevated);
 }
 
 /* Flipped, the sheet hangs from the bar instead of standing on it. */
 [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
   top: var(--hud-bar-height, var(--composer-fallback-height));
-  bottom: auto;
+  bottom: 0;
   --hud-exit-shift: -2.5rem;
-  border-radius: 0 0 0.75rem 0.75rem;
+  border-radius: 0;
 }
 
 /* WHAT ANSWERS THE CURSOR — and, because `useHudClickThrough` hands the window
@@ -2906,38 +2916,28 @@ button[data-slot='aui_msg-reactions'] svg {
   transition-timing-function: var(--hud-ease-enter);
 }
 
-/* THE BAND IS ALWAYS LIGHT-ON-DARK. Unconditional, and that is the point: the
-   transcript here is either bare text over another app or text on a translucent
-   scrim, and in both cases the theme's near-black body ink is the wrong ink.
-   Every earlier cut gated this on something — focus, then `data-hud-game` — and
-   every gate produced a state where the words went black on a dark game. A
-   HUD's legibility cannot depend on a condition being evaluated correctly; it
-   is a property of the surface. The scrim below is darkened to match, so white
-   is right whether the sheet is up or not. */
+/* THE BAND USES THEME INK on the opaque card. Forced white overlay text was
+   right for bare words over a game and wrong everywhere else — unfocused HUD
+   inherited it while the sheet was down, so the transcript went pale against
+   whatever was behind the window. Game overlay keeps the overlay ink below. */
 [data-hud-shell] [data-slot='composer-bounds'] {
+  color: var(--ui-text-primary);
+}
+
+[data-hud-shell][data-hud-game] [data-slot='composer-bounds'] {
   --hud-overlay-ink: #fff;
-  /* WoW-epic gold: reads as "yours" against white agent text and survives being
-     over a dark cave or a bright loading screen. */
   --hud-overlay-ink-user: #ffcf6b;
   color: var(--hud-overlay-ink);
   text-shadow:
     0 1px 2px rgb(0 0 0 / 0.9),
     0 0 6px rgb(0 0 0 / 0.55);
-  /* Ramp the scrollback out at the top instead of guillotining it against the
-     bar. With no sheet to end on, a hard edge reads as text sliced off; the
-     fade says "there is more above" the way a game's chat log does. */
   --hud-top-fade: 3.5rem;
 }
 
-/* The mask has to ride the SCROLLER, not the band. `composer-bounds` is a
-   static box: the rows scroll inside the thread viewport nested in it, so a
-   mask there ramps over the band's own first 3.5rem while the overflowing text
-   is already ABOVE that box (measured: rows at -117px, -81px, -55px relative
-   to the band, and `scrollHeight === clientHeight` — nothing overflows the
-   band itself). The viewport clips it hard before the band's mask is ever
-   consulted, which is why raising the value changed nothing on screen. Masking
-   the viewport puts the ramp where the clipping actually happens. */
-[data-hud-shell] [data-slot='aui_thread-viewport'] {
+/* The mask has to ride the SCROLLER, not the band. Only over a game, where
+   the sheet stays down and text sits on the action — an opaque card does not
+   need a fade-to-desktop. */
+[data-hud-shell][data-hud-game] [data-slot='aui_thread-viewport'] {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hud-top-fade, 3.5rem));
   mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hud-top-fade, 3.5rem));
 }
@@ -2946,7 +2946,7 @@ button[data-slot='aui_msg-reactions'] svg {
    markdown, timestamps — inherits it too, or the ink change reaches the
    wrapper and nothing you can actually read. Widgets carve themselves out by
    resetting the variable (see below), so this stays one rule. */
-[data-hud-shell] [data-slot='composer-bounds'] * {
+[data-hud-shell][data-hud-game] [data-slot='composer-bounds'] * {
   color: var(--hud-overlay-ink) !important;
 }
 
@@ -2994,8 +2994,8 @@ button[data-slot='aui_msg-reactions'] svg {
    ink so it costs no surface. Warm gold rather than the theme's accent: it has
    to hold up over whatever is behind the window, and a blue or purple lands on
    top of exactly the palette most games use for their own UI. */
-[data-hud-shell] :is([data-slot='aui_user-message-root'], .composer-human-message),
-[data-hud-shell] :is([data-slot='aui_user-message-root'], .composer-human-message) * {
+[data-hud-shell][data-hud-game] :is([data-slot='aui_user-message-root'], .composer-human-message),
+[data-hud-shell][data-hud-game] :is([data-slot='aui_user-message-root'], .composer-human-message) * {
   color: var(--hud-overlay-ink-user) !important;
 }
 
@@ -3127,8 +3127,9 @@ button[data-slot='aui_msg-reactions'] svg {
 /* Flipped, the band hangs from the bar instead of standing on it. */
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-bounds'] {
   top: var(--hud-bar-height, var(--composer-fallback-height)) !important;
-  bottom: auto !important;
-  border-radius: 0 0 0.75rem 0.75rem;
+  bottom: 0 !important;
+  height: auto !important;
+  border-radius: 0;
 }
 
 /* …so the edge it falls back from is the bar's, which is now above it. */
@@ -3383,6 +3384,20 @@ button[data-slot='aui_msg-reactions'] svg {
 [data-hud-shell][data-hud-game] [data-slot='composer-dock']:hover {
   opacity: 1;
   transition: opacity var(--hud-reveal) var(--hud-ease-enter);
+}
+
+/* Over a game the sheet is a translucent scrim so the action stays visible
+   under the log. These selectors must outrank the opaque-paper
+   recent/focus/glass-on rules — otherwise overlay ink (#fff) lands on
+   --ui-bg-elevated. Games also pin data-hud-recent, so the glass-on +
+   recent override is the steady state, not an edge case. */
+[data-hud-shell][data-hud-game] [data-hud-glass],
+[data-hud-shell][data-hud-game][data-hud-recent] [data-hud-glass],
+[data-hud-shell][data-hud-game]:has([data-slot='composer-rich-input']:focus) [data-hud-glass],
+:root[data-hermes-glass-on] [data-hud-shell][data-hud-game] [data-hud-glass],
+:root[data-hermes-glass-on] [data-hud-shell][data-hud-game][data-hud-recent] [data-hud-glass],
+:root[data-hermes-glass-on] [data-hud-shell][data-hud-game]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+  background: rgb(12 14 18 / 0.62);
 }
 
 /* Long-press drag armed — the whole bar is the handle until release. */

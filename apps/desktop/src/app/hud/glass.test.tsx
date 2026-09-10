@@ -33,10 +33,9 @@ afterEach(() => {
 Object.assign(window, { hermesDesktop: { hud: { setFrost } } })
 
 describe('useHudGlass', () => {
-  // The bug this replaced: the caller widened the gate to "recent or held", so
-  // a turn merely running raised the window's material while the scrim that is
-  // supposed to be painted over it — focus-gated in styles.css — stayed down.
-  // On a light theme that is a white slab under the band's white ink.
+  // Frost stays focus-only even though the CSS sheet also paints on
+  // `data-hud-recent`. Native vibrancy under unfocused streaming is what
+  // washed HUD text into the desktop; the opaque card does not need it.
   it('leaves the window bare while a turn runs with the composer unfocused', () => {
     render(<Harness backing />)
 

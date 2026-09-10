@@ -145,12 +145,15 @@ function useRecentActivity(): [boolean, () => void] {
  *   chat frame, and a chat frame that erases itself a second after each line is
  *   useless: you look back at it when there is a lull in the game, not when the
  *   text happens to be fresh. This is what every in-game chat log does, and it
- *   costs nothing here because the band over a game is bare text with no panel.
+ *   costs nothing here because the band over a game is overlay text: the CSS
+ *   sheet stays down until the composer is focused, and then it is a
+ *   translucent scrim rather than the desktop HUD's opaque card.
  *
  * Pinning on busy was deliberately avoided while the band brought its tinted
  * sheet up with it — that put an opaque panel across the screen for as long as
- * the agent worked. The sheet is a translucent scrim now, so a held band is
- * legible text rather than a slab.
+ * the agent worked. On the desktop HUD the sheet is the window's own card, so
+ * a held band is readable theme text on paper rather than overlay ink on
+ * someone else's UI. Over a game, hold still means overlay text, not a card.
  */
 function useHudHeld(gameUnder: boolean): boolean {
   const awaiting = useStore($activeSessionAwaitingInput)

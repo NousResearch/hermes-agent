@@ -1530,6 +1530,8 @@ export const en: Translations = {
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
       tierOfficial: 'official',
       tierCommunity: 'community',
+      removedBadge: 'removed',
+      removedProvenance: (reason: string) => `Pulled from the Hermes catalog: ${reason}`,
       updateToPin: (sha: string) => `Update to ${sha}`,
       updateFailed: (name: string) => `Could not update ${name}`,
       updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`

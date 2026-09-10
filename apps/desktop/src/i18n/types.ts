@@ -1339,6 +1339,8 @@ export interface Translations {
       pinnedBadge: (sha: string) => string
       tierOfficial: string
       tierCommunity: string
+      removedBadge: string
+      removedProvenance: (reason: string) => string
       updateToPin: (sha: string) => string
       updateFailed: (name: string) => string
       updated: (name: string) => string

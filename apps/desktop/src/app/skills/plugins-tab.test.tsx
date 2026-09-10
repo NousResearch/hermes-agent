@@ -217,6 +217,26 @@ describe('PluginsTab catalog UX', () => {
     expect(screen.getByRole('button', { name: `Update to ${'b'.repeat(8)}` })).toBeTruthy()
   })
 
+  it('shows a removed badge for a still-installed, catalog-recalled plugin', () => {
+    // CLI (`hermes plugins list`) and the web dashboard already surface this kill-list
+    // recall notice for a still-installed plugin; the desktop row had no equivalent.
+    $agentPlugins.set([
+      {
+        description: '',
+        key: 'killed-plugin',
+        name: 'killed-plugin',
+        removed_reason: 'malware found in a dependency',
+        source: 'git',
+        status: 'enabled',
+        version: '1.0.0'
+      }
+    ])
+
+    render(<PluginsTab profile={null} />)
+
+    expect(screen.getByText('removed')).toBeTruthy()
+  })
+
   it('re-pins through plugins.manage update when the chip is clicked', async () => {
     $agentPlugins.set([
       {

@@ -12,19 +12,6 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 _CANCELLED = -1
 
-# pip name → import name mapping for packages where they differ
-_IMPORT_NAMES = {
-    "honcho-ai": "honcho",
-    "mem0ai": "mem0",
-    "hindsight-client": "hindsight_client",
-    "hindsight-all": "hindsight"}
-
-
-def _provider_extras(provider_name: str, manifest: dict, plugin_dir=None) -> list[str]:
-    """The declared core extra; manifest requirements join the staged union."""
-    declared = manifest.get("extra")
-    return [declared] if isinstance(declared, str) and declared else []
-
 
 def _curses_select(
     title: str, items: list[tuple[str, str]], default: int = 0, *, cancel_returns: int | None = None
@@ -65,49 +52,40 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 
 
 def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
-    """Install pip dependencies declared in ``plugin.yaml``.
+    """Prepare provider dependencies without narrowing the active plugin union.
 
-    With ``force`` every declared dependency goes to the installer even if it imports (the resolver
-    no-ops when nothing drifted) — how ``hermes update`` heals a provider after a venv rebuild.
-
-    When ``force`` is true, every declared dependency is handed to the installer even if its import
-    currently succeeds — the resolver then reinstalls anything missing or version-drifted and no-ops on
-    satisfied ranges. This is how ``hermes update`` heals the active memory provider after a venv
-    rebuild/sync removed or downgraded its bridge packages (#53272, #70636).
+    A new provider is not selected in config yet. Include its directory with
+    every active member, and propagate failure before setup saves it.
     """
     import subprocess
+
+    import pm
+    from hermes_cli.plugins_admission import candidate_member_dirs
+    from hermes_cli.plugins_cmd import PluginOperationError, _read_manifest_for_install
+    from pm.package import InstallError
+    from pm.workspace import _is_member_candidate
     from plugins.memory import find_provider_dir
 
     plugin_dir = find_provider_dir(provider_name)
     if not plugin_dir:
         return
-    yaml_path = plugin_dir / "plugin.yaml"
-    if not yaml_path.exists():
-        return
     try:
-        import yaml
-        with open(yaml_path, encoding="utf-8-sig") as f:
-            meta = yaml.safe_load(f) or {}
-    except Exception:
-        return
+        meta = _read_manifest_for_install(plugin_dir)
+        member = _is_member_candidate(plugin_dir)
+    except (PluginOperationError, OSError, ValueError) as exc:
+        raise InstallError(provider_name, str(exc)) from exc
 
-    extras = _provider_extras(provider_name, meta, plugin_dir=plugin_dir)
-    if not extras:
-        return
-
-    import pm
-
+    extra = meta.get("extra")
+    extras = [extra] if isinstance(extra, str) and extra else []
     missing = [e for e in extras if force or not pm.available(e)]
-    if not missing:
+    if not missing and not member:
         return
 
-    print(f"\n  Installing dependencies: {', '.join(missing)}")
-    try:
-        pm.sync_venv(missing, explicit=True)
-        print(f"  ✓ Installed {', '.join(missing)}")
-    except Exception as e:
-        print(f"  ⚠ Install failed: {e}")
-        print("  Run manually: hermes pm install")
+    print(f"\n  Preparing dependencies for {provider_name}")
+    # Without a proposed home, selection retains every configured member.
+    inputs = {"plugin_dirs": lambda: candidate_member_dirs((), extra_dirs=[plugin_dir])} if member else {}
+    pm.sync_venv(missing, explicit=True, **inputs)
+    print(f"  ✓ Dependencies prepared for {provider_name}")
 
     # Also show external (non-pip) dependencies that are missing.
     for dep in meta.get("external_dependencies", []):
@@ -432,10 +410,17 @@ def cmd_status(args) -> None:
 def memory_command(args) -> None:
     """Route memory subcommands."""
     if getattr(args, "memory_command", None) == "setup":
+        from pm.package import InstallError
+
         provider = getattr(args, "provider", None)
-        if provider:
-            cmd_setup_provider(provider)
-        else:
-            cmd_setup(args)
+        try:
+            if provider:
+                cmd_setup_provider(provider)
+            else:
+                cmd_setup(args)
+        except InstallError as exc:
+            print(f"Memory setup failed: {exc}", file=sys.stderr)
+            print("Correct the dependency error and retry setup.", file=sys.stderr)
+            raise SystemExit(1) from exc
     else:
         cmd_status(args)

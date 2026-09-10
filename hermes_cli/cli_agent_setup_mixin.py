@@ -594,14 +594,6 @@ class CLIAgentSetupMixin:
                 seed_credits_at_session_start(self.agent)
             except Exception:
                 pass
-
-            # Restore conversation history if resuming
-            if self._resumed and self._session_db and not self.conversation_history:
-                if not self._load_resumed_history_late():
-                    return False
-            if self.conversation_history:
-                self.agent.messages = self.conversation_history
-                self.agent._session_messages = self.conversation_history
             self._active_agent_route_signature = _route_signature(effective_model, runtime)
 
             # Force-create DB row on /title intent, then apply title.

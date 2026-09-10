@@ -416,6 +416,93 @@ class TestNormalizeConverseResponse:
         assert blocks[2]["reasoningContent"]["redactedContent"] == b"r2"
 
 
+class TestReasoningNonThinkingModels:
+    """Regression tests for reasoningContent stripping on non-thinking-capable Bedrock models.
+
+    Covers:
+      - meta.llama4-* and openai.gpt-oss-* must not receive reasoningContent blocks
+      - _replay_ordered_blocks must use 'reasoningText' (not 'text') as the inner key
+      - _convert_content_to_converse must map type='thinking' parts to reasoningContent
+      - claude-sonnet-4-6 reasoning blocks are preserved unchanged
+    """
+
+    def test_llama_strips_reasoning_content_blocks(self):
+        """_strip_reasoning_blocks removes reasoningContent from assistant turns for Llama."""
+        from agent.bedrock_adapter import _strip_reasoning_blocks
+
+        converse_messages = [
+            {"role": "user", "content": [{"text": "think about this"}]},
+            {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": "Let me reason through this."}},
+                {"text": "The answer is 42."},
+            ]},
+            {"role": "user", "content": [{"text": "now explain"}]},
+        ]
+        stripped = _strip_reasoning_blocks(converse_messages)
+        assistant_turn = next(m for m in stripped if m["role"] == "assistant")
+        assert not any("reasoningContent" in b for b in assistant_turn["content"]), (
+            "reasoningContent blocks must be stripped for non-thinking models"
+        )
+        assert any(b.get("text") == "The answer is 42." for b in assistant_turn["content"])
+
+    def test_strip_reasoning_blocks_placeholder_when_only_reasoning(self):
+        """If stripping leaves an empty content list, a placeholder is inserted."""
+        from agent.bedrock_adapter import _strip_reasoning_blocks
+
+        converse_messages = [
+            {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": "only reasoning, no text"}},
+            ]},
+        ]
+        stripped = _strip_reasoning_blocks(converse_messages)
+        assert stripped[0]["content"], "content must not be empty after stripping"
+        assert "reasoningContent" not in stripped[0]["content"][0]
+
+    def test_replay_ordered_blocks_uses_reasoningText_key(self):
+        """_replay_ordered_blocks must emit reasoningContent.reasoningText (not .text)."""
+        from agent.bedrock_adapter import _replay_ordered_blocks
+
+        blocks = _replay_ordered_blocks([
+            {"reasoningContent": {"text": "step-by-step reasoning"}},
+            {"text": "Final answer."},
+        ])
+        reasoning_blocks = [b for b in blocks if "reasoningContent" in b]
+        assert len(reasoning_blocks) == 1
+        rc = reasoning_blocks[0]["reasoningContent"]
+        assert "reasoningText" in rc, (
+            f"Expected 'reasoningText' key, got: {list(rc.keys())}"
+        )
+        assert "text" not in rc, (
+            "Must not use the legacy 'text' key — Bedrock Converse rejects it"
+        )
+        assert rc["reasoningText"] == "step-by-step reasoning"
+
+    def test_convert_content_thinking_part_maps_to_reasoningContent(self):
+        """type='thinking' content parts must map to reasoningContent.reasoningText blocks."""
+        from agent.bedrock_adapter import _convert_content_to_converse
+
+        parts = [
+            {"type": "thinking", "text": "internal monologue"},
+            {"type": "text", "text": "visible response"},
+        ]
+        blocks = _convert_content_to_converse(parts)
+        reasoning = [b for b in blocks if "reasoningContent" in b]
+        assert len(reasoning) == 1
+        assert reasoning[0]["reasoningContent"]["reasoningText"] == "internal monologue"
+        text_blocks = [b for b in blocks if "text" in b]
+        assert any(b["text"] == "visible response" for b in text_blocks)
+
+    def test_sonnet_46_preserves_reasoning_blocks_in_build_converse_kwargs(self):
+        """build_converse_kwargs must not strip reasoningContent for Sonnet 4.6."""
+        from agent.bedrock_adapter import convert_messages_to_converse, _model_supports_extended_thinking
+
+        assert _model_supports_extended_thinking("global.anthropic.claude-sonnet-4-6")
+        assert _model_supports_extended_thinking("anthropic.claude-sonnet-4-6")
+        assert not _model_supports_extended_thinking("meta.llama4-maverick-17b-instruct-v1:0")
+        assert not _model_supports_extended_thinking("openai.gpt-oss-120b-1:0")
+        assert not _model_supports_extended_thinking("")
+
+
 # ---------------------------------------------------------------------------
 # Streaming response normalization
 # ---------------------------------------------------------------------------

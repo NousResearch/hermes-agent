@@ -329,6 +329,40 @@ def _model_supports_prompt_cache(model_id: str) -> bool:
     return any(pattern in model_id.lower() for pattern in _CACHE_POINT_PATTERNS)
 
 
+# Extended-thinking / reasoning is only supported by specific Anthropic Claude models.
+# All other models (Llama, GPT-OSS, Nova, Mistral, etc.) reject reasoningContent blocks
+# in Converse calls with a ValidationException.  Default to False for unknown models.
+_EXTENDED_THINKING_PATTERNS = ("claude-sonnet-4-6", "claude-4.6")
+
+
+def _model_supports_extended_thinking(model_id: str) -> bool:
+    """True only for Claude models that accept extended-thinking / reasoningContent blocks."""
+    slug = model_id.lower()
+    return any(pattern in slug for pattern in _EXTENDED_THINKING_PATTERNS)
+
+
+def _strip_reasoning_blocks(converse_messages: List[Dict]) -> List[Dict]:
+    """Remove ``reasoningContent`` blocks from all assistant turns in a Converse message list.
+
+    Called by ``build_converse_kwargs`` when the target model does not support extended
+    thinking (e.g. ``meta.llama4-*``, ``openai.gpt-oss-*``).  Bedrock rejects the entire
+    Converse call with a ``ValidationException`` if any ``reasoningContent`` block reaches
+    a model that doesn't understand it — this strips them transparently so no caller of
+    ``convert_messages_to_converse`` needs to know about the target model.
+
+    If stripping empties a content list, a placeholder text block is inserted — Bedrock
+    also rejects messages with an empty ``content`` array.
+    """
+    result = []
+    for msg in converse_messages:
+        if msg.get("role") != "assistant":
+            result.append(msg)
+            continue
+        filtered = [b for b in msg.get("content", []) if "reasoningContent" not in b]
+        result.append({"role": "assistant", "content": filtered or [dict(_PLACEHOLDER_BLOCK)]})
+    return result
+
+
 # --- Server-verdict cachePoint suppression ---
 # Bedrock's cachePoint rule is per-family AND per-field (Nova accepts it in system/messages but hard-fails
 # on toolConfig.tools) and any static table drifts, so when Bedrock names a placement as unpermitted we
@@ -477,6 +511,13 @@ def _convert_content_to_converse(content) -> List[Dict]:
             blocks.append({"text": _safe_text(part)})
         elif isinstance(part, dict) and part.get("type", "") == "text":
             blocks.append({"text": _safe_text(part.get("text", ""))})
+        elif isinstance(part, dict) and part.get("type", "") == "thinking":
+            # Extended-thinking block arriving in OpenAI list format (e.g. from an
+            # Anthropic-format response normalised through the gateway).  Map it to
+            # the Bedrock reasoningContent shape so it survives the round-trip.
+            text = (part.get("text") or part.get("thinking") or "").strip()
+            if text:
+                blocks.append({"reasoningContent": {"reasoningText": text}})
         elif isinstance(part, dict) and part.get("type", "") == "image_url":
             image_url = part.get("image_url", {})
             url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -516,7 +557,7 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
             reasoning = block["reasoningContent"]
             if not isinstance(reasoning, dict):
                 continue
-            replay = {"text": reasoning["text"]} if isinstance(reasoning.get("text"), str) else {}
+            replay = {"reasoningText": reasoning["text"]} if isinstance(reasoning.get("text"), str) else {}
             encoded = reasoning.get("redactedContentBase64")
             if isinstance(encoded, str) and encoded:
                 redacted = _decode_redacted(encoded)
@@ -783,6 +824,8 @@ def build_converse_kwargs(
     second-newest message (survives as the tail grows — mirrors Anthropic system_and_3), each only if the
     model supports caching and Bedrock has not rejected that placement."""
     system_prompt, converse_messages = convert_messages_to_converse(messages)
+    if not _model_supports_extended_thinking(model):
+        converse_messages = _strip_reasoning_blocks(converse_messages)
     cache_at = {p for p in CACHE_POINT_PLACEMENTS if cache_point_allowed(model, p)} if _model_supports_prompt_cache(model) else set()
     inference_config: Dict[str, Any] = {} if max_tokens is None else {"maxTokens": max_tokens}
     kwargs: Dict[str, Any] = {"modelId": model, "messages": converse_messages, "inferenceConfig": inference_config}

@@ -1122,6 +1122,87 @@ class TestTruncateMessage:
                 "No continuation chunk reopened with language tag"
             )
 
+    def test_pipe_table_kept_intact_when_split_lands_mid_table(self):
+        """A split that lands BETWEEN data rows must move the whole table
+        (header + separator + all rows) into the next chunk instead of
+        cutting it in half.
+
+        Regression: the 4.0 factor-attribution table in the pre-market
+        briefing (8 rows x 5 cols) was split mid-table — chunk 1 ended on a
+        truncated data row, chunk 2 started with an orphaned row — and
+        neither half rendered as a table in Feishu.
+        """
+        adapter = self._adapter()
+        rows = [
+            "| **反转因子** | 上证5日-0.1% | 中性 | ★★ | 驱动证据文本 |",
+            "| **情绪因子** | 涨跌比3.02 | 过热回落中 | ★★★★ | 驱动证据文本 |",
+            "| **资金流因子** | 全市场净流出-95亿 | 离场 | ★★★★ | 驱动证据文本 |",
+            "| **波动率因子** | 21.09% | 正常偏高 | ★★★ | 驱动证据文本 |",
+            "| **动量因子** | 20日-4.53% | 中性偏弱 | ★★ | 驱动证据文本 |",
+            "| **价值因子** | PE中位数39.8 | 估值偏高 | ★★★ | 驱动证据文本 |",
+            "| **流动性因子** | 量比0.91 | 缩量 | ★★★ | 驱动证据文本 |",
+            "| **板块因子** | 分化度7.69 | 结构性行情 | ★★★★ | 驱动证据文本 |",
+        ]
+        table = (
+            "### 4.0 因子归因\n\n"
+            "| 因子 | 量化值 | 方向 | 强度 | 驱动证据 |\n"
+            "|:----|:-------|:----|:----:|:--------- |\n"
+            + "\n".join(rows)
+            + "\n"
+        )
+        content = (
+            "盘前摘要。\n" * 50
+            + table
+            + "\n\n### 4.1 对账\n\n"
+            + "对账文本。\n" * 50
+        )
+
+        # Sweep max_length so several split points land inside the table.
+        # For every split, the whole table must end up in exactly one chunk.
+        # (max_length must exceed the table's own length — a table bigger
+        # than the chunk budget physically cannot be kept together, same
+        # as any other content.)
+        protected = 0
+        for max_length in range(500, 1000, 25):
+            chunks = adapter.truncate_message(content, max_length=max_length)
+            if len(chunks) < 2:
+                continue
+            table_chunks = [
+                i for i, c in enumerate(chunks) if "| 因子 | 量化值" in c
+            ]
+            assert len(table_chunks) == 1, (
+                f"table header split across chunks at max_length={max_length}"
+            )
+            joined = chunks[table_chunks[0]]
+            for row in rows:
+                assert row in joined, (
+                    f"row {row[:20]!r} separated from header "
+                    f"at max_length={max_length}"
+                )
+            protected += 1
+        assert protected >= 3, "sweep never produced a multi-chunk split"
+
+    def test_pipe_table_kept_intact_when_split_lands_after_separator(self):
+        """A split right after the separator line (header+separator in the
+        current chunk, data rows orphaned in the next) also keeps the whole
+        table together in the next chunk."""
+        adapter = self._adapter()
+        table = (
+            "| 名称 | 数值 |\n"
+            "|:----|:----:|\n"
+            "| A | 1 |\n"
+            "| B | 2 |\n"
+        )
+        content = "说明文字。\n" * 40 + table + "\n" + "后续内容。\n" * 40
+        chunks = adapter.truncate_message(content, max_length=300)
+        assert len(chunks) >= 2
+        owners = set()
+        for ci, c in enumerate(chunks):
+            for marker in ("| 名称 | 数值 |", "| A | 1 |", "| B | 2 |"):
+                if marker in c:
+                    owners.add(ci)
+        assert len(owners) == 1, f"table split across chunks: owners={owners}"
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay

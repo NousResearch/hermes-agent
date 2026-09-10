@@ -2992,6 +2992,7 @@ _PAYMENT_KEYWORDS = (
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
     "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "weekly usage limit", "weekly limit",
+    "weekly (7-day) usage limit",
 )
 
 

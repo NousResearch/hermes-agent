@@ -1419,9 +1419,39 @@ class TestIsPaymentError:
         exc.status_code = 404
         assert _is_payment_error(exc) is False
 
+    def test_403_generic_forbidden_is_not_payment(self):
+        """Generic 403 without billing/quota keywords stays fail-open (#107067)."""
+        exc = Exception("Error code: 403 - {'error': {'type': 'permission_error'}}")
+        exc.status_code = 403
+        assert _is_payment_error(exc) is False
 
+    def test_kimi_weekly_7day_usage_limit_403_is_payment(self):
+        exc = Exception(
+            "Error code: 403 - {'error': {'type': 'permission_error', "
+            "'message': \"You've reached your weekly (7-day) usage limit. "
+            "Your quota will reset when the current 7-day window ends.\"}, "
+            "'type': 'error'}"
+        )
+        exc.status_code = 403
+        assert _is_payment_error(exc) is True
 
+    def test_weekly_usage_limit_403_still_payment(self):
+        """Existing exact substring must keep matching after the Kimi phrase add."""
+        exc = Exception("You've reached your weekly usage limit.")
+        exc.status_code = 403
+        assert _is_payment_error(exc) is True
 
+    def test_500_weekly_7day_usage_limit_is_not_payment(self):
+        """Weekly keywords must not newly classify statuses outside the payment gate."""
+        exc = Exception("You've reached your weekly (7-day) usage limit.")
+        exc.status_code = 500
+        assert _is_payment_error(exc) is False
+
+    def test_403_bare_weekly_is_not_payment(self):
+        """Bare 'weekly' without a quota phrase must not trip payment matching."""
+        exc = Exception("Weekly digest is temporarily unavailable")
+        exc.status_code = 403
+        assert _is_payment_error(exc) is False
 
     # ── Daily / monthly quota exhaustion (#26803) ────────────────────────────
 

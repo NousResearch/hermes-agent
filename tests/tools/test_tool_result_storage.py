@@ -942,7 +942,11 @@ class TestEnforceTurnBudgetEdgeCases:
         assert result[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
 
     def test_budget_enforcement_logs_persisted(self):
-        """Verify the logging path for budget enforcement is exercised."""
+        """The budget-enforcement log line itself must fire.
+
+        maybe_persist_tool_result already logs on the persist path, so a bare
+        ``logger.info.called`` cannot distinguish the enforcement call from the
+        ordinary persist call; assert the exact enforcement call instead."""
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
         msgs = [
@@ -950,5 +954,7 @@ class TestEnforceTurnBudgetEdgeCases:
         ]
         with patch("tools.tool_result_storage.logger") as mock_logger:
             enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
-            # Logger.info should have been called for the budget enforcement
-            assert mock_logger.info.called
+            mock_logger.info.assert_any_call(
+                "Budget enforcement: persisted tool result %s (%d chars)",
+                "t1", 250_000,
+            )

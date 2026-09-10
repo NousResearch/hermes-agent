@@ -43,6 +43,9 @@ export const tr: Translations = {
     expand: "Genişlet",
     general: "Genel",
     messaging: "Mesajlaşma",
+    gateway: "Ağ Geçidi",
+    gatewayHint:
+      "Mesajlaşma platformları, API sunucusu ve webhook'lar Kanallar sayfasında yapılandırılır. Bunlar ağ geçidi genelindeki ayarlardır (proxy/relay modu ve genel izin listesi).",
     pluginLoadFailed:
       "Bu eklentinin betiği yüklenemedi. Ağ sekmesini (dashboard-plugins/…) ve sunucunun eklenti yolunu kontrol edin.",
     pluginNotRegistered:
@@ -75,7 +78,7 @@ export const tr: Translations = {
       keys: "Anahtarlar",
       logs: "Günlükler",
       models: "Modeller",
-      profiles: "profiller : çoklu agent",
+      profiles: "Profiller",
       plugins: "Eklentiler",
       sessions: "Oturumlar",
       skills: "Yetenekler",
@@ -90,6 +93,20 @@ export const tr: Translations = {
     statusOverview: "Durum özeti",
     system: "Sistem",
     webUi: "Web UI",
+    managingProfile: "Yönetilen profil",
+    currentProfileOption: "bu panel ({name})",
+    managingProfileBanner:
+      "\u201c{name}\u201d profili yönetiliyor \u2014 yapılandırma, anahtarlar, yetenekler, MCP'ler, model ve yeni sohbetler bu profile uygulanır.",
+    memoryOomRestartBanner:
+      "Agent'ınız beklenmedik şekilde yeniden başladı, büyük olasılıkla bellek yetersizliğinden dolayı. Uzun oturumlar ve çok sayıda eşzamanlı görev bellek kullanımını artırır.",
+    memoryCriticalBanner:
+      "Agent'ınızın belleği neredeyse tükendi ve yeniden başlayabilir. Boşta bekleyen oturumları kapatmayı veya belleğini yükseltmeyi düşünün.",
+    memoryElevatedBanner: "Agent'ınızın belleği azalıyor.",
+    diskCriticalBanner:
+      "Agent'ınızın diski neredeyse dolu. Yeni mesajlar, hatıralar ve ayarlar kaydedilemeyebilir.",
+    diskElevatedBanner:
+      "Agent'ınızın diski dolmaya başlıyor. Eski oturumları temizlemeyi veya depolama alanını genişletmeyi düşünün.",
+    dismiss: "Kapat",
   },
 
   status: {
@@ -100,6 +117,7 @@ export const tr: Translations = {
     activeSessions: "Aktif Oturumlar",
     connected: "Bağlandı",
     connectedPlatforms: "Bağlı Platformlar",
+    disabled: "Devre dışı",
     disconnected: "Bağlantı kesildi",
     error: "Hata",
     failed: "Başarısız",
@@ -113,6 +131,9 @@ export const tr: Translations = {
     platformError: "hata",
     recentSessions: "Son Oturumlar",
     restartGateway: "Ağ Geçidini Yeniden Başlat",
+    restartGatewayConfirmMessage:
+      "Bu, Hermes ağ geçidi sürecini yeniden başlatır. Bağlı kanallar ve aktif oturumlar bundan sonra yeniden bağlanır.",
+    restartGatewayConfirmTitle: "Ağ geçidi yeniden başlatılsın mı?",
     restartingGateway: "Ağ geçidi yeniden başlatılıyor…",
     running: "Çalışıyor",
     runningRemote: "Çalışıyor (uzak)",
@@ -121,6 +142,10 @@ export const tr: Translations = {
     startedInBackground: "Arka planda başlatıldı — ilerleme için günlüklere bakın",
     stopped: "Durduruldu",
     updateHermes: "Hermes'i Güncelle",
+    updateHermesConfirmMessage:
+      "Bu, hermes update komutunu çalıştırır ve tamamlandığında ağ geçidini yeniden başlatır. Aktif oturumlar o ana kadar istem önbelleklerini korur.",
+    updateHermesConfirmNow: "Şimdi güncelle",
+    updateHermesConfirmTitle: "Hermes güncellensin mi?",
     updatingHermes: "Hermes güncelleniyor…",
     waitingForOutput: "Çıktı bekleniyor…",
   },
@@ -282,7 +307,10 @@ export const tr: Translations = {
       telegram: "Telegram",
       discord: "Discord",
       slack: "Slack",
-      email: "Email",
+      email: "E-posta",
+      needsHomeChannel: "önce bir ana kanal ayarlayın",
+      noneConfigured:
+        "Yapılandırılmış mesajlaşma platformu yok. Raporları teslim etmek için Kanallar altında bir tane ayarlayın.",
     },
   },
 
@@ -293,7 +321,8 @@ export const tr: Translations = {
     nameRequired: "Ad gereklidir",
     nameRule:
       "Yalnızca küçük harfler, rakamlar, _ ve - kullanılabilir; harf veya rakamla başlamalı; en fazla 64 karakter.",
-    invalidName: "Geçersiz profil adı",    cloneFrom: "Profilden yapılandırmayı klonla",
+    invalidName: "Geçersiz profil adı",
+    cloneFrom: "Profilden yapılandırmayı klonla",
     cloneFromNone: "Hiçbiri (boş)",
     allProfiles: "Profiller",
     noProfiles: "Profil bulunamadı.",
@@ -316,6 +345,41 @@ export const tr: Translations = {
     created: "Oluşturuldu",
     deleted: "Silindi",
     renamed: "Yeniden adlandırıldı",
+    activeProfile: "Aktif profil",
+    activeBadge: "aktif",
+    setActive: "Aktif olarak ayarla",
+    activeSet: "Aktif profil ayarlandı",
+    gatewayRunning: "Ağ geçidi çalışıyor",
+    gatewayStopped: "Ağ geçidi durduruldu",
+    gatewayRunningWarning:
+      "Bu profilin ağ geçidi çalışıyor — durdurulacak.",
+    aliasBadge: "takma ad",
+    description: "Açıklama",
+    descriptionPlaceholder:
+      "Bu profil ne konuda iyi? Kanban görevlerini role göre yönlendirmek için kullanılır.",
+    noDescription: "Açıklama yok",
+    editDescription: "Açıklamayı düzenle",
+    descriptionSaved: "Açıklama kaydedildi",
+    reviewBadge: "gözden geçirme",
+    autoGenerate: "Otomatik oluştur",
+    generating: "Oluşturuluyor…",
+    describeFailed: "Açıklama oluşturulamadı",
+    distribution: "Dağılım",
+    advancedOptions: "Gelişmiş seçenekler",
+    cloneAll: "Her şeyi klonla (hatıralar, oturumlar, yetenekler, durum)",
+    noSkillsOption: "Hazır yetenekleri ekleme",
+    descriptionOptional: "Açıklama (isteğe bağlı)",
+    modelOptional: "Model (isteğe bağlı)",
+    modelInherit: "Klondan / varsayılandan devral",
+    modelLoading: "Modeller yükleniyor…",
+    modelNone: "Kimliği doğrulanmış sağlayıcı yok — önce bir anahtar ayarlayın",
+    editModel: "Modeli değiştir",
+    modelSaved: "Model güncellendi",
+    modelSelect: "Bir model seçin",
+    actions: "İşlemler",
+    manageSkills: "Yetenekleri ve araçları yönet",
+    activeSetHint:
+      "Panel artık {name} profilini yönetecek şekilde değiştirildi. Yeni CLI ve ağ geçidi çalıştırmaları da bu profili kullanacak.",
   },
 
   pluginsPage: {
@@ -377,6 +441,10 @@ export const tr: Translations = {
     setupNeeded: "Kurulum gerekli",
     disabledForCli: "CLI için devre dışı",
     more: "+{count} daha",
+    profileSelector: "Profil",
+    currentProfile: "geçerli ({name})",
+    managingProfile:
+      "\u201c{name}\u201d profili yönetiliyor — açma/kapama işlemleri bu panelin değil, o profilin ayarlarına uygulanır.",
   },
 
   config: {
@@ -440,7 +508,7 @@ export const tr: Translations = {
     showValue: "Gerçek değeri göster",
     hideValue: "Değeri gizle",
     customTitle: "Özel Anahtarlar",
-    customHint: ".env dosyanızda saklanan ve Hermes'in tanımadığı rastgele ortam değişkenleri. Bunları beceriler, MCP sunucuları veya kendi araçlarınız için ortam değişkenleri eklemek için kullanın.",
+    customHint: ".env dosyanızda saklanan ve Hermes'in tanımadığı rastgele ortam değişkenleri. Bunları yetenekler, MCP sunucuları veya kendi araçlarınız için ortam değişkenleri eklemek için kullanın.",
     customConfigured: "{count} özel anahtar ayarlandı",
     addCustomKey: "Özel anahtar ekle",
     customKeyName: "Değişken adı",
@@ -500,6 +568,12 @@ export const tr: Translations = {
   theme: {
     title: "Tema",
     switchTheme: "Temayı değiştir",
+    fontTitle: "Yazı Tipi",
+    fontDefault: "Tema varsayılanı",
+    fontDefaultHint: "Aktif temanın yazı tipini kullan",
+    fontSans: "Sans",
+    fontSerif: "Serif",
+    fontMono: "Mono",
   },
 
   achievements: {
@@ -621,11 +695,11 @@ export const tr: Translations = {
     slug: "Slug",
     slugHint: "— küçük harf, tire, ör. atm10-server",
     confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+      "{n} görev tamamlandı olarak işaretlensin mi? Worker'ların sahiplenmesi serbest bırakılır ve bağımlı altlar hazır hale gelir.",
     confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
+      "{n} görev arşivlensin mi? Varsayılan pano görünümünden kaybolurlar.",
     confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
+      "{n} görev engellendi olarak işaretlensin mi? Worker'ların sahiplenmesi serbest bırakılır.",
     displayName: "Görünen ad",
     displayNameHint: "(isteğe bağlı)",
     description: "Açıklama",
@@ -654,6 +728,9 @@ export const tr: Translations = {
     createTask: "Bu sütunda görev oluştur",
     noTasks: "— görev yok —",
     unassigned: "atanmamış",
+    needsAssignee: "Atanan kişi gerekiyor",
+    needsAssigneeHint:
+      "Bağımlılıklar karşılandı, ancak siz bir profil atayana kadar dispatcher bu görevi atlar.",
     untitled: "(başlıksız)",
     loadingDetail: "Yükleniyor…",
     addComment: "Yorum ekle… (göndermek için Enter)",
@@ -758,6 +835,8 @@ export const tr: Translations = {
       "Bu görev arşivlensin mi? Varsayılan pano görünümünden kaybolur.",
     confirmBlocked:
       "Bu görev engellendi olarak işaretlensin mi? Worker'ın sahiplenmesi serbest bırakılır.",
+    confirmScheduled:
+      "Bu görev Zamanlandı durumuna taşınsın mı? Bunu insan engelleri yerine bilinen zaman gecikmeleri için kullanın.",
     completionSummary:
       "{label} için tamamlanma özeti. Görev result'ı olarak saklanır.",
     completionSummaryRequired:
@@ -768,12 +847,36 @@ export const tr: Translations = {
     assigneePlaceholder: "atanan",
     priority: "Öncelik",
     skillsPlaceholder:
-      "beceriler (isteğe bağlı, virgülle ayrılmış): translation, github-code-review",
+      "yetenekler (isteğe bağlı, virgülle ayrılmış): translation, github-code-review",
     noParent: "— üst yok —",
     workspacePathDir: "workspace yolu (zorunlu, ör. ~/projects/my-app)",
     workspacePathOptional:
       "workspace yolu (isteğe bağlı, boşsa atanan kişiden türetilir)",
     logTruncated: "(son 100 KB gösteriliyor — tam günlük şurada: ",
     logAt: ")",
+    newTaskTitle: "Yeni görev — {column}",
+    taskTitleLabel: "Başlık",
+    assigneeLabel: "Atanan kişi",
+    assigneeLabelHint: "(boş = dispatcher seçer)",
+    skillsLabel: "Yetenekler",
+    skillsLabelHint: "(isteğe bağlı, virgülle ayrılmış)",
+    parentLabel: "Üst görev",
+    parentLabelHint: "(üst görev tamamlanana kadar alt görev engelli kalır)",
+    create: "Oluştur",
+    boardSettings: "Ayarlar",
+    boardSettingsTitle:
+      "Pano ayarları — ad, açıklama ve yeni görevlerin devraldığı varsayılan proje dizini",
+    boardSettingsTitleFor: "Pano ayarları — {name}",
+    projectDirectoryOverrideHint:
+      "Yeni görevler bunu workspace varsayılanı olarak devralır; her görev, oluşturma iletişim kutusunda bunu yine de geçersiz kılabilir.",
+    saving: "Kaydediliyor…",
+    commentHint:
+      "Yorumlar, worker'a bir sonraki çalıştırmasında veya kanban_show() çağrısında ulaşır — görevi önce engellemenize gerek yok.",
+    commentHintTitle:
+      "Yorumlar, bir görevin worker'ıyla konuşmanın kanalıdır. Konuya hemen ulaşırlar — görevi önce engellemenize gerek yoktur. Çalışan bir worker, bir sonraki kanban_show() çağrısında veya yeniden başlatıldığında konuyu ele alır; engelleme yalnızca worker'ın DURMASINI ve girdinizi beklemesini istediğinizde kullanılır.",
+    trash: {
+      confirmTitle: "Görev silinsin mi?",
+      confirmManyTitle: "{n} görev silinsin mi?",
+    },
   },
 };

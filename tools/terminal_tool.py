@@ -1333,6 +1333,15 @@ def _handle_terminal(args, **kw):
             "command in 'command'. Use execute_code(code=...) for Python; "
             "for shell, retry as terminal(command=...)."
         )
+    # Models sometimes send a structured command_class/argv list instead of a
+    # single shell string; name the stray argument instead of failing on
+    # command=None ("Invalid command: expected string, got NoneType").
+    if "command" not in args and "command_class" in args:
+        return tool_error(
+            "terminal received a 'command_class' parameter, but it requires "
+            "a single shell command string in 'command'. Retry as "
+            "terminal(command=\"...\")."
+        )
     # `notify` is the advertised interface (true → notify_on_complete,
     # [...] → watch_patterns); the legacy args stay accepted, explicit
     # `notify` wins. Background-only modifiers on a foreground call fail

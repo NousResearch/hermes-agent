@@ -83,9 +83,9 @@ def db(tmp_path):
 def _bridge_agent(session_db, session_id: str, *, declared_key: str | None):
     """Construct an agent the way the Studio bridge pool does."""
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",

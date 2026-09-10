@@ -553,6 +553,7 @@ export function StatusRuleView({
   t
 }: StatusRuleProps & { i18n: I18nApi }) {
   const pct = usage.context_percent
+  const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
 
@@ -566,8 +567,8 @@ export function StatusRuleView({
     ok('context_detail') || ok('context_pct')
       ? usage.context_max
         ? segs.compactCtx
-          ? `${fmtK(usage.context_used ?? 0)} ${i18n.t('usage.tokensShort')}`
-          : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+          ? `${contextMark}${fmtK(usage.context_used ?? 0)} ${i18n.t('usage.tokensShort')}`
+          : `${contextMark}${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
         : usage.total > 0
           ? `${fmtK(usage.total)} ${i18n.t('usage.tokensShort')}`
           : ''
@@ -628,11 +629,9 @@ export function StatusRuleView({
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
-  // if it fits in the space left after the pinned essentials. Idle background
-  // subagents explain an upcoming auto-resume, so that reassurance outranks
-  // telemetry like the context bar and voice state. Lower-priority segments
-  // drop first and nothing truncates mid-segment, so status/model/context are
-  // never crushed.
+  // if it fits in the space left after the pinned essentials, evaluated in
+  // descending priority order. Lower-priority segments drop first and nothing
+  // truncates mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 
@@ -647,13 +646,6 @@ export function StatusRuleView({
   }
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount, i18n) : ''
-  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
-
-  const resumeHintText =
-    subagentCount === 1
-      ? i18n.t('background.resumeWhenSubagentFinishes')
-      : i18n.t('background.resumeWhenSubagentsFinish', { count: String(subagentCount) })
-
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
   // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
@@ -663,14 +655,7 @@ export function StatusRuleView({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
-  // Parked-background reassurance: a top-level delegate_task runs in the
-  // background, so the turn ends (idle) while the subagent keeps working and its
-  // result re-enters as a fresh turn later. When idle with work still in flight,
-  // spell out that the agent resumes on its own — no spinner, nothing to poll.
-  const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
-  const showSubagents =
-    segs.subagents && ok('bg_subagents') && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${contextMark}${pct}%` : ''}`))
   const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
   // Idle clock — time since the last final agent response. Hidden while busy
@@ -695,6 +680,21 @@ export function StatusRuleView({
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(bgText))
+  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
+  const showSubagents =
+    segs.subagents && ok('bg_subagents') && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+
+  // Parked-background reassurance: a top-level delegate_task runs in the
+  // background, so the turn ends (idle) while the subagent keeps working and its
+  // result re-enters as a fresh turn later. When idle with work still in flight,
+  // spell out that the agent resumes on its own — no spinner, nothing to poll.
+  // Width-budgeted like every tail segment, so it drops first on a tight
+  // terminal where ⛓ already carries the signal.
+  const resumeHintText =
+    subagentCount === 1
+      ? i18n.t('background.resumeWhenSubagentFinishes')
+      : i18n.t('background.resumeWhenSubagentsFinish', { count: String(subagentCount) })
+  const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
@@ -782,7 +782,8 @@ export function StatusRuleView({
         {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+            <Text color={barColor}>[{bar}]</Text>{' '}
+            <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
           </Text>
         ) : null}
         {showDuration ? (

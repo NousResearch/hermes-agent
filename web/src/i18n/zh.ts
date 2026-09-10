@@ -848,7 +848,20 @@ export const zh: TranslationOverlay = {
     keepExistingSecret: '留空可保留现有值',
     hideSecret: '隐藏密钥',
     showSecret: '显示密钥',
-    rescanCount: '{action}（{count} 项）'
+    rescanCount: '{action}（{count} 项）',
+    catalogHeading: '插件目录',
+    catalogHint: '经 Nous 审核并锁定到精确提交的插件。从此安装可使用供应链更安全的版本。',
+    catalogSearchPlaceholder: '搜索插件目录…',
+    catalogEmpty: '没有匹配的目录条目。',
+    catalogEmptyDocsLink: '了解 Hermes 插件',
+    catalogInstallBtn: '安装',
+    catalogInstalledBadge: '已安装 ✓',
+    catalogUpdateBtn: '有可用更新',
+    catalogRemovedBadge: '已移除',
+    catalogConfirmTitle: '安装此插件？',
+    catalogConfirmInstallNote: '插件安装后默认禁用；安装完成后请启用它以激活。',
+    catalogRequiresEnv: '需要环境变量',
+    removedFromCatalog: '已从目录移除'
   },
 
   skills: {

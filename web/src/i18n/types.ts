@@ -776,6 +776,19 @@ export interface Translations {
     hideSecret: string
     showSecret: string
     rescanCount: string
+    catalogHeading: string
+    catalogHint: string
+    catalogSearchPlaceholder: string
+    catalogEmpty: string
+    catalogEmptyDocsLink: string
+    catalogInstallBtn: string
+    catalogInstalledBadge: string
+    catalogUpdateBtn: string
+    catalogRemovedBadge: string
+    catalogConfirmTitle: string
+    catalogConfirmInstallNote: string
+    catalogRequiresEnv: string
+    removedFromCatalog: string
   }
 
   // ── Profiles page ──

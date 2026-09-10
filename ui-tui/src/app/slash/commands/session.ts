@@ -919,11 +919,12 @@ export const sessionCommands: SlashCommand[] = [
         const sections: PanelSection[] = [{ rows }]
 
         if (r.context_max) {
+          const mark = r.context_estimated ? '~' : ''
           sections.push({
             text: t('usage.context', {
               max: f(r.context_max),
-              percent: String(r.context_percent),
-              used: f(r.context_used)
+              percent: `${mark}${r.context_percent}`,
+              used: `${mark}${f(r.context_used)}`
             })
           })
         }

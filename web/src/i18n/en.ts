@@ -884,7 +884,21 @@ export const en: Translations = {
     keepExistingSecret: 'Leave blank to keep the existing value',
     hideSecret: 'Hide secret',
     showSecret: 'Show secret',
-    rescanCount: '{action} ({count})'
+    rescanCount: '{action} ({count})',
+    catalogHeading: 'Plugin catalog',
+    catalogHint:
+      'Curated, Nous-reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.',
+    catalogSearchPlaceholder: 'Search catalog...',
+    catalogEmpty: 'No catalog entries match.',
+    catalogEmptyDocsLink: 'Learn about Hermes plugins',
+    catalogInstallBtn: 'Install',
+    catalogInstalledBadge: 'Installed ✓',
+    catalogUpdateBtn: 'Update available',
+    catalogRemovedBadge: 'Removed',
+    catalogConfirmTitle: 'Install this plugin?',
+    catalogConfirmInstallNote: 'Plugins install disabled; enable it after install to activate.',
+    catalogRequiresEnv: 'Requires env',
+    removedFromCatalog: 'Removed from catalog'
   },
 
   skills: {

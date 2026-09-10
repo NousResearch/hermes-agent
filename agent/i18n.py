@@ -154,6 +154,13 @@ def normalize_language(value: Any) -> str:
 _normalize_lang = normalize_language
 
 
+def _cache_catalog(lang: str, flat: dict[str, str]) -> dict[str, str]:
+    """Publish one fully-built catalog under the cache lock."""
+    with _catalog_lock:
+        _catalog_cache[lang] = flat
+    return flat
+
+
 def _load_catalog(lang: str) -> dict[str, str]:
     """Load and flatten one locale YAML file into a dotted-key dict.
 
@@ -168,9 +175,7 @@ def _load_catalog(lang: str) -> dict[str, str]:
     path = _locales_dir() / f"{lang}.yaml"
     if not path.is_file():
         logger.debug("i18n catalog missing for %s at %s", lang, path)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
-        return {}
+        return _cache_catalog(lang, {})
 
     try:
         import yaml  # PyYAML is already a hermes dependency
@@ -178,15 +183,11 @@ def _load_catalog(lang: str) -> dict[str, str]:
             raw = yaml.safe_load(f) or {}
     except Exception as exc:
         logger.warning("Failed to load i18n catalog %s: %s", path, exc)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
-        return {}
+        return _cache_catalog(lang, {})
 
     flat: dict[str, str] = {}
     _flatten_into(raw, "", flat)
-    with _catalog_lock:
-        _catalog_cache[lang] = flat
-    return flat
+    return _cache_catalog(lang, flat)
 
 
 def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:

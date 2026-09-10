@@ -83,7 +83,11 @@ export const toTranscriptMessages = (rows: unknown, locale: Locale = 'en'): Msg[
             ? translate(locale, 'transcript.backgroundAgentFinished', { count })
             : translate(locale, 'transcript.backgroundAgentsFinished', { count })
 
-      out.push({ kind: 'event', role: 'system', text: label })
+      out.push({
+        kind: 'event',
+        role: 'system',
+        text: typeof meta?.display_text === 'string' ? meta.display_text : label
+      })
       pending = []
 
       continue

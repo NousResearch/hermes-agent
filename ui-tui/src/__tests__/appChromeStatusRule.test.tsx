@@ -118,6 +118,26 @@ const baseProps = {
 }
 
 describe('StatusRule session title', () => {
+  it('marks only estimated context occupancy at every visible width', () => {
+    for (const cols of [80, 120, 200]) {
+      for (const estimated of [true, false]) {
+        const text = textContent(
+          StatusRuleView({
+            ...baseProps,
+            cols,
+            statusBarFields: new Set(['context_detail']),
+            usage: { ...baseProps.usage, context_estimated: estimated }
+          })
+        )
+
+        const context = text.match(/(~?\d+(?:\.\d+)?k(?:\/\d+k| tok))/)?.[1]
+
+        expect(context, `context must render at ${cols} columns`).toBeTruthy()
+        expect(context?.startsWith('~')).toBe(estimated)
+      }
+    }
+  })
+
   it('pins the named session at the far-right edge instead of the cwd label', () => {
     const element = StatusRuleView({
       ...baseProps,
@@ -169,6 +189,7 @@ describe('StatusRule background-subagent indicator', () => {
   it('spells out the auto-resume hint when idle with subagents in flight', () => {
     const element = StatusRuleView({
       ...baseProps,
+      cols: 260,
       usage: { ...baseProps.usage, active_subagents: 1 }
     })
 
@@ -178,6 +199,7 @@ describe('StatusRule background-subagent indicator', () => {
   it('pluralizes the resume hint for multiple in-flight subagents', () => {
     const element = StatusRuleView({
       ...baseProps,
+      cols: 260,
       usage: { ...baseProps.usage, active_subagents: 3 }
     })
 

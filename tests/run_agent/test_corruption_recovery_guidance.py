@@ -63,6 +63,47 @@ def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, 
     assert "~/.hermes/backups" not in sent[0]
 
 
+def test_gateway_corruption_banner_backups_dir_follows_scoped_profile_override(monkeypatch, tmp_path):
+    """The gateway broadcast's step 3 must name the SCOPED profile's root, not the ambient
+    process HERMES_HOME (#105887).
+
+    A multiplexed gateway enters a named profile via ``set_hermes_home_override`` (a contextvar)
+    without mutating ``os.environ`` — see ``gateway.run._profile_runtime_scope``. The corruption
+    banner built while that profile's turn is active must name the backups dir beneath the
+    scoped profile's own root, not whatever root the ambient process HERMES_HOME points at.
+    """
+    import asyncio
+
+    import gateway.run as gateway_run
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    ambient_home = tmp_path / "ambient-default-home"
+    monkeypatch.setenv("HERMES_HOME", str(ambient_home))
+    custom_root = tmp_path / "custom-root"
+    profile_home = custom_root / "profiles" / "work"
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db_init_error = "database disk image is malformed"
+    sent = []
+    monkeypatch.setattr(
+        runner, "_home_channel_transports", lambda: [("telegram", {}, "home-chat", object())]
+    )
+
+    async def _capture_send(_platform, _home, _transport, message, _log_fmt):
+        sent.append(message)
+
+    monkeypatch.setattr(runner, "_send_home_channel_message", _capture_send)
+    token = set_hermes_home_override(profile_home)
+    try:
+        asyncio.run(runner._send_session_db_warning_notifications())
+    finally:
+        reset_hermes_home_override(token)
+
+    assert sent, "warning must be broadcast to home channels"
+    assert f"{custom_root / 'backups'}" in sent[0]
+    assert str(ambient_home) not in sent[0]
+
+
 def test_format_turn_completion_corrupt_never_names_the_live_db():
     """The 'corrupt' cause must not direct a raw sqlite3 shell at the live DB.
 

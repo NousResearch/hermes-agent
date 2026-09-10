@@ -173,6 +173,31 @@ def test_explanation_persistence_corrupt_backups_dir_follows_hermes_home(monkeyp
     assert "{backups_dir}" not in out
 
 
+def test_explanation_persistence_corrupt_backups_dir_follows_scoped_profile_override(monkeypatch, tmp_path):
+    """Step 3 must name the SCOPED profile's root, not the ambient process HERMES_HOME (#105887).
+
+    A multiplexed gateway or CLI operation enters a named profile via
+    ``set_hermes_home_override`` (a contextvar) without mutating ``os.environ`` — see
+    ``gateway.run._profile_runtime_scope``. Recovery guidance built inside that scope must name
+    the backups dir beneath the scoped profile's own root, not the ambient default's root.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    ambient_home = tmp_path / "ambient-default-home"
+    monkeypatch.setenv("HERMES_HOME", str(ambient_home))
+    custom_root = tmp_path / "custom-root"
+    profile_home = custom_root / "profiles" / "work"
+    token = set_hermes_home_override(profile_home)
+    try:
+        out = AIAgent._format_turn_completion_explanation(
+            "session_persistence_failed", "corrupt"
+        )
+    finally:
+        reset_hermes_home_override(token)
+    assert f"{custom_root / 'backups'}" in out
+    assert str(ambient_home) not in out
+
+
 def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "replaced"

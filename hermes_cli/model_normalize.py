@@ -92,8 +92,12 @@ _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
 _DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
     "deepseek-chat", "deepseek-reasoner"})
 
+# ``deepseek-flash`` is the version-less canonical Flash id from the 2026-09 Flash refresh:
+# ``GET /v1/models`` reports it and the API accepts it directly. It carries no ``v<N>``
+# marker, so without an entry here it misses the V-series regex below and the id the user
+# picked is folded onto ``deepseek-v4-flash`` before it ever reaches the wire.
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-v4-pro", "deepseek-v4-flash"})
+    "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"})
 
 # First-class V-series IDs incl. future ``deepseek-v5-*`` and dated variants
 # (``deepseek-v4-flash-20260423``): verified real model ids, NOT aliases of ``deepseek-chat``.

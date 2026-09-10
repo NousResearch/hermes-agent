@@ -15,6 +15,13 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 
+# Version-less canonical ids for thinking-capable DeepSeek models. The 2026-09 Flash
+# refresh dropped the ``v<N>`` marker from the public id: ``GET /v1/models`` reports
+# ``deepseek-flash`` and the API accepts it directly, so the generation check in
+# ``build_api_kwargs_extras`` cannot recognise it.
+_THINKING_CAPABLE_IDS: frozenset[str] = frozenset({"deepseek-flash"})
+
+
 class DeepSeekProfile(ProviderProfile):
     """DeepSeek — extra_body.thinking + top-level reasoning_effort."""
 
@@ -22,7 +29,12 @@ class DeepSeekProfile(ProviderProfile):
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         m = (model or "").strip().lower()
-        if not m.startswith("deepseek-v") or m.startswith("deepseek-v3"):  # v4+ only; v3 excluded
+        # v4+ only; v3 excluded. Version-less canonicals (``deepseek-flash``) carry the
+        # same thinking-mode contract but no ``v<N>`` prefix, so consult the id set too —
+        # missing them makes Hermes omit ``thinking``, so the server defaults to on and
+        # the user's thinking toggle / effort setting is silently ignored.
+        versioned_v4_plus = m.startswith("deepseek-v") and not m.startswith("deepseek-v3")
+        if not versioned_v4_plus and m not in _THINKING_CAPABLE_IDS:
             return {}, {}
         rc = reasoning_config if isinstance(reasoning_config, dict) else None
         # Always set thinking explicitly (default enabled, matching the API default)

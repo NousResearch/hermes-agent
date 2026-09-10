@@ -110,6 +110,21 @@ class TestDeepseekVSeriesPassThrough:
         result = normalize_model_for_provider("deepseek-v4-pro", "deepseek")
         assert result == "deepseek-v4-pro"
 
+    def test_deepseek_provider_preserves_versionless_flash_id(self):
+        """``deepseek-flash`` must reach DeepSeek's API unchanged.
+
+        DeepSeek's 2026-09 Flash refresh dropped the ``v<N>`` marker from the
+        public id: ``GET /v1/models`` reports ``deepseek-flash`` and the API
+        accepts it directly (verified live — it answers 200, and the older
+        ``deepseek-v4-flash`` is aliased onto it).  Folding it onto
+        ``deepseek-v4-flash`` meant the id users picked never reached the wire
+        and the config stored a different model than the picker advertised.
+        """
+        assert (
+            normalize_model_for_provider("deepseek-flash", "deepseek")
+            == "deepseek-flash"
+        )
+
 
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 

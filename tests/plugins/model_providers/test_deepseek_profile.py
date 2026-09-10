@@ -108,6 +108,10 @@ class TestDeepSeekModelGating:
             "deepseek-v4-flash",
             "deepseek-v4-future-variant",
             "DEEPSEEK-V4-PRO",  # case-insensitive
+            # Version-less canonical ids (2026-09 Flash refresh) carry the
+            # same thinking-mode contract but no v<N> marker.
+            "deepseek-flash",
+            "DEEPSEEK-FLASH",  # case-insensitive
         ],
     )
     def test_thinking_capable_models_emit_thinking(self, deepseek_profile, model):

@@ -176,12 +176,12 @@ GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/
 ### Gmail
 
 ```bash
-# Search (returns JSON array with id, from, subject, date, snippet)
+# Search (returns JSON array with headers, Gmail internal date, and snippet)
 $GAPI gmail search "is:unread" --max 10
 $GAPI gmail search "from:boss@company.com newer_than:1d"
 $GAPI gmail search "has:attachment filename:pdf newer_than:7d"
 
-# Read full message (returns JSON with body text)
+# Read full message (returns body text and attachment metadata)
 $GAPI gmail get MESSAGE_ID
 
 # Send
@@ -291,8 +291,8 @@ $GAPI docs append DOC_ID --text "Additional content to append"
 
 All commands return JSON. Parse with `jq` or read directly. Key fields:
 
-- **Gmail search**: `[{id, threadId, from, to, subject, date, snippet, labels}]`
-- **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
+- **Gmail search**: `[{id, threadId, from, to, subject, date, internalDate, snippet, labels}]`
+- **Gmail get**: `{id, threadId, from, to, cc, subject, date, internalDate, labels, body, attachments: [{filename, mimeType, attachmentId, size}]}`
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`

@@ -186,6 +186,12 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     idle session first (a racing user prompt wins), then re-enter through ``_run_prompt_submit`` as a
     plain user turn. A dispatch that never starts a turn rewinds the persisted fire so the tick stays
     due instead of being silently consumed.
+
+    Runs on the per-session poller thread (``_notification_poller_loop``), not an asyncio task, so no
+    ContextVar state is inherited from a turn — ``HeartbeatManager`` (via ``hermes_cli.goals._get_session_db``,
+    cached per ``get_hermes_home()``) must be bound to the session's own profile home explicitly, the same way
+    ``_cmd_goal`` binds it for ``/goal``, or a secondary-profile session's heartbeat reads/writes whichever
+    profile happens to be the process-wide HERMES_HOME at that moment.
     """
     try:
         from hermes_cli.heartbeat import HeartbeatManager
@@ -193,53 +199,58 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
         return
     if not (sid_key := session.get("session_key") or ""):
         return
-    mgr = HeartbeatManager(session_id=sid_key)
-    if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
-        return  # not due, or busy — the tick coalesces to the next idle poll
-    if not (prompt := mgr.due_prompt()):
-        _notif_release_turn(session)
-        return
-    started = False
-    try:
-        _emit("status.update", sid, {"kind": "heartbeat", "text": f"♥ heartbeat #{mgr.state.fire_count} firing…"})
-        started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
-    except Exception as exc:
-        _notif_log_failure("heartbeat dispatch failed", exc)
-    if not started:
-        # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
-        _notif_release_turn(session)
-        with contextlib.suppress(Exception):
-            mgr.abandon_fire()
+    with _session_profile_runtime_scope(session or {}):
+        mgr = HeartbeatManager(session_id=sid_key)
+        if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
+            return  # not due, or busy — the tick coalesces to the next idle poll
+        if not (prompt := mgr.due_prompt()):
+            _notif_release_turn(session)
+            return
+        started = False
+        try:
+            _emit("status.update", sid, {"kind": "heartbeat", "text": f"♥ heartbeat #{mgr.state.fire_count} firing…"})
+            started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
+        except Exception as exc:
+            _notif_log_failure("heartbeat dispatch failed", exc)
+        if not started:
+            # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
+            _notif_release_turn(session)
+            with contextlib.suppress(Exception):
+                mgr.abandon_fire()
 
 
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
-    the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
+    the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick.
+
+    Runs on the per-session poller thread, so ``LoopManager`` (like ``HeartbeatManager`` above) must be bound to
+    the session's own profile home explicitly — mirrors ``_cmd_goal``'s ``_session_profile_runtime_scope`` wrap."""
     try:
         from hermes_cli.loops import LoopManager, goal_blocks_loop_tick
     except Exception:
         return
     if not (sid_key := session.get("session_key") or ""):
         return
-    mgr = LoopManager(session_id=sid_key)
-    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not _notif_claim_turn(session):
-        return  # busy — stays due, next poll retries
-    if not (wakeup := mgr.fire_tick()):
-        _notif_release_turn(session)
-        return
-    rid = f"__loop__{int(time.time() * 1000)}"
-    try:
-        _notif_loop_status(sid, f"↻ /loop wakeup #{mgr.state.ticks_fired if mgr.state else '?'} firing…")
-        if wakeup.lstrip().startswith("/"):
-            _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
-        else:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
-    except Exception as exc:
-        _notif_log_failure("loop wakeup dispatch failed", exc)
-        _notif_release_turn(session)
-        with contextlib.suppress(Exception):
-            mgr.abandon_tick()
+    with _session_profile_runtime_scope(session or {}):
+        mgr = LoopManager(session_id=sid_key)
+        if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not _notif_claim_turn(session):
+            return  # busy — stays due, next poll retries
+        if not (wakeup := mgr.fire_tick()):
+            _notif_release_turn(session)
+            return
+        rid = f"__loop__{int(time.time() * 1000)}"
+        try:
+            _notif_loop_status(sid, f"↻ /loop wakeup #{mgr.state.ticks_fired if mgr.state else '?'} firing…")
+            if wakeup.lstrip().startswith("/"):
+                _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
+            else:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, wakeup)
+        except Exception as exc:
+            _notif_log_failure("loop wakeup dispatch failed", exc)
+            _notif_release_turn(session)
+            with contextlib.suppress(Exception):
+                mgr.abandon_tick()
 
 
 def _kb_first_line(value: Any, limit: int) -> str:

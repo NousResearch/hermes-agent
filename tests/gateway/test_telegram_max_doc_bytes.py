@@ -307,6 +307,62 @@ async def test_trusted_recovery_is_expanded_before_busy_routing():
 
 
 @pytest.mark.asyncio
+async def test_busy_recovery_interrupt_queues_complete_event_before_text_interrupt():
+    from gateway.run_inbound import GatewayInboundMixin
+
+    event = _oversize_event()
+    event.text = "expanded recovery skill prompt"
+    event.preprocess_skill_command_before_busy = True
+    event.metadata["routing_marker"] = "keep-complete-event"
+    calls = []
+    running_agent = SimpleNamespace(
+        _supports_active_turn_redirect=False,
+        interrupt=lambda text: calls.append(("interrupt", text)),
+    )
+
+    class BusyRunner(GatewayInboundMixin):
+        _draining = False
+
+        async def _hm_busy_slash_or_photo(self, event, source, session_key):
+            return False, None
+
+        def _effective_busy_input_mode(self, source):
+            return "interrupt"
+
+        def _hm_busy_telegram_grace_queue(
+            self, event, source, session_key, effective_busy_input_mode
+        ):
+            return False
+
+        def _peek_session_state(self, session_key):
+            return SimpleNamespace(turn=SimpleNamespace(agent=running_agent))
+
+        def _agent_has_active_subagents(self, agent):
+            return False
+
+        async def _session_has_compression_in_flight(self, session_key):
+            return False
+
+        def _queue_or_replace_pending_event(self, session_key, queued_event):
+            calls.append(("queue", session_key, queued_event))
+
+        def _pending_event_audio_paths(self, event):
+            return []
+
+    result = await BusyRunner()._hm_handle_running_session_message(
+        event, event.source, "session-key"
+    )
+
+    assert result is None
+    assert calls[0] == ("queue", "session-key", event)
+    assert calls[1] == ("interrupt", "expanded recovery skill prompt")
+    queued = calls[0][2]
+    assert queued.message_id == "99"
+    assert queued.source is event.source
+    assert queued.metadata["routing_marker"] == "keep-complete-event"
+
+
+@pytest.mark.asyncio
 async def test_public_oversize_document_is_rejected_before_get_file():
     adapter = _recovery_adapter()
     adapter.handle_message = AsyncMock()

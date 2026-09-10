@@ -658,6 +658,13 @@ class GatewayInboundMixin:
             if self._redirect_active_turn(running_agent, (event.text or "").strip(), _quick_key, event):
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
                 return
+        # ``agent.interrupt()`` carries text only. Stage the complete event first so the recursive
+        # drain retains its source, inbound message id, media and routing metadata. This is normally
+        # done by the adapter busy handler, but trusted pre-busy skill events dispatch inline and
+        # reach this runner fast-path directly.
+        self._queue_or_replace_pending_event(  # pyright: ignore[reportAttributeAccessIssue]
+            _quick_key, event
+        )
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
         _interrupt_text = event.text
         if self._pending_event_audio_paths(event):
@@ -667,8 +674,6 @@ class GatewayInboundMixin:
             )
         elif not _interrupt_text and getattr(event, "media_urls", None):
             _interrupt_text = _build_media_placeholder(event)
-        # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
-        # — that copy was never consumed and grew unbounded.
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_handle_running_session_message(

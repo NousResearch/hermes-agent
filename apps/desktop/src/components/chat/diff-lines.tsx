@@ -487,7 +487,7 @@ function SyntaxDiff({ language, lines }: { language: string; lines: DiffLine[] }
 
 const LazySyntaxDiff = React.lazy(() => import('./syntax-diff'))
 
-interface DiffLinesProps extends Omit<React.ComponentProps<'pre'>, 'children'> {
+interface DiffLinesProps extends Omit<React.ComponentPropsWithoutRef<'pre'>, 'children'> {
   text: string
 }
 

@@ -1,13 +1,13 @@
 import { defineConfig } from "oxlint";
 
-// Vendored anti-slop rules (tools/oxlint/anti-slop, from dmmulroy/anti-slop),
+// Vendored anti-slop rules (lint/oxlint/anti-slop, from dmmulroy/anti-slop),
 // ported from NousResearch/hermes-portal. Oxlint runs only these plugin rules;
 // ESLint stays the primary linter. This config feeds an ADVISORY lane: the
 // ratchet in slop-ratchet.mjs reports net-new findings on a PR against the
 // committed baseline and never blocks a merge.
 export default defineConfig({
   // Repo-wide ignores live in /.slopignore (passed as --ignore-path): patterns
-  // here are rooted at tools/oxlint/ and cannot reach files above it.
+  // here are rooted at lint/oxlint/ and cannot reach files above it.
   ignorePatterns: ["anti-slop/**", "node_modules/**"],
   jsPlugins: [
     { name: "anti-slop", specifier: "./anti-slop/index.ts" },

@@ -1,7 +1,7 @@
 # Advisory anti-slop lane, part 1 of 2: lint the PR's diff with ZERO write
 # permissions — this job runs pull-request-controlled code (the vendored
 # rules execute inside oxlint), so it must hold nothing worth stealing.
-# A committed per-file, per-rule baseline (tools/oxlint/slop-baseline.json)
+# A committed per-file, per-rule baseline (lint/oxlint/slop-baseline.json)
 # makes this a ratchet: only net-new findings in touched files are reported,
 # while existing counts may go down. The report uploads as an artifact;
 # slop-comment.yml (running trusted default-branch code via workflow_run)
@@ -20,7 +20,7 @@ on:
       - "**/*.jsx"
       - "**/*.mjs"
       - "**/*.cjs"
-      - "tools/oxlint/**"
+      - "lint/oxlint/**"
       - ".github/workflows/slop-lint.yml"
 
 permissions:
@@ -48,7 +48,7 @@ jobs:
       # loader, so nothing else in the monorepo needs installing. --ignore-scripts
       # keeps PR-controlled postinstalls out of a job that lints PR code.
       - name: Install the oxlint workspace
-        run: npm ci --workspace tools/oxlint --no-fund --no-audit --ignore-scripts
+        run: npm --prefix lint/oxlint ci --no-fund --no-audit --ignore-scripts
 
       # The check itself never fails: findings are advisory and surface
       # through the sticky PR comment only. The lint exit code rides the

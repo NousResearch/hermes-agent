@@ -9,9 +9,9 @@
     "oxlint": "1.79.0"
   },
   "scripts": {
-    "slop": "cd ../.. && oxlint -c tools/oxlint/oxlint.config.ts --ignore-path .slopignore",
-    "slop:baseline": "cd ../.. && node tools/oxlint/slop-ratchet.mjs baseline",
-    "slop:diff": "cd ../.. && bash tools/oxlint/slop-diff.sh",
+    "slop": "cd ../.. && oxlint -c lint/oxlint/oxlint.config.ts --ignore-path .slopignore",
+    "slop:baseline": "cd ../.. && node lint/oxlint/slop-ratchet.mjs baseline",
+    "slop:diff": "cd ../.. && bash lint/oxlint/slop-diff.sh",
     "check": "true",
     "fix": "true"
   }

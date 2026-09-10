@@ -14,7 +14,7 @@ marker='<!-- slop-diff-report -->'
 {
   echo "$marker"
   if [ "${LINT_EXIT}" = "0" ]; then
-    echo "**Anti-slop lint: no net-new findings** in the JS/TS files this PR touches (baseline: \`tools/oxlint/slop-baseline.json\`). Advisory only; never blocks a merge."
+    echo "**Anti-slop lint: no net-new findings** in the JS/TS files this PR touches (baseline: \`lint/oxlint/slop-baseline.json\`). Advisory only; never blocks a merge."
   else
     echo "**Anti-slop lint found net-new findings** in the JS/TS files this PR touches. Advisory only; never blocks a merge."
     echo
@@ -43,7 +43,7 @@ marker='<!-- slop-diff-report -->'
   echo 'npm run lint:slop:baseline          # after fixing old hits, lower the baseline (it never goes up without --allow-increase)'
   echo '```'
   echo
-  echo 'The rules live in `tools/oxlint/anti-slop/`; the config is `oxlint.config.ts` at the repo root. A finding means the pattern needs a real fix or, for type assertions, a `// SAFETY:` comment stating the checked invariant.'
+  echo 'The rules live in `lint/oxlint/anti-slop/`; the config is `oxlint.config.ts` at the repo root. A finding means the pattern needs a real fix or, for type assertions, a `// SAFETY:` comment stating the checked invariant.'
   echo '</details>'
 } > comment-body.md
 

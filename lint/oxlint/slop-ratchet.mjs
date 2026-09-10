@@ -48,10 +48,10 @@ function repoRoot() {
 }
 
 const root = repoRoot();
-const BASELINE_REPO_PATH = "tools/oxlint/slop-baseline.json";
+const BASELINE_REPO_PATH = "lint/oxlint/slop-baseline.json";
 const baselinePath = path.join(root, BASELINE_REPO_PATH);
-const configPath = "tools/oxlint/oxlint.config.ts";
-const localOxlint = path.join(root, "tools/oxlint/node_modules/.bin/oxlint");
+const configPath = "lint/oxlint/oxlint.config.ts";
+const localOxlint = path.join(root, "lint/oxlint/node_modules/.bin/oxlint");
 const oxlint = existsSync(localOxlint) ? localOxlint : "oxlint";
 
 function normalizedFilename(filename) {
@@ -130,9 +130,9 @@ function readBaseline() {
     text = readFileSync(baselinePath, "utf8");
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    fail(`${SCRIPT_NAME}: could not read tools/oxlint/slop-baseline.json: ${reason}`);
+    fail(`${SCRIPT_NAME}: could not read lint/oxlint/slop-baseline.json: ${reason}`);
   }
-  return parseBaseline(text, "tools/oxlint/slop-baseline.json");
+  return parseBaseline(text, "lint/oxlint/slop-baseline.json");
 }
 
 /**
@@ -186,7 +186,7 @@ function printChanges(label, changes) {
 
 function baselineCommand(args) {
   if (args.some((arg) => arg !== "--allow-increase")) {
-    fail("usage: node tools/oxlint/slop-ratchet.mjs baseline [--allow-increase]");
+    fail("usage: node lint/oxlint/slop-ratchet.mjs baseline [--allow-increase]");
   }
 
   const allowIncrease = args.includes("--allow-increase");
@@ -216,7 +216,7 @@ function baselineCommand(args) {
 
   writeFileSync(baselinePath, `${JSON.stringify(current, null, 2)}\n`);
   console.log(
-    `${SCRIPT_NAME}:baseline: wrote tools/oxlint/slop-baseline.json (${diagnostics.length} findings in ${Object.keys(current).length} files)`,
+    `${SCRIPT_NAME}:baseline: wrote lint/oxlint/slop-baseline.json (${diagnostics.length} findings in ${Object.keys(current).length} files)`,
   );
 }
 
@@ -288,7 +288,7 @@ function locationOf(diagnostic) {
 
 function diffCommand(args) {
   if (args.length > 0) {
-    fail("usage: node tools/oxlint/slop-ratchet.mjs diff");
+    fail("usage: node lint/oxlint/slop-ratchet.mjs diff");
   }
 
   const base = process.env.SLOP_BASE ?? "origin/main";
@@ -388,5 +388,5 @@ if (command === "baseline") {
 } else if (command === "diff") {
   diffCommand(args);
 } else {
-  fail("usage: node tools/oxlint/slop-ratchet.mjs <baseline|diff>");
+  fail("usage: node lint/oxlint/slop-ratchet.mjs <baseline|diff>");
 }

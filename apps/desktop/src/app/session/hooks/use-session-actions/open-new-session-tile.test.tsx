@@ -15,15 +15,16 @@ import { ensureGatewayProfile } from '@/store/profile'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import {
   requestGateway,
-  requestGatewayForAgent
+  requestGatewayForAgent,
 } from '@/store/gateway'
 import {
   $activeSessionStoredIdRotation,
   $messages,
   $sessions,
-  sessionPinId
+  sessionPinId,
 } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
+import type { ClientSessionState } from '@/store/session'
 
 import { useSessionActions } from './index'
 
@@ -35,12 +36,12 @@ vi.mock('@/hermes', async importOriginal => ({
   getLatestSessionMessages: vi.fn(),
   listAllProfileSessions: vi.fn(),
   setApiRequestProfile: vi.fn(),
-  setSessionArchived: vi.fn()
+  setSessionArchived: vi.fn(),
 }))
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
+  ensureGatewayProfile: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/store/gateway', async importOriginal => ({
@@ -49,7 +50,7 @@ vi.mock('@/store/gateway', async importOriginal => ({
   openGatewayForProfile: vi.fn(),
   requestGateway: vi.fn().mockResolvedValue({ ok: true, stored_session_id: 'stored-1' }),
   requestGatewayForAgent: vi.fn().mockResolvedValue({ ok: true, stored_session_id: 'stored-1' }),
-  retainGatewayForAgent: vi.fn().mockResolvedValue(() => undefined)
+  retainGatewayForAgent: vi.fn().mockResolvedValue(() => undefined),
 }))
 
 type SessionCreateParams = Record<string, unknown>
@@ -74,7 +75,7 @@ function Harness({ onReady }: HarnessProps) {
     activeSessionIdRef: ref<string | null>(null),
     busyRef: ref(false),
     creatingSessionRef: ref(false),
-    ensureSessionState: () => ({}) as SessionInfo,
+    ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
     getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,
@@ -83,9 +84,9 @@ function Harness({ onReady }: HarnessProps) {
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
-    sessionStateByRuntimeIdRef: ref(new Map<string, SessionInfo>()),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
-    updateSessionState: () => ({}) as SessionInfo
+    updateSessionState: () => ({}) as ClientSessionState,
   })
 
   useEffect(() => {
@@ -123,8 +124,8 @@ describe('openNewSessionTile × Bot Mode hidden flag', () => {
 
     await act(() =>
       handle.openNewSessionTile('right', {
-        workspaceScope: { workspaceMode: 'bots' }
-      })
+        workspaceScope: { workspaceMode: 'bots' },
+      }),
     )
 
     const params = extractSessionCreateParams()
@@ -138,8 +139,8 @@ describe('openNewSessionTile × Bot Mode hidden flag', () => {
 
     await act(() =>
       handle.openNewSessionTile('right', {
-        workspaceScope: { workspaceMode: 'sessions' }
-      })
+        workspaceScope: { workspaceMode: 'sessions' },
+      }),
     )
 
     const params = extractSessionCreateParams()
@@ -152,8 +153,8 @@ describe('openNewSessionTile × Bot Mode hidden flag', () => {
 
     await act(() =>
       handle.openNewSessionTile('right', {
-        workspaceScope: { workspaceMode: 'bots' }
-      })
+        workspaceScope: { workspaceMode: 'bots' },
+      }),
     )
 
     const params = extractSessionCreateParams()

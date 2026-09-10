@@ -310,6 +310,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/api/model/options", adapter._handle_model_options)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_get("/v1/peers", adapter._handle_peers)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
@@ -848,6 +849,62 @@ class TestModelsEndpoint:
             "include_unconfigured": True,
             "refresh": True,
         }
+
+
+# ---------------------------------------------------------------------------
+# /v1/peers endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestPeersEndpoint:
+    @pytest.mark.asyncio
+    async def test_peers_returns_registered_bot_peers(self, adapter):
+        """GET /v1/peers lists this gateway's registered ``hermes peer``
+        targets (name + url + note), sorted by name, never including the
+        peer's stored API key."""
+        app = _create_app(adapter)
+        with patch("hermes_cli.config.load_config", return_value={
+            "bot_peers": {
+                "sage": {"url": "http://192.168.1.185:8642", "note": "household ops"},
+                "angela": {"url": "http://100.90.113.22:8643"},
+            }
+        }):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/peers")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["peers"] == [
+                    {"name": "angela", "url": "http://100.90.113.22:8643", "note": None},
+                    {"name": "sage", "url": "http://192.168.1.185:8642", "note": "household ops"},
+                ]
+                # No credential field of any kind is ever present on a peer entry.
+                for peer in data["peers"]:
+                    assert "key" not in peer
+                    assert "token" not in peer
+
+    @pytest.mark.asyncio
+    async def test_peers_returns_empty_list_when_none_configured(self, adapter):
+        app = _create_app(adapter)
+        with patch("hermes_cli.config.load_config", return_value={}):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/peers")
+                assert resp.status == 200
+                assert (await resp.json()) == {"peers": []}
+
+    @pytest.mark.asyncio
+    async def test_peers_tolerates_malformed_entries(self, adapter):
+        """A hand-edited config.yaml with a non-dict peer entry must not 500
+        the endpoint -- it degrades that one entry instead of crashing."""
+        app = _create_app(adapter)
+        with patch("hermes_cli.config.load_config", return_value={
+            "bot_peers": {"broken": "not-a-dict", "ok": {"url": "http://x:1"}}
+        }):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/peers")
+                assert resp.status == 200
+                data = await resp.json()
+                names = [p["name"] for p in data["peers"]]
+                assert names == ["broken", "ok"]
 
 
 # ---------------------------------------------------------------------------

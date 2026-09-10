@@ -19,7 +19,7 @@ from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 MAX_ACTIVE_POLICY_EVENTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 1
+_TRANSCRIPT_SCHEMA_VERSION = 2
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 
 _SCHEMA_DDL = (
@@ -144,27 +144,23 @@ class HostedRoomPolicyCheckpoint:
                     "DELETE FROM hosted_room_policy_transcript WHERE room_id=? AND thread_id=? AND seq<?",
                     (event["room_id"], thread_id, int(cutoff["seq"])))
 
-    def _backfill_transcript(self, conn: sqlite3.Connection, *, room_id: str, through_seq: int) -> None:
-        """Migrate bounded committed thread history from the durable room log."""
-        if through_seq <= 0:
-            return
-        settled_seq_by_message = {
-            message_event_id: int(row["seq"])
-            for row in conn.execute("""SELECT seq, payload_json FROM hosted_room_events
-               WHERE room_id=? AND seq<=? AND kind='turn.settled' ORDER BY seq""", (room_id, through_seq))
-            if (message_event_id := _text(json.loads(row["payload_json"]), "message_event_id"))}
+    def _rebuild_outcome_caches(self, conn: sqlite3.Connection, *, room_id: str, through_seq: int) -> None:
+        """Repair consumed receipts without rewinding active policy or admitted work."""
+        for table in ("hosted_room_policy_publications", "hosted_room_policy_watermarks",
+                      "hosted_room_policy_transcript"):
+            conn.execute(f"DELETE FROM {table} WHERE room_id=?", (room_id,))
         for row in conn.execute(
             f"""SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events
-               WHERE room_id=? AND seq<=? AND kind IN ('message.user', 'message.member')
+               WHERE room_id=? AND seq<=? AND kind IN (
+                   'message.user', 'turn.settled', 'turn.failed', 'turn.cancelled', 'turn.deferred')
                ORDER BY seq""", (room_id, through_seq)):
-            if row["kind"] == "message.member" and row["event_id"] not in settled_seq_by_message:
-                continue
             event = _event_from_room_row(row)
-            thread_id = _text(event["payload"], "thread_id")
-            if thread_id:
-                self._store_transcript_event(
-                    conn, event=event, thread_id=thread_id, settled_seq=settled_seq_by_message.get(str(row["event_id"]))
-                )
+            payload = event["payload"]
+            if event["kind"] == "message.user":
+                if thread_id := _text(payload, "thread_id"):
+                    self._store_transcript_event(conn, event=event, thread_id=thread_id)
+            else:
+                self._record_terminal_event(conn, event, payload)
 
     def _discussion_events(
         self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str
@@ -212,6 +208,13 @@ class HostedRoomPolicyCheckpoint:
         # but must not resurrect a completed discussion's active projection.
         if kind not in _TERMINAL_KINDS:
             return
+        self._record_terminal_event(conn, event, payload)
+
+    def _record_terminal_event(
+        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
+        """Index durable outcomes without reopening their active discussions."""
+        room_id, seq, kind = str(event["room_id"]), int(event["seq"]), _text(event, "kind")
+        thread_id, discussion_event_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
         task_id = _text(payload, "task_id")
         execution_generation = int(payload.get("execution_generation") or 0) if kind == "turn.deferred" else 0
         if task_id:
@@ -258,7 +261,7 @@ class HostedRoomPolicyCheckpoint:
             handler(self, conn, event, payload if isinstance(payload, Mapping) else {})
 
     def _ensure_cursor_and_transcript(self, conn: sqlite3.Connection, room_id: str) -> int:
-        """Create the room cursor if absent, backfill the transcript once, return through_seq."""
+        """Create the cursor and repair outcome caches atomically at the existing position."""
         _require_room(conn, room_id)
         conn.execute("""INSERT OR IGNORE INTO hosted_room_policy_cursors(
                    room_id, through_seq, stopped_through_seq, updated_at
@@ -269,7 +272,7 @@ class HostedRoomPolicyCheckpoint:
         transcript_state = conn.execute(
             "SELECT schema_version FROM hosted_room_policy_transcript_state WHERE room_id=?", (room_id,)).fetchone()
         if transcript_state is None or int(transcript_state["schema_version"]) < _TRANSCRIPT_SCHEMA_VERSION:
-            self._backfill_transcript(conn, room_id=room_id, through_seq=cursor)
+            self._rebuild_outcome_caches(conn, room_id=room_id, through_seq=cursor)
             conn.execute("""INSERT INTO hosted_room_policy_transcript_state(room_id, schema_version)
                    VALUES (?, ?)
                    ON CONFLICT(room_id) DO UPDATE SET schema_version=excluded.schema_version""",

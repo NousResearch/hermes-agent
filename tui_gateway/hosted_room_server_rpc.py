@@ -33,6 +33,9 @@ class HostedRoomServerRPC:
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         envelope = self.server._methods[method](f"hosted-room-{next(self._ids)}", params)
+        return self._result(method, envelope)
+
+    def _result(self, method: str, envelope: Any) -> dict[str, Any]:
         if not isinstance(envelope, dict):
             envelope = {}
         error = envelope.get("error")
@@ -62,8 +65,27 @@ class HostedRoomServerRPC:
             "room_plumbing": True, "follow_profile_config": True, "close_on_disconnect": False})
 
     def resume(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
-        return self._call("session.resume", {
-            "profile": profile, "session_id": session_id, "omit_messages": True, "source": source})
+        from tui_gateway.hosted_room_sessions import resume_hosted_session
+        try:
+            return self._result("session.resume", resume_hosted_session(
+                self.server, f"hosted-room-{next(self._ids)}", {
+                    "profile": profile, "session_id": session_id,
+                    "omit_messages": True, "source": source}))
+        except HostedRoomSessionError as exc:
+            exc.not_admitted = True
+            raise
+
+    def retire_idle(self, *, session_id: str) -> None:
+        """Release an unused reservation after an attempt's pre-submit failure."""
+        from tui_gateway.hosted_room_sessions import retire_hosted_session
+        if (record := self._session_record(session_id)) is not None:
+            # A completed turn retires itself only after its full finalization.
+            # This path is for reservations which never started a turn.
+            if record.get("_run_thread") is None:
+                # An attachment may have started a deferred build. The existing
+                # reaper finishes retirement after that build becomes quiescent.
+                record["_hosted_retirement_pending"] = True
+                retire_hosted_session(self.server, session_id, record)
 
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,

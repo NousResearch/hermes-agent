@@ -1,5 +1,6 @@
 """RoomLink room-member grants and capability HTTP handlers."""
 
+import asyncio
 import time
 import uuid
 from typing import Any, Optional
@@ -71,11 +72,14 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
+    from gateway.platforms import api_server_room_controls
+
     return [
         ("POST", "/v1/room-members/invitations", self._handle_room_member_invitation),
         ("GET", "/v1/room-members/capabilities", self._handle_room_member_capabilities),
         ("POST", "/v1/room-members/grants/refresh", self._handle_room_member_grant_refresh),
-        ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke)]
+        ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke),
+        *api_server_room_controls._http_routes(self)]
 
 
 def _room_grant_token(request: "web.Request") -> str:
@@ -88,13 +92,18 @@ def _room_grant_secret(self) -> bytes:
     return gateway_room_grant_secret()
 
 
-def _decode_request_grant(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
+def _decode_request_grant(
+    self, request: "web.Request", *, permission: str, allow_expired_for_revocation: bool = False,
+) -> dict[str, Any]:
     """Signature/scope/horizon check only (no revocation lookup)."""
     from gateway.hosted_room_peer import decode_room_grant
     token = self._room_grant_token(request)
     if not token:
         raise ValueError("room grant is missing")
-    return decode_room_grant(self._room_grant_secret(), token, permission=permission)
+    return decode_room_grant(
+        self._room_grant_secret(), token, permission=permission,
+        allow_expired_for_revocation=allow_expired_for_revocation,
+    )
 
 
 def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
@@ -219,10 +228,22 @@ async def _handle_room_member_grant_revoke(
         from gateway import hosted_rooms
         # Idempotent: a response-lost retry authenticates with the grant just denylisted, so
         # verify signature/scope/horizon directly (not _room_grant_claims) and upsert the id.
-        claims = _decode_request_grant(self, request, permission="status")
+        claims = _decode_request_grant(self, request, permission="status", allow_expired_for_revocation=True)
         _local_target(claims, _api_request_profile)
         hosted_rooms.revoke_room_grant_scope(
             hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
+    try:
+        from gateway.hosted_room_control_client import revoke_stored_peer_control
+
+        await asyncio.to_thread(
+            revoke_stored_peer_control, hosted_rooms.default_db_path(),
+            room_id=str(claims["room_id"]), member_id=str(claims["member_id"]),
+        )
+    except Exception:
+        return _json_error(
+            _openai_error, "Room control cleanup is pending; retry this revocation.",
+            code="room_control_cleanup_pending", status=503,
+        )
     return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})

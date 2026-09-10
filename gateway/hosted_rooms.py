@@ -531,7 +531,8 @@ _DEPENDENT_TABLES = (
     "hosted_room_policy_transcript_state", "hosted_room_policy_transcript", "hosted_room_policy_publications",
     "hosted_room_policy_watermarks", "hosted_room_policy_events", "hosted_room_policy_threads",
     "hosted_room_policy_cursors", "hosted_room_driver_tasks", "hosted_room_driver_leases", "hosted_room_remote_runs",
-    "hosted_room_links", "hosted_room_peer_reservations", "hosted_room_events")
+    "hosted_room_links", "hosted_room_control_commands", "hosted_room_control_tokens",
+    "hosted_room_peer_controls", "hosted_room_peer_reservations", "hosted_room_events")
 
 
 def _room_ids(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...]) -> list[str]:
@@ -563,6 +564,9 @@ def _prune_disbanded_rooms_locked(
     placeholders = ",".join("?" for _ in candidates)
     room_ids = tuple(sorted(candidates))
     conn.execute(_RETIRE_FROM_ROOMS.format(where=f"room_id IN ({placeholders}) AND disbanded_at IS NOT NULL"), room_ids)
+    from gateway.hosted_room_approval_rules import purge_room_rules
+
+    purge_room_rules(conn, room_ids)
     for table in _DEPENDENT_TABLES:
         if table_exists(conn, table):
             conn.execute(f"DELETE FROM {table} WHERE room_id IN ({placeholders})", room_ids)

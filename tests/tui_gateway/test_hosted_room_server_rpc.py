@@ -47,7 +47,13 @@ def _server():
     return server, calls
 
 
-def test_routes_exact_hidden_session_and_internal_task_proof():
+def test_routes_exact_hidden_session_and_internal_task_proof(monkeypatch):
+    # This test covers adapter envelopes; the two-runtime test exercises reservation
+    # and cold hydration with the installed server, SQLite and exclusive registry.
+    monkeypatch.setattr(
+        "tui_gateway.hosted_room_sessions.resume_hosted_session",
+        lambda backend, rid, params: backend._methods["session.resume"](rid, params),
+    )
     server, calls = _server()
     rpc = HostedRoomServerRPC(server)
     task = TaskIdentity("room", "task", "thread", "turn")

@@ -89,6 +89,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli import kanban_fable
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
@@ -7676,8 +7677,11 @@ def _default_spawn(
     ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
     vars all resolve to the same board the dispatcher claimed the task
     from. Workers cannot accidentally see other boards.
+
+    Tasks assigned to an opted-in Fable lane profile take the external
+    launcher path instead (see :mod:`hermes_cli.kanban_fable`); the return
+    contract is identical.
     """
-    import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
@@ -7768,6 +7772,32 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
+    # Selective Fable lane: when the assignee profile opted in via
+    # ``kanban.fable_lane``, this task runs on the external OAuth-only
+    # Claude Code launcher instead of a normal Hermes worker. Everything
+    # around the swap is identical (env pins, workspace cwd, worker log,
+    # PID for crash detection); only argv changes, and the supervisor
+    # closes the task out because the launcher has no kanban tools.
+    #
+    # Fail closed: preflight raises here, on the dispatcher's thread, so a
+    # missing launcher / missing `claude` is recorded as a spawn failure by
+    # the caller. We never fall through to the normal worker path, which
+    # would answer the task with the profile's ordinary model.
+    fable_cfg = kanban_fable.lane_for_assignee(profile_arg)
+    if fable_cfg is not None:
+        kanban_fable.preflight(fable_cfg, env=env)
+        env = kanban_fable.sanitize_env(env)
+        cmd = kanban_fable.supervisor_argv(
+            task.id, workspace,
+            board=_normalize_board_slug(board) or get_current_board(),
+            run_id=task.current_run_id,
+        )
+        _log.info(
+            "kanban fable lane: task %s dispatched to %s via %s",
+            task.id, kanban_fable.FABLE_MODEL, fable_cfg.launcher,
+        )
+        return _launch_worker(cmd, task, workspace, env, board=board)
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
@@ -7795,6 +7825,25 @@ def _default_spawn(
         "chat",
         "-q", prompt,
     ])
+    return _launch_worker(cmd, task, workspace, env, board=board)
+
+
+def _launch_worker(
+    cmd: list[str],
+    task: Task,
+    workspace: str,
+    env: dict,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
+    """Fire-and-forget ``cmd`` as this task's worker; return its PID.
+
+    Shared by the normal ``hermes -p <assignee>`` worker and the Fable lane
+    supervisor so both get the same per-task log file, rotation, cwd,
+    detached session, and PID contract.
+    """
+    import subprocess
+
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

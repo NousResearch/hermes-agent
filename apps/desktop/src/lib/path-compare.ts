@@ -5,8 +5,19 @@
  *  case. Compare through these rather than `===` / `startsWith`.
  */
 
-/** POSIX-style spelling: one separator, no trailing slash. */
-export const cleanPath = (path: string): string => path.trim().replace(/\\/g, '/').replace(/\/+$/, '') || '/'
+/** POSIX-style spelling: one separator, no trailing slash.
+ *
+ *  Repeated separators collapse as well: `C:/Repos//App` names the same
+ *  directory as `C:/Repos/App`, and a cwd assembled by joining a root that
+ *  already ends in a separator arrives spelled that way. A UNC path keeps its
+ *  leading `//`, the one place a doubled separator carries meaning. */
+export const cleanPath = (path: string): string => {
+  const unified = path.trim().replace(/\\/g, '/')
+  const uncPrefix = unified.startsWith('//') ? '/' : ''
+  const collapsed = unified.replace(/\/{2,}/g, '/').replace(/\/+$/, '')
+
+  return collapsed === '' ? '/' : `${uncPrefix}${collapsed}`
+}
 
 /** Case-folded comparison key. Windows drive/UNC paths are case-insensitive;
  *  POSIX paths are not, and callers that display a path want its real spelling,

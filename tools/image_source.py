@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import platform
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -70,7 +72,10 @@ async def resolve_image_source(
             src=s)
     # Everything else is a filesystem path — including bare relative names like "pic.png"
     # (a path-shape gate here regressed them once).
-    candidate = s[len("file://"):] if s.lower().startswith("file://") else s
+    is_file_uri = s.lower().startswith("file://")
+    candidate = s[len("file://"):] if is_file_uri else s
+    if not is_file_uri:
+        candidate = _translate_windows_msys_path(candidate)
     p = Path(os.path.expanduser(candidate))
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
@@ -146,6 +151,47 @@ async def _download_to_bytes(url: str) -> bytes:
 def _is_local_terminal_backend() -> bool:
     """True when the terminal backend runs directly on the host (keys off ``TERMINAL_ENV``)."""
     return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+
+
+def _translate_windows_msys_path(path: str) -> str:
+    """Translate a raw Git Bash/MSYS path on a local Windows backend.
+
+    ``Path`` does not understand MSYS paths such as ``/tmp/image.png`` on
+    native Windows. Do not translate paths for sandbox backends: there,
+    slash-prefixed paths belong to the sandbox's filesystem and must retain
+    the confinement behavior below. UNC paths likewise remain untouched.
+    """
+    if (
+        platform.system() != "Windows"
+        or not _is_local_terminal_backend()
+        or not path.startswith("/")
+        or path.startswith("//")
+    ):
+        return path
+
+    try:
+        result = subprocess.run(
+            ["cygpath", "-w", path],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        raise SourceNotFound(_windows_msys_path_error(path), src=path, origin="file")
+
+    translated = result.stdout.strip() if result.returncode == 0 else ""
+    if translated:
+        return translated
+    raise SourceNotFound(_windows_msys_path_error(path), src=path, origin="file")
+
+
+def _windows_msys_path_error(path: str) -> str:
+    return (
+        f"'{path}' looks like a Unix-style path. On Windows, provide a "
+        r"Windows-style absolute path such as 'C:\Users\...\image.png', "
+        "or run Hermes from Git Bash with cygpath available."
+    )
 
 
 # Host-side media caches: the only host paths vision may read under a non-local backend

@@ -100,6 +100,46 @@ describe('the catalog owns model curation', () => {
     expect(screen.queryByText(/Gemini 3\.1 Pro/i)).toBeNull()
   })
 
+  it('drops subscription-locked models once the free tier is known', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          free_tier: true,
+          models: ['gemini-3.1-pro', 'gemini-2.5-flash'],
+          name: 'Google',
+          slug: 'google',
+          unavailable_models: ['gemini-3.1-pro']
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText(/Gemini 2\.5 Flash/i)
+    expect(screen.queryByText(/Gemini 3\.1 Pro/i)).toBeNull()
+  })
+
+  it('keeps every model listed while entitlement is still pending (fail-closed marker is not a filter)', async () => {
+    // Cold cache: the backend marks ALL models unavailable until the tier
+    // resolves. Blanking the section then is worse than briefly listing them.
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          free_tier_pending: true,
+          models: ['gemini-3.1-pro', 'gemini-2.5-flash'],
+          name: 'Google',
+          slug: 'google',
+          unavailable_models: ['gemini-3.1-pro', 'gemini-2.5-flash']
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText(/Gemini 2\.5 Flash/i)
+    expect(screen.getByText(/Gemini 3\.1 Pro/i)).toBeTruthy()
+  })
+
   it('still finds a hidden model by search — curation narrows the default view, not the catalog', async () => {
     setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
 

@@ -42,6 +42,8 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
+_CACHE_MOUNTS_LABEL_KEY = "hermes-cache-mounts"
+_CACHE_MOUNTS_LABEL_VALUE = "v1"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -584,7 +586,9 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
-            _EGRESS_LABEL_KEY: egress_label}
+            _EGRESS_LABEL_KEY: egress_label,
+            _CACHE_MOUNTS_LABEL_KEY: _CACHE_MOUNTS_LABEL_VALUE,
+        }
         # Saved for container recreation on "No such container" recovery.
         self._image = image
         self._image_uses_s6_init = image_uses_s6_init
@@ -974,7 +978,9 @@ class DockerEnvironment(BaseEnvironment):
             "--filter", "label=hermes-agent=1",
             "--filter", f"label=hermes-task-id={task_label}",
             "--filter", f"label=hermes-profile={profile_label}",
-            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
+            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}",
+            "--filter", f"label={_CACHE_MOUNTS_LABEL_KEY}={_CACHE_MOUNTS_LABEL_VALUE}",
+        ]
         result = _docker_query(
             [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",

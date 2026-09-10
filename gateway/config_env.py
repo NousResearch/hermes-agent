@@ -341,13 +341,6 @@ def _qq_home(config: GatewayConfig, qq_config: PlatformConfig) -> None:
         )
 
 
-def _session_settings(config: GatewayConfig) -> None:
-    for env, attr in (("SESSION_IDLE_MINUTES", "idle_minutes"), ("SESSION_RESET_HOUR", "at_hour")):
-        if raw := getenv(env):
-            with contextlib.suppress(ValueError):
-                setattr(config.default_reset_policy, attr, int(raw))
-
-
 def _plugin_probe_seed(entry) -> Optional[dict]:
     """``env_enablement_fn()`` result as a non-empty dict, else None."""
     if entry.env_enablement_fn is None:
@@ -623,7 +616,7 @@ _ENV_STEPS: tuple = (
         ),
         home="YUANBAO_HOME_CHANNEL",
     ),
-    _session_settings,
+
     _enable_plugin_platforms_from_env,
     _relay,
     _scrub_explicit_markers,

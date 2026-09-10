@@ -62,4 +62,32 @@ describe('enhanced keyboard modifier parsing', () => {
     expect(right.key.rightArrow).toBe(true)
     expect(right.key.super).toBe(true)
   })
+
+  it('restores uppercase for Shift+letter via kitty CSI u (Ghostty) so the composer gets "R"', () => {
+    // Ghostty with TERM=xterm-ghostty reports Shift+R as CSI 82;2u. The
+    // parser lowercases the keycode to name 'r' and sets shift=true; the
+    // input layer must re-capitalize so the composer receives 'R', not 'r'.
+    const shiftR = new InputEvent(parseOne('\u001b[82;2u'))
+    expect(shiftR.key.shift).toBe(true)
+    expect(shiftR.input).toBe('R')
+
+    const shiftA = new InputEvent(parseOne('\u001b[65;2u'))
+    expect(shiftA.input).toBe('A')
+
+    // Plain lowercase must stay lowercase.
+    const plainR = new InputEvent(parseOne('\u001b[114;1u'))
+    expect(plainR.key.shift).toBe(false)
+    expect(plainR.input).toBe('r')
+  })
+
+  it('restores uppercase for Shift+letter via xterm modifyOtherKeys so the composer gets "R"', () => {
+    // modifyOtherKeys form of the same bug: Shift+R is [27;2;82~.
+    const shiftR = new InputEvent(parseOne('\u001b[27;2;82~'))
+    expect(shiftR.key.shift).toBe(true)
+    expect(shiftR.input).toBe('R')
+
+    const plainR = new InputEvent(parseOne('\u001b[27;1;114~'))
+    expect(plainR.key.shift).toBe(false)
+    expect(plainR.input).toBe('r')
+  })
 })

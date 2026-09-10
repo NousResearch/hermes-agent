@@ -63,6 +63,7 @@ def _make_compressor():
     c.last_real_prompt_tokens = 0
     c.last_compression_rough_tokens = 0
     c.awaiting_real_usage_after_compression = False
+    c.max_tail_message_floor = 0
     return c
 
 

@@ -94,3 +94,10 @@ def take_turn_author_from_env(environ: MutableMapping[str, str] = os.environ) ->
 def turn_author_env(author: Dict[str, Any]) -> Dict[str, str]:
     """The environment entry a dispatcher merges into a child's env."""
     return {TURN_AUTHOR_ENV: json.dumps(author, separators=(",", ":"))}
+
+
+def a2a_key(author: Optional[Dict[str, Any]]) -> Optional[str]:
+    """``a2a:<bot id>``, the shared name for a bot author's turns. None for a human or an id-less bot."""
+    if not isinstance(author, dict) or not author.get("is_bot") or not author.get("id"):
+        return None
+    return f"a2a:{author['id']}"

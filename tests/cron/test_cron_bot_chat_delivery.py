@@ -145,7 +145,7 @@ def test_deliver_runs_canonical_bot_chat_lane():
     assert not any("the output" in str(a) for a in argv)
 
 
-def test_deliver_named_profile_uses_p_flag_and_clears_home():
+def test_deliver_named_profile_uses_p_flag_and_points_home_at_root():
     calls = {}
 
     def fake_run(argv, **kwargs):
@@ -155,14 +155,20 @@ def test_deliver_named_profile_uses_p_flag_and_clears_home():
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
          mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-         mock.patch.dict(sched.os.environ, {"HERMES_HOME": "/tmp/other-profile"}):
+         mock.patch.dict(sched.os.environ, {"HERMES_HOME": "/tmp/other-profile"}), \
+         mock.patch("hermes_constants.get_default_hermes_root",
+                    return_value=sched.Path("/opt/data")):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "research")
 
     assert err is None
     argv = calls["argv"]
     assert argv[1:3] == ["-p", "research"]
-    # -p owns resolution; the scheduler's own HERMES_HOME must not leak in.
-    assert "HERMES_HOME" not in calls["kwargs"]["env"]
+    # -p resolves the profile, but only against the deployment root. HERMES_HOME
+    # must be SET to that root (not dropped): dropping it makes the child fall
+    # back to ~/.hermes, so a Docker deployment (HERMES_HOME=/opt/data) fails to
+    # find /opt/data/profiles/research. Regression for the "profile does not
+    # exist" bot-chat delivery failure.
+    assert calls["kwargs"]["env"]["HERMES_HOME"] == "/opt/data"
 
 
 def test_deliver_failure_returns_error_string():

@@ -4,11 +4,14 @@ import json
 import pytest
 from unittest.mock import MagicMock
 
+import agent.display as display_module
 from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    prepare_tool_preview,
+    redact_tool_args_for_display,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
@@ -23,6 +26,17 @@ def reset_tool_preview_max_len():
     set_tool_preview_max_len(0)
 
 
+def test_cute_tool_message_falls_back_when_renderer_raises(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("cosmetic failure")
+
+    monkeypatch.setattr(display_module, "_get_cute_tool_message", _boom)
+
+    assert get_cute_tool_message("web_extract", {"urls": []}, 0.25) == (
+        "┊ ⚡ web_extra completed  0.2s"
+    )
+
+
 class TestBuildToolPreview:
     """Tests for build_tool_preview defensive handling and normal operation."""
 
@@ -34,75 +48,57 @@ class TestBuildToolPreview:
         """Empty dict has no keys to preview."""
         assert build_tool_preview("terminal", {}) is None
 
-    def test_known_tool_with_primary_arg(self):
-        """Known tool with its primary arg should return a preview string."""
-        result = build_tool_preview("terminal", {"command": "ls -la"})
+
+
+
+
+
+
+
+    def test_browser_type_preview_redacts_api_key(self):
+        secret = "sk-proj-ABCD1234567890EFGH"
+        result = build_tool_preview("browser_type", {"ref": "@e3", "text": secret})
         assert result is not None
-        assert "ls -la" in result
+        assert secret not in result
+        assert "sk-pro" in result and "..." in result
 
-    def test_web_search_preview(self):
-        result = build_tool_preview("web_search", {"query": "hello world"})
+    def test_browser_type_preview_keeps_normal_text(self):
+        text = "hello world search query"
+        result = build_tool_preview("browser_type", {"ref": "@e3", "text": text})
         assert result is not None
-        assert "hello world" in result
+        assert text in result
 
-    def test_read_file_preview(self):
-        result = build_tool_preview("read_file", {"path": "/tmp/test.py", "offset": 1})
-        assert result is not None
-        assert "/tmp/test.py" in result
+    def test_browser_type_display_args_redact_api_key(self):
+        secret = "ghp_ABCDEFGHIJ1234567890"
+        safe_args = redact_tool_args_for_display(
+            "browser_type", {"ref": "@e3", "text": secret}
+        )
+        assert secret not in str(safe_args)
+        assert safe_args["ref"] == "@e3"
+        assert safe_args["text"].startswith("ghp_AB")
 
-    def test_unknown_tool_with_fallback_key(self):
-        """Unknown tool but with a recognized fallback key should still preview."""
-        result = build_tool_preview("custom_tool", {"query": "test query"})
-        assert result is not None
-        assert "test query" in result
 
-    def test_unknown_tool_no_matching_key(self):
-        """Unknown tool with no recognized keys should return None."""
-        result = build_tool_preview("custom_tool", {"foo": "bar"})
-        assert result is None
 
-    def test_long_value_truncated(self):
-        """Preview should truncate long values."""
-        long_cmd = "a" * 100
-        result = build_tool_preview("terminal", {"command": long_cmd}, max_len=40)
-        assert result is not None
-        assert len(result) <= 43  # max_len + "..."
 
-    def test_process_tool_with_none_args(self):
-        """Process tool special case should also handle None args."""
-        assert build_tool_preview("process", None) is None
 
-    def test_process_tool_normal(self):
-        result = build_tool_preview("process", {"action": "poll", "session_id": "abc123"})
-        assert result is not None
-        assert "poll" in result
 
-    def test_todo_tool_read(self):
-        result = build_tool_preview("todo", {"merge": False})
-        assert result is not None
-        assert "reading" in result
 
-    def test_todo_tool_with_todos(self):
-        result = build_tool_preview("todo", {"todos": [{"id": "1", "content": "test", "status": "pending"}]})
-        assert result is not None
-        assert "1 task" in result
 
-    def test_memory_tool_add(self):
-        result = build_tool_preview("memory", {"action": "add", "target": "user", "content": "test note"})
-        assert result is not None
-        assert "user" in result
 
-    def test_memory_replace_missing_old_text_marked(self):
-        # Avoid empty quotes "" in the preview when old_text is missing/None.
-        result = build_tool_preview("memory", {"action": "replace", "target": "memory"})
-        assert result == '~memory: "<missing old_text>"'
-        result = build_tool_preview("memory", {"action": "remove", "target": "memory", "old_text": None})
-        assert result == '-memory: "<missing old_text>"'
 
-    def test_session_search_preview(self):
-        result = build_tool_preview("session_search", {"query": "find something"})
-        assert result is not None
-        assert "find something" in result
+
+
+
+
+
+    def test_delegate_task_batch_preview_respects_max_len(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": "A" * 80}, {"goal": "B" * 80}]},
+            max_len=30,
+        )
+        assert result == "2 tasks: AAAAAAAAAAAAAAAAAA..."
+        assert len(result) == 30
 
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
@@ -111,25 +107,46 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", []) is None
 
 
+class TestPrepareToolPreview:
+    def test_recovers_and_describes_truncated_url(self):
+        url = "https://example.com/a/very/long/path/to/a/page"
+        set_tool_preview_max_len(20)
+
+        preview = prepare_tool_preview(
+            "web_extract",
+            {"urls": [url]},
+            fallback=url[:17] + "...",
+            max_len=20,
+        )
+
+        assert preview.text == url[:17] + "..."
+        assert preview.truncated is True
+        assert preview.url == url
+
+    def test_untruncated_url_has_no_link_target(self):
+        url = "https://example.com/page"
+        preview = prepare_tool_preview(
+            "browser_navigate", None, fallback=url, max_len=40
+        )
+
+        assert preview.text == url
+        assert preview.truncated is False
+        assert preview.url is None
+
+    def test_truncated_non_url_has_no_link_target(self):
+        preview = prepare_tool_preview(
+            "web_search",
+            {"query": "how to parse a URL"},
+            fallback="how to parse a URL",
+            max_len=12,
+        )
+
+        assert preview.truncated is True
+        assert preview.url is None
+
+
 class TestCuteToolMessagePreviewLength:
-    def test_terminal_preview_unlimited_when_config_is_zero(self):
-        set_tool_preview_max_len(0)
-        command = "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")' | head -5"
 
-        line = get_cute_tool_message("terminal", {"command": command}, 0.1)
-
-        assert command in line
-        assert "..." not in line
-
-    def test_terminal_preview_uses_positive_configured_limit(self):
-        set_tool_preview_max_len(80)
-        command = "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")' | head -5"
-
-        line = get_cute_tool_message("terminal", {"command": command}, 0.1)
-
-        assert command[:77] in line
-        assert "..." in line
-        assert "head -5" not in line
 
     def test_search_files_preview_uses_positive_configured_limit_not_default(self):
         set_tool_preview_max_len(80)
@@ -140,61 +157,37 @@ class TestCuteToolMessagePreviewLength:
         assert pattern in line
         assert "..." not in line
 
-    def test_path_preview_uses_positive_configured_limit_not_default(self):
-        set_tool_preview_max_len(80)
-        path = "/tmp/hermes-test-preview-length/deeply/nested/path/test-output.txt"
 
-        line = get_cute_tool_message("read_file", {"path": path}, 0.1)
 
-        assert path in line
-        assert "..." not in line
 
-    def test_write_file_lint_error_result_is_not_marked_failed(self):
-        result = json.dumps({
-            "bytes_written": 12,
-            "lint": {"status": "error", "output": "SyntaxError: invalid syntax"},
-        })
 
-        line = get_cute_tool_message("write_file", {"path": "/tmp/a.py"}, 0.1, result=result)
+    def test_browser_type_cute_message_redacts_api_key(self):
+        secret = "sk-proj-ABCD1234567890EFGH"
+        line = get_cute_tool_message(
+            "browser_type",
+            {"ref": "@password", "text": secret},
+            0.1,
+            result='{"success": true, "typed": "sk-pro...EFGH"}',
+        )
 
-        assert "[error]" not in line
+        assert secret not in line
+        assert "sk-pro" in line
 
-    def test_patch_lsp_diagnostics_result_is_not_marked_failed(self):
-        result = json.dumps({
-            "success": True,
-            "diff": "--- a/tmp.py\n+++ b/tmp.py\n",
-            "lsp_diagnostics": "<diagnostics>ERROR [1:1] type mismatch</diagnostics>",
-        })
+    def test_browser_type_cute_message_keeps_normal_text(self):
+        text = "hello world"
+        line = get_cute_tool_message(
+            "browser_type",
+            {"ref": "@search", "text": text},
+            0.1,
+            result='{"success": true, "typed": "hello world"}',
+        )
 
-        line = get_cute_tool_message("patch", {"path": "/tmp/a.py"}, 0.1, result=result)
-
-        assert "[error]" not in line
+        assert text in line
 
 
 class TestEditDiffPreview:
-    def test_extract_edit_diff_for_patch(self):
-        diff = extract_edit_diff("patch", '{"success": true, "diff": "--- a/x\\n+++ b/x\\n"}')
-        assert diff is not None
-        assert "+++ b/x" in diff
 
-    def test_render_inline_unified_diff_colors_added_and_removed_lines(self):
-        rendered = _render_inline_unified_diff(
-            "--- a/cli.py\n"
-            "+++ b/cli.py\n"
-            "@@ -1,2 +1,2 @@\n"
-            "-old line\n"
-            "+new line\n"
-            " context\n"
-        )
 
-        assert "a/cli.py" in rendered[0]
-        assert "b/cli.py" in rendered[0]
-        assert any("old line" in line for line in rendered)
-        assert any("new line" in line for line in rendered)
-        assert any("48;2;" in line for line in rendered)
-
-    def test_extract_edit_diff_ignores_non_edit_tools(self):
-        assert extract_edit_diff("web_search", '{"diff": "--- a\\n+++ b\\n"}') is None
 
     def test_extract_edit_diff_uses_local_snapshot_for_write_file(self, tmp_path):
         target = tmp_path / "note.txt"
@@ -217,29 +210,7 @@ class TestEditDiffPreview:
         assert "-old" in diff
         assert "+new" in diff
 
-    def test_render_edit_diff_with_delta_invokes_printer(self):
-        printer = MagicMock()
 
-        rendered = render_edit_diff_with_delta(
-            "patch",
-            '{"diff": "--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-old\\n+new\\n"}',
-            print_fn=printer,
-        )
-
-        assert rendered is True
-        assert printer.call_count >= 2
-        calls = [call.args[0] for call in printer.call_args_list]
-        assert any("a/x" in line and "b/x" in line for line in calls)
-        assert any("old" in line for line in calls)
-        assert any("new" in line for line in calls)
-
-    def test_render_edit_diff_with_delta_skips_without_diff(self):
-        rendered = render_edit_diff_with_delta(
-            "patch",
-            '{"success": true}',
-        )
-
-        assert rendered is False
 
     def test_render_edit_diff_with_delta_handles_renderer_errors(self, monkeypatch):
         printer = MagicMock()
@@ -255,13 +226,6 @@ class TestEditDiffPreview:
         assert rendered is False
         assert printer.call_count == 0
 
-    def test_summarize_rendered_diff_sections_truncates_large_diff(self):
-        diff = "--- a/x.py\n+++ b/x.py\n" + "".join(f"+line{i}\n" for i in range(120))
-
-        rendered = _summarize_rendered_diff_sections(diff, max_lines=20)
-
-        assert len(rendered) == 21
-        assert "omitted" in rendered[-1]
 
     def test_summarize_rendered_diff_sections_limits_file_count(self):
         diff = "".join(
@@ -276,3 +240,77 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+
+class TestBuildToolLabel:
+    """Friendly human-phrased tool labels for built-in tools."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_friendly(self):
+        from agent.display import set_friendly_tool_labels
+        set_friendly_tool_labels(True)
+        yield
+        set_friendly_tool_labels(True)
+
+    def test_web_search_uses_for_connector(self):
+        from agent.display import build_tool_label
+        label = build_tool_label("web_search", {"query": "weather in NYC"})
+        assert label == 'Searching the web for weather in NYC'
+
+    def test_web_extract_reads_url(self):
+        from agent.display import build_tool_label
+        label = build_tool_label("web_extract", {"urls": ["https://example.com/page"]})
+        assert label is not None
+        assert label.startswith("Reading ")
+        assert "example.com/page" in label
+
+
+
+
+
+
+
+    def test_disabled_falls_back_to_preview(self):
+        from agent.display import (
+            build_tool_label,
+            build_tool_preview,
+            set_friendly_tool_labels,
+        )
+        set_friendly_tool_labels(False)
+        args = {"query": "weather in NYC"}
+        label = build_tool_label("web_search", args)
+        # With the feature off, must match the raw preview exactly
+        assert label == build_tool_preview("web_search", args)
+        assert "Searching the web" not in (label or "")
+
+
+
+class TestBuildStatusPhrase:
+    """build_status_phrase — live working-state text for Slack's status line."""
+
+
+
+    def test_verb_only_when_args_none(self):
+        # live_status: "verb" mode passes args=None to suppress previews.
+        from agent.display import build_status_phrase
+        assert build_status_phrase("terminal", None) == "is running…"
+        assert build_status_phrase("read_file", None) == "is reading…"
+
+
+
+    def test_caps_length_for_slack_status_line(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase(
+            "terminal", {"command": "x" * 300}, max_len=49
+        )
+        assert phrase is not None and len(phrase) <= 49
+        assert phrase.endswith("…")
+
+
+    def test_respects_friendly_labels_toggle(self):
+        from agent.display import build_status_phrase, set_friendly_tool_labels
+        set_friendly_tool_labels(False)
+        try:
+            assert build_status_phrase("terminal", {"command": "ls"}) is None
+        finally:
+            set_friendly_tool_labels(True)

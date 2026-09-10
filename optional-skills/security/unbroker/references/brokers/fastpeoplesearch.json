@@ -1,0 +1,44 @@
+{
+  "id": "fastpeoplesearch",
+  "name": "FastPeopleSearch",
+  "category": "people_search",
+  "priority": "high",
+  "jurisdictions": ["US"],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.fastpeoplesearch.com/",
+    "fetch": "browser",
+    "antibot": "datadome",
+    "match_signal": "result",
+    "match_signal_notes": "SEO TRAP: title/H1/intro echoes the query ('Over 100+ FREE public records found for {Name}') with no real match behind it, and /name/{first}-{last} list pages are fuzzy-SURNAME namesakes (different states, no address overlap). Record `found` ONLY on a result CARD corroborated by the subject's address or DOB. Ignore templated title/intro/H1 text.",
+    "by": ["name", "phone", "address"],
+    "url_patterns": {
+      "name": "https://www.fastpeoplesearch.com/name/{first}-{last}"
+    },
+    "url_format_quirks": [
+      "Name path /name/jane-public (lowercase, hyphen join) was ACCEPTED by the router under challenge, so the name pattern is confirmed even though content never rendered.",
+      "Sibling of truepeoplesearch (near-identical removal flow/branding); phone pattern is LIKELY /{digits} or /phone/{digits} and address /address/... but UNCONFIRMED - do not assume.",
+      "MOST aggressively gated of the people-search trio (2026-06-30): both server-side scraping (Firecrawl 504) AND headless browser (Cloudflare -> DataDome) fail on search AND /removal. Treat as fully blocked; needs residential-proxy/stealth browser to scan or opt out."
+    ]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "web_form",
+    "url": "https://www.fastpeoplesearch.com/removal",
+    "requires": {
+      "profile_url": false,
+      "email_verification": true,
+      "captcha": true,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["full_name", "contact_email"],
+    "notes": "Opt-out NOT directly observed (2026-06-30): /removal is itself behind DataDome. By sibling-site pattern almost certainly mirrors truepeoplesearch (email-link flow, subject/agent toggle, name+email fields, hCaptcha) - INFERRED, not verified. Confirm before acting.",
+    "est_processing_days": 3,
+    "reappearance_risk": "high"
+  },
+  "last_verified": "2026-06-30",
+  "source": "BADBOOL"
+}

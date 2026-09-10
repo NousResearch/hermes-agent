@@ -47,9 +47,10 @@ fallback_model:
 
 | 提供商 | 值 | 要求 |
 |----------|-------|-------------|
+| AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal`（全新安装）或 `hermes auth add nous`（OAuth） |
-| OpenAI Codex | `openai-codex` | `hermes model`（ChatGPT OAuth） |
+| OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth） |
 | GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `GITHUB_TOKEN` |
 | GitHub Copilot ACP | `copilot-acp` | 外部进程（编辑器集成） |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` 或 Claude Code 凭据 |
@@ -62,7 +63,6 @@ fallback_model:
 | GMI Cloud | `gmi` | `GMI_API_KEY`（可选：`GMI_BASE_URL`） |
 | StepFun | `stepfun` | `STEPFUN_API_KEY`（可选：`STEPFUN_BASE_URL`） |
 | Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
-| Google Gemini（OAuth） | `google-gemini-cli` | `hermes model`（Google OAuth；可选：`HERMES_GEMINI_PROJECT_ID`） |
 | Google AI Studio | `gemini` | `GOOGLE_API_KEY`（别名：`GEMINI_API_KEY`） |
 | xAI（Grok） | `xai`（别名 `grok`） | `XAI_API_KEY`（可选：`XAI_BASE_URL`） |
 | xAI Grok OAuth（SuperGrok） | `xai-oauth`（别名 `grok-oauth`） | `hermes model` → xAI Grok OAuth（浏览器登录；需 SuperGrok 订阅） |
@@ -166,12 +166,12 @@ fallback_model:
 |---------|-------------------|
 | CLI 会话 | ✔ |
 | 消息网关（Telegram、Discord 等） | ✔ |
-| 子 Agent 委派 | ✘（子 Agent 不继承备用配置） |
-| Cron 任务 | ✘（使用固定提供商运行） |
+| 子 Agent 委派 | ✔（子 Agent 继承父 Agent 的备用链） |
+| Cron 任务 | ✔（Cron Agent 继承配置的备用提供商） |
 | 辅助任务（视觉、压缩等） | ✘（使用各自的提供商链——见下文） |
 
 :::tip
-`fallback_model` 没有对应的环境变量——它只能通过 `config.yaml` 配置。这是有意为之：备用配置是一个经过深思熟虑的选择，不应被过期的 shell 导出变量覆盖。
+没有针对主备用链的环境变量——只能通过 `config.yaml` 或 `hermes fallback` 进行配置。这是有意为之：备用配置是一个经过深思熟虑的选择，不应被过期的 shell 导出变量覆盖。
 :::
 
 ---
@@ -185,19 +185,19 @@ Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己�
 | 任务 | 功能说明 | 配置键 |
 |------|-------------|-----------|
 | 视觉 | 图像分析、浏览器截图 | `auxiliary.vision` |
-| 网页提取 | 网页内容摘要 | `auxiliary.web_extract` |
 | 压缩 | 上下文压缩摘要 | `auxiliary.compression` |
 | Skills Hub | 技能搜索与发现 | `auxiliary.skills_hub` |
 | MCP | MCP 辅助操作 | `auxiliary.mcp` |
 | 审批 | 智能命令审批分类 | `auxiliary.approval` |
 | 标题生成 | 会话标题摘要 | `auxiliary.title_generation` |
+| 评审 | `/review` 评审子智能体（完整智能体，而非单次 LLM 调用） | `auxiliary.review` |
 | Triage Specifier | `hermes kanban specify` / 看板（kanban）✨ 按钮——将单行 triage 任务扩展为完整规格 | `auxiliary.triage_specifier` |
 
 ### 自动检测链
 
 当任务的提供商设置为 `"auto"`（默认值）时，Hermes 按顺序尝试各提供商，直到找到可用的：
 
-**文本任务（压缩、网页提取等）：**
+**文本任务（压缩等）：**
 
 ```text
 OpenRouter → Nous Portal → 自定义端点 → Codex OAuth →
@@ -224,10 +224,6 @@ auxiliary:
     model: ""                     # 例如 "openai/gpt-4o"
     base_url: ""                  # 直接端点（优先于 provider）
     api_key: ""                   # base_url 的 API 密钥
-
-  web_extract:
-    provider: "auto"
-    model: ""
 
   compression:
     provider: "auto"
@@ -272,7 +268,7 @@ fallback_model:
 | `"auto"` | 按顺序尝试各提供商直到找到可用的（默认） | 至少配置一个提供商 |
 | `"openrouter"` | 强制使用 OpenRouter | `OPENROUTER_API_KEY` |
 | `"nous"` | 强制使用 Nous Portal | `hermes auth` |
-| `"codex"` | 强制使用 Codex OAuth | `hermes model` → Codex |
+| `"codex"` | 强制使用 Codex OAuth | `hermes model` → ChatGPT or Codex Subscription |
 | `"main"` | 使用主 Agent 当前的提供商（仅限辅助任务） | 已配置活跃的主提供商 |
 | `"anthropic"` | 强制使用 Anthropic 原生 | `ANTHROPIC_API_KEY` 或 Claude Code 凭据 |
 
@@ -362,7 +358,7 @@ auxiliary:
 
 ## 委派提供商覆盖
 
-由 `delegate_task` 生成的子 Agent **不会**使用主备用模型。但可以将它们路由到不同的提供商:模型对以优化成本：
+由 `delegate_task` 生成的子 Agent 会继承父 Agent 的主备用链。你仍然可以将子 Agent 路由到不同的主提供商:模型对以进行成本优化：
 
 ```yaml
 delegation:
@@ -378,7 +374,7 @@ delegation:
 
 ## Cron 任务提供商
 
-Cron 任务使用执行时配置的提供商运行，不支持备用模型。若要为 Cron 任务使用不同的提供商，请在 Cron 任务本身上配置 `provider` 和 `model` 覆盖：
+Cron 任务在创建 Agent 时会继承你配置的 `fallback_providers` 链（或旧版 `fallback_model`）。要为 Cron 任务使用不同的主提供商，请在 Cron 任务本身配置 `provider` 和 `model` 覆盖：
 
 ```python
 cronjob(
@@ -398,11 +394,10 @@ cronjob(
 
 | 功能 | 备用机制 | 配置位置 |
 |---------|-------------------|----------------|
-| 主 Agent 模型 | `fallback_model`（config.yaml 中）——出错时按轮次故障转移（每轮次恢复主模型） | `fallback_model:`（顶层） |
+| 主 Agent 模型 | `fallback_providers`（config.yaml 中）——出错时按轮次故障转移（每轮次恢复主模型） | `fallback_providers:`（顶层列表） |
 | 辅助任务（任意）— auto 用户 | 容量错误时完整自动检测链（主 Agent 模型优先，然后提供商链） | `auxiliary.<task>.provider: auto` |
 | 辅助任务（任意）— 显式提供商 | `fallback_chain`（若已设置）→ 主 Agent 模型 → 警告 + 抛出，仅在容量错误时触发 | `auxiliary.<task>.fallback_chain` |
 | 视觉 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.vision` |
-| 网页提取 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.web_extract` |
 | 上下文压缩 | 分层（见上文）；所有层不可用时降级为无摘要 | `auxiliary.compression` |
 | Skills Hub | 分层（见上文） | `auxiliary.skills_hub` |
 | MCP 辅助 | 分层（见上文） | `auxiliary.mcp` |

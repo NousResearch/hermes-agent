@@ -44,6 +44,12 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('settings.appearance.title')).toBe('外觀')
     expect(translateNow('settings.nav.providerApiKeys')).toBe('API 金鑰')
+
+    setRuntimeI18nLocale('ar')
+    expect(translateNow('settings.appearance.reasoningCollapsedTitle')).toBe('طي التفكير افتراضيًا')
+    expect(translateNow('settings.appearance.reasoningCollapsedDesc')).toBe(
+      'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.'
+    )
   })
 
   it('keeps translated settings field copy addressable from schema keys', () => {
@@ -53,13 +59,13 @@ describe('desktop i18n runtime translator', () => {
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
   })
 
-  it('falls back to English when the active locale cannot resolve a key', () => {
-    const boot = TRANSLATIONS.ja.boot as { ready?: string }
+  it.each(['ja', 'ko'] as const)('falls back to English when %s cannot resolve a key', locale => {
+    const boot = TRANSLATIONS[locale].boot as { ready?: string }
     const originalReady = boot.ready
 
     try {
       boot.ready = undefined
-      setRuntimeI18nLocale('ja')
+      setRuntimeI18nLocale(locale)
 
       expect(translateNow('boot.ready')).toBe('Hermes Desktop is ready')
     } finally {

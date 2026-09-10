@@ -29,7 +29,7 @@ https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
     "openrouter": {
       "metadata": {},
       "models": [
-        {"id": "moonshotai/kimi-k2.6", "description": "recommended", "metadata": {}},
+        {"id": "moonshotai/kimi-k3",   "description": "recommended", "metadata": {}},
         {"id": "openai/gpt-5.4",       "description": ""}
       ]
     },
@@ -37,7 +37,7 @@ https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
       "metadata": {},
       "models": [
         {"id": "anthropic/claude-opus-4.7"},
-        {"id": "moonshotai/kimi-k2.6"}
+        {"id": "moonshotai/kimi-k3"}
       ]
     }
   }
@@ -69,7 +69,7 @@ https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
 model_catalog:
   enabled: true
   url: https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
-  ttl_hours: 24
+  ttl_hours: 1
   providers: {}
 ```
 

@@ -1,21 +1,37 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { ErrorState } from '@/components/ui/error-state'
-import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  preventCloseButtonAutoFocus
+} from '@/components/ui/dialog'
+import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
+import { Loader } from '@/components/ui/loader'
+import { Progress } from '@/components/ui/progress'
+import type { DesktopUpdateBlocker, DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
-import { AlertCircle, Check, CheckCircle2, Copy, Loader2, Sparkles, Terminal } from '@/lib/icons'
+import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
+import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
 import {
+  $backendUpdateApply,
+  $backendUpdateChecking,
+  $backendUpdateStatus,
   $updateApply,
   $updateChecking,
   $updateOverlayOpen,
+  $updateOverlayTarget,
   $updateStatus,
+  applyBackendUpdate,
   applyUpdates,
+  checkBackendUpdates,
   checkUpdates,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
@@ -28,26 +44,43 @@ function totalItems(groups: readonly CommitGroup[]) {
 
 export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
-  const status = useStore($updateStatus)
-  const checking = useStore($updateChecking)
-  const apply = useStore($updateApply)
+  const target = useStore($updateOverlayTarget)
+
+  const clientStatus = useStore($updateStatus)
+  const clientChecking = useStore($updateChecking)
+  const clientApply = useStore($updateApply)
+  const backendStatus = useStore($backendUpdateStatus)
+  const backendChecking = useStore($backendUpdateChecking)
+  const backendApply = useStore($backendUpdateApply)
+
+  const isBackend = target === 'backend'
+  const status = isBackend ? backendStatus : clientStatus
+  const checking = isBackend ? backendChecking : clientChecking
+  const apply = isBackend ? backendApply : clientApply
+  const check = isBackend ? checkBackendUpdates : checkUpdates
+  const install = isBackend ? applyBackendUpdate : applyUpdates
 
   useEffect(() => {
     if (open && !status && !checking) {
-      void checkUpdates()
+      void check()
     }
-  }, [checking, open, status])
+  }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
+  const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'error' =
+  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
       ? 'manual'
-      : apply.applying || apply.stage === 'restart'
-        ? 'applying'
-        : apply.stage === 'error'
-          ? 'error'
-          : 'idle'
+      : apply.stage === 'guiSkew'
+        ? 'guiSkew'
+        : apply.applying || apply.stage === 'restart'
+          ? 'applying'
+          : apply.stage === 'error'
+            ? 'error'
+            : 'idle'
+
+  const updateBlockers = !isBackend && apply.error === 'venv-blocked' && apply.blockers?.length ? apply.blockers : null
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -56,30 +89,47 @@ export function UpdatesOverlay() {
 
     setUpdateOverlayOpen(next)
 
-    if (!next && (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual')) {
+    if (
+      !next &&
+      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
+    ) {
       resetUpdateApplyState()
     }
   }
 
   const handleInstall = () => {
-    void applyUpdates()
+    void install()
   }
 
   return (
     <Dialog onOpenChange={handleClose} open={open}>
+      {/* This dialog has no inputs, so Radix's default autofocus would land on
+          the close button and trigger its tooltip immediately on open. */}
       <DialogContent
-        className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
+        bodyClassName="overflow-hidden p-0 gap-0"
+        className="max-w-sm"
+        onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
       >
-        {phase === 'applying' && <ApplyingView apply={apply} />}
+        {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
 
         {phase === 'manual' && (
-          <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} />
+          <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
         )}
 
-        {phase === 'error' && (
+        {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
+
+        {phase === 'error' && updateBlockers ? (
+          <BlockerView
+            blockers={updateBlockers}
+            onDismiss={() => handleClose(false)}
+            onStopAndUpdate={() => void applyUpdates({ stopSafeBlockers: true })}
+          />
+        ) : null}
+
+        {phase === 'error' && !updateBlockers ? (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
-        )}
+        ) : null}
 
         {phase === 'idle' && (
           <IdleView
@@ -88,8 +138,10 @@ export function UpdatesOverlay() {
             commits={status?.commits ?? []}
             onInstall={handleInstall}
             onLater={() => handleClose(false)}
-            onRetryCheck={() => void checkUpdates()}
+            onRetryCheck={() => void check()}
             status={status}
+            target={target}
+            updateAvailable={updateAvailable}
           />
         )}
       </DialogContent>
@@ -104,7 +156,9 @@ function IdleView({
   onInstall,
   onLater,
   onRetryCheck,
-  status
+  status,
+  target,
+  updateAvailable
 }: {
   behind: number
   checking: boolean
@@ -113,13 +167,18 @@ function IdleView({
   onLater: () => void
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
+  target: UpdateTarget
+  updateAvailable: boolean
 }) {
   const { t } = useI18n()
   const u = t.updates
 
   if (!status && checking) {
     return (
-      <CenteredStatus icon={<Loader2 className="size-6 animate-spin text-primary" />} title={u.checking} />
+      <CenteredStatus
+        icon={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />}
+        title={u.checking}
+      />
     )
   }
 
@@ -131,7 +190,7 @@ function IdleView({
             {u.tryAgain}
           </Button>
         }
-        icon={<AlertCircle className="size-6 text-muted-foreground" />}
+        icon={<ErrorIcon />}
         title={u.checkFailedTitle}
       />
     )
@@ -156,17 +215,17 @@ function IdleView({
           </Button>
         }
         body={u.connectionRetry}
-        icon={<AlertCircle className="size-6 text-muted-foreground" />}
+        icon={<ErrorIcon />}
         title={u.checkFailedTitle}
       />
     )
   }
 
-  if (behind === 0) {
+  if (!updateAvailable) {
     return (
       <CenteredStatus
-        body={u.latestBody}
-        icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
+        body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
+        icon={<BrandMark className="size-12" />}
         title={u.allSetTitle}
       />
     )
@@ -176,20 +235,22 @@ function IdleView({
   const shownItems = totalItems(groups)
   const remaining = Math.max(0, behind - shownItems)
 
+  // Name what's being updated. In remote mode the overlay acts on the connected
+  // backend, not the local client — say so. When there are no commit rows to
+  // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
+  // instead of generic filler.
+  const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
+
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Sparkles className="size-7" />
-        </span>
+        <BrandMark className="size-16" />
 
-        <DialogTitle className="text-center text-xl">{u.availableTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {u.availableBody}
-        </DialogDescription>
+        <DialogTitle className="text-center text-xl">{title}</DialogTitle>
+        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
-      <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
+      <div className="grid gap-3">
         {groups.map(group => (
           <div key={group.id}>
             <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
@@ -209,88 +270,125 @@ function IdleView({
         <Button className="font-semibold" onClick={onInstall} size="lg">
           {u.updateNow}
         </Button>
-        <button
-          className="text-center text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-          onClick={onLater}
-          type="button"
-        >
+        <Button className="font-medium" onClick={onLater} type="button" variant="text">
           {u.maybeLater}
-        </button>
+        </Button>
       </div>
 
-      {remaining > 0 && (
-        <p className="text-center text-xs text-muted-foreground">
-          {u.moreChanges(remaining)}
-        </p>
-      )}
+      {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
     </div>
   )
 }
 
-function ManualView({ command, onDone }: { command: string; onDone: () => void }) {
+function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
 
   const handleCopy = () => {
+    if (!command) {
+      return
+    }
+
     void writeClipboardText(command).then(() => {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1800)
     })
   }
 
+  // No command (e.g. the Linux sandbox-blocked relaunch): render the explanatory
+  // message + a Done button, not a copy-a-command box.
+  if (!command) {
+    return (
+      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Terminal className="size-8 text-primary" />
+
+          <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
+          <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
+        </div>
+
+        <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
+          {u.done}
+        </Button>
+      </div>
+    )
+  }
+
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Terminal className="size-7" />
-        </span>
+        <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {u.manualBody}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{u.manualBody}</DialogDescription>
       </div>
 
       <button
-        className="group flex w-full items-center justify-between gap-3 rounded-xl border border-border/70 bg-muted/30 px-4 py-3 text-left transition-colors hover:border-border hover:bg-muted/50"
+        className={cn(
+          'group flex w-full items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors',
+          copied ? 'border-primary/50' : 'border-(--stroke-nous) hover:border-(--ui-stroke-secondary)'
+        )}
         onClick={handleCopy}
         type="button"
       >
-        <code className="select-all font-mono text-sm text-foreground">
-          <span className="text-muted-foreground">$ </span>
+        <code className="min-w-0 flex-1 truncate select-all font-mono text-sm text-foreground">
+          <span className="select-none text-muted-foreground">$ </span>
           {command}
         </code>
-        <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground transition-colors group-hover:text-foreground">
-          {copied ? (
-            <>
-              <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              {u.copied}
-            </>
-          ) : (
-            <>
-              <Copy className="size-3.5" />
-              {u.copy}
-            </>
+        <span
+          className={cn(
+            'flex shrink-0 items-center gap-1 text-xs font-medium transition-colors',
+            copied ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
           )}
+        >
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          {copied ? u.copied : u.copy}
         </span>
       </button>
 
-      <p className="text-center text-xs text-muted-foreground">
-        {u.manualPickedUp}
-      </p>
+      <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>
 
-      <Button className="font-semibold" onClick={onDone} size="lg" variant="outline">
+      <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}
       </Button>
     </div>
   )
 }
 
-function ApplyingView({ apply }: { apply: UpdateApplyState }) {
+// Linux GUI/backend skew (#45205): backend updated, but the running desktop app
+// package (AppImage/.deb/.rpm) was NOT changed. Closeable terminal state that
+// tells the user to update/reinstall the desktop app — never claims the GUI was
+// updated.
+function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void }) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <AlertCircle className="size-8 text-amber-500" />
+
+        <DialogTitle className="text-center text-xl">{u.guiSkewTitle}</DialogTitle>
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {message || u.guiSkewBody}
+        </DialogDescription>
+      </div>
+
+      <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
+        {u.done}
+      </Button>
+    </div>
+  )
+}
+
+function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend: boolean }) {
   const { t } = useI18n()
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
+  const body = isBackend ? u.applyingBodyBackend : u.applyingBody
+  const currentMessage = apply.message.trim()
+  const recentLog = apply.log.slice(-4)
 
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
@@ -300,27 +398,134 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="relative flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Loader2 className="size-7 animate-spin" />
-        </span>
+        <Loader className="size-16" label={label} type="lemniscate-bloom" />
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {u.applyingBody}
+        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
+
+        {currentMessage ? (
+          <p className="max-w-lg break-words text-center text-xs leading-5 text-muted-foreground">{currentMessage}</p>
+        ) : null}
+      </div>
+
+      <Progress
+        aria-label={label}
+        indeterminate={percent === null}
+        size="lg"
+        value={percent === null ? 0 : percent / 100}
+      />
+
+      {recentLog.length > 1 ? (
+        <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">
+          {recentLog.map((entry, index) => (
+            <div className="truncate" key={`${entry.at}-${index}`}>
+              {entry.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
+    </div>
+  )
+}
+
+const BLOCKER_COMMAND_LINE_LIMIT = 500
+
+const SENSITIVE_ARGUMENT_NAME =
+  '(?:api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|x[-_]?plex[-_]?token|token|password|passwd|client[-_]?secret|secret|authorization)'
+
+const SENSITIVE_COMMAND_TAIL = new RegExp(
+  `((?:^|\\s)(?:(?:--?)${SENSITIVE_ARGUMENT_NAME}(?:\\s*=\\s*|\\s+)|${SENSITIVE_ARGUMENT_NAME}\\s*(?:=|:)\\s*)).*$`,
+  'i'
+)
+
+const SENSITIVE_QUERY_ARGUMENT = new RegExp(`([?&]${SENSITIVE_ARGUMENT_NAME}=)[^&#\\s]+`, 'gi')
+
+export function formatBlockerCommandLine(commandLine: string): string {
+  const redacted = commandLine
+    .replace(SENSITIVE_QUERY_ARGUMENT, '$1[REDACTED]')
+    .replace(SENSITIVE_COMMAND_TAIL, '$1[REDACTED]')
+
+  const characters = Array.from(redacted)
+
+  return characters.length > BLOCKER_COMMAND_LINE_LIMIT
+    ? `${characters.slice(0, BLOCKER_COMMAND_LINE_LIMIT - 1).join('')}…`
+    : redacted
+}
+
+export function BlockerView({
+  blockers,
+  onDismiss,
+  onStopAndUpdate
+}: {
+  blockers: readonly DesktopUpdateBlocker[]
+  onDismiss: () => void
+  onStopAndUpdate: () => void
+}) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  const safeBlockers = blockers.filter(blocker => blocker.kind === 'local-preview' && blocker.safeToStop)
+  const hasForeignBlockers = safeBlockers.length !== blockers.length
+  const title = hasForeignBlockers ? u.foreignBlockerTitle : u.blockerTitle
+
+  const body = hasForeignBlockers
+    ? safeBlockers.length > 0
+      ? u.mixedBlockerBody
+      : u.foreignBlockerBody
+    : u.blockerBody
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <div className="grid size-12 place-items-center rounded-full bg-warning/15 text-warning">
+          <AlertCircle aria-hidden className="size-6" />
+        </div>
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{title}</DialogTitle>
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {body}
         </DialogDescription>
       </div>
 
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            'h-full rounded-full bg-primary transition-[width] duration-300 ease-out',
-            percent === null && 'w-1/3 animate-pulse'
-          )}
-          style={percent !== null ? { width: `${percent}%` } : undefined}
-        />
+      <div className="grid gap-2">
+        {blockers.map(blocker => {
+          const isSafePreview = blocker.kind === 'local-preview' && blocker.safeToStop
+
+          return (
+            <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-2.5" key={blocker.pid}>
+              <div className="text-sm font-medium">
+                {isSafePreview ? blocker.label || u.localPreview : blocker.name}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {isSafePreview && blocker.port ? u.portLabel(blocker.port) : u.pidLabel(blocker.pid)}
+              </div>
+            </div>
+          )
+        })}
       </div>
 
-      <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
+      <details className="rounded-md border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+        <summary className="cursor-pointer select-none font-medium">{u.technicalDetails}</summary>
+        <div className="mt-2 grid gap-2 font-mono text-[11px] leading-4">
+          {blockers.map(blocker => (
+            <div className="break-all" key={blocker.pid}>
+              PID {blocker.pid} · {formatBlockerCommandLine(blocker.cmdline)}
+            </div>
+          ))}
+        </div>
+      </details>
+
+      <div className="grid gap-1">
+        {safeBlockers.length > 0 ? (
+          <Button className="font-semibold" onClick={onStopAndUpdate} size="lg">
+            {hasForeignBlockers ? u.closePreviewsAndCheckAgain : u.closePreviewsAndUpdate}
+          </Button>
+        ) : null}
+        <Button onClick={onDismiss} variant="text">
+          {u.notNow}
+        </Button>
+      </div>
     </div>
   )
 }
@@ -337,9 +542,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
           {message || u.errorBody}
         </DialogDescription>
       }
-      title={
-        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>
-      }
+      title={<DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>}
     >
       <Button className="font-semibold" onClick={onRetry} size="lg">
         {u.tryAgain}
@@ -365,7 +568,7 @@ function CenteredStatus({
   return (
     <div className="grid gap-4 px-6 pb-6 pt-8 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-muted/40">{icon}</span>
+        {icon}
 
         <DialogTitle className="text-center text-lg">{title}</DialogTitle>
         {body && <DialogDescription className="text-center text-sm">{body}</DialogDescription>}

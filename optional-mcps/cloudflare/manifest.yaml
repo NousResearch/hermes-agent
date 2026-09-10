@@ -1,0 +1,147 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: cloudflare
+description: Full Cloudflare API access via the official remote MCP.
+source: https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/
+
+# Cloudflare's official API MCP server (github.com/cloudflare/mcp) is a
+# managed remote server — nothing to install locally. It fronts the entire
+# Cloudflare API: DNS, Workers, R2, KV, D1, Zero Trust, WAF, Pages, Queues,
+# and everything else in the OpenAPI spec.
+#
+# We pin `?codemode=false` deliberately. The server's default mode fronts
+# the API through its own search()/execute() indirection ("Code Mode"),
+# where the model must query a spec index and then write JavaScript that
+# runs in a provider-side sandbox. Hermes already has progressive tool
+# disclosure (tool_search) — stacking a second, server-side search layer
+# on top of it would mean two search hops before any real call, and our
+# tool_search would only ever see 2 opaque meta-tools instead of the real
+# surface. With codemode=false the server registers each API endpoint as
+# its own tool (~3,300 as of July 2026) with a real JSON Schema derived
+# from the endpoint's path/query/body parameters. Hermes's tool_search
+# then defers the whole surface behind its bridge tools and searches the
+# FULL catalog with complete schemas — one disclosure layer, ours, with
+# total information. Calls go straight to the Cloudflare API; no sandbox
+# indirection.
+transport:
+  type: http
+  url: https://mcp.cloudflare.com/mcp?codemode=false
+
+auth:
+  type: oauth
+  # Native MCP OAuth 2.1 (case 1) — the server publishes AS metadata with
+  # Dynamic Client Registration at https://mcp.cloudflare.com/register.
+  # Hermes's MCP client + mcp_oauth_manager handle discovery, DCR, PKCE,
+  # token exchange, and refresh. During authorization Cloudflare lets you
+  # scope exactly which account permissions the agent gets.
+
+# Tool selection at install time:
+# The surface is ~3,300 endpoint tools. Rather than a manual checklist (or
+# a frozen include list that would block future endpoints), we ship a
+# curated exclude list of glob patterns targeting product families that are
+# enterprise-contract, org-fleet, or read-only-analytics surfaces — dead
+# weight for the personal/dev accounts the catalog serves. Everything else
+# (~1,900 tools: DNS, Workers, R2, KV, D1, Queues, Pages, WAF, rulesets,
+# tunnels, Access, Stream, Images, AI, Vectorize, ...) stays enabled,
+# including endpoints Cloudflare adds later. Users can re-enable any family
+# by deleting its pattern from mcp_servers.cloudflare.tools.exclude.
+tools:
+  default_excluded:
+    # The server's built-in Cloudflare-docs search tool (not an API
+    # endpoint) — redundant with the agent's own web tools.
+    - docs
+    # Radar: public read-only internet trend analytics (~275 tools).
+    # Cloudflare ships a dedicated Radar MCP for this.
+    - "*_radar_*"
+    # Enterprise networking: Magic Transit/WAN, network monitoring,
+    # interconnects, WAN teamnet. (cloudflared tunnels are NOT excluded.)
+    - "*_accounts_magic_*"
+    - "*_accounts_mnm_*"
+    - "*_accounts_cni_*"
+    - "*_accounts_teamnet_*"
+    # Cloudforce One threat-intel analyst platform (enterprise SOC).
+    - "*_accounts_cloudforceone_*"
+    # Zero Trust org-fleet suite: DLP, managed devices, DEX, data-security
+    # posture, email security, SCIM provisioning, SWG gateway policy.
+    # Access (login policies for your own apps) stays enabled.
+    - "*_accounts_dlp_*"
+    - "*_accounts_devices*"
+    - "*_accounts_dex_*"
+    - "*_accounts_datasecurity_*"
+    - "*_accounts_emailsecurity_*"
+    - "*_accounts_scim_*"
+    - "*_accounts_gateway*"
+    - "*_accounts_zerotrust_*"
+    - "*_accounts_one_*"
+    # Security-intel research products: brand protection, threat intel,
+    # URL scanner, CVE scanner, security center.
+    - "*_accounts_brandprotection_*"
+    - "*_accounts_intel_*"
+    - "*_accounts_urlscanner_*"
+    - "*_accounts_vuln_scanner_*"
+    - "*_zones_securitycenter_*"
+    - "*_accounts_securitycenter_*"
+    # Enterprise API Shield cluster + waiting rooms + BYOIP + data shares.
+    - "*_zones_api_gateway_*"
+    - "*_zones_schema_validation*"
+    - "*_zones_token_validation*"
+    - "*_zones_waiting_rooms*"
+    - "*_accounts_addressing_*"
+    - "*_accounts_shares*"
+    # Legacy / migration / niche: S3-migration slurper, Web3 gateways,
+    # secondary-DNS peering, legacy per-user load balancers.
+    - "*_accounts_slurper_*"
+    - "*_zones_web3_*"
+    - "*_accounts_flagship_*"
+    - "*_zones_secondary_dns_*"
+    - "*_accounts_secondary_dns_*"
+    - "*_user_load_balancers*"
+
+post_install: |
+  On first connection, Hermes opens a browser to authorize with Cloudflare.
+  You pick the account and the permissions to grant — scope the token to
+  what you want the agent to touch. After auth, restart your Hermes session
+  so the Cloudflare tools are loaded.
+
+  This entry exposes each Cloudflare API endpoint as an individual tool.
+  A curated exclude list ships in the manifest (enterprise-contract,
+  org-fleet, and read-only-analytics product families are disabled —
+  ~1,400 tools), leaving ~1,900 tools for the products people actually
+  drive from an agent: DNS, Workers, R2, KV, D1, Queues, Pages, WAF,
+  rulesets, tunnels, Access, Stream, Images, AI, Vectorize. Hermes's
+  tool_search defers them all, so your context is not flooded — the agent
+  discovers the right endpoint on demand with full schemas.
+
+  Run a Zero Trust org or want Radar/Magic/API-Shield surfaces back?
+  Delete their patterns from mcp_servers.cloudflare.tools.exclude in
+  ~/.hermes/config.yaml.
+
+  Headless / CI alternative: instead of OAuth, create a Cloudflare API token
+  at https://dash.cloudflare.com/profile/api-tokens and configure the server
+  with a bearer header in ~/.hermes/config.yaml:
+
+    mcp_servers:
+      cloudflare:
+        url: "https://mcp.cloudflare.com/mcp?codemode=false"
+        headers:
+          Authorization: "Bearer ${CLOUDFLARE_API_TOKEN}"
+
+  Prefer the provider-side Code Mode surface instead (2 search/execute
+  meta-tools, ~1k-token schema, sandboxed JS composition)? Drop the
+  `?codemode=false` from the url. Not recommended together with Hermes
+  tool_search — you'd be stacking two tool-discovery layers.
+
+  Cloudflare also runs product-specific MCP servers (same OAuth flow, add
+  manually via `hermes mcp add <name> --url <url>` if you want a narrower
+  surface): docs search (https://docs.mcp.cloudflare.com/mcp, no auth),
+  Workers observability (https://observability.mcp.cloudflare.com/mcp),
+  Browser Rendering (https://browser.mcp.cloudflare.com/mcp), Radar
+  (https://radar.mcp.cloudflare.com/mcp), GraphQL analytics
+  (https://graphql.mcp.cloudflare.com/mcp), audit logs
+  (https://auditlogs.mcp.cloudflare.com/mcp), and more — full list at the
+  source URL above.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure cloudflare

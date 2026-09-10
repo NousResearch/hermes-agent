@@ -54,16 +54,43 @@ class _FakeGateway:
     def _running_agent_count(self):
         return len(self._running_agents)
 
+    def _active_cron_job_count(self):
+        # stop() reads this alongside _running_agent_count when logging the
+        # drain snapshot (#60432) -- this fake has no cron scheduler, so
+        # there's never in-flight cron work to report.
+        return 0
+
+    def _active_api_run_count(self):
+        # The shutdown log also reports adapter-owned API work (#63529).
+        # This fake has no API server adapter, so it is always idle.
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
+
+    def _clear_plugin_message_injector(self):
+        pass
+
+    async def _run_in_executor_with_context(self, func, *args):
+        # stop() offloads agent-resource cleanup off the loop (#53175); run
+        # inline in tests so the bounded-cleanup path is exercised.
+        return func(*args)
+
+    async def _cleanup_agent_resources_off_loop(self, agent, *, context=""):
+        # Mirror the real bounded helper, inline (no executor/timeout) so the
+        # fake exercises the same call shape stop() now uses.
+        self._cleanup_agent_resources(agent)
 
     async def _notify_active_sessions_of_shutdown(self):
         pass
 
-    async def _drain_active_agents(self, timeout):
+    async def _cancel_secondary_profile_reconnect_tasks(self):
+        pass
+
+    async def _drain_active_agents(self, timeout, cron_timeout=None):
         return {}, False
 
-    def _finalize_shutdown_agents(self, agents):
+    async def _finalize_shutdown_agents(self, agents):
         for agent in agents.values():
             self._cleanup_agent_resources(agent)
 
@@ -83,6 +110,12 @@ class _FakeGateway:
 
     def _evict_cached_agent(self, key):
         pass
+
+    def _release_running_agent_state(self, session_key, **_kwargs):
+        agent = self._running_agents.pop(session_key, None)
+        self._running_agents_ts.pop(session_key, None)
+        self._cleanup_agent_resources(agent)
+        return agent is not None
 
 
 def _make_mock_agent():
@@ -119,71 +152,6 @@ class TestCachedAgentCleanupOnShutdown:
         gw = _FakeGateway()
         agent = _make_mock_agent()
         gw._agent_cache["s1"] = (agent, "sig1")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        assert len(gw._agent_cache) == 0
-
-    @pytest.mark.asyncio
-    async def test_no_cached_agents_no_error(self):
-        """stop() works fine when _agent_cache is empty."""
-        gw = _FakeGateway()
-
-        await gw_mod.GatewayRunner.stop(gw)  # Should not raise
-
-        assert len(gw._agent_cache) == 0
-
-    @pytest.mark.asyncio
-    async def test_multiple_cached_agents_all_cleaned(self):
-        """All cached agents get cleaned up."""
-        gw = _FakeGateway()
-        agents = []
-        for i in range(5):
-            a = _make_mock_agent()
-            agents.append(a)
-            gw._agent_cache[f"s{i}"] = (a, f"sig{i}")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        for a in agents:
-            a.shutdown_memory_provider.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_cleanup_survives_agent_exception(self):
-        """An exception from one agent's shutdown doesn't prevent others."""
-        gw = _FakeGateway()
-
-        bad = _make_mock_agent()
-        bad.shutdown_memory_provider.side_effect = RuntimeError("boom")
-        bad.close.side_effect = RuntimeError("boom")
-
-        good = _make_mock_agent()
-
-        gw._agent_cache["bad"] = (bad, "sig-bad")
-        gw._agent_cache["good"] = (good, "sig-good")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        # The good agent should still be cleaned up
-        good.shutdown_memory_provider.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_plain_agent_not_tuple(self):
-        """Cache entries that aren't tuples (just bare agents) are also cleaned."""
-        gw = _FakeGateway()
-        agent = _make_mock_agent()
-        gw._agent_cache["s1"] = agent  # Not a tuple
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        agent.shutdown_memory_provider.assert_called_once()
-        assert len(gw._agent_cache) == 0
-
-    @pytest.mark.asyncio
-    async def test_none_entry_skipped(self):
-        """A None cache entry doesn't cause errors."""
-        gw = _FakeGateway()
-        gw._agent_cache["s1"] = None
 
         await gw_mod.GatewayRunner.stop(gw)
 

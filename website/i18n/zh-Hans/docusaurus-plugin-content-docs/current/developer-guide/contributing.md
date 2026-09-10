@@ -22,7 +22,7 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 
 ## 常见贡献路径
 
-- 构建自定义/本地工具而不修改 Hermes 核心？从 [构建 Hermes 插件](../guides/build-a-hermes-plugin.md) 开始
+- 构建自定义/本地工具而不修改 Hermes 核心？从 [构建 Hermes 插件](../developer-guide/plugins/index.md) 开始
 - 为 Hermes 本身构建新的内置核心工具？从 [添加工具](./adding-tools.md) 开始
 - 构建新的 skill？从 [创建 Skill](./creating-skills.md) 开始
 - 构建新的推理提供商？从 [添加提供商](./adding-providers.md) 开始
@@ -34,11 +34,35 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 | 要求 | 说明 |
 |-------------|-------|
 | **Git** | 需安装 `git-lfs` 扩展 |
-| **Python 3.11+** | 若未安装，uv 会自动安装 |
+| **Python 3.11–3.13** | 若未安装，uv 会自动安装 |
 | **uv** | 高速 Python 包管理器（[安装](https://docs.astral.sh/uv/)） |
 | **Node.js 20+** | 可选 — 浏览器工具和 WhatsApp bridge 需要（与根目录 `package.json` engines 字段一致） |
 
-### 克隆与安装
+### 使用标准安装器
+
+对大多数贡献者来说，最好的开发启动方式和用户安装方式相同：运行标准安装器，然后在它克隆出的仓库里开发。安装器会创建 Hermes venv、配置 `hermes` 命令、为 `hermes update` 写入安装方式标记，并把完整 git 项目克隆到 `$HERMES_HOME/hermes-agent`（通常是 `~/.hermes/hermes-agent`）。这样你的开发环境会和 CLI、updater、lazy dependency installer、gateway、docs 默认假设的布局一致。
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+
+# 在标准安装基础上添加开发/测试 extras。
+uv pip install -e ".[all,dev]"
+
+# 可选：浏览器工具 / docs site dependencies。
+npm install
+```
+
+之后从这个 checkout 创建分支并运行测试：
+
+```bash
+git checkout -b fix/description
+scripts/run_tests.sh
+```
+
+### 手动克隆备用路径
+
+只有在你明确不想使用 Hermes managed install layout 时才使用这种方式（例如容器或 CI job 里的临时 clone）。如果这样安装，请确保运行的是这个 venv 里的 `hermes` entrypoint；运行系统 `python3 -m hermes_cli.main` 可能会加载无关的系统 Python 包。
 
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
@@ -69,19 +93,22 @@ echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
 ### 运行
 
 ```bash
-# 创建全局访问的符号链接
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-
-# 验证
+# 标准安装器已经把 `hermes` 放到了 PATH 上。
 hermes doctor
 hermes chat -q "Hello"
+```
+
+如果你使用了手动克隆备用路径，可以在 checkout 中运行 `./hermes`，或显式把这个 clone 的 venv 链接到 PATH：
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 ```
 
 ### 运行测试
 
 ```bash
-pytest tests/ -v
+scripts/run_tests.sh
 ```
 
 ## 代码风格
@@ -105,24 +132,7 @@ Hermes 官方支持 **Linux、macOS、WSL2 以及原生 Windows（通过 PowerSh
 - **使用 `pathlib.Path` / `os.path.join`，不得手动用 `/` 拼接路径。** 这对我们构造后传给子进程的字符串尤为重要，而非 OS 返回给我们的字符串。
 
 关键模式：
-
-### 1. `termios` 和 `fcntl` 仅适用于 Unix
-
-始终同时捕获 `ImportError` 和 `NotImplementedError`：
-
-```python
-try:
-    from simple_term_menu import TerminalMenu
-    menu = TerminalMenu(options)
-    idx = menu.show()
-except (ImportError, NotImplementedError):
-    # 回退：编号菜单
-    for i, opt in enumerate(options):
-        print(f"  {i+1}. {opt}")
-    idx = int(input("Choice: ")) - 1
-```
-
-### 2. 文件编码
+### 1. 文件编码
 
 某些环境可能以非 UTF-8 编码保存 `.env` 文件：
 
@@ -133,7 +143,7 @@ except UnicodeDecodeError:
     load_dotenv(env_path, encoding="latin-1")
 ```
 
-### 3. 进程管理
+### 2. 进程管理
 
 `os.setsid()`、`os.killpg()` 以及信号处理在各平台间存在差异：
 
@@ -143,7 +153,7 @@ if platform.system() != "Windows":
     kwargs["preexec_fn"] = os.setsid
 ```
 
-### 4. 路径分隔符
+### 3. 路径分隔符
 
 使用 `pathlib.Path` 代替用 `/` 进行字符串拼接。
 
@@ -185,9 +195,9 @@ refactor/description   # 代码重构
 
 ### 提交前检查
 
-1. **运行测试**：`pytest tests/ -v`
+1. **运行测试**：`scripts/run_tests.sh` 以确保 CI 一致性。仅当 wrapper 不可用或您有意在 wrapper 之外调试时，才使用直接 `python -m pytest ...`。
 2. **手动测试**：运行 `hermes` 并验证您修改的代码路径
-3. **检查跨平台影响**：考虑 macOS 和不同 Linux 发行版
+3. **检查跨平台影响**：考虑 macOS、Linux、WSL2 和原生 Windows。如果您修改了文件 I/O、进程管理、终端处理、子进程或信号相关代码，请运行 `scripts/check-windows-footguns.py`。
 4. **保持 PR 聚焦**：每个 PR 只包含一个逻辑变更
 
 ### PR 描述
@@ -227,7 +237,7 @@ fix(security): prevent shell injection in sudo password piping
 ## 报告问题
 
 - 使用 [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 请包含：操作系统、Python 版本、Hermes 版本（`hermes version`）、完整错误堆栈
+- 请包含：操作系统、Python 版本、Hermes 版本（`hermes --version`）、完整错误堆栈
 - 包含复现步骤
 - 创建前请检查是否已有重复 issue
 - 安全漏洞请私下报告

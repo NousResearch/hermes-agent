@@ -1,8 +1,41 @@
-import { defineFieldCopy } from '@/app/settings/field-copy'
-
+// Korean: original translations by @dalgme (PR #40716).
+// Additional catalog coverage by Dante (@dandacompany); integrated without replacing original copy.
 import { defineLocale } from './define-locale'
 
 export const ko = defineLocale({
+  sessionImport: {
+    title: '다른 앱에서 하던 대화 이어가기',
+    subtitle: '대화를 Hermes로 가져와 이어서 진행하세요.',
+    action: '세션 가져오기',
+    readingFrom: '읽어오는 위치',
+    connectedComputer: '연결된 컴퓨터',
+    destination: '가져올 위치',
+    all: '전체',
+    search: '불러온 세션 검색',
+    scanning: '대화 찾는 중',
+    scanError: '세션을 찾지 못했습니다',
+    scanHelp: '백엔드 연결을 확인한 후 다시 시도하세요. 이전 버전의 백엔드는 업데이트가 필요할 수 있습니다.',
+    empty: '대화를 찾지 못했습니다',
+    emptyHelp: '이 백엔드의 Claude Code 및 Codex 세션이 여기에 표시됩니다.',
+    noMatches: '일치하는 대화가 없습니다',
+    searchHelp: '다른 제목이나 폴더로 검색하거나 세션을 더 불러오세요.',
+    skipped: '일부 로그가 비어 있거나 읽을 수 없거나 미리 보기에 너무 큽니다.',
+    more: '세션 더 불러오기',
+    messages: '메시지',
+    choose: '이어서 진행할 대화',
+    chooseHelp: 'Hermes로 가져오기 전에 세션을 선택해 대화 내역을 확인하세요.',
+    previewLoading: '미리 보기 여는 중',
+    previewError: '미리 보기를 사용할 수 없습니다',
+    previewHelp: '원본이 이동되거나 변경되었을 수 있습니다. 목록을 새로고침한 후 다시 시도하세요.',
+    previewLimit: '읽기 쉽도록 미리 보기를 줄였습니다. 가져올 때는 전체 대화가 포함됩니다.',
+    you: '나',
+    snapshot: '이미 Hermes로 가져온 대화입니다. 기존 사본을 열어 이어서 진행하세요.',
+    copyNotice: '대화 텍스트를 복사합니다. 원본 파일은 변경되지 않으며, 도구 출력과 추론 내용은 가져오지 않습니다.',
+    importing: '가져오는 중…',
+    open: 'Hermes에서 열기',
+    continue: 'Hermes에서 이어가기',
+    importError: '이 대화를 가져오지 못했습니다.'
+  },
   common: {
     apply: '적용',
     back: '뒤로',
@@ -25,7 +58,9 @@ export const ko = defineLocale({
     docs: '문서',
     done: '완료',
     error: '오류',
+    expand: '펼치기',
     failed: '실패',
+    formatJson: 'JSON 정렬',
     free: '무료',
     loading: '불러오는 중…',
     notSet: '설정되지 않음',
@@ -38,10 +73,28 @@ export const ko = defineLocale({
     set: '설정',
     skip: '건너뛰기',
     update: '업데이트',
+    tryHint: term => `“${term}” 검색해 보기`,
     on: '켜짐',
     off: '꺼짐'
   },
-
+  fileMenu: {
+    revealFinder: 'Finder에서 보기',
+    revealExplorer: '파일 탐색기에서 보기',
+    revealFileManager: '상위 폴더 열기',
+    revealInSidebar: '파일 트리에서 보기',
+    copyPath: '경로 복사',
+    copyRelativePath: '상대 경로 복사',
+    download: '다운로드',
+    downloadSaved: '저장됨',
+    downloadFailed: '다운로드 실패',
+    rename: '이름 변경…',
+    delete: '삭제',
+    renameTitle: '이름 변경',
+    renameLabel: '새 이름',
+    deleteTitle: name => `${name} 삭제할까요?`,
+    deleteBody: '휴지통으로 이동하며, 휴지통에서 복원할 수 있습니다.',
+    pathCopied: '경로 복사됨'
+  },
   boot: {
     ready: 'Hermes Desktop 준비 완료',
     desktopBootFailedWithMessage: message => `데스크톱 시작 실패: ${message}`,
@@ -49,6 +102,7 @@ export const ko = defineLocale({
       connectingGateway: '라이브 데스크톱 Gateway 연결 중',
       loadingSettings: 'Hermes 설정 불러오는 중',
       loadingSessions: '최근 세션 불러오는 중',
+      retryingRemoteBackend: '원격 Hermes 백엔드에 다시 연결하는 중…',
       startingDesktopConnection: '데스크톱 연결 시작 중',
       startingHermesDesktop: 'Hermes Desktop 시작 중…'
     },
@@ -57,6 +111,9 @@ export const ko = defineLocale({
       backgroundExitedDuringStartup: '시작 중 Hermes 백그라운드 프로세스가 종료되었습니다.',
       backendStopped: '백엔드 중지됨',
       desktopBootFailed: '데스크톱 시작 실패',
+      gatewayConnectionLost: '게이트웨이 연결이 끊겼습니다',
+      gatewayConnectionLostDetail:
+        '백그라운드에서 계속 연결을 시도하고 있습니다. 대화를 읽거나 초안을 작성할 수 있습니다. 문제가 지속되면 게이트웨이 설정을 확인하세요.',
       gatewaySignInRequired: 'Gateway 로그인이 필요합니다',
       ipcBridgeUnavailable: '데스크톱 IPC 브리지를 사용할 수 없습니다.'
     },
@@ -70,10 +127,21 @@ export const ko = defineLocale({
       retry: '재시도',
       repairInstall: '설치 복구',
       useLocalGateway: '로컬 Gateway 사용',
+      gatewaySettings: '게이트웨이 설정',
+      back: '뒤로',
       openLogs: '로그 열기',
       repairHint: '복구는 설치 프로그램을 다시 실행하며 새 컴퓨터에서는 몇 분 걸릴 수 있습니다.',
-      remoteSignInHint:
-        'Gateway 로그인 창을 엽니다. 대신 번들 백엔드로 전환하려면 로컬 Gateway 사용을 선택하세요.',
+      remoteSignInHint: signInLabel =>
+        `저장된 원격 브라우저 세션에서 로그아웃한 후 ${signInLabel} 화면을 엽니다. 내장 백엔드로 전환하려면 로컬 게이트웨이를 사용하세요.`,
+      signOutAndSignIn: '로그아웃 후 다시 로그인',
+      remoteFailureHint: '게이트웨이 설정에서 URL과 로그인 상태를 확인하거나 로컬 게이트웨이로 전환하세요.',
+      cloudDownTitle: 'Nous Cloud 에이전트가 중단되었습니다',
+      cloudDownDescription:
+        '이 게이트웨이에 연결된 Nous 관리형 클라우드 에이전트가 서버 오류를 반환하고 있습니다. 여기서는 다시 시작할 수 없습니다. 상태를 확인하거나 로컬 게이트웨이로 전환하거나 지원을 요청하세요.',
+      cloudDownHint:
+        '아래 버튼에서 Nous Portal의 인스턴스 상태 및 제어 화면을 열거나 Discord에서 지원을 받을 수 있습니다.',
+      cloudDownCheckPortal: 'Portal에서 상태 확인',
+      cloudDownDiscord: 'Discord에서 도움 받기',
       hideRecentLogs: '최근 로그 숨기기',
       showRecentLogs: '최근 로그 보기',
       signedInTitle: '로그인됨',
@@ -86,7 +154,6 @@ export const ko = defineLocale({
       identityProvider: 'ID 제공자'
     }
   },
-
   notifications: {
     region: '알림',
     hide: '숨기기',
@@ -100,19 +167,33 @@ export const ko = defineLocale({
     backendOutOfDateTitle: '백엔드 버전이 오래되었습니다',
     backendOutOfDateMessage:
       '현재 Hermes 백엔드가 이 데스크톱 빌드보다 오래되어 정상 작동하지 않을 수 있습니다. 업데이트하여 버전을 맞추세요.',
+    installMethodUnsupportedTitle: '지원하지 않는 설치 방식',
     updateHermes: 'Hermes 업데이트',
     updateReadyTitle: '업데이트 준비됨',
     updateReadyMessage: count => `새 변경사항 ${count}개 사용 가능.`,
+    updateReadyMessageUnknown: '새 업데이트가 있습니다.',
     seeWhatsNew: '새로운 점 보기',
+    mcp: {
+      needsAuthTitle: 'MCP 서버 재인증이 필요합니다',
+      needsAuthMessage: name => `${name} MCP 재인증이 필요합니다.`,
+      errorTitle: 'MCP 서버에 연결할 수 없습니다',
+      errorMessage: name => `${name} MCP 상태 확인에 실패했습니다.`,
+      signIn: '로그인',
+      view: '보기'
+    },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT에는 ELEVENLABS_API_KEY가 필요합니다.',
       elevenLabsRejectedKey: 'ElevenLabs가 API 키를 거부했습니다 (401).',
+      diskFull: '디스크 공간이 부족합니다. 공간을 확보한 후 다시 시도하세요.',
+      gatewayAuthFailed: '게이트웨이 인증에 실패했습니다. API_SERVER_KEY를 확인하세요.',
       methodNotAllowed:
         '데스크톱 백엔드가 요청을 거부했습니다 (405 Method Not Allowed). Hermes Desktop을 재시작해 보세요.',
       microphonePermission: '마이크 권한이 거부되었습니다.',
       openaiRejectedApiKey: 'OpenAI가 API 키를 거부했습니다.',
       openaiRejectedApiKeyWithStatus: status => `OpenAI가 API 키를 거부했습니다 (${status} invalid_api_key).`,
-      openaiTtsNeedsKey: 'OpenAI TTS에는 VOICE_TOOLS_OPENAI_KEY 또는 OPENAI_API_KEY가 필요합니다.'
+      openaiTtsNeedsKey: 'OpenAI TTS에는 VOICE_TOOLS_OPENAI_KEY 또는 OPENAI_API_KEY가 필요합니다.',
+      codeSkewRestartRequired:
+        '업데이트 후에도 백엔드가 이전 코드를 실행 중입니다. 새 코드를 불러오려면 다시 시작하세요.'
     },
     voice: {
       configureSpeechToText: '음성 모드를 사용하려면 음성 인식(STT)을 설정하세요.',
@@ -128,27 +209,193 @@ export const ko = defineLocale({
       noSpeechDetected: '음성이 감지되지 않았습니다',
       playbackFailed: '음성 재생 실패',
       recordingFailed: '음성 녹음 실패',
+      sayStopToEnd: phrase => `음성 대화를 끝내려면 “${phrase}”이라고 말하세요.`,
       transcriptionFailed: '음성 전사 실패',
       transcriptionUnavailable: '음성 전사를 아직 사용할 수 없습니다.',
       tryRecordingAgain: '다시 녹음해 보세요.',
       unavailable: '음성 사용 불가'
+    },
+    native: {
+      approvalTitle: '승인이 필요합니다',
+      approveAction: '승인',
+      rejectAction: '거부',
+      inputTitle: '입력이 필요합니다',
+      inputBody: 'Hermes가 응답을 기다리고 있습니다.',
+      turnDoneTitle: 'Hermes 작업 완료',
+      turnDoneBody: '',
+      turnErrorTitle: '응답 처리 실패',
+      backgroundDoneTitle: '백그라운드 작업 완료',
+      backgroundFailedTitle: '백그라운드 작업 실패',
+      creditsTitle: '크레딧'
     }
   },
-
+  remoteDisplayBanner: {
+    message: reason =>
+      `원격 화면이 감지되어 소프트웨어 렌더링을 사용 중입니다(${reason}). 깜빡임을 방지하기 위해 GPU 가속을 껐습니다.`
+  },
+  billingBlock: {
+    titleNous: 'Nous 크레딧 부족',
+    titleProvider: provider => `크레딧 부족 — ${provider}`,
+    fallbackMessage: '계정의 크레딧이 부족합니다. 계속하려면 크레딧을 충전하세요.',
+    openBilling: '결제 관리 열기',
+    addCredits: '크레딧 충전',
+    dismiss: '닫기'
+  },
+  sendDiagnostics: {
+    title: 'Nous에 진단 정보 보내기',
+    privacyNotice:
+      '디버그 묶음을 공개 게시물이 아닌 Nous 내부 저장소에 업로드합니다. 시스템 정보(OS, 버전, 제공업체, 설정된 API 키 종류 — 키 값은 제외)와 에이전트·게이트웨이·데스크톱 로그 전체(각 최대 512KB)가 포함됩니다. 로그에는 대화 내용, 도구 출력, 파일 경로가 포함되어 있을 가능성이 높습니다. 비밀 정보는 업로드 전에 가려집니다. Nous 직원과 허용 목록에 등록된 Discord 운영자만 열람할 수 있으며, 14일 후 자동 삭제됩니다.',
+    upload: '업로드',
+    uploading: '업로드 중…',
+    cancel: '취소',
+    close: '닫기',
+    copyLink: '링크 복사',
+    uploadIdFallback: id => `보기 링크가 반환되지 않았습니다. 지원 요청 시 업로드 ID ${id}를 알려주세요`,
+    doneTitle: '진단 정보를 보냈습니다',
+    doneDescription:
+      '진단 묶음을 비공개로 업로드했습니다. 지원 대화에 아래 링크를 공유하면 담당자가 로그를 확인할 수 있습니다.',
+    failedTitle: '업로드 실패',
+    failedHint:
+      '터미널에서 `hermes debug share --nous`를 실행할 수도 있습니다. 업로드 없이 보고서를 출력하려면 `hermes debug share --local`을 실행하세요.',
+    handoffLead: '다음 채널에서 문의를 이어가세요:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal 지원',
+      discord: 'Discord'
+    }
+  },
   titlebar: {
     hideSidebar: '사이드바 숨기기',
     showSidebar: '사이드바 보기',
     search: '검색',
     searchTitle: '세션, 보기, 작업 검색',
     swapSidebarSides: '사이드바 좌우 전환',
-    swapSidebarSidesTitle: '세션과 파일 탐색기 위치 전환',
     hideRightSidebar: '오른쪽 사이드바 숨기기',
     showRightSidebar: '오른쪽 사이드바 보기',
+    unreadSessions: count => `읽지 않은 세션 ${count}개`,
     muteHaptics: '햅틱 끄기',
     unmuteHaptics: '햅틱 켜기',
-    openSettings: '설정 열기'
+    openSettings: '설정 열기',
+    openStarmap: '메모리 그래프 열기',
+    enterHud: 'HUD 모드',
+    exitHud: 'HUD 모드 종료',
+    resetHudLayout: 'HUD 크기와 위치 초기화',
+    layoutEditor: '레이아웃 편집기',
+    layoutEditorTitle: mod => `레이아웃 편집기 — ${mod} 키를 누른 채 클릭하면 레이아웃이 초기화됩니다`
   },
-
+  keybinds: {
+    title: '키보드 단축키',
+    subtitle: open => `단축키를 클릭해 변경하세요 · ${open} 키로 이 패널을 다시 엽니다.`,
+    search: '단축키 검색…',
+    rebind: '단축키 변경',
+    reset: '기본값으로 초기화',
+    resetAll: '모두 초기화',
+    pressKey: '키를 누르세요…',
+    set: '설정',
+    conflictWith: label => `“${label}”에도 지정된 단축키입니다`,
+    categories: {
+      composer: '메시지 입력',
+      profiles: '프로필',
+      session: '세션',
+      navigation: '탐색',
+      view: '보기'
+    },
+    actions: {
+      'keybinds.openPanel': '키보드 단축키 열기',
+      'nav.commandPalette': '명령 팔레트 열기',
+      'nav.commandCenter': '명령 센터 열기',
+      'nav.settings': '설정 열기',
+      'nav.profiles': '프로필 열기',
+      'nav.skills': '스킬 열기',
+      'nav.messaging': '메시징 열기',
+      'nav.artifacts': '결과물 열기',
+      'nav.cron': '예약 작업 열기',
+      'nav.agents': '에이전트 열기',
+      'session.new': '새 세션',
+      'session.newTab': '새 세션 탭',
+      'session.newWindow': '새 창',
+      'session.next': '다음 세션',
+      'session.prev': '이전 세션',
+      'session.slot.1': '최근 세션 1로 전환',
+      'session.slot.2': '최근 세션 2로 전환',
+      'session.slot.3': '최근 세션 3로 전환',
+      'session.slot.4': '최근 세션 4로 전환',
+      'session.slot.5': '최근 세션 5로 전환',
+      'session.slot.6': '최근 세션 6로 전환',
+      'session.slot.7': '최근 세션 7로 전환',
+      'session.slot.8': '최근 세션 8로 전환',
+      'session.slot.9': '최근 세션 9로 전환',
+      'session.focusSearch': '세션 검색',
+      'session.togglePin': '현재 세션 고정/해제',
+      'session.archive': '현재 세션 보관',
+      'workspace.newWorktree': '새 워크트리',
+      'workspace.openFolder': '폴더를 프로젝트로 열기',
+      'composer.focus': '메시지 입력창으로 이동',
+      'composer.modelPicker': '모델 선택기 열기',
+      'composer.voice': '음성 대화 시작/중지',
+      'view.toggleSidebar': '세션 사이드바 표시/숨기기',
+      'view.toggleRightSidebar': '파일 탐색기 표시/숨기기',
+      'view.toggleReview': '검토 패널 표시/숨기기',
+      'view.toggleStatusbar': '상태 표시줄 표시/숨기기',
+      'view.toggleTabStrip': '탭 표시/숨기기',
+      'view.showFiles': '파일 탐색기 보기',
+      'view.showBrowser': '브라우저 열기',
+      'view.toggleHud': 'HUD 모드 전환',
+      'hud.snapToPointer': 'HUD를 포인터 위치로 이동(전역, HUD가 열려 있을 때)',
+      'view.showTerminal': '터미널 표시/숨기기',
+      'view.newTerminal': '새 터미널',
+      'view.nextTerminal': '다음 터미널',
+      'view.prevTerminal': '이전 터미널',
+      'view.closeTerminal': '터미널 닫기',
+      'view.selectionToComposer': '선택한 내용을 메시지 입력창으로 보내기',
+      'view.terminalCopy': '터미널 선택 영역 복사',
+      'view.terminalPaste': '터미널에 붙여넣기',
+      'view.closeTab': '탭 닫기',
+      'view.reopenTab': '닫은 탭 다시 열기',
+      'view.flipPanes': '사이드바 위치 바꾸기',
+      'view.findInPage': '페이지에서 찾기',
+      'view.findNext': '다음 일치 항목 찾기',
+      'view.findPrevious': '이전 일치 항목 찾기',
+      'appearance.toggleMode': '밝은/어두운 모드 전환',
+      'profile.default': '기본 프로필로 전환',
+      'profile.switch.1': '프로필 1로 전환',
+      'profile.switch.2': '프로필 2로 전환',
+      'profile.switch.3': '프로필 3으로 전환',
+      'profile.switch.4': '프로필 4로 전환',
+      'profile.switch.5': '프로필 5로 전환',
+      'profile.switch.6': '프로필 6으로 전환',
+      'profile.switch.7': '프로필 7로 전환',
+      'profile.switch.8': '프로필 8로 전환',
+      'profile.switch.9': '프로필 9로 전환',
+      'profile.switch.10': '프로필 10으로 전환',
+      'profile.switch.11': '프로필 11로 전환',
+      'profile.switch.12': '프로필 12로 전환',
+      'profile.switch.13': '프로필 13으로 전환',
+      'profile.switch.14': '프로필 14로 전환',
+      'profile.switch.15': '프로필 15로 전환',
+      'profile.switch.16': '프로필 16으로 전환',
+      'profile.switch.17': '프로필 17로 전환',
+      'profile.switch.18': '프로필 18로 전환',
+      'profile.next': '다음 프로필',
+      'profile.prev': '이전 프로필',
+      'profile.toggleAll': '전체 프로필 보기 전환',
+      'profile.create': '프로필 만들기',
+      'composer.send': '메시지 보내기',
+      'composer.newline': '줄바꿈 삽입',
+      'composer.steer': '진행 중인 응답에 지시 추가',
+      'composer.queue': '메시지 대기열에 추가',
+      'composer.sendQueued': '다음 대기 메시지 보내기',
+      'composer.mention': '파일, 폴더, URL 참조',
+      'composer.slash': '슬래시 명령 팔레트',
+      'composer.help': '빠른 도움말',
+      'composer.history': '팝오버/기록 순환',
+      'composer.cancel': '팝오버 닫기 · 실행 취소'
+    }
+  },
+  findInPage: {
+    next: '다음 일치 항목',
+    previous: '이전 일치 항목'
+  },
   language: {
     label: '언어',
     description: '데스크톱 인터페이스 언어를 선택합니다.',
@@ -158,7 +405,6 @@ export const ko = defineLocale({
     searchPlaceholder: '언어 검색…',
     noResults: '언어를 찾을 수 없습니다'
   },
-
   settings: {
     closeSettings: '설정 닫기',
     exportConfig: '설정 내보내기',
@@ -171,13 +417,134 @@ export const ko = defineLocale({
       providers: '공급자',
       providerAccounts: '계정',
       providerApiKeys: 'API 키',
+      providerCustomEndpoints: '사용자 지정 엔드포인트',
+      providerLocalModels: '로컬 모델',
       gateway: 'Gateway',
       apiKeys: '도구와 키',
+      keybinds: '키보드 단축키',
       keysTools: '도구',
       keysSettings: '설정',
       mcp: 'MCP',
       archivedChats: '보관된 채팅',
-      about: '정보'
+      about: '정보',
+      billing: '결제',
+      notifications: '알림',
+      plugins: '플러그인'
+    },
+    plugins: {
+      title: '데스크톱 플러그인',
+      blurb: '앱에 포함되거나 desktop-plugins 폴더에 추가된 플러그인입니다. 비활성화하면 즉시 해제됩니다.',
+      count: n => `${n}개 설치됨`,
+      openFolder: '플러그인 폴더 열기',
+      rescan: '다시 검색',
+      reveal: '파일 관리자에서 보기',
+      enable: '활성화',
+      disable: '비활성화',
+      failed: '실패',
+      empty: '아직 설치된 데스크톱 플러그인이 없습니다.',
+      kinds: {
+        bundled: '기본 제공',
+        disk: '디스크',
+        runtime: '런타임'
+      },
+      agent: {
+        title: '에이전트 플러그인',
+        movedToCapabilities:
+          '에이전트 플러그인은 기능 화면에서 프로필별로 관리합니다. 설치 목록, 켜기/끄기, 플러그인 카탈로그를 그곳에서 이용하세요.',
+        openCapabilities: '기능 → 플러그인 열기'
+      },
+      installModal: {
+        title: '플러그인 설치',
+        description: '설치하기 전에 이 저장소에 포함된 내용을 확인하세요.',
+        repoLabel: '저장소',
+        includesHeading: '패키지 구성',
+        agentLabel: '에이전트 플러그인',
+        desktopLabel: '데스크톱 UI',
+        agentTargetLocal: profile => `${profile} 백엔드에 설치됩니다 (~/.hermes/plugins/)`,
+        agentTargetRemote: profile => `연결된 ${profile} 백엔드에 설치됩니다`,
+        desktopTarget: '이 앱의 로컬 desktop-plugins 폴더에 설치됩니다',
+        desktopOnlyNote: '데스크톱 전용 패키지는 백엔드 에이전트 플러그인을 설치하지 않습니다.',
+        insecureWarning:
+          '보안이 적용되지 않았거나 로컬 전용인 URL 형식입니다. 운영 환경에서는 https:// 또는 git@를 사용하세요.',
+        securityHeading: '설치 전 확인',
+        securityIntro: '신뢰할 수 있는 출처에서만 설치하세요. 추가될 내용을 확인하려면 아래 저장소를 검토하세요.',
+        sourceHeading: '소스 코드',
+        viewRepository: '저장소 보기',
+        viewPluginFiles: '플러그인 파일 보기',
+        gitCloneLabel: 'Git 복제 URL',
+        enableAgent: '설치 후 에이전트 플러그인 활성화',
+        forceReinstall: '강제 재설치 (이미 설치되어 있으면 교체)',
+        install: '설치',
+        installing: '설치 중…',
+        probing: '저장소 확인 중…',
+        probeUnavailable: '이 환경에서는 플러그인을 검사할 수 없습니다.',
+        desktopUnavailable: '이 환경에서는 데스크톱 플러그인을 설치할 수 없습니다.',
+        selectComponent: '설치할 구성 요소를 하나 이상 선택하세요.',
+        agentSuccess: name => `에이전트 플러그인 ${name} 설치 완료`,
+        desktopSuccess: name => `데스크톱 플러그인 ${name} 설치 완료`,
+        agentFailed: '에이전트 플러그인 설치 실패',
+        desktopFailed: '데스크톱 플러그인 설치 실패',
+        missingEnv: vars => `필요한 환경 변수: ${vars}. 설정 → 키에서 추가하세요.`,
+        installFromGit: 'Git에서 설치',
+        reviewRepository: '저장소 검토',
+        repoPlaceholder: 'https://github.com/owner/repo',
+        catalogPinned: (name, sha) =>
+          `Hermes 카탈로그 항목 “${name}” — 에이전트 구성 요소는 브랜치의 최신 버전이 아닌 검토된 고정 커밋${sha ? ` ${sha}` : ''}으로 설치됩니다.`,
+        reviewedHeading: '검토된 카탈로그 항목',
+        reviewedIntro: '이 항목의 고정 커밋은 사람이 검토했습니다. 아래에서 해당 코드를 직접 확인할 수 있습니다.',
+        restartToApply: '플러그인을 적용하려면 게이트웨이를 다시 시작하세요.',
+        restartNow: '게이트웨이 다시 시작',
+        missingEnvAction: '설정하기',
+        alreadyInstalled: name => `${name}은(는) 이미 설치되어 있습니다.`
+      },
+      agentHalfMissing: '에이전트 구성 요소가 설치되지 않음',
+      agentHalfMissingTip:
+        '이 통합 플러그인의 데스크톱 구성 요소는 있지만, 현재 연결된 백엔드/프로필에는 에이전트 구성 요소가 없습니다. 기능 → 플러그인에서 설치하세요.'
+    },
+    notifications: {
+      title: '알림',
+      intro: '기기별 운영체제 알림 설정입니다. 앱 내부 알림과 별개입니다.',
+      enableAll: '알림 활성화',
+      enableAllDesc: '끄면 아래의 모든 알림이 중지됩니다.',
+      focusedHint: '완료 알림은 Hermes가 백그라운드에 있을 때만 표시됩니다.',
+      kinds: {
+        approval: {
+          label: '승인 필요',
+          description: '명령이 승인 또는 거절을 기다리고 있습니다.'
+        },
+        input: {
+          label: '입력 필요',
+          description: 'Hermes가 질문했거나 비밀번호 또는 비밀 정보가 필요합니다.'
+        },
+        turnDone: {
+          label: '응답 준비됨',
+          description: 'Hermes가 백그라운드에 있는 동안 턴이 완료되었습니다.'
+        },
+        turnError: {
+          label: '턴 실패',
+          description: '백그라운드 턴 오류입니다.'
+        },
+        backgroundDone: {
+          label: '백그라운드 작업 완료',
+          description: '백그라운드 터미널 명령이 완료되었습니다.'
+        },
+        credits: {
+          label: '크레딧 알림',
+          description: '크레딧 사용이 중지되거나 복구되었습니다.'
+        },
+        plugin: {
+          label: '플러그인 알림',
+          description: 'Hermes가 백그라운드에 있는 동안 데스크톱 플러그인이 알림을 보냈습니다.'
+        }
+      },
+      test: '테스트 알림 보내기',
+      testTitle: 'Hermes',
+      testBody: '알림이 정상적으로 작동합니다.',
+      testSent: '테스트 알림을 보냈습니다. 표시되지 않으면 운영체제 알림 권한과 집중 모드/방해 금지 설정을 확인하세요.',
+      testUnsupported: '이 시스템은 기본 알림을 지원하지 않습니다.',
+      completionSoundTitle: '완료 소리',
+      completionSoundDesc: '에이전트 턴이 완료되면 재생합니다. 여기에서 소리를 선택하고 미리 들어 보세요.',
+      completionSoundPreview: '미리 듣기'
     },
     sections: {
       model: '모델',
@@ -198,9 +565,18 @@ export const ko = defineLocale({
       sessions: '보관된 세션 검색...'
     },
     modeOptions: {
-      light: { label: '라이트', description: '밝은 화면' },
-      dark: { label: '다크', description: '눈부심 적은 작업 환경' },
-      system: { label: '시스템', description: 'OS 설정 따르기' }
+      light: {
+        label: '라이트',
+        description: '밝은 화면'
+      },
+      dark: {
+        label: '다크',
+        description: '눈부심 적은 작업 환경'
+      },
+      system: {
+        label: '시스템',
+        description: 'OS 설정 따르기'
+      }
     },
     appearance: {
       title: '모양',
@@ -210,239 +586,303 @@ export const ko = defineLocale({
       colorModeDesc: '고정 모드를 선택하거나 시스템 설정을 따르게 할 수 있습니다.',
       toolViewTitle: '도구 호출 표시',
       toolViewDesc: '제품 모드는 원시 도구 데이터를 숨기고, 기술 모드는 입출력 전체를 보여줍니다.',
+      reasoningCollapsedTitle: '기본적으로 생각 과정 접기',
+      reasoningCollapsedDesc: '스트리밍되는 추론 내용을 보관하되 직접 열기 전에는 펼치지 않습니다.',
+      uiScaleTitle: 'UI 크기',
+      uiScaleDesc: (percent: number) =>
+        `앱 전체의 텍스트와 컨트롤 크기를 조절합니다. Cmd/Ctrl과 +, -, 0 키로도 조절할 수 있습니다. 현재: ${percent}%.`,
+      sessionDensityTitle: '세션 목록 표시 밀도',
+      sessionDensityDesc: '사이드바의 세션 제목 아래에 표시할 정보의 양을 선택하세요.',
+      sessionDensityCompact: '간결하게',
+      sessionDensityComfortable: '보통',
+      sessionDensityDetailed: '자세하게',
+      tabStripTitle: '탭 표시줄',
+      tabStripDesc: '영역 위에 탭을 표시합니다. 자동 모드는 영역에 창이 하나뿐일 때 탭을 숨깁니다.',
+      tabStripAuto: '자동',
+      tabStripAlways: '항상',
+      tabStripNever: '표시 안 함',
+      terminalFontTitle: '터미널 글꼴',
+      terminalFontDesc:
+        '데스크톱 터미널에 사용할 설치된 글꼴을 선택하세요. Nerd Fonts는 Powerlevel10k와 셸 아이콘을 표시합니다. 비워 두면 기본 제공 JetBrains Mono를 사용합니다.',
+      terminalFontPlaceholder: 'MesloLGS NF 또는 CSS 글꼴 목록',
+      terminalFontPreview: '문자 미리 보기',
+      terminalFontReset: '기본값 사용',
+      translucencyTitle: '창 투명도',
+      translucencyDesc: '텍스트를 포함한 창 전체에 바탕 화면이 비치도록 합니다. 라이트와 다크 모드별로 조절합니다.',
+      translucencyGlassDesc:
+        '무광 유리 효과로 바탕 화면을 부드럽게 흐리게 하고 텍스트는 선명하게 유지합니다. 라이트와 다크 모드별로 조절합니다.',
+      translucencyModeClear: '투명',
+      translucencyModeGlass: '유리',
+      translucencyTintTitle: '색조',
+      translucencyFadeTitle: '투명도',
+      translucencyFrostTitle: '흐림 효과',
+      translucencyFrost: {
+        'under-window': '깊게',
+        popover: '부드럽게',
+        titlebar: '밝게',
+        header: '눈부시게'
+      },
+      translucencyScopeTitle: '영역',
+      translucencyScope: {
+        window: '창 전체',
+        sidebar: '사이드바만'
+      },
+      backdropTitle: '대화 배경',
+      backdropDesc: '대화 뒤에 희미하게 표시되는 조각상 이미지입니다.',
+      userBubbleTitle: '메시지 말풍선',
+      userBubbleDesc: '내 메시지의 투명도를 조절합니다. 0은 불투명하고, 100은 테두리만 남습니다.',
+      introSplashTitle: '시작 화면',
+      introSplashDesc: '빈 대화에 표시되는 로고와 안내 문구입니다.',
+      reactionsTitle: '메시지 반응',
+      reactionsDesc: 'iMessage처럼 메시지에 이모지로 반응합니다. Hermes도 내 메시지에 반응할 수 있습니다.',
+      tipsTitle: '앱 도움말',
+      tipsDesc:
+        '앱의 특정 부분을 가리키는 작은 말풍선입니다. 대기 중 가끔 표시되며, 도움이 될 때 Hermes가 표시하기도 합니다. 닫은 도움말은 다시 표시되지 않습니다.',
+      tipsReset: (count: number) => `닫은 도움말 ${count}개 다시 표시`,
+      toursTitle: '기능 둘러보기',
+      toursDesc: '화면을 어둡게 하고 각 단계를 강조하며 Hermes가 앱 사용법을 안내합니다.',
+      composerPopoutTitle: '떠 있는 입력창',
+      composerPopoutDesc: '입력창을 고정 영역 밖으로 끌어낼 수 있습니다. 끄면 입력창이 하단에 고정됩니다.',
+      vibeHeartsTitle: '하트 효과',
+      vibeHeartsDesc:
+        'thanks, ily, good bot을 말하거나 하트를 보내면 하트가 떠오릅니다. 위의 메시지 반응과는 별개입니다.',
+      embedsTitle: '본문 미리 보기',
+      embedsDesc:
+        'YouTube, X 등 외부 사이트의 미리 보기를 불러옵니다. 확인 모드는 각 서비스를 허용할 때까지 대체 표시를 보여 주고, 항상 모드는 자동으로 불러오며, 끄기는 일반 링크만 표시합니다.',
+      embedsAsk: '확인',
+      embedsAlways: '항상',
+      embedsOff: '끄기',
+      embedsReset: (count: number) => `허용한 서비스 ${count}개 초기화`,
+      resumeLastSessionTitle: '실행 시 마지막 대화 열기',
+      resumeLastSessionDesc: '앱을 새로 실행하면 가장 최근 대화를 다시 엽니다. 끄면 항상 새 대화로 시작합니다.',
       product: '제품',
       productDesc: '간결한 요약과 함께 사용자 친화적인 도구 활동을 표시합니다.',
       technical: '기술',
       technicalDesc: '원시 도구 인자와 결과 및 하위 수준 세부정보를 포함합니다.',
       themeTitle: '테마',
-      themeDesc: '데스크톱 색상 팔레트입니다. 선택한 모드가 위에 적용됩니다.'
+      themeDesc: '데스크톱 색상 팔레트입니다. 선택한 모드가 위에 적용됩니다.',
+      themeProfileNote: profile => `${profile} 프로필에 저장됩니다. 프로필마다 테마를 별도로 유지합니다.`,
+      installTitle: 'VS Code에서 설치',
+      installDesc:
+        'Marketplace 확장 ID(예: dracula-theme.theme-dracula)를 붙여 넣으면 색상 테마를 데스크톱 테마로 변환합니다.',
+      installPlaceholder: 'publisher.extension',
+      installButton: '설치',
+      installing: '설치 중…',
+      installError: '테마를 설치하지 못했습니다.',
+      installed: name => `“${name}” 설치 완료.`,
+      removeTheme: '테마 삭제',
+      importedBadge: '가져옴',
+      pet: {
+        title: '펫',
+        intro:
+          '앱 위에 떠 있는 petdex 애니메이션 마스코트를 입양하세요. 도구 실행 중에는 달리고, 성공하면 기뻐하고, 오류가 나면 시무룩해집니다.',
+        restartHint:
+          '펫을 사용하려면 앱을 다시 시작해야 합니다. 실행 중인 앱이 이 기능이 추가되기 전에 시작되었습니다. Hermes를 종료하고 다시 연 다음 여기로 돌아오세요.',
+        on: '켜기',
+        off: '끄기',
+        scaleTitle: '크기',
+        scaleDesc: '떠 있는 마스코트의 크기를 조절합니다. 모든 화면에 즉시 적용됩니다.',
+        roamTitle: '돌아다니기',
+        roamDesc: '대기 중 펫이 창 안을 자유롭게 돌아다닙니다.',
+        chooseTitle: '펫 선택',
+        chooseDesc: '선택하면 필요한 경우 설치한 뒤 활성화합니다.',
+        searchPlaceholder: '펫 검색…',
+        unreachable: 'petdex 갤러리에 연결하지 못했습니다. 연결을 확인한 뒤 이 페이지를 다시 여세요.',
+        noMatch: query => `“${query}”와 일치하는 펫이 없습니다.`,
+        installedTag: '설치됨',
+        generatedTag: '생성됨',
+        countCapped: (cap, total) => `${total}개 중 ${cap}개 표시 중 — 검색어로 범위를 좁히세요.`,
+        count: n => `펫 ${n}마리.`,
+        uninstall: name => `${name} 제거`,
+        delete: name => `${name} 삭제`,
+        deleteTitle: name => `${name}을(를) 삭제할까요?`,
+        deleteBody: '펫이 영구 삭제되며 다시 설치할 수 없습니다.',
+        deleteConfirm: '삭제',
+        rename: name => `${name} 이름 변경`,
+        renameTitle: '펫 이름 변경',
+        renamePlaceholder: '펫 이름 입력',
+        renameSave: '저장',
+        exportPet: name => `${name} 내보내기`,
+        adoptFailed: slug => `${slug}을(를) 입양하지 못했습니다`,
+        uninstallFailed: slug => `${slug}을(를) 제거하지 못했습니다`,
+        renameFailed: slug => `${slug} 이름을 변경하지 못했습니다`,
+        exportFailed: slug => `${slug}을(를) 내보내지 못했습니다`,
+        noneAvailable: '지금 켤 수 있는 펫이 없습니다.',
+        turnOnFailed: '펫을 켜지 못했습니다.',
+        turnOffFailed: '펫을 끄지 못했습니다.'
+      }
     },
-    fieldLabels: defineFieldCopy({
+    fieldLabels: {
       model: '기본 모델',
       modelContextLength: '컨텍스트 윈도우',
       fallbackProviders: '폴백 모델',
       toolsets: '활성화된 도구 세트',
       timezone: '시간대',
-      display: {
-        personality: '성격',
-        showReasoning: '추론 블록'
-      },
-      agent: {
-        maxTurns: '최대 에이전트 단계',
-        imageInputMode: '이미지 첨부',
-        apiMaxRetries: 'API 재시도 횟수',
-        serviceTier: '서비스 등급',
-        toolUseEnforcement: '도구 사용 강제'
-      },
-      terminal: {
-        cwd: '작업 디렉터리',
-        backend: '실행 백엔드',
-        timeout: '명령 시간 초과',
-        persistentShell: '영속 셸',
-        envPassthrough: '환경 변수 전달'
-      },
+      'display.personality': '성격',
+      'display.showReasoning': '추론 블록',
+      'desktop.repoScanEnabled': '저장소 자동 탐색',
+      'desktop.repoScanRoots': '저장소 탐색 시작 폴더',
+      'desktop.repoScanExcludePaths': '저장소 탐색 제외 경로',
+      'agent.maxTurns': '최대 에이전트 단계',
+      'agent.imageInputMode': '이미지 첨부',
+      'agent.apiMaxRetries': 'API 재시도 횟수',
+      'agent.serviceTier': '서비스 등급',
+      'agent.toolUseEnforcement': '도구 사용 강제',
+      'terminal.cwd': '작업 디렉터리',
+      'terminal.backend': '실행 백엔드',
+      'terminal.timeout': '명령 시간 초과',
+      'terminal.persistentShell': '영속 셸',
+      'terminal.envPassthrough': '환경 변수 전달',
+      'terminal.dockerImage': 'Docker 이미지',
+      'terminal.singularityImage': 'Singularity 이미지',
+      'terminal.modalImage': 'Modal 이미지',
+      'terminal.daytonaImage': 'Daytona 이미지',
       fileReadMaxChars: '파일 읽기 한도',
-      toolOutput: {
-        maxBytes: '터미널 출력 한도',
-        maxLines: '파일 페이지 한도',
-        maxLineLength: '줄 길이 한도'
-      },
-      codeExecution: {
-        mode: '코드 실행 모드'
-      },
-      approvals: {
-        mode: '승인 모드',
-        timeout: '승인 시간 초과',
-        mcpReloadConfirm: 'MCP 다시 로드 확인'
-      },
+      'toolOutput.maxBytes': '터미널 출력 한도',
+      'toolOutput.maxLines': '파일 페이지 한도',
+      'toolOutput.maxLineLength': '줄 길이 한도',
+      'codeExecution.mode': '코드 실행 모드',
+      'approvals.mode': '승인 모드',
+      'approvals.timeout': '승인 시간 초과',
+      'approvals.mcpReloadConfirm': 'MCP 다시 로드 확인',
       commandAllowlist: '명령 허용 목록',
-      security: {
-        redactSecrets: '비밀 정보 가리기',
-        allowPrivateUrls: '비공개 URL 허용'
-      },
-      browser: {
-        allowPrivateUrls: '브라우저 비공개 URL',
-        autoLocalForPrivateUrls: '비공개 URL용 로컬 브라우저'
-      },
-      checkpoints: {
-        enabled: '파일 체크포인트',
-        maxSnapshots: '체크포인트 한도'
-      },
-      voice: {
-        recordKey: '음성 단축키',
-        maxRecordingSeconds: '최대 녹음 시간',
-        autoTts: '응답 소리내어 읽기'
-      },
-      stt: {
-        enabled: '음성 인식',
-        provider: '음성 인식 공급자',
-        local: {
-          model: '로컬 전사 모델',
-          language: '전사 언어'
-        },
-        elevenlabs: {
-          modelId: 'ElevenLabs STT 모델',
-          languageCode: 'ElevenLabs 언어',
-          tagAudioEvents: '오디오 이벤트 태그',
-          diarize: '화자 구분'
-        }
-      },
-      tts: {
-        provider: '음성 합성 공급자',
-        edge: {
-          voice: 'Edge 음성'
-        },
-        openai: {
-          model: 'OpenAI TTS 모델',
-          voice: 'OpenAI 음성'
-        },
-        elevenlabs: {
-          voiceId: 'ElevenLabs 음성',
-          modelId: 'ElevenLabs 모델'
-        }
-      },
-      memory: {
-        memoryEnabled: '영구 메모리',
-        userProfileEnabled: '사용자 프로필',
-        memoryCharLimit: '메모리 한도',
-        userCharLimit: '프로필 한도',
-        provider: '메모리 공급자'
-      },
-      context: {
-        engine: '컨텍스트 엔진'
-      },
-      compression: {
-        enabled: '자동 압축',
-        threshold: '압축 임계값',
-        targetRatio: '압축 목표',
-        protectLastN: '보호된 최근 메시지'
-      },
-      delegation: {
-        model: '서브에이전트 모델',
-        provider: '서브에이전트 공급자',
-        maxIterations: '서브에이전트 턴 한도',
-        maxConcurrentChildren: '병렬 서브에이전트',
-        childTimeoutSeconds: '서브에이전트 시간 초과',
-        reasoningEffort: '서브에이전트 추론 노력'
-      },
-      updates: {
-        nonInteractiveLocalChanges: '앱 내 업데이트 시 로컬 변경 처리'
-      }
-    }),
-    fieldDescriptions: defineFieldCopy({
+      'security.redactSecrets': '비밀 정보 가리기',
+      'security.allowPrivateUrls': '비공개 URL 허용',
+      'browser.allowPrivateUrls': '브라우저 비공개 URL',
+      'browser.autoLocalForPrivateUrls': '비공개 URL용 로컬 브라우저',
+      'browser.useRealProfile': '내 실제 브라우저 프로필 사용',
+      'checkpoints.enabled': '파일 체크포인트',
+      'checkpoints.maxSnapshots': '체크포인트 한도',
+      'voice.recordKey': '음성 단축키',
+      'voice.maxRecordingSeconds': '최대 녹음 시간',
+      'voice.autoTts': '응답 소리내어 읽기',
+      'stt.enabled': '음성 인식',
+      'stt.echoTranscripts': '전사 내용 표시',
+      'stt.provider': '음성 인식 공급자',
+      'stt.local.model': '로컬 전사 모델',
+      'stt.local.language': '전사 언어',
+      'stt.openai.model': 'OpenAI 음성 인식 모델',
+      'stt.groq.model': 'Groq 음성 인식 모델',
+      'stt.mistral.model': 'Mistral 음성 인식 모델',
+      'stt.elevenlabs.modelId': 'ElevenLabs STT 모델',
+      'stt.elevenlabs.languageCode': 'ElevenLabs 언어',
+      'stt.elevenlabs.tagAudioEvents': '오디오 이벤트 태그',
+      'stt.elevenlabs.diarize': '화자 구분',
+      'tts.provider': '음성 합성 공급자',
+      'tts.edge.voice': 'Edge 음성',
+      'tts.openai.model': 'OpenAI TTS 모델',
+      'tts.openai.voice': 'OpenAI 음성',
+      'tts.elevenlabs.voiceId': 'ElevenLabs 음성',
+      'tts.elevenlabs.modelId': 'ElevenLabs 모델',
+      'tts.xai.voiceId': 'xAI (Grok) 목소리',
+      'tts.xai.language': 'xAI 언어',
+      'tts.xai.speed': 'xAI 재생 속도',
+      'tts.xai.autoSpeechTags': 'xAI 자동 음성 태그',
+      'tts.xai.optimizeStreamingLatency': 'xAI 스트리밍 지연 최적화',
+      'tts.xai.sampleRate': 'xAI 샘플링 레이트',
+      'tts.xai.bitRate': 'xAI 비트레이트',
+      'tts.minimax.model': 'MiniMax 음성 합성 모델',
+      'tts.minimax.voiceId': 'MiniMax 목소리',
+      'tts.mistral.model': 'Mistral 음성 합성 모델',
+      'tts.mistral.voiceId': 'Mistral 목소리',
+      'tts.gemini.model': 'Gemini 음성 합성 모델',
+      'tts.gemini.voice': 'Gemini 목소리',
+      'tts.neutts.model': 'NeuTTS 모델',
+      'tts.neutts.device': 'NeuTTS 장치',
+      'tts.kittentts.model': 'KittenTTS 모델',
+      'tts.kittentts.voice': 'KittenTTS 목소리',
+      'tts.piper.voice': 'Piper 목소리',
+      'tts.deepinfra.model': 'DeepInfra 음성 합성 모델',
+      'tts.deepinfra.voice': 'DeepInfra 목소리',
+      'memory.memoryEnabled': '영구 메모리',
+      'memory.userProfileEnabled': '사용자 프로필',
+      'memory.memoryCharLimit': '메모리 한도',
+      'memory.userCharLimit': '프로필 한도',
+      'memory.provider': '메모리 공급자',
+      'context.engine': '컨텍스트 엔진',
+      'compression.enabled': '자동 압축',
+      'compression.threshold': '압축 임계값',
+      'compression.targetRatio': '압축 목표',
+      'compression.protectLastN': '보호된 최근 메시지',
+      'delegation.model': '서브에이전트 모델',
+      'delegation.provider': '서브에이전트 공급자',
+      'delegation.maxIterations': '서브에이전트 턴 한도',
+      'delegation.maxConcurrentChildren': '병렬 서브에이전트',
+      'delegation.childTimeoutSeconds': '서브에이전트 시간 초과',
+      'delegation.reasoningEffort': '서브에이전트 추론 노력',
+      'updates.nonInteractiveLocalChanges': '앱 내 업데이트 시 로컬 변경 처리'
+    },
+    fieldDescriptions: {
       model: '입력기에서 다른 모델을 선택하지 않는 한 새 채팅에 사용됩니다.',
       modelContextLength: '0으로 두면 선택한 모델의 감지된 컨텍스트 윈도우를 사용합니다.',
       fallbackProviders: '기본 모델 실패 시 시도할 대체 provider:model 항목입니다.',
-      display: {
-        personality: '새 세션의 기본 어시스턴트 스타일입니다.',
-        showReasoning: '백엔드가 추론 내용을 제공할 때 표시합니다.'
-      },
+      'display.personality': '새 세션의 기본 어시스턴트 스타일입니다.',
+      'display.showReasoning': '백엔드가 추론 내용을 제공할 때 표시합니다.',
+      'desktop.repoScanEnabled': '로컬 폴더에서 Git 저장소를 찾아 프로젝트에 표시합니다.',
+      'desktop.repoScanRoots': '탐색할 폴더입니다. 비워 두면 홈 디렉터리를 탐색합니다.',
+      'desktop.repoScanExcludePaths': '저장소 탐색에서 제외할 폴더와 그 하위 폴더입니다.',
       timezone: 'Hermes가 로컬 시간 컨텍스트를 필요로 할 때 사용됩니다. 비워두면 시스템 시간대를 사용합니다.',
-      agent: {
-        imageInputMode: '이미지 첨부 파일이 모델에 전송되는 방식을 제어합니다.',
-        maxTurns: 'Hermes가 한 번의 실행을 중지하기 전 도구 호출 턴의 상한선입니다.'
-      },
-      terminal: {
-        cwd: '도구와 터미널 작업의 기본 프로젝트 폴더입니다.',
-        persistentShell: '백엔드가 지원하는 경우 명령 간 셸 상태를 유지합니다.',
-        envPassthrough: '도구 실행에 전달할 환경 변수입니다.'
-      },
-      codeExecution: {
-        mode: '코드 실행이 현재 프로젝트로 얼마나 엄격하게 제한되는지를 설정합니다.'
-      },
+      'browser.useRealProfile':
+        '로컬 탐색에서 실제 로그인 정보를 사용합니다. Hermes는 기본 브라우저의 프로필(쿠키, 로그인, 환경설정)을 관리되는 스냅샷으로 복사하고 내장 Chromium으로 실행합니다. 실제 프로필을 직접 열지 않으며, 실행할 때마다 복사본을 갱신합니다. 클라우드 브라우저 백엔드가 설정되어 있어도 에이전트가 요청에 따라 실제 프로필 기반 로컬 세션을 열 수 있습니다. Chromium 계열 브라우저(Chrome, Edge, Brave, Brave Origin, Chromium)만 지원하며, 다른 기본 브라우저는 명확한 오류 메시지와 함께 실패합니다. 기본값은 꺼짐입니다.',
+      'agent.imageInputMode': '이미지 첨부 파일이 모델에 전송되는 방식을 제어합니다.',
+      'agent.maxTurns': 'Hermes가 한 번의 실행을 중지하기 전 도구 호출 턴의 상한선입니다.',
+      'terminal.cwd': '도구와 터미널 작업의 기본 프로젝트 폴더입니다.',
+      'terminal.persistentShell': '백엔드가 지원하는 경우 명령 간 셸 상태를 유지합니다.',
+      'terminal.envPassthrough': '도구 실행에 전달할 환경 변수입니다.',
+      'terminal.dockerImage': 'Docker 실행 백엔드에서 사용할 컨테이너 이미지입니다.',
+      'terminal.singularityImage': 'Singularity 실행 백엔드에서 사용할 이미지입니다.',
+      'terminal.modalImage': 'Modal 실행 백엔드에서 사용할 이미지입니다.',
+      'terminal.daytonaImage': 'Daytona 실행 백엔드에서 사용할 이미지입니다.',
+      'codeExecution.mode': '코드 실행이 현재 프로젝트로 얼마나 엄격하게 제한되는지를 설정합니다.',
       fileReadMaxChars: 'Hermes가 한 번의 파일 요청에서 읽을 수 있는 최대 문자 수입니다.',
-      approvals: {
-        mode: '명시적 승인이 필요한 명령을 Hermes가 처리하는 방식을 설정합니다.',
-        timeout: '승인 프롬프트가 시간 초과되기까지의 대기 시간입니다.'
-      },
-      security: {
-        redactSecrets: '가능한 경우 모델에 보이는 콘텐츠에서 감지된 비밀을 가립니다.'
-      },
-      checkpoints: {
-        enabled: '파일 편집 전에 롤백 스냅샷을 만듭니다.'
-      },
-      memory: {
-        memoryEnabled: '향후 세션에 도움이 될 수 있는 영구 메모리를 저장합니다.',
-        userProfileEnabled: '사용자 환경 설정의 간결한 프로필을 유지합니다.'
-      },
-      context: {
-        engine: '컨텍스트 한도에 근접한 긴 대화를 관리하는 전략입니다.'
-      },
-      compression: {
-        enabled: '대화가 길어지면 이전 컨텍스트를 요약합니다.'
-      },
-      voice: {
-        autoTts: '어시스턴트 응답을 자동으로 말합니다.'
-      },
-      stt: {
-        enabled: '로컬 또는 공급자 기반 음성 전사를 활성화합니다.',
-        elevenlabs: {
-          languageCode: '선택적 ISO-639-3 언어 코드입니다. 비워두면 ElevenLabs가 자동 감지합니다.'
-        }
-      },
-      delegation: {
-        model: '서브에이전트가 위임 작업에 사용할 모델입니다. 비워두면 메인 모델을 사용합니다.',
-        provider: '서브에이전트 모델의 공급자입니다.',
-        maxIterations: '서브에이전트가 한 번에 수행할 수 있는 최대 턴 수입니다.',
-        maxConcurrentChildren: '동시에 실행할 수 있는 서브에이전트 수입니다.',
-        childTimeoutSeconds: '서브에이전트가 응답 없이 대기하는 최대 시간(초)입니다.',
-        reasoningEffort:
-          '서브에이전트의 추론 강도입니다. minimal(최소)부터 high(높음)까지. 강도가 높을수록 응답 품질이 향상되지만 시간과 비용이 증가합니다.'
-      },
-      updates: {
-        nonInteractiveLocalChanges:
-          '앱에서 Hermes를 자체 업데이트할 때(터미널 프롬프트 없음) 로컬 소스 편집을 유지(stash)하거나 폐기(discard)합니다. 터미널 업데이트는 항상 묻습니다.'
-      }
-    }),
-    envDescriptions: {
-      // === Tools ===
-      AGENT_BROWSER_ENGINE: '로컬 모드 브라우저 엔진: auto(기본 Chrome), lightpanda(더 빠름, 스크린샷 없음), chrome',
-      BRAVE_SEARCH_API_KEY: 'Brave Search API 구독 토큰 (무료 등급: 월 2,000회 질의)',
-      BROWSERBASE_API_KEY: '클라우드 브라우저용 Browserbase API 키 (선택 — 로컬 브라우저는 이 키 없이도 작동)',
-      BROWSERBASE_PROJECT_ID: 'Browserbase 프로젝트 ID (선택 — 클라우드 브라우저에만 필요)',
-      BROWSER_USE_API_KEY: '클라우드 브라우저용 Browser Use API 키 (선택 — 로컬 브라우저는 이 키 없이도 작동)',
-      CAMOFOX_URL: '로컬 봇 탐지 회피 브라우징용 Camofox 브라우저 서버 URL (예: http://localhost:9377)',
-      ELEVENLABS_API_KEY: '프리미엄 음성 합성과 Scribe 전사용 ElevenLabs API 키',
-      EXA_API_KEY: 'AI 네이티브 웹 검색과 콘텐츠용 Exa API 키',
-      FAL_KEY: '이미지·동영상 생성용 FAL API 키',
-      FIRECRAWL_API_KEY: '웹 검색과 스크래핑용 Firecrawl API 키',
-      FIRECRAWL_API_URL: '자체 호스팅 Firecrawl API URL (선택)',
-      FIRECRAWL_BROWSER_TTL: 'Firecrawl 브라우저 세션 TTL(초) (선택, 기본 300)',
-      FIRECRAWL_GATEWAY_URL: 'Nous 구독자 전용 Firecrawl 도구 게이트웨이 원본 오버라이드 (선택)',
-      GITHUB_TOKEN: 'Skills Hub용 GitHub 토큰 (API 호출 한도 상향, 스킬 게시)',
-      HERMES_LANGFUSE_BASE_URL: 'Langfuse 서버 URL (기본: https://cloud.langfuse.com)',
-      HERMES_LANGFUSE_PUBLIC_KEY: 'Langfuse 프로젝트 공개 키 (pk-lf-...)',
-      HERMES_LANGFUSE_SECRET_KEY: 'Langfuse 프로젝트 비밀 키 (sk-lf-...)',
-      HONCHO_API_KEY: 'AI 네이티브 영구 메모리용 Honcho API 키',
-      HONCHO_BASE_URL: '자체 호스팅 Honcho 인스턴스의 기본 URL (API 키 불필요)',
-      KREA_API_KEY: 'Krea 2 이미지 생성용(Medium + Large) Krea API 키',
-      MISTRAL_API_KEY: 'Voxtral TTS와 전사(STT)용 Mistral API 키',
-      PARALLEL_API_KEY: 'AI 네이티브 웹 검색과 추출용 Parallel API 키',
-      SEARXNG_URL: '자체 호스팅 무료 웹 검색용 SearXNG 인스턴스 URL',
-      TAVILY_API_KEY: 'AI 네이티브 웹 검색과 추출용 Tavily API 키',
-      TOOL_GATEWAY_DOMAIN:
-        'Nous 구독자 전용 공유 도구 게이트웨이 도메인 접미사 — 벤더 호스트 추론용 (예: nousresearch.com → firecrawl-gateway.nousresearch.com)',
-      TOOL_GATEWAY_SCHEME:
-        'Nous 구독자 전용 공유 도구 게이트웨이 URL 스킴 — 벤더 호스트 추론용 (기본 `https`, 로컬 게이트웨이 테스트는 `http`)',
-      TOOL_GATEWAY_USER_TOKEN:
-        '도구 게이트웨이 요청용 명시적 Nous 구독자 액세스 토큰 (선택 — 미설정 시 Hermes 인증 저장소에서 읽음)',
-      VOICE_TOOLS_OPENAI_KEY: '음성 전사(Whisper)와 OpenAI TTS용 OpenAI API 키',
-      // === Settings ===
-      HERMES_EPHEMERAL_SYSTEM_PROMPT: 'API 호출 시점에 주입되는 임시 시스템 프롬프트 (세션에 영구 저장되지 않음)',
-      HERMES_PREFILL_MESSAGES_FILE: 'few-shot 프라이밍용 임시 사전 입력 메시지 JSON 파일 경로',
-      HERMES_TOOL_PROGRESS: '(사용 중단) 대신 config.yaml의 display.tool_progress를 사용하세요',
-      HERMES_TOOL_PROGRESS_MODE: '(사용 중단) 대신 config.yaml의 display.tool_progress를 사용하세요',
-      SUDO_PASSWORD:
-        '루트 접근이 필요한 터미널 명령용 sudo 비밀번호; 명시적 빈 문자열로 설정하면 프롬프트 없이 빈 값으로 시도'
+      'approvals.mode': '명시적 승인이 필요한 명령을 Hermes가 처리하는 방식을 설정합니다.',
+      'approvals.timeout': '승인 프롬프트가 시간 초과되기까지의 대기 시간입니다.',
+      'security.redactSecrets': '가능한 경우 모델에 보이는 콘텐츠에서 감지된 비밀을 가립니다.',
+      'checkpoints.enabled': '파일 편집 전에 롤백 스냅샷을 만듭니다.',
+      'memory.memoryEnabled': '향후 세션에 도움이 될 수 있는 영구 메모리를 저장합니다.',
+      'memory.userProfileEnabled': '사용자 환경 설정의 간결한 프로필을 유지합니다.',
+      'context.engine': '컨텍스트 한도에 근접한 긴 대화를 관리하는 전략입니다.',
+      'compression.enabled': '대화가 길어지면 이전 컨텍스트를 요약합니다.',
+      'voice.autoTts': '어시스턴트 응답을 자동으로 말합니다.',
+      'tts.xai.voiceId': 'xAI 음성 ID(예: eve) 또는 사용자 지정 음성 ID입니다.',
+      'tts.xai.language': '음성 언어 코드(예: en, pt-BR)입니다. 자동 감지는 "auto"를 사용합니다.',
+      'tts.xai.speed': '재생 속도입니다. 0.7은 느리게, 1.0은 보통, 1.5는 빠르게 재생합니다.',
+      'tts.xai.autoSpeechTags':
+        '합성 전에 LLM이 대본에 표현력 있는 오디오 태그([laughing], [sighs])를 삽입하도록 합니다.',
+      'tts.xai.optimizeStreamingLatency': '지연 시간과 품질의 균형을 조절합니다. 0은 최고 품질, 2는 최소 지연입니다.',
+      'tts.xai.sampleRate': '오디오 샘플링 레이트(Hz)입니다. 높을수록 품질이 좋아지고 파일이 커집니다.',
+      'tts.xai.bitRate': 'MP3 비트레이트(bps)입니다. 코덱이 mp3일 때만 적용됩니다.',
+      'tts.neutts.device': 'NeuTTS 로컬 추론에 사용할 장치입니다.',
+      'stt.enabled': '로컬 또는 공급자 기반 음성 전사를 활성화합니다.',
+      'stt.echoTranscripts': '음성 메시지의 🎙️ 원문 전사 내용을 대화에 다시 표시합니다.',
+      'stt.elevenlabs.languageCode': '선택적 ISO-639-3 언어 코드입니다. 비워두면 ElevenLabs가 자동 감지합니다.',
+      'updates.nonInteractiveLocalChanges':
+        '앱에서 Hermes를 자체 업데이트할 때(터미널 프롬프트 없음) 로컬 소스 편집을 유지(stash)하거나 폐기(discard)합니다. 터미널 업데이트는 항상 묻습니다.',
+      'delegation.model': '서브에이전트가 위임 작업에 사용할 모델입니다. 비워두면 메인 모델을 사용합니다.',
+      'delegation.provider': '서브에이전트 모델의 공급자입니다.',
+      'delegation.maxIterations': '서브에이전트가 한 번에 수행할 수 있는 최대 턴 수입니다.',
+      'delegation.maxConcurrentChildren': '동시에 실행할 수 있는 서브에이전트 수입니다.',
+      'delegation.childTimeoutSeconds': '서브에이전트가 응답 없이 대기하는 최대 시간(초)입니다.',
+      'delegation.reasoningEffort':
+        '서브에이전트의 추론 강도입니다. minimal(최소)부터 high(높음)까지. 강도가 높을수록 응답 품질이 향상되지만 시간과 비용이 증가합니다.'
     },
     about: {
       heading: 'Hermes Desktop',
       version: value => `버전 ${value}`,
       versionUnavailable: '버전 정보 없음',
+      bundleOutOfSync: '앱 빌드가 오래되었습니다',
+      bundleOutOfSyncDesc:
+        'Hermes 런타임은 업데이트되었지만 데스크톱 앱은 이전 빌드입니다. 앱을 업데이트하기 전까지 봇 모드 같은 새 UI 기능이 표시되지 않습니다. 아래 업데이트를 실행하여 앱을 다시 빌드하세요. 경고가 사라지지 않으면 최신 데스크톱 설치 프로그램으로 재설치하세요.',
+      bundleOutOfSyncAction: '설치 프로그램 받기',
+      bundleSwapPending: '다시 시작하여 업데이트 완료',
+      bundleSwapPendingDesc:
+        '업데이트된 앱이 설치되어 있습니다. 새 버전을 불러오려면 Hermes를 다시 시작하세요. 대화와 설정은 유지됩니다.',
+      bundleSwapPendingAction: 'Hermes 다시 시작',
       updates: '업데이트',
       checkNow: '지금 확인',
       checking: '확인 중…',
       seeWhatsNew: '새로운 점 보기',
+      updateNow: '지금 업데이트',
       releaseNotes: '릴리스 노트',
       onLatest: '최신 버전입니다.',
       installing: '업데이트가 설치 중입니다.',
@@ -450,11 +890,11 @@ export const ko = defineLocale({
       cantReach: '업데이트 서버에 연결할 수 없습니다.',
       tapCheck: '"지금 확인"을 눌러 업데이트를 확인하세요.',
       updateReady: count => `새 업데이트 준비됨 (변경사항 ${count}개 포함).`,
+      updateReadyUnknown: '새 업데이트가 준비되었습니다.',
       lastChecked: age => `마지막 확인: ${age}`,
       justNowSuffix: ' · 방금',
       automaticUpdates: '자동 업데이트',
-      automaticUpdatesDesc:
-        'Hermes는 백그라운드에서 자동으로 업데이트를 확인하고 준비되면 알려드립니다.',
+      automaticUpdatesDesc: 'Hermes는 백그라운드에서 자동으로 업데이트를 확인하고 준비되면 알려드립니다.',
       branchCommit: (branch, commit) => `브랜치 ${branch} · 커밋 ${commit}`,
       never: '없음',
       justNow: '방금',
@@ -465,15 +905,41 @@ export const ko = defineLocale({
     config: {
       none: '없음',
       noneParen: '(없음)',
+      builtinOnly: '기본 제공만',
       notSet: '설정되지 않음',
       commaSeparated: '쉼표로 구분된 값',
+      searchPlaceholder: '검색…',
+      noResults: '검색 결과가 없습니다',
+      systemDefault: '시스템 기본값',
       loading: 'Hermes 설정을 불러오는 중...',
       emptyTitle: '설정할 항목 없음',
       emptyDesc: '이 섹션에는 조정 가능한 설정이 없습니다.',
       failedLoad: '설정 불러오기 실패',
       autosaveFailed: '자동 저장 실패',
       imported: '설정 가져옴',
-      invalidJson: '잘못된 설정 JSON'
+      invalidJson: '잘못된 설정 JSON',
+      toolsetsWipeConfirm:
+        '활성화된 도구 모음을 모두 제거할까요? 다시 활성화하기 전까지 메모리, 터미널, 웹 검색, 위임 등 대부분의 도구를 사용할 수 없습니다.',
+      keepAwakeTitle: '컴퓨터 잠자기 방지',
+      keepAwakeDesc:
+        '오래 걸리거나 밤새 실행하는 작업이 계속되도록 컴퓨터의 잠자기를 방지합니다. 화면은 어두워질 수 있습니다.',
+      disableF12Title: 'F12 개발자 도구 비활성화',
+      disableF12Desc:
+        'F12로 개발자 도구를 열지 못하게 합니다. Ctrl+Shift+I(Mac에서는 Cmd+Opt+I)는 계속 사용할 수 있습니다.',
+      attachmentSizeTitle: '최대 미리 보기 / 이미지 로드 크기',
+      attachmentSizeDesc:
+        '데스크톱이 미리 보기와 이미지 첨부를 위해 불러올 로컬 파일의 최대 크기(MB)입니다. 기본값은 16입니다. 이미지가 아닌 원격 첨부 파일은 별도의 256MB 한도를 사용합니다. 매우 높게 설정하면 파일 전체가 메모리에 로드되어 앱이 멈추거나 종료될 수 있습니다.',
+      attachmentSizeUnit: 'MB',
+      attachmentSizeLabel: '최대 미리 보기 / 이미지 로드 크기(MB)'
+    },
+    quickEntry: {
+      enabledTitle: '빠른 입력',
+      enabledDesc: '어디서든 전역 단축키로 작은 입력창을 열어 Hermes를 열지 않고 프롬프트를 보냅니다.',
+      shortcutTitle: '빠른 입력 단축키',
+      shortcutDesc: 'CommandOrControl+Shift+Space처럼 보조 키가 하나 이상 필요합니다.',
+      active: '단축키가 활성화되어 있습니다.',
+      takenBy: '다른 앱이 이미 이 단축키를 사용합니다. 다른 단축키를 선택하세요.',
+      invalidShortcut: '올바른 단축키가 아닙니다. 보조 키를 하나 이상 포함하세요.'
     },
     credentials: {
       pasteKey: '키 붙여넣기',
@@ -482,20 +948,99 @@ export const ko = defineLocale({
       enterValueFirst: '먼저 값을 입력하세요.',
       couldNotSave: '자격 증명을 저장할 수 없습니다.',
       remove: '제거',
-      or: '또는',
-      escToCancel: 'esc로 취소',
       getKey: '키 받기',
       saving: '저장 중'
     },
     envActions: {
-      actionsFor: label => `${label} 작업`,
-      credentialActions: '자격 증명 작업',
+      actions: '작업',
+      manageInKeys: 'API 키에서 관리',
       docs: '문서',
       hideValue: '값 숨기기',
       revealValue: '값 표시',
       replace: '교체',
       set: '설정',
       clear: '지우기'
+    },
+    connections: {
+      title: '등록된 게이트웨이',
+      intro: '이 기기와 원격, SSH, Cloud 연결로 접근할 수 있는 모든 Hermes 게이트웨이를 관리합니다.',
+      stagedNote:
+        '세션에서 게이트웨이를 전환하세요. 프로필, 대화, 메시징, 예약 작업은 각 게이트웨이에 유지되며, 다른 게이트웨이의 작업은 계속 실행됩니다.',
+      launchModeTitle: '시작 시 마지막으로 사용한 게이트웨이의 세션으로 돌아가기',
+      launchModeDesc: '끄면 기본 게이트웨이의 세션을 엽니다.',
+      searchPlaceholder: '게이트웨이 검색…',
+      noSearchResults: '검색과 일치하는 게이트웨이가 없습니다.',
+      loadFailed: '연결을 불러오지 못했습니다',
+      currentPill: '현재',
+      primaryPill: '기본',
+      managedPill: '앱 관리',
+      addConnection: '연결 추가',
+      editConnection: '편집',
+      removeConnection: '제거',
+      removeConfirmTitle: '이 연결을 제거할까요?',
+      removeConfirmDesc: (label: string) =>
+        `“${label}” 연결을 이 앱에서 제거합니다. 인스턴스 자체는 변경되지 않으며 언제든 다시 추가할 수 있습니다.`,
+      makePrimary: '기본으로 설정',
+      testConnection: '테스트',
+      testOk: '연결 가능',
+      testFailed: '연결 테스트 실패',
+      saveFailed: '연결을 저장하지 못했습니다',
+      removeFailed: '연결을 제거하지 못했습니다',
+      updateAll: '모든 인스턴스 업데이트',
+      updateAllRunning: '모든 인스턴스 업데이트 중…',
+      updateAllDone: '업데이트 요청 완료',
+      updateAllFailed: '일괄 업데이트 요청 실패',
+      updateSkippedCloud: 'Hermes Cloud에서 관리',
+      kindLocal: '로컬',
+      kindRemote: '원격 게이트웨이',
+      kindCloud: 'Hermes Cloud',
+      kindSsh: 'SSH',
+      kindLocalDesc: '이 앱이 관리하는 Hermes 런타임입니다.',
+      kindRemoteDesc: 'LAN, Tailscale 또는 인터넷을 통해 HTTP(S)로 접근하는 Hermes 게이트웨이입니다.',
+      kindCloudDesc: 'Hermes Cloud 계정에서 찾은 호스팅 인스턴스입니다.',
+      kindSshDesc: 'SSH로 접근하는 Hermes 설치 환경입니다.',
+      labelTitle: '이름',
+      labelDesc:
+        '필수 항목입니다. 인스턴스가 표시되는 모든 곳에 사용하며, 중복되지 않아야 합니다 (예: “홈 서버”, “업무용 노트북”).',
+      labelPlaceholder: '홈 서버',
+      urlTitle: '게이트웨이 URL',
+      sshHostTitle: 'SSH 호스트',
+      headersTitle: '추가 게이트웨이 헤더',
+      headersDesc:
+        '이 게이트웨이에 보내는 모든 HTTP 및 WebSocket 요청에 포함됩니다. Cloudflare Access(CF-Access-Client-Id / CF-Access-Client-Secret) 같은 접근 프록시에 사용합니다. 값은 암호화하여 저장합니다. Hermes가 관리하는 헤더(Authorization, Cookie, Host 등)는 무시됩니다.',
+      headerValuePlaceholder: '값',
+      headerValueSaved: '저장됨 — 유지하려면 비워 두세요',
+      headerAdd: '헤더 추가',
+      headerRemove: '제거',
+      duplicateLocal: '이 앱이 관리하는 로컬 연결이 이미 있습니다. 로컬 연결은 하나만 사용할 수 있습니다.',
+      duplicateUrl: (label: string) => `이 게이트웨이 URL의 연결이 이미 있습니다 (“${label}”).`,
+      duplicateSsh: (label: string) => `이 SSH 호스트의 연결이 이미 있습니다 (“${label}”).`,
+      sameBackendHint: (label: string) => `“${label}”와 같은 백엔드`,
+      localAddHint: '관리되는 로컬 연결이 이미 있어 추가할 수 없습니다. 로컬 연결은 하나만 허용됩니다.',
+      cloudAddHint:
+        '위의 Hermes Cloud에서 로그인하면 에이전트를 자동으로 찾습니다. 알고 있는 인스턴스 URL을 직접 등록할 때만 이 양식을 사용하세요.',
+      save: '연결 저장',
+      saving: '저장 중…',
+      cancel: '취소',
+      empty: '아직 등록된 연결이 없습니다.'
+    },
+    managedUpdates: {
+      title: '관리형 업데이트',
+      intro:
+        '데스크톱이 관리하는 SSH 설치 환경을 일관된 절차로 업데이트합니다. 세션 종료를 기다린 뒤 원격 체크아웃을 업데이트하고, 각 프로필을 복원하며 결과 기록을 남깁니다.',
+      sshConnection: '데스크톱 관리 SSH 설치',
+      update: '업데이트',
+      updating: '업데이트 중…',
+      progress: '세션 종료를 기다리고 원격 설치를 업데이트한 뒤 프로필을 복원하는 중…',
+      updated: '업데이트됨',
+      partial: '업데이트됨 — 복원 실패',
+      refused: '거부됨',
+      failed: '업데이트 실패',
+      alreadyRunning: '이미 업데이트가 진행 중입니다',
+      receipt: (id: string, outcome: string) => `결과 기록 ${id} · ${outcome}`,
+      receiptVersions: (pre: string, post: string) => `${pre} → ${post}`,
+      scopesRestored: (profiles: string) => `복원된 프로필: ${profiles}`,
+      scopeNotRestored: (profile: string, error: string) => `“${profile}” 프로필 복원 실패: ${error}`
     },
     gateway: {
       loading: 'Gateway 설정 불러오는 중...',
@@ -505,18 +1050,48 @@ export const ko = defineLocale({
       envOverride: '환경 변수 오버라이드',
       intro:
         'Hermes Desktop은 기본적으로 자체 로컬 Gateway를 시작합니다. 다른 컴퓨터에서 이미 실행 중인 Hermes 백엔드를 제어하거나 신뢰할 수 있는 프록시 뒤에 있는 경우 원격 Gateway를 사용하세요. 아래에서 프로필을 선택하여 고유한 원격 호스트를 지정할 수 있습니다.',
-      appliesTo: '적용 대상',
-      allProfiles: '모든 프로필',
-      defaultConnection: '자체 오버라이드가 없는 모든 프로필의 기본 연결입니다.',
-      profileConnection: profile => `"${profile}" 프로필이 활성화된 경우에만 사용되는 연결입니다. 기본값을 상속하려면 로컬로 설정하세요.`,
       envOverrideTitle: '환경 변수가 이 데스크톱 세션을 제어하고 있습니다.',
       envOverrideDesc:
         '아래 저장된 설정을 사용하려면 HERMES_DESKTOP_REMOTE_URL과 HERMES_DESKTOP_REMOTE_TOKEN의 설정을 해제하세요.',
+      modeTitle: '연결 모드',
       localTitle: '로컬 Gateway',
       localDesc: 'localhost에서 개인 Hermes 백엔드를 시작합니다. 기본값이며 오프라인에서도 작동합니다.',
       remoteTitle: '원격 Gateway',
       remoteDesc:
         '이 데스크톱 셸을 원격 Hermes 백엔드에 연결합니다. 호스팅된 Gateway는 OAuth 또는 사용자명·비밀번호를 사용하며 자체 호스팅은 세션 토큰을 사용할 수 있습니다.',
+      remoteAuthHint:
+        '호스팅 게이트웨이는 OAuth 또는 사용자 이름과 비밀번호를 사용합니다. 자체 호스팅 게이트웨이는 세션 토큰을 사용할 수 있습니다.',
+      cloudTitle: 'Hermes Cloud',
+      cloudDesc: 'Hermes Cloud에 한 번 로그인하고 계정의 에이전트를 선택하세요. URL을 붙여 넣을 필요가 없습니다.',
+      cloudSignInTitle: 'Hermes Cloud',
+      cloudSignIn: 'Hermes Cloud에 로그인',
+      cloudSignedIn: 'Hermes Cloud에 로그인됨',
+      cloudNeedsSignIn: '계정의 에이전트를 찾으려면 Hermes Cloud에 로그인하세요.',
+      cloudSignedInDesc: '로그인되어 있습니다. 아래에서 에이전트를 선택하세요. 세션은 자동으로 갱신됩니다.',
+      cloudAgentsTitle: '내 에이전트',
+      cloudOrgPickerTitle: '조직 선택',
+      cloudOrgSelect: '선택',
+      cloudOrgChange: '조직 변경',
+      cloudOrgRole: role => `역할: ${role}`,
+      cloudLoadingAgents: '에이전트 불러오는 중…',
+      cloudNoAgents: {
+        before: '이 계정에 에이전트가 없습니다. ',
+        linkText: 'Nous 포털',
+        after: '에서 만든 뒤 새로고침하세요.'
+      },
+      cloudRefresh: '새로고침',
+      cloudConnect: '연결',
+      cloudConnecting: '연결 중…',
+      cloudDiscoverFailed: 'Hermes Cloud 에이전트를 불러오지 못했습니다',
+      cloudConnectFailed: '에이전트에 연결하지 못했습니다',
+      cloudSignInFailed: 'Hermes Cloud 로그인 실패',
+      cloudSignedOutTitle: 'Hermes Cloud에서 로그아웃됨',
+      cloudSignedOutMessage: 'Hermes Cloud 세션을 지웠습니다.',
+      cloudConnectedTitle: '연결됨',
+      cloudConnectedPill: '연결됨',
+      cloudConnectedTo: name => `${name}에 연결되었습니다.`,
+      cloudAgentProvisioning: '환경 준비 중…',
+      cloudStatusLabel: status => `상태: ${status}`,
       remoteUrlTitle: '원격 URL',
       remoteUrlDesc: '원격 대시보드 백엔드의 기본 URL입니다. 경로 접두사(예: /hermes)도 지원됩니다.',
       probing: 'Gateway 인증 방식을 확인하는 중…',
@@ -530,13 +1105,24 @@ export const ko = defineLocale({
         '이 Gateway는 사용자명과 비밀번호를 사용합니다. 로그인되었으며 세션은 자동으로 새로 고쳐집니다.',
       authSignedInOauth: '이 Gateway는 OAuth를 사용합니다. 로그인되었으며 세션은 자동으로 새로 고쳐집니다.',
       authNeedsPassword: '이 Gateway는 사용자명과 비밀번호를 사용합니다. 이 데스크톱 앱을 인증하려면 로그인하세요.',
-      authNeedsOauth: provider => `이 Gateway는 OAuth를 사용합니다. ${provider}(으)로 로그인하여 이 데스크톱 앱을 인증하세요.`,
+      authNeedsOauth: provider =>
+        `이 Gateway는 OAuth를 사용합니다. ${provider}(으)로 로그인하여 이 데스크톱 앱을 인증하세요.`,
       tokenTitle: '세션 토큰',
-      tokenDesc:
-        'REST와 WebSocket 액세스에 사용되는 대시보드 세션 토큰입니다. 저장된 토큰을 유지하려면 비워두세요.',
+      tokenDesc: 'REST와 WebSocket 액세스에 사용되는 대시보드 세션 토큰입니다. 저장된 토큰을 유지하려면 비워두세요.',
       existingToken: value => `기존 토큰 ${value}`,
       savedToken: '저장됨',
       pasteSessionToken: '세션 토큰 붙여넣기',
+      plainTextConfirmTitle: '게이트웨이 토큰을 평문으로 저장할까요?',
+      plainTextConfirmDesc:
+        '이 기기에서 운영체제 키링 서비스를 찾지 못했습니다. 토큰은 앱의 연결 설정 파일에 암호화하지 않고 저장되며, 이 사용자로 실행되는 모든 프로세스가 읽을 수 있습니다. 암호화하여 저장하려면 GNOME Keyring 또는 KWallet을 설치하거나 활성화하세요.',
+      plainTextConfirmAction: '평문으로 저장',
+      plainTextStoredTitle: '토큰이 평문으로 저장되어 있습니다',
+      plainTextStoredDesc:
+        '보안 저장소를 사용할 수 없어 이 기기의 앱 연결 설정 파일에 토큰이 암호화되지 않은 상태로 저장되어 있습니다. 암호화하려면 GNOME Keyring 또는 KWallet을 설치하거나 활성화하세요.',
+      keychainEncryptionTitle: '운영체제 키체인으로 비밀 정보 암호화',
+      keychainEncryptionDesc:
+        '기본값은 꺼짐입니다. 켜면 게이트웨이 토큰과 로그인 인증 정보를 시스템 키체인(Keychain Access, GNOME Keyring 또는 Windows DPAPI)으로 암호화하며, 시스템이 권한이나 비밀번호를 요청할 수 있습니다. 끄면 사용자 계정만 읽을 수 있는 일반 파일로 저장합니다.',
+      keychainEncryptionFailed: '비밀 정보 암호화 설정을 변경하지 못했습니다',
       testRemote: '원격 테스트',
       saveForRestart: '다음 재시작용으로 저장',
       saveAndReconnect: '저장하고 재연결',
@@ -562,12 +1148,62 @@ export const ko = defineLocale({
       signOutFailed: '로그아웃 실패',
       testFailed: '원격 Gateway 테스트 실패',
       applyFailed: 'Gateway 설정을 적용할 수 없습니다',
-      saveFailed: 'Gateway 설정을 저장할 수 없습니다'
+      saveFailed: 'Gateway 설정을 저장할 수 없습니다',
+      sshTitle: 'SSH로 연결',
+      sshDesc:
+        'SSH로 원격 Hermes를 실행하고 이 앱에 터널링합니다. 직접 시작하거나 외부에 공개할 필요가 없습니다. 해당 호스트에 키 기반 SSH 접속이 가능해야 합니다.',
+      sshTrustHint: '처음 제시된 호스트 키를 신뢰하고 고정합니다. 이후 키가 바뀌면 연결을 차단합니다.',
+      sshHostTitle: '호스트',
+      sshHostDesc: 'user@host 또는 ~/.ssh/config의 Host 별칭입니다.',
+      sshHostPick: '호스트 선택…',
+      sshHostPickTitle: '호스트',
+      sshHostPickDesc: '~/.ssh/config의 Host 별칭을 선택하거나 직접 입력을 선택하세요.',
+      sshHostCustom: '사용자 지정 (직접 입력)…',
+      sshUserTitle: '사용자',
+      sshUserDesc: '비워 두면 ~/.ssh/config 또는 현재 사용자를 사용합니다.',
+      sshUserPlaceholder: '~/.ssh/config에서 가져오기',
+      sshPortTitle: '포트',
+      sshPortDesc: '비워 두면 22 또는 ~/.ssh/config의 포트를 사용합니다.',
+      sshKeyTitle: '인증 키 파일',
+      sshKeyDesc: '개인 키 경로입니다. 비워 두면 ssh-agent 또는 ~/.ssh/config를 사용합니다.',
+      sshHermesPathTitle: 'Hermes 경로 (선택 사항)',
+      sshHermesPathDesc: '원격 hermes 실행 파일의 전체 경로입니다. 비워 두면 자동 감지합니다.',
+      sshHermesPathPlaceholder: '자동 감지',
+      sshTestConnection: 'SSH 테스트',
+      sshConnect: '연결',
+      sshButtonsHint: '저장은 다음 실행 시 적용하고, 연결은 지금 다시 연결합니다.',
+      sshReachable: (host, platform) => `연결 가능: ${host} (${platform}) — Hermes 발견`,
+      sshIncompleteHost: '연결하기 전에 SSH 호스트를 입력하세요.',
+      sshErrUnreachable: 'SSH로 호스트에 연결하지 못했습니다. 호스트, 포트, 네트워크를 확인하세요.',
+      sshErrAuth:
+        'SSH 인증에 실패했습니다. ssh-agent에 키를 등록(ssh-add)하거나 ~/.ssh/config에 IdentityFile을 설정하세요. Hermes는 SSH를 비대화형으로 실행합니다.',
+      sshErrHostKey:
+        '마지막 연결 이후 호스트 키가 변경되었습니다. 예상한 변경인지 확인한 뒤 ssh-keygen -R <host>를 실행하고 다시 연결하세요.',
+      sshErrNotInstalled:
+        '원격 호스트에 Hermes가 설치되어 있지 않습니다. 해당 호스트에 설치(curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh)하거나 Hermes 경로를 설정하세요.',
+      sshErrPlatform:
+        '지원하지 않는 원격 플랫폼입니다. Hermes Desktop SSH 모드는 Linux, macOS, Windows 원격 호스트를 지원합니다.',
+      sshErrTimeout: 'SSH 연결 시간이 초과되었습니다. 호스트에 접근할 수 없거나 잠자기 상태일 수 있습니다.',
+      sshErrUpdateRequired: '데스크톱 SSH로 연결하기 전에 원격 호스트의 Hermes를 업데이트하세요.',
+      sshErrUnknown: 'SSH 연결에 실패했습니다.',
+      cloudSavedTitle: '저장된 Cloud 게이트웨이',
+      cloudSavedDesc:
+        '기본값을 변경하지 않고 저장된 게이트웨이를 사용하세요. 인스턴스를 추가하려면 아래에서 로그인하세요. 이름과 로그인 정보는 저장된 연결 목록에서 관리합니다.',
+      cloudUseSaved: '게이트웨이 사용',
+      cloudActive: '이 창에서 사용 중'
     },
     keys: {
       loading: 'API 키와 자격 증명을 불러오는 중...',
       failedLoad: 'API 키 불러오기 실패',
       empty: '이 카테고리에 아직 구성된 항목이 없습니다.'
+    },
+    search: {
+      placeholder: '전체 설정 검색…',
+      pill: '검색'
+    },
+    profileScope: {
+      appliesTo: '적용 대상',
+      editsProfile: profile => `이 페이지의 변경 사항은 “${profile}” 프로필에 적용됩니다.`
     },
     mcp: {
       loading: 'MCP 서버 불러오는 중...',
@@ -595,7 +1231,67 @@ export const ko = defineLocale({
       name: '이름',
       serverJson: '서버 JSON',
       remove: '제거',
-      saveServer: '서버 저장'
+      saveServer: '서버 저장',
+      test: '연결 테스트',
+      testing: '테스트 중...',
+      testOk: count => `연결됨 — 도구 ${count}개 사용 가능`,
+      testFailed: '연결 실패',
+      enableServer: name => `${name} 활성화`,
+      disableServer: name => `${name} 비활성화`,
+      serverEnabled: name => `${name} 활성화됨 — 새 세션에 적용됩니다.`,
+      serverDisabled: name => `${name} 비활성화됨 — 새 세션에 적용됩니다.`,
+      toggleFailed: (name, enabled) => `${name} ${enabled ? '활성화' : '비활성화'} 실패`,
+      tabServers: '서버',
+      tabCatalog: '카탈로그',
+      catalogLoading: 'MCP 카탈로그 불러오는 중...',
+      catalogLoadFailed: 'MCP 카탈로그를 불러오지 못했습니다',
+      catalogEmpty: '사용 가능한 카탈로그 항목이 없습니다.',
+      catalogInstalled: '설치됨',
+      catalogEnabled: '활성화됨',
+      catalogNeedsInstall: '빌드 필요',
+      catalogInstall: '설치',
+      catalogInstalling: '설치 중...',
+      catalogInstallStarted: name => `${name} 설치 중... 완료 후 새 세션에 적용됩니다.`,
+      catalogInstallFailed: name => `${name} 설치 실패`,
+      catalogEnvPrompt: name => `${name}에 인증 정보가 필요합니다`,
+      catalogEnvRequired: '설치하기 전에 필수 값을 입력하세요.',
+      capabilitySummary: (tools, prompts, resources) =>
+        `${[`도구 ${tools}개`, ...(prompts ? [`프롬프트 ${prompts}개`] : []), ...(resources ? [`리소스 ${resources}개`] : [])].join(', ')} 활성화됨`,
+      costTokens: tokens => `호출당 약 ${tokens}토큰`,
+      usage30d: uses => `30일간 ${uses}회 사용`,
+      unusedPill: '미사용',
+      statusConnecting: '연결 중…',
+      statusNeedsAuth: '인증 필요',
+      statusError: '오류',
+      statusOff: '꺼짐',
+      allServers: '모든 서버',
+      authenticatedTitle: '인증됨',
+      authenticatedMessage: (server, count) => `${server}: 도구 ${count}개`,
+      waitingForBrowser: '브라우저 대기 중…',
+      authenticate: '인증',
+      unsavedConnect: '저장되지 않았습니다. 연결하려면 mcp.json을 저장하세요.',
+      enableTool: tool => `${tool} 활성화`,
+      disableTool: tool => `${tool} 비활성화`,
+      noOutput: '아직 출력이 없습니다.',
+      deepLinkTitle: 'MCP 서버를 추가할까요?',
+      deepLinkDescription:
+        '링크가 이 MCP 서버를 Hermes에 추가하도록 요청했습니다. 아래 설정을 확인하세요. 이 설정은 Hermes가 아닌 링크에서 제공한 것입니다.',
+      deepLinkStdioWarning:
+        '이 서버는 아래 명령으로 컴퓨터에서 로컬 프로세스를 실행합니다. 출처를 신뢰하는 경우에만 계속하세요.',
+      deepLinkConfirm: '서버 추가',
+      deepLinkNameInvalid: '이름은 1~64자의 영문자, 숫자, 마침표, 하이픈, 밑줄로 구성해야 합니다.',
+      deepLinkNameConflict: name => `${name} 서버가 이미 있습니다. 다른 이름을 선택하거나 취소하세요.`,
+      deepLinkErrorTitle: 'MCP 설치 링크 거부됨',
+      deepLinkErrorName: '링크의 서버 이름이 없거나 올바르지 않습니다.',
+      deepLinkErrorConfig: '링크의 설정이 올바른 base64 인코딩 JSON이 아닙니다.',
+      deepLinkErrorShape: '설정은 문자열 `url` 또는 `command` 필드가 있는 JSON 객체여야 합니다.',
+      deepLinkErrorUrl: '서버 URL은 http:// 및 https://만 허용됩니다.',
+      deepLinkErrorTooLarge: '설정 데이터가 32KB 한도를 초과합니다.',
+      importButton: '가져오기',
+      importPlaceholder: 'mcp.json 일부, npx/docker 명령, claude mcp add 명령, URL 또는 Cursor 링크를 붙여 넣으세요…',
+      importNoMatch: '붙여 넣은 텍스트에서 서버 설정을 찾지 못했습니다.',
+      importConfirm: 'mcp.json에 추가',
+      importConfirmMany: count => `서버 ${count}개를 mcp.json에 추가`
     },
     model: {
       loading: '모델 구성을 불러오는 중...',
@@ -603,6 +1299,15 @@ export const ko = defineLocale({
       provider: '공급자',
       model: '모델',
       applying: '적용 중...',
+      defaultsLabel: '기본값',
+      reasoning: '추론',
+      reasoningOff: '끄기',
+      defaultsFailed: '모델 기본값 저장 실패',
+      loadFailed: '모델을 불러오지 못했습니다',
+      restartRequired: '업데이트 후에도 백엔드가 이전 코드를 실행 중입니다. 새 코드를 불러오려면 다시 시작하세요.',
+      restartBackend: '백엔드 다시 시작',
+      restartingBackend: '백엔드 다시 시작 중...',
+      restartFailed: '백엔드를 다시 시작하지 못했습니다',
       auxiliaryTitle: '보조 모델',
       resetAllToMain: '모두 메인으로 초기화',
       auxiliaryDesc: '보조 작업은 기본적으로 메인 모델로 실행됩니다. 작업별로 전용 모델을 지정해 덮어쓸 수 있습니다.',
@@ -610,16 +1315,159 @@ export const ko = defineLocale({
       change: '변경',
       autoUseMain: '자동 · 메인 모델 사용',
       providerDefault: '(공급자 기본값)',
+      fallbackAdd: '대체 모델 추가',
+      fallbackEmpty: '대체 모델이 없습니다. 실패하지 않는 한 기본 모델을 사용합니다.',
+      notInCatalog: '은(는) 이 제공업체의 모델 목록에 없습니다. 호출 시 대체 모델을 사용할 수 있습니다.',
       tasks: {
-        vision: { label: '비전', hint: '이미지 분석' },
-        web_extract: { label: '웹 추출', hint: '페이지 요약' },
-        compression: { label: '압축', hint: '컨텍스트 압축' },
-        skills_hub: { label: '스킬 허브', hint: '스킬 검색' },
-        approval: { label: '승인', hint: '스마트 자동 승인' },
-        mcp: { label: 'MCP', hint: 'MCP 도구 라우팅' },
-        title_generation: { label: '제목 생성', hint: '세션 제목' },
-        curator: { label: '큐레이터', hint: '스킬 사용 검토' }
+        vision: {
+          label: '비전',
+          hint: '이미지 분석'
+        },
+        compression: {
+          label: '압축',
+          hint: '컨텍스트 압축'
+        },
+        skills_hub: {
+          label: '스킬 허브',
+          hint: '스킬 검색'
+        },
+        approval: {
+          label: '승인',
+          hint: '스마트 자동 승인'
+        },
+        mcp: {
+          label: 'MCP',
+          hint: 'MCP 도구 라우팅'
+        },
+        title_generation: {
+          label: '제목 생성',
+          hint: '세션 제목'
+        },
+        review: {
+          label: '검토',
+          hint: '/review 검토용 하위 에이전트'
+        },
+        curator: {
+          label: '큐레이터',
+          hint: '스킬 사용 검토'
+        }
       }
+    },
+    localModels: {
+      title: '로컬 모델',
+      runtimeTitle: '로컬 런타임',
+      runtimeReady: backend => `준비됨 · ${backend}`,
+      serverRunning: '실행 중',
+      runtimeInstalled: 'llama.cpp 런타임 설치됨',
+      runtimeInstalledDetail: (tag, backend) =>
+        `빌드 ${tag}, ${backend} 백엔드입니다. Hermes가 서버를 시작하고 관리합니다.`,
+      installTitle: '로컬 런타임 설치',
+      installDetail:
+        'llama.cpp 추론 엔진(수백 MB)을 다운로드합니다. 다운로드한 모델은 이 기기에서만 실행되며, 계정이 필요 없고 데이터가 컴퓨터 밖으로 나가지 않습니다.',
+      installAction: '런타임 설치',
+      installing: '런타임 설치 중…',
+      installFailed: '런타임 설치 실패',
+      hardwareTitle: '이 기기',
+      hardwareLoading: '하드웨어 확인 중…',
+      vram: label => `${label} GPU 메모리`,
+      ram: label => `${label} RAM`,
+      unifiedMemory: '통합 메모리',
+      modelsTitle: '모델',
+      recommended: '추천',
+      recommendedReason: {
+        'best-quality-resident':
+          'GPU에서 전부 실행되어 최대 속도를 낼 수 있는 가장 품질이 높은 모델입니다. 이 하드웨어의 예상 속도와 품질을 함께 고려했습니다.',
+        'speed-gated-quality':
+          '더 높은 품질의 모델도 이 기기에 들어가지만 메모리 대역폭 때문에 응답이 너무 느려집니다. 빠른 속도를 유지하는 가장 좋은 모델입니다.',
+        'fastest-resident':
+          '이 하드웨어에서 최대 속도에 도달하는 모델은 없습니다. 이 모델은 GPU 메모리 안에서 전부 실행되면서 최대 속도에 가장 근접합니다.',
+        'least-painful-spilled':
+          'GPU 메모리에 전부 들어가는 모델이 없습니다. 시스템 RAM을 사용하는 모델 중 가장 잘 실행됩니다.'
+      },
+      downloaded: '다운로드됨',
+      downloadAction: size => `다운로드 · ${size}`,
+      downloadProgress: (done, total) => `${total} 중 ${done} 다운로드 중`,
+      downloadDoneToast: model => `${model} 준비 완료.`,
+      installDoneToast: '로컬 런타임이 설치되어 준비되었습니다.',
+      quickstartTitle: '이 기기에서 모델 실행',
+      quickstartDetail: (model, size) =>
+        `한 번의 클릭으로 로컬 엔진, ${model}(${size} 다운로드), 새 대화의 기본 모델까지 모두 설정합니다. 데이터는 컴퓨터 밖으로 나가지 않습니다.`,
+      quickstartDetailReady: model =>
+        `한 번의 클릭으로 ${model}을(를) 새 대화의 기본 모델로 설정합니다. 모든 작업은 이 기기에서 실행됩니다.`,
+      quickstartAction: '자동 설정',
+      quickstartConfigure: '설정…',
+      quickstartDoneToast: model => `${model} 설정 완료 — 새 대화는 이 기기에서 실행됩니다.`,
+      quickstartFailed: '로컬 모델 설정 실패',
+      quickstartStageEngine: '엔진',
+      quickstartStageModel: '모델',
+      quickstartStageFinish: '완료',
+      useAction: '사용',
+      activePill: '기본',
+      updateTitle: '엔진 업데이트 가능',
+      updateDetail: (next, current) =>
+        `새 llama.cpp 빌드(${next})를 설치할 수 있습니다. 현재 버전은 ${current}입니다. 다운로드 중에도 모델을 계속 사용할 수 있습니다.`,
+      updateAction: '엔진 업데이트',
+      updating: '엔진 업데이트 중…',
+      upToDateTitle: '엔진이 최신 상태입니다',
+      upToDateDetail: (tag, backend) => `llama.cpp ${tag} (${backend}) 실행 중 — Hermes가 제공하는 최신 빌드입니다.`,
+      updateToast: next => `새 로컬 엔진 빌드(${next})가 있습니다. 설정 → 로컬 모델에서 업데이트하세요.`,
+      activeDetail: '새 대화에 이 모델을 사용합니다. 첫 메시지를 보내면 불러옵니다',
+      activeNotLoaded: '첫 메시지를 보내면 불러옵니다',
+      loadedPill: '메모리에 로드됨',
+      placementResident: 'GPU에서 전체 실행',
+      placementSpilled: '일부 RAM 사용',
+      placementResidentTip: '현재 컨텍스트 창에서 GPU 메모리만으로 최대 속도로 실행됩니다.',
+      placementSpilledTip:
+        '모델의 일부가 시스템 RAM에서 실행되어 속도가 느립니다. 더 작은 빌드나 컨텍스트를 사용하면 GPU 메모리에 모두 들어갈 수 있습니다.',
+      loadingPill: '불러오는 중…',
+      ejectTip: 'GPU 메모리 확보 (다음 메시지에서 다시 불러옴)',
+      ejected: '모델을 메모리에서 해제하여 GPU 메모리를 확보했습니다.',
+      ejectFailed: '모델을 메모리에서 해제하지 못했습니다',
+      stopServer: '끄기',
+      startServer: '켜기',
+      runtimeRunningDetail:
+        '로컬 서버가 실행 중입니다. 끄면 모든 GPU 메모리를 해제하며, 다시 켜기 전까지 새 대화에서 로컬 모델을 사용할 수 없습니다.',
+      serverStopped: '로컬 서버를 중지하여 GPU 메모리를 확보했습니다.',
+      serverStarted: '로컬 서버가 실행 중입니다.',
+      serverStopFailed: '로컬 서버를 중지하지 못했습니다',
+      serverStartFailed: '로컬 서버를 시작하지 못했습니다',
+      activating: '시작 중…',
+      activateFailed: model => `${model}(으)로 전환하지 못했습니다`,
+      activateDoneToast: model => `새 대화에 ${model}을(를) 사용합니다.`,
+      downloadFailed: model => `${model} 다운로드 실패`,
+      pillFitsGpu: 'GPU에 적합',
+      pillUsesRam: '시스템 RAM 사용',
+      pillTooBig: '이 기기에 너무 큼',
+      browseTitle: '더 많은 모델 찾기',
+      browseHint:
+        'Hugging Face 전체를 검색합니다. 여기서 다운로드한 모델의 크기는 기기에 맞게 자동 선택되지만 Hermes가 테스트한 모델은 아닙니다.',
+      browsePlaceholder: '모델 이름 또는 제작자 검색…',
+      browseSearching: 'Hugging Face 검색 중',
+      browseListing: '모델 파일 읽는 중',
+      browseShowFiles: '파일 보기',
+      browseRefresh: '새로고침',
+      browseDownloads: '다운로드',
+      browseLikes: '좋아요',
+      browseGated: 'Hugging Face 로그인 필요',
+      browseNoGguf: '호환되는 모델 파일을 찾지 못했습니다.',
+      browseFitUnknown: '적합성 알 수 없음',
+      browseAlreadyDownloaded: '이미 다운로드했습니다.',
+      addedByYou: '직접 추가함',
+      browseDownloadStarted: '{name} 다운로드 중',
+      browseDownloadAria: '{name} 다운로드',
+      sideloadButton: '모델 파일 추가',
+      sideloadTitle: 'GGUF 모델 파일 선택',
+      sideloadDone: '{name} 추가 완료.',
+      sideloadAlreadyPresent: '라이브러리에 이미 있습니다.',
+      pillFullContext: max => `전체 ${max} 컨텍스트`,
+      pillFullContextTip: '처음부터 모델의 전체 컨텍스트 창을 사용합니다',
+      pillUpTo: max => `최대 ${max} 컨텍스트`,
+      pillGrowsTip: '대화에 더 많은 공간이 필요하면 자동으로 확장됩니다',
+      pillVision: '이미지 인식',
+      deleteAction: '모델 삭제',
+      deleteConfirm: model => `디스크에서 ${model}을(를) 삭제할까요?`,
+      deleted: model => `${model} 삭제 완료.`,
+      deleteFailed: '삭제 실패'
     },
     providers: {
       connectAccount: '계정 연결',
@@ -629,7 +1477,24 @@ export const ko = defineLocale({
       collapse: '접기',
       connectAnother: '다른 공급자 연결',
       otherProviders: '다른 공급자',
+      disconnect: '연결 해제',
+      disconnectInTerminal: '연결 해제 (터미널에서 제거 명령 실행)',
+      removeConfirm: provider => `${provider}을(를) 제거할까요?`,
+      removeExternalGeneric: provider => `${provider}은(는) 자체 CLI에서 관리합니다. 해당 CLI에서 제거하세요.`,
+      removeKeyManaged: provider => `${provider}은(는) API 키로 설정되어 있습니다. API 키에서 제거하세요.`,
+      removeTerminalConfirm: (provider, command) =>
+        `${provider} 연결을 해제할까요? 터미널에서 "${command}"을(를) 실행하여 인증 정보를 지웁니다.`,
+      removeTerminalRunning: provider => `터미널에서 ${provider} 연결 해제 중…`,
+      removedTitle: '계정 제거됨',
+      removedMessage: provider => `${provider}을(를) 제거했습니다.`,
+      failedRemove: provider => `${provider}을(를) 제거하지 못했습니다`,
       noProviderKeys: '사용 가능한 공급자 API 키가 없습니다.',
+      searchKeys: '제공업체 검색…',
+      noKeysMatch: '검색과 일치하는 제공업체가 없습니다.',
+      localEndpoint: {
+        title: '로컬 / 사용자 지정 엔드포인트',
+        description: 'Hermes를 OpenAI 호환 엔드포인트(Zyphra, vLLM, llama.cpp, Ollama 등)에 연결합니다.'
+      },
       loading: '공급자 불러오는 중...'
     },
     sessions: {
@@ -644,6 +1509,12 @@ export const ko = defineLocale({
       messages: count => `메시지 ${count}개`,
       restored: '복원됨',
       deleteConfirm: title => `"${title}"을(를) 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`,
+      autoArchiveTitle: '오래된 대화 자동 보관',
+      autoArchiveDesc:
+        '한동안 사용하지 않은 대화를 자동으로 보관합니다. 고정된 대화는 보관하지 않으며, 대화는 삭제되지 않고 여기로 이동합니다.',
+      autoArchiveDaysLabel: '보관 기준',
+      autoArchiveDaysUnit: '일간 미사용',
+      autoArchiveFailed: '자동 보관 설정을 변경하지 못했습니다',
       defaultDirTitle: '기본 프로젝트 디렉터리',
       defaultDirDesc:
         '새 세션은 다른 폴더를 선택하지 않으면 이 폴더에서 시작됩니다. 비워두면 홈 디렉터리를 사용합니다.',
@@ -678,15 +1549,130 @@ export const ko = defineLocale({
       noProviderOptions: '이 도구 세트에는 공급자 옵션이 없습니다 — 활성화하면 현재 설정으로 작동합니다.',
       noProviders: '현재 이 도구 세트에 사용 가능한 공급자가 없습니다.',
       ready: '준비됨',
+      needsSignIn: '로그인 필요',
+      needsSetup: '설정 필요',
+      activeBackend: '활성',
+      activeBackendHint: '현재 사용 중인 백엔드입니다',
+      useBackend: '이 백엔드 사용',
       nousIncluded: 'Nous 구독에 포함됨 — 활성화하려면 Nous Portal에 로그인하세요.',
+      nousAuthNeededTitle: 'Nous Portal에 로그인',
+      nousAuthNeededMessage: provider => `${provider} 설정은 저장되었지만 Nous Portal에 로그인해야 활성화됩니다.`,
+      nousAuthSignIn: '로그인',
+      nousAuthDoneTitle: 'Nous Portal 연결됨',
+      nousAuthDoneMessage: '구독 백엔드가 활성화되었습니다.',
+      nousAuthFailed: 'Nous Portal 로그인을 완료하지 못했습니다',
       noApiKeyRequired: 'API 키가 필요하지 않습니다.',
-      postSetup: step => `이 공급자는 추가 설정 단계(${step})가 필요합니다. 지금은 CLI에서 hermes tools로 실행하세요.`
+      postSetupHint: step =>
+        `이 백엔드는 최초 한 번 설치(${step})가 필요합니다. 이 기기에서 실행되며 몇 분 정도 걸릴 수 있습니다.`,
+      postSetupInstalledHint: '설치되어 있습니다. 문제가 있을 때만 다시 설정하세요.',
+      postSetupRun: '설정 실행',
+      postSetupRerun: '설정 다시 실행',
+      postSetupInstalled: '설치됨',
+      postSetupRunning: '설치 중…',
+      postSetupStarting: '시작 중…',
+      postSetupCompleteTitle: '설정 완료',
+      postSetupCompleteMessage: step => `${step} 설치 완료.`,
+      postSetupErrorTitle: '설정 중 오류 발생',
+      postSetupErrorMessage: step => `${step} 로그를 확인하세요.`,
+      postSetupFailed: step => `${step} 설정 실행 실패`,
+      webSearchActive: backend => `검색: ${backend}`,
+      webExtractActive: backend => `추출: ${backend}`,
+      webCapabilityUnset: '설정 안 됨',
+      webUseForSearch: '검색에 사용',
+      webUseForExtract: '추출에 사용',
+      webUsedForSearch: '검색 백엔드',
+      webUsedForExtract: '추출 백엔드',
+      webCapabilitySelectedMessage: (provider, capability) =>
+        `${provider}이(가) 이제 웹 ${capability}을(를) 처리합니다.`,
+      failedSelectCapability: provider => `${provider} 설정 실패`,
+      loadingModels: '모델 카탈로그 불러오는 중...',
+      modelSectionTitle: '모델',
+      modelCount: count => `모델 ${count}개`,
+      modelInUse: '사용 중',
+      modelDefault: '기본',
+      modelInactiveHint: '모델을 변경하려면 먼저 이 백엔드를 선택하세요.',
+      modelSelectedTitle: '모델 선택됨',
+      modelSelectedMessage: model => `${model}은(는) 새 세션에 적용됩니다.`,
+      failedSelectModel: model => `${model} 선택 실패`,
+      terminalBackend: {
+        sectionTitle: '실행 백엔드',
+        loading: '실행 백엔드 확인 중…',
+        failedLoad: '터미널 백엔드를 불러오지 못했습니다',
+        ready: '준비됨',
+        needsSetup: '설정 필요',
+        unavailable: '사용 불가',
+        inUse: '사용 중',
+        selectedTitle: '백엔드 선택됨',
+        selectedMessage: backend => `터미널 명령이 ${backend}에서 실행됩니다. 새 세션에 적용됩니다.`,
+        failedSelect: backend => `${backend} 선택 실패`,
+        needsSetupHint: '지금 이 백엔드를 선택할 수 있지만 설정을 완료하기 전까지 명령 실행은 실패합니다.'
+      },
+      browserRealProfile: {
+        label: '내 실제 브라우저 프로필 사용',
+        description:
+          '기본 브라우저의 로그인과 쿠키를 관리되는 스냅샷으로 복사하여 에이전트가 탐색에 사용합니다. 실제 프로필은 직접 열지 않습니다. 새 세션에 적용됩니다.',
+        enabledTitle: '실제 프로필 탐색 켜짐',
+        enabledMessage: '새 세션은 기본 브라우저 프로필의 스냅샷으로 탐색합니다.',
+        disabledTitle: '실제 프로필 탐색 꺼짐',
+        disabledMessage: '프로필 스냅샷을 삭제합니다. 새 세션은 초기 상태의 브라우저를 사용합니다.',
+        failedSave: '실제 프로필 설정을 저장하지 못했습니다',
+        prompt: {
+          title: '사이트 로그인 상태 유지',
+          body: 'Hermes가 기본 브라우저 프로필의 스냅샷으로 탐색하도록 허용하면 로그인된 상태로 사이트를 열 수 있습니다.',
+          bulletSnapshot: '쿠키와 로그인 정보를 관리되는 스냅샷으로 복사합니다.',
+          bulletLiveProfile: '실제 브라우저 프로필은 직접 열지 않습니다.',
+          bulletLocal: '데이터는 이 컴퓨터 밖으로 나가지 않습니다.',
+          dontShowAgain: '다시 표시하지 않기',
+          notNow: '나중에',
+          enable: '내 프로필 사용'
+        }
+      }
+    },
+    envDescriptions: {
+      AGENT_BROWSER_ENGINE: '로컬 모드 브라우저 엔진: auto(기본 Chrome), lightpanda(더 빠름, 스크린샷 없음), chrome',
+      BRAVE_SEARCH_API_KEY: 'Brave Search API 구독 토큰 (무료 등급: 월 2,000회 질의)',
+      BROWSERBASE_API_KEY: '클라우드 브라우저용 Browserbase API 키 (선택 — 로컬 브라우저는 이 키 없이도 작동)',
+      BROWSERBASE_PROJECT_ID: 'Browserbase 프로젝트 ID (선택 — 클라우드 브라우저에만 필요)',
+      BROWSER_USE_API_KEY: '클라우드 브라우저용 Browser Use API 키 (선택 — 로컬 브라우저는 이 키 없이도 작동)',
+      CAMOFOX_URL: '로컬 봇 탐지 회피 브라우징용 Camofox 브라우저 서버 URL (예: http://localhost:9377)',
+      ELEVENLABS_API_KEY: '프리미엄 음성 합성과 Scribe 전사용 ElevenLabs API 키',
+      EXA_API_KEY: 'AI 네이티브 웹 검색과 콘텐츠용 Exa API 키',
+      FAL_KEY: '이미지·동영상 생성용 FAL API 키',
+      FIRECRAWL_API_KEY: '웹 검색과 스크래핑용 Firecrawl API 키',
+      FIRECRAWL_API_URL: '자체 호스팅 Firecrawl API URL (선택)',
+      FIRECRAWL_BROWSER_TTL: 'Firecrawl 브라우저 세션 TTL(초) (선택, 기본 300)',
+      FIRECRAWL_GATEWAY_URL: 'Nous 구독자 전용 Firecrawl 도구 게이트웨이 원본 오버라이드 (선택)',
+      GITHUB_TOKEN: 'Skills Hub용 GitHub 토큰 (API 호출 한도 상향, 스킬 게시)',
+      HERMES_LANGFUSE_BASE_URL: 'Langfuse 서버 URL (기본: https://cloud.langfuse.com)',
+      HERMES_LANGFUSE_PUBLIC_KEY: 'Langfuse 프로젝트 공개 키 (pk-lf-...)',
+      HERMES_LANGFUSE_SECRET_KEY: 'Langfuse 프로젝트 비밀 키 (sk-lf-...)',
+      HONCHO_API_KEY: 'AI 네이티브 영구 메모리용 Honcho API 키',
+      HONCHO_BASE_URL: '자체 호스팅 Honcho 인스턴스의 기본 URL (API 키 불필요)',
+      KREA_API_KEY: 'Krea 2 이미지 생성용(Medium + Large) Krea API 키',
+      MISTRAL_API_KEY: 'Voxtral TTS와 전사(STT)용 Mistral API 키',
+      PARALLEL_API_KEY: 'AI 네이티브 웹 검색과 추출용 Parallel API 키',
+      SEARXNG_URL: '자체 호스팅 무료 웹 검색용 SearXNG 인스턴스 URL',
+      TAVILY_API_KEY: 'AI 네이티브 웹 검색과 추출용 Tavily API 키',
+      TOOL_GATEWAY_DOMAIN:
+        'Nous 구독자 전용 공유 도구 게이트웨이 도메인 접미사 — 벤더 호스트 추론용 (예: nousresearch.com → firecrawl-gateway.nousresearch.com)',
+      TOOL_GATEWAY_SCHEME:
+        'Nous 구독자 전용 공유 도구 게이트웨이 URL 스킴 — 벤더 호스트 추론용 (기본 `https`, 로컬 게이트웨이 테스트는 `http`)',
+      TOOL_GATEWAY_USER_TOKEN:
+        '도구 게이트웨이 요청용 명시적 Nous 구독자 액세스 토큰 (선택 — 미설정 시 Hermes 인증 저장소에서 읽음)',
+      VOICE_TOOLS_OPENAI_KEY: '음성 전사(Whisper)와 OpenAI TTS용 OpenAI API 키',
+      HERMES_EPHEMERAL_SYSTEM_PROMPT: 'API 호출 시점에 주입되는 임시 시스템 프롬프트 (세션에 영구 저장되지 않음)',
+      HERMES_PREFILL_MESSAGES_FILE: 'few-shot 프라이밍용 임시 사전 입력 메시지 JSON 파일 경로',
+      HERMES_TOOL_PROGRESS: '(사용 중단) 대신 config.yaml의 display.tool_progress를 사용하세요',
+      HERMES_TOOL_PROGRESS_MODE: '(사용 중단) 대신 config.yaml의 display.tool_progress를 사용하세요',
+      SUDO_PASSWORD:
+        '루트 접근이 필요한 터미널 명령용 sudo 비밀번호; 명시적 빈 문자열로 설정하면 프롬프트 없이 빈 값으로 시도'
     }
   },
-
   skills: {
     tabSkills: '스킬',
     tabToolsets: '도구 세트',
+    configuringProfile: '설정 대상:',
+    tabMcp: 'MCP',
     all: '전체',
     searchSkills: '스킬 검색...',
     searchToolsets: '도구 세트 검색...',
@@ -700,9 +1686,12 @@ export const ko = defineLocale({
     noDescription: '설명 없음.',
     configured: '구성됨',
     needsKeys: '키 필요',
+    visionModelHint:
+      '이미지 분석에는 보조 모델 설정을 사용합니다. 이미지 지원 모델은 여기서 제공업체별로 설정하지 않고 보조 모델 설정에서 선택합니다.',
+    visionModelLink: '설정 → 모델에서 이미지 분석 모델 선택',
     toolsetsEnabled: (enabled, total) => `도구 세트 ${enabled}/${total} 활성화됨`,
     configureToolset: label => `${label} 구성`,
-    toggleToolset: label => `${label} 도구 세트 전환`,
+    toggleToolset: (label, enabled) => `${label} 도구 세트 ${enabled ? '켜기' : '끄기'}`,
     skillsLoadFailed: '스킬 불러오기 실패',
     toolsetsRefreshFailed: '도구 세트 새로 고침 실패',
     skillEnabled: '스킬 활성화됨',
@@ -711,6 +1700,107 @@ export const ko = defineLocale({
     toolsetDisabled: '도구 세트 비활성화됨',
     appliesToNewSessions: name => `${name}은(는) 새 세션에 적용됩니다.`,
     failedToUpdate: name => `${name} 업데이트 실패`,
+    sortMostUsed: '많이 사용한 순',
+    sortAlpha: '이름순',
+    sortMostUsedDesc: '↓ 많이 사용한 순',
+    sortLeastUsedAsc: '↑ 적게 사용한 순',
+    enableAll: '모두 활성화',
+    disableAll: '모두 비활성화',
+    disableUnused: '미사용 항목 비활성화',
+    bulkUpdated: count => `항목 ${count}개를 업데이트했습니다. 새 세션에 적용됩니다.`,
+    bulkNoChange: '변경할 항목이 없습니다.',
+    usageCount: count => `${count}회 사용`,
+    provenance: {
+      agent: '학습됨',
+      bundled: '내장',
+      hub: '허브'
+    },
+    emptyNoneFound: noun => `${noun}: 찾을 수 없습니다`,
+    emptyNothingMatches: query => `“${query}”와 일치하는 항목이 없습니다.`,
+    emptyNoneAvailable: noun => `${noun}: 아직 사용할 수 있는 항목이 없습니다.`,
+    changesApplyNewSessions: '변경 사항은 새 세션에 적용됩니다.',
+    skillUpdated: '스킬 업데이트됨',
+    edit: '편집',
+    archive: '보관',
+    skillArchivedTitle: '스킬 보관됨',
+    skillArchivedMessage: 'hermes curator restore 명령으로 복원할 수 있습니다.',
+    plugins: {
+      empty: '이 프로필에 설치된 에이전트 플러그인이 없습니다',
+      emptyHint: '아래 카탈로그에서 검토된 플러그인을 찾아 한 번의 클릭으로 설치하세요.',
+      loadFailed: '에이전트 플러그인을 불러오지 못했습니다',
+      toggleFailed: name => `${name}의 활성화 상태를 변경하지 못했습니다`,
+      legacyBackend:
+        '이 백엔드는 식별 키를 사용하는 플러그인 켜기/끄기를 지원하지 않습니다. 여기에서 관리하려면 Hermes를 업데이트하세요.',
+      portableBadge: '이식 가능',
+      catalogTitle: '플러그인 카탈로그',
+      catalogBrowse: '찾아보기',
+      catalogHide: '카탈로그 탐색기 숨기기',
+      catalogHint:
+        '플러그인의 “+ 이 에이전트에 추가”를 누르세요. 검토된 항목은 선택한 프로필에 고정 커밋으로 설치됩니다. 에이전트와 데스크톱을 묶은 플러그인은 두 구성 요소를 모두 제공합니다.',
+      alreadyInstalled: name => `${name}은(는) 이 프로필에 이미 설치되어 있습니다.`,
+      catalogProvenance: sha => `Hermes 카탈로그${sha ? `의 고정 커밋 ${sha}` : ''}에서 설치했습니다.`,
+      tierOfficial: '공식',
+      tierCommunity: '커뮤니티',
+      updateToPin: sha => `${sha}(으)로 업데이트`,
+      updateFailed: name => `${name}을(를) 업데이트하지 못했습니다`,
+      updated: name =>
+        `${name}을(를) 카탈로그의 현재 고정 커밋으로 업데이트했습니다. 적용하려면 게이트웨이를 다시 시작하세요.`
+    },
+    officialCatalog: '설치 가능',
+    officialPill: '공식',
+    hub: {
+      searchPlaceholder: '스킬 허브 검색',
+      search: '검색',
+      searching: '검색 중...',
+      connectingHubs: '스킬 허브 연결 중...',
+      connectedHubs: '연결된 허브:',
+      featured: '추천 스킬',
+      landingHint: '허브를 검색하여 공식 색인, GitHub 및 커뮤니티에서 설치할 수 있는 스킬을 찾아보세요.',
+      noResults: '허브에서 일치하는 스킬을 찾을 수 없습니다.',
+      resultCount: (count, ms) => `결과 ${count}개${ms !== null ? ` · ${ms}ms` : ''}`,
+      timedOut: sources => `시간 초과: ${sources}`,
+      installed: '설치됨',
+      install: '설치',
+      installing: '설치 중...',
+      uninstall: '제거',
+      uninstalling: '제거 중...',
+      updateAll: '설치된 스킬 업데이트',
+      updating: '업데이트 중...',
+      preview: '미리보기',
+      scan: '검사',
+      scanning: '검사 중...',
+      close: '닫기',
+      files: '파일',
+      noReadme: '이 스킬에는 SKILL.md 미리보기가 없습니다.',
+      trust: {
+        builtin: '내장',
+        trusted: '신뢰됨',
+        community: '커뮤니티'
+      },
+      verdictSafe: '안전',
+      verdictCaution: '주의',
+      verdictDangerous: '위험',
+      policyAllow: '설치 허용',
+      policyAsk: '설치 전 검토 필요',
+      policyBlock: '정책에 따라 설치 차단됨',
+      findings: count => `발견 사항 ${count}건`,
+      noFindings: '보안 문제가 발견되지 않았습니다.',
+      installStarted: name => `${name} 설치 중...`,
+      uninstallStarted: name => `${name} 제거 중...`,
+      updateStarted: '설치된 스킬 업데이트 중...',
+      actionFailed: '스킬 작업 실패',
+      actionLog: '작업 로그',
+      alreadyInstalled: (name: string) => `"${name}"은(는) 이미 설치되어 있습니다`,
+      pickerTitle: '스킬 허브',
+      pickerBrowse: '전체 허브 둘러보기',
+      pickerHide: '허브 탐색 숨기기',
+      pickerHint: '스킬의 "+ 이 에이전트에 추가"를 누르면 설치 후 위 목록에 표시됩니다.',
+      loadFailed: '스킬 허브를 불러오지 못했습니다',
+      previewFailed: '스킬 미리보기 실패',
+      scanFailed: '보안 검사 실패',
+      searchFailed: '허브 검색 실패'
+    },
+    tabPlugins: '플러그인',
     toolsetDescriptions: {
       web: '웹 검색, 웹 추출',
       browser: '탐색, 클릭, 입력, 스크롤',
@@ -739,26 +1829,6 @@ export const ko = defineLocale({
       discord_admin: '채널/역할 목록, 고정, 역할 할당',
       yuanbao: '그룹 정보, 멤버 조회, DM',
       computer_use: 'cua-driver를 통한 백그라운드 데스크톱 제어'
-    },
-    skillCategoryNames: {
-      'autonomous-ai-agents': '자율 AI 에이전트',
-      creative: '창작',
-      'data-science': '데이터 과학',
-      devops: '데브옵스',
-      email: '이메일',
-      gaming: '게임',
-      github: 'GitHub',
-      mcp: 'MCP',
-      media: '미디어',
-      mlops: 'MLOps',
-      'note-taking': '노트 작성',
-      productivity: '생산성',
-      'red-teaming': '레드 팀',
-      research: '리서치',
-      'smart-home': '스마트 홈',
-      'social-media': '소셜 미디어',
-      'software-development': '소프트웨어 개발',
-      general: '일반'
     },
     skillDescriptions: {
       'ai-agent-operating-system':
@@ -814,8 +1884,7 @@ export const ko = defineLocale({
         'Hermes Kanban 워커가 Codex CLI를 독립 구현 레인으로 실행 — Hermes가 작업 라이프사이클·조정·테스트·인계 소유 유지',
       'kanban-orchestrator':
         'Kanban 라우팅 오케스트레이터 분해 플레이북 + 안티 유혹 규칙. "직접 작업하지 말 것" 규칙과 기본 라이프사이클 자동 주입',
-      'kanban-worker':
-        'Hermes Kanban 워커 함정·예제·엣지 케이스. 라이프사이클은 KANBAN_GUIDANCE로 자동 주입',
+      'kanban-worker': 'Hermes Kanban 워커 함정·예제·엣지 케이스. 라이프사이클은 KANBAN_GUIDANCE로 자동 주입',
       linear: 'Linear: GraphQL + curl로 이슈·프로젝트·팀 관리',
       'llama-cpp': 'llama.cpp 로컬 GGUF 추론 + HF Hub 모델 검색',
       'llm-wiki': 'Karpathy LLM Wiki: 상호 연결된 마크다운 KB 구축/조회',
@@ -865,9 +1934,56 @@ export const ko = defineLocale({
       xurl: 'xurl CLI로 X/Twitter: 게시·검색·DM·미디어·v2 API',
       'youtube-content': 'YouTube 스크립트로 요약·스레드·블로그',
       yuanbao: 'Yuanbao(元宝) 그룹: 사용자 @멘션, 정보/멤버 조회'
+    },
+    skillCategoryNames: {
+      'autonomous-ai-agents': '자율 AI 에이전트',
+      creative: '창작',
+      'data-science': '데이터 과학',
+      devops: '데브옵스',
+      email: '이메일',
+      gaming: '게임',
+      github: 'GitHub',
+      mcp: 'MCP',
+      media: '미디어',
+      mlops: 'MLOps',
+      'note-taking': '노트 작성',
+      productivity: '생산성',
+      'red-teaming': '레드 팀',
+      research: '리서치',
+      'smart-home': '스마트 홈',
+      'social-media': '소셜 미디어',
+      'software-development': '소프트웨어 개발',
+      general: '일반'
     }
   },
-
+  starmap: {
+    title: '메모리 그래프',
+    subtitle: (nodes, clusters) => `카테고리 ${clusters}개 · 스킬 ${nodes}개`,
+    close: '메모리 그래프 닫기',
+    refresh: '새로고침',
+    memory: '메모리',
+    filterAll: '전체',
+    filterUsed: '사용됨',
+    filterLearned: '학습됨',
+    viewGraph: '그래프',
+    loadFailed: '메모리 그래프를 불러올 수 없습니다',
+    loading: '불러오는 중…',
+    emptyTitle: '아직 학습한 내용이 없습니다',
+    emptyDesc: 'Hermes가 작업을 위한 스킬과 메모리를 쌓으면 여기에 표시됩니다.',
+    share: '지도 공유',
+    shareHint:
+      '코드를 복사하여 이 지도를 공유하거나 코드를 붙여넣어 불러오세요. 배치 정보만 포함되며 메모리나 스킬 본문은 포함되지 않습니다.',
+    shareTitle: '지도 가져오기 / 내보내기',
+    sharePlaceholder: '지도 코드 붙여넣기…',
+    copy: '지도 코드 복사',
+    copied: '복사됨',
+    importMap: '지도 가져오기',
+    importBtn: '불러오기',
+    importEmpty: '불러올 지도 코드를 붙여넣으세요.',
+    importSuccess: nodes => `노드 ${nodes}개가 있는 지도를 불러왔습니다.`,
+    importedBadge: '가져온 지도',
+    resetToMine: '내 지도로 돌아가기'
+  },
   agents: {
     close: '에이전트 닫기',
     title: '스폰 트리',
@@ -893,43 +2009,147 @@ export const ko = defineLocale({
     ageSeconds: seconds => `${seconds}초 전`,
     ageMinutes: minutes => `${minutes}분 전`,
     ageHours: hours => `${hours}시간 전`,
+    ageDays: days => `${days}일 전`,
     durationSeconds: seconds => `${seconds}초`,
     durationMinutes: (minutes, seconds) => `${minutes}분 ${seconds}초`,
-    tokensK: k => `${k}k tok`,
-    tokens: value => `${value} tok`
+    tokens: value => `${value} tok`,
+    extendedTranscript: '확장 대화 기록',
+    transcriptTruncated: '최근 16 KiB 표시 중',
+    transcriptUnavailable: '실시간 대화 기록을 사용할 수 없습니다',
+    moreAgents: count => `에이전트 ${count}개 더 보기`,
+    queued: '대기 중',
+    waitingActivity: '활동 대기 중',
+    steer: '추가 지시',
+    steerPlaceholder: '이 하위 에이전트에 전달할 지시',
+    steerQueued: '다음 체크포인트에서 전달 예정',
+    stopRequested: '중지 요청됨',
+    requestRejected: '하위 에이전트가 요청을 수락하지 않았습니다'
   },
-
   commandCenter: {
     close: '커맨드 센터 닫기',
     paletteTitle: '커맨드 팔레트',
     back: '뒤로',
     searchPlaceholder: '세션, 보기, 작업 검색',
     goTo: '이동',
+    goToSession: '세션으로 이동',
+    branches: '브랜치',
+    projects: '프로젝트',
+    openFolder: '폴더를 프로젝트로 열기…',
+    openFolderAt: path => `폴더를 프로젝트로 열기 — ${path}`,
+    newSessionInProject: project => `${project}에서 새 세션`,
+    commands: '명령',
+    startInBranch: branch => `${branch}에서 새 대화`,
     commandCenter: '커맨드 센터',
     appearance: '모양',
     settings: '설정',
     changeTheme: '테마 변경...',
     changeColorMode: '색상 모드 변경...',
+    pets: {
+      title: '펫',
+      placeholder: '펫 검색…',
+      loading: 'petdex 갤러리 불러오는 중…',
+      error: 'petdex 갤러리에 연결할 수 없습니다.',
+      staleBackend: '펫을 사용하려면 Hermes를 다시 시작하세요. 현재 백엔드는 이 기능을 지원하기 전 버전입니다.',
+      empty: '일치하는 펫이 없습니다.',
+      turnOff: '끄기',
+      turnOn: '켜기',
+      installed: '설치됨',
+      generatedTag: '생성됨',
+      adoptFailed: '이 펫을 입양할 수 없습니다.',
+      toggleFailed: enabled => `펫을 ${enabled ? '켤' : '끌'} 수 없습니다.`,
+      noneAvailable: '사용 가능한 펫이 없습니다. 아래에서 설치할 펫을 선택하세요.'
+    },
+    generatePet: {
+      title: '펫 생성',
+      placeholder: '생성할 펫을 설명하세요…',
+      promptHint: '설명을 입력하고 Enter를 누르면 시안 4개를 만듭니다.',
+      readyHint: 'Enter를 누르면 설명을 바탕으로 시안 4개를 만듭니다.',
+      generate: '생성',
+      generating: '생성 중…',
+      retry: '다시 시도',
+      hatch: '부화',
+      spawning: '생성 중…',
+      hatching: '펫 부화 중…',
+      hatchingSub: '생명을 불어넣는 중…',
+      hatched: '부화했습니다',
+      hatchRow: (_state, done, total) => `프레임 스케치 중 ${done}/${total}…`,
+      hatchComposing: '조립하는 중…',
+      hatchSaving: '거의 다 됐습니다…',
+      namePlaceholder: '펫 이름 입력',
+      staleBackend: '펫을 생성하려면 Hermes를 업데이트하세요.',
+      backgroundHint: '이 창을 닫아도 됩니다. 완료되면 Hermes가 알려드립니다.',
+      slowProviderHint: '몇 분 정도 걸릴 수 있습니다',
+      remix: '리믹스',
+      remixConfirmTitle: '이 모습을 리믹스할까요?',
+      remixConfirmBody: '이 모습을 바탕으로 새로운 시안을 생성합니다. 몇 분 정도 걸릴 수 있습니다.',
+      genericError: '생성에 실패했습니다. 다시 시도하거나 제안 항목을 선택하세요.',
+      referenceImageTooLarge: '참조 이미지가 너무 큽니다. 16MB 미만의 이미지를 사용하세요.',
+      referenceImageInvalid: '참조 이미지를 읽을 수 없습니다. PNG, JPG, WebP 또는 GIF를 사용하세요.',
+      adopt: '입양',
+      startOver: '처음부터 다시'
+    },
+    installTheme: {
+      title: '테마 설치…',
+      pageTitle: '테마 설치',
+      placeholder: 'VS Code Marketplace 검색...',
+      loading: 'Marketplace 검색 중...',
+      error: 'Marketplace에 연결할 수 없습니다.',
+      empty: '일치하는 테마가 없습니다.',
+      install: '설치',
+      installing: '설치 중...',
+      installed: '설치됨',
+      installs: count => `${count}회 설치`
+    },
     settingsFields: '설정 필드',
     mcpServers: 'MCP 서버',
     archivedChats: '보관된 채팅',
-    sections: { sessions: '세션', system: '시스템', usage: '사용량' },
+    sections: {
+      maintenance: '유지 관리',
+      sessions: '세션',
+      system: '시스템',
+      usage: '사용량'
+    },
     sectionDescriptions: {
+      maintenance: '진단, 백업, 큐레이터 및 메모리 데이터',
       sessions: '세션 검색 및 관리',
       system: '상태, 로그, 시스템 작업',
       usage: '시간 경과에 따른 토큰, 비용, 스킬 활동'
     },
     nav: {
-      newChat: { title: '새 세션', detail: '새로운 세션을 시작합니다' },
-      settings: { title: '설정', detail: 'Hermes 데스크톱 구성' },
-      skills: { title: '스킬과 도구', detail: '스킬, 도구 세트, 공급자 활성화' },
-      messaging: { title: '메시징', detail: 'Telegram, Slack, Discord 등 설정' },
-      artifacts: { title: '아티팩트', detail: '생성된 출력 찾아보기' }
+      newChat: {
+        title: '새 세션',
+        detail: '새로운 세션을 시작합니다'
+      },
+      settings: {
+        title: '설정',
+        detail: 'Hermes 데스크톱 구성'
+      },
+      skills: {
+        title: '스킬과 도구',
+        detail: '스킬, 도구 세트, 공급자 활성화'
+      },
+      messaging: {
+        title: '메시징',
+        detail: 'Telegram, Slack, Discord 등 설정'
+      },
+      artifacts: {
+        title: '아티팩트',
+        detail: '생성된 출력 찾아보기'
+      }
     },
     sectionEntries: {
-      sessions: { title: '세션 패널', detail: '세션 검색, 고정, 관리' },
-      system: { title: '시스템 패널', detail: 'Gateway 상태, 로그, 재시작/업데이트' },
-      usage: { title: '사용량 패널', detail: '토큰, 비용, 스킬 활동' }
+      sessions: {
+        title: '세션 패널',
+        detail: '세션 검색, 고정, 관리'
+      },
+      system: {
+        title: '시스템 패널',
+        detail: 'Gateway 상태, 로그, 재시작/업데이트'
+      },
+      usage: {
+        title: '사용량 패널',
+        detail: '토큰, 비용, 스킬 활동'
+      }
     },
     providerNavigate: '탐색',
     providerSessions: '세션',
@@ -944,8 +2164,11 @@ export const ko = defineLocale({
     gatewayRunning: '메시징 Gateway 실행 중',
     gatewayStopped: '메시징 Gateway 중지됨',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 활성 세션 ${count}개`,
-    restartMessaging: '메시징 재시작',
+    restartGateway: '게이트웨이 재시작',
+    openBrowser: '브라우저 열기',
+    gatewayRestartFailed: '게이트웨이 재시작에 실패했습니다.',
     updateHermes: 'Hermes 업데이트',
+    reloadWindow: '창 새로고침',
     actionRunning: '실행 중',
     actionDone: '완료',
     actionFailed: '실패',
@@ -970,9 +2193,55 @@ export const ko = defineLocale({
     noModelUsage: '아직 모델 사용량이 없습니다.',
     topSkills: '상위 스킬',
     noSkillActivity: '아직 스킬 활동이 없습니다.',
-    actions: count => `${count}개 작업`
+    actions: count => `${count}개 작업`,
+    logFile: '로그 파일',
+    logLevel: '수준',
+    logSearchPlaceholder: '로그 필터링...',
+    maintenance: {
+      runOps: '진단',
+      doctor: '진단 실행',
+      doctorDesc: '설치, 설정 및 제공업체 상태 검사',
+      securityAudit: '보안 감사',
+      securityAuditDesc: '설정과 스킬의 위험한 설정 검사',
+      backup: '백업 생성',
+      backupDesc: '설정, 메모리, 스킬 및 세션을 ZIP으로 압축',
+      debugShare: '디버그 정보 공유',
+      debugShareDesc: '민감 정보를 가린 보고서와 로그를 업로드하고 공유 링크 생성 (6시간 후 자동 삭제)',
+      debugShareRunning: '디버그 보고서 업로드 중...',
+      debugShareLinks: '공유 링크',
+      debugShareFailed: '디버그 정보 공유 실패',
+      copyLink: '링크 복사',
+      linkCopied: '링크 복사됨',
+      curator: '스킬 큐레이터',
+      curatorDesc: '에이전트가 만든 오래된 스킬을 백그라운드에서 검토하고 보관합니다',
+      curatorPaused: '일시 중지됨',
+      curatorActive: '활성',
+      curatorDisabled: '비활성',
+      curatorLastRun: when => `마지막 실행 ${when}`,
+      curatorNeverRan: '실행 기록 없음',
+      pause: '일시 중지',
+      resume: '재개',
+      runNow: '지금 실행',
+      memoryData: '메모리 데이터',
+      memoryDataDesc: '모든 세션에 주입되는 내장 메모리 파일',
+      memoryProvider: name => `활성 제공업체: ${name}`,
+      builtinMemory: '내장',
+      memoryFile: '에이전트 메모리 (MEMORY.md)',
+      userFile: '사용자 프로필 (USER.md)',
+      bytes: size => size,
+      empty: '비어 있음',
+      resetMemory: '메모리 초기화',
+      resetUser: '프로필 초기화',
+      resetAll: '모두 초기화',
+      resetConfirm: target => `${target}을(를) 삭제할까요? 되돌릴 수 없습니다.`,
+      resetDone: files => `${files} 삭제됨.`,
+      resetFailed: '메모리 초기화 실패',
+      actionStarted: name => `${name} 시작됨 — 로그 추적 중...`,
+      actionFailed: name => `${name} 시작 실패`,
+      running: '실행 중...',
+      viewLog: '작업 로그'
+    }
   },
-
   messaging: {
     search: '메시징 검색...',
     loading: '메시징 플랫폼 불러오는 중...',
@@ -1021,6 +2290,23 @@ export const ko = defineLocale({
     failedUpdate: name => `${name} 업데이트 실패`,
     failedSave: name => `${name} 저장 실패`,
     failedClear: key => `${key} 지우기 실패`,
+    pendingRequests: count => `대기 중인 요청 (${count})`,
+    pendingAria: count => `대기 중인 페어링 요청 ${count}개`,
+    approvedUsers: count => `승인된 사용자 (${count})`,
+    approve: '승인',
+    approving: '승인 중...',
+    revoke: '철회',
+    revoking: '철회 중...',
+    revokeAria: name => `${name} 접근 권한 철회`,
+    revokeTitle: '접근 권한 철회',
+    revokeDesc: (name: string) => `${name}의 접근 권한이 철회되며 다음 메시지부터 승인된 사용자로 인식되지 않습니다.`,
+    approvedUser: name => `${name} 승인됨`,
+    approvedHint: '다음 메시지부터 자동으로 인식됩니다.',
+    revokedUser: name => `${name} 권한 철회됨`,
+    failedApprove: name => `${name} 승인 실패`,
+    failedRevoke: name => `${name} 권한 철회 실패`,
+    pairingLockedOut: '승인 실패 횟수가 너무 많아 이 플랫폼이 잠겼습니다. 나중에 다시 시도하세요.',
+    waitingSince: minutes => (minutes < 1 ? '방금' : `${minutes}분 전`),
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Bot 토큰',
@@ -1031,13 +2317,22 @@ export const ko = defineLocale({
         label: '허용된 Telegram 사용자 ID',
         help: '권장. @userinfobot에서 받은 숫자 ID를 쉼표로 구분합니다. 설정하지 않으면 누구나 봇에 DM할 수 있습니다.'
       },
-      TELEGRAM_PROXY: { label: '프록시 URL', help: 'Telegram이 차단된 네트워크에서만 필요합니다.' },
+      TELEGRAM_PROXY: {
+        label: '프록시 URL',
+        help: 'Telegram이 차단된 네트워크에서만 필요합니다.'
+      },
       DISCORD_BOT_TOKEN: {
         label: 'Bot 토큰',
         help: 'Discord Developer Portal에서 애플리케이션을 만들고 봇을 추가한 후 토큰을 붙여넣으세요.'
       },
-      DISCORD_ALLOWED_USERS: { label: '허용된 Discord 사용자 ID', help: '권장. 쉼표로 구분된 Discord 사용자 ID.' },
-      DISCORD_REPLY_TO_MODE: { label: '답글 스타일', help: 'first, all 또는 off.' },
+      DISCORD_ALLOWED_USERS: {
+        label: '허용된 Discord 사용자 ID',
+        help: '권장. 쉼표로 구분된 Discord 사용자 ID.'
+      },
+      DISCORD_REPLY_TO_MODE: {
+        label: '답글 스타일',
+        help: 'first, all 또는 off.'
+      },
       DISCORD_ALLOW_ALL_USERS: {
         label: '모든 Discord 사용자 허용',
         help: '개발 전용. true이면 허용 목록 없이 누구나 봇에 DM할 수 있습니다.'
@@ -1050,12 +2345,26 @@ export const ko = defineLocale({
         label: '홈 채널 이름',
         help: '로그와 상태 출력에 표시될 홈 채널 이름.'
       },
-      BLUEBUBBLES_ALLOW_ALL_USERS: { label: '모든 iMessage 사용자 허용', help: 'true이면 BlueBubbles 허용 목록을 건너뜁니다.' },
-      MATTERMOST_ALLOW_ALL_USERS: { label: '모든 Mattermost 사용자 허용' },
-      MATTERMOST_HOME_CHANNEL: { label: '홈 채널' },
-      QQ_ALLOW_ALL_USERS: { label: '모든 QQ 사용자 허용' },
-      QQBOT_HOME_CHANNEL: { label: 'QQ 홈 채널', help: 'cron 전송을 위한 기본 채널 또는 그룹.' },
-      QQBOT_HOME_CHANNEL_NAME: { label: 'QQ 홈 채널 이름' },
+      BLUEBUBBLES_ALLOW_ALL_USERS: {
+        label: '모든 iMessage 사용자 허용',
+        help: 'true이면 BlueBubbles 허용 목록을 건너뜁니다.'
+      },
+      MATTERMOST_ALLOW_ALL_USERS: {
+        label: '모든 Mattermost 사용자 허용'
+      },
+      MATTERMOST_HOME_CHANNEL: {
+        label: '홈 채널'
+      },
+      QQ_ALLOW_ALL_USERS: {
+        label: '모든 QQ 사용자 허용'
+      },
+      QQBOT_HOME_CHANNEL: {
+        label: 'QQ 홈 채널',
+        help: 'cron 전송을 위한 기본 채널 또는 그룹.'
+      },
+      QQBOT_HOME_CHANNEL_NAME: {
+        label: 'QQ 홈 채널 이름'
+      },
       SLACK_BOT_TOKEN: {
         label: 'Slack 봇 토큰',
         help: 'Slack 앱 설치 후 OAuth & Permissions에서 봇 토큰을 사용하세요.',
@@ -1066,13 +2375,32 @@ export const ko = defineLocale({
         help: 'Socket Mode에 필요한 앱 레벨 토큰을 사용하세요.',
         placeholder: 'Slack 앱 토큰 붙여넣기'
       },
-      SLACK_ALLOWED_USERS: { label: '허용된 Slack 사용자 ID', help: '권장. 쉼표로 구분된 Slack 사용자 ID.' },
-      MATTERMOST_URL: { label: '서버 URL', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: '봇 토큰' },
-      MATTERMOST_ALLOWED_USERS: { label: '허용된 사용자 ID', help: '권장. 쉼표로 구분된 Mattermost 사용자 ID.' },
-      MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
-      MATRIX_ACCESS_TOKEN: { label: '액세스 토큰' },
-      MATRIX_USER_ID: { label: '봇 사용자 ID', placeholder: '@hermes:example.org' },
+      SLACK_ALLOWED_USERS: {
+        label: '허용된 Slack 사용자 ID',
+        help: '권장. 쉼표로 구분된 Slack 사용자 ID.'
+      },
+      MATTERMOST_URL: {
+        label: '서버 URL',
+        placeholder: 'https://mattermost.example.com'
+      },
+      MATTERMOST_TOKEN: {
+        label: '봇 토큰'
+      },
+      MATTERMOST_ALLOWED_USERS: {
+        label: '허용된 사용자 ID',
+        help: '권장. 쉼표로 구분된 Mattermost 사용자 ID.'
+      },
+      MATRIX_HOMESERVER: {
+        label: 'Homeserver URL',
+        placeholder: 'https://matrix.org'
+      },
+      MATRIX_ACCESS_TOKEN: {
+        label: '액세스 토큰'
+      },
+      MATRIX_USER_ID: {
+        label: '봇 사용자 ID',
+        placeholder: '@hermes:example.org'
+      },
       MATRIX_ALLOWED_USERS: {
         label: '허용된 Matrix 사용자 ID',
         help: '권장. @user:server 형식의 사용자 ID를 쉼표로 구분.'
@@ -1082,13 +2410,21 @@ export const ko = defineLocale({
         placeholder: 'http://127.0.0.1:8080',
         help: '실행 중인 signal-cli REST 브리지의 URL.'
       },
-      SIGNAL_ACCOUNT: { label: '전화번호', help: 'signal-cli 브리지에 등록된 번호.' },
-      SIGNAL_ALLOWED_USERS: { label: '허용된 Signal 사용자', help: '권장. 쉼표로 구분된 Signal 식별자.' },
+      SIGNAL_ACCOUNT: {
+        label: '전화번호',
+        help: 'signal-cli 브리지에 등록된 번호.'
+      },
+      SIGNAL_ALLOWED_USERS: {
+        label: '허용된 Signal 사용자',
+        help: '권장. 쉼표로 구분된 Signal 식별자.'
+      },
       WHATSAPP_ENABLED: {
         label: 'WhatsApp 브리지 활성화',
         help: '아래 토글에 의해 자동으로 설정됩니다. 필요하다는 것을 알지 못하면 그대로 두세요.'
       },
-      WHATSAPP_MODE: { label: '브리지 모드' },
+      WHATSAPP_MODE: {
+        label: '브리지 모드'
+      },
       WHATSAPP_ALLOWED_USERS: {
         label: '허용된 WhatsApp 사용자',
         help: '권장. 쉼표로 구분된 전화번호 또는 WhatsApp ID.'
@@ -1096,21 +2432,135 @@ export const ko = defineLocale({
     },
     platformIntro: {}
   },
-
+  webhooks: {
+    search: '웹훅 검색...',
+    loading: '웹훅 불러오는 중...',
+    loadFailed: '웹훅을 불러오지 못했습니다',
+    subscriptions: (count: number) => `구독 (${count})`,
+    hint: '수신기가 실행 중이면 구독 변경 사항이 즉시 반영됩니다. 비활성화된 구독은 수신 이벤트를 거부합니다.',
+    empty: '아직 웹훅 구독이 없습니다.',
+    disabledTitle: '웹훅 수신기 비활성화됨',
+    disabledBody:
+      '웹훅은 독립적인 게이트웨이 플랫폼입니다. 수신 HTTP 이벤트를 받으려면 여기서 활성화하세요. 채팅 채널은 구독 결과를 Telegram, Discord, Slack 등의 채널로 전송할 때만 필요합니다.',
+    enable: '웹훅 활성화',
+    enabling: '활성화 중...',
+    enabled: (name: string) => `활성화됨: "${name}"`,
+    disabled: (name: string) => `비활성화됨: "${name}"`,
+    enableRow: '활성화',
+    disableRow: '비활성화',
+    delete: '삭제',
+    deleting: '삭제 중...',
+    deleted: '웹훅 삭제됨',
+    deleteTitle: '웹훅 삭제',
+    deleteDescPrefix: '다음 항목을 영구 삭제합니다: ',
+    deleteDescSuffix: '. 되돌릴 수 없습니다.',
+    deleteFailed: (name: string) => `"${name}" 삭제 실패`,
+    toggleFailed: (name, enabled) => `"${name}" ${enabled ? '활성화' : '비활성화'} 실패`,
+    newSubscription: '새 구독',
+    restarting: '게이트웨이 재시작 중...',
+    restartNeeded: '웹훅이 활성화되었지만 수신기를 가동하려면 게이트웨이를 다시 시작해야 합니다.',
+    restartGateway: '게이트웨이 재시작',
+    restartingGateway: '재시작 중...',
+    restartFailed: (detail: string) => `게이트웨이 재시작 실패${detail}`,
+    enabledRestarting: '웹훅 활성화됨. 게이트웨이 재시작 중...',
+    all: '(전체)',
+    deliverOnly: '전송만',
+    createdTitle: '구독 생성됨',
+    createdSecretHint: '시크릿은 한 번만 표시됩니다. 지금 복사하세요.',
+    webhookUrl: '웹훅 URL',
+    secretOnce: '시크릿 (한 번만 표시)',
+    done: '완료',
+    fieldName: '이름',
+    fieldNamePlaceholder: '예: github-push',
+    fieldDescription: '설명',
+    fieldDescriptionPlaceholder: '이 웹훅의 역할 (선택 사항)',
+    fieldEvents: '이벤트',
+    fieldEventsPlaceholder: '쉼표로 구분. 비워 두면 전체 선택',
+    fieldSkills: '스킬',
+    fieldSkillsPlaceholder: '쉼표로 구분한 스킬 이름 (선택 사항)',
+    fieldDeliver: '전송 대상',
+    fieldDeliverOnly: '페이로드만 전송',
+    fieldPrompt: '프롬프트',
+    fieldPromptPlaceholder: '웹훅 발생 시 에이전트가 수행할 지침 (선택 사항)',
+    nameRequired: '이름이 필요합니다',
+    create: '생성',
+    creating: '생성 중...',
+    created: '생성됨',
+    createFailed: (detail: string) => `생성 실패: ${detail}`,
+    copy: '복사',
+    deliverOptions: {
+      log: '로그',
+      telegram: 'Telegram',
+      discord: 'Discord',
+      slack: 'Slack',
+      email: '이메일',
+      github_comment: 'GitHub 댓글'
+    }
+  },
   profiles: {
     close: '프로필 닫기',
     nameHint: '소문자, 숫자, 하이픈, 밑줄만 사용 가능합니다. 문자나 숫자로 시작해야 합니다.',
     title: '프로필',
     count: count => `프로필 ${count}개`,
+    search: '프로필 검색...',
     loading: '프로필 불러오는 중...',
     newProfile: '새 프로필',
+    importProfile: '프로필 가져오기…',
+    exportProfile: '프로필 내보내기…',
+    imported: '프로필 가져옴',
+    exported: '프로필 내보냄',
+    failedImport: '프로필 가져오기 실패',
+    failedExport: '프로필 내보내기 실패',
     allProfiles: '모든 프로필',
     showAllProfiles: '모든 프로필 보기',
     switchToProfile: name => `${name}(으)로 전환`,
+    switchToConnection: name => `${name}(으)로 전환`,
+    switchConnectionFailed: name => `${name}에 연결할 수 없습니다`,
     manageProfiles: '프로필 관리...',
-    actionsFor: name => `${name} 작업`,
+    connectGateway: '게이트웨이 관리…',
+    fleet: {
+      allOnGateway: '이 게이트웨이의 모든 프로필',
+      gateway: gateway => `${gateway}의 프로필`,
+      gatewayUnreachable: gateway => `${gateway} · 연결할 수 없음`,
+      onGateway: (name, gateway) => `${name} · ${gateway}`,
+      switchTo: (name, gateway) => `${gateway}의 ${name}(으)로 전환`,
+      deleteOn: gateway => ` (${gateway})`
+    },
+    remoteOverride: {
+      menuItem: '원격 호스트에 연결…',
+      badge: (host: string) => `${host}에서 실행`,
+      title: (profile: string) => `${profile}을(를) 원격 호스트에 연결`,
+      description: '이 프로필의 세션은 이 컴퓨터 대신 지정한 원격 Hermes에서 실행됩니다.',
+      urlLabel: '원격 주소',
+      urlPlaceholder: 'https://hermes.example.com',
+      urlInvalid: 'http:// 또는 https://로 시작하는 전체 주소를 입력하세요',
+      tokenLabel: '접근 토큰',
+      tokenPlaceholder: '원격 세션 토큰 붙여넣기',
+      tokenSavedHint: '토큰이 이미 저장되어 있습니다. 유지하려면 비워 두세요.',
+      plainTextOptIn:
+        '이 컴퓨터에는 보안 키 저장소가 없어 토큰이 암호화되지 않은 상태로 디스크에 저장됩니다. 그래도 저장합니다.',
+      collisionWarning: (label: string) =>
+        `설정에 “${label}” 게이트웨이가 이미 있습니다. 이 프로필 연결은 별개이며 기존 게이트웨이를 변경하지 않습니다.`,
+      confirmTitle: '이 프로필을 원격 호스트에 연결할까요?',
+      confirmNote: (profile: string, host: string) =>
+        `${profile}의 새 대화는 ${host}에서 실행됩니다. 명령 실행과 파일 읽기는 이 컴퓨터가 아닌 해당 컴퓨터에서 이루어집니다. 신뢰하는 호스트에만 연결하세요.`,
+      confirmBack: '뒤로',
+      connect: '연결',
+      connecting: '연결 중…',
+      disconnect: '원격 연결 제거',
+      savedTitle: '프로필 연결됨',
+      savedMessage: (profile: string, host: string) => `${profile}은(는) 이제 ${host}에서 실행됩니다`,
+      removedTitle: '원격 연결 제거됨',
+      removedMessage: (profile: string) => `${profile}은(는) 이제 이 컴퓨터에서 실행됩니다`,
+      removeFailed: '원격 연결을 제거할 수 없습니다',
+      authFailedTitle: '원격 호스트가 저장된 토큰을 거부했습니다',
+      authFailedMessage: (profile: string, host: string) =>
+        `${host}에서 ${profile}에 저장된 토큰을 거부했습니다. 원격 호스트에서 토큰이 변경되었을 수 있습니다.`,
+      updateToken: '새 토큰 입력…'
+    },
+    actions: '작업',
     color: '색상...',
-    colorFor: name => `${name} 색상`,
+    colorFor: '색상',
     setColor: color => `${color} 색상 설정`,
     autoColor: '자동',
     noProfiles: '아직 프로필이 없습니다.',
@@ -1122,6 +2572,9 @@ export const ko = defineLocale({
     env: 'env',
     defaultBadge: '기본',
     rename: '이름 변경',
+    renameMenu: '이름 변경…',
+    exportMenu: '내보내기…',
+    editSoul: 'SOUL.md 편집…',
     copySetup: '설정 복사',
     copying: '복사 중...',
     modelLabel: '모델',
@@ -1144,6 +2597,9 @@ export const ko = defineLocale({
     deleting: '삭제 중...',
     createDesc: '프로필은 독립적인 Hermes 환경입니다: 별도의 설정, 스킬, SOUL.md.',
     nameLabel: '이름',
+    cloneFrom: '복제 원본',
+    cloneFromNone: '없음 (비어 있음)',
+    cloneFromDesc: '선택한 원본 프로필의 설정, 스킬 및 SOUL.md를 복사합니다.',
     cloneFromDefault: '기본에서 복제',
     cloneFromDefaultDesc: '기본 프로필에서 설정, 스킬, SOUL.md를 복사합니다.',
     invalidName: hint => `잘못된 이름. ${hint}`,
@@ -1153,6 +2609,9 @@ export const ko = defineLocale({
     renameTitle: '프로필 이름 변경',
     renameDescPrefix: '이름 변경은 프로필 디렉터리와 ',
     renameDescSuffix: '의 래퍼 스크립트를 업데이트합니다.',
+    displayNameTitle: '에이전트 이름 지정',
+    displayNameDesc: '앱 전체에 표시할 이름을 설정합니다. 내부 프로필 ID는 "default"로 유지됩니다.',
+    displayNameLabel: '표시 이름',
     newNameLabel: '새 이름',
     renaming: '이름 변경 중...',
     created: '프로필 생성됨',
@@ -1168,12 +2627,22 @@ export const ko = defineLocale({
     failedCreate: '프로필 생성 실패',
     failedRename: '프로필 이름 변경 실패'
   },
-
   cron: {
     close: 'Cron 닫기',
+    title: '예약 작업',
+    count: count => `작업 ${count}개`,
+    modelImpact: {
+      title: '예약 작업 검토 필요',
+      message: count => `모델 설정을 검토할 때까지 예약 작업 ${count}개의 실행을 건너뜁니다.`,
+      detailMore: (names, remaining) => `${names} 외 ${remaining}개`,
+      review: '예약 작업 검토',
+      saveFailed: 'Hermes가 모델 변경 사항을 저장하지 않았습니다.',
+      confirmTitle: '모델 선택 경고',
+      confirmDetail: '이 조건을 수락하는 경우에만 확인하세요.',
+      confirmAction: '확인',
+      declined: '데이터 학습 등급 경고를 수락하지 않아 모델 변경을 취소했습니다.'
+    },
     search: 'Cron 작업 검색...',
-    refresh: 'Cron 작업 새로 고침',
-    refreshing: 'Cron 작업 새로 고침 중',
     loading: 'Cron 작업 불러오는 중...',
     states: {
       enabled: '활성화됨',
@@ -1226,9 +2695,7 @@ export const ko = defineLocale({
     monthlyOnDayAt: (dayOfMonth, time) => `매월 ${dayOfMonth}일 ${time}`,
     topOfHour: '매시 정각',
     everyHourAt: minute => `매시 :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} 활성`,
     newCron: '새 Cron',
-    createFirst: '첫 Cron 만들기',
     emptyDescNew:
       'cron 표현식에 따라 실행할 프롬프트를 예약합니다. Hermes가 실행하고 선택한 대상으로 결과를 전송합니다.',
     emptyDescSearch: '더 넓은 검색어를 시도해 보세요.',
@@ -1236,7 +2703,11 @@ export const ko = defineLocale({
     emptyTitleSearch: '일치 항목 없음',
     last: '마지막:',
     next: '다음:',
-    actionsFor: title => `${title} 작업`,
+    noRuns: '실행 기록 없음',
+    manage: '관리',
+    showRuns: '실행 기록 표시',
+    hideRuns: '실행 기록 숨기기',
+    runHistory: '실행 기록',
     actionsTitle: 'Cron 작업',
     resume: 'Cron 재개',
     pause: 'Cron 일시 중지',
@@ -1269,15 +2740,38 @@ export const ko = defineLocale({
     promptPlaceholder: '읽지 않은 Slack 스레드를 요약하고 상위 5개를 이메일로 보내주세요...',
     frequencyLabel: '빈도',
     deliverLabel: '전송 대상',
+    deliverNeedsHomeChannel: '기본 채널을 먼저 설정하세요',
+    modelLabel: '모델',
+    modelDefault: '기본값 (전역 모델)',
     customScheduleLabel: '사용자 지정 일정',
     customPlaceholder: '0 9 * * * 또는 평일 오전 9시',
     customHint: 'cron 표현식 또는 "매시간", "평일 오전 9시" 같은 문구.',
     optional: '선택사항',
+    promptRequired: '프롬프트가 필요합니다.',
     promptScheduleRequired: '프롬프트와 일정이 필요합니다.',
+    scheduleRequired: '일정이 필요합니다.',
+    scriptOnlyEditHint: '스크립트 전용 작업입니다 (AI 프롬프트 없음). 작업 ID:',
     saveChanges: '변경 저장',
-    createAction: 'Cron 생성'
+    createAction: 'Cron 생성',
+    tabs: {
+      jobs: '작업',
+      blueprints: '템플릿'
+    },
+    blueprints: {
+      tab: '템플릿',
+      startFrom: '시작 방식',
+      custom: '직접 설정',
+      subtitle: '바로 사용할 수 있는 자동화',
+      dialogDesc: '상세 내용을 입력하고 실행을 예약하세요.',
+      scheduleIt: '예약',
+      scheduling: '예약 중...',
+      scheduled: '템플릿 예약됨',
+      loading: '템플릿 불러오는 중...',
+      failedLoad: '템플릿 불러오기 실패',
+      emptyTitle: '사용 가능한 템플릿이 없습니다',
+      emptyDesc: '이 백엔드에는 사용 가능한 자동화 템플릿이 없습니다.'
+    }
   },
-
   artifacts: {
     search: '아티팩트 검색...',
     refresh: '아티팩트 새로 고침',
@@ -1312,13 +2806,46 @@ export const ko = defineLocale({
     copyUrl: 'URL 복사',
     copyPath: '경로 복사'
   },
-
+  artifactCard: {
+    kind: {
+      code: '코드',
+      html: '인터랙티브 페이지',
+      svg: '그래픽'
+    },
+    generating: lines => `생성 중… ${lines}줄`,
+    versionBadge: count => `버전 ${count}개`,
+    open: '열기'
+  },
+  artifactPreview: {
+    versionOf: (current, total) => `전체 ${total}개 중 v${current}`,
+    olderVersion: '이전 버전',
+    newerVersion: '다음 버전',
+    latest: '최신',
+    copyContent: '내용 복사',
+    download: '다운로드',
+    openInBrowser: '브라우저에서 열기',
+    openInBrowserFailed: '브라우저에서 열 수 없습니다',
+    missingTitle: '결과물을 사용할 수 없습니다',
+    missingBody: '이 결과물은 더 이상 로컬 레지스트리에 없습니다.'
+  },
   sidebar: {
+    gatewayGroups: {
+      grouping: '게이트웨이 및 프로필',
+      rename: '그룹 이름 변경',
+      aliasLabel: '표시 이름',
+      aliasHint: '표시 이름만 바뀝니다. 게이트웨이와 프로필의 이름은 유지됩니다.',
+      resetName: '이름 초기화',
+      moveUp: '위로 이동',
+      moveDown: '아래로 이동',
+      reorder: '그룹 순서 변경',
+      actions: '그룹 작업'
+    },
     nav: {
       'new-session': '새 세션',
       skills: '스킬과 도구',
       messaging: '메시징',
-      artifacts: '아티팩트'
+      artifacts: '아티팩트',
+      cron: '예약 작업'
     },
     searchAria: '세션 검색',
     searchPlaceholder: '세션 검색…',
@@ -1327,44 +2854,160 @@ export const ko = defineLocale({
     results: '결과',
     pinned: '고정됨',
     sessions: '세션',
+    cronJobs: 'Cron 작업',
     groupAriaGrouped: '세션을 단일 목록으로 보기',
     groupAriaUngrouped: '작업 공간별로 세션 그룹화',
+    showProjects: '프로젝트 표시',
+    showSessions: '세션 표시',
     groupTitleGrouped: '세션 그룹 해제',
     groupTitleUngrouped: '작업 공간별 그룹화',
     allPinned: '여기 모든 항목이 고정되어 있습니다. 채팅을 최근 항목에 표시하려면 고정 해제하세요.',
     shiftClickHint: '채팅을 Shift-클릭하여 고정 · 드래그하여 순서 변경',
     noWorkspace: '작업 공간 없음',
+    projectEmpty: '아직 세션이 없습니다',
+    projectLoadFailed: '세션을 불러오지 못했습니다',
+    noSessions: '아직 세션이 없습니다',
+    noFilterMatches: '이 필터와 일치하는 세션이 없습니다',
+    projects: {
+      sectionLabel: '프로젝트',
+      home: '홈',
+      newButton: '새 프로젝트',
+      createTitle: '새 프로젝트',
+      createDesc: '작업 공간의 이름을 정하고 폴더를 하나 이상 추가하세요.',
+      renameTitle: '프로젝트 이름 변경',
+      addFolderTitle: '폴더 추가',
+      namePlaceholder: '예: 연구 프로젝트',
+      foldersLabel: '폴더',
+      ideaLabel: '아이디어',
+      ideaPlaceholder: '어떤 프로젝트인가요? (IDEA.md에 저장)',
+      ideaGenerate: '아이디어 생성',
+      ideaGenerating: '생성 중…',
+      ideaShuffle: '템플릿 섞기',
+      noFolders: '아직 추가한 폴더가 없습니다.',
+      addFolder: '폴더 추가',
+      primaryBadge: '기본',
+      removeFolder: '제거',
+      create: '만들기',
+      menu: '작업',
+      menuRename: '이름 변경…',
+      menuAppearance: '모양',
+      noColor: '색상 없음',
+      menuAddFolder: '폴더 추가',
+      menuSetActive: '활성화',
+      menuDelete: '삭제',
+      moveToProject: '프로젝트로 이동',
+      movedTo: name => `${name}(으)로 이동했습니다`,
+      moveFailed: '세션을 이동하지 못했습니다',
+      moveNoFolder: '이 프로젝트에는 이동할 폴더가 없습니다',
+      moveNoProjects: '다른 프로젝트 없음',
+      reveal: '폴더에서 보기',
+      copyPath: '경로 복사',
+      removeFromSidebar: '사이드바에서 숨기기',
+      createFailed: '프로젝트를 만들지 못했습니다',
+      staleBackend:
+        '프로젝트를 만들려면 Hermes 백엔드를 업데이트하세요. 현재 백엔드가 데스크톱 앱보다 오래된 버전입니다(설정 → 업데이트 → 백엔드).',
+      deleteConfirm: 'Hermes에 저장된 프로젝트를 제거합니다. 파일, git 저장소, 워크트리는 그대로 유지됩니다.',
+      startWork: '새 워크트리',
+      newWorktreeTitle: '새 워크트리',
+      newWorktreeDesc: '이 워크트리의 브랜치 이름을 입력하세요.',
+      branchPlaceholder: '예: my-feature',
+      branchOff: () => ({ after: '에서 분기', before: '' }),
+      baseBranchPlaceholder: '브랜치 검색…',
+      baseBranchNone: '브랜치를 찾을 수 없습니다',
+      startWorkFailed: '워크트리를 만들지 못했습니다',
+      worktreeStaleBackend:
+        '이 원격 연결에서 워크트리를 만들려면 Hermes 백엔드를 업데이트하세요. 현재 버전은 git worktree API를 지원하지 않습니다.',
+      worktreeProjectLabel: '프로젝트',
+      worktreeProjectPlaceholder: '프로젝트 검색…',
+      worktreeProjectNone: '폴더가 있는 프로젝트 없음',
+      convertBranch: '브랜치 변환…',
+      convertBranchTitle: '브랜치 변환',
+      convertBranchDesc: '체크아웃된 브랜치를 열거나 사용하지 않는 브랜치의 워크트리를 만드세요.',
+      convertBranchPlaceholder: '브랜치 검색…',
+      convertBranchInstead: '기존 브랜치 변환',
+      branchOpenExisting: '열기',
+      branchSwitchHome: '홈 전환',
+      branchCreateWorktree: '새 워크트리',
+      branchTrackRemote: '원격 추적',
+      branchesLoading: '브랜치 불러오는 중…',
+      noBranches: '브랜치를 찾을 수 없습니다',
+      removeWorktree: '워크트리 제거',
+      removeWorktreeFailed: '워크트리를 제거하지 못했습니다(커밋하지 않은 변경 사항이 있나요?)',
+      removeWorktreeConfirm:
+        'git에서 제거하거나(워크트리 디렉터리 삭제, 브랜치 유지), 사이드바에서만 숨기고 디스크에 워크트리를 유지할 수 있습니다.',
+      removeWorktreeDirty:
+        '이 워크트리에는 커밋하지 않은 변경 사항이 있습니다. 강제로 제거하여 변경 사항을 버리거나, 사이드바에서만 숨기고 디스크에 유지할 수 있습니다.',
+      forceRemove: '강제 제거',
+      enter: label => `${label} 열기`,
+      reorder: label => `${label} 순서 변경`,
+      toggle: (label, open) => `${label} 세션 ${open ? '표시' : '숨기기'}`,
+      back: '모든 프로젝트',
+      showAllSessions: '모든 세션 표시',
+      autoDiscovered: '자동으로 발견됨'
+    },
     newSessionIn: label => `${label}의 새 세션`,
-    reorderWorkspace: label => `${label} 작업 공간 순서 변경`,
     showMoreIn: (count, label) => `${label}에서 ${count}개 더 보기`,
     loading: '불러오는 중…',
     loadMore: '더 불러오기',
     loadCount: step => `${step}개 더 불러오기`,
+    messageCount: count => `메시지 ${count}개`,
+    toolCallCount: count => `도구 호출 ${count}회`,
     row: {
       pin: '고정',
       unpin: '고정 해제',
+      markUnread: '읽지 않음으로 표시',
+      markRead: '읽음으로 표시',
+      unreadFailed: '읽음 상태를 변경하지 못했습니다',
       copyId: 'ID 복사',
       export: '내보내기',
+      branchFrom: '분기',
       rename: '이름 변경',
       archive: '보관',
+      newWindow: '새 창',
+      openInTerminal: '터미널에서 열기',
+      hideTabBar: '탭 표시줄 숨기기',
+      openInNewTab: '새 탭에서 열기',
+      openInSplit: '분할 화면에서 열기',
       copyIdFailed: '세션 ID를 복사할 수 없습니다',
-      actionsFor: title => `${title} 작업`,
       sessionActions: '세션 작업',
       sessionRunning: '세션 실행 중',
       needsInput: '입력 필요',
       waitingForAnswer: '답변 대기 중',
+      finishedUnread: '완료 — 읽지 않음',
+      backgroundRunning: '백그라운드 작업 실행 중',
+      draftSession: '초안 — 아직 전송하지 않음',
+      handoffOrigin: platform => `${platform}에서 이어받음`,
+      ownedByProfile: profile => `프로필: ${profile}`,
       renamed: '이름 변경됨',
       renameFailed: '이름 변경 실패',
       renameTitle: '세션 이름 변경',
       renameDesc: '이 채팅에 기억하기 쉬운 제목을 부여하세요. 비워두면 지웁니다.',
       untitledPlaceholder: '제목 없는 세션',
+      deleteTitle: '세션을 삭제할까요?',
+      deleteDesc: title => `“${title}” 세션을 영구적으로 삭제합니다. 이 작업은 되돌릴 수 없습니다.`,
+      deleting: '삭제 중…',
+      deleted: '세션을 삭제했습니다',
+      untitledChat: id => `대화 ${id}`,
+      messageCount: count => `메시지 ${count}개`,
+      todoProgress: '완료한 작업',
       ageNow: '방금',
       ageDay: '일',
       ageHour: '시간',
       ageMin: '분'
-    }
+    },
+    dateDivider: {
+      today: '오늘',
+      yesterday: '어제',
+      thisWeek: '이번 주',
+      lastWeek: '지난주',
+      thisMonth: '이번 달'
+    },
+    statusDivider: {
+      working: '작업 중',
+      done: '완료'
+    },
+    markAllRead: '모두 읽음으로 표시'
   },
-
   composer: {
     message: '메시지',
     wakingProfile: profile => `${profile} 깨우는 중…`,
@@ -1390,6 +3033,7 @@ export const ko = defineLocale({
       '조정하거나 계속하기'
     ],
     startVoice: '음성 대화 시작',
+    openDirective: '열기',
     queueMessage: '메시지 대기열에 추가',
     steer: '현재 실행 조정 (⌘⏎)',
     stop: '중지',
@@ -1407,7 +3051,13 @@ export const ko = defineLocale({
     endShort: '종료',
     stopDictation: '받아쓰기 중지',
     transcribingDictation: '받아쓰기 전사 중',
+    voiceControls: '음성',
     voiceDictation: '음성 받아쓰기',
+    speakReplies: '답변 소리 내어 읽기',
+    stopSpeakingReplies: '답변 읽기 중지',
+    wakeWordListening: phrase => `호출어: "${phrase}" — 듣는 중`,
+    wakeWordOff: phrase => `호출어: "${phrase}" — 꺼짐`,
+    wakeWordPausedVoice: phrase => `호출어: "${phrase}" — 음성 대화 중 일시 중지`,
     lookupLoading: '조회 중…',
     lookupNoMatches: '일치 항목 없음.',
     lookupTry: '시도',
@@ -1424,14 +3074,14 @@ export const ko = defineLocale({
       '/quit': 'hermes 종료'
     },
     hotkeyDescs: {
-      '@': '파일, 폴더, URL, git 참조',
-      '/': '슬래시 명령 팔레트',
-      '?': '빠른 도움말 (delete로 닫기)',
-      Enter: '보내기 · Shift+Enter로 줄바꿈',
-      'Cmd/Ctrl+K': '다음 대기 턴 보내기',
-      'Cmd/Ctrl+L': '다시 그리기',
-      Esc: '팝오버 닫기 · 실행 취소',
-      '↑ / ↓': '팝오버 / 기록 순환'
+      'composer.mention': '파일, 폴더, URL, git 참조',
+      'composer.slash': '슬래시 명령 팔레트',
+      'composer.help': '빠른 도움말(삭제 키로 닫기)',
+      'composer.sendNewline': '보내기 · Shift+Enter로 줄 바꿈',
+      'composer.sendQueued': '다음 대기 메시지 보내기',
+      'keybinds.openPanel': '모든 키보드 단축키',
+      'composer.cancel': '팝오버 닫기 · 실행 취소',
+      'composer.history': '팝오버 / 기록 탐색'
     },
     attachUrlTitle: 'URL 첨부',
     attachUrlDesc: 'Hermes가 페이지를 가져와 이 턴의 컨텍스트로 포함합니다.',
@@ -1439,15 +3089,21 @@ export const ko = defineLocale({
     urlHintPre: '전체 URL을 포함하세요, 예: ',
     attach: '첨부',
     queued: count => `대기 ${count}개`,
+    queuedPaused: count => `${count}개 대기 중 — 일시 중지`,
     attachmentOnly: '첨부 전용 턴',
     emptyTurn: '빈 턴',
     attachments: count => `첨부 ${count}개`,
     editingInComposer: '입력기에서 편집 중',
     editingQueuedInComposer: '대기 중인 턴을 입력기에서 편집 중',
-    editQueued: '대기 중인 턴 편집',
-    sendQueuedNext: '대기 중인 턴 다음에 보내기',
-    sendQueuedNow: '대기 중인 턴 지금 보내기',
-    deleteQueued: '대기 중인 턴 삭제',
+    queueEdit: '편집',
+    queueSendNext: '다음',
+    queueSteer: '방향 변경 — 현재 턴에 바로 반영',
+    queueSend: '보내기',
+    queueDelete: '삭제',
+    queueResume: '계속',
+    queueResumeTip: '중지 버튼으로 일시 중지됨 — 대기 중인 턴 전송 재개',
+    queueStuckTitle: '대기 중인 메시지를 보내지 못했습니다',
+    queueStuckBody: '대기 중인 턴의 전송이 계속 실패했습니다. 대기열에 남아 있으니 다시 보내 보세요.',
     previewUnavailable: '미리보기 사용 불가',
     previewLabel: label => `${label} 미리보기`,
     couldNotPreview: label => `${label}을(를) 미리볼 수 없습니다`,
@@ -1473,6 +3129,43 @@ export const ko = defineLocale({
     snippetsDesc: '입력기에 넣을 시작 프롬프트를 선택하세요.',
     dropFiles: '파일을 끌어다 첨부',
     dropSession: '이 채팅을 연결하려면 놓기',
+    mcpSuggestions: {
+      label: server => `${server} 추가`,
+      tip: keyword => `“${keyword}” 언급에 따른 추천 — 클릭하여 연결`,
+      connecting: server => `${server} 연결 중…`,
+      cancelTip: '클릭하여 취소',
+      added: server => `${server} 추가됨`,
+      addedTip: '연결됨 — 이 대화에서 도구를 사용할 수 있습니다',
+      connectFailed: server => `${server}에 연결하지 못했습니다`
+    },
+    skillSuggestions: {
+      label: skill => `스킬 사용: ${skill}`,
+      tip: skill => `“${skill}”을 언급했습니다 — 클릭하여 이 스킬로 시작`,
+      done: skill => `/${skill} 추가됨`,
+      doneTip: '메시지를 보내면 스킬을 불러옵니다'
+    },
+    githubSuggestions: {
+      label: 'GitHub 설정',
+      tip: 'GitHub는 gh CLI 스킬을 통해 작동합니다 — 클릭하여 계정 연결',
+      done: '/github-auth 추가됨',
+      doneTip: '메시지를 보내면 에이전트가 GitHub 로그인을 안내합니다'
+    },
+    repairSuggestions: {
+      label: server => `${server} 다시 연결`,
+      tip: server => `${server} 호출이 연결 오류로 실패했습니다`,
+      working: server => `${server} 다시 연결 중…`,
+      workingTip: '클릭하여 취소',
+      done: server => `${server} 다시 연결됨`,
+      doneTip: '이 대화에 새 인증 정보가 적용되었습니다',
+      failed: server => `${server}에 다시 연결하지 못했습니다`
+    },
+    cronSuggestions: {
+      label: '예약 작업으로 설정',
+      tip: phrase => `“${phrase}”은 반복 작업으로 보입니다 — 일정에 따라 실행하세요`,
+      prefix: '다음을 예약 작업으로 설정해 주세요:',
+      done: '예약 작업으로 표시됨',
+      doneTip: '메시지를 보내면 에이전트가 작업을 만듭니다'
+    },
     snippets: {
       codeReview: {
         label: '코드 리뷰',
@@ -1491,7 +3184,156 @@ export const ko = defineLocale({
       }
     }
   },
-
+  statusStack: {
+    agents: '에이전트',
+    background: count => `백그라운드 ${count}개`,
+    goalActive: '목표 진행 중',
+    goalBlocked: '목표 진행 불가',
+    goalDone: '목표 완료',
+    goalPaused: '목표 일시 중지',
+    goalWaiting: '목표 대기 중',
+    subagents: count => `하위 에이전트 ${count}개`,
+    todos: (done, total) => `작업 ${done}/${total}`,
+    running: '실행 중',
+    stop: '중지',
+    dismiss: '닫기',
+    exit: code => `종료 ${code}`,
+    control: {
+      goalActiveTurns: (turn, maxTurns) => `턴 ${turn}/${maxTurns}`,
+      goalDoneTurns: turns => `${turns}턴`,
+      goalTurn: turn => `턴 ${turn}`,
+      goalActions: '목표 작업',
+      viewDetails: '자세히 보기',
+      addCriterion: '기준 추가',
+      addCriterionDialogTitle: '기준 추가',
+      addCriterionPlaceholder: '기준을 입력하세요...',
+      criterionLabel: '기준',
+      pauseGoal: '목표 일시 중지',
+      resumeGoal: '목표 재개',
+      resumeNow: '지금 재개',
+      clearGoal: '목표 지우기',
+      clearGoalConfirmTitle: '목표를 지울까요?',
+      clearGoalConfirmBody: '진행 중인 목표를 지울까요? 이 작업은 되돌릴 수 없습니다.',
+      copyCriterion: index => `기준 ${index} 복사`,
+      removeCriterion: index => `기준 ${index} 제거`,
+      removeCriterionConfirmTitle: index => `기준 ${index}을(를) 제거할까요?`,
+      removeCriterionConfirmBody: index => `기준 ${index}을(를) 제거하시겠습니까?`,
+      clearCriteria: '모든 기준 지우기',
+      clearCriteriaConfirmTitle: '모든 기준을 지울까요?',
+      clearCriteriaConfirmBody: '이 목표의 모든 기준을 제거하시겠습니까?',
+      criteriaHeader: count => `기준 · ${count}`,
+      noCriteria: '기준 없음',
+      goalDetailsTitle: '목표 세부 정보',
+      objectiveLabel: '목표',
+      contractOutcome: '결과',
+      contractVerification: '검증',
+      contractConstraints: '제약 조건',
+      contractBoundaries: '범위',
+      contractStopWhen: '중지 조건',
+      waitBarrierTitle: '대기 조건',
+      waitUntil: target => `${target}까지 대기 중`,
+      waitSession: target => `세션 ${target} 대기 중`,
+      waitPid: pid => `프로세스 ${pid} 대기 중`,
+      qualityGatesTitle: '품질 검증',
+      gateCommand: '명령',
+      gateAttempts: (attempts, max) => `${attempts}/${max}회 시도`,
+      gateTimeout: seconds => `제한 시간 ${seconds}초`,
+      gateLastExit: code => (code === null ? '대기 중' : `종료 코드: ${code}`),
+      loopActive: '반복 실행 중',
+      loopPaused: '반복 일시 중지',
+      loopDeferred: '반복 실행 보류',
+      loopFinished: '반복 완료',
+      loopRuns: runs => `${runs}회 실행`,
+      loopRunCount: (current, total) => `실행 ${current}/${total}`,
+      loopNext: time => `다음 ${time}`,
+      loopEverySeconds: seconds => `${seconds}초마다`,
+      loopEveryMinutes: minutes => `${minutes}분마다`,
+      loopEveryHours: hours => `${hours}시간마다`,
+      loopSelfPaced: '자율 주기',
+      loopActions: '반복 작업',
+      pauseLoop: '반복 일시 중지',
+      resumeLoop: '반복 재개',
+      stopLoop: '반복 중지',
+      stopLoopConfirmTitle: '반복을 중지할까요?',
+      stopLoopConfirmBody: '이 반복 실행을 중지하시겠습니까?',
+      dismissLoop: '반복 닫기',
+      loopPromptLabel: '프롬프트',
+      loopCadenceLabel: '실행 주기',
+      loopUntilLabel: '종료 조건',
+      loopDeferredNotice: '현재 진행 중인 목표가 세션을 제어하고 있습니다.',
+      loopAwaitingResponse: '응답 대기 중',
+      heartbeatActive: '하트비트 활성',
+      heartbeatPaused: '하트비트 일시 중지',
+      heartbeatEveryMinutes: minutes => `${minutes}분마다`,
+      heartbeatEveryHours: hours => `${hours}시간마다`,
+      heartbeatEverySeconds: seconds => `${seconds}초마다`,
+      heartbeatNext: time => `다음 ${time}`,
+      heartbeatDueWaitingForIdle: '실행 시각 도달 — 유휴 상태 대기 중',
+      heartbeatActions: '하트비트 작업',
+      pauseHeartbeat: '하트비트 일시 중지',
+      resumeHeartbeat: '하트비트 재개',
+      clearHeartbeat: '하트비트 지우기',
+      clearHeartbeatConfirmTitle: '하트비트를 지울까요?',
+      clearHeartbeatConfirmBody: '이 하트비트를 지우시겠습니까?',
+      heartbeatFiredCount: count => `${count}회 실행됨`,
+      actionFailed: msg => `작업 실패: ${msg}`,
+      actionSucceeded: '작업 성공',
+      copySuccess: '기준을 클립보드에 복사했습니다',
+      copyFailure: '기준을 클립보드에 복사하지 못했습니다',
+      continuationFailed: '목표 계속 진행 요청을 보내지 못했습니다',
+      continuationQueued: '목표 재개됨 — 현재 턴이 끝나면 계속 진행합니다',
+      continuationBusy: '목표 재개됨 — 세션이 사용 중입니다. 현재 턴을 /interrupt로 중단하면 계속 진행합니다',
+      controlUnavailable: msg => `세션 제어 불가: ${msg}`,
+      dismissError: '오류 닫기',
+      add: '추가'
+    },
+    coding: {
+      title: '작업 트리',
+      noBranch: '브랜치 없음',
+      detached: '분리됨',
+      clean: '변경 없음',
+      changed: count => `${count}개 변경`,
+      ahead: count => `${count}개 앞섬`,
+      behind: count => `${count}개 뒤처짐`,
+      review: '검토',
+      close: '닫기',
+      openChanges: '변경 사항 열기',
+      openFile: '파일 열기',
+      stage: '스테이징',
+      unstage: '스테이징 해제',
+      stageAll: '모두 스테이징',
+      viewAsTree: '트리로 보기',
+      viewAsList: '목록으로 보기',
+      revert: '되돌리기',
+      revertAll: '모두 되돌리기',
+      revertConfirm: '이 파일의 변경 사항을 버리고 커밋된 상태로 복원할까요? 이 작업은 되돌릴 수 없습니다.',
+      revertAllConfirm: '모든 변경 사항을 버리고 파일을 커밋된 상태로 복원할까요? 이 작업은 되돌릴 수 없습니다.',
+      staged: '스테이징됨',
+      noChanges: '변경 사항 없음',
+      notRepo: 'git 저장소가 아닙니다',
+      noDiff: '표시할 차이 없음',
+      scopeUncommitted: '커밋 전',
+      scopeBranch: '브랜치',
+      scopeLastTurn: '마지막 턴',
+      commit: '커밋',
+      commitAndPush: '커밋 후 푸시',
+      commitPlaceholder: shortcut => `메시지 (${shortcut}로 커밋)`,
+      generateCommitMessage: '커밋 메시지 생성',
+      stopGenerating: '생성 중지',
+      createPr: 'PR 만들기',
+      openPr: 'PR 열기',
+      ghMissing: 'PR을 열려면 GitHub CLI(gh)를 설치하고 로그인하세요',
+      agentShip: 'Hermes에게 PR 생성 요청',
+      agentShipUnavailable: '이 변경 사항을 만든 대화가 화면에 열려 있지 않습니다.',
+      agentShipPrompt:
+        '현재 변경 사항을 검토하고 명확한 Conventional Commits 형식의 메시지로 커밋한 뒤 브랜치를 푸시하고 풀 리퀘스트를 열어 주세요.',
+      newBranch: '새 브랜치',
+      branchOffFrom: base => `${base}에서 새 브랜치`,
+      switchTo: branch => `${branch}(으)로 전환`,
+      switchFailed: branch => `${branch}(으)로 전환하지 못했습니다`,
+      worktrees: '워크트리'
+    }
+  },
   updates: {
     stages: {
       idle: '준비 중…',
@@ -1499,8 +3341,12 @@ export const ko = defineLocale({
       fetch: '다운로드 중…',
       pull: '거의 다 됐습니다…',
       pydeps: '마무리 중…',
+      update: 'Hermes 업데이트 중…',
+      rebuild: '데스크톱 앱 다시 빌드 중…',
       restart: 'Hermes 재시작 중…',
+      done: '업데이트 완료',
       manual: '터미널에서 업데이트',
+      guiSkew: '데스크톱 앱 업데이트',
       error: '업데이트 일시 중지됨'
     },
     checking: '업데이트 확인 중…',
@@ -1510,25 +3356,61 @@ export const ko = defineLocale({
     unsupportedMessage: '이 버전의 Hermes는 앱 내부에서 자체 업데이트할 수 없습니다.',
     connectionRetry: '연결을 확인하고 다시 시도하세요.',
     latestBody: '최신 버전을 실행 중입니다.',
+    latestBodyBackend: '백엔드가 최신 버전입니다.',
     allSetTitle: '모두 준비됨',
     availableTitle: '새 업데이트 사용 가능',
     availableBody: '새 Hermes 버전이 설치 준비되었습니다.',
+    availableTitleBackend: '백엔드 업데이트가 있습니다',
+    availableBodyBackend: '연결된 Hermes 백엔드의 새 버전을 설치할 수 있습니다.',
+    availableBodyNoChangelog: '새 버전이 준비되었습니다. 이 설치 유형에서는 릴리스 노트를 제공하지 않습니다.',
     updateNow: '지금 업데이트',
     maybeLater: '나중에',
     moreChanges: count => `+ 변경사항 ${count}개 더 포함됨.`,
     manualTitle: '터미널에서 업데이트',
     manualBody: '명령줄에서 Hermes를 설치하셨으므로 업데이트도 거기서 실행됩니다. 다음을 터미널에 붙여넣으세요:',
     manualPickedUp: 'Hermes는 다음 실행 시 새 버전을 가져옵니다.',
+    guiSkewTitle: '데스크톱 앱 업데이트',
+    guiSkewBody:
+      '백엔드는 업데이트되었지만 데스크톱 앱 패키지는 변경되지 않았습니다. 버전을 맞추려면 Hermes 데스크톱 앱(AppImage / .deb / .rpm)을 업데이트하거나 다시 설치하세요.',
     copy: '복사',
     copied: '복사됨',
     done: '완료',
     applyingBody: 'Hermes 업데이트 프로그램이 자체 창에서 작업을 인계받아 완료 시 Hermes를 다시 엽니다.',
+    applyingBodyBackend: '원격 백엔드가 업데이트를 적용한 뒤 재시작합니다. 준비되면 Hermes가 자동으로 다시 연결합니다.',
     applyingClose: '업데이트를 적용하기 위해 Hermes가 닫힙니다.',
     errorTitle: '업데이트가 완료되지 않았습니다',
     errorBody: '걱정 마세요 — 잃은 것은 없습니다. 지금 다시 시도할 수 있습니다.',
-    notNow: '지금 안 함'
+    blockerTitle: '로컬 미리보기를 닫고 Hermes를 업데이트할까요?',
+    blockerBody: '업데이트하려면 아래 로컬 미리보기를 중지해야 합니다. 파일은 수정하거나 삭제하지 않습니다.',
+    foreignBlockerTitle: '다른 프로세스를 닫고 Hermes 업데이트',
+    foreignBlockerBody:
+      '이 프로세스들은 자동으로 안전하게 종료할 수 없습니다. 각 프로세스를 실행한 앱, 터미널 또는 서비스를 닫은 뒤 업데이트를 다시 시도하세요.',
+    mixedBlockerBody:
+      '아래 로컬 미리보기는 Hermes가 닫을 수 있습니다. 다른 프로세스는 직접 종료해야 업데이트를 계속할 수 있습니다.',
+    closePreviewsAndUpdate: '미리보기 닫고 업데이트',
+    closePreviewsAndCheckAgain: '미리보기 닫고 다시 확인',
+    localPreview: '로컬 미리보기',
+    portLabel: port => `포트 ${port}`,
+    pidLabel: pid => `PID ${pid}`,
+    technicalDetails: '기술 세부 정보',
+    notNow: '지금 안 함',
+    clientAlsoBehindTitle: '데스크톱 앱이 이전 버전입니다',
+    clientAlsoBehindMessage:
+      '백엔드는 최신이지만 데스크톱 앱은 이전 버전입니다. 최신 수정 사항을 적용하려면 앱을 업데이트하세요.',
+    clientAlsoBehindAction: '데스크톱 앱 업데이트',
+    everythingDispatched: '업데이트 요청됨',
+    everythingSkipped: '건너뜀',
+    everythingRowFailed: '업데이트 실패',
+    everythingFanoutFailedTitle: '다른 인스턴스를 업데이트하지 못했습니다',
+    applyStatus: {
+      preparing: '백엔드 업데이트 준비 중…',
+      pulling: '백엔드 업데이트 중…',
+      restarting: '업데이트를 적용하기 위해 백엔드 재시작 중…',
+      notAvailable: '이 백엔드는 업데이트할 수 없습니다.',
+      failed: '백엔드 업데이트에 실패했습니다.',
+      noReturn: '백엔드가 다시 연결되지 않았습니다. 업데이트가 완료되지 않았을 수 있으니 백엔드 호스트를 확인하세요.'
+    }
   },
-
   install: {
     stageStates: {
       pending: '대기 중',
@@ -1545,6 +3427,39 @@ export const ko = defineLocale({
     viewDocs: '설치 문서 보기',
     installTo: '설치 위치',
     retryAfterRun: '실행했습니다 -- 재시도',
+    setupChoiceTitle: 'Hermes Desktop 설정',
+    setupChoiceDesc: '실행 중인 Hermes 게이트웨이에 연결하거나 이 컴퓨터에 Hermes를 설치하세요.',
+    connectExistingTitle: '기존 Hermes에 연결',
+    connectExistingShort: '기존 환경 연결',
+    connectExistingDesc: '세션 토큰이나 브라우저 로그인으로 원격 백엔드를 사용합니다. 로컬 설치는 시작하지 않습니다.',
+    installLocalTitle: 'Hermes 로컬 설치',
+    installLocalDesc: 'Hermes를 다운로드하고 Python 환경을 만든 뒤 이 컴퓨터에서 백엔드를 실행합니다.',
+    localStartUnavailable: '로컬 설치를 시작하지 못했습니다. Hermes Desktop을 재시작하고 다시 시도하세요.',
+    remoteSetupTitle: '기존 Hermes에 연결',
+    remoteSetupDesc: '게이트웨이 URL을 입력하세요. Hermes Desktop이 토큰 또는 브라우저 로그인 필요 여부를 감지합니다.',
+    remoteUrlTitle: '게이트웨이 URL',
+    remoteUrlDesc: 'Hermes 게이트웨이의 기본 URL을 입력하세요. 원격 연결에는 https://를 포함하세요.',
+    remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
+    probing: '게이트웨이 인증 방식 확인 중...',
+    probeError: '해당 Hermes 게이트웨이에 연결하지 못했습니다.',
+    identityProvider: '인증 제공업체',
+    authTitle: '인증',
+    authNeedsOauth: provider => `이 게이트웨이를 테스트하기 전에 ${provider}(으)로 로그인하세요.`,
+    authSignedIn: '브라우저 로그인을 완료했습니다.',
+    connected: '연결됨',
+    signIn: '로그인',
+    signInWith: provider => `${provider}(으)로 로그인`,
+    enterUrlFirst: '먼저 게이트웨이 URL을 입력하세요.',
+    signInIncomplete: '인증을 완료하기 전에 로그인 창이 닫혔습니다.',
+    tokenTitle: '세션 토큰',
+    tokenDesc: '원격 게이트웨이의 .env 파일에 있는 세션 토큰을 붙여넣으세요.',
+    pasteSessionToken: '세션 토큰 붙여넣기',
+    incompleteSignInTest: '이 OAuth 인증 게이트웨이를 테스트하기 전에 로그인하세요.',
+    incompleteTokenTest: '이 게이트웨이를 테스트하기 전에 세션 토큰을 입력하세요.',
+    testConnection: '연결 테스트',
+    testSucceeded: (baseUrl, version) => `${baseUrl}${version ? ` (${version})` : ''}에 연결되었습니다.`,
+    applyRemote: '적용 후 다시 연결',
+    backToSetup: '뒤로',
     failedTitle: '설치 실패',
     settingUpTitle: 'Hermes Agent 설정 중',
     finishingTitle: '마무리 중',
@@ -1567,7 +3482,6 @@ export const ko = defineLocale({
     copyOutput: '출력 복사',
     reloadRetry: '다시 불러오고 재시도'
   },
-
   onboarding: {
     headerTitle: 'Hermes Agent 설정을 시작합니다',
     headerDesc: '모델 공급자를 연결하여 채팅을 시작하세요. 대부분의 옵션은 한 번의 클릭으로 완료됩니다.',
@@ -1581,28 +3495,48 @@ export const ko = defineLocale({
     recommended: '권장',
     connected: '연결됨',
     featuredPitch: '하나의 구독, 300개 이상의 최첨단 모델 — Hermes를 실행하는 권장 방법',
+    fireworksPitch: '직접 연결하는 모델 API — Fireworks가 호스팅하는 최신 모델',
+    localModelsTitle: '모델 로컬 실행',
+    localModelsPitch: '계정 없이 모델을 다운로드하여 이 컴퓨터에서 실행',
     openRouterPitch: '하나의 키, 수백 개의 모델 — 견고한 기본값',
     apiKeyOptions: {
-      openrouter: { short: '하나의 키, 다양한 모델', description: '하나의 키로 수백 개의 모델을 호스팅합니다. 새 설치에 좋은 기본값.' },
-      openai: { short: 'GPT 계열 모델', description: 'OpenAI 모델에 직접 액세스합니다.' },
-      gemini: { short: 'Gemini 모델', description: 'Google Gemini 모델에 직접 액세스합니다.' },
-      xai: { short: 'Grok 모델', description: 'xAI Grok 모델에 직접 액세스합니다.' },
+      fireworks: {
+        short: '직접 연결하는 모델 API',
+        description: 'Fireworks AI에서 호스팅하는 모델에 직접 연결합니다.'
+      },
+      openrouter: {
+        short: '하나의 키, 다양한 모델',
+        description: '하나의 키로 수백 개의 모델을 호스팅합니다. 새 설치에 좋은 기본값.'
+      },
+      openai: {
+        short: 'GPT 계열 모델',
+        description: 'OpenAI 모델에 직접 액세스합니다.'
+      },
+      gemini: {
+        short: 'Gemini 모델',
+        description: 'Google Gemini 모델에 직접 액세스합니다.'
+      },
+      xai: {
+        short: 'Grok 모델',
+        description: 'xAI Grok 모델에 직접 액세스합니다.'
+      },
       local: {
         short: '자체 호스팅',
-        description: '로컬 또는 자체 호스팅 OpenAI 호환 엔드포인트(vLLM, llama.cpp, Ollama 등)를 Hermes가 가리키게 합니다.'
+        description:
+          '로컬 또는 자체 호스팅 OpenAI 호환 엔드포인트(vLLM, llama.cpp, Ollama 등)를 Hermes가 가리키게 합니다.'
       }
     },
     backToSignIn: '로그인으로 돌아가기',
     getKey: '키 받기',
     replaceCurrent: '현재 값 교체',
     pasteApiKey: 'API 키 붙여넣기',
+    localApiKeyPlaceholder: 'API 키(선택 사항 — 엔드포인트에서 요구할 때만)',
     couldNotSave: '자격 증명을 저장할 수 없습니다.',
     connecting: '연결 중',
     update: '업데이트',
     flowSubtitles: {
       pkce: '브라우저를 열어 로그인한 후 여기서 계속합니다',
       device_code: '브라우저에 인증 페이지를 열고 — Hermes가 자동으로 연결합니다',
-      loopback: '브라우저를 열어 로그인하면 — Hermes가 자동으로 연결합니다',
       external: '터미널에서 한 번 로그인한 후 다시 돌아와 채팅하세요'
     },
     startingSignIn: provider => `${provider} 로그인 시작 중...`,
@@ -1610,6 +3544,8 @@ export const ko = defineLocale({
     connectedProvider: provider => `${provider} 연결됨.`,
     connectedPicking: provider => `${provider} 연결됨. 기본 모델 선택 중...`,
     signInFailed: '로그인 실패. 다시 시도하세요.',
+    signInExpired:
+      '승인을 기다리는 동안 로그인이 만료되었습니다. 열린 탭의 로그인 페이지가 서버 문제로 멈췄을 수 있습니다. 해당 페이지에서 로그인을 마친 뒤 다시 시도하세요. 계속 실패하면 API 키 또는 CLI 방식으로 로그인하세요.',
     pickDifferentProvider: '다른 공급자 선택',
     signInWith: provider => `${provider}(으)로 로그인`,
     openedBrowser: provider => `브라우저에서 ${provider}을(를) 열었습니다.`,
@@ -1636,32 +3572,31 @@ export const ko = defineLocale({
     startChatting: '채팅 시작',
     docs: provider => `${provider} 문서`
   },
-
   modelPicker: {
     title: '모델 전환',
     current: '현재:',
     unknown: '(알 수 없음)',
     search: '공급자와 모델 필터링...',
     noModels: '모델을 찾을 수 없습니다.',
-    persistGlobalSession: '전역으로 유지 (그렇지 않으면 이 세션만)',
-    persistGlobal: '전역으로 유지',
     addProvider: '공급자 추가',
     loadFailed: '모델을 불러올 수 없습니다',
+    loadingIntoMemory: '메모리에 불러오는 중',
+    downloading: '다운로드 중',
+    localDownloadsHeading: '로컬',
     noAuthenticatedProviders: '인증된 공급자가 없습니다.',
     pro: 'Pro',
     proNeedsSubscription: 'Pro 모델에는 유료 Nous 구독이 필요합니다.',
     free: '무료',
     freeTier: '무료 등급',
-    priceTitle: '백만 토큰당 입력 / 출력 가격'
+    priceTitle: '백만 토큰당 입력 / 출력 가격',
+    wasPrice: '기존 가격'
   },
-
   modelVisibility: {
     title: '모델',
     search: '모델 검색',
     noAuthenticatedProviders: '인증된 공급자가 없습니다.',
     addProvider: '공급자 추가…'
   },
-
   shell: {
     windowControls: '창 컨트롤',
     paneControls: '창 분할 컨트롤',
@@ -1670,8 +3605,8 @@ export const ko = defineLocale({
       search: '모델 검색',
       noModels: '모델을 찾을 수 없습니다',
       editModels: '모델 편집…',
-      fast: '빠름',
-      medium: '중간'
+      refreshModels: '모델 새로고침',
+      fast: '빠름'
     },
     modelOptions: {
       noOptions: '이 모델에는 옵션이 없습니다',
@@ -1683,7 +3618,9 @@ export const ko = defineLocale({
       low: '낮음',
       medium: '중간',
       high: '높음',
+      xhigh: '매우 높음',
       max: '최대',
+      ultra: '최상',
       updateFailed: '모델 옵션 업데이트 실패',
       fastFailed: '빠른 모드 업데이트 실패'
     },
@@ -1696,11 +3633,22 @@ export const ko = defineLocale({
       inferenceNotReady: '추론 준비 안 됨',
       checkingInference: '추론 확인 중',
       disconnected: '연결 끊김',
+      reconnectGateway: '게이트웨이 다시 연결',
       openSystem: '시스템 패널 열기',
       connection: label => `연결: ${label}`,
       recentActivity: '최근 활동',
       viewAllLogs: '모든 로그 보기 →',
       messagingPlatforms: '메시징 플랫폼'
+    },
+    approvalMode: {
+      title: '승인 모드',
+      ariaLabel: mode => `승인 모드: ${mode}`,
+      manual: '수동',
+      manualDescription: '승인이 필요한 작업을 실행하기 전에 묻습니다',
+      smart: '스마트',
+      smartDescription: '작업을 자동으로 판단하고 필요할 때 묻습니다',
+      off: '꺼짐',
+      offDescription: '승인 요청 없이 실행합니다'
     },
     statusbar: {
       unknown: '알 수 없음',
@@ -1709,17 +3657,47 @@ export const ko = defineLocale({
       updateInProgress: '업데이트 진행 중',
       commitsBehind: (count, branch) => `${branch}보다 커밋 ${count}개 뒤짐`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `백엔드 v${version}`,
+      clientLabel: version => `클라이언트 v${version}`,
+      connectionSsh: host => `SSH: ${host}`,
+      connectionRemote: host => `원격: ${host}`,
+      connectionCloud: host => `클라우드: ${host}`,
+      connectionCloudTooltip: host => `Hermes Cloud · ${host}`,
+      connectionSshTooltip: host => `SSH · ${host}`,
+      connectionRemoteTooltip: host => `원격 · ${host}`,
+      backendLabel: version => `백엔드 v${version}`,
       commit: sha => `커밋 ${sha}`,
       branch: branch => `브랜치 ${branch}`,
       closeCommandCenter: '커맨드 센터 닫기',
       openCommandCenter: '커맨드 센터 열기',
+      showTerminal: '터미널 표시',
+      hideTerminal: '터미널 숨기기',
       gateway: 'Gateway',
       gatewayReady: '준비됨',
       gatewayNeedsSetup: '설정 필요',
+      gatewayUnavailable: '추론 불가',
       gatewayChecking: '확인 중',
       gatewayConnecting: '연결 중',
       gatewayOffline: '오프라인',
+      gatewayRestarting: '재시작 중…',
       gatewayTitle: 'Hermes 추론 Gateway 상태',
+      customizeTitle: '상태 표시줄에 표시',
+      hideStatusbar: '상태 표시줄 숨기기',
+      resetStatusbar: '기본값으로 초기화',
+      toggleApprovalMode: '승인',
+      toggleBackendVersion: '백엔드 버전',
+      toggleCacheHitRate: '캐시 적중률',
+      toggleCommandCenter: '명령 센터',
+      toggleContextUsage: '컨텍스트 사용량',
+      toggleRunningTimer: '턴 타이머',
+      toggleSessionTimer: '세션 타이머',
+      toggleTerminal: '터미널',
+      toggleTokensPerSecond: '초당 토큰',
+      toggleVersion: '버전 및 업데이트',
+      toggleWorkspace: '작업 공간',
+      cacheHitRateTitle:
+        '이 세션의 프롬프트 캐시 적중률 — 캐시된 토큰은 더 저렴하므로 적중률이 높을수록 비용이 줄어듭니다',
+      tokensPerSecondTitle: '최근 모델 호출 10회의 평균 초당 출력 토큰 수',
       agents: '에이전트',
       closeAgents: '에이전트 닫기',
       openAgents: '에이전트 열기',
@@ -1728,22 +3706,50 @@ export const ko = defineLocale({
       running: count => `${count}개 실행 중`,
       cron: 'Cron',
       openCron: 'Cron 작업 열기',
+      webhooks: '웹훅',
+      openWebhooks: '웹훅 열기',
+      starmap: '메모리 그래프',
+      openStarmap: '메모리 그래프 열기',
       turnRunning: '실행 중',
-      currentTurnElapsed: '현재 턴 경과',
       contextUsage: '컨텍스트 사용량',
+      systemResources: {
+        title: '시스템 리소스',
+        loading: '리소스…',
+        gpuUtilization: 'GPU 사용률',
+        gpuMemory: 'GPU 메모리',
+        ram: 'RAM',
+        unifiedNote: '통합 메모리 — GPU와 시스템이 공유합니다.',
+        toggle: '시스템 리소스'
+      },
+      contextUsagePanel: {
+        categories: {
+          conversation: '대화',
+          mcp: 'MCP',
+          memory: '메모리',
+          rules: '규칙',
+          skills: '스킬',
+          subagent_definitions: '하위 에이전트 정의',
+          system_prompt: '시스템 프롬프트',
+          tool_definitions: '도구 정의'
+        },
+        empty: '아직 컨텍스트 데이터가 없습니다',
+        loading: '세부 내역 불러오는 중…',
+        percentFull: percent => `${percent}% 사용`,
+        title: '컨텍스트 사용량',
+        tokenSummary: (used, max) => `${used} / ${max} 토큰`
+      },
       session: '세션',
-      runtimeSessionElapsed: '런타임 세션 경과',
       yoloOn: 'YOLO 켜짐 — 위험한 명령을 자동 승인 중. 끄려면 클릭.',
       yoloOff: 'YOLO 꺼짐 — 위험한 명령을 자동 승인하려면 클릭.',
       modelNone: '없음',
       noModel: '모델 없음',
       switchModel: '모델 전환',
       openModelPicker: '모델 선택기 열기',
+      modelPinned: '직접 고정한 모델입니다. 새 대화는 설정의 기본값 대신 이 모델을 사용합니다',
       modelTitle: (provider, model) => `모델 · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }
   },
-
   rightSidebar: {
     aria: '오른쪽 사이드바',
     panelsAria: '오른쪽 사이드바 패널',
@@ -1751,6 +3757,9 @@ export const ko = defineLocale({
     terminal: '터미널',
     noFolderSelected: '선택된 폴더 없음',
     changeCwdTitle: '작업 디렉터리 변경',
+    remotePickerTitle: '원격 폴더 선택',
+    remotePickerDescription: '연결된 백엔드의 폴더를 탐색하세요.',
+    remotePickerSelect: '폴더 선택',
     folderTip: cwd => `${cwd} — 폴더 변경하려면 클릭`,
     openFolder: '폴더 열기',
     refreshTree: '트리 새로 고침',
@@ -1759,6 +3768,8 @@ export const ko = defineLocale({
     couldNotPreview: path => `${path}을(를) 미리볼 수 없습니다`,
     noProjectTitle: '프로젝트 없음',
     noProjectBody: '파일을 탐색하려면 상태 표시줄에서 작업 디렉터리를 설정하세요.',
+    noProjectOpen: '열린 프로젝트 없음',
+    noDiffs: '변경 사항 없음',
     unreadableTitle: '읽을 수 없음',
     unreadableBody: error => `이 폴더를 읽을 수 없습니다 (${error}).`,
     emptyTitle: '비어 있음',
@@ -1768,23 +3779,30 @@ export const ko = defineLocale({
     tryAgain: '다시 시도',
     loadingTree: '파일 트리 불러오는 중',
     loadingFiles: '파일 불러오는 중',
-    terminalFocus: '터미널 보기에 포커스',
-    terminalSplit: '분할 보기로 돌아가기',
+    terminalHide: '터미널 숨기기',
+    terminalsAria: '터미널',
+    terminalNew: '새 터미널',
+    terminalCloseOthers: '다른 터미널 닫기',
+    terminalCloseAll: '모두 닫기',
     addToChat: '채팅에 추가'
   },
-
   preview: {
     tab: '미리보기',
-    closeTab: label => `${label} 닫기`,
     closePane: '미리보기 창 닫기',
     loading: '미리보기 불러오는 중',
     unavailable: '미리보기 사용 불가',
     opening: '여는 중...',
     hide: '숨기기',
     openPreview: '미리보기 열기',
+    openInBrowser: '브라우저에서 열기',
+    openInExternal: '외부 앱에서 열기',
+    popIn: '앱 안으로 이동',
+    popOut: '별도 창으로 분리',
+    linkHint: '⌘/Ctrl+클릭으로 미리보기 패널 열기',
     sourceLineTitle: '선택하려면 클릭 · 확장하려면 shift-클릭 · 입력기로 드래그',
     source: '소스',
     renderedPreview: '미리보기',
+    diff: '변경 사항',
     unknownSize: '알 수 없는 크기',
     binaryTitle: '바이너리 파일로 보입니다',
     binaryBody: label => `${label} 미리보기는 읽을 수 없는 텍스트를 표시할 수 있습니다.`,
@@ -1794,6 +3812,15 @@ export const ko = defineLocale({
     truncated: '처음 512 KB 표시 중.',
     noInlineTitle: '인라인 미리보기 없음',
     noInlineBody: mimeType => `${mimeType || '이 파일 유형'}은(는) 여전히 컨텍스트로 첨부할 수 있습니다.`,
+    edit: '편집',
+    editing: '편집 중',
+    unsavedChanges: '저장하지 않은 변경 사항',
+    saveFailed: message => `저장하지 못했습니다: ${message}`,
+    diskChangedTitle: '디스크의 파일이 변경되었습니다',
+    diskChangedBody:
+      '파일을 연 이후 내용이 변경되었습니다. 현재 편집 내용으로 덮어쓰거나 편집 내용을 버리고 다시 불러올까요?',
+    overwrite: '덮어쓰기',
+    discardReload: '버리고 다시 불러오기',
     console: {
       deselect: '항목 선택 해제',
       select: '항목 선택',
@@ -1817,6 +3844,8 @@ export const ko = defineLocale({
     web: {
       appFailedToBoot: '미리보기 앱 시작 실패',
       serverNotFound: '서버를 찾을 수 없음',
+      remoteLoopback:
+        '이 주소는 현재 컴퓨터가 아닌 에이전트 실행 컴퓨터를 가리킵니다. 브라우저 패널은 로컬에서 페이지를 불러오므로 원격 개발 서버에는 포트 포워딩이나 접근 가능한 호스트 이름이 필요합니다.',
       failedToLoad: '미리보기 불러오기 실패',
       tryAgain: '다시 시도',
       restarting: 'Hermes 재시작 중...',
@@ -1830,8 +3859,13 @@ export const ko = defineLocale({
       showConsole: '미리보기 콘솔 보기',
       hideDevTools: '미리보기 DevTools 숨기기',
       openDevTools: '미리보기 DevTools 열기',
-      finishedRestarting: message =>
-        `Hermes가 미리보기 서버 재시작을 마쳤습니다${message ? `: ${message}` : ''}`,
+      goBack: '뒤로',
+      goForward: '앞으로',
+      reload: '페이지 새로고침',
+      address: '주소',
+      addressPlaceholder: '주소 입력',
+      blankPageBody: '위에 주소를 입력하거나 Hermes에게 페이지를 열어 달라고 요청하세요.',
+      finishedRestarting: message => `Hermes가 미리보기 서버 재시작을 마쳤습니다${message ? `: ${message}` : ''}`,
       failedRestarting: message => `서버 재시작 실패: ${message}`,
       unknownError: '알 수 없는 오류',
       restartedTitle: '미리보기 서버 재시작됨',
@@ -1849,41 +3883,165 @@ export const ko = defineLocale({
       loadFailedConsole: (code, message) => `불러오기 실패${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: '미리보기 페이지에 도달할 수 없습니다.',
       openTarget: url => `${url} 열기`,
-      fallbackTitle: '미리보기'
+      fallbackTitle: '미리보기',
+      annotate: '주석 달기',
+      annotateOn: '주석 달기 종료',
+      annotateNeedPage: '먼저 앱 내 브라우저에서 페이지를 여세요.',
+      annotateFailed: '주석 모드를 시작하지 못했습니다',
+      commenting: '댓글 작성 중',
+      addComments: count => (count === 1 ? '댓글 1개 추가' : `댓글 ${count}개 추가`),
+      commentPlaceholder: '댓글 추가...',
+      commentTitle: n => `댓글 ${n}`,
+      saveComment: '저장',
+      cancelComment: '댓글 취소'
     }
   },
-
+  zones: {
+    showTabStrip: '탭 표시',
+    hideTabStrip: '탭 숨기기',
+    showStripTab: title => `${title} 표시`,
+    hideStripTab: title => `${title} 숨기기`,
+    lastTabKeptTitle: '마지막 탭은 유지됩니다',
+    lastTabKeptBody:
+      '이 영역에는 표시된 탭이 하나 이상 필요합니다. 먼저 다른 탭을 표시하거나 사이드바 전체를 접으세요.',
+    toggleStripTab: title => `${title} 탭 전환`,
+    minimize: '최소화',
+    restore: '복원',
+    closeRunningTitle: '실행 중인 탭을 닫을까요?',
+    closeRunningBody:
+      '이 대화는 아직 작업 중이거나 입력을 기다리고 있습니다. 탭을 닫아도 세션의 진행 상황은 유지되며 사이드바에서 다시 열 수 있습니다.',
+    closeRunningConfirm: '탭 닫기',
+    reload: '새로고침',
+    closeOthers: '다른 탭 닫기',
+    closeToRight: '오른쪽 탭 닫기',
+    closeAll: '모두 닫기',
+    newSessionTab: '새 세션 탭',
+    newTab: '새 탭',
+    pluginDisabled: pluginId => `"${pluginId}" 플러그인 비활성화됨`,
+    pluginDisabledBody: '설정 → 플러그인에서 다시 활성화하면 패널을 복원할 수 있습니다.',
+    missingPane: paneId => `패널 없음: ${paneId}`,
+    editTitle: '레이아웃',
+    editHint: '레이아웃을 선택하거나 패널을 영역 간에 드래그하세요.',
+    reset: '초기화',
+    templates: '템플릿',
+    custom: '사용자 지정',
+    newGridLayout: '새 그리드 레이아웃',
+    saveCurrentAs: '현재 배치를 템플릿으로 저장',
+    nameLayoutPlaceholder: '레이아웃 이름…',
+    deletePreset: name => `${name} 삭제`,
+    zoneEditorTitle: '영역 편집기',
+    editorHintPre: '클릭하여 분할 · ',
+    editorHintPost: '로 분할선 방향 전환 · 영역을 가로질러 드래그하여 병합 · 공통 경계를 드래그하여 크기 조절',
+    templateColumns: '열',
+    templateRows: '행',
+    templateGrid: '그리드',
+    templatePriority: '우선순위',
+    zoneTag: index => `영역 ${index}`,
+    mergeZones: count => `영역 ${count}개 병합`,
+    customZoneName: count => `사용자 지정 ${count}개 영역`,
+    layoutNamePlaceholder: fallback => `레이아웃 이름 (${fallback})`,
+    saveApply: '저장 후 적용',
+    notExpressible: '이 배치는 서로 맞물리는 바람개비 구조로, 아직 중첩 분할로 표현할 수 없습니다',
+    zoneCount: count => `영역 ${count}개`,
+    tabCount: count => `탭 ${count}개`
+  },
+  contextMenu: {
+    link: {
+      openInApp: '앱 내 브라우저에서 열기',
+      openExternal: '외부 브라우저에서 열기',
+      copyUrl: 'URL 복사',
+      copyResolvedUrl: '해석된 URL 복사'
+    },
+    image: {
+      copyImage: '이미지 복사',
+      copyImageAddress: '이미지 주소 복사',
+      saveImageAs: '이미지를 다른 이름으로 저장…'
+    },
+    edit: {
+      cut: '잘라내기',
+      paste: '붙여넣기',
+      selectAll: '모두 선택',
+      addToDictionary: '사전에 추가'
+    },
+    page: {
+      copyPageUrl: '페이지 URL 복사',
+      inspectElement: '요소 검사'
+    }
+  },
   assistant: {
     thread: {
       loadingSession: '세션 불러오는 중',
+      showEarlier: '이전 메시지 보기',
       loadingResponse: 'Hermes가 응답을 불러오는 중',
+      loadingLocalModel: model => `${model} 메모리에 불러오는 중`,
+      processingPrompt: '프롬프트 처리 중',
+      resumeWhenBackgroundDone: count =>
+        count === 1 ? '백그라운드 작업이 끝나면 재개합니다' : `백그라운드 작업 ${count}개가 끝나면 재개합니다`,
       thinking: '생각 중',
+      thought: '생각',
+      thoughtBriefly: '잠시 생각함',
+      thoughtFor: duration => `${duration} 동안 생각함`,
+      turnDuration: duration => `이 턴에 ${duration} 소요됨`,
       today: time => `오늘 ${time}`,
       yesterday: time => `어제 ${time}`,
       copy: '복사',
       refresh: '새로 고침',
       moreActions: '더 많은 작업',
       branchNewChat: '새 채팅으로 분기',
+      react: '반응',
+      dismissError: '오류 닫기',
+      errorLayers: {
+        auth: '인증 오류',
+        billing: '크레딧 소진',
+        disk: '디스크 공간 부족',
+        endpoint: '사용자 지정 엔드포인트 오류',
+        gateway: '게이트웨이 오류',
+        generic: '턴 실패',
+        provider: '제공업체 오류',
+        runtime: '로컬 런타임 오류',
+        streaming: '스트리밍 연결 오류'
+      },
+      errorRetry: '다시 시도',
+      errorSwitchProvider: '제공업체 전환',
+      errorOpenLogs: '로그 열기',
+      errorOpenLogsFailed: '로그 폴더를 열지 못했습니다',
+      errorOpenDesktopLogs: '데스크톱 로그 열기',
+      errorCopyDiagnostics: '오류 세부 정보 복사',
+      errorSendDiagnostics: '진단 정보 보내기',
+      filesChanged: count => (count === 1 ? '파일 1개 변경됨' : `파일 ${count}개 변경됨`),
+      reviewChanges: '검토',
       readAloudFailed: '소리내어 읽기 실패',
       preparingAudio: '오디오 준비 중...',
       stopReading: '읽기 중지',
       readAloud: '소리내어 읽기',
       editMessage: '메시지 편집',
+      expandMessage: '메시지 펼치기',
+      scrollToBottom: '맨 아래로 이동',
       stop: '중지',
-      editableCheckpoint: '편집 가능한 체크포인트',
       restorePrevious: '이전 체크포인트 복원',
       restoreCheckpoint: '체크포인트 복원',
+      restoreFromHere: '체크포인트 복원 — 이 프롬프트부터 다시 실행',
+      restoreTitle: '이 체크포인트로 복원할까요?',
+      restoreBody: '이 프롬프트 이후의 모든 내용을 대화에서 제거하고 여기서부터 프롬프트를 다시 실행합니다.',
+      restoreConfirm: '복원 후 다시 실행',
       restoreNext: '다음 체크포인트 복원',
       goForward: '앞으로 이동',
-      sendEdited: '편집한 메시지 보내기'
+      sendEdited: '편집한 메시지 보내기',
+      attachingFile: '첨부 중…',
+      errorStartNewSession: '새 세션 시작',
+      errorSignInAgain: provider => `${provider}에 다시 로그인`,
+      errorOauthExpired: provider =>
+        `${provider} 로그인이 만료되었거나 취소되었습니다. 대화를 계속하려면 다시 로그인하세요.`
     },
     approval: {
       gatewayDisconnected: 'Hermes Gateway가 연결되지 않았습니다',
       sendFailed: '승인 응답을 보낼 수 없습니다',
       run: '실행',
+      command: '명령',
       moreOptions: '더 많은 승인 옵션',
       allowSession: '이 세션에서 허용',
       alwaysAllowMenu: '항상 허용…',
+      jumpToApproval: '승인 필요',
       reject: '거부',
       alwaysTitle: '이 명령을 항상 허용하시겠습니까?',
       alwaysDescription: pattern =>
@@ -1897,13 +4055,39 @@ export const ko = defineLocale({
       loadingQuestion: '질문 불러오는 중…',
       other: '기타 (답변 입력)',
       placeholder: '답변을 입력하세요…',
-      shortcut: '⌘/Ctrl + Enter로 보내기',
-      back: '뒤로',
       skip: '건너뛰기',
-      send: '보내기'
+      skipped: '건너뜀',
+      continueLabel: '계속',
+      confirmAndContinueLabel: '확인 후 계속',
+      answeredBadge: '답변 완료',
+      questionProgress: (answered, total) => `${total}개 중 ${answered}개 답변`,
+      lateAnswer: (question, choice) => `"${question}"에 대한 답변: ${choice}`,
+      lateAnswerTip: '이 답변을 후속 메시지로 작성',
+      lateAnswerHint: '이 질문은 더 이상 답변을 기다리지 않습니다. 옵션을 선택하면 후속 메시지로 작성합니다.'
+    },
+    mcpSetup: {
+      installTitle: server => `${server} MCP 서버를 추가할까요?`,
+      enableTitle: server => `${server} MCP 서버를 활성화할까요?`,
+      authorizeTitle: server => `${server} MCP 서버를 승인할까요?`,
+      installAction: '설치',
+      enableAction: '활성화',
+      authorizeAction: '승인',
+      decline: '나중에',
+      declined: '거절됨',
+      installed: server => `${server} 설치됨`,
+      enabled: server => `${server} 활성화됨`,
+      authorized: server => `${server} 승인됨`,
+      failed: server => `${server} 설정 실패`,
+      unanswered: '응답 없음',
+      toolCount: count => (count === 1 ? '도구 1개' : `도구 ${count}개`),
+      notInCatalog: server => `“${server}”은(는) MCP 카탈로그에 없습니다`,
+      catalogSource: 'Nous 승인 카탈로그 제공',
+      envRequired: '먼저 필수 인증 정보를 입력하세요',
+      sendFailed: 'MCP 설정 응답을 보내지 못했습니다',
+      reloadFailed: '서버를 저장했지만 MCP 도구를 다시 불러오지 못했습니다. 다음 세션에 적용됩니다',
+      gatewayDisconnected: 'Hermes 게이트웨이가 연결되지 않았습니다'
     },
     tool: {
-      code: '코드',
       copyCode: '코드 복사',
       renderingImage: '이미지 렌더링 중',
       copyOutput: '출력 복사',
@@ -1924,10 +4108,152 @@ export const ko = defineLocale({
       statusRunning: '실행 중',
       statusError: '오류',
       statusRecovered: '복구됨',
-      statusDone: '완료'
+      statusDone: '완료',
+      memoryWriteNoted: '메모리 쓰기 기록됨',
+      actions: {
+        read: '읽음',
+        reading: '읽는 중',
+        opened: '열었음',
+        opening: '여는 중',
+        failedToOpen: '열기 실패',
+        searched: '검색함',
+        searching: '검색 중',
+        ran: '실행함',
+        running: '실행 중',
+        ranCode: '코드 실행함',
+        runningCode: '코드 실행 중'
+      },
+      prefixes: {
+        browser: '브라우저',
+        web: '웹'
+      },
+      titleTemplates: {
+        actionCommand: (action, command) => `${command} ${action}`,
+        actionQuoted: (action, value) => `“${value}” ${action}`,
+        actionTarget: (action, target) => `${target} ${action}`,
+        prefixedDone: (prefix, action) => `${prefix} ${action}`,
+        runningPrefixedTool: (prefix, action) => `${prefix.toLowerCase()} ${action.toLowerCase()} 실행 중`,
+        runningTool: action => `${action.toLowerCase()} 실행 중`
+      },
+      titles: {
+        browser_click: {
+          done: '페이지 요소 클릭함',
+          pending: '페이지 요소 클릭 중',
+          pendingAction: '클릭 중'
+        },
+        browser_fill: {
+          done: '양식 입력함',
+          pending: '양식 입력 중',
+          pendingAction: '입력 중'
+        },
+        browser_navigate: {
+          done: '페이지 열었음',
+          pending: '페이지 여는 중',
+          pendingAction: '여는 중'
+        },
+        browser_snapshot: {
+          done: '페이지 스냅샷 캡처함',
+          pending: '페이지 스냅샷 캡처 중',
+          pendingAction: '캡처 중'
+        },
+        browser_take_screenshot: {
+          done: '스크린샷 캡처함',
+          pending: '스크린샷 캡처 중',
+          pendingAction: '캡처 중'
+        },
+        browser_type: {
+          done: '페이지에 입력함',
+          pending: '페이지에 입력 중',
+          pendingAction: '입력 중'
+        },
+        clarify: {
+          done: '질문함',
+          pending: '질문 중',
+          pendingAction: '질문 중'
+        },
+        cronjob: {
+          done: 'Cron 작업',
+          pending: 'Cron 작업 예약 중',
+          pendingAction: '예약 중'
+        },
+        edit_file: {
+          done: '파일 편집함',
+          pending: '파일 편집 중',
+          pendingAction: '편집 중'
+        },
+        execute_code: {
+          done: '코드 실행함',
+          pending: '코드 실행 중',
+          pendingAction: '코드 실행 중'
+        },
+        image_generate: {
+          done: '이미지 생성함',
+          pending: '이미지 생성 중',
+          pendingAction: '생성 중'
+        },
+        list_files: {
+          done: '파일 목록 조회함',
+          pending: '파일 목록 조회 중',
+          pendingAction: '조회 중'
+        },
+        memory: {
+          done: '메모리에 저장함',
+          pending: '메모리에 저장 중',
+          pendingAction: '저장 중'
+        },
+        patch: {
+          done: '파일 패치함',
+          pending: '파일 패치 중',
+          pendingAction: '패치 중'
+        },
+        read_file: {
+          done: '파일 읽음',
+          pending: '파일 읽는 중',
+          pendingAction: '읽는 중'
+        },
+        search_files: {
+          done: '파일 검색함',
+          pending: '파일 검색 중',
+          pendingAction: '검색 중'
+        },
+        session_search_recall: {
+          done: '세션 기록 검색함',
+          pending: '세션 기록 검색 중',
+          pendingAction: '검색 중'
+        },
+        terminal: {
+          done: '명령 실행함',
+          pending: '명령 실행 중',
+          pendingAction: '실행 중'
+        },
+        todo: {
+          done: '할 일 갱신함',
+          pending: '할 일 갱신 중',
+          pendingAction: '갱신 중'
+        },
+        vision_analyze: {
+          done: '이미지 분석함',
+          pending: '이미지 분석 중',
+          pendingAction: '분석 중'
+        },
+        web_extract: {
+          done: '웹페이지 읽음',
+          pending: '웹페이지 읽는 중',
+          pendingAction: '읽는 중'
+        },
+        web_search: {
+          done: '웹 검색함',
+          pending: '웹 검색 중',
+          pendingAction: '검색 중'
+        },
+        write_file: {
+          done: '파일 편집함',
+          pending: '파일 편집 중',
+          pendingAction: '편집 중'
+        }
+      }
     }
   },
-
   prompts: {
     gatewayDisconnected: 'Hermes Gateway가 연결되지 않았습니다',
     sudoSendFailed: 'sudo 비밀번호를 보낼 수 없습니다',
@@ -1939,7 +4265,6 @@ export const ko = defineLocale({
     secretDesc: 'Hermes가 계속하기 위해 자격 증명이 필요합니다.',
     secretPlaceholder: '비밀 값'
   },
-
   desktop: {
     audioReadFailed: '녹음된 오디오를 읽을 수 없습니다',
     sessionUnavailable: '세션 사용 불가',
@@ -1965,13 +4290,22 @@ export const ko = defineLocale({
     stopFailed: '중지 실패',
     regenerateFailed: '재생성 실패',
     editFailed: '편집 실패',
+    editTurnUnavailable: '이 턴이 더 이상 서버 기록에 없습니다. 압축 과정에서 제거되었을 수 있습니다.',
     resumeFailed: '재개 실패',
+    readOnlyTranscriptTitle: '읽기 전용으로 열림',
+    readOnlyTranscriptBody:
+      '이전 대화를 담당하는 연결된 백엔드가 없어 읽기 전용으로 열었습니다. 기록은 유지되며, 담당 백엔드가 연결될 때까지 메시지를 보낼 수 없습니다.',
+    readOnlyTranscriptSendBlocked: '이 대화는 읽기 전용이므로 메시지를 보낼 수 없습니다.',
+    resumeStrandedTitle: '이 세션을 불러오지 못했습니다',
+    resumeStrandedBody:
+      '세션 연결에 실패하여 자동 재시도를 중단했습니다. 게이트웨이가 실행 중인지 확인한 뒤 다시 시도하세요.',
+    resumeRetry: '다시 시도',
     nothingToBranch: '분기할 항목 없음',
     branchNeedsChat: '분기하기 전에 채팅을 시작하거나 재개하세요.',
     sessionBusy: '세션 사용 중',
     branchStopCurrent: '이 채팅을 분기하기 전에 현재 턴을 중지하세요.',
     branchNoText: '이 메시지에 분기할 텍스트가 없습니다.',
-    branchTitle: '분기',
+    branchTitle: n => `초안: 분기 #${n}`,
     branchFailed: '분기 실패',
     deleteFailed: '삭제 실패',
     archived: '보관됨',
@@ -1980,6 +4314,7 @@ export const ko = defineLocale({
     cwdStagedTitle: '작업 디렉터리 준비됨',
     cwdStagedMessage: '이 활성 세션에 cwd 변경을 적용하려면 데스크톱 백엔드를 재시작하세요.',
     modelSwitchFailed: '모델 전환 실패',
+    hydrationSyncing: (profile: string) => `${profile} 동기화 중\u2026`,
     sessionExported: '세션 내보냄',
     sessionExportFailed: '세션을 내보낼 수 없습니다',
     imageSaved: '이미지 저장됨',
@@ -1998,9 +4333,61 @@ export const ko = defineLocale({
     clipboard: '클립보드',
     noClipboardImage: '클립보드에 이미지가 없습니다',
     clipboardPasteFailed: '클립보드 붙여넣기 실패',
-    dropFiles: '파일 놓기'
+    dropFiles: '파일 놓기',
+    handoff: {
+      pickPlatform: '대상 선택',
+      success: platform => `${platform}(으)로 전달했습니다. 언제든 여기서 이어갈 수 있습니다.`,
+      systemNote: platform => `↻ ${platform}(으)로 전달됨 — 언제든 여기서 이어갈 수 있습니다.`,
+      failed: error => `전달 실패: ${error}`,
+      timedOut: '게이트웨이 응답 대기 시간이 초과되었습니다. `hermes gateway`가 실행 중인가요?'
+    }
   },
-
+  tips: {
+    close: '이 팁 다시 표시하지 않기',
+    items: {
+      'new-session': {
+        title: '새롭게 시작하기',
+        text: '새 대화에는 독립적인 컨텍스트, 터미널, 작업 디렉터리가 주어집니다.'
+      },
+      skills: {
+        title: '한 번만 가르치세요',
+        text: '스킬은 작업에 필요할 때 Hermes가 불러오는 지침 폴더입니다.'
+      },
+      messaging: {
+        title: '어디서든 Hermes와 함께',
+        text: 'Telegram, Discord, Slack 등을 연결하여 같은 에이전트와 메모리를 사용하세요.'
+      },
+      artifacts: {
+        title: 'Hermes가 만든 모든 것',
+        text: '모든 세션의 이미지, 파일, 링크를 한곳에서 찾아보세요.'
+      },
+      cron: {
+        title: '알아서 실행되는 작업',
+        text: '매시간, 매일 밤 또는 cron 표현식에 따라 프롬프트를 예약하세요.'
+      },
+      'command-palette': {
+        title: '한곳에서 모두 찾기',
+        text: '팔레트에서 세션, 설정, 스킬, 명령을 모두 찾을 수 있습니다.'
+      },
+      profiles: {
+        title: '프로필은 서로 독립적입니다',
+        text: '각 프로필은 고유한 키, 메모리, 세션을 가진 별도의 Hermes입니다.'
+      },
+      'composer-mentions': {
+        title: '첨부와 명령',
+        text: '@를 입력하면 대화에 파일을 가져오고 /를 입력하면 명령을 실행합니다.'
+      },
+      'local-setup': {
+        title: '이 컴퓨터에서 모델을 실행할 수 있습니다',
+        text: '현재 하드웨어로 로컬 모델을 실행할 수 있습니다. 대화는 컴퓨터에만 저장되며 사용 비용이 없습니다.',
+        action: '설정하기'
+      },
+      'right-pane': {
+        title: '작업 패널',
+        text: '오른쪽에서 파일, 터미널, 변경 사항 검토, 앱 내 브라우저를 사용할 수 있습니다.'
+      }
+    }
+  },
   errors: {
     genericFailure: '문제가 발생했습니다',
     boundaryTitle: '인터페이스에서 문제가 발생했습니다',
@@ -2008,7 +4395,6 @@ export const ko = defineLocale({
     reloadWindow: '창 다시 불러오기',
     openLogs: '로그 열기'
   },
-
   ui: {
     search: {
       clear: '검색 지우기'
@@ -2023,7 +4409,7 @@ export const ko = defineLocale({
     sidebar: {
       title: '사이드바',
       description: '모바일 사이드바를 표시합니다.',
-      toggle: '사이드바 전환'
+      toggle: open => `사이드바 ${open ? '표시' : '숨기기'}`
     }
   }
 })

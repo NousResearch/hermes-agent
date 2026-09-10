@@ -8,7 +8,7 @@ description: "规划、搭建并监控由 Hermes Kanban 支撑的多智能体视
 
 # Kanban Video Orchestrator
 
-规划、搭建并监控由 Hermes Kanban 支撑的多智能体视频制作流水线。当用户想要制作**任何**类型的视频时使用本技能——叙事短片、产品/营销视频、MV、解说视频、ASCII/终端艺术、抽象/生成循环、漫画、3D、实时/装置艺术——且工作需要分解为专业角色（编剧、设计师、动画师、渲染师、配音、剪辑等）并通过 kanban 看板协调。执行自适应探索以明确需求范围，为所请求的风格设计合适的团队，生成用于创建 Hermes profiles 和初始 kanban 任务的安装脚本，然后协助监控执行过程并在任务卡住或失败时介入。将场景路由到适合每个节拍的 Hermes 渲染/音频/设计技能（`ascii-video`、`manim-video`、`p5js`、`comfyui`、`touchdesigner-mcp`、`blender-mcp`、`pixel-art`、`baoyu-comic`、`claude-design`、`excalidraw`、`songsee`、`heartmula`……）以及用于 TTS、图像生成和图像转视频的外部 API。
+规划、搭建并监控由 Hermes Kanban 支撑的多智能体视频制作流水线。当用户想要制作**任何**类型的视频时使用本技能——叙事短片、产品/营销视频、MV、解说视频、ASCII/终端艺术、抽象/生成循环、漫画、3D、实时/装置艺术——且工作需要分解为专业角色（编剧、设计师、动画师、渲染师、配音、剪辑等）并通过 kanban 看板协调。执行自适应探索以明确需求范围，为所请求的风格设计合适的团队，生成用于创建 Hermes profiles 和初始 kanban 任务的安装脚本，然后协助监控执行过程并在任务卡住或失败时介入。将场景路由到适合每个节拍的 Hermes 渲染/音频/设计技能（`ascii-video`、`manim-video`、`p5js`、`comfyui`、`touchdesigner-mcp`、`pixel-art`、`baoyu-comic`、`claude-design`、`excalidraw`、`songsee`、`heartmula`……）以及用于 TTS、图像生成和图像转视频的外部 API。
 
 ## 技能元数据
 
@@ -21,7 +21,7 @@ description: "规划、搭建并监控由 Hermes Kanban 支撑的多智能体视
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `video`, `kanban`, `multi-agent`, `orchestration`, `production-pipeline` |
-| 相关技能 | [`kanban-orchestrator`](/user-guide/skills/bundled/devops/devops-kanban-orchestrator)、[`kanban-worker`](/user-guide/skills/bundled/devops/devops-kanban-worker)、[`ascii-video`](/user-guide/skills/bundled/creative/creative-ascii-video)、[`manim-video`](/user-guide/skills/bundled/creative/creative-manim-video)、[`p5js`](/user-guide/skills/bundled/creative/creative-p5js)、[`comfyui`](/user-guide/skills/bundled/creative/creative-comfyui)、[`touchdesigner-mcp`](/user-guide/skills/bundled/creative/creative-touchdesigner-mcp)、[`blender-mcp`](/user-guide/skills/optional/creative/creative-blender-mcp)、[`pixel-art`](/user-guide/skills/bundled/creative/creative-pixel-art)、[`ascii-art`](/user-guide/skills/bundled/creative/creative-ascii-art)、[`songwriting-and-ai-music`](/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music)、[`heartmula`](/user-guide/skills/bundled/media/media-heartmula)、[`songsee`](/user-guide/skills/bundled/media/media-songsee)、[`spotify`](/user-guide/skills/bundled/media/media-spotify)、[`youtube-content`](/user-guide/skills/bundled/media/media-youtube-content)、[`claude-design`](/user-guide/skills/bundled/creative/creative-claude-design)、[`excalidraw`](/user-guide/skills/bundled/creative/creative-excalidraw)、[`architecture-diagram`](/user-guide/skills/bundled/creative/creative-architecture-diagram)、[`concept-diagrams`](/user-guide/skills/optional/creative/creative-concept-diagrams)、[`baoyu-comic`](/user-guide/skills/bundled/creative/creative-baoyu-comic)、[`baoyu-infographic`](/user-guide/skills/bundled/creative/creative-baoyu-infographic)、[`humanizer`](/user-guide/skills/bundled/creative/creative-humanizer)、[`gif-search`](/user-guide/skills/bundled/media/media-gif-search)、[`meme-generation`](/user-guide/skills/optional/creative/creative-meme-generation) |
+| 相关技能 | [`ascii-video`](/user-guide/skills/bundled/creative/creative-ascii-video)、[`manim-video`](/user-guide/skills/bundled/creative/creative-manim-video)、[`p5js`](/user-guide/skills/bundled/creative/creative-p5js)、[`comfyui`](/user-guide/skills/bundled/creative/creative-comfyui)、[`touchdesigner-mcp`](/user-guide/skills/bundled/creative/creative-touchdesigner-mcp)、[`pixel-art`](/user-guide/skills/bundled/creative/creative-pixel-art)、[`ascii-art`](/user-guide/skills/bundled/creative/creative-ascii-art)、[`songwriting-and-ai-music`](/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music)、[`heartmula`](/user-guide/skills/optional/creative/creative-heartmula)、[`songsee`](/user-guide/skills/bundled/media/media-songsee)、[`youtube-content`](/user-guide/skills/bundled/media/media-youtube-content)、[`claude-design`](/user-guide/skills/bundled/creative/creative-claude-design)、[`excalidraw`](/user-guide/skills/bundled/creative/creative-excalidraw)、[`architecture-diagram`](/user-guide/skills/bundled/creative/creative-architecture-diagram)、[`concept-diagrams`](/user-guide/skills/optional/creative/creative-concept-diagrams)、[`baoyu-comic`](/user-guide/skills/bundled/creative/creative-baoyu-comic)、[`baoyu-infographic`](/user-guide/skills/bundled/creative/creative-baoyu-infographic)、[`humanizer`](/user-guide/skills/bundled/creative/creative-humanizer)、[`gif-search`](/user-guide/skills/bundled/media/media-gif-search)、[`meme-generation`](/user-guide/skills/optional/creative/creative-meme-generation) |
 
 ## 参考：完整 SKILL.md
 
@@ -41,7 +41,7 @@ description: "规划、搭建并监控由 Hermes Kanban 支撑的多智能体视
 4. **交接**——移交给 director profile，由其通过 kanban 进行分解
 5. **监控**——跟踪执行过程，在任务卡住或失败时协助介入
 
-实际渲染在 kanban 运行后在其内部完成，使用适合各场景的现有技能和工具——`ascii-video`、`manim-video`、`p5js`、`comfyui`、`touchdesigner-mcp`、`blender-mcp`、`songwriting-and-ai-music`、`heartmula`、外部 API，或使用 PIL + ffmpeg 的纯 Python。
+实际渲染在 kanban 运行后在其内部完成，使用适合各场景的现有技能和工具——`ascii-video`、`manim-video`、`p5js`、`comfyui`、`touchdesigner-mcp`、`songwriting-and-ai-music`、`heartmula`、外部 API，或使用 PIL + ffmpeg 的纯 Python。
 
 ## 不适用本技能的情况
 
@@ -146,7 +146,7 @@ director profile 从此接管，通过 kanban 工具集将工作分解并路由�
 
 5. **尊重现有技能。** 当某个场景适合现有技能时，相关渲染器应通过任务上的 `--skill <name>` 或 profile 中的 `always_load` 加载该技能。不要重新推导技能已提供的内容。
 
-6. **director 绝不执行。** 即使拥有完整的 `kanban + terminal + file` 工具集，director 的 `SOUL.md` 规则也禁止其自行执行工作。它只负责分解和路由——每个具体任务都变成对专业 profile 的 `hermes kanban create` 调用。`kanban-orchestrator` 技能对此有进一步说明。
+6. **director 绝不执行。** 即使拥有完整的 `kanban + terminal + file` 工具集，director 的 `SOUL.md` 规则也禁止其自行执行工作。它只负责分解和路由——每个具体任务都变成对专业 profile 的 `hermes kanban create` 调用。自动注入的 kanban 编排指引对此有进一步说明。
 
 7. **不要过度分解。** 一个 30 秒的产品视频**不需要** 20 个任务。目标是最小任务图，同时仍能良好并行化并暴露正确的人工审核节点。
 

@@ -5,7 +5,7 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
-import { TERMUX_TUI_MODE } from './config/env.js'
+import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
@@ -23,6 +23,22 @@ if (!process.stdin.isTTY) {
 // terminal tab can still have mouse/focus/paste modes enabled.
 resetTerminalModes()
 
+// Final backstop for terminal cleanup. setupGracefulExit() resets modes on
+// signals/uncaught errors, and die()/dieWithCode() call process.exit() after
+// Ink's unmount specifically so this handler can fire (see useMainApp.ts and
+// #19194). But that handler was never actually installed — so /quit, Ctrl+C,
+// Ctrl+D, and any process.exit() path left DEC mouse tracking (?1000/1002/
+// 1003/1006) armed in the parent shell. The terminal then keeps emitting mouse
+// reports into whatever reads stdin next — the shell or a freshly relaunched
+// TUI mid-init — which surface as `102;71M5;104;62M`-style garbage in the input
+// box (#28419). 'exit' fires exactly once on real termination and only runs
+// synchronous code; resetTerminalModes() writes via writeSync, so it completes
+// before the process is gone. Idempotent and cheap, so layering it under the
+// graceful-exit cleanups is safe.
+process.on('exit', () => {
+  resetTerminalModes()
+})
+
 // Desktop terminals benefit from a clean startup slate because the TUI usually
 // runs in AlternateScreen. On Termux we keep prior output intact so users can
 // review/copy earlier assistant replies after reopening the app.
@@ -37,7 +53,9 @@ const gw = new GatewayClient()
 gw.start()
 
 const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
-  `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? '(failed)'}\n`
+  `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? dump?.diagPath ?? '(failed)'}\n`
+
+let consecutiveDeadStreamErrors = 0
 
 setupGracefulExit({
   cleanups: [
@@ -51,7 +69,31 @@ setupGracefulExit({
     const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
 
     recordParentLifecycle(`${scope}: ${message.split('\n')[0]?.slice(0, 400) ?? ''}`)
-    process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
+
+    // A dead PTY (terminal tab closed, SSH dropped without SIGHUP) turns every
+    // stdout/stderr write into EIO/EPIPE. Swallowing those here made the parent
+    // a zombie: Ink's render loop throws once a second, each throw lands back
+    // in this handler, and the crash log fills with `write EIO` forever while
+    // the gateway child keeps running. Bail out for real after a few in a row.
+    const code = (err as NodeJS.ErrnoException)?.code
+
+    if (code === 'EIO' || code === 'EPIPE') {
+      if (++consecutiveDeadStreamErrors >= 5) {
+        recordParentLifecycle(`dead output stream (${code} x${consecutiveDeadStreamErrors}) → exiting`)
+        void gw.kill('dead-output-stream')
+        process.exit(1)
+      }
+
+      return
+    }
+
+    consecutiveDeadStreamErrors = 0
+
+    try {
+      process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
+    } catch {
+      // stderr may be the dead stream itself.
+    }
   },
   onSignal: signal => {
     // The next line in the crash log is the child's `=== SIGTERM received ===`
@@ -60,7 +102,12 @@ setupGracefulExit({
     recordParentLifecycle(`graceful-exit received signal=${signal} → killing gateway`)
     resetTerminalModes()
     process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
-  }
+  },
+  // The dashboard chat tab has no in-page restart path after the PTY child
+  // exits. Ignore SIGINT there so Ctrl+C cannot kill the embedded TUI if raw
+  // mode briefly drops and the terminal driver turns the keystroke into a
+  // signal instead of input bytes. SIGTERM/SIGHUP still cleanly shut down.
+  ignoredSignals: DASHBOARD_TUI_MODE ? ['SIGINT'] : []
 })
 
 const stopMemoryMonitor = startMemoryMonitor({
@@ -68,9 +115,13 @@ const stopMemoryMonitor = startMemoryMonitor({
     // process.exit(137) closes the child's stdin → the gateway logs a clean
     // EOF, NOT SIGTERM. Recording it here is the only way a crash report can
     // attribute a death to Node OOM rather than a signal-driven kill.
-    recordParentLifecycle(`memory-critical process.exit(137) heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)} dump=${dump?.heapPath ?? 'failed'}`)
+    recordParentLifecycle(
+      `memory-critical process.exit(137) heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)} dump=${dump?.heapPath ?? 'failed'}`
+    )
     resetTerminalModes()
-    process.stderr.write(`hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`)
+    process.stderr.write(
+      `hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`
+    )
     process.stderr.write(dumpNotice(snap, dump))
     process.stderr.write('hermes-tui: exiting to avoid OOM; restart to recover\n')
     process.exit(137)
@@ -81,7 +132,9 @@ const stopMemoryMonitor = startMemoryMonitor({
   // so the only trace was a bare gateway `stdin EOF`. Persist a breadcrumb +
   // stderr line so the next such death is attributable instead of silent.
   onWarn: snap => {
-    recordParentLifecycle(`memory-warning fast heap growth heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}`)
+    recordParentLifecycle(
+      `memory-warning fast heap growth heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}`
+    )
     process.stderr.write(
       `hermes-tui: heap climbing fast (${formatBytes(snap.heapUsed)}) — a large tool output or long session may be straining memory\n`
     )

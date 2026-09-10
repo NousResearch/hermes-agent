@@ -259,12 +259,6 @@ from `config.yaml`. Double-check the file lives under the active Hermes profile
 home and that there's no stray quoting around the URL/token. Restart the gateway
 after editing — env changes are only applied on process start.
 
-**`conversation entity not found` / agent never replies.**
-Home Assistant's conversation API requires a configured *Assist* conversation
-agent. In HA, open **Settings → Voice assistants → Add assistant** and note the
-resulting entity id (looks like `conversation.home_assistant` or
-`conversation.openai_<name>`). Set that entity id in the adapter's
-`conversation_entity` setting; the default may not exist on your instance.
 
 **REST auth failing (`401 Unauthorized`).**
 The token must be a *Long-Lived Access Token* created from your HA user profile

@@ -1,6 +1,6 @@
 ---
 name: 1password
-description: Set up and use 1Password CLI (op). Use when installing the CLI, enabling desktop app integration, signing in, and reading/injecting secrets for commands.
+description: Set up op CLI, sign in, and read or inject secrets.
 version: 1.0.0
 author: arceus77-7, enhanced by Hermes Agent
 license: MIT
@@ -41,7 +41,7 @@ Use this skill when the user wants secrets managed through 1Password instead of 
 
 ### Service Account (recommended for Hermes)
 
-Set `OP_SERVICE_ACCOUNT_TOKEN` in `~/.hermes/.env` (the skill will prompt for this on first load).
+Set `OP_SERVICE_ACCOUNT_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` (the skill will prompt for this on first load).
 No desktop app needed. Supports `op read`, `op inject`, `op run`.
 
 ```bash
@@ -139,7 +139,7 @@ echo "db_password: {{ op://app-prod/db/password }}" | op inject
 ### Run a command with secret env var
 
 ```bash
-export DB_PASSWORD="op://app-prod/db/password"
+export DB_PASSWORD="op://app-prod/db/password"  # example op:// reference, resolved by `op run`
 op run -- sh -c '[ -n "$DB_PASSWORD" ] && echo "DB_PASSWORD is set" || echo "DB_PASSWORD missing"'
 ```
 

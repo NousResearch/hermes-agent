@@ -102,6 +102,7 @@ describe('prevRenderedMsg', () => {
     { role: 'system', kind: 'trail', text: '', tools: ['Edit bar.ts'] }, // 3
     { role: 'assistant', text: 'second' } // 4
   ]
+
   const at = (i: number) => rows[i]
 
   it('returns the literal predecessor when everything renders', () => {

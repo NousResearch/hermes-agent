@@ -19,6 +19,7 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `list` | List all profiles. |
 | `use` | Set the active (default) profile. |
 | `create` | Create a new profile. |
+| `describe` | Read or set a profile's description (used by the kanban orchestrator for routing). |
 | `delete` | Delete a profile. |
 | `show` | Show details about a profile. |
 | `alias` | Regenerate the shell alias for a profile. |
@@ -79,12 +80,12 @@ Creates a new profile.
 | Argument / Option | Description |
 |-------------------|-------------|
 | `<name>` | Name for the new profile. Must be a valid directory name (alphanumeric, hyphens, underscores). |
-| `--clone` | Copy `config.yaml`, `.env`, and `SOUL.md` from the current profile. |
-| `--clone-all` | Copy everything (config, memories, skills, sessions, state) from the current profile. |
-| `--clone-from <profile>` | Clone from a specific profile instead of the current one. Used with `--clone` or `--clone-all`. |
+| `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, and skills from the current profile. |
+| `--clone-all` | Copy everything (config, memories, skills, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints — and cron jobs, which stay bound to the source profile (a clone that inherited them would fire every job twice). |
+| `--clone-from <profile>` | Clone config/skills/SOUL from a specific profile instead of the current one. Implies `--clone` unless paired with `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
 | `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
-| `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-bundled-skills` marker into the profile so future `hermes update` runs won't re-seed the bundled set, and refuses to combine with `--clone` / `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. To toggle this on an already-created profile (including the default `~/.hermes`), use `hermes skills opt-out` / `hermes skills opt-in`. |
+| `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-bundled-skills` marker into the profile so future `hermes update` runs won't re-seed the bundled set, and refuses to combine with `--clone`, `--clone-from`, or `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. To toggle this on an already-created profile (including the default `~/.hermes`), use `hermes skills opt-out` / `hermes skills opt-in`. |
 
 Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. If you want a profile to start in a specific project, set `terminal.cwd` in that profile's `config.yaml`.
 
@@ -101,7 +102,10 @@ hermes profile create work --clone
 hermes profile create backup --clone-all
 
 # Clone config from a specific profile
-hermes profile create work2 --clone --clone-from work
+hermes profile create work2 --clone-from work
+
+# Clone everything from a specific profile
+hermes profile create work2-backup --clone-from work --clone-all
 ```
 
 ## `hermes profile describe`
@@ -159,7 +163,7 @@ hermes profile delete mybot --yes
 ```
 
 :::warning
-This permanently deletes the profile's entire directory including all config, memories, sessions, and skills. Cannot delete the currently active profile.
+This permanently deletes the profile's entire directory including all config, memories, sessions, and skills. The `default` profile (`~/.hermes`) cannot be deleted — use `hermes uninstall` to remove everything.
 :::
 
 ## `hermes profile show`
@@ -244,7 +248,9 @@ hermes profile rename mybot assistant
 hermes profile export <name> [options]
 ```
 
-Exports a profile as a compressed tar.gz archive.
+Exports a profile as a compressed tar.gz archive — a portable snapshot you can back up, move to another machine, or hand to someone else. `auth.json` and `.env` are always excluded.
+
+Also available in chat as [`/export`](./slash-commands.md), and in the desktop app via **⌘K → Export profile…** or a profile square's right-click menu. A desktop export additionally stages `desktop.json` (skin, light/dark mode, custom themes, rail color, window layout) into the archive.
 
 | Argument / Option | Description |
 |-------------------|-------------|
@@ -260,13 +266,17 @@ hermes profile export work
 hermes profile export work -o ./work-2026-03-29.tar.gz
 ```
 
+See [Export and import a profile file](../user-guide/profile-distributions.md#export-and-import-a-profile-file) for exactly what lands in the archive and what to check before sending one to someone else.
+
 ## `hermes profile import`
 
 ```bash
 hermes profile import <archive> [options]
 ```
 
-Imports a profile from a tar.gz archive.
+Imports a profile from a tar.gz archive, as a new profile. Refuses to overwrite an existing profile, and cannot import as `default` (the built-in root profile) — pass `--name` in either case. A shell wrapper is created when the name doesn't collide with an existing command.
+
+Also available in chat as [`/import`](./slash-commands.md), and in the desktop app via **⌘K → Import profile…** or the import button beside the profile rail's **+**. A desktop import also applies any bundled `desktop.json` overlay (theme, layout) and switches you into the new profile.
 
 | Argument / Option | Description |
 |-------------------|-------------|
@@ -301,10 +311,7 @@ The recipient's user data (memories, sessions, auth, their own edits to
 updates.
 
 :::info
-`hermes profile export` / `import` are still the right commands for
-**local backup and restore** of a profile on your own machine. Distribution
-(`install` / `update` / `info`) is a separate concept: ship a profile via
-git so someone else can install it.
+Two ways to share a profile, and they complement each other. `hermes profile export` / `import` (also `/export` and `/import` in chat) produce a **single file** — no repo, no manifest, and a desktop export carries your theme and layout too. Distribution (`install` / `update` / `info`) publishes a profile as a **git repo** so recipients can pull versioned updates later. Backup and restore is the export file's other job. See [Two ways to share a profile](../user-guide/profile-distributions.md#two-ways-to-share-a-profile).
 :::
 
 ### `hermes profile install`

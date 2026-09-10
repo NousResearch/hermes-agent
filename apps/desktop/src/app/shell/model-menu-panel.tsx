@@ -1,295 +1,269 @@
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  dropdownMenuRow,
-  DropdownMenuSearch,
-  dropdownMenuSectionLabel,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubTrigger
-} from '@/components/ui/dropdown-menu'
-import { Skeleton } from '@/components/ui/skeleton'
+import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import type { HermesGateway } from '@/hermes'
-import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import { modelOptionsQueryKey, reconcileSelectionAfterCatalogRefresh, requestModelOptions } from '@/lib/model-options'
+import { currentPickerSelection } from '@/lib/model-status-label'
+import { DEFAULT_REASONING_EFFORT } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
+import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from '@/store/model-presets'
+import { $visibleModels } from '@/store/model-visibility'
+import { notifyError } from '@/store/notifications'
 import {
-  $visibleModels,
-  collapseModelFamilies,
-  DEFAULT_VISIBLE_PER_PROVIDER,
-  type ModelFamily,
-  modelVisibilityKey,
-  setModelVisibilityOpen
-} from '@/store/model-visibility'
-import {
-  $activeSessionId,
-  $currentFastMode,
-  $currentModel,
-  $currentProvider,
-  $currentReasoningEffort
+  $defaultReasoningEffort,
+  markComposerSelectionManual,
+  setCurrentFastMode,
+  setCurrentReasoningEffort
 } from '@/store/session'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+import { sessionTileDelegate } from '@/store/session-states'
+import type { ModelOptionsResponse } from '@/types/hermes'
 
-import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
+
+export { ModelMenuCloseContext } from './model-catalog-menu'
+
+export interface ModelSelection {
+  model: string
+  provider: string
+  /** Runtime id of the surface that opened the menu. When set, the switch
+   *  targets that session (a tile) instead of the primary `$activeSessionId`. */
+  sessionId?: null | string
+}
 
 interface ModelMenuPanelProps {
   gateway?: HermesGateway
-  onSelectModel: (selection: { model: string; persistGlobal: boolean; provider: string }) => Promise<boolean> | void
+  ownerConnectionId?: string
+  onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
+  profile?: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-interface ProviderGroup {
-  families: ModelFamily[]
-  provider: ModelOptionProvider
-}
-
-export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
+/**
+ * The composer's model menu: `ModelCatalogMenu` (the shared renderer) plus the
+ * controller that gives a selection its meaning HERE — write through to this
+ * surface's session, remember the pick as a global preset, keep the optimistic
+ * stores honest, and roll back on a failed gateway write.
+ */
+export function ModelMenuPanel({
+  gateway,
+  onSelectModel,
+  ownerConnectionId,
+  profile = 'default',
+  requestGateway
+}: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
-  const [search, setSearch] = useState('')
-  // Reactive session state is read from the stores here (not drilled in), so
-  // toggling effort/fast/model re-renders this panel in place without forcing
-  // the parent to rebuild the menu content (which would close the dropdown).
-  const activeSessionId = useStore($activeSessionId)
-  const currentFastMode = useStore($currentFastMode)
-  const currentModel = useStore($currentModel)
-  const currentProvider = useStore($currentProvider)
-  const currentReasoningEffort = useStore($currentReasoningEffort)
+  const [refreshing, setRefreshing] = useState(false)
+  const queryClient = useQueryClient()
+  // Bind to THIS surface's SessionView (primary or tile) so each pane's menu
+  // shows/switches its own model — not the primary-only globals.
+  const view = useSessionView()
+  const activeSessionId = useStore(view.$runtimeId)
+  const currentFastMode = useStore(view.$fast)
+  const currentModel = useStore(view.$model)
+  const currentProvider = useStore(view.$provider)
+  const currentReasoningEffort = useStore(view.$reasoningEffort)
+  const modelPresets = useStore($modelPresets)
+  const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
   const visibleModels = useStore($visibleModels)
+  const touchesPrimary = view.kind === 'primary'
 
+  // Subscribe to the SAME query the menu runs (identical key ⇒ React Query
+  // dedupes, no second fetch). It must be a live subscription, not a cache
+  // peek: with no model in the session store yet, currentPickerSelection falls
+  // back to the catalog's reported current, and a non-reactive read would
+  // never repaint that fallback once the catalog resolved.
   const modelOptions = useQuery({
-    queryKey: ['model-options', activeSessionId || 'global'],
-    queryFn: (): Promise<ModelOptionsResponse> => {
-      if (gateway && activeSessionId) {
-        return gateway.request<ModelOptionsResponse>('model.options', { session_id: activeSessionId })
-      }
-
-      return getGlobalModelOptions()
-    }
+    queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
+    queryFn: (): Promise<ModelOptionsResponse> =>
+      requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
   })
 
-  const optionsModel = String(modelOptions.data?.model ?? currentModel ?? '')
-  const optionsProvider = String(modelOptions.data?.provider ?? currentProvider ?? '')
-  const loading = modelOptions.isPending && !modelOptions.data
-
-  const error = modelOptions.error
-    ? modelOptions.error instanceof Error
-      ? modelOptions.error.message
-      : String(modelOptions.error)
-    : null
-
-  const providers = modelOptions.data?.providers
-
-  const switchTo = (model: string, provider: string) =>
-    onSelectModel({ model, persistGlobal: !activeSessionId, provider })
-
-  const groups = useMemo(
-    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, visibleModels),
-    [providers, search, optionsModel, optionsProvider, visibleModels]
+  const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
+    { model: currentModel, provider: currentProvider },
+    modelOptions.data
   )
 
-  return (
-    <>
-      <DropdownMenuSearch
-        aria-label={copy.search}
-        onValueChange={setSearch}
-        placeholder={copy.search}
-        value={search}
-      />
-
-      <DropdownMenuSeparator className="mx-0" />
-
-      {loading ? (
-        <DropdownMenuGroup className="py-1">
-          {Array.from({ length: 4 }, (_, index) => (
-            <DropdownMenuItem
-              className={dropdownMenuRow}
-              disabled
-              key={index}
-              onSelect={event => event.preventDefault()}
-            >
-              <Skeleton className="h-4 w-full" />
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
-      ) : error ? (
-        <DropdownMenuItem className={dropdownMenuRow} disabled>
-          {error}
-        </DropdownMenuItem>
-      ) : groups.length === 0 ? (
-        <DropdownMenuItem className={dropdownMenuRow} disabled>
-          {copy.noModels}
-        </DropdownMenuItem>
-      ) : (
-        <div className="max-h-80 overflow-y-auto py-0.5">
-          {groups.map(group => (
-            <DropdownMenuGroup className="py-0.5" key={group.provider.slug}>
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{group.provider.name}</DropdownMenuLabel>
-              {group.families.map(family => {
-                // The active id may be the base or its -fast sibling; either
-                // way this one family row represents both.
-                const activeId =
-                  group.provider.slug === optionsProvider &&
-                  (optionsModel === family.id || optionsModel === family.fastId)
-                    ? optionsModel
-                    : null
-
-                const isCurrent = activeId !== null
-                const name = modelDisplayParts(family.id).name
-                // Capabilities are looked up against the active/base id; the
-                // -fast variant carries the same param support as its base.
-                const caps = group.provider.capabilities?.[family.id]
-
-                // Single source of truth for the active row's fast state — keeps
-                // the row label in lock-step with the submenu's Fast toggle and
-                // handles the standalone `-fast` id case.
-                const fastControl = resolveFastControl(
-                  activeId ?? family.id,
-                  group.provider.models ?? [],
-                  caps?.fast ?? false,
-                  currentFastMode
-                )
-
-                // Grayed text: active row shows live state (Fast + effort);
-                // others show a fast-capability hint.
-                const meta = isCurrent
-                  ? [
-                      fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      reasoningEffortLabel(currentReasoningEffort) || copy.medium
-                    ]
-                      .filter(Boolean)
-                      .join(' ')
-                  : caps?.fast || family.fastId
-                    ? copy.fast
-                    : ''
-
-                // Every row is a hover-Edit submenu trigger. Activating it
-                // (pointer or keyboard) switches to the family's base model;
-                // the Fast toggle inside swaps to the -fast sibling (or flips
-                // the speed param). The sub-trigger has no `onSelect`, so wire
-                // both click and Enter/Space for keyboard parity.
-                const activate = () => {
-                  if (!isCurrent) {
-                    void switchTo(family.id, group.provider.slug)
-                  }
-                }
-
-                return (
-                  <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
-                    <DropdownMenuSubTrigger
-                      className={dropdownMenuRow}
-                      hideChevron
-                      onClick={activate}
-                      onKeyDown={event => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          activate()
-                        }
-                      }}
-                    >
-                      <span className="min-w-0 flex-1 truncate">
-                        {name}
-                        {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                      </span>
-                      {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
-                    </DropdownMenuSubTrigger>
-                    <ModelEditSubmenu
-                      fastControl={fastControl}
-                      isActive={isCurrent}
-                      onActivate={() => switchTo(family.id, group.provider.slug)}
-                      onSelectModel={nextModel => switchTo(nextModel, group.provider.slug)}
-                      reasoning={caps?.reasoning ?? true}
-                      requestGateway={requestGateway}
-                    />
-                  </DropdownMenuSub>
-                )
-              })}
-            </DropdownMenuGroup>
-          ))}
-        </div>
-      )}
-
-      <DropdownMenuSeparator className="mx-0" />
-
-      <DropdownMenuItem
-        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-        onSelect={() => setModelVisibilityOpen(true)}
-      >
-        {copy.editModels}
-      </DropdownMenuItem>
-    </>
-  )
-}
-
-// Collapsed we show the user's chosen models (or the curated default); typing
-// spans every available model so anything is reachable past the cut.
-const PER_PROVIDER_SEARCH = 12
-
-function groupModels(
-  providers: ModelOptionProvider[],
-  search: string,
-  current: { model: string; provider: string },
-  visible: Set<string> | null
-): ProviderGroup[] {
-  const q = search.trim().toLowerCase()
-  const groups: ProviderGroup[] = []
-
-  for (const provider of providers) {
-    const allFamilies = collapseModelFamilies(provider.models ?? [])
-
-    if (allFamilies.length === 0) {
-      continue
+  // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
+  // backend busts its 1h provider-model disk cache and re-pulls each provider's
+  // live list. Fixes live-only models (e.g. OpenCode Zen free tier) vanishing
+  // when the cache expires and falls back to the curated static list.
+  const refreshModels = async () => {
+    if (refreshing) {
+      return
     }
 
-    const matches = (family: ModelFamily) =>
-      `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`
-        .toLowerCase()
-        .includes(q)
+    setRefreshing(true)
 
-    // Which model ids to show (the active one is always added on top of this).
-    let shown: Set<string>
+    try {
+      const queryKey = modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId)
 
-    if (q) {
-      // Search spans every family, regardless of visibility.
-      shown = new Set(allFamilies.filter(matches).map(family => family.id))
-    } else if (visible) {
-      // User has customized which models show — honor their selection exactly.
-      shown = new Set(
-        allFamilies.filter(family => visible.has(modelVisibilityKey(provider.slug, family.id))).map(family => family.id)
-      )
-    } else {
-      // Default: curated top-N families per provider.
-      shown = new Set(allFamilies.slice(0, DEFAULT_VISIBLE_PER_PROVIDER).map(family => family.id))
-    }
+      const next = await requestModelOptions({
+        gateway,
+        profile,
+        refresh: true,
+        request: requestGateway,
+        sessionId: activeSessionId
+      })
 
-    // Always include the active model — but keep every row in the provider's
-    // stable curated order (filter `allFamilies`, never reorder), so selecting
-    // a model can't shuffle the list.
-    const activeId =
-      provider.slug === current.provider && current.model
-        ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
-        : undefined
+      queryClient.setQueryData<ModelOptionsResponse>(queryKey, next)
 
-    let families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
+      // Group / credential swaps can return a catalog that no longer contains
+      // the session's current model. The store + currentPickerSelection would
+      // otherwise keep painting the stale id (it is not in the new list).
+      const switchTo = reconcileSelectionAfterCatalogRefresh(optionsModel, next.providers)
 
-    if (q) {
-      families = families.slice(0, PER_PROVIDER_SEARCH)
-    }
-
-    if (families.length > 0) {
-      groups.push({ families, provider })
+      if (switchTo) {
+        await onSelectModel({ ...switchTo, sessionId: activeSessionId || null })
+      }
+    } catch {
+      // Network/backend hiccup — fall back to a plain invalidate so the next
+      // open re-fetches (still cached, but no worse than before).
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+    } finally {
+      setRefreshing(false)
     }
   }
 
-  // Stable, logical group order: alphabetical by provider name. (The backend
-  // floats the current provider first, which would reshuffle on every switch.)
-  groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+  // Push a reasoning change onto the session that owns it, with rollback.
+  const patchReasoning = async (next: string, previous: string, provider: string, model: string) => {
+    if (touchesPrimary) {
+      markComposerSelectionManual()
+      setCurrentReasoningEffort(next)
+    } else if (activeSessionId) {
+      sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: next }))
+    }
 
-  return groups
+    // Preset-only without a session: the gateway's `config.set` falls back to
+    // global config when none matches — so don't reach it (preset + optimistic
+    // store are the whole effect).
+    if (!activeSessionId) {
+      return
+    }
+
+    try {
+      await requestGateway('config.set', { key: 'reasoning', session_id: activeSessionId, value: next })
+    } catch (err) {
+      if (touchesPrimary) {
+        setCurrentReasoningEffort(previous)
+      } else {
+        sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: previous }))
+      }
+
+      setModelPreset(provider, model, { effort: previous })
+      notifyError(err, t.shell.modelOptions.updateFailed)
+    }
+  }
+
+  const patchFast = async (enabled: boolean, provider: string, model: string) => {
+    if (touchesPrimary) {
+      markComposerSelectionManual()
+      setCurrentFastMode(enabled)
+    } else if (activeSessionId) {
+      sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, fast: enabled }))
+    }
+
+    if (!activeSessionId) {
+      return
+    }
+
+    try {
+      await requestGateway('config.set', {
+        key: 'fast',
+        session_id: activeSessionId,
+        value: enabled ? 'fast' : 'normal'
+      })
+    } catch (err) {
+      if (touchesPrimary) {
+        setCurrentFastMode(!enabled)
+      } else {
+        sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, fast: !enabled }))
+      }
+
+      setModelPreset(provider, model, { fast: !enabled })
+      notifyError(err, t.shell.modelOptions.fastFailed)
+    }
+  }
+
+  const controller: ModelMenuController = {
+    // Selecting a model row restores that model's remembered preset onto the
+    // session (effort/fast). applyModelPreset owns the batched gateway write.
+    applyPreset: (preset, row) => {
+      setModelPreset(row.provider, row.model, preset)
+
+      void applyModelPreset(preset, {
+        failMessage: t.shell.modelOptions.updateFailed,
+        primary: touchesPrimary,
+        request: requestGateway,
+        sessionId: activeSessionId
+      })
+    },
+
+    current: {
+      effort: currentReasoningEffort,
+      fast: currentFastMode,
+      model: optionsModel,
+      provider: optionsProvider
+    },
+
+    presetFor: (provider, model) => modelPresets[modelPresetKey(provider, model)] ?? {},
+
+    // The composer picker never persists the profile default. With a session it
+    // scopes the switch to that session; with none it's UI state shipped on the
+    // next session.create. Always stamp sessionId from this surface so a tile
+    // switch never hits the primary (busy) session by accident.
+    select: (model, provider) => onSelectModel({ model, provider, sessionId: activeSessionId || null }),
+
+    setOptions: (patch, row) => {
+      // Editing always records the model's global preset (keyed by
+      // provider::model, not per-surface — a tile edit re-applies to that model
+      // everywhere); the active model also gets it pushed onto its OWN session.
+      // Non-active edits stay preset-only — no model switch, no session write.
+      if (patch.effort !== undefined || patch.fast !== undefined) {
+        setModelPreset(row.provider, row.model, patch)
+      }
+
+      if (!row.isActive) {
+        return
+      }
+
+      if (patch.effort !== undefined) {
+        void patchReasoning(patch.effort, currentReasoningEffort, row.provider, row.model)
+      }
+
+      if (patch.fast !== undefined) {
+        void patchFast(patch.fast, row.provider, row.model)
+      }
+    }
+  }
+
+  return (
+    <ModelCatalogMenu
+      controller={controller}
+      footer={
+        <DropdownMenuItem
+          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+          disabled={refreshing}
+          onSelect={event => {
+            event.preventDefault()
+            void refreshModels()
+          }}
+        >
+          <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+          {copy.refreshModels}
+        </DropdownMenuItem>
+      }
+      gateway={gateway}
+      includeMoa
+      ownerConnectionId={ownerConnectionId}
+      profile={profile}
+      request={requestGateway}
+      sessionId={activeSessionId}
+    />
+  )
 }

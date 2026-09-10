@@ -127,7 +127,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 
 当你的 provider 需要以下任何内容时，使用下面的完整清单：
 
-- OAuth 或 token 刷新（Nous Portal、Codex、Google Gemini、Qwen Portal、Copilot）
+- OAuth 或 token 刷新（Nous Portal、Codex、Qwen Portal、Copilot）
 - 需要新适配器的非 OpenAI API 格式（Anthropic Messages、Codex Responses）
 - 自定义端点检测或多区域探测（z.ai、Kimi）
 - 精选的静态模型目录或实时 `/models` 获取
@@ -338,11 +338,11 @@ Prompt（提示词）缓存和 provider 专属的调节项很容易出现回归�
 - `provider:model` 解析
 - 任何适配器专属的消息转换
 
-使用禁用 xdist 的方式运行测试：
+运行目标测试（或使用 `scripts/run_tests.sh`，它在独立子进程中运行每个文件）：
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/test_runtime_provider_resolution.py tests/test_cli_provider_resolution.py tests/test_cli_model_command.py tests/test_setup_model_selection.py -n0 -q
+python -m pytest tests/test_runtime_provider_resolution.py tests/test_cli_provider_resolution.py tests/test_cli_model_command.py tests/test_setup_model_selection.py -q
 ```
 
 对于更深层的修改，在推送前运行完整测试套件：

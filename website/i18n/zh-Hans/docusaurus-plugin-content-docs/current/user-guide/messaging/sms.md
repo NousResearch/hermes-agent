@@ -20,7 +20,7 @@ SMS gateway（网关）与可选的 [telephony skill](/reference/skills-catalog)
 - **Twilio 账户** — [在 twilio.com 注册](https://www.twilio.com/try-twilio)（提供免费试用）
 - **具备 SMS 功能的 Twilio 电话号码**
 - **可公开访问的服务器** — Twilio 在收到 SMS 时会向你的服务器发送 webhook
-- **aiohttp** — `pip install 'hermes-agent[sms]'`
+- **aiohttp** — `cd ~/.hermes/hermes-agent && uv pip install -e ".[sms]"`
 
 ---
 
@@ -126,7 +126,7 @@ hermes gateway
 | `TWILIO_PHONE_NUMBER` | 是 | 你的 Twilio 电话号码（E.164 格式） |
 | `SMS_WEBHOOK_URL` | 是 | 用于 Twilio 签名验证的公网 URL——必须与 Twilio 控制台中的 webhook URL 一致 |
 | `SMS_WEBHOOK_PORT` | 否 | Webhook 监听端口（默认：`8080`） |
-| `SMS_WEBHOOK_HOST` | 否 | Webhook 绑定地址（默认：`0.0.0.0`） |
+| `SMS_WEBHOOK_HOST` | 否 | Webhook 绑定地址（默认：`127.0.0.1`） |
 | `SMS_INSECURE_NO_SIGNATURE` | 否 | 设为 `true` 可禁用签名验证（仅限本地开发——**不适用于生产环境**） |
 | `SMS_ALLOWED_USERS` | 否 | 允许聊天的 E.164 格式电话号码，逗号分隔 |
 | `SMS_ALLOW_ALL_USERS` | 否 | 设为 `true` 允许所有人（不推荐） |

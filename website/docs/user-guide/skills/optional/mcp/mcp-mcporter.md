@@ -1,21 +1,21 @@
 ---
-title: "Mcporter"
+title: "Mcporter — List, auth, and call MCP servers/tools from the terminal"
 sidebar_label: "Mcporter"
-description: "Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type gene..."
+description: "List, auth, and call MCP servers/tools from the terminal"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Mcporter
 
-Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type generation.
+List, auth, and call MCP servers/tools from the terminal.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mcp/mcporter` |
-| Path | `optional-skills/mcp/mcporter` |
+| Path | `optional-skills/mcp\mcporter` |
 | Version | `1.0.0` |
 | Author | community |
 | License | MIT |

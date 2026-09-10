@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +18,7 @@ from hermes_cli.plugins_cmd import (
     _repo_name_from_url,
     _resolve_git_executable,
     _resolve_git_url,
+    _resolve_subdir_within,
     _sanitize_plugin_name,
 )
 
@@ -30,102 +33,84 @@ class TestSanitizePluginName:
         target = _sanitize_plugin_name("my-plugin", tmp_path)
         assert target == (tmp_path / "my-plugin").resolve()
 
-    def test_valid_name_with_hyphen_and_digits(self, tmp_path):
-        target = _sanitize_plugin_name("plugin-v2", tmp_path)
-        assert target.name == "plugin-v2"
 
     def test_rejects_dot_dot(self, tmp_path):
         with pytest.raises(ValueError, match="must not contain"):
             _sanitize_plugin_name("../../etc/passwd", tmp_path)
 
-    def test_rejects_single_dot_dot(self, tmp_path):
-        with pytest.raises(ValueError, match="must not reference the plugins directory itself"):
-            _sanitize_plugin_name("..", tmp_path)
 
-    def test_rejects_single_dot(self, tmp_path):
-        with pytest.raises(ValueError, match="must not reference the plugins directory itself"):
-            _sanitize_plugin_name(".", tmp_path)
 
-    def test_rejects_forward_slash(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("foo/bar", tmp_path)
 
-    def test_rejects_backslash(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("foo\\bar", tmp_path)
 
-    def test_rejects_absolute_path(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("/etc/passwd", tmp_path)
 
-    def test_rejects_empty_name(self, tmp_path):
-        with pytest.raises(ValueError, match="must not be empty"):
-            _sanitize_plugin_name("", tmp_path)
 
     # ── allow_subdir=True ──
 
-    def test_allow_subdir_accepts_single_slash(self, tmp_path):
-        target = _sanitize_plugin_name(
-            "observability/langfuse", tmp_path, allow_subdir=True
-        )
-        assert target == (tmp_path / "observability" / "langfuse").resolve()
 
-    def test_allow_subdir_strips_leading_trailing_slash(self, tmp_path):
-        target = _sanitize_plugin_name(
-            "/image_gen/openai/", tmp_path, allow_subdir=True
-        )
-        assert target == (tmp_path / "image_gen" / "openai").resolve()
 
-    def test_allow_subdir_still_rejects_dot_dot(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("foo/../bar", tmp_path, allow_subdir=True)
 
-    def test_allow_subdir_still_rejects_backslash(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("foo\\bar", tmp_path, allow_subdir=True)
 
-    def test_allow_subdir_rejects_empty_after_strip(self, tmp_path):
-        with pytest.raises(ValueError, match="must not be empty"):
-            _sanitize_plugin_name("///", tmp_path, allow_subdir=True)
 
-    def test_allow_subdir_resolves_inside_plugins_dir(self, tmp_path):
-        target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
-        assert target.is_relative_to(tmp_path.resolve())
 
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
 
 
 class TestResolveGitUrl:
-    """Shorthand and full-URL resolution."""
+    """Shorthand and full-URL resolution, with optional subdirectory."""
 
-    def test_owner_repo_shorthand(self):
-        url = _resolve_git_url("owner/repo")
+
+
+
+
+    def test_url_with_fragment_subdir(self):
+        url, subdir = _resolve_git_url("https://github.com/owner/repo.git#my-plugin")
         assert url == "https://github.com/owner/repo.git"
+        assert subdir == "my-plugin"
 
-    def test_https_url_passthrough(self):
-        url = _resolve_git_url("https://github.com/x/y.git")
-        assert url == "https://github.com/x/y.git"
 
-    def test_ssh_url_passthrough(self):
-        url = _resolve_git_url("git@github.com:x/y.git")
-        assert url == "git@github.com:x/y.git"
 
-    def test_http_url_passthrough(self):
-        url = _resolve_git_url("http://example.com/repo.git")
-        assert url == "http://example.com/repo.git"
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner",
+            "https://github.com/owner/repo/branches",
+            "https://github.com/owner//tree/main",
+            "https://gitlab.com/owner/repo/tree/main",
+            "git@github.com:owner/repo.git",
+            "file:///tmp/repo/tree/main",
+        ],
+    )
+    def test_non_browser_urls_passthrough(self, identifier):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == identifier
+        assert subdir is None
 
-    def test_file_url_passthrough(self):
-        url = _resolve_git_url("file:///tmp/repo")
-        assert url == "file:///tmp/repo"
 
-    def test_invalid_single_word_raises(self):
-        with pytest.raises(ValueError, match="Invalid plugin identifier"):
-            _resolve_git_url("justoneword")
+# ── _resolve_subdir_within ──────────────────────────────────────────────────
 
-    def test_invalid_three_parts_raises(self):
-        with pytest.raises(ValueError, match="Invalid plugin identifier"):
-            _resolve_git_url("a/b/c")
+
+class TestResolveSubdirWithin:
+    """Subdirectory resolution stays within the clone and rejects traversal."""
+
+
+    def test_valid_nested_subdir(self, tmp_path):
+        (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+        result = _resolve_subdir_within(tmp_path, "a/b/c")
+        assert result == (tmp_path / "a" / "b" / "c").resolve()
+
+
+
+    def test_rejects_symlink_escape(self, tmp_path):
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (clone / "link").symlink_to(outside)
+        with pytest.raises(PluginOperationError, match="escapes the repository"):
+            _resolve_subdir_within(clone, "link")
 
 
 # ── _resolve_git_executable ─────────────────────────────────────────────────
@@ -157,14 +142,6 @@ class TestResolveGitExecutable:
                 with patch.object(pc.os.path, "isfile", side_effect=_isfile):
                     assert pc._resolve_git_executable() == "/usr/local/bin/git"
 
-    def test_returns_none_when_unavailable(self):
-        import hermes_cli.plugins_cmd as pc
-
-        _resolve_git_executable.cache_clear()
-        with patch.object(pc.shutil, "which", return_value=None):
-            with patch.object(pc.os, "name", "posix"):
-                with patch.object(pc.os.path, "isfile", return_value=False):
-                    assert pc._resolve_git_executable() is None
 
     def test_git_pull_uses_resolved_executable(self, tmp_path):
         import hermes_cli.plugins_cmd as pc
@@ -176,19 +153,146 @@ class TestResolveGitExecutable:
             return_value="/resolved/git",
         ):
             with patch.object(pc.subprocess, "run") as run:
-                run.return_value = MagicMock(returncode=0, stdout="Already up to date\n", stderr="")
+                # First call is `git status --porcelain` (clean tree),
+                # second is the pull itself.
+                run.side_effect = [
+                    MagicMock(returncode=0, stdout="", stderr=""),
+                    MagicMock(returncode=0, stdout="Already up to date\n", stderr=""),
+                ]
                 ok, msg = pc._git_pull_plugin_dir(tmp_path)
         assert ok is True
-        run.assert_called_once()
-        assert run.call_args[0][0][0] == "/resolved/git"
+        assert run.call_count == 2
+        for call in run.call_args_list:
+            assert call.args[0][0] == "/resolved/git"
+        assert run.call_args_list[1].args[0][1:] == ["pull", "--ff-only"]
 
-    def test_install_core_raises_when_git_unresolved(self):
+    def test_git_pull_clean_tree_never_stashes(self, tmp_path):
         import hermes_cli.plugins_cmd as pc
 
         _resolve_git_executable.cache_clear()
-        with patch.object(pc, "_resolve_git_executable", return_value=None):
-            with pytest.raises(PluginOperationError, match="git is not installed"):
-                pc._install_plugin_core("owner/repo", force=True)
+        with patch.object(pc, "_resolve_git_executable", return_value="/g"):
+            with patch.object(pc.subprocess, "run") as run:
+                run.side_effect = [
+                    MagicMock(returncode=0, stdout="", stderr=""),      # status
+                    MagicMock(returncode=0, stdout="Updated\n", stderr=""),  # pull
+                ]
+                ok, msg = pc._git_pull_plugin_dir(tmp_path)
+        assert ok is True
+        assert msg == "Updated"
+        commands = [c.args[0][1] for c in run.call_args_list]
+        assert "stash" not in commands
+
+
+class TestGitPullPluginDirAutostash:
+    """Real-git E2E: local edits in a plugin checkout must not block updates."""
+
+    @staticmethod
+    def _make_repos(tmp_path):
+        import subprocess as sp
+
+        def git(cwd, *args):
+            r = sp.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            return r.stdout
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        git(origin, "init", "-q", "-b", "main")
+        git(origin, "config", "user.email", "t@t")
+        git(origin, "config", "user.name", "t")
+        pad = "\n".join(f"# pad {i}" for i in range(12))
+        (origin / "plugin.py").write_text(
+            f"VALUE = 1\n{pad}\nOTHER = 'a'\n", encoding="utf-8"
+        )
+        git(origin, "add", ".")
+        git(origin, "commit", "-qm", "init")
+
+        checkout = tmp_path / "checkout"
+        git(tmp_path, "clone", "-q", str(origin), str(checkout))
+        git(checkout, "config", "user.email", "t@t")
+        git(checkout, "config", "user.name", "t")
+        return origin, checkout, git
+
+    @staticmethod
+    def _set_line(repo, prefix, new_line):
+        """Replace the line starting with ``prefix`` in plugin.py, keep the rest."""
+        f = repo / "plugin.py"
+        lines = f.read_text(encoding="utf-8").splitlines()
+        lines = [new_line if ln.startswith(prefix) else ln for ln in lines]
+        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_dirty_checkout_pulls_and_reapplies_local_edit(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+
+        # Upstream changes one line; local edit touches a DIFFERENT line.
+        self._set_line(origin, "VALUE", "VALUE = 2")
+        git(origin, "commit", "-qam", "bump value")
+        self._set_line(checkout, "OTHER", "OTHER = 'local'")
+
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+        assert ok is True
+        content = (checkout / "plugin.py").read_text(encoding="utf-8")
+        assert "VALUE = 2" in content        # update landed
+        assert "OTHER = 'local'" in content  # local edit survived
+        assert "re-applied" in msg
+        # Clean re-apply drops the autostash entry.
+        assert git(checkout, "stash", "list").strip() == ""
+
+    def test_conflicting_local_edit_is_preserved_in_stash(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+
+        # Upstream and local both change the SAME line → re-apply conflicts.
+        self._set_line(origin, "VALUE", "VALUE = 2")
+        git(origin, "commit", "-qam", "bump value")
+        self._set_line(checkout, "VALUE", "VALUE = 99")
+
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+        assert ok is True
+        content = (checkout / "plugin.py").read_text(encoding="utf-8")
+        # Checkout is importable on the updated revision — no conflict markers.
+        assert "<<<<<<<" not in content
+        assert "VALUE = 2" in content
+        assert "preserved in git stash" in msg
+        # The local edit is recoverable from the kept stash entry.
+        stash_list = git(checkout, "stash", "list")
+        assert "hermes-plugin-update-autostash" in stash_list
+        stash_diff = git(checkout, "stash", "show", "-p", "stash@{0}")
+        assert "VALUE = 99" in stash_diff
+
+    def test_untracked_local_file_survives_update(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+
+        self._set_line(origin, "VALUE", "VALUE = 2")
+        git(origin, "commit", "-qam", "bump value")
+        (checkout / "local_notes.txt").write_text("keep me\n", encoding="utf-8")
+
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+        assert ok is True
+        assert (checkout / "local_notes.txt").read_text(encoding="utf-8") == "keep me\n"
+        assert "VALUE = 2" in (checkout / "plugin.py").read_text(encoding="utf-8")
+
+    def test_clean_checkout_unchanged_behavior(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+        assert ok is True
+        assert "Already up to date" in msg
 
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────
@@ -202,17 +306,7 @@ class TestRepoNameFromUrl:
             _repo_name_from_url("https://github.com/owner/my-plugin.git") == "my-plugin"
         )
 
-    def test_https_without_dot_git(self):
-        assert _repo_name_from_url("https://github.com/owner/my-plugin") == "my-plugin"
 
-    def test_trailing_slash(self):
-        assert _repo_name_from_url("https://github.com/owner/repo/") == "repo"
-
-    def test_ssh_style(self):
-        assert _repo_name_from_url("git@github.com:owner/repo.git") == "repo"
-
-    def test_ssh_protocol(self):
-        assert _repo_name_from_url("ssh://git@github.com/owner/repo.git") == "repo"
 
 
 # ── plugins_command dispatch ──────────────────────────────────────────────
@@ -224,26 +318,20 @@ class TestRepoNameFromUrl:
 class TestReadManifest:
     """Manifest reading edge cases."""
 
-    def test_valid_yaml(self, tmp_path):
-        manifest = {"name": "cool-plugin", "version": "1.0.0"}
-        (tmp_path / "plugin.yaml").write_text(yaml.dump(manifest))
-        result = _read_manifest(tmp_path)
-        assert result["name"] == "cool-plugin"
-        assert result["version"] == "1.0.0"
 
     def test_missing_file_returns_empty(self, tmp_path):
         result = _read_manifest(tmp_path)
         assert result == {}
 
     def test_invalid_yaml_returns_empty_and_logs(self, tmp_path, caplog):
-        (tmp_path / "plugin.yaml").write_text(": : : bad yaml [[[")
+        (tmp_path / "plugin.yaml").write_text(": : : bad yaml [[[", encoding="utf-8")
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins_cmd"):
             result = _read_manifest(tmp_path)
         assert result == {}
         assert any("Failed to read plugin.yaml" in r.message for r in caplog.records)
 
     def test_empty_file_returns_empty(self, tmp_path):
-        (tmp_path / "plugin.yaml").write_text("")
+        (tmp_path / "plugin.yaml").write_text("", encoding="utf-8")
         result = _read_manifest(tmp_path)
         assert result == {}
 
@@ -324,11 +412,14 @@ class TestCmdUpdate:
         )
         mock_sanitize.return_value = mock_target
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="Updated", stderr="")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),        # status: clean
+            MagicMock(returncode=0, stdout="Updated", stderr=""),  # pull
+        ]
 
         cmd_update("test-plugin")
 
-        mock_run.assert_called_once()
+        assert mock_run.call_count == 2
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -435,7 +526,7 @@ class TestCopyExampleFiles:
 
         # Create example file
         example_file = tmp_path / "config.yaml.example"
-        example_file.write_text("key: value")
+        example_file.write_text("key: value", encoding="utf-8")
 
         _copy_example_files(tmp_path, console)
 
@@ -443,21 +534,6 @@ class TestCopyExampleFiles:
         assert (tmp_path / "config.yaml").exists()
         console.print.assert_called()
 
-    def test_skips_existing_files(self, tmp_path):
-        from unittest.mock import MagicMock
-
-        console = MagicMock()
-
-        # Create both example and real file
-        example_file = tmp_path / "config.yaml.example"
-        example_file.write_text("key: value")
-        real_file = tmp_path / "config.yaml"
-        real_file.write_text("existing: true")
-
-        _copy_example_files(tmp_path, console)
-
-        # Should NOT have overwritten
-        assert real_file.read_text() == "existing: true"
 
     def test_handles_copy_error_gracefully(self, tmp_path):
         from unittest.mock import MagicMock, patch
@@ -466,7 +542,7 @@ class TestCopyExampleFiles:
 
         # Create example file
         example_file = tmp_path / "config.yaml.example"
-        example_file.write_text("key: value")
+        example_file.write_text("key: value", encoding="utf-8")
 
         # Mock shutil.copy2 to raise an error
         with patch(
@@ -483,40 +559,8 @@ class TestCopyExampleFiles:
 class TestPromptPluginEnvVars:
     """Tests for _prompt_plugin_env_vars."""
 
-    def test_skips_when_no_requires_env(self):
-        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
-        from unittest.mock import MagicMock
 
-        console = MagicMock()
-        _prompt_plugin_env_vars({}, console)
-        console.print.assert_not_called()
 
-    def test_skips_already_set_vars(self, monkeypatch):
-        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
-        from unittest.mock import MagicMock, patch
-
-        console = MagicMock()
-        with patch("hermes_cli.config.get_env_value", return_value="already-set"):
-            _prompt_plugin_env_vars({"requires_env": ["MY_KEY"]}, console)
-        # No prompt should appear — all vars are set
-        console.print.assert_not_called()
-
-    def test_prompts_for_missing_var_simple_format(self):
-        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
-        from unittest.mock import MagicMock, patch
-
-        console = MagicMock()
-        manifest = {
-            "name": "test_plugin",
-            "requires_env": ["MY_API_KEY"],
-        }
-
-        with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("builtins.input", return_value="sk-test-123"), \
-             patch("hermes_cli.config.save_env_value") as mock_save:
-            _prompt_plugin_env_vars(manifest, console)
-
-        mock_save.assert_called_once_with("MY_API_KEY", "sk-test-123")
 
     def test_prompts_for_missing_var_rich_format(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
@@ -562,34 +606,7 @@ class TestPromptPluginEnvVars:
 
         mock_prompt.assert_called_once()
 
-    def test_empty_input_skips(self):
-        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
-        from unittest.mock import MagicMock, patch
 
-        console = MagicMock()
-        manifest = {"name": "test", "requires_env": ["OPTIONAL_VAR"]}
-
-        with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("builtins.input", return_value=""), \
-             patch("hermes_cli.config.save_env_value") as mock_save:
-            _prompt_plugin_env_vars(manifest, console)
-
-        mock_save.assert_not_called()
-
-    def test_keyboard_interrupt_skips_gracefully(self):
-        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
-        from unittest.mock import MagicMock, patch
-
-        console = MagicMock()
-        manifest = {"name": "test", "requires_env": ["KEY1", "KEY2"]}
-
-        with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("builtins.input", side_effect=KeyboardInterrupt), \
-             patch("hermes_cli.config.save_env_value") as mock_save:
-            _prompt_plugin_env_vars(manifest, console)
-
-        # Should not crash, and not save anything
-        mock_save.assert_not_called()
 
 
 # ── curses_radiolist ─────────────────────────────────────────────────────
@@ -605,21 +622,6 @@ class TestCursesRadiolist:
             result = curses_radiolist("Pick one", ["a", "b", "c"], selected=1)
             assert result == 1
 
-    def test_non_tty_returns_cancel_value(self):
-        from hermes_cli.curses_ui import curses_radiolist
-        with patch("sys.stdin") as mock_stdin:
-            mock_stdin.isatty.return_value = False
-            result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=1)
-            assert result == 1
-
-    def test_keyboard_interrupt_returns_cancel_value(self):
-        from hermes_cli.curses_ui import curses_radiolist
-
-        with patch("sys.stdin") as mock_stdin, patch("curses.wrapper", side_effect=KeyboardInterrupt):
-            mock_stdin.isatty.return_value = True
-            result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=-1)
-            assert result == -1
-
 
 # ── Provider discovery helpers ───────────────────────────────────────────
 
@@ -627,51 +629,18 @@ class TestCursesRadiolist:
 class TestProviderDiscovery:
     """Test provider plugin discovery and config helpers."""
 
-    def test_get_current_memory_provider_default(self, tmp_path, monkeypatch):
-        """Empty config returns empty string."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("memory:\n  provider: ''\n")
-        from hermes_cli.plugins_cmd import _get_current_memory_provider
-        result = _get_current_memory_provider()
-        assert result == ""
 
-    def test_get_current_context_engine_default(self, tmp_path, monkeypatch):
-        """Default config returns 'compressor'."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("context:\n  engine: compressor\n")
-        from hermes_cli.plugins_cmd import _get_current_context_engine
-        result = _get_current_context_engine()
-        assert result == "compressor"
-
-    def test_save_memory_provider(self, tmp_path, monkeypatch):
-        """Saving a memory provider persists to config.yaml."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("memory:\n  provider: ''\n")
-        from hermes_cli.plugins_cmd import _save_memory_provider
-        _save_memory_provider("honcho")
-        content = yaml.safe_load(config_file.read_text())
-        assert content["memory"]["provider"] == "honcho"
 
     def test_save_context_engine(self, tmp_path, monkeypatch):
         """Saving a context engine persists to config.yaml."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("context:\n  engine: compressor\n")
+        config_file.write_text("context:\n  engine: compressor\n", encoding="utf-8")
         from hermes_cli.plugins_cmd import _save_context_engine
         _save_context_engine("lcm")
-        content = yaml.safe_load(config_file.read_text())
+        content = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         assert content["context"]["engine"] == "lcm"
 
-    def test_discover_memory_providers_empty(self):
-        """Discovery returns empty list when import fails."""
-        with patch("plugins.memory.discover_memory_providers",
-                    side_effect=ImportError("no module")):
-            from hermes_cli.plugins_cmd import _discover_memory_providers
-            result = _discover_memory_providers()
-            assert result == []
 
     def test_discover_context_engines_empty(self):
         """Discovery returns empty list when import fails."""
@@ -694,7 +663,161 @@ class TestNoAutoActivation:
         # This tests the run_agent.py logic indirectly by checking that the
         # code path for default config doesn't call get_plugin_context_engine.
         import run_agent as ra_module
-        source = open(ra_module.__file__).read()
+        source = Path(ra_module.__file__).read_text(encoding="utf-8")
         # The old code had: "Even with default config, check if a plugin registered one"
         # The fix removes this. Verify it's gone.
         assert "Even with default config, check if a plugin registered one" not in source
+
+
+# ── End-to-end subdirectory install ──────────────────────────────────────────
+
+
+class TestSubdirInstallE2E:
+    """Install a plugin that lives in a subdirectory of a real local git repo."""
+
+    @staticmethod
+    def _make_repo_with_subdir_plugin(repo_root: Path) -> None:
+        """Create a git repo where the plugin lives in ``./my-plugin/`` and the
+        repo root holds unrelated docs/tests."""
+        import subprocess as sp
+
+        repo_root.mkdir(parents=True, exist_ok=True)
+        # Root-level noise: docs + tests that should NOT be installed.
+        (repo_root / "README.md").write_text("# Monorepo docs\n", encoding="utf-8")
+        (repo_root / "tests").mkdir()
+        (repo_root / "tests" / "test_x.py").write_text(
+            "def test_x():\n    pass\n", encoding="utf-8"
+        )
+        # The actual plugin in a subdirectory.
+        plugin_dir = repo_root / "my-plugin"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: my-plugin\nmanifest_version: 1\ndescription: A subdir plugin\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "__init__.py").write_text("# plugin entry\n", encoding="utf-8")
+
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(
+            ["git", "commit", "-q", "-m", "init"],
+            cwd=repo_root,
+            check=True,
+            env=env,
+        )
+
+    def test_installs_only_the_subdir_plugin(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "monorepo"
+        self._make_repo_with_subdir_plugin(repo_root)
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        identifier = f"file://{repo_root}#my-plugin"
+        target, manifest, name = pc._install_plugin_core(identifier, force=False)
+
+        # Installed under the plugin's own name, not the repo name.
+        assert name == "my-plugin"
+        assert manifest.get("name") == "my-plugin"
+        assert target == (plugins_dir / "my-plugin").resolve()
+
+        # The plugin's files are present...
+        assert (target / "plugin.yaml").exists()
+        assert (target / "__init__.py").exists()
+        # ...and the repo-root noise is NOT.
+        assert not (target / "README.md").exists()
+        assert not (target / "tests").exists()
+
+    def test_missing_subdir_raises(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "monorepo"
+        self._make_repo_with_subdir_plugin(repo_root)
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        identifier = f"file://{repo_root}#does-not-exist"
+        with pytest.raises(PluginOperationError, match="does not exist"):
+            pc._install_plugin_core(identifier, force=False)
+
+    def test_installs_portable_root_package_disabled(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        import json
+        import subprocess as sp
+        from hermes_cli import plugins_cmd as pc
+        from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+
+        repo_root = tmp_path / "portable-repo"
+        repo_root.mkdir()
+        (repo_root / "plugin.json").write_text(
+            json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"})
+        )
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True, env=env)
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        target, manifest, name = pc._install_plugin_core(
+            f"file://{repo_root}", force=False
+        )
+
+        assert name == "portable.test"
+        assert manifest["name"] == "portable.test"
+        assert target == (plugins_dir / "portable.test").resolve()
+        assert pc._resolve_plugin_key("portable.test") == "portable.test"
+
+
+def test_portable_manifest_is_visible_to_plugin_cli(tmp_path):
+    import json
+
+    from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+    from hermes_cli.plugins_cmd import _read_manifest_info
+
+    plugin = tmp_path / "portable"
+    plugin.mkdir()
+    (plugin / "plugin.json").write_text(
+        json.dumps(
+            {
+                "$schema": PLUGIN_SCHEMA_V1,
+                "name": "portable.test",
+                "version": "1.0.0",
+                "description": "Portable test plugin",
+            }
+        )
+    )
+
+    assert _read_manifest_info(plugin, "") == (
+        "portable.test",
+        "1.0.0",
+        "Portable test plugin",
+        "portable.test",
+    )

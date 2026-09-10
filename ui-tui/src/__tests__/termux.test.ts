@@ -8,9 +8,7 @@ describe('isTermuxEnv', () => {
   })
 
   it('detects Termux PREFIX path marker', () => {
-    expect(
-      isTermuxEnv({ PREFIX: '/data/data/com.termux/files/usr' } as NodeJS.ProcessEnv)
-    ).toBe(true)
+    expect(isTermuxEnv({ PREFIX: '/data/data/com.termux/files/usr' } as NodeJS.ProcessEnv)).toBe(true)
   })
 
   it('returns false for generic Linux envs', () => {
@@ -24,9 +22,7 @@ describe('isTermuxTuiMode', () => {
   })
 
   it('allows explicit opt-out override', () => {
-    expect(
-      isTermuxTuiMode({ TERMUX_VERSION: '0.118.0', HERMES_TUI_TERMUX_MODE: '0' } as NodeJS.ProcessEnv)
-    ).toBe(false)
+    expect(isTermuxTuiMode({ TERMUX_VERSION: '0.118.0', HERMES_TUI_TERMUX_MODE: '0' } as NodeJS.ProcessEnv)).toBe(false)
   })
 
   it('stays false outside Termux even if override is set', () => {

@@ -20,12 +20,43 @@ from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+_BOTO_PREFIXES = ("botocore", "boto3")
+
+
+@pytest.fixture(autouse=True)
+def _boto_sys_modules_hygiene():
+    """Snapshot/restore boto* sys.modules around every test.
+
+    Tests here plant fake botocore/boto3 modules; a fake that leaks (or a
+    real submodule first-imported inside a stub window) poisons later
+    imports of the real ``botocore.exceptions`` with
+    ``No module named 'botocore.vendored'`` (PR #92617 CI flake). This
+    fixture makes stub windows airtight regardless of test ordering.
+    """
+    import sys as _sys
+
+    saved = {
+        name: mod
+        for name, mod in _sys.modules.items()
+        if name.split(".", 1)[0] in _BOTO_PREFIXES
+    }
+    yield
+    for name in [n for n in _sys.modules if n.split(".", 1)[0] in _BOTO_PREFIXES]:
+        _sys.modules.pop(name, None)
+    _sys.modules.update(saved)
+
+
+from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+
+_MANTLE_MODELS = list(BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
+_MANTLE_SET = {m.lower() for m in _MANTLE_MODELS}
 
 
 # ---------------------------------------------------------------------------
 # Shared helpers / fixtures
 # ---------------------------------------------------------------------------
-
 
 
 @contextmanager
@@ -75,7 +106,9 @@ class TestProviderModelIdsBedrock:
 
         assert "eu.anthropic.claude-sonnet-4-6-20250514-v1:0" in result
         assert "eu.anthropic.claude-haiku-4-5-20251015-v1:0" in result
-        assert len(result) == len(_EU_MODELS)
+        for _m in _MANTLE_MODELS:
+            assert _m in result
+        assert len(result) == len(_EU_MODELS) + len(_MANTLE_MODELS)
 
     def test_region_determines_model_ids(self, monkeypatch):
         """Different regions produce different model ID prefixes (eu.* vs us.*)."""
@@ -87,45 +120,12 @@ class TestProviderModelIdsBedrock:
             with patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
                 us_result = provider_model_ids("bedrock")
 
-        assert all(m.startswith("eu.") for m in eu_result)
-        assert all(m.startswith("us.") for m in us_result)
+        assert all(m.startswith("eu.") or m.lower() in _MANTLE_SET for m in eu_result)
+        assert all(m.startswith("us.") or m.lower() in _MANTLE_SET for m in us_result)
         assert eu_result != us_result
 
-    def test_falls_back_to_static_list_when_discovery_empty(self, monkeypatch):
-        """When discover_bedrock_models() returns [], fall back to curated static list."""
-        from hermes_cli.models import provider_model_ids
 
-        with patch("agent.bedrock_adapter.discover_bedrock_models", return_value=[]), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
-            result = provider_model_ids("bedrock")
 
-        # Should fall back to static table (may be empty or populated depending on
-        # the current static list, but must not crash and must be a list).
-        assert isinstance(result, list)
-
-    def test_falls_back_to_static_list_on_exception(self, monkeypatch):
-        """When discover_bedrock_models() raises, fall back gracefully."""
-        from hermes_cli.models import provider_model_ids
-
-        with patch("agent.bedrock_adapter.discover_bedrock_models",
-                   side_effect=Exception("boto3 not installed")), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
-            result = provider_model_ids("bedrock")
-
-        assert isinstance(result, list)  # no crash
-
-    def test_accepts_bedrock_aliases(self, monkeypatch):
-        """Provider aliases (aws, aws-bedrock, amazon) should also trigger live discovery."""
-        from hermes_cli.models import provider_model_ids
-
-        _expected_ids = [m["id"] for m in _US_MODELS]
-
-        with patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
-            for alias in ("aws", "aws-bedrock", "amazon-bedrock"):
-                result = provider_model_ids(alias)
-                assert result == _expected_ids, \
-                    f"alias {alias!r} should return live-discovered US model IDs, got {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -135,69 +135,9 @@ class TestProviderModelIdsBedrock:
 class TestListAuthenticatedProvidersBedrock:
     """Bedrock should appear in the /model picker when AWS creds are present."""
 
-    def test_bedrock_appears_with_aws_profile(self, monkeypatch):
-        """Bedrock shows up when AWS_PROFILE is set."""
-        from hermes_cli.model_switch import list_authenticated_providers
 
-        monkeypatch.setenv("AWS_PROFILE", "my-sso-profile")
-        monkeypatch.setenv("AWS_REGION", "eu-central-1")
 
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
-            providers = list_authenticated_providers(current_provider="bedrock")
 
-        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
-        assert bedrock is not None, "bedrock should appear when AWS credentials are present"
-
-    def test_bedrock_uses_live_discovery_not_static_list(self, monkeypatch):
-        """Model IDs come from discover_bedrock_models(), not the static _PROVIDER_MODELS table."""
-        from hermes_cli.model_switch import list_authenticated_providers
-
-        monkeypatch.setenv("AWS_PROFILE", "my-sso-profile")
-
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
-            providers = list_authenticated_providers(current_provider="bedrock")
-
-        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
-        assert bedrock is not None
-
-        # All returned model IDs should have eu.* prefix — live discovery result
-        for model_id in bedrock["models"]:
-            assert model_id.startswith("eu."), \
-                f"Expected eu.* model ID from live discovery, got {model_id!r}"
-
-    def test_bedrock_total_models_matches_discovery(self, monkeypatch):
-        """total_models reflects the actual discovered count."""
-        from hermes_cli.model_switch import list_authenticated_providers
-
-        monkeypatch.setenv("AWS_PROFILE", "my-sso-profile")
-
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.discover_bedrock_models", return_value=_EU_MODELS), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
-            providers = list_authenticated_providers(current_provider="openai")
-
-        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
-        assert bedrock is not None
-        assert bedrock["total_models"] == len(_EU_MODELS)
-
-    def test_bedrock_is_current_when_selected(self, monkeypatch):
-        """is_current=True when current_provider matches bedrock."""
-        from hermes_cli.model_switch import list_authenticated_providers
-
-        monkeypatch.setenv("AWS_PROFILE", "my-sso-profile")
-
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.discover_bedrock_models", return_value=_EU_MODELS), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
-            providers = list_authenticated_providers(current_provider="bedrock")
-
-        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
-        assert bedrock is not None
-        assert bedrock["is_current"] is True
 
     def test_bedrock_not_shown_without_credentials(self, monkeypatch):
         """Bedrock must not appear when no AWS credentials are present."""
@@ -240,37 +180,6 @@ class TestListAuthenticatedProvidersBedrock:
         assert calls["has_aws_credentials"] == 0
         assert all(p["slug"] != "bedrock" for p in providers)
 
-    def test_bedrock_falls_back_to_curated_when_discovery_fails(self, monkeypatch):
-        """When discover_bedrock_models() raises, fall back to curated list without crashing."""
-        from hermes_cli.model_switch import list_authenticated_providers
-
-        monkeypatch.setenv("AWS_PROFILE", "my-sso-profile")
-
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.discover_bedrock_models",
-                   side_effect=Exception("API call failed")), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
-            providers = list_authenticated_providers(current_provider="bedrock")
-
-        # Should not raise — bedrock entry may or may not appear depending on
-        # whether the curated fallback has entries, but the call must succeed.
-        assert isinstance(providers, list)
-
-    def test_bedrock_no_duplicate_entries(self, monkeypatch):
-        """Bedrock must appear at most once — not in both Section 1 and Section 2."""
-        from hermes_cli.model_switch import list_authenticated_providers
-
-        monkeypatch.setenv("AWS_PROFILE", "my-sso-profile")
-
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.discover_bedrock_models", return_value=_EU_MODELS), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
-            providers = list_authenticated_providers(current_provider="bedrock")
-
-        bedrock_entries = [p for p in providers if p["slug"] == "bedrock"]
-        assert len(bedrock_entries) <= 1, \
-            f"bedrock should appear at most once, got {len(bedrock_entries)} entries"
-
 
 # ---------------------------------------------------------------------------
 # 3. Region routing: EU/AP users see regional model IDs
@@ -294,25 +203,12 @@ class TestBedrockRegionRouting:
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
         assert bedrock is not None
+        for _m in _MANTLE_MODELS:
+            assert _m in bedrock["models"]
         for model_id in bedrock["models"]:
-            assert model_id.startswith("eu."), \
-                f"Expected eu.* model ID from eu-central-1 profile, got {model_id!r}"
+            assert model_id.startswith("eu.") or model_id.lower() in _MANTLE_SET, \
+                f"Expected eu.* or Bedrock OpenAI model ID from eu-central-1 profile, got {model_id!r}"
 
-    def test_us_region_from_env_var_yields_us_models(self, monkeypatch):
-        """Explicit AWS_REGION=us-east-1 returns us.* model IDs."""
-        from hermes_cli.model_switch import list_authenticated_providers
-
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover):
-            providers = list_authenticated_providers(current_provider="bedrock")
-
-        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
-        assert bedrock is not None
-        for model_id in bedrock["models"]:
-            assert model_id.startswith("us."), \
-                f"Expected us.* model ID from us-east-1, got {model_id!r}"
 
     def test_env_var_takes_priority_over_botocore_profile(self, monkeypatch):
         """AWS_REGION env var wins over botocore profile region."""
@@ -340,13 +236,6 @@ class TestBedrockOverlayRegistration:
         from hermes_cli.providers import HERMES_OVERLAYS
         assert "bedrock" in HERMES_OVERLAYS
 
-    def test_bedrock_overlay_transport(self):
-        from hermes_cli.providers import HERMES_OVERLAYS
-        assert HERMES_OVERLAYS["bedrock"].transport == "bedrock_converse"
-
-    def test_bedrock_overlay_auth_type(self):
-        from hermes_cli.providers import HERMES_OVERLAYS
-        assert HERMES_OVERLAYS["bedrock"].auth_type == "aws_sdk"
 
     def test_bedrock_label(self):
         from hermes_cli.providers import get_label

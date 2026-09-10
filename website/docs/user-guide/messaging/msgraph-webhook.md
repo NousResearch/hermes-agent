@@ -61,7 +61,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `host` | `0.0.0.0` | Bind address for the HTTP listener. Non-loopback binds require `allowed_source_cidrs`; loopback (`127.0.0.1` / `::1`) is the easiest dev-tunnel / reverse-proxy setup. |
+| `host` | unset (dual-stack: all interfaces, IPv4+IPv6) | Bind address for the HTTP listener. Non-loopback binds require `allowed_source_cidrs`; loopback (`127.0.0.1` / `::1`) is the easiest dev-tunnel / reverse-proxy setup. |
 | `port` | `8646` | Bind port. |
 | `webhook_path` | `/msgraph/webhook` | URL path Graph POSTs to. |
 | `health_path` | `/health` | Readiness endpoint. |
@@ -70,7 +70,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 | `max_seen_receipts` | `5000` | Dedupe cache size for notification IDs. Oldest entries evicted when the cap is hit. |
 | `allowed_source_cidrs` | `[]` | Required for non-loopback binds. Leave empty only when the listener is bound to loopback and fronted by a local tunnel / reverse proxy. |
 
-Each setting also has an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup — see the [environment variables reference](/reference/environment-variables#microsoft-graph-teams-meetings).
+Most settings also have an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup (the exception is `host`, which is config-only — see the note above) — see the [environment variables reference](/reference/environment-variables#microsoft-graph-teams-meetings).
 
 ## Security Hardening
 

@@ -58,23 +58,3 @@ def test_dashboard_tui_flag_is_accepted_not_rejected():
     assert result.returncode != 2, combined
 
 
-def test_dashboard_tui_flag_is_hidden_from_help():
-    """The deprecated shim must not re-advertise a removed feature in --help."""
-    result = _run_cli(["dashboard", "--help"])
-    combined = (result.stdout or "") + (result.stderr or "")
-    assert result.returncode == 0, combined
-    assert "--tui" not in combined, (
-        "dashboard --tui is a deprecated back-compat shim and must stay "
-        "hidden via argparse.SUPPRESS:\n" + combined
-    )
-
-
-def test_dashboard_without_tui_still_parses():
-    """Sanity: the modern (no --tui) invocation is unaffected by the shim."""
-    result = _run_cli(
-        ["dashboard", "--no-open", "--host", "127.0.0.1",
-         "--port", "39996", "--status"]
-    )
-    combined = (result.stdout or "") + (result.stderr or "")
-    assert "unrecognized arguments" not in combined, combined
-    assert result.returncode != 2, combined

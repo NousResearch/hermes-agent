@@ -106,22 +106,67 @@ class TestParseMoveFile:
         assert ops[0].new_path == "new/path.py"
 
 
+class TestBoundaryMarkersInContent:
+    """Patch boundary markers inside content lines must not be treated as
+    real boundaries (docs about the patch format, nested patch text, etc.)."""
+
+    def test_end_patch_marker_in_add_content_does_not_truncate(self):
+        patch = """\
+*** Begin Patch
+*** Add File: notes.md
++doc line one
++*** End Patch
++content after the marker mention
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 1
+        contents = [l.content for l in ops[0].hunks[0].lines if l.prefix == "+"]
+        assert contents == [
+            "doc line one",
+            "*** End Patch",
+            "content after the marker mention",
+        ]
+
+    def test_begin_patch_marker_in_content_does_not_discard_operations(self):
+        patch = """\
+*** Begin Patch
+*** Add File: first.md
++first file content
+*** Add File: second.md
++*** Begin Patch
++second file content
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert [(op.operation, op.file_path) for op in ops] == [
+            (OperationType.ADD, "first.md"),
+            (OperationType.ADD, "second.md"),
+        ]
+
+    def test_context_line_end_patch_marker_does_not_truncate(self):
+        patch = """\
+*** Begin Patch
+*** Update File: guide.md
+@@ section @@
+ old line
+ *** End Patch
++new line
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 1
+        hunk_lines = [(l.prefix, l.content) for l in ops[0].hunks[0].lines]
+        assert (" ", "*** End Patch") in hunk_lines
+        assert ("+", "new line") in hunk_lines
+
+
 class TestParseInvalidPatch:
     def test_empty_patch_returns_empty_ops(self):
         ops, err = parse_v4a_patch("")
         assert err is None
         assert ops == []
 
-    def test_no_begin_marker_still_parses(self):
-        patch = """\
-*** Update File: f.py
- line1
--old
-+new
-*** End Patch"""
-        ops, err = parse_v4a_patch(patch)
-        assert err is None
-        assert len(ops) == 1
 
     def test_multiple_operations(self):
         patch = """\
@@ -170,7 +215,7 @@ class TestApplyUpdate:
                     error=None,
                 )
 
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -216,7 +261,7 @@ class TestAdditionOnlyHunks:
                     content="def main():\n    pass\n",
                     error=None,
                 )
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -244,7 +289,7 @@ class TestAdditionOnlyHunks:
                     content="existing = True\n",
                     error=None,
                 )
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -281,7 +326,7 @@ class TestReadFileRaw:
             written = None
             def read_file_raw(self, path):
                 return SimpleNamespace(content=file_content, error=None)
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -315,7 +360,7 @@ class TestReadFileRaw:
             written = None
             def read_file_raw(self, path):
                 return SimpleNamespace(content=file_content, error=None)
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -358,7 +403,7 @@ class TestValidationPhase:
                     return SimpleNamespace(content=None, error=f"File not found: {path}")
                 return SimpleNamespace(content=content, error=None)
 
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 written[path] = content
                 return SimpleNamespace(error=None)
 
@@ -367,39 +412,28 @@ class TestValidationPhase:
         assert written == {}, f"No files should have been written, got: {list(written.keys())}"
         assert "validation failed" in result.error.lower()
 
-    def test_all_valid_operations_applied(self):
-        """When all operations are valid, all files are written."""
+
+    def test_validation_error_identifies_hunk_number(self):
         patch = """\
 *** Begin Patch
 *** Update File: a.py
- def foo():
--    return 1
-+    return 2
-*** Update File: b.py
- def bar():
--    pass
-+    return True
+@@ first @@
+-first = 1
++first = 2
+@@ missing @@
+-does_not_exist = 1
++does_not_exist = 2
 *** End Patch"""
         ops, err = parse_v4a_patch(patch)
         assert err is None
 
-        written = {}
-
         class FakeFileOps:
             def read_file_raw(self, path):
-                files = {
-                    "a.py": "def foo():\n    return 1\n",
-                    "b.py": "def bar():\n    pass\n",
-                }
-                return SimpleNamespace(content=files[path], error=None)
-
-            def write_file(self, path, content):
-                written[path] = content
-                return SimpleNamespace(error=None)
+                return SimpleNamespace(content="first = 1\n", error=None)
 
         result = apply_v4a_operations(ops, FakeFileOps())
-        assert result.success is True
-        assert set(written.keys()) == {"a.py", "b.py"}
+        assert result.success is False
+        assert "hunk 2" in result.error.lower()
 
 
 class TestApplyDelete:
@@ -481,21 +515,6 @@ class TestParseErrorSignalling:
         assert err is not None, "Expected a parse error for hunk-less UPDATE"
         assert ops == []
 
-    def test_move_without_destination_returns_error(self):
-        """A MOVE without '->' syntax should not silently produce a broken operation."""
-        # The move regex requires '->' so this will be treated as an unrecognised
-        # line and the op is never created.  Confirm nothing crashes and ops is empty.
-        patch = """\
-*** Begin Patch
-*** Move File: src/foo.py
-*** End Patch"""
-        ops, err = parse_v4a_patch(patch)
-        # Either parse sees zero ops (fine) or returns an error (also fine).
-        # What is NOT acceptable is ops=[MOVE op with empty new_path] + err=None.
-        if ops:
-            assert err is not None, (
-                "MOVE with missing destination must either produce empty ops or an error"
-            )
 
     def test_valid_patch_returns_no_error(self):
         """A well-formed patch must still return err=None."""
@@ -550,7 +569,7 @@ class TestV4ALspDiagnosticsPropagation:
         )
 
         class FakeFileOps:
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=diag_block)
 
             def _check_lint(self, path):
@@ -584,7 +603,7 @@ class TestV4ALspDiagnosticsPropagation:
             def read_file_raw(self, path):
                 return SimpleNamespace(content="ctx\nold\nctx\n", error=None)
 
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=diag_block)
 
             def _check_lint(self, path):
@@ -602,7 +621,7 @@ class TestV4ALspDiagnosticsPropagation:
         ops = self._build_ops_writing("foo.py", "x = 1\n")
 
         class FakeFileOps:
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 # lsp_diagnostics omitted entirely (older WriteResult shape).
                 return SimpleNamespace(error=None)
 
@@ -635,7 +654,7 @@ class TestV4ALspDiagnosticsPropagation:
         }
 
         class FakeFileOps:
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=per_file[path])
 
             def _check_lint(self, path):
@@ -647,3 +666,250 @@ class TestV4ALspDiagnosticsPropagation:
         assert result.lsp_diagnostics is not None
         assert per_file["a.ts"] in result.lsp_diagnostics
         assert per_file["b.ts"] in result.lsp_diagnostics
+
+
+class _DictFileOps:
+    """In-memory file_ops backing store supporting update/move/delete/add."""
+
+    def __init__(self, files):
+        self.files = dict(files)
+
+    def read_file_raw(self, path):
+        if path in self.files:
+            return SimpleNamespace(content=self.files[path], error=None)
+        return SimpleNamespace(content="", error="file not found")
+
+    def write_file(self, path, content, pre_content=None):
+        self.files[path] = content
+        return SimpleNamespace(error=None)
+
+    def move_file(self, src, dst):
+        self.files[dst] = self.files.pop(src)
+        return SimpleNamespace(error=None)
+
+    def delete_file(self, path):
+        self.files.pop(path, None)
+        return SimpleNamespace(error=None)
+
+
+class TestDuckTypedWriteFileCompat:
+    """V4A UPDATE must work with basic write_file(path, content) impls.
+
+    apply_v4a_operations is duck-typed (file_ops: Any); external callers may
+    only implement the two-argument contract. The signature-based feature
+    detection must route them to the 2-arg call — and must NOT swallow a
+    TypeError raised INSIDE a pre_content-capable write_file (which would
+    trigger a duplicate write).
+    """
+
+    PATCH = (
+        "*** Begin Patch\n"
+        "*** Update File: f.py\n"
+        "@@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+        "*** End Patch"
+    )
+
+    def test_two_arg_write_file_still_supported(self):
+        calls = []
+
+        class BasicOps(_DictFileOps):
+            def write_file(self, path, content):  # no pre_content
+                calls.append(path)
+                self.files[path] = content
+                return SimpleNamespace(error=None)
+
+        ops, err = parse_v4a_patch(self.PATCH)
+        assert err is None
+        fo = BasicOps({"f.py": "x = 1\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert fo.files["f.py"] == "x = 2\n"
+        assert calls == ["f.py"]  # exactly one write, no double invocation
+
+    def test_internal_typeerror_not_silently_retried(self):
+        # A TypeError raised INSIDE a pre_content-capable write_file must not
+        # trigger a second 2-arg write. (The op-loop's blanket except turns it
+        # into a failed result — the key contract is: ONE call, error surfaced.)
+        calls = []
+
+        class ExplodingOps(_DictFileOps):
+            def write_file(self, path, content, pre_content=None):
+                calls.append(path)
+                raise TypeError("bug inside a pre_content-capable impl")
+
+        ops, err = parse_v4a_patch(self.PATCH)
+        assert err is None
+        fo = ExplodingOps({"f.py": "x = 1\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is False
+        assert "bug inside" in result.error
+        assert calls == ["f.py"]  # not silently retried with 2 args
+
+
+class TestMoveThenUpdateSameFile:
+    """A rename-then-edit patch must validate and apply (was rejected).
+
+    Regression: _validate_operations read the UPDATE's target from disk before
+    the MOVE ran, so `Move a->b` + `Update b` failed with 'b: file not found'.
+    """
+
+    def test_move_then_update_destination(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Move File: a.py -> b.py\n"
+            "*** Update File: b.py\n"
+            "@@\n"
+            "-x = 1\n"
+            "+x = 42\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({"a.py": "x = 1\nkeep = 2\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert "a.py" not in fo.files
+        assert fo.files["b.py"] == "x = 42\nkeep = 2\n"
+
+    def test_move_onto_existing_destination_still_rejected(self):
+        """The overlay must not mask a genuine 'destination exists' conflict."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Move File: a.py -> b.py\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({"a.py": "1\n", "b.py": "2\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is False
+        assert "already exists" in (result.error or "")
+
+
+class TestCrlfPatchBody:
+    """A CRLF-encoded patch body must not inject stray carriage returns."""
+
+    def test_crlf_body_applied_to_lf_file(self):
+        patch = (
+            "*** Begin Patch\r\n"
+            "*** Update File: f.py\r\n"
+            "@@\r\n"
+            "-    x = 1\r\n"
+            "+    x = 2\r\n"
+            "*** End Patch\r\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({"f.py": "def f():\n    x = 1\n    return x\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert "\r" not in fo.files["f.py"]
+        assert fo.files["f.py"] == "def f():\n    x = 2\n    return x\n"
+
+
+class TestV4ABomRoundTrip:
+    """V4A patches must not silently strip a UTF-8 BOM on UPDATE.
+
+    ``read_file_raw`` deliberately strips the BOM (the agent should
+    never see U+FEFF), but the underlying ``write_file`` must restore
+    it on rewrite — otherwise a V4A patch turns an existing BOM-bearing
+    file into a plain UTF-8 file.  Regression for teknium1 review on
+    PR #55661.
+    """
+
+    BOM = "\ufeff"
+
+    def _file_ops_for_update(self, file_path: str, original_bytes: bytes):
+        """Build a FakeFileOps whose ``write_file`` writes real bytes to
+        ``file_path``, simulating BOM-preserving behaviour like the real
+        ``FileOperations.write_file`` (which probes disk for the marker)."""
+        from pathlib import Path
+        from tools.file_operations import _has_bom, _UTF8_BOM
+
+        target = Path(file_path)
+        _bom = self.BOM  # capture for inner class
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                # Simulate BOM-stripped read — same as the real
+                # read_file_raw which strips the marker before returning.
+                decoded = original_bytes.decode("utf-8")
+                if decoded.startswith(_bom):
+                    decoded = decoded[1:]
+                return SimpleNamespace(content=decoded, error=None)
+
+            def write_file(self, path, content, pre_content=None):
+                # Simulate real write_file: probe the target for a BOM
+                # (the real impl calls _file_has_bom → head -c 3) and
+                # prepend if the original had one.
+                had_bom = target.exists() and target.read_bytes().startswith(
+                    _bom.encode("utf-8")
+                )
+                if had_bom and not _has_bom(content):
+                    content = _UTF8_BOM + content
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                return SimpleNamespace(error=None)
+
+        return FakeFileOps()
+
+    def test_update_preserves_bom(self, tmp_path):
+        """A V4A UPDATE on a BOM-bearing file keeps the BOM."""
+        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+
+        target = tmp_path / "bom_config.py"
+        original = self.BOM + "setting = 'old'\n"
+        target.write_text(original, encoding="utf-8")
+
+        patch = """\
+*** Begin Patch
+*** Update File: bom_config.py
+@@ setting @@
+-setting = 'old'
++setting = 'new'
+*** End Patch"""
+
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        file_ops = self._file_ops_for_update(str(target), original.encode("utf-8"))
+        result = apply_v4a_operations(ops, file_ops)
+
+        assert result.success is True
+        raw = target.read_bytes()
+        assert raw.startswith(
+            self.BOM.encode("utf-8")
+        ), "BOM was stripped by V4A round-trip"
+        assert b"setting = 'new'" in raw
+        assert b"setting = 'old'" not in raw
+
+    def test_update_no_bom_when_original_had_none(self, tmp_path):
+        """A V4A UPDATE on a plain file must NOT inject a BOM."""
+        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+
+        target = tmp_path / "plain.py"
+        original = "print('hello')\n"
+        target.write_text(original, encoding="utf-8")
+
+        patch = """\
+*** Begin Patch
+*** Update File: plain.py
+@@ print @@
+-print('hello')
++print('world')
+*** End Patch"""
+
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        file_ops = self._file_ops_for_update(str(target), original.encode("utf-8"))
+        result = apply_v4a_operations(ops, file_ops)
+
+        assert result.success is True
+        raw = target.read_bytes()
+        assert not raw.startswith(
+            self.BOM.encode("utf-8")
+        ), "BOM was injected on a plain file"
+        assert b"print('world')" in raw

@@ -252,10 +252,6 @@ export function formatSummary(totals: SubagentAggregate): string {
     pieces.push(`${fmtTokens(tokens)} tok`)
   }
 
-  if (totals.costUsd > 0) {
-    pieces.push(fmtCost(totals.costUsd))
-  }
-
   if (totals.activeCount > 0) {
     pieces.push(`⚡${totals.activeCount}`)
   }

@@ -1,14 +1,12 @@
 ---
 sidebar_position: 16
 title: "Google Gemini"
-description: "Use Hermes Agent with Google Gemini — native AI Studio API, API-key setup, OAuth option, tool calling, streaming, and quota guidance"
+description: "Use Hermes Agent with Google Gemini — native AI Studio API, API-key setup, tool calling, streaming, and quota guidance"
 ---
 
 # Google Gemini
 
 Hermes Agent supports Google Gemini as a native provider using the **Google AI Studio / Gemini API** — not the OpenAI-compatible endpoint. This lets Hermes translate its internal OpenAI-shaped message and tool loop into Gemini's native `generateContent` API while preserving tool calling, streaming, multimodal inputs, and Gemini-specific response metadata.
-
-Hermes also supports a separate **Google Gemini (OAuth)** provider that uses the same Cloud Code Assist backend as Google's Gemini CLI. Use the API-key provider (`gemini`) for the lowest-risk official API path.
 
 ## Prerequisites
 
@@ -40,7 +38,7 @@ If you prefer direct config editing, use the native Gemini API base URL:
 
 ```yaml
 model:
-  default: gemini-3-flash-preview
+  default: gemini-3.7-flash
   provider: gemini
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
@@ -51,7 +49,7 @@ After running `hermes model`, your `~/.hermes/config.yaml` will contain:
 
 ```yaml
 model:
-  default: gemini-3-flash-preview
+  default: gemini-3.7-flash
   provider: gemini
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
@@ -78,6 +76,11 @@ Hermes detects this endpoint and creates its native Gemini adapter. Internally, 
 - tool results → Gemini `functionResponse` parts
 - streaming responses → OpenAI-shaped stream chunks for the Hermes loop
 
+Tool parameter type arrays such as `"type": ["number", "null"]` are translated
+into Gemini's scalar type plus `nullable` form. Multi-type unions keep every
+alternative through `anyOf`, including nested properties and array items. This
+happens automatically; no MCP server or provider configuration change is needed.
+
 :::note Gemini 3 thought signatures
 For Gemini 3 tool use, Hermes preserves the `thoughtSignature` values attached to function-call parts and replays them on the next tool turn. That covers the validation-critical path for multi-step agent workflows.
 
@@ -100,37 +103,28 @@ If you previously set `GEMINI_BASE_URL` to the `/openai` URL, remove it or chang
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ```
 
-### OAuth Provider
-
-Hermes also has a `google-gemini-cli` provider:
-
-```bash
-hermes model
-# → Choose "Google Gemini (OAuth)"
-```
-
-This uses browser PKCE login and the Cloud Code Assist backend. It can be useful for users who want Gemini CLI-style OAuth, but Hermes shows an explicit warning because Google may treat use of the Gemini CLI OAuth client from third-party software as a policy violation. For production or lowest-risk usage, prefer the API-key provider above.
-
 ## Available Models
 
 The `hermes model` picker shows Gemini models maintained in Hermes' provider registry. Common choices include:
 
 | Model | ID | Notes |
 |-------|----|-------|
-| Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | Most capable preview model when available |
-| Gemini 3 Pro Preview | `gemini-3-pro-preview` | Strong reasoning and coding model |
-| Gemini 3 Flash Preview | `gemini-3-flash-preview` | Recommended default balance of speed and capability |
-| Gemini 3.1 Flash Lite Preview | `gemini-3.1-flash-lite-preview` | Fastest / lowest-cost option when available |
+| Gemini 3.8 Flash | `gemini-3.8-flash` | Most capable Flash model for long-horizon agentic and coding work |
+| Gemini 3.7 Flash | `gemini-3.7-flash` | Recommended default balance of speed, capability, and multimodal understanding |
+| Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | Most capable reasoning, math, and coding model |
+| Gemini 3.5 Flash Lite | `gemini-3.5-flash-lite` | Fastest and lowest-cost option for lightweight tasks |
+| Gemini 2.5 Flash | `gemini-2.5-flash` | Previous generation fast model with thinking capabilities |
+| Gemini 2.5 Pro | `gemini-2.5-pro` | Previous generation complex reasoning model |
 
 Model availability changes over time. If a model disappears or is not enabled for your key, run `hermes model` again and pick one from the current list.
 
 :::info Model IDs
-Use Gemini's native model IDs such as `gemini-3-flash-preview`, not OpenRouter-style IDs like `google/gemini-3-flash-preview`, when `provider: gemini`.
+Use Gemini's native model IDs such as `gemini-3.7-flash`, not OpenRouter-style IDs like `google/gemini-3.7-flash`, when `provider: gemini`.
 :::
 
 ### Latest Aliases
 
-Google publishes moving aliases for the Pro and Flash Gemini families. `gemini-pro-latest` and `gemini-flash-latest` are useful when you want Google to advance the model automatically without changing your Hermes config.
+Google publishes moving aliases for the Pro and Flash Gemini families. `gemini-pro-latest` and `gemini-flash-latest` are useful when you want Google to advance the model automatically without changing your Hermes config. Note that your usage charges may be affected if newer models introduce different rates.
 
 | Alias | Currently tracks | Notes |
 |-------|------------------|-------|
@@ -144,7 +138,7 @@ model:
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
 
-If you need strict reproducibility, prefer explicit model IDs such as `gemini-3.1-pro-preview` or `gemini-3-flash-preview`.
+If you need strict reproducibility, prefer explicit model IDs such as `gemini-3.1-pro-preview` or `gemini-3.7-flash`.
 
 ### Gemma via the Gemini API
 
@@ -173,9 +167,9 @@ model:
 Use the `/model` command during a conversation:
 
 ```text
-/model gemini-3-flash-preview
+/model gemini-3.7-flash
 /model gemini-flash-latest
-/model gemini-3-pro-preview
+/model gemini-3.1-pro-preview
 /model gemini-pro-latest
 /model gemma-4-31b-it
 /model gemini-3.1-flash-lite-preview
@@ -192,16 +186,7 @@ hermes doctor
 The doctor checks:
 
 - Whether `GOOGLE_API_KEY` or `GEMINI_API_KEY` is available
-- Whether Gemini OAuth credentials exist for `google-gemini-cli`
 - Whether configured provider credentials can be resolved
-
-For OAuth quota usage, run this inside a Hermes session:
-
-```text
-/gquota
-```
-
-`/gquota` applies to the `google-gemini-cli` OAuth provider, not the AI Studio API-key provider.
 
 ## Gateway (Messaging Platforms)
 
@@ -263,10 +248,6 @@ Change it to the native endpoint or remove the override:
 ```bash
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ```
-
-### OAuth login warning
-
-The `google-gemini-cli` provider uses a Gemini CLI / Cloud Code Assist OAuth flow. Hermes warns before starting it because this is distinct from the official AI Studio API-key path. Use `provider: gemini` with `GOOGLE_API_KEY` for the official API-key integration.
 
 ### Tool calling fails with schema errors
 

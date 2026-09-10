@@ -19,10 +19,14 @@ hermes --tui
 # Resume the latest TUI session (falls back to the latest classic session)
 hermes --tui -c
 hermes --tui --continue
+hermes --tui --resume latest
 
 # Resume a specific session by ID or title
 hermes --tui -r 20260409_000000_aa11bb
 hermes --tui --resume "my t0p session"
+
+# Resume the latest session for a specific project directory
+hermes --tui --resume latest --in ./my-project
 
 # Run source directly — skips the prebuild step (for TUI contributors)
 hermes --tui --dev
@@ -79,6 +83,10 @@ Click anywhere on a section header (or its chevron) to toggle it. The Tools list
 
 On first launch Hermes installs the TUI's Node dependencies into `ui-tui/node_modules` (one-time, a few seconds). Subsequent launches are fast. If you pull a new Hermes version, the TUI bundle is rebuilt automatically when sources are newer than the dist.
 
+:::tip Working across git worktrees?
+Contributors who run `hermes --tui --dev` from many worktrees can share one `node_modules` instead of installing per checkout — see [TUI & Desktop from Worktrees](../developer-guide/worktree-ui-dev.md).
+:::
+
 ### External prebuild
 
 Distributions that ship a prebuilt bundle (Nix, system packages) can point Hermes at it:
@@ -94,6 +102,8 @@ The directory must contain `dist/entry.js`.
 
 Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavioral differences:
 
+- **`Ctrl+T`** expands the automatic live-subagent dock into the full-height `/agents` roster. Select a worker and press **Enter** (or **`t`**) for its live transcript, **`d`** for rich details, **`e`** to steer, or **`x`** to stop it. The dock fits its row count to terminal height and preserves your composer draft. See [Monitoring subagents](/user-guide/features/delegation#monitoring-running-subagents-agents).
+- **`F7`** toggles the live dock between its default preview and one summary line. This does not open the monitor or move composer focus; the choice lasts for this TUI process without changing config.
 - **Mouse drag** highlights text with a uniform selection background.
 - **`Cmd+V` / `Ctrl+V`** first tries normal text paste, then falls back to OSC52/native clipboard reads, and finally image attach when the clipboard or pasted payload resolves to an image.
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
@@ -130,9 +140,9 @@ Open it with any of these:
 - `/sessions new` to create a fresh live session immediately.
 - Click the `N live sessions` count in the status line.
 
-<img alt="Hermes TUI Session Orchestrator with one live session and a +new row" src="/img/docs/tui-session-orchestrator/session-orchestrator.png" />
+<img alt="Hermes TUI Session Orchestrator with one live session and a +new row" src="/docs/img/docs/tui-session-orchestrator/session-orchestrator.png" />
 
-<video controls muted loop playsInline src="/img/docs/tui-session-orchestrator/session-orchestrator-demo.mp4" title="Hermes TUI Session Orchestrator demo" />
+<video controls muted loop playsInline src="/docs/img/docs/tui-session-orchestrator/session-orchestrator-demo.mp4" title="Hermes TUI Session Orchestrator demo" style={{maxWidth: '100%'}}></video>
 
 Inside the switcher:
 
@@ -191,6 +201,8 @@ Unset the variable or pass `--resume <id>` explicitly to override on a per-launc
 
 The TUI's status line tracks agent state in real time:
 
+After a session is named, its title appears as an accent-colored badge at the far-right edge of the status line. The title takes the workspace label's place and truncates on narrow terminals.
+
 | Status | Meaning |
 |--------|---------|
 | `starting agent…` | Session ID is live; tools and skills still coming online. You can type — messages queue and send when ready. |
@@ -206,7 +218,7 @@ The status line also shows:
 - **Working directory with git branch** — `~/projects/hermes-agent (docs/two-week-gap-sweep)`. The branch suffix updates when you `git checkout` in a side terminal (mtime-cached) so the TUI reflects your actual active branch, not whatever it was at launch.
 - **Per-prompt elapsed time** — `⏱ 12s/3m 45s` while the turn is running (live), frozen to `⏲ 32s / 3m 45s` after the turn completes. First number is time since last user message; second is total session duration. Resets on every new prompt.
 - **`🗜️ N`** — number of times the running session has been auto-compressed. Appears once the first compression fires.
-- **`▶ N`** — number of `/background` tasks currently running in this session. Appears whenever at least one task is in flight.
+- **`▶ N`** — number of `/bg` tasks currently running in this session. Appears whenever at least one task is in flight.
 - **`⚠ YOLO`** — visible warning whenever YOLO mode is on (`hermes --yolo`, `/yolo`, or `HERMES_YOLO_MODE=1`). The same badge also appears in the startup banner so you cannot launch an auto-approving session without noticing.
 
 ## Configuration
@@ -271,24 +283,15 @@ Sessions are shared between the TUI and the classic CLI — both write to the sa
 
 See [Sessions](sessions.md) for lifecycle, search, compression, and export.
 
-## Attaching to a running gateway
+## How the TUI talks to its gateway
 
-By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained. If you already have a long-lived gateway running (e.g. `hermes gateway run` in tmux, or the systemd / launchd service), you can point the TUI at that gateway instead — the TUI then becomes a thin client and shares state with every other surface (messaging platforms, web dashboard, other TUI sessions) that's attached to the same gateway.
+By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained — there's nothing to configure.
 
-Set the websocket URL via env before launching:
+You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). The `/api/ws` endpoint exists only inside the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
 
-```bash
-export HERMES_TUI_GATEWAY_URL="ws://localhost:8765/api/ws?token=<auth-token>"
-hermes --tui
-```
+There is no general "point any TUI at any standalone gateway port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
 
-The token comes from the gateway's API auth configuration (see [API Server](features/api-server.md)). When the env var is set, the TUI:
-
-- Skips spawning a local gateway entirely — no duplicate platform adapters, no port conflicts.
-- Routes every action (slash commands, image attach, browser progress, voice events, …) over the websocket to the shared gateway.
-- Reconnects automatically if the gateway URL rotates (new token) between requests.
-
-This is the same channel the web dashboard's embedded TUI uses (see [Web Dashboard](features/web-dashboard.md#chat)) — one gateway, many clients.
+If you want multiple surfaces to share one set of sessions, use the shared `~/.hermes/state.db` (see [Sessions](sessions.md)) or the web dashboard's embedded chat (see [Web Dashboard](features/web-dashboard.md#chat)) — not a hand-set gateway URL.
 
 ## Reverting to the classic CLI
 

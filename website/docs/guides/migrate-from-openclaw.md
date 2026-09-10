@@ -8,6 +8,10 @@ description: "Complete guide to migrating your OpenClaw / Clawdbot setup to Herm
 
 `hermes claw migrate` imports your OpenClaw (or legacy Clawdbot/Moldbot) setup into Hermes. This guide covers exactly what gets migrated, the config key mappings, and what to verify after migration.
 
+:::note
+Coming from **Claude Code** or **OpenAI Codex CLI** instead? Use [`hermes import-agent`](../user-guide/import-from-other-agents.md).
+:::
+
 :::tip
 If your OpenClaw setup was multi-provider, `hermes setup --portal` collapses it to one OAuth — 300+ models plus the Tool Gateway in a single login. See [Nous Portal](/integrations/nous-portal).
 :::
@@ -73,7 +77,7 @@ Skill conflicts are handled by `--skill-conflict`: `skip` leaves the existing He
 | What | OpenClaw config path | Hermes destination | Notes |
 |------|---------------------|-------------------|-------|
 | Default model | `agents.defaults.model` | `config.yaml` → `model` | Can be a string or `{primary, fallbacks}` object |
-| Custom providers | `models.providers.*` | `config.yaml` → `custom_providers` | Maps `baseUrl`, `apiType`/`api` — handles both short ("openai", "anthropic") and hyphenated ("openai-completions", "anthropic-messages", "google-generative-ai") values |
+| Custom providers | `models.providers.*` | `config.yaml` → `custom_providers` (auto-migrated to the canonical `providers:` dict on the next `hermes update` config migration) | Maps `baseUrl`, `apiType`/`api` — handles both short ("openai", "anthropic") and hyphenated ("openai-completions", "anthropic-messages", "google-generative-ai") values |
 | Provider API keys | `models.providers.*.apiKey` | `~/.hermes/.env` | Requires `--migrate-secrets`. See [API key resolution](#api-key-resolution) below. |
 
 ### Agent behavior
@@ -92,15 +96,9 @@ Skill conflicts are handled by `--skill-conflict`: `skip` leaves the existing He
 | Docker sandbox | `agents.defaults.sandbox.backend` | `terminal.backend` | "docker" → "docker" |
 | Docker image | `agents.defaults.sandbox.docker.image` | `terminal.docker_image` | Direct copy |
 
-### Session reset policies
+### Session lifetime
 
-| OpenClaw config path | Hermes config path | Notes |
-|---------------------|-------------------|-------|
-| `session.reset.mode` | `session_reset.mode` | "daily", "idle", or both |
-| `session.reset.atHour` | `session_reset.at_hour` | Hour (0–23) for daily reset |
-| `session.reset.idleMinutes` | `session_reset.idle_minutes` | Minutes of inactivity |
-
-Note: OpenClaw also has `session.resetTriggers` (a simple string array like `["daily", "idle"]`). If the structured `session.reset` isn't present, the migration falls back to inferring from `resetTriggers`.
+Idle and daily reset timers are not imported: Hermes conversations persist until an explicit `/new` or `/reset`. Advanced session settings (identity links, thread bindings, maintenance, scope and send policy) remain archived for reference.
 
 ### MCP servers
 
@@ -229,7 +227,7 @@ The migration resolves all three formats. For env templates and SecretRef object
 
 5. **Test messaging** — if you migrated platform tokens, restart the gateway: `systemctl --user restart hermes-gateway`
 
-6. **Check session policies** — run `hermes config show` and verify the `session_reset` value matches your expectations.
+6. **Check session archives** — review archived advanced settings; idle and daily reset timers are intentionally not imported.
 
 7. **Re-pair WhatsApp** — WhatsApp uses QR code pairing (Baileys), not token migration. Run `hermes whatsapp` to pair.
 

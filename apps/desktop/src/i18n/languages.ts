@@ -1,3 +1,5 @@
+import { normalize } from '@/lib/text'
+
 import type { Locale } from './types'
 
 export const DEFAULT_LOCALE: Locale = 'en'
@@ -32,6 +34,18 @@ export const LOCALE_OPTIONS = [
     name: '한국어',
     englishName: 'Korean',
     configValue: 'ko'
+  },
+  {
+    id: 'ar',
+    name: 'العربية',
+    englishName: 'Arabic',
+    configValue: 'ar'
+  },
+  {
+    id: 'ru',
+    name: 'Русский',
+    englishName: 'Russian',
+    configValue: 'ru'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -71,7 +85,27 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ja_jp: 'ja',
   ko: 'ko',
   'ko-kr': 'ko',
-  ko_kr: 'ko'
+  ko_kr: 'ko',
+  korean: 'ko',
+  한국어: 'ko',
+  ar: 'ar',
+  'ar-sa': 'ar',
+  ar_sa: 'ar',
+  'ar-ae': 'ar',
+  ar_ae: 'ar',
+  'ar-eg': 'ar',
+  ar_eg: 'ar',
+  arabic: 'ar',
+  العربية: 'ar',
+  ru: 'ru',
+  'ru-ru': 'ru',
+  ru_ru: 'ru',
+  'ru-by': 'ru',
+  'ru-kz': 'ru',
+  russian: 'ru',
+  'russian-russian': 'ru',
+  русский: 'ru',
+  руский: 'ru'
 }
 
 export function isLocale(value: unknown): value is Locale {
@@ -83,11 +117,11 @@ export function normalizeLocale(value: unknown): Locale {
     return DEFAULT_LOCALE
   }
 
-  return LOCALE_ALIASES[value.trim().toLowerCase()] ?? DEFAULT_LOCALE
+  return LOCALE_ALIASES[normalize(value)] ?? DEFAULT_LOCALE
 }
 
 export function isSupportedLocaleValue(value: unknown): boolean {
-  return typeof value === 'string' && LOCALE_ALIASES[value.trim().toLowerCase()] != null
+  return typeof value === 'string' && LOCALE_ALIASES[normalize(value)] != null
 }
 
 export function localeConfigValue(locale: Locale): string {

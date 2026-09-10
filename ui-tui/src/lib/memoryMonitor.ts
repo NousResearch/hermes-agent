@@ -38,6 +38,7 @@ const MB = 1024 ** 2
 // thresholds below the warn watermark. Callers may still override explicitly.
 function resolveThresholds(criticalBytes?: number, highBytes?: number) {
   let limit = 0
+
   try {
     limit = getHeapStatistics().heap_size_limit || 0
   } catch {
@@ -111,6 +112,14 @@ export function startMemoryMonitor({
   let warned = false
   const WARN_GROWTH_STEP = 150 * MB
 
+  // Cooldown prevents repeated auto dumps when heap oscillates around the
+  // threshold (issue #21767). `dumped` alone is not enough — it clears on
+  // every transition back to `normal`.
+  const cooldownRaw = process.env.HERMES_AUTO_HEAPDUMP_COOLDOWN_MS?.trim()
+  const cooldownParsed = cooldownRaw ? Number(cooldownRaw) : NaN
+  const cooldownMs = Number.isFinite(cooldownParsed) && cooldownParsed >= 0 ? cooldownParsed : 600_000
+  let lastAutoDumpAt = 0
+
   const tick = async () => {
     const { heapUsed, rss } = process.memoryUsage()
 
@@ -124,12 +133,14 @@ export function startMemoryMonitor({
         warned = false
       }
     }
+
     lastHeap = heapUsed
 
     const level: MemoryLevel = heapUsed >= critical ? 'critical' : heapUsed >= high ? 'high' : 'normal'
 
     if (level === 'normal') {
       dumped.clear()
+
       return
     }
 
@@ -137,7 +148,12 @@ export function startMemoryMonitor({
       return
     }
 
+    if (Date.now() - lastAutoDumpAt < cooldownMs) {
+      return
+    }
+
     inFlight.add(level)
+    lastAutoDumpAt = Date.now()
 
     // Prune Ink content caches before dump/exit — half on 'high' (recoverable),
     // full on 'critical' (post-dump RSS reduction, keeps user running).
@@ -155,6 +171,7 @@ export function startMemoryMonitor({
 
       dumped.add(level)
       const dump = await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)
+
       const snap: MemorySnapshot = { heapUsed, level, rss }
 
       ;(level === 'critical' ? onCritical : onHigh)?.(snap, dump)

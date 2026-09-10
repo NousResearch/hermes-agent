@@ -200,6 +200,28 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         self._json(200, payload)
 
     def do_POST(self):  # noqa: N802
+        """Scope this connection's thread to the adapter's own profile home.
+
+        ThreadingHTTPServer hands each connection to a fresh native
+        ``threading.Thread`` — unlike ``asyncio.Task``, plain threads do not
+        copy the spawning context, so the multiplexer's per-profile
+        ``_HERMES_HOME_OVERRIDE`` contextvar (set around adapter creation in
+        ``gateway/run.py::_start_one_profile_adapters``) never reaches this
+        thread. Everything ``_do_POST_scoped`` calls that resolves
+        ``get_hermes_home()`` — the ``a2a.trusted_peers`` config.yaml
+        fallback, the audit log, and on-disk conversation persistence —
+        would otherwise silently read/write the *default* profile's data
+        whenever A2A is configured on a secondary multiplex profile.
+        """
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home_token = set_hermes_home_override(self.adapter._profile_home)
+        try:
+            self._do_POST_scoped()
+        finally:
+            reset_hermes_home_override(home_token)
+
+    def _do_POST_scoped(self):
         adapter = self.adapter
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
         identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
@@ -264,6 +286,16 @@ class A2AAdapter(BasePlatformAdapter):
         configured_toolsets = list(extra.get("advertised_toolsets") or []) or os.getenv("A2A_ADVERTISED_TOOLSETS", "").split(",")
         self._advertised_toolsets = [t.strip() for t in configured_toolsets if str(t).strip()]
         self._active_profile = _active_profile_name()
+        # Captured now, not re-resolved later: __init__ runs inside
+        # gateway/run.py::_start_one_profile_adapters's
+        # ``with _profile_runtime_scope(profile_home):`` block, so
+        # get_hermes_home() here correctly reflects the profile this adapter
+        # instance was created for. The HTTP handler thread that eventually
+        # calls do_POST is a plain threading.Thread (no context propagation),
+        # so it can't re-derive this itself — it must be handed the value.
+        from hermes_constants import get_hermes_home
+
+        self._profile_home = str(get_hermes_home())
         self._agents = self._load_served_agents(extra)
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._server_thread = self._watchdog_thread = None  # type: Optional[threading.Thread]

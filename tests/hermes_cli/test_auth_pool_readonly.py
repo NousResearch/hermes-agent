@@ -68,14 +68,47 @@ def test_readonly_malformed_pool_never_silently_falls_back_or_writes(
         root_entries if malformed_source == "profile" else [])
 
 
+@pytest.mark.parametrize("store", [{}, {"version": 1}, {"active_provider": "openai-codex"}])
+def test_readonly_metadata_only_store_is_empty_without_writes(tmp_path, monkeypatch, store):
+    profile = tmp_path / "auth.json"
+    profile.write_text(json.dumps(store))
+    monkeypatch.setattr(auth_store_readonly, "_auth_store_paths", lambda: (profile, None))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    assert auth_store_readonly.read_credential_pool() == {}
+    assert auth_store_readonly.read_credential_pool("openai-codex") == []
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
+
+
+@pytest.mark.parametrize("use_profile", [False, True])
+def test_readonly_real_path_resolution_matches_operational_auth(tmp_path, monkeypatch, use_profile):
+    root = tmp_path / "custom-root"
+    profile = root / "profiles" / "work" if use_profile else root
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    root_entries = [{"id": "root"}]
+    (root / "auth.json").write_text(json.dumps({"credential_pool": {"openai-codex": root_entries}}))
+    if use_profile:
+        (profile / "auth.json").write_text(json.dumps({"credential_pool": {"openai-codex": []}}))
+    # Use every real resolver; no patched paths can make this assertion pass by construction.
+    assert auth_store_readonly._auth_store_paths() == (
+        auth._auth_file_path(), auth._global_auth_file_path())
+    assert auth.read_credential_pool("openai-codex", read_only=True) == root_entries
+    assert auth.read_credential_pool("openai-codex") == root_entries
+
+
 def test_fresh_reader_uses_real_profile_paths_without_operational_imports(tmp_path):
     user=tmp_path/'user'; root=user/'.hermes'; profile=root/'profiles/work'
     profile.mkdir(parents=True)
     (root/'auth.json').write_text(json.dumps({'credential_pool':{'openai-codex':[{'id':'root'}]}}))
     (profile/'auth.json').write_text(json.dumps({'credential_pool':{'openai-codex':[{'id':'profile'}]}}))
-    before={str(p.relative_to(user)):p.read_bytes() for p in user.rglob('*') if p.is_file()}
     source=Path(auth_store_readonly.__file__).resolve().parent.parent
-    env={'PATH':os.environ.get('PATH','/usr/bin:/bin'),'HOME':str(user),'HERMES_HOME':str(profile)}
+    temp = user / 'temp'; temp.mkdir()
+    env={'PATH':os.environ.get('PATH','/usr/bin:/bin'),'HOME':str(user),'HERMES_HOME':str(profile),
+         'USERPROFILE':str(user),'LOCALAPPDATA':str(user/'AppData/Local'),
+         'APPDATA':str(user/'AppData/Roaming'),'TEMP':str(temp),'TMP':str(temp),'TMPDIR':str(temp)}
+    if 'SYSTEMROOT' in os.environ:
+        env['SYSTEMROOT'] = os.environ['SYSTEMROOT']
+    before={str(p.relative_to(user)):p.read_bytes() for p in user.rglob('*') if p.is_file()}
     probe=subprocess.run([sys.executable,'-I','-B','-c',
         'import sys;sys.path.insert(0,sys.argv[1]);'
         'from hermes_cli.auth_store_readonly import read_credential_pool;'

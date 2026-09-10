@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, Fragment, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -22,7 +22,7 @@ import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelDisplayParts, modelVendorLabel } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -34,9 +34,11 @@ import {
   collapseModelFamilies,
   DEFAULT_VISIBLE_PER_PROVIDER,
   effectiveVisibleKeys,
+  isMultiVendorProvider,
   type ModelFamily,
   modelVisibilityKey,
-  setModelVisibilityOpen
+  setModelVisibilityOpen,
+  splitFamiliesByPrefix
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
@@ -490,7 +492,17 @@ export function ModelCatalogMenu({
                   />
                 </DropdownMenuItem>
                 {!collapsed &&
-                  group.families.map(family => {
+                  (isMultiVendorProvider(group.families.map(family => family.id))
+                    ? splitFamiliesByPrefix(group.families)
+                    : [{ families: group.families, prefix: '' }]
+                  ).map((branch, branchIndex) => (
+                    <Fragment key={`${slug}-vendor-${branchIndex}`}>
+                      {branch.prefix ? (
+                        <DropdownMenuLabel className="px-2 pb-0.5 pt-1.5 text-[0.5625rem] font-medium uppercase tracking-wider text-(--ui-text-tertiary)/80">
+                          {modelVendorLabel(branch.prefix)}
+                        </DropdownMenuLabel>
+                      ) : null}
+                      {branch.families.map(family => {
                     // The active id may be the base or its -fast sibling; either
                     // way this one family row represents both.
                     const activeId =
@@ -601,7 +613,9 @@ export function ModelCatalogMenu({
                         />
                       </DropdownMenuSub>
                     )
-                  })}
+                      })}
+                    </Fragment>
+                  ))}
                 {!collapsed &&
                   slug === LOCAL_PROVIDER_SLUG &&
                   shownDownloads.map(job => (

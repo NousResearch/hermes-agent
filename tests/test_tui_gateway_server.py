@@ -20973,6 +20973,7 @@ def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
         session_key="branch-key",
         parent_session_id="parent-key",
         history=_branch_history(),
+        seeded=True,  # stamped by session.create: this history exists only in memory
     )
     try:
         db.create_session("branch-key", source="tui")

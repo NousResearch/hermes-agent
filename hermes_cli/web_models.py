@@ -498,6 +498,8 @@ class _AgentPluginInstallBody(BaseModel):
     enable: bool = True
     # Install by curated-catalog name (resolves repo + pinned SHA server-side).
     catalog_name: Optional[str] = None
+    # Pin a custom source to one full 40-hex commit SHA (same contract as ``--ref``).
+    ref: Optional[str] = None
 
 class _PluginProvidersPutBody(BaseModel):
     memory_provider: Optional[str] = None

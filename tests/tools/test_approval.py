@@ -2054,3 +2054,54 @@ class TestLifecycleGuardLaunchctlParity:
             "launchctl print system/com.apple.WindowServer",
         ):
             assert contains_gateway_lifecycle_command(cmd) is False, cmd
+
+
+class TestTirithLowSeveritySkip:
+    """Verify that routine low/info severity warnings are skipped, while higher or missing fail closed."""
+
+    def test_skips_low_and_info_warnings(self, monkeypatch):
+        import tools.approval as app
+        from unittest.mock import patch
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setattr(app, "detect_dangerous_command", lambda cmd: (False, None, None))
+        monkeypatch.setattr(app, "_tirith_scan", lambda cmd: {
+            "action": "warn",
+            "findings": [{"rule_id": "r1", "severity": "LOW"}, {"rule_id": "r2", "severity": "INFO"}],
+        })
+        cfg = {"approvals": {"mode": "manual"}}
+        with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            decision = app.check_all_command_guards("echo safe", "local")
+        assert decision.get("action") == "allow" or decision.get("approved") is True
+
+    def test_shows_warn_for_high_severity(self, monkeypatch):
+        import tools.approval as app
+        from unittest.mock import patch
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setattr(app, "detect_dangerous_command", lambda cmd: (False, None, None))
+        monkeypatch.setattr(app, "_tirith_scan", lambda cmd: {
+            "action": "warn",
+            "findings": [{"rule_id": "r1", "severity": "HIGH"}],
+        })
+        monkeypatch.setattr(app, "is_approved", lambda sk, tk: False)
+        cfg = {"approvals": {"mode": "manual"}}
+        with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            decision = app.check_all_command_guards(
+                "echo dangerous", "local", approval_callback=lambda *a, **kw: "deny")
+        assert decision.get("approved") is False
+
+    def test_missing_severity_fails_closed(self, monkeypatch):
+        import tools.approval as app
+        from unittest.mock import patch
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setattr(app, "detect_dangerous_command", lambda cmd: (False, None, None))
+        monkeypatch.setattr(app, "_tirith_scan", lambda cmd: {
+            "action": "warn",
+            "findings": [{"rule_id": "r1", "severity": ""}],
+        })
+        monkeypatch.setattr(app, "is_approved", lambda sk, tk: False)
+        cfg = {"approvals": {"mode": "manual"}}
+        with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            decision = app.check_all_command_guards(
+                "echo suspicious", "local", approval_callback=lambda *a, **kw: "deny")
+        assert decision.get("approved") is False
+

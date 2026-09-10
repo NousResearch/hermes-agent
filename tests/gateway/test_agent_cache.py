@@ -166,6 +166,7 @@ class TestExtractCacheBustingConfig:
                     "micro_compact_defrag_threshold_tokens": 4000,
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
+                    "max_tail_message_floor": 20,
                     "codex_app_server_auto": "hermes",
                     "some_other_key": "ignored",
                 }
@@ -183,6 +184,7 @@ class TestExtractCacheBustingConfig:
         assert out["compression.micro_compact_defrag_threshold_tokens"] == 4000
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
+        assert out["compression.max_tail_message_floor"] == 20
         assert out["compression.codex_app_server_auto"] == "hermes"
 
 

@@ -531,8 +531,17 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     try:
         tid = kb.create_task(conn, title=f"test {kind} task", assignee="worker1")
+        claimed = kb.claim_task(conn, tid, claimer="test:worker")
+        assert claimed is not None
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
-        kb._append_event(conn, tid, kind=kind)
+        from hermes_cli import kanban_db_dispatch as kbd
+        kbd._record_task_failure(
+            conn, tid, "Synthetic worker failure",
+            outcome="timed_out" if kind == "gave_up" else kind,
+            failure_limit=1 if kind == "gave_up" else 2,
+            release_claim=True, end_run=True,
+            expected_run_id=claimed.current_run_id,
+        )
     finally:
         conn.close()
 

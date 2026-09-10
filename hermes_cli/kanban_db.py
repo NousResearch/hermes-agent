@@ -1855,14 +1855,15 @@ def _append_event(
 def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
     ``current_run_id``; None when no run was active (never-claimed task)."""
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
-    if run_id is None:
+    if run_id is None or (expected_run_id is not None and run_id != expected_run_id):
         return None
-    conn.execute(
+    cur = conn.execute(
         """
         UPDATE task_runs
            SET status        = ?,
@@ -1879,7 +1880,9 @@ def _end_run(
         """,
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
-    conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
+    if cur.rowcount != 1:
+        return None
+    conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ? AND current_run_id = ?", (task_id, run_id))
     return run_id
 
 
@@ -2656,8 +2659,8 @@ def _stage_completion_artifacts(conn: sqlite3.Connection, task_id: str, metadata
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
 ) -> dict:
-    """``completed`` event payload: first summary line (400 chars) so gateway
-    notifiers / dashboard WS render without a second round-trip; verified
+    """``completed`` event payload: lossless summary so adapters can chunk at
+    their native delivery limit; verified
     cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
     them as native attachments without fetching the run row."""
     # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
@@ -2667,7 +2670,7 @@ def _completed_event_payload(
     # ignored the config (#18994).
     payload: dict = {
         "result_len": len(result) if result else 0,
-        "summary": _first_line(event_summary, 400) or None,
+        "summary": event_summary or None,
     }
     if verified_cards:
         payload["verified_cards"] = verified_cards

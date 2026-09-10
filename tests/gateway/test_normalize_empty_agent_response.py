@@ -150,6 +150,8 @@ class TestNonempty400EnvelopeOverflowReply:
         "Billing or credits exhausted: HTTP 429: You exceeded your current quota",
         "API call failed after 3 retries: HTTP 429 rate limit exceeded",
         "HTTP 401: invalid authentication token",
+        # digits "400" inside a larger number are not an HTTP 400 status
+        "API call failed after 3 retries: HTTP 429 rate limit exceeded. Limit 40000, Used 39990",
     ])
     def test_non_overflow_failure_keeps_its_own_text(self, text):
         assert _normalize_empty_agent_response(self._failed(text), text, history_len=138) == text

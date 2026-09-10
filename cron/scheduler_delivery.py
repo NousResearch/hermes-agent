@@ -769,11 +769,27 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     # writer), so a dropped refusal loses the payload with no retry anywhere:
     # a scheduled bot finding vanishes while the sender records a bare failure.
     # Retrying here is the only place that recoverable refusal can be honoured.
+    # A refusal is issued at lease acquisition, BEFORE any turn runs, so it
+    # writes nothing to the recipient and a retry cannot duplicate a delivery.
     # Genuine errors are NOT retried — they stay terminal and loud.
-    _CAPACITY_REFUSALS = ("SESSION_NOT_OWNED", "MAX_CONCURRENT_SESSIONS")
+    #
+    # SESSION_COORDINATION_UNAVAILABLE is deliberately NOT here: it means
+    # ownership could not be PROVEN, and retrying an unprovable state is the
+    # fail-open hole that lets two writers share one session.
+    _CAPACITY_REFUSALS = frozenset({"SESSION_NOT_OWNED", "MAX_CONCURRENT_SESSIONS"})
 
     def _is_capacity_refusal(text: str) -> bool:
-        return any(reason in text for reason in _CAPACITY_REFUSALS)
+        """True only when the CLI emitted a typed capacity refusal marker.
+
+        Parses the ``hermes-refusal-reason:`` line rather than substring-matching
+        the output: a job whose own payload merely mentions a reason name must
+        never be mistaken for a refusal.
+        """
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith(_REFUSAL_REASON_PREFIX):
+                return line.removeprefix(_REFUSAL_REASON_PREFIX).strip() in _CAPACITY_REFUSALS
+        return False
 
     from agent.delegation_context import delegated_child_subprocess_env
     env = delegated_child_subprocess_env(os.environ)
@@ -808,9 +824,10 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
                 logger.info(
                     "Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
                 return None
-            tail = (result.stderr or result.stdout or "").strip()[-500:]
+            output = (result.stderr or result.stdout or "").strip()
+            tail = output[-500:]
             last_attempt = attempt == attempts - 1
-            if last_attempt or not _is_capacity_refusal(tail):
+            if last_attempt or not _is_capacity_refusal(output):
                 return _fail(
                     f"bot-chat delivery to profile '{profile_label}' failed "
                     f"(exit {result.returncode})" + (f": {tail}" if tail else ""))
@@ -852,6 +869,9 @@ _ROUTING_TOKENS = frozenset({"all"})
 # Pseudo-platform: deliver output as a real inbound turn into a profile's "Bot Chat" (not a mirror).
 # ``bot-chat`` = own profile; ``bot-chat:<name>`` = named profile on THIS machine.
 BOT_CHAT_PLATFORM = "bot-chat"
+
+# Marker the CLI prints ahead of a typed refusal reason (hermes_cli/active_sessions.py).
+_REFUSAL_REASON_PREFIX = "hermes-refusal-reason:"
 
 
 def parse_bot_chat_deliver_token(part: str) -> Optional[str]:

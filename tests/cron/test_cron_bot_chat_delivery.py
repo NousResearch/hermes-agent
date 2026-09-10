@@ -253,6 +253,80 @@ def test_deliver_reports_error_when_recipient_stays_busy():
     assert "SESSION_NOT_OWNED" in err or "busy" in err.lower()
 
 
+def test_payload_mentioning_a_refusal_reason_is_not_retried():
+    """A reason NAME inside ordinary output must not be mistaken for a refusal.
+
+    Substring-matching the child's output would retry any job whose payload or
+    traceback merely mentions SESSION_NOT_OWNED. Only the typed
+    `hermes-refusal-reason:` marker line means the CLI actually refused.
+    """
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return _completed(
+            returncode=1,
+            stderr="ValueError: audit found SESSION_NOT_OWNED in 3 log lines",
+        )
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 1, "output merely naming a reason must not be retried"
+    assert err is not None
+
+
+def test_coordination_unavailable_is_not_retried():
+    """Unprovable ownership is not capacity: retrying it is the fail-open hole."""
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return _completed(
+            returncode=1,
+            stderr="hermes-refusal-reason: SESSION_COORDINATION_UNAVAILABLE\nregistry unreadable",
+        )
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 1, "SESSION_COORDINATION_UNAVAILABLE must never retry"
+    assert err is not None
+
+
+def test_capacity_refusal_is_detected_behind_a_long_preamble():
+    """Classification reads the whole output; only the DISPLAYED error is truncated.
+
+    The refusal marker is printed before the CLI's long explanatory text, so
+    truncating to the last 500 chars before matching loses it and drops the
+    payload — the exact bug this retry exists to prevent.
+    """
+    stderr = (
+        "hermes-refusal-reason: SESSION_NOT_OWNED\n"
+        + "Session already has a live owner. " * 40
+    )
+    assert len(stderr) > 500
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return busy if len(attempts) == 1 else _completed()
+
+    busy = _completed(returncode=1, stderr=stderr)
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 2, "a refusal marker before 500 chars of text must still retry"
+    assert err is None
+
+
 def test_deliver_message_carries_cron_attribution(tmp_path):
     """The injected turn must self-identify as scheduled output, not the user."""
     captured = {}

@@ -365,6 +365,8 @@ export interface HermesConfig {
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown
+    /** Seconds of silence that end an utterance in the conversation loop. */
+    silence_duration?: number
   }
 }
 

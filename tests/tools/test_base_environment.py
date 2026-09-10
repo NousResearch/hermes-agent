@@ -6,7 +6,8 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
+from tools.environments.base import BaseEnvironment
+from tools.environments.base_output import _BoundedOutputCollector
 
 
 class _TestableEnv(BaseEnvironment):
@@ -405,3 +406,68 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestSanitizeTaskIdForPath:
+    """sanitize_task_id_for_path must yield mountable, collision-free segments.
+
+    A raw task id like ``session:agent:main:telegram:dm:12345`` used as a
+    sandbox directory name made docker -v split the bind-mount on the embedded
+    colons and the daemon rejected it with "invalid mode" / exit 125 (#92414).
+    The helper is shared by every backend that builds host paths from task_id
+    (docker persistent sandboxes, singularity overlays), fixing the class once.
+    """
+
+    def test_docker_unsafe_characters_are_replaced(self):
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        out = sanitize_task_id_for_path("session:agent:main:telegram:dm:12345")
+        assert ":" not in out
+        assert "/" not in out and "\\" not in out
+
+    def test_safe_ids_pass_through_verbatim(self):
+        """Existing sandboxes keep resolving to their current directory."""
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        for value in ("default", "task-01.abc_def", "astropy__astropy-12907"):
+            assert sanitize_task_id_for_path(value) == value
+
+    def test_deterministic_and_collision_free_for_distinct_inputs(self):
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        assert sanitize_task_id_for_path("a:b") == sanitize_task_id_for_path("a:b")
+        # substitution alone is not injective — the digest must disambiguate
+        assert sanitize_task_id_for_path("a:b") != sanitize_task_id_for_path("a_b")
+        assert sanitize_task_id_for_path("!!!") != sanitize_task_id_for_path("@@@")
+
+    def test_empty_and_traversal_inputs_are_neutralized(self):
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        assert sanitize_task_id_for_path("") == "default"
+        for value in (".", "..", "../../etc", "..\\..\\escape"):
+            out = sanitize_task_id_for_path(value)
+            assert out not in {".", ".."}
+            assert "/" not in out and "\\" not in out
+
+    def test_oversized_input_truncates_with_unique_digest(self):
+        from tools.environments.path_utils import (
+            _SANDBOX_DIR_MAX_LEN,
+            sanitize_task_id_for_path,
+        )
+
+        long_a = "a" * 300 + ":1"
+        long_b = "a" * 300 + ":2"
+        out_a = sanitize_task_id_for_path(long_a)
+        out_b = sanitize_task_id_for_path(long_b)
+        assert len(out_a) <= _SANDBOX_DIR_MAX_LEN
+        assert ":" not in out_a
+        assert out_a != out_b
+
+    def test_sanitized_dir_is_creatable(self, tmp_path):
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        target = tmp_path / "docker" / sanitize_task_id_for_path(
+            "session:agent:main:telegram:dm:12345"
+        )
+        target.mkdir(parents=True)
+        assert target.is_dir()

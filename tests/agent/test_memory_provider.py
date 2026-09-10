@@ -171,6 +171,38 @@ class TestMemoryManager:
 
 
 
+    @staticmethod
+    def _set_spill_config(monkeypatch, tmp_path, *, max_chars):
+        monkeypatch.setattr(
+            "agent.memory_manager.get_spill_config",
+            lambda: {"enabled": True, "max_chars": max_chars, "preview_head": 12,
+                     "preview_tail": 12, "directory": str(tmp_path)},
+        )
+
+    def test_oversized_external_prefetch_is_spilled(self, tmp_path, monkeypatch):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "recalled " * 20
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-1")
+
+        assert "external memory prefetch output truncated" in result
+        spill_files = list((tmp_path / "session-1").glob("*.txt"))
+        assert len(spill_files) == 1
+        assert spill_files[0].read_text() == provider._prefetch_result + "\n"
+
+    def test_builtin_prefetch_is_not_spilled(self, tmp_path, monkeypatch):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=10)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("builtin")
+        provider._prefetch_result = "built-in memory has its own configured limit"
+        mgr.add_provider(provider)
+
+        assert mgr.prefetch_all("what do you remember?", session_id="s") == provider._prefetch_result
+        assert not list(tmp_path.rglob("*.txt"))
+
     def test_prefetch_merges_results(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin")
@@ -1382,3 +1414,85 @@ class TestTrivialPromptClassifier:
                   "hello world", "ok so what's next", "what's my name",
                   "hey can you check the logs", "continue the migration plan"):
             assert not is_trivial_prompt(t), f"expected non-trivial: {t!r}"
+
+
+# ---------------------------------------------------------------------------
+# System-prompt gate parity — #81014
+# ---------------------------------------------------------------------------
+
+
+class TestSystemPromptGateParity:
+    """The memory provider's ``system_prompt_block()`` must be injected only
+    when ``inject_memory_provider_tools`` would actually expose its tools.
+
+    Otherwise the agent receives instructions for tools that don't exist
+    in its tool surface (issue #81014).
+    """
+
+    def _agent_with_provider(
+        self,
+        *,
+        enabled_toolsets=None,
+        disabled_toolsets=None,
+        tools=None,
+        prompt_block="Use mnemosyne_remember to save facts.",
+    ):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("mnemosyne", tools=[
+            {"name": "mnemosyne_remember", "description": "Remember", "parameters": {}},
+        ])
+        provider._prompt_block = prompt_block
+        mgr.add_provider(provider)
+        agent = SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            tools=list(tools) if tools is not None else [],
+        )
+        return agent, mgr, provider
+
+    def test_tools_exposed_when_memory_in_enabled_toolsets(self):
+        from agent.memory_manager import memory_provider_tools_exposed
+        agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["memory"])
+        assert memory_provider_tools_exposed(agent) is True
+
+    def test_tools_hidden_when_memory_in_disabled_toolsets(self):
+        from agent.memory_manager import memory_provider_tools_exposed
+        agent, _mgr, _p = self._agent_with_provider(disabled_toolsets=["memory"])
+        assert memory_provider_tools_exposed(agent) is False
+
+    def test_tools_hidden_when_memory_not_in_enabled_toolsets(self):
+        from agent.memory_manager import memory_provider_tools_exposed
+        agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["web_search"])
+        assert memory_provider_tools_exposed(agent) is False
+
+    def test_tools_exposed_when_memory_tool_already_present(self):
+        """The built-in "memory" tool is a sufficient opt-in even when the
+        toolset gate says nothing about memory."""
+        from agent.memory_manager import memory_provider_tools_exposed
+        tools = [
+            {"type": "function", "function": {"name": "memory", "description": "x", "parameters": {}}},
+        ]
+        agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["web_search"], tools=tools)
+        assert memory_provider_tools_exposed(agent) is True
+
+    def test_inject_and_exposed_share_the_same_gate(self):
+        """``inject_memory_provider_tools`` and ``memory_provider_tools_exposed``
+        must agree — both determine whether provider tools are presented to
+        the model (#81014)."""
+        from agent.memory_manager import inject_memory_provider_tools, memory_provider_tools_exposed
+
+        # Disabled toolsets — neither path should add or advertise provider tools.
+        agent, _mgr, _p = self._agent_with_provider(disabled_toolsets=["memory"])
+        assert memory_provider_tools_exposed(agent) is False
+        assert inject_memory_provider_tools(agent) == 0
+
+        # Enabled with "memory" — both paths must add/advertise.
+        agent, _mgr, _p = self._agent_with_provider(
+            enabled_toolsets=["memory"], tools=[]
+        )
+        assert memory_provider_tools_exposed(agent) is True
+        added = inject_memory_provider_tools(agent)
+        assert added == 1
+        names = {t["function"]["name"] for t in agent.tools}
+        assert "mnemosyne_remember" in names

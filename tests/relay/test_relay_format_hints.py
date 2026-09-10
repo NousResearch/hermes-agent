@@ -158,6 +158,61 @@ class TestFormatHintsStamping:
         hints = (frame.get("metadata") or {}).get("format_hints")
         assert hints == {"rich_blocks": True}
 
+    @pytest.mark.asyncio
+    async def test_draft_interim_and_seal_frames_carry_hints(self):
+        """Observed in live relay testing: a STREAMED bash
+        snippet sealed as a plain code block while send/edit rendered
+        blocks. The draft lane (interim frame AND the final=true seal
+        frame) is a text egress lane crossing the same frame contract —
+        the connector's seal reconcile can only attach the markdown block
+        if the seal frame carries the hint. Boundary rule: send, edit,
+        send_for_platform, AND draft/seal all stamp format_hints."""
+        a = _adapter(
+            extra={"slack": {"markdown_blocks": True}},
+            descriptor=_descriptor(
+                supports_block_formatting=True,
+                supports_draft_streaming=True,
+                supported_ops=("send", "edit", "draft"),
+            ),
+        )
+        code = "```bash\necho hi\n```"
+        await a.send_draft("D01", 7, "```bash\necho")
+        interim, _ = a._transport.frames[-1]
+        assert interim["op"] == "draft" and interim["final"] is False
+        assert (interim.get("metadata") or {}).get("format_hints") == {
+            "markdown_blocks": True
+        }
+        seal = getattr(a, "seal_draft", None) or getattr(
+            a, "send_draft_final", None
+        )
+        if seal is not None:
+            await seal("D01", 7, code)
+        else:
+            # The seal frame is built by _seal_open_draft (send()
+            # interception converts an armed final into draft final=true).
+            await a._seal_open_draft("D01", code, None)
+        final_frame, _ = a._transport.frames[-1]
+        assert final_frame["op"] == "draft" and final_frame["final"] is True
+        assert (final_frame.get("metadata") or {}).get("format_hints") == {
+            "markdown_blocks": True
+        }
+
+    @pytest.mark.asyncio
+    async def test_draft_frames_no_hints_when_knobs_off(self):
+        """Regression control: knob off -> draft frames byte-identical to
+        today (no format_hints key)."""
+        a = _adapter(
+            extra={},
+            descriptor=_descriptor(
+                supports_block_formatting=True,
+                supports_draft_streaming=True,
+                supported_ops=("send", "edit", "draft"),
+            ),
+        )
+        await a.send_draft("D01", 8, "plain text")
+        interim, _ = a._transport.frames[-1]
+        assert "format_hints" not in (interim.get("metadata") or {})
+
 
 class TestMultiPlatformResolution:
     """One RelayAdapter fronts N platforms: capability must resolve from the

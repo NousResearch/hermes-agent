@@ -30,12 +30,17 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm.example.com/v1"):
+def _make_agent(
+    fallback_model=None,
+    provider="custom",
+    base_url="https://my-llm.example.com/v1",
+    request_overrides=None,
+):
     """Create a minimal AIAgent with optional fallback config."""
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
         # Unit tests must not probe live endpoints. The compressor resolves
         # context length lazily via a real network call against base_url; for
         # reachable hosts (the nous portal case) the endpoint's answer for the
@@ -45,6 +50,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
             "agent.context_compressor.get_model_context_length",
             return_value=200_000,
         ),
+        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key="test-key-12345678",
@@ -54,6 +60,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            request_overrides=dict(request_overrides or {}),
         )
         agent.client = MagicMock()
         return agent
@@ -83,6 +90,13 @@ class TestPrimaryRuntimeSnapshot:
         assert "client_kwargs" in rt
         assert "compressor_context_length" in rt
 
+    def test_snapshot_includes_request_overrides(self):
+        overrides = {"extra_body": {"reasoning": {"effort": "medium"}}}
+        agent = _make_agent(request_overrides=overrides)
+        rt = agent._primary_runtime
+        assert rt["request_overrides"] == overrides
+        assert rt["request_overrides"] is not agent.request_overrides
+
     def test_snapshot_includes_compressor_state(self):
         agent = _make_agent()
         rt = agent._primary_runtime
@@ -95,9 +109,9 @@ class TestPrimaryRuntimeSnapshot:
     def test_snapshot_includes_anthropic_state_when_applicable(self):
         """Anthropic-mode agents should snapshot Anthropic-specific state."""
         with (
-            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
+            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
@@ -147,13 +161,83 @@ class TestRestorePrimaryRuntime:
         assert agent.provider == "openrouter"
 
         # Restore should bring back the primary
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             result = agent._restore_primary_runtime()
 
         assert result is True
         assert agent._fallback_activated is False
         assert agent.model == original_model
         assert agent.provider == original_provider
+
+    def test_emits_user_visible_primary_restore_notice(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        agent.model = "primary-model"
+        agent._primary_runtime["model"] = "primary-model"
+        original_model = agent.model
+        original_provider = agent.provider
+        mock_client = _mock_resolve()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        emitted = []
+        agent._emit_status = emitted.append
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert emitted == [
+            f"✅ Primary model restored: {original_model} via {original_provider}; "
+            "fallback anthropic/claude-sonnet-4 via openrouter is no longer active."
+        ]
+
+    def test_does_not_label_temporary_model_restore_as_fallback_recovery(self):
+        """`/model --once` reuses restore with no provider fallback lifecycle."""
+        agent = _make_agent()
+        agent.model = "temporary-model"
+        agent.provider = "openrouter"
+        agent._fallback_activated = True
+        emitted = []
+        agent._emit_status = emitted.append
+
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert emitted == []
+
+    def test_restore_retry_preserves_fallback_identity_after_partial_failure(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        agent.model = "primary-model"
+        agent._primary_runtime["model"] = "primary-model"
+        mock_client = _mock_resolve()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        emitted = []
+        agent._emit_status = emitted.append
+        with (
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch.object(
+                agent.context_compressor,
+                "update_model",
+                side_effect=[RuntimeError("transient restore failure"), None],
+            ),
+        ):
+            assert agent._restore_primary_runtime() is False
+            assert agent._restore_primary_runtime() is True
+
+        assert emitted == [
+            "✅ Primary model restored: primary-model via custom; "
+            "fallback anthropic/claude-sonnet-4 via openrouter is no longer active."
+        ]
 
     def test_resets_fallback_index(self):
         """After restore, the full fallback chain should be available again."""
@@ -170,7 +254,7 @@ class TestRestorePrimaryRuntime:
 
         assert agent._fallback_index == 1  # consumed one entry
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             agent._restore_primary_runtime()
 
         assert agent._fallback_index == 0  # reset for next turn
@@ -191,7 +275,7 @@ class TestRestorePrimaryRuntime:
         agent.context_compressor.context_length = 32000
         agent.context_compressor.threshold_tokens = 25600
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             agent._restore_primary_runtime()
 
         assert agent.context_compressor.context_length == original_ctx_len
@@ -205,10 +289,23 @@ class TestRestorePrimaryRuntime:
         agent._fallback_activated = True
         agent._use_prompt_caching = not original_caching
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             agent._restore_primary_runtime()
 
         assert agent._use_prompt_caching == original_caching
+
+    def test_restores_request_overrides(self):
+        original_overrides = {"extra_body": {"reasoning": {"effort": "medium"}}}
+        agent = _make_agent(request_overrides=original_overrides)
+        agent._fallback_activated = True
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.request_overrides == original_overrides
+        assert agent.request_overrides is not agent._primary_runtime["request_overrides"]
 
     def test_restore_skips_cross_provider_pool_entry(self):
         """Restore must not swap in a fallback provider credential for the primary runtime."""
@@ -242,7 +339,7 @@ class TestRestorePrimaryRuntime:
         agent._credential_pool = _Pool()
         agent._swap_credential = MagicMock()
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             result = agent._restore_primary_runtime()
 
         assert result is True
@@ -299,7 +396,7 @@ class TestRestorePrimaryRuntime:
         primary_pool.provider = primary_provider
         primary_pool.has_available.return_value = False
         with (
-            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
         ):
             result = agent._restore_primary_runtime()
@@ -324,7 +421,7 @@ class TestRestorePrimaryRuntime:
         agent._credential_pool = fallback_pool
 
         with (
-            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch(
                 "agent.credential_pool.load_pool",
                 side_effect=RuntimeError("auth store unavailable"),
@@ -367,12 +464,92 @@ class TestRestorePrimaryRuntime:
                 "agent.credential_pool.get_custom_provider_pool_key",
                 return_value="custom:myllm",
             ),
-            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
         ):
             result = agent._restore_primary_runtime()
 
         assert result is True
         agent._swap_credential.assert_called_once()
+
+    def test_restore_reloads_named_custom_pool_by_scoped_key(self):
+        class _Entry:
+            provider = "custom:gemini-display"
+            id = "gemini-key"
+            label = "gemini"
+            runtime_api_key = "gemini-key"
+            access_token = "gemini-key"
+
+        primary_pool = MagicMock()
+        primary_pool.provider = "custom:gemini-display"
+        primary_pool.has_available.return_value = True
+        primary_pool.select.return_value = _Entry()
+
+        fallback_pool = MagicMock()
+        fallback_pool.provider = "openrouter"
+        agent = _make_agent(
+            provider="custom:gemini-no-filter",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        agent._fallback_activated = True
+        agent._credential_pool = fallback_pool
+        agent._swap_credential = MagicMock()
+        config = {
+            "custom_providers": [
+                {
+                    "name": "Legacy Provider",
+                    "base_url": "https://legacy.example/v1",
+                }
+            ],
+            "providers": {
+                "gemini-no-filter": {
+                    "name": "Gemini Display",
+                    "api": "https://generativelanguage.googleapis.com/v1beta",
+                }
+            },
+        }
+
+        with (
+            patch("agent.credential_pool._load_config_safe", return_value=config),
+            patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._credential_pool is primary_pool
+        load_pool.assert_called_once_with("gemini-no-filter")
+        agent._swap_credential.assert_called_once_with(primary_pool.select.return_value)
+
+    def test_restore_named_custom_pool_wrong_endpoint_fails_closed(self):
+        pool = MagicMock()
+        pool.provider = "custom:gemini-no-filter"
+        agent = _make_agent(
+            provider="gemini-no-filter",
+            base_url="https://fallback.example/v1",
+        )
+        agent._fallback_activated = True
+        agent._credential_pool = pool
+        agent._swap_credential = MagicMock()
+        configured = [(
+            "gemini-no-filter",
+            {
+                "name": "Gemini No Filter",
+                "provider_key": "gemini-no-filter",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            },
+        )]
+
+        with (
+            patch("agent.credential_pool._iter_custom_providers", return_value=configured),
+            patch("agent.credential_pool.load_pool", return_value=None) as load_pool,
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._credential_pool is None
+        load_pool.assert_called_once_with("gemini-no-filter")
+        agent._swap_credential.assert_not_called()
 
 
 
@@ -393,7 +570,7 @@ class TestTryRecoverPrimaryTransport:
         agent = _make_agent(provider="custom")
         error = _make_transport_error("ReadTimeout")
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
              patch("time.sleep"):
             result = agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
@@ -401,6 +578,21 @@ class TestTryRecoverPrimaryTransport:
 
         assert result is True
 
+    def test_recovery_restores_request_overrides(self):
+        original_overrides = {"extra_body": {"reasoning": {"effort": "medium"}}}
+        agent = _make_agent(provider="custom", request_overrides=original_overrides)
+        error = _make_transport_error("ReadTimeout")
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        assert agent.request_overrides == original_overrides
+        assert agent.request_overrides is not agent._primary_runtime["request_overrides"]
 
 
 
@@ -457,7 +649,7 @@ class TestTryRecoverPrimaryTransport:
         agent = _make_agent(provider="custom")
         error = _make_transport_error("ReadTimeout")
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
              patch("time.sleep") as mock_sleep:
             agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
@@ -469,7 +661,7 @@ class TestTryRecoverPrimaryTransport:
         agent = _make_agent(provider="custom")
         error = _make_transport_error("ReadTimeout")
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
              patch("time.sleep") as mock_sleep:
             agent._try_recover_primary_transport(
                 error, retry_count=10, max_retries=3,
@@ -483,7 +675,7 @@ class TestTryRecoverPrimaryTransport:
         agent = _make_agent(provider="custom")
         error = _make_transport_error("ReadTimeout")
 
-        with patch("run_agent.OpenAI", side_effect=Exception("socket error")), \
+        with patch("agent.process_bootstrap.OpenAI", side_effect=Exception("socket error")), \
              patch("time.sleep"):
             result = agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
@@ -528,7 +720,7 @@ class TestRestoreInRunConversation:
         assert agent._fallback_index == 1
 
         # Turn 2: restore primary
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
 
         assert agent._fallback_activated is False
@@ -565,7 +757,7 @@ class TestRateLimitCooldown:
 
     def test_cooldown_set_on_rate_limit_reason(self):
         """_try_activate_fallback with rate_limit reason sets _rate_limited_until."""
-        from run_agent import FailoverReason
+        from agent.error_classifier import FailoverReason
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         )
@@ -579,7 +771,7 @@ class TestRateLimitCooldown:
 
     def test_cooldown_not_set_when_already_on_fallback(self):
         """Chain-switching while already on fallback must not reset cooldown."""
-        from run_agent import FailoverReason
+        from agent.error_classifier import FailoverReason
         agent = _make_agent(
             fallback_model=[
                 {"provider": "openrouter", "model": "model-a"},
@@ -598,3 +790,79 @@ class TestRateLimitCooldown:
 
         # second call should not have extended the cooldown
         assert second_cooldown == first_cooldown
+
+
+# =============================================================================
+# request_overrides travels through the switch_model snapshot (#75091 seam)
+# =============================================================================
+
+
+class TestSwitchModelRequestOverridesSnapshot:
+    """switch_model rebuilds _primary_runtime; it must carry request_overrides
+    so a post-switch transport recovery or fallback restore reinstates the
+    switched-to identity's overrides, not a stale or empty set."""
+
+    def _switch(self, agent, **kwargs):
+        from agent.agent_runtime_helpers import switch_model
+
+        with (
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch(
+                "agent.model_metadata.get_model_context_length",
+                return_value=128_000,
+            ),
+        ):
+            switch_model(
+                agent,
+                new_model=kwargs.get("new_model", "gpt-4o"),
+                new_provider=kwargs.get("new_provider", "openai"),
+                base_url=kwargs.get("base_url", "https://api.openai.com/v1"),
+                api_key=kwargs.get("api_key", "sk-test-1234567890"),
+            )
+
+    def test_switch_snapshot_carries_request_overrides(self):
+        overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
+        agent = _make_agent(request_overrides=overrides)
+        self._switch(agent)
+        rt = agent._primary_runtime
+        assert rt.get("request_overrides") == overrides
+        assert rt["request_overrides"] is not agent.request_overrides
+
+    def test_switch_then_recover_restores_current_overrides(self):
+        """After /model switch, a transport recovery must reinstate the
+        overrides that were live at switch time — not drop them."""
+        overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
+        agent = _make_agent(provider="custom", request_overrides=overrides)
+        self._switch(
+            agent,
+            new_model="local-model",
+            new_provider="custom",
+            base_url="https://my-llm.example.com/v1",
+        )
+        # A fallback activation mid-turn clobbers the live overrides…
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+        error = _make_transport_error("ReadTimeout")
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+        assert result is True
+        # …and recovery restores the switch-time snapshot.
+        assert agent.request_overrides == overrides
+
+    def test_switch_then_restore_restores_current_overrides(self):
+        overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
+        agent = _make_agent(provider="custom", request_overrides=overrides)
+        self._switch(
+            agent,
+            new_model="local-model",
+            new_provider="custom",
+            base_url="https://my-llm.example.com/v1",
+        )
+        agent._fallback_activated = True
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+        assert result is True
+        assert agent.request_overrides == overrides

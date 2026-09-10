@@ -65,7 +65,7 @@ def sample_silk(tmp_path):
 @pytest.fixture
 def oversized_wav(tmp_path):
     """Create a sparse WAV-shaped file just above the remote upload cap."""
-    from tools.transcription_tools import MAX_FILE_SIZE
+    from tools.transcription_common import MAX_FILE_SIZE
 
     wav_path = tmp_path / "oversized.wav"
     with wav_path.open("wb") as audio_file:
@@ -246,9 +246,9 @@ class TestTranscribeLocalCommand:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.transcription_tools.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
 
-        from tools.transcription_tools import _run_command_stt
+        from tools.transcription_command import _run_command_stt
 
         result = _run_command_stt("echo hi", timeout=1)
 
@@ -292,10 +292,10 @@ class TestTranscribeLocalCommand:
                 returncode = 0
             return R()
 
-        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
-        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+        monkeypatch.setattr("tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
         monkeypatch.setattr(
-            "tools.transcription_tools._prepare_local_audio",
+            "tools.transcription_local._prepare_local_audio",
             lambda *a, **k: (str(sample_wav), None),
         )
 
@@ -334,9 +334,9 @@ class TestTranscribeLocalCommand:
             (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
-        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")
-        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+        monkeypatch.setattr("tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_audio._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
 
         from tools.transcription_tools import _transcribe_local_command
 
@@ -509,7 +509,8 @@ class TestValidateAudioFileEdgeCases:
 
 
     def test_all_supported_formats_accepted(self, tmp_path):
-        from tools.transcription_tools import _validate_audio_file, SUPPORTED_FORMATS
+        from tools.transcription_tools import _validate_audio_file
+        from tools.transcription_common import SUPPORTED_FORMATS
         for fmt in SUPPORTED_FORMATS:
             f = tmp_path / f"test{fmt}"
             f.write_bytes(b"data")
@@ -925,7 +926,7 @@ class TestTranscribeAudioElevenLabsDispatch:
 
 class TestExtractTranscriptText:
     def test_strips_qwen3_asr_language_envelope(self):
-        from tools.transcription_tools import _extract_transcript_text
+        from tools.transcription_cloud import _extract_transcript_text
 
         result = _extract_transcript_text(
             "language zh\n<audio_language>zh</audio_language>\n<asr_text>你好，世界",
@@ -934,7 +935,7 @@ class TestExtractTranscriptText:
         assert result == "你好，世界"
 
     def test_keeps_non_envelope_marker_literal(self):
-        from tools.transcription_tools import _extract_transcript_text
+        from tools.transcription_cloud import _extract_transcript_text
 
         result = _extract_transcript_text(
             "The user literally said <asr_text> while reading markup.",
@@ -951,10 +952,10 @@ class TestShellSafety:
         import shlex
         monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
         monkeypatch.setattr(
-            "tools.transcription_tools._find_whisper_binary",
+            "tools.transcription_local._find_whisper_binary",
             lambda: "/usr/bin/whisper",
         )
-        from tools.transcription_tools import _get_local_command_template
+        from tools.transcription_local import _get_local_command_template
         template = _get_local_command_template()
         assert template is not None
         cmd = template.format(
@@ -970,10 +971,10 @@ class TestShellSafety:
     def test_env_var_template_metacharacters_are_literal_argv(
         self, monkeypatch, sample_wav, tmp_path
     ):
+        from hermes_cli._subprocess_compat import windows_hide_flags
         from tools.transcription_tools import (
             LOCAL_STT_COMMAND_ENV,
             _transcribe_local_command,
-            windows_hide_flags,
         )
 
         output_dir = tmp_path / "transcript-output"
@@ -1005,9 +1006,9 @@ class TestShellSafety:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
         monkeypatch.setattr(
-            "tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir
+            "tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir
         )
-        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
 
         result = _transcribe_local_command(sample_wav, "base")
 
@@ -1102,7 +1103,7 @@ class TestLocalBaseUrlNoApiKey:
 
 
     def test_is_local_or_private_url(self):
-        from tools.transcription_tools import _is_local_or_private_url
+        from tools.transcription_cloud import _is_local_or_private_url
         assert _is_local_or_private_url("http://localhost:8504/v1")
         assert _is_local_or_private_url("http://127.0.0.1:9000")
         assert _is_local_or_private_url("http://10.0.0.5/v1")
@@ -1131,7 +1132,7 @@ class TestCafConversion:
             return MagicMock(returncode=0)
 
         monkeypatch.setattr(
-            "tools.transcription_tools._find_ffmpeg_binary",
+            "tools.transcription_audio._find_ffmpeg_binary",
             lambda: "/usr/bin/ffmpeg",
         )
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -1199,7 +1200,7 @@ class TestRunCommandSttIdleTimeout:
     def test_stderr_progress_extends_beyond_timeout(self, tmp_path):
         """A slow-but-alive command that keeps emitting output survives an
         idle timeout shorter than its total runtime."""
-        from tools.transcription_tools import _run_command_stt
+        from tools.transcription_command import _run_command_stt
 
         script = tmp_path / "progress_then_exit.py"
         script.write_text(
@@ -1225,7 +1226,7 @@ class TestRunCommandSttIdleTimeout:
     def test_silent_stall_still_times_out(self, tmp_path):
         """A silently stalled command is killed once the idle window elapses,
         and pre-stall output is preserved on the TimeoutExpired."""
-        from tools.transcription_tools import _run_command_stt
+        from tools.transcription_command import _run_command_stt
 
         script = tmp_path / "progress_then_hang.py"
         script.write_text(
@@ -1244,3 +1245,107 @@ class TestRunCommandSttIdleTimeout:
             )
 
         assert "starting pass 1" in (excinfo.value.stderr or "")
+
+
+# ============================================================================
+# Explicit openai selection keeps its selection-specific error (#93045)
+# ============================================================================
+
+class TestExplicitOpenaiSelectionError:
+    """A managed-route outage must not be reported as generic setup guidance.
+
+    When ``_resolve_openai_audio_client_config()`` raises its
+    selection-specific ValueError (managed openai-audio gateway unavailable,
+    with the ``hermes tools`` remediation for managed-Nous users), the old
+    boolean probe flattened it into False — the log said "no API key" and
+    the transcription result returned the all-provider install hint,
+    pointing operators at unrelated setup instead of their managed route.
+    """
+
+    def _no_openai_credentials(self, monkeypatch):
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers.resolve_openai_audio_api_key",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "tools.managed_tool_gateway.resolve_managed_tool_gateway",
+            lambda vendor: None,
+        )
+
+    def test_get_provider_openai_none_not_generic_when_managed_route_down(
+        self, monkeypatch, caplog
+    ):
+        self._no_openai_credentials(monkeypatch)
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config", lambda: {}
+        )
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
+            from tools.transcription_tools import _get_provider
+
+            with caplog.at_level("WARNING"):
+                result = _get_provider({"provider": "openai"})
+
+        assert result == "none"
+        warning = caplog.records[-1].getMessage()
+        assert "unavailable" in warning
+        # The selection-specific blocker is named, not a bare API-key hint.
+        assert "managed" in warning or "gateway" in warning
+        assert "no API key available" not in warning
+
+    def test_dispatch_returns_selection_specific_error(self, monkeypatch):
+        """The final transcription result carries the managed-route error and
+        its hermes tools remediation instead of the all-provider install
+        hint."""
+        self._no_openai_credentials(monkeypatch)
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config", lambda: {}
+        )
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch(
+                 "tools.tool_backend_helpers.nous_tool_gateway_unavailable_message",
+                 lambda what: f"managed route down for {what}; run `hermes tools`",
+             ):
+            from tools.transcription_tools import _dispatch_stt_provider
+
+            result = _dispatch_stt_provider(
+                "/tmp/nonexistent.wav", "none", {"provider": "openai"}
+            )
+
+        assert result["success"] is False
+        assert "managed route down" in result["error"]
+        assert "hermes tools" in result["error"]
+        assert "No STT provider available" not in result["error"]
+
+    def test_auto_detect_none_keeps_generic_hint(self, monkeypatch):
+        """Auto-detect with no credentials at all still returns the generic
+        all-provider hint — the selection-specific branch must not fire
+        without an explicit provider choice."""
+        self._no_openai_credentials(monkeypatch)
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config", lambda: {}
+        )
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch(
+                 "tools.transcription_tools._has_local_command", return_value=False
+             ), \
+             patch(
+                 "tools.transcription_tools._try_lazy_install_stt",
+                 return_value=False,
+             ):
+            from tools.transcription_tools import _dispatch_stt_provider
+
+            result = _dispatch_stt_provider("/tmp/x.wav", "none", {})
+
+        assert result["success"] is False
+        assert "No STT provider available" in result["error"]

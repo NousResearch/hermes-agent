@@ -116,6 +116,51 @@ class TestFormatSessionInfo:
         assert "config" in info
         assert "131K" not in info
 
+    def test_providers_block_endpoint_keeps_context_pin_for_bare_custom_runtime(
+        self, runner, tmp_path
+    ):
+        """A ``providers:``-declared endpoint must keep model.context_length.
+
+        The runtime reports such an entry as the bare ``custom`` billing class while
+        ``model.provider`` still names the entry, so the empty configured route fell through to
+        the provider-id comparison, the pin was cleared, and the banner reported the hardcoded
+        catalog window (``128K tokens (detected)``) instead of the configured 1M (#107606).
+        """
+        model = "deepseek-flash"
+        config_yaml = (
+            "model:\n"
+            f"  default: {model}\n"
+            "  provider: my-proxy\n"
+            "  base_url: ''\n"
+            "  context_length: 1000000\n"
+            "providers:\n"
+            "  my-proxy:\n"
+            "    base_url: https://proxy.example.com/v1\n"
+            "    key_env: MY_PROXY_KEY\n"
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            config_yaml,
+            model,
+            {
+                "provider": "custom",
+                "base_url": "https://proxy.example.com/v1",
+                "api_key": "k",
+            },
+        )
+        with p1, p2, p3, patch(
+            "agent.model_metadata.get_model_context_length",
+            side_effect=lambda *args, **kwargs: (
+                kwargs.get("config_context_length")
+                if kwargs.get("config_context_length")
+                else 128000
+            ),
+        ):
+            info = runner._format_session_info()
+        assert "1.0M" in info
+        assert "config" in info
+        assert "128K" not in info
+
 
 class TestResetNoticeSessionInfo:
     """#59003: the auto-reset banner must report the serving profile's config,

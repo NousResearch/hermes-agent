@@ -1815,3 +1815,40 @@ async def test_hygiene_unwind_records_cooldown(monkeypatch, tmp_path):
         await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_hygiene_settings_keep_pin_for_providers_block_endpoint(monkeypatch, tmp_path):
+    """Hygiene must resolve the configured provider's route before dropping the context pin.
+
+    A custom endpoint declared under ``providers:`` resolves to the bare ``custom`` runtime
+    billing class while ``model.provider`` still names the entry, so the provider-id comparison
+    cleared ``model.context_length`` and the 85% valve scaled off the hardcoded catalog window
+    (108,800 instead of 850,000 for a configured 1M) even though the model never changed
+    (#107606).
+    """
+    from gateway.run import GatewayRunner
+
+    (tmp_path / "config.yaml").write_text(
+        "model:\n"
+        "  default: deepseek-flash\n"
+        "  provider: my-proxy\n"
+        "  base_url: ''\n"
+        "  context_length: 1000000\n"
+        "providers:\n"
+        "  my-proxy:\n"
+        "    base_url: https://proxy.example.com/v1\n"
+        "    key_env: MY_PROXY_KEY\n"
+    )
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._resolve_session_agent_runtime = lambda **kwargs: (
+        "deepseek-flash",
+        {"provider": "custom", "base_url": "https://proxy.example.com/v1", "api_key": "k"},
+    )
+
+    hs = await runner._hmwa_hygiene_settings(None, "telegram:1:u1")
+
+    assert hs.config_context_length == 1000000
+    assert hs.base_url == "https://proxy.example.com/v1"

@@ -360,31 +360,47 @@ def _run_single_child(
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
+    top_model: Optional[str], top_provider: Optional[str],
     live_deleg_id: Optional[str], live_writers: list,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        # Per-task model/provider override: per-task > top-level > the batch's resolved creds.
+        _task_model = t.get("model") or top_model
+        _task_provider = t.get("provider") or top_provider
+        _creds = creds
+        _routing = routing_cfg
+        if _task_model or _task_provider:
+            _routing = dict(routing_cfg)
+            if _task_model:
+                _routing["model"] = _task_model
+            if _task_provider:
+                _routing["provider"] = _task_provider
+            try:
+                _creds = _resolve_delegation_credentials(_routing, parent_agent)
+            except ValueError as exc:
+                return [], str(exc)
+        overrides = {
+            "override_provider": _creds["provider"], "override_base_url": _creds["base_url"],
+            "override_api_key": _creds["api_key"], "override_api_mode": _creds["api_mode"],
+            "override_request_overrides": _creds.get("request_overrides"),
+            "override_acp_command": _creds.get("command"),
+            "override_acp_args": _creds.get("args"),
+            "routing_cfg": _routing,
+        }
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
@@ -412,6 +428,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
+    model: Optional[str] = None, provider: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -485,7 +502,8 @@ def delegate_task(
 
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
+        routing_cfg=routing_cfg, top_model=model, top_provider=provider,
+        live_deleg_id=live_deleg_id, live_writers=live_writers,
     )
     if err:
         return tool_error(err)
@@ -641,6 +659,16 @@ DELEGATE_TASK_SCHEMA = {
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
+                        "model": _p(
+                            "string",
+                            "Optional model override for THIS subagent (e.g. 'deepseek-v4-pro'). Overrides the top-level "
+                            "model and delegation.model in config.yaml.",
+                        ),
+                        "provider": _p(
+                            "string",
+                            "Optional provider override for THIS subagent (e.g. 'deepseek'). Must correspond to a "
+                            "configured provider in config.yaml or environment.",
+                        ),
                     },
                     "required": ["goal"],
                 },
@@ -663,6 +691,16 @@ DELEGATE_TASK_SCHEMA = {
                 "string",
                 "For action='steer': the course correction, appended to "
                 "the child's next tool result mid-run. Be directive and specific.",
+            ),
+            "model": _p(
+                "string",
+                "Optional model override for ALL subagents in this call (e.g. 'deepseek-v4-pro'). "
+                "Overrides the parent model and delegation.model in config.yaml; per-task model beats it.",
+            ),
+            "provider": _p(
+                "string",
+                "Optional provider override for ALL subagents in this call (e.g. 'deepseek', 'gemini'). "
+                "Must correspond to a configured provider in config.yaml or environment; per-task provider beats it.",
             ),
         },
         "required": [],
@@ -699,6 +737,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        model=args.get("model"), provider=args.get("provider"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

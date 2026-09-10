@@ -93,6 +93,7 @@ import {
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
+import { provisionCliLinks } from './cli-provision'
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -279,7 +280,7 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { bundledPayload, installIdForRoot, type PayloadInfo } from './payload-backend'
+import { bundledPayload, installIdForRoot } from './payload-backend'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -4538,51 +4539,12 @@ function createActiveBackend(backendArgs) {
   }
 }
 
-/**
- * POSIX bundled installs have no MSIX ExecutionAlias mechanism: put the
- * payload's CLI trampolines on the user's PATH by symlinking them into
- * ~/.local/bin (created on demand). First-run provision, but idempotent
- * and cheap enough to run on every bundled boot: an existing entry of any
- * kind is left alone, and every failure (no HOME, EPERM, EROFS...) is
- * silent — CLI-on-PATH must never block boot. Windows bundled installs do
- * NOT get this: the AppExecutionAlias is the mechanism there.
- */
-function provisionPosixCliOnPath(payload: PayloadInfo): void {
-  const names = Object.keys(payload.commands)
-
-  try {
-    const binDir = path.join(os.homedir(), '.local', 'bin')
-    fs.mkdirSync(binDir, { recursive: true })
-    let linked = 0
-
-    for (const name of names) {
-      const source = payload.commands[name]
-      const target = path.join(binDir, name)
-
-      // lstat, not exists: a DANGLING symlink from a previous install (the
-      // .app moved/uninstalled) is exactly the case we want to replace.
-      if (fs.lstatSync(target, { throwIfNoEntry: false })) {
-        continue
-      }
-
-      fs.symlinkSync(source, target)
-      linked += 1
-    }
-
-    if (linked > 0) {
-      rememberLog(`[payload] linked ${linked} CLI trampoline(s) into ${binDir}`)
-    }
-  } catch (error) {
-    rememberLog(`[payload] CLI PATH provision skipped: ${error instanceof Error ? error.message : String(error)}`)
-  }
-}
-
 function resolveHermesBackend(backendArgs) {
   const payload = bundledPayload(process.resourcesPath)
 
   if (payload) {
     if (!IS_WINDOWS) {
-      provisionPosixCliOnPath(payload)
+      provisionCliLinks(payload.commands, path.join(os.homedir(), '.local', 'bin'), rememberLog)
     }
 
     return {

@@ -22,9 +22,9 @@ from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.model_metadata import (
-    anchored_context_tokens, estimate_messages_tokens_rough, estimate_request_tokens_rough
-)
+from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+from agent.image_token_cost import bind_image_token_cost
+from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ def _preflight_request_tokens(
     """Token estimate for automatic preflight compression: a valid provider usage anchor,
     else the checkpoint-pruned native wire payload, else the generic estimator."""
     anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    agent._request_pressure_anchored = anchored is not None
     if anchored is not None:
         return anchored
     tools = getattr(agent, "tools", None) or None
@@ -113,14 +114,25 @@ def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     return v if isinstance(v, str) else None
 
 
-def consume_gateway_turn_context_notes(agent: Any) -> str:
-    """Pop the gateway's per-turn must-deliver notes off the agent (one-shot, so the
-    system prompt stays byte-stable and a cached agent never replays a stale note)."""
-    notes = getattr(agent, "_gateway_turn_context_notes", "") or ""
-    if hasattr(agent, "_gateway_turn_context_notes"):
+def _pop_turn_note(agent: Any, attr: str) -> str:
+    """One-shot per-turn note: read and clear, so the system prompt stays byte-stable and a
+    cached agent never replays a stale note."""
+    note = getattr(agent, attr, "") or ""
+    if hasattr(agent, attr):
         with suppress(Exception):
-            agent._gateway_turn_context_notes = ""
-    return notes if isinstance(notes, str) else ""
+            setattr(agent, attr, "")
+    return note if isinstance(note, str) else ""
+
+
+def consume_gateway_turn_context_notes(agent: Any) -> str:
+    """Pop the gateway's per-turn must-deliver notes."""
+    return _pop_turn_note(agent, "_gateway_turn_context_notes")
+
+
+def consume_surface_switch_note(agent: Any) -> str:
+    """Pop the surface-switch note staged by the system-prompt restore (#104414); rides the same
+    user-message channel as the gateway notes, behind the cached prefix."""
+    return _pop_turn_note(agent, "_surface_switch_note")
 
 
 def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
@@ -230,6 +242,44 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
         if fallback < 0:
             fallback = i
     return fallback
+
+
+def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> Any:
+    """Stamp ``{turn_id, current_turn_user_idx}`` on a result envelope, proven against the
+    exact ``result["messages"]`` projection it travels with.
+
+    Hosts that settle their own transcript by index (hermes-webui) must never guess which
+    row is the current user turn after this loop rewrote history (alternation repair,
+    compaction, post-turn micro-compaction): a guessed index or a text match can relabel an
+    identical historical prompt and claim its old answer as this turn's. So the producer
+    exports the coordinate, computed on the final list, only when the addressed row is this
+    turn's user message verbatim. Otherwise the keys are omitted and hosts fail closed.
+
+    A preflight-timeout envelope carries the prior history without this turn's row (#7100), so a
+    repeated prompt would resolve to its historical copy: nothing is exported there.
+    """
+    if not isinstance(result, dict) or result.get("turn_exit_reason") == "context_compression_timeout":
+        return result
+    messages = result.get("messages")
+    turn_id = str(getattr(agent, "_current_turn_id", "") or "")
+    if not isinstance(messages, list) or not turn_id or user_message is None:
+        return result
+    idx = reanchor_current_turn_user_idx(messages, user_message)
+    if idx < 0 or idx >= len(messages):
+        return result
+    row = messages[idx]
+    if not (isinstance(row, dict) and row.get("role") == "user"):
+        return result
+    from agent.context_compressor import user_originated_turn_view
+
+    live_view = user_originated_turn_view(row)
+    if row.get("content") != user_message and not (
+        isinstance(live_view, dict) and live_view.get("content") == user_message
+    ):
+        return result  # rewritten (merge-into-tail) row: not a proven boundary
+    result["turn_id"] = turn_id
+    result["current_turn_user_idx"] = idx
+    return result
 
 
 def compression_made_progress(
@@ -418,6 +468,7 @@ def _bind_turn_identity(
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
+    agent._process_owner_task_ids = {*getattr(agent, "_process_owner_task_ids", ()), effective_task_id}
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "") or (
         f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     )
@@ -440,6 +491,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None), ("_vision_supported", True),
+    ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
 )
@@ -515,8 +567,8 @@ def _stage_turn_user_message(
     # row; the model still receives role/content unchanged (api_messages strips both).
     if persist_user_display_kind:
         user_msg["display_kind"] = persist_user_display_kind
-        if persist_user_display_metadata:
-            user_msg["display_metadata"] = persist_user_display_metadata
+    if persist_user_display_metadata:
+        user_msg["display_metadata"] = persist_user_display_metadata
     # The platform message id survives the turn-start flush; restart drain-window
     # recovery dedups via ``has_platform_message_id`` against this row.
     if persist_user_platform_id is not None:
@@ -525,13 +577,40 @@ def _stage_turn_user_message(
 
 
 def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]]) -> None:
-    """Hydrate the todo store and per-session nudge counters from persisted history."""
+    """Hydrate process-local state from persisted history on the first resumed turn."""
     if not conversation_history:
         return
     if not agent._todo_store.has_items():
         agent._hydrate_todo_store(conversation_history)
-    # Hydrate per-session nudge counters from persisted history.
+    # A live native checkpoint arms this latch while its response is captured.  A
+    # restarted agent must recover the same one-response deferral before turn-start
+    # compression can rewrite the restored opaque checkpoint.  Reuse the adapter's
+    # exact route/issuer/replay filtering and tolerate plugin compressors without the
+    # optional hook.
     if agent._user_turn_count == 0:
+        # A fresh process has no in-memory anchor; the persisted one is honored only while the
+        # restored transcript still carries the priced prefix (see agent/usage_anchor.py).
+        restore_usage_anchor(agent, conversation_history)
+        note_checkpoint = getattr(
+            getattr(agent, "context_compressor", None),
+            "note_native_compaction_checkpoint",
+            None,
+        )
+        if callable(note_checkpoint):
+            try:
+                from agent.codex_responses_adapter import (
+                    has_replayable_native_compaction_checkpoint,
+                )
+
+                if has_replayable_native_compaction_checkpoint(
+                    agent, conversation_history
+                ):
+                    note_checkpoint()
+            except Exception:
+                logger.debug(
+                    "restored native checkpoint hydration skipped", exc_info=True
+                )
+        # Hydrate per-session nudge counters from persisted history.
         prior_user_turns = sum(1 for m in conversation_history if m.get("role") == "user")
         if prior_user_turns > 0:
             agent._user_turn_count = prior_user_turns
@@ -633,11 +712,15 @@ def _collect_pre_llm_call_context(
 def _merge_gateway_notes(
     agent: Any, messages: List[Any], current_turn_user_idx: int, plugin_user_context: str
 ) -> str:
-    """Gateway must-deliver notes ride the user-message injection channel (one-shot,
-    gateway-staged) so the ephemeral system prompt stays byte-stable. Multimodal (list)
-    content can't take the string sidecar — append a durable text part instead."""
-    _gateway_notes = consume_gateway_turn_context_notes(agent)
-    if not _gateway_notes:
+    """Must-deliver per-turn notes ride the user-message injection channel (one-shot) so the
+    ephemeral system prompt stays byte-stable: the gateway's staged notes, then the
+    surface-switch correction. Multimodal (list) content can't take the string sidecar —
+    append a durable text part instead."""
+    _turn_notes = "\n\n".join(
+        part for part in (consume_gateway_turn_context_notes(agent),
+                          consume_surface_switch_note(agent)) if part
+    )
+    if not _turn_notes:
         return plugin_user_context
     _gw_turn_content = (
         messages[current_turn_user_idx].get("content")
@@ -646,10 +729,10 @@ def _merge_gateway_notes(
         else None
     )
     if isinstance(_gw_turn_content, list):
-        append_notes_to_multimodal_content(_gw_turn_content, _gateway_notes)
+        append_notes_to_multimodal_content(_gw_turn_content, _turn_notes)
         return plugin_user_context
     return (
-        plugin_user_context + "\n\n" + _gateway_notes if plugin_user_context else _gateway_notes
+        plugin_user_context + "\n\n" + _turn_notes if plugin_user_context else _turn_notes
     )
 
 
@@ -680,7 +763,7 @@ def _memory_turn_start_and_prefetch(agent: Any, original_user_message: Any) -> s
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
     # Deterministic recall indicator via _emit_status so the model can't silently
     # drop injected memory.
     if ext_prefetch_cache:
@@ -698,30 +781,44 @@ def _stamp_api_content_sidecar(
     """api_content sidecar — persist what you send: injected context lives only in the
     API copy, so stamp the exact sent bytes on the live dict for replay."""
     _turn_user_msg = messages[current_turn_user_idx]
-    _api_content = compose_user_api_content(
-        _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+    live_content = _turn_user_msg.get("content")
+    from agent.session_persistence import _persist_lock, durable_user_row_content
+    # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
+    durable_content, _api_content = durable_user_row_content(
+        agent, _turn_user_msg, live_content,
+        compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context),
     )
-    if _api_content is None or _api_content == _turn_user_msg.get("content"):
+    if _api_content is None or _api_content == durable_content:
         return
     _turn_user_msg["api_content"] = _api_content
-    # In-place preflight compaction already inserted this turn's user row and the
-    # crash persist identity-skips compacted dicts, so backfill the stamp onto the row
-    # directly. Rotation mode flushes to the child session later.
-    if not (preflight_compressed and getattr(agent, "_last_compaction_in_place", False)):
-        return
-    _db = getattr(agent, "_session_db", None)
-    if _db is not None:
+
+    # When another writer materialized this turn's user row BEFORE the sidecar existed — in-place
+    # preflight compaction, or a close/early flush that raced the prologue (#102194) — the crash
+    # persist marker-skips the message and the stamp never reaches the DB, so the next turn replays
+    # clean content and the request prefix diverges here. Both writers stamp ``_row_id`` on the live
+    # dict, which is at once the proof a row exists and the address to update.
+    #
+    # Never widen this to an unconditional positional backfill — see set_latest_user_api_content.
+    #
+    # ``_row_id`` is read under ``_session_persist_lock``: a close flush holds it while it commits
+    # the row and only then writes ``_row_id`` back (``sync_flushed_message_markers``). Read outside
+    # it, the stamp can land in between, see no id, return — and the flush then marks the message
+    # persisted with ``api_content = NULL``, leaving no writer to correct the row.
+    with _persist_lock(agent):
+        _row_id = _turn_user_msg.get("_row_id")
+        _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
+        _db = getattr(agent, "_session_db", None)
+        if _db is None or not (isinstance(_row_id, int) or _in_place_compacted):
+            return
         try:
-            _db.set_latest_user_api_content(
-                agent.session_id, _turn_user_msg.get("content"), _api_content
-            )
+            if isinstance(_row_id, int):
+                _db.set_message_api_content(agent.session_id, _row_id, durable_content, _api_content)
+            else:
+                # Compacted copies carry no row id; positional is safe only because
+                # archive_and_compact just made this message the newest active user row.
+                _db.set_latest_user_api_content(agent.session_id, durable_content, _api_content)
         except Exception:
-            logger.warning(
-                "in-place compaction api_content backfill failed "
-                "for session=%s",
-                agent.session_id or "none",
-                exc_info=True,
-            )
+            logger.warning("api_content backfill failed for session=%s", agent.session_id or "none", exc_info=True)
 
 
 def _persist_turn_start(
@@ -776,6 +873,8 @@ def build_turn_context(
     # warning and a needless first-turn prefix cache miss. (Issue #45499.)
     set_session_context(agent.session_id)
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
+    from tools.skill_provenance import set_review_attended
+    set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
@@ -807,6 +906,8 @@ def build_turn_context(
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
     )
     _hydrate_from_history(agent, conversation_history)
+    # Every estimator this turn prices images at the cost learned from this model's real usage.
+    bind_image_token_cost(agent)
     # Append the user message now that close persistence is safe.
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1

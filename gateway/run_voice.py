@@ -18,7 +18,8 @@ from types import SimpleNamespace
 from typing import Dict, List, Optional
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType, build_auto_tts_output_path
+from gateway.platforms.base import build_auto_tts_output_path
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 logger = logging.getLogger("gateway.run")  # log-record parity with the origin module

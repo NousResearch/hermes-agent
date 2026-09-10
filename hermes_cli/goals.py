@@ -49,6 +49,9 @@ DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 # on concrete evidence instead of a vibe check.
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
 DEFAULT_GATE_MAX_RETRIES = 3
+# Longest a pid/session wait barrier may hold the loop before judging resumes. Timed barriers
+# (``waiting_until``) carry their own deadline and are exempt.
+_MAX_BARRIER_WAIT_S = 30 * 60
 # Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
 _GATE_OUTPUT_TAIL_CHARS = 3000
 
@@ -138,6 +141,11 @@ JUDGE_SYSTEM_PROMPT = (
     "``wait_on_pid`` (releases on exit only).\n"
     "- The agent says it is rate-limited / backing off / must wait a fixed "
     "period — return seconds in ``wait_for_seconds``.\n"
+    "- The agent has delegated subagents still running (stated below as "
+    "active delegations) and the response says it is waiting on them with "
+    "nothing else dispatchable — return ``wait_for_seconds`` between 600 and "
+    "1800. Their results wake the agent on their own; re-poking it now only "
+    "produces a status recap.\n"
     "Picking WAIT parks the loop without burning a turn; it resumes "
     "automatically when the pid exits or the time elapses. Do NOT pick WAIT "
     "just because work remains — only when re-poking now would be pure "
@@ -154,6 +162,12 @@ JUDGE_SYSTEM_PROMPT = (
     '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<one sentence>"}\n'
     "The legacy shape {\"done\": <true|false>, \"reason\": \"...\"} is still "
     "accepted (true=done, false=continue)."
+)
+
+# Judge prompt line for live delegated subagents (WAIT-for-seconds vs CONTINUE).
+JUDGE_DELEGATIONS_BLOCK_TEMPLATE = (
+    "Active delegations: the agent has {count} delegated subagent batch(es) still running; "
+    "their results are delivered to it automatically when they finish.\n\n"
 )
 
 # Judge prompt block listing running background processes (WAIT vs CONTINUE, which pid).
@@ -425,6 +439,9 @@ class GoalState:
     waiting_on_pid: Optional[int] = None
     waiting_on_session: Optional[str] = None
     waiting_until: float = 0.0
+    # Live delegation batches when a timed WAIT was set because of them; the barrier lifts as soon
+    # as that count drops (a batch returned), not only when the timer runs out.
+    waiting_on_delegations: int = 0
     waiting_reason: Optional[str] = None
     waiting_since: float = 0.0
     contract: GoalContract = field(default_factory=GoalContract)
@@ -438,7 +455,7 @@ class GoalState:
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
-        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures")}
+        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
         return cls(
             goal=data.get("goal", ""),
@@ -470,6 +487,7 @@ class GoalState:
         self.waiting_on_pid = None
         self.waiting_on_session = None
         self.waiting_until = 0.0
+        self.waiting_on_delegations = 0
         self.waiting_reason = None
         self.waiting_since = 0.0
 
@@ -857,6 +875,7 @@ def judge_goal(
     subgoals: Optional[List[str]] = None,
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
+    active_delegations: int = 0,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -883,7 +902,8 @@ def judge_goal(
     common = dict(
         goal=_truncate(goal, 2000),
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
-        background_block=_render_background_block(background_processes),
+        background_block=_render_background_block(background_processes)
+        + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
         current_time=datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
     )
     if contract is not None and not contract.is_empty():
@@ -909,9 +929,75 @@ def judge_goal(
     return verdict, reason, parse_failed, wait_directive, False
 
 
-def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def count_active_delegations(session_id: Optional[str]) -> int:
+    """Live async delegation batches spawned by this session (fail-safe 0)."""
+    if not session_id:
+        return 0
+    try:
+        from tools.async_delegation import _LIVE_STATES, _session_records
+        return len(_session_records(_LIVE_STATES, "", "", str(session_id)))
+    except Exception:
+        return 0
+
+
+# `/goal <text>` kicks the loop by sending the goal as the next user turn. When that text IS what
+# the user just said (a pasted handoff note, a plan the agent already has), re-sending it makes the
+# agent spend a turn deciding it is a replay (11 API calls, 6 min, in one run) and duplicates ~2k
+# tokens of context. The pointer is used only when the goal is substantially the WHOLE last
+# message: a short goal that merely appears inside a longer one ("ship the API" after a message
+# offering API or UI work) selects one option, and two different goals must not kick identically.
+GOAL_ALREADY_SEEN_KICK = "[Goal set] Continue with the goal you were just given; there is no need to re-read it."
+_GOAL_REPASTE_MIN_CHARS = 400
+_GOAL_REPASTE_MIN_SHARE = 0.8
+
+
+def goal_kick_prompt(goal: str, last_user_message: Any) -> str:
+    """The goal text, or ``GOAL_ALREADY_SEEN_KICK`` when ``last_user_message`` is essentially that text."""
+    content = last_user_message
+    if isinstance(content, list):
+        content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    goal_norm, last_norm = " ".join(str(goal or "").split()), " ".join(str(content or "").split())
+    if (
+        len(goal_norm) >= _GOAL_REPASTE_MIN_CHARS
+        and goal_norm in last_norm
+        and len(goal_norm) >= _GOAL_REPASTE_MIN_SHARE * len(last_norm)
+    ):
+        return GOAL_ALREADY_SEEN_KICK
+    return goal
+
+
+def last_user_message_content(history: Any) -> Any:
+    """Content of the newest ``role == "user"`` message in an OpenAI-shaped history, else ``""``."""
+    for msg in reversed(history or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return msg.get("content")
+    return ""
+
+
+def last_user_message_from_db(session_id: Optional[str]) -> Any:
+    """Newest user message of ``session_id`` from the SessionDB (gateway/TUI surfaces have no live
+    history object at slash-command time); ``""`` on any error."""
+    if not session_id:
+        return ""
+    try:
+        db = _get_session_db()
+        if db is None:
+            return ""
+        rows = db.get_messages(str(session_id), limit=20, latest=True)
+        return last_user_message_content(rows)
+    except Exception:
+        return ""
+
+
+def gather_background_processes(task_id: Optional[str] = None, *, owner_task_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fail-safe snapshot of RUNNING ``process_registry`` sessions for the judge; ``[]`` on any error
-    so the loop degrades to its pre-wait-barrier behavior."""
+    so the loop degrades to its pre-wait-barrier behavior.
+
+    ``owner_task_id`` restricts the snapshot to processes the goal's OWN session spawned. The registry's
+    ``task_id`` is the container key, which collapses to one value for every agent in the process, so
+    without this filter a fan-out parent's judge saw every subagent's pollers and parked the goal on a
+    grandchild's ``proc_*`` session (one run: 7 of 7 root verdicts were WAIT on child-owned processes;
+    parked 3 h 22 min at the end while nothing of its own was running)."""
     try:
         from tools.process_registry import process_registry
 
@@ -919,7 +1005,10 @@ def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str,
     except Exception as exc:
         logger.debug("gather_background_processes failed: %s", exc)
         return []
-    return [s for s in sessions if isinstance(s, dict) and s.get("status") != "exited"]
+    running = [s for s in sessions if isinstance(s, dict) and s.get("status") != "exited"]
+    if owner_task_id:
+        running = [s for s in running if str(s.get("owner_task_id") or s.get("task_id") or "") == str(owner_task_id)]
+    return running
 
 
 def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Optional[GoalContract]:
@@ -1263,13 +1352,17 @@ class GoalManager:
             raise ValueError("session_id must be a non-empty string")
         return self._park(reason, waiting_on_session=session_id)
 
-    def wait_for_seconds(self, seconds: int, reason: str = "") -> GoalState:
-        """Park until ``seconds`` from now (backoff/cooldown waits with no process to track)."""
+    def wait_for_seconds(self, seconds: int, reason: str = "", *, on_delegations: int = 0) -> GoalState:
+        """Park until ``seconds`` from now (backoff/cooldown waits with no process to track). With
+        ``on_delegations`` the wait is FOR those live delegation batches: it also lifts as soon as
+        fewer are live (a batch result came back), so the loop re-judges with the result in hand
+        instead of sleeping out a 20-minute timer (independent review: results arrived with 1,199 s
+        left on the timer and nothing re-judged)."""
         self._require_active()
         seconds = int(seconds)
         if seconds <= 0:
             raise ValueError("seconds must be a positive integer")
-        return self._park(reason, waiting_until=time.time() + seconds)
+        return self._park(reason, waiting_until=time.time() + seconds, waiting_on_delegations=max(0, int(on_delegations)))
 
     def stop_waiting(self) -> bool:
         """Clear any active wait barrier (pid / session / time). Returns True if one was cleared."""
@@ -1282,7 +1375,10 @@ class GoalManager:
 
     def is_waiting(self) -> bool:
         """True iff a barrier is set AND not yet satisfied. A satisfied barrier is cleared here
-        (lazy auto-clear) so the next evaluation resumes normal judging."""
+        (lazy auto-clear) so the next evaluation resumes normal judging. A pid/session barrier
+        also expires after ``_MAX_BARRIER_WAIT_S``: a watcher or poller that never exits would
+        otherwise park the goal indefinitely (one run sat 3 h 22 min on a poller that outlived
+        the work it was polling)."""
         s = self._state
         if s is None:
             return False
@@ -1292,8 +1388,17 @@ class GoalManager:
             still = _pid_alive(s.waiting_on_pid)
         elif s.waiting_until:
             still = time.time() < s.waiting_until
+            if still and s.waiting_on_delegations > 0:
+                # Set because of live delegations: lift the moment one of them returned.
+                live = count_active_delegations(self.session_id)
+                if live < s.waiting_on_delegations:
+                    still = False
         else:
             return False
+        if still and s.waiting_since and s.waiting_until == 0.0 and time.time() - s.waiting_since > _MAX_BARRIER_WAIT_S:
+            logger.info("goal %s: wait barrier on %s exceeded %ds; resuming judging",
+                        self.session_id, s.waiting_on_session or s.waiting_on_pid, _MAX_BARRIER_WAIT_S)
+            still = False
         if not still:
             self.stop_waiting()
         return still
@@ -1310,7 +1415,7 @@ class GoalManager:
         reason = state.waiting_reason or tgt
         return _decision("active", False, None, "waiting", reason, f"⏳ Goal parked — waiting on {tgt}: {reason}")
 
-    def _apply_wait_directive(self, wait_directive: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    def _apply_wait_directive(self, wait_directive: Dict[str, Any], reason: str, *, active_delegations: int = 0) -> Dict[str, Any]:
         """Judge said WAIT: set the barrier and park. The counted turn stands (the judge ran) but no
         continuation fires; the loop resumes once the barrier clears."""
         if wait_directive.get("session_id"):
@@ -1318,7 +1423,7 @@ class GoalManager:
         elif wait_directive.get("pid"):
             tgt = f"pid {self.wait_on(int(wait_directive['pid']), reason=reason).waiting_on_pid}"
         else:
-            self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason)
+            self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason, on_delegations=active_delegations)
             tgt = f"{wait_directive['seconds']}s"
         return _decision("active", False, None, "wait", reason, f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}")
 
@@ -1332,6 +1437,7 @@ class GoalManager:
     def evaluate_after_turn(
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
+        active_delegations: int = 0,
     ) -> Dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
@@ -1357,7 +1463,7 @@ class GoalManager:
 
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
-            contract=state.contract if state.has_contract() else None,
+            contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
         )
         state.last_verdict = verdict
         state.last_reason = reason
@@ -1368,7 +1474,7 @@ class GoalManager:
         state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
 
         if verdict == "wait" and wait_directive:
-            return self._apply_wait_directive(wait_directive, reason)
+            return self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
 
         # BLOCKED is NOT done: pause so the user sees the judge's reason and can re-scope or override,
         # instead of burning turns on an unachievable goal or waving it through as complete.

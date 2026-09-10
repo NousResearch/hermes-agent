@@ -1088,13 +1088,14 @@ class TestGetModelContextLength:
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
-        # GLM-5-TEE matches the "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        # GLM-5-TEE resolves through DEFAULT_CONTEXT_LENGTHS (longest matching GLM key), not the generic default.
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
-        assert result == 202752  # "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        assert result == _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "zai-org/glm-5-tee")[1]
 
 
 

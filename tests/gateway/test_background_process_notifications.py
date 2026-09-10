@@ -23,6 +23,15 @@ from gateway.run import GatewayRunner, _parse_session_key
 # Helpers
 # ---------------------------------------------------------------------------
 
+class AdmittingHandler(AsyncMock):
+    """Fake transport whose successful insertion issues the production receipt."""
+
+    async def _execute_mock_call(self, event, *args, **kwargs):
+        result = await super()._execute_mock_call(event, *args, **kwargs)
+        event._gateway_accepted = True
+        return result
+
+
 class _FakeRegistry:
     """Return pre-canned sessions, then None once exhausted."""
 
@@ -51,7 +60,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
-    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AdmittingHandler())
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner
 
@@ -524,7 +533,7 @@ async def test_inject_watch_notification_raw_session_key_self_posts(monkeypatch,
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AsyncMock(),
+        handle_message=AdmittingHandler(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
@@ -557,7 +566,7 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AsyncMock(),
+        handle_message=AdmittingHandler(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
@@ -591,7 +600,7 @@ async def test_async_delegation_apiserver_persists_delivery_not_self_post(
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AsyncMock(),
+        handle_message=AdmittingHandler(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
@@ -639,7 +648,7 @@ async def test_async_delegation_apiserver_persist_failure_is_retryable(
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AsyncMock(),
+        handle_message=AdmittingHandler(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter

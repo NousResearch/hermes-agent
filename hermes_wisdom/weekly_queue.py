@@ -25,7 +25,12 @@ def _week_key(now: datetime) -> str:
     return f"weekly:{day - timedelta(days=day.weekday())}"
 
 
-def _handled(db, org: str, skill_id: str, content_hash: str) -> bool:
+def _handled(
+    db, org: str, skill_id: str, content_hash: str, *, user: str, now: float
+) -> bool:
+    # A delivered deferral may recur after expiry; unfinished/uncertain work
+    # still blocks it. Fresh shared preferences also gate review and delivery.
+    key = suppression_key({"kind": "candidate", "content_hash": content_hash})
     return bool(
         db.execute(
             """SELECT 1 FROM candidate WHERE skill_id=? AND content_hash=? AND state='dismissed'
@@ -35,7 +40,15 @@ def _handled(db, org: str, skill_id: str, content_hash: str) -> bool:
             WHERE a.organization_id=? AND a.state!='retired'
             AND json_extract(a.reference_json,'$.kind')='candidate'
             AND COALESCE(json_extract(a.reference_json,'$.local_skill_id'), e.skill_id)=?
-            AND json_extract(a.reference_json,'$.content_hash')=? LIMIT 1""",
+            AND json_extract(a.reference_json,'$.content_hash')=?
+            AND NOT (a.state='delivered' AND EXISTS (
+                SELECT 1 FROM wisdom_consent c
+                JOIN wisdom_consent_defer d ON d.interaction_id=c.id
+                JOIN wisdom_preference_outbox p ON p.organization_id=c.organization_id
+                WHERE c.assessment_id=a.id AND c.organization_id=a.organization_id
+                AND c.state IN ('pending','stale')
+                AND p.user_id=? AND p.key=? AND p.suppress_until<=?
+            )) LIMIT 1""",
             (
                 skill_id,
                 content_hash,
@@ -44,6 +57,9 @@ def _handled(db, org: str, skill_id: str, content_hash: str) -> bool:
                 org,
                 skill_id,
                 content_hash,
+                user,
+                key,
+                now,
             ),
         ).fetchone()
     )
@@ -72,6 +88,7 @@ def enqueue_weekly_review(
     current = now or datetime.now(timezone.utc)
     queue = MediationStore(service.store, clock=current.timestamp)
     queue._require_org(org)
+    user = WisdomPreferences(service).identity(org)
     event_key = _week_key(current)
     with service.store.transaction() as db:
         queue._check_org(db, org)
@@ -115,7 +132,9 @@ def enqueue_weekly_review(
             reason = None
             if not local or local["current_hash"] != item.content_hash:
                 reason = "changed"
-            elif _handled(db, org, local["id"], item.content_hash):
+            elif _handled(
+                db, org, local["id"], item.content_hash, user=user, now=current.timestamp()
+            ):
                 reason = "previously_handled"
             elif len(candidates) >= MAX_REVIEW_CANDIDATES:
                 reason = "review_batch_limit"
@@ -316,6 +335,7 @@ def _commit_selection(
 ) -> None:
     service, queue = mediation.service, mediation.queue
     now = queue.clock()
+    user = WisdomPreferences(service).identity(org)
     with service.store.transaction() as db:
         queue._check_org(db, org)
         if not db.execute(
@@ -333,7 +353,7 @@ def _commit_selection(
             if (
                 not local
                 or local[0] != content_hash
-                or _handled(db, org, skill_id, content_hash)
+                or _handled(db, org, skill_id, content_hash, user=user, now=now)
             ):
                 continue
             payload = {
@@ -356,8 +376,20 @@ def _commit_selection(
                 qualification="weekly_usage",
                 _db=db,
             )
+            event_key = f"candidate:{event_id}"
             if event_id is None:
-                continue
+                # Keep the original event/card/receipt intact. A later weekly
+                # offer gets its own assessment against the same exact source.
+                existing = db.execute(
+                    """SELECT id FROM local_event WHERE organization_id=?
+                    AND kind='wisdom.candidate' AND skill_id=? AND content_hash=?
+                    AND qualification='weekly_usage'""",
+                    (org, skill_id, content_hash),
+                ).fetchone()
+                if existing is None:
+                    continue
+                event_id = existing["id"]
+                event_key = f"weekly-candidate:{job['id']}:{event_id}"
             identity = uuid.uuid4().hex
             reference = {
                 "kind": "candidate",
@@ -379,7 +411,7 @@ def _commit_selection(
                 (
                     identity,
                     org,
-                    f"candidate:{event_id}",
+                    event_key,
                     job["owner_session"],
                     json.dumps(reference),
                     job["owner_session"],

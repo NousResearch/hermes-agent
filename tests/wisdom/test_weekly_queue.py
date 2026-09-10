@@ -9,9 +9,10 @@ import pytest
 from hermes_wisdom.agent_led.policy import AgentLedPolicy
 from hermes_wisdom.agent_led.schemas import CandidateReviewResult
 from hermes_wisdom.client import WisdomMuteResponse
-from hermes_wisdom.consent import ConsentActor
+from hermes_wisdom.consent import ConsentActor, WisdomConsent
 from hermes_wisdom.mediation import WisdomMediation
 from hermes_wisdom.mediation_store import MediationStore
+from hermes_wisdom.preferences import WisdomPreferences
 from hermes_wisdom.weekly_queue import (
     enqueue_weekly_review,
     process_weekly_review,
@@ -223,6 +224,70 @@ def test_later_week_does_not_repeat_an_unchanged_recommendation(weekly):
     )
     assert next_week["candidates"] == []
     assert "release-notes" in next_week["excluded"]["previously_handled"]
+
+
+@pytest.mark.parametrize("days", [3, 30, 60])
+@pytest.mark.parametrize("delivery_state", ["delivered", "delivery_uncertain"])
+def test_expired_native_deferral_gets_one_fresh_weekly_assessment(weekly, days, delivery_state):
+    service, mediation, actor, root, now = weekly
+    _, job = claim(weekly)
+    process_weekly_review(
+        mediation, "org-1", job, runtime={"model": "test", "provider": "test"},
+        history=[], reviewer=reviewer,
+    )
+    original = next(row for row in mediation.queue.assessments("org-1") if row["id"] != job["id"])
+    with service.store.transaction() as db:
+        db.execute("UPDATE wisdom_assessment SET state=? WHERE id=?", (delivery_state, original["id"]))
+        db.execute(
+            "INSERT INTO wisdom_delivery_receipt VALUES(?,?,?,?,?)",
+            (original["id"], "org-1", actor.session_key, '{"message_id":"original"}', now[0]),
+        )
+        db.execute(
+            """INSERT INTO wisdom_consent
+            (id,organization_id,assessment_id,owner_session,actor_id,platform,
+             operation,plan_json,expires_at,created_at,updated_at)
+            VALUES('deferred','org-1',?,?,?,'local','publish',?,?,?,?)""",
+            (original["id"], actor.session_key, actor.actor_id,
+             json.dumps({"not_now_suppression_days": days}), now[0] + 86400, now[0], now[0]),
+        )
+    assert WisdomConsent(service, clock=lambda: now[0]).resolve(
+        "org-1", "deferred", actor, "defer"
+    )["deferred"]
+    before = enqueue_weekly_review(service, now=NOW, skills_root=root, dry_run=True)
+    assert before["candidates"] == []
+
+    elapsed = days + 7
+    now[0] = (NOW + timedelta(days=elapsed)).timestamp()
+    _use(service.store, "release-notes", [-elapsed, 1 - elapsed, 2 - elapsed])
+    assert WisdomPreferences(service, clock=lambda: now[0]).check(
+        "org-1", [original["reference"]]
+    )["suppressed"] == {}
+    queued = enqueue_weekly_review(service, now=NOW + timedelta(days=elapsed), skills_root=root)
+    if delivery_state == "delivery_uncertain":
+        assert queued["considered"] == 0
+        return
+    assert queued["considered"] == 1
+    register(mediation, actor)
+    next_job = mediation.queue.claim("org-1", actor.session_key)[0]
+    process_weekly_review(
+        mediation, "org-1", next_job, runtime={"model": "test", "provider": "test"},
+        history=[], reviewer=reviewer,
+    )
+    candidates = [row for row in mediation.queue.assessments("org-1") if row["reference"]["kind"] == "candidate"]
+    assert len(candidates) == 2
+    assert next(row for row in candidates if row["id"] == original["id"])["state"] == "delivered"
+    successor = next(row for row in candidates if row["id"] != original["id"])
+    assert successor["state"] == "ready"
+    assert successor["reference"]["content_hash"] == original["reference"]["content_hash"]
+    assert service.store.local_event(successor["reference"]["event_id"])
+    with service.store.transaction() as db:
+        receipts = db.execute("SELECT assessment_id,receipt_json FROM wisdom_delivery_receipt").fetchall()
+    assert [(row["assessment_id"], row["receipt_json"]) for row in receipts] == [
+        (original["id"], '{"message_id":"original"}')
+    ]
+    assert enqueue_weekly_review(
+        service, now=NOW + timedelta(days=elapsed), skills_root=root, dry_run=True
+    )["candidates"] == []
 
 
 def test_weekly_selection_does_not_duplicate_an_immediate_qualification(weekly):

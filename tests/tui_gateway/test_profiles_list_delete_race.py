@@ -911,20 +911,27 @@ def test_named_profile_config_never_mkdir_after_validation_race(
     assert not profile_dir.exists()
 
 
-def test_config_memo_never_crosses_profile_directory_generation(home: Path) -> None:
+@pytest.mark.parametrize("with_marker", (False, True), ids=("legacy", "marked"))
+def test_config_memo_never_crosses_profile_directory_generation(home: Path, with_marker: bool) -> None:
+    from hermes_cli.profile_incarnation import write_fresh_profile_incarnation
+
     profile_dir = home / "profiles" / "worker"
     profile_dir.mkdir(parents=True)
+    if with_marker:
+        write_fresh_profile_incarnation(profile_dir)
     token = set_hermes_home_override(profile_dir)
     try:
         config.ensure_hermes_home()
-        old_identity = config._HERMES_HOME_ENSURED[str(profile_dir)]
+        assert (profile_dir / "cron").is_dir()
         shutil.rmtree(profile_dir)
         profile_dir.mkdir()
+        if with_marker:
+            write_fresh_profile_incarnation(profile_dir)
 
         config.ensure_hermes_home()
 
-        assert config._HERMES_HOME_ENSURED[str(profile_dir)] != old_identity
-        assert (profile_dir / "cron").is_dir()
+        assert all((profile_dir / subdir).is_dir() for subdir in config._HERMES_HOME_SUBDIRS)
+        assert (profile_dir / "SOUL.md").is_file()
     finally:
         config._HERMES_HOME_ENSURED.pop(str(profile_dir), None)
         reset_hermes_home_override(token)
@@ -986,7 +993,7 @@ def test_failed_partial_delete_stays_tombstoned(
     with pytest.raises(FileNotFoundError):
         profiles.resolve_profile_env("worker")
     token = set_hermes_home_override(profile_dir)
-    identity = config._hermes_home_identity(profile_dir, include_ctime=True)
+    identity = config._hermes_home_identity(profile_dir, named_profile=True)
     assert identity is not None
     config._HERMES_HOME_ENSURED[str(profile_dir)] = identity
     try:

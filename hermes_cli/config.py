@@ -609,19 +609,30 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-# Named homes include ctime to distinguish rapid delete/recreate cycles that reuse an inode.
-_HERMES_HOME_ENSURED: dict[str, tuple[int, int, int]] = {}
+# Named homes need a persisted generation: filesystems can reuse inode and ctime together.
+_HERMES_HOME_ENSURED: dict[str, tuple[int, int, int, str | None]] = {}
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
 
 
-def _hermes_home_identity(home: Path, *, include_ctime: bool) -> tuple[int, int, int] | None:
+def _hermes_home_identity(
+    home: Path, *, named_profile: bool,
+) -> tuple[int, int, int, str | None] | None:
     try:
         value = home.stat()
+        incarnation = None
+        if named_profile:
+            from hermes_cli.profile_incarnation import read_profile_incarnation
+
+            incarnation = read_profile_incarnation(home)
+            # Legacy homes remain usable, but cannot prove a reusable cache identity.
+            # Do not backfill here: config reads must not acquire the lifecycle lock.
+            if incarnation is None:
+                return None
     except OSError:
         return None
-    return (value.st_dev, value.st_ino, value.st_ctime_ns if include_ctime else 0)
+    return (value.st_dev, value.st_ino, value.st_ctime_ns if named_profile else 0, incarnation)
 
 
 def ensure_hermes_home():
@@ -639,7 +650,7 @@ def ensure_hermes_home():
         raise FileNotFoundError(
             f"Named profile home does not exist because it is missing or being deleted: {home}. "
             "Create the profile explicitly before using it.")
-    current_identity = _hermes_home_identity(home, include_ctime=named_profile)
+    current_identity = _hermes_home_identity(home, named_profile=named_profile)
     if current_identity is not None and _HERMES_HOME_ENSURED.get(key) == current_identity:
         return
     from hermes_cli.config_home import initialize_home

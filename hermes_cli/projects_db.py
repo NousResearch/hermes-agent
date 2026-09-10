@@ -106,8 +106,11 @@ def _now() -> int:
 
 
 def _normalize_path(path: str) -> str:
-    """Absolute, user-expanded, separator-normalized path (no trailing sep)."""
-    p = os.path.abspath(os.path.expanduser(str(path).strip()))
+    """Absolute, user-expanded path (no trailing sep), or empty for blank input."""
+    path = str(path).strip()
+    if not path:
+        return ""
+    p = os.path.abspath(os.path.expanduser(path))
     return p.rstrip("/\\") or p
 
 
@@ -238,7 +241,7 @@ def create_project(
     pid = "p_" + secrets.token_hex(4)
     now = _now()
     folder_paths = list(dict.fromkeys(p for p in map(_normalize_path, folders or []) if p))
-    primary = _normalize_path(primary_path) if primary_path else None
+    primary = (_normalize_path(primary_path) or None) if primary_path else None
     if primary and primary not in folder_paths:
         folder_paths.insert(0, primary)
     if primary is None and folder_paths:

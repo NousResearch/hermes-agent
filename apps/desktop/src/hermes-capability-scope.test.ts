@@ -89,21 +89,27 @@ describe('capability helpers are connection-scoped', () => {
     }
   })
 
-  it("a 'local' pin routes to the local pool even while a remote gateway is active", () => {
+  it("a 'local' pin carries an explicit connectionId even while a remote gateway is active", () => {
     setApiRequestProfile('research')
     setApiRequestConnection('gw-tailscale')
 
     void getSkills({ connectionId: 'local', profile: 'coder' })
 
+    // The explicit pin must survive to Electron main: its registry resolver
+    // owns 'local' (forced-local pooled child). Omitting the key here let the
+    // ambient tag — or, worse, a remote registry PRIMARY on the v1 fallback
+    // route — absorb a "This device" pick (v0.20.6 regression, #91564 rung).
     expect(last().profile).toBe('coder')
-    expect(last()).not.toHaveProperty('connectionId')
+    expect(last().connectionId).toBe('local')
   })
 
-  it('profileScopeKey keeps legacy keys byte-identical and namespaces remote pins', () => {
+  it('profileScopeKey keeps legacy keys byte-identical and namespaces every explicit pin', () => {
     expect(profileScopeKey()).toBe('default')
     expect(profileScopeKey(null)).toBe('default')
     expect(profileScopeKey('coder')).toBe('coder')
-    expect(profileScopeKey({ connectionId: 'local', profile: 'coder' })).toBe('coder')
+    // A 'local' pin and the ambient path can resolve to DIFFERENT backends
+    // when the registry primary is remote — they must not share a cache row.
+    expect(profileScopeKey({ connectionId: 'local', profile: 'coder' })).toBe('local::coder')
     expect(profileScopeKey({ connectionId: 'homelab', profile: 'coder' })).toBe('homelab::coder')
     expect(profileScopeKey({ connectionId: 'homelab' })).toBe('homelab::default')
   })

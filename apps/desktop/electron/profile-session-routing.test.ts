@@ -9,7 +9,8 @@ import {
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
-  spliceRegistrySessionRows
+  spliceRegistrySessionRows,
+  tagRegistrySessionResponse
 } from './profile-session-routing'
 
 test('remote sidebar slices all follow the selected profile', () => {
@@ -299,6 +300,46 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
       ['r-2', 'default', 'gw-cloud']
     ]
   )
+})
+
+test('registry-pinned session responses retain their owning connection', () => {
+  const sidebar = tagRegistrySessionResponse(
+    '/api/profiles/sessions/sidebar?recents_profile=default',
+    {
+      recents: { sessions: [{ id: 'remote-chat', profile: 'default' }] },
+      cron: { sessions: [{ id: 'remote-cron', profile: 'default' }] },
+      messaging: { sessions: [] }
+    },
+    'test-amnezia'
+  ) as any
+
+  assert.equal(sidebar.recents.sessions[0].connection_id, 'test-amnezia')
+  assert.equal(sidebar.cron.sessions[0].connection_id, 'test-amnezia')
+
+  const aggregate = tagRegistrySessionResponse(
+    '/api/profiles/sessions?profile=all',
+    { sessions: [{ id: 'remote-profile-chat', profile: 'research' }] },
+    'test-amnezia'
+  ) as any
+
+  assert.equal(aggregate.sessions[0].connection_id, 'test-amnezia')
+
+  const single = tagRegistrySessionResponse(
+    '/api/sessions/remote-chat?profile=default',
+    { id: 'remote-chat', profile: 'default' },
+    'test-amnezia'
+  ) as any
+
+  assert.equal(single.connection_id, 'test-amnezia')
+})
+
+test('registry response ownership tagging ignores non-session payloads and transcript messages', () => {
+  const status = { ok: true }
+  const messages = { messages: [{ id: 'message-1' }], session_id: 'remote-chat' }
+
+  assert.equal(tagRegistrySessionResponse('/api/status', status, 'test-amnezia'), status)
+  assert.equal(tagRegistrySessionResponse('/api/sessions/remote-chat/messages', messages, 'test-amnezia'), messages)
+  assert.equal((messages.messages[0] as any).connection_id, undefined)
 })
 
 test('registry sources: an older shared host without the aggregator falls back to its flat list', async () => {

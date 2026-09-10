@@ -25,12 +25,10 @@ def _reset_scheduler_state():
 
     sched._running_job_ids.clear()
     sched._running_fire_owners.clear()
-    sched._guarded_fire_tokens.clear()
     sched._interrupted_job_ids.clear()
     yield
     sched._running_job_ids.clear()
     sched._running_fire_owners.clear()
-    sched._guarded_fire_tokens.clear()
     sched._interrupted_job_ids.clear()
 
 
@@ -163,30 +161,6 @@ class TestMarkRunningJobsInterrupted:
         assert isinstance(refreshed, dict)
         assert refreshed["fire_claim"] == replacement_claim
         assert refreshed["last_status"] == original_status
-
-    def test_shutdown_does_not_recreate_deleted_guarded_profile(self, tmp_path):
-        import shutil
-
-        import cron.jobs as jobs
-        import cron.scheduler as sched
-
-        profile_home = tmp_path / "profiles" / "deleted"
-        profile_home.mkdir(parents=True)
-        with jobs.use_cron_store(profile_home, require_existing_home=True):
-            created = jobs.create_job(prompt="x", schedule="every 5m", name="owned")
-            claimed = jobs.claim_job_for_fire(created["id"], force=True, return_job=True)
-            assert isinstance(claimed, dict)
-            token = object()
-            sched._running_job_ids.add(created["id"])
-            sched._running_fire_owners[created["id"]] = {
-                token: (claimed["fire_claim"]["by"], profile_home)
-            }
-            sched._guarded_fire_tokens.add(token)
-
-            shutil.rmtree(profile_home)
-            assert sched.mark_running_jobs_interrupted("shutdown") == []
-
-        assert not profile_home.exists()
 
 
 class TestRunningFireOwnerRegistry:

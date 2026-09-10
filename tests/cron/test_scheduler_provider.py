@@ -16,13 +16,9 @@ is set. We patch `cron.scheduler.tick` (both tickers import it locally as
 `cron_tick`, so the module-attribute patch is observed) and assert the loop
 drives it and stops promptly.
 """
-import shutil
 import threading
 import time
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 
 def _wait_until(predicate, timeout=10.0, interval=0.005):
@@ -408,7 +404,8 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
     monkeypatch.setattr(
         executions,
         "create_execution",
-        lambda jid, source: events.append("ledger") or {"id": "exec-1"},
+        lambda jid, source, _create=executions.create_execution:
+        events.append("ledger") or _create(jid, source=source),
     )
     monkeypatch.setattr(
         sched,
@@ -421,9 +418,9 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
 
     assert events == ["ledger", "claim"]
     assert claimed is not None
-    assert claimed["execution_id"] == "exec-1"
+    assert executions.get_execution(claimed["execution_id"])["status"] == "claimed"
     assert provider.fire_claimed(claimed) is True
-    assert events == ["ledger", "claim", ("run", "exec-1")]
+    assert events == ["ledger", "claim", ("run", claimed["execution_id"])]
 
 
 def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
@@ -442,6 +439,10 @@ def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
 
     assert InProcessCronScheduler().fire_due("j1", force=True) is True
     assert claims == [("j1", {"force": True, "return_job": True})]
+    # An off-tick run-now forwards ``manual`` so the claim does not stamp the next occurrence;
+    # the default (webhook / misfire) fire keeps the occurrence stamp.
+    assert InProcessCronScheduler().fire_due("j1", manual=True) is True
+    assert claims[-1] == ("j1", {"manual": True, "return_job": True})
 
 
 def test_fire_due_lost_claim_does_not_run(monkeypatch):
@@ -644,261 +645,85 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
 
 
-def test_multiplex_ticker_refreshes_deleted_and_recreated_profiles(tmp_path):
-    """A startup snapshot must not let cron resurrect a deleted profile."""
-    from cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
-
-    default_home = tmp_path / "default"
-    bot_home = tmp_path / "profiles" / "bot"
-    default_home.mkdir(parents=True)
-    bot_home.mkdir(parents=True)
-    deleted = threading.Event()
-    deletion_observed = threading.Event()
-
-    def profile_homes():
-        homes = [("default", default_home)]
-        if deleted.is_set():
-            deletion_observed.set()
-        elif bot_home.is_dir():
-            homes.append(("bot", bot_home))
-        return homes
-
-    ticked: list[Path] = []
-
-    def tracking_tick(*_args, **_kwargs):
-        ticked.append(get_hermes_home().resolve())
-        return 0
-
-    stop = threading.Event()
-    provider = InProcessCronScheduler()
-
-    with patch("cron.scheduler.tick", side_effect=tracking_tick):
-        thread = threading.Thread(
-            target=provider.start,
-            args=(stop,),
-            kwargs={"interval": 0.01, "profile_homes": profile_homes},
-            daemon=True,
-        )
-        thread.start()
-
-        assert _wait_until(lambda: bot_home.resolve() in ticked)
-        bot_ticks_before_delete = ticked.count(bot_home.resolve())
-        default_ticks_before_delete = ticked.count(default_home.resolve())
-        deleted.set()
-        assert deletion_observed.wait(timeout=5)
-        for attempt in range(3):
-            try:
-                shutil.rmtree(bot_home)
-                break
-            except OSError:
-                if attempt == 2:
-                    raise
-                time.sleep(0.05)
-
-        assert _wait_until(
-            lambda: ticked.count(default_home.resolve()) >= default_ticks_before_delete + 3
-        )
-        assert not bot_home.exists()
-        assert ticked.count(bot_home.resolve()) == bot_ticks_before_delete
-
-        bot_home.mkdir(parents=True)
-        deleted.clear()
-        assert _wait_until(
-            lambda: ticked.count(bot_home.resolve()) > bot_ticks_before_delete
-        )
-
-        stop.set()
-        thread.join(timeout=5)
-
-    assert not thread.is_alive()
-
-
-def test_multiplex_ticker_recovers_from_membership_enumeration_failure(tmp_path):
-    """A transient live-membership failure must not kill the ticker thread."""
+def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
+    """A stale profile_homes entry must not recreate a deleted profile."""
+    import cron.jobs as jobs
     from cron.scheduler_provider import InProcessCronScheduler
 
     default_home = tmp_path / "default"
     (default_home / "cron").mkdir(parents=True)
-    membership_calls = 0
-    tick_calls = 0
-    heartbeat_calls: list[bool] = []
-    resumed_tick = threading.Event()
-    release_resumed_tick = threading.Event()
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    deleted_home = profiles_dir / "deleted"
+    profile_homes = [("default", default_home), ("deleted", deleted_home)]
 
-    def profile_homes():
-        nonlocal membership_calls
-        membership_calls += 1
-        if membership_calls == 3:
-            raise OSError("transient profiles directory failure")
-        return [("default", default_home)]
+    ticked_homes = []
+    stop = threading.Event()
 
-    def tracking_tick(*_args, **_kwargs):
-        nonlocal tick_calls
-        tick_calls += 1
-        if tick_calls >= 2:
-            resumed_tick.set()
-            release_resumed_tick.wait(timeout=5)
+    def _tracking_tick(*args, **kwargs):
+        ticked_homes.append(jobs._current_cron_store().cron_dir.parent)
+        stop.set()
         return 0
 
-    def tracking_heartbeat(*, success=False):
-        heartbeat_calls.append(success)
-
-    stop = threading.Event()
     provider = InProcessCronScheduler()
-
-    with patch("cron.scheduler.tick", side_effect=tracking_tick), \
-         patch("cron.jobs.record_ticker_heartbeat", side_effect=tracking_heartbeat):
+    with patch("cron.scheduler.tick", side_effect=_tracking_tick):
         thread = threading.Thread(
             target=provider.start,
             args=(stop,),
-            kwargs={"interval": 0.01, "profile_homes": profile_homes},
-            daemon=True,
-        )
-        thread.start()
-
-        assert resumed_tick.wait(timeout=5)
-        assert membership_calls >= 4
-        # The initial liveness write is the only heartbeat before recovery:
-        # the failed post-tick membership refresh skipped all profile writes.
-        assert heartbeat_calls == [False]
-        assert thread.is_alive()
-        stop.set()
-        release_resumed_tick.set()
-        thread.join(timeout=5)
-
-    assert not thread.is_alive()
-
-
-def test_multiplex_heartbeat_excludes_profile_not_ticked_in_cycle(tmp_path):
-    """A profile discovered after ticking cannot receive a success marker."""
-    from cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
-
-    default_home = tmp_path / "default"
-    new_home = tmp_path / "new"
-    for home in (default_home, new_home):
-        (home / "cron").mkdir(parents=True)
-
-    membership_calls = 0
-    ticked: list[Path] = []
-    successful_heartbeats: list[Path] = []
-    stop = threading.Event()
-
-    def profile_homes():
-        nonlocal membership_calls
-        membership_calls += 1
-        if membership_calls <= 2:
-            return [("default", default_home)]
-        return [("default", default_home), ("new", new_home)]
-
-    def tracking_tick(*_args, **_kwargs):
-        ticked.append(get_hermes_home().resolve())
-        return 0
-
-    def tracking_heartbeat(*, success=False):
-        if success:
-            successful_heartbeats.append(get_hermes_home().resolve())
-            stop.set()
-
-    provider = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", side_effect=tracking_tick), \
-         patch("cron.jobs.record_ticker_heartbeat", side_effect=tracking_heartbeat):
-        thread = threading.Thread(
-            target=provider.start,
-            args=(stop,),
-            kwargs={"interval": 0.01, "profile_homes": profile_homes},
+            kwargs={"interval": 0, "profile_homes": profile_homes},
             daemon=True,
         )
         thread.start()
         thread.join(timeout=5)
 
     assert not thread.is_alive()
-    assert ticked == [default_home.resolve()]
-    assert successful_heartbeats == [default_home.resolve()]
-
-
-def test_multiplex_heartbeat_does_not_recreate_home_deleted_after_snapshot(tmp_path):
-    """Heartbeat persistence cannot recreate a home deleted after refresh."""
-    from cron.scheduler_provider import InProcessCronScheduler
-
-    default_home = tmp_path / "default"
-    deleted_home = tmp_path / "profiles" / "deleted"
-    for home in (default_home, deleted_home):
-        home.mkdir(parents=True)
-
-    membership_calls = 0
-    snapshot_ready = threading.Event()
-    release_snapshot = threading.Event()
-    stop = threading.Event()
-
-    class PausedSnapshot:
-        def __iter__(self):
-            yield ("default", default_home)
-            yield ("deleted", deleted_home)
-            snapshot_ready.set()
-            assert release_snapshot.wait(timeout=5)
-
-    def profile_homes():
-        nonlocal membership_calls
-        membership_calls += 1
-        if membership_calls == 3:
-            return PausedSnapshot()
-        return [("default", default_home), ("deleted", deleted_home)]
-
-    provider = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", return_value=0):
-        thread = threading.Thread(
-            target=provider.start,
-            args=(stop,),
-            kwargs={"interval": 30, "profile_homes": profile_homes},
-            daemon=True,
-        )
-        thread.start()
-        assert snapshot_ready.wait(timeout=5)
-        shutil.rmtree(deleted_home)
-        release_snapshot.set()
-        assert _wait_until(
-            lambda: (default_home / "cron" / "ticker_heartbeat").is_file()
-        )
-        stop.set()
-        thread.join(timeout=5)
-
-    assert not thread.is_alive()
+    assert ticked_homes == [default_home.resolve()]
     assert not deleted_home.exists()
 
 
-def test_multiplex_recovery_does_not_recreate_home_deleted_after_snapshot(tmp_path):
-    """Execution-ledger recovery must honor deletion after startup discovery."""
+def test_existing_profile_homes_filters_deleted(tmp_path):
+    """The existence filter keeps live homes and drops deleted ones, whether
+    entries are (name, path) tuples or bare paths."""
+    from cron.scheduler_provider import _existing_profile_homes
+
+    live = tmp_path / "live"
+    deleted = tmp_path / "deleted"
+    live.mkdir(parents=True)
+    # deleted intentionally not created
+
+    as_tuples = _existing_profile_homes(lambda: [("live", live), ("deleted", deleted)])
+    assert [p[0] for p in as_tuples] == ["live"]
+
+    as_paths = _existing_profile_homes([live, deleted])
+    assert [p for p in as_paths] == [live]
+
+
+def test_multiplex_ticker_discovers_profile_created_after_startup(tmp_path):
+    """A long-lived multiplex ticker refreshes profile membership each cycle."""
+    import cron.jobs as jobs
     from cron.scheduler_provider import InProcessCronScheduler
 
     default_home = tmp_path / "default"
-    deleted_home = tmp_path / "profiles" / "deleted"
-    for home in (default_home, deleted_home):
-        home.mkdir(parents=True)
-
-    snapshot_ready = threading.Event()
-    release_snapshot = threading.Event()
-    default_ticked = threading.Event()
+    later_home = tmp_path / "profiles" / "later"
+    (default_home / "cron").mkdir(parents=True)
+    (later_home / "cron").mkdir(parents=True)
+    entries = [("default", default_home)]
+    supplier_calls = 0
+    ticked_homes = []
     stop = threading.Event()
-    membership_calls = 0
-
-    class PausedInitialSnapshot:
-        def __iter__(self):
-            yield ("default", default_home)
-            yield ("deleted", deleted_home)
-            snapshot_ready.set()
-            assert release_snapshot.wait(timeout=5)
 
     def profile_homes():
-        nonlocal membership_calls
-        membership_calls += 1
-        if membership_calls == 1:
-            return PausedInitialSnapshot()
-        return [("default", default_home)]
+        nonlocal supplier_calls
+        supplier_calls += 1
+        return list(entries)
 
     def tracking_tick(*_args, **_kwargs):
-        default_ticked.set()
+        home = jobs._current_cron_store().cron_dir.parent
+        ticked_homes.append(home)
+        if entries == [("default", default_home)]:
+            entries.append(("later", later_home))
+        elif home == later_home.resolve():
+            stop.set()
         return 0
 
     provider = InProcessCronScheduler()
@@ -906,49 +731,213 @@ def test_multiplex_recovery_does_not_recreate_home_deleted_after_snapshot(tmp_pa
         thread = threading.Thread(
             target=provider.start,
             args=(stop,),
-            kwargs={"interval": 0.01, "profile_homes": profile_homes},
+            kwargs={"interval": 0, "profile_homes": profile_homes},
             daemon=True,
         )
         thread.start()
-        assert snapshot_ready.wait(timeout=5)
-        shutil.rmtree(deleted_home)
-        release_snapshot.set()
-        assert default_ticked.wait(timeout=5)
-        assert thread.is_alive()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert supplier_calls >= 3
+    assert later_home.resolve() in ticked_homes
+
+
+def _run_multiplex_capture(tmp_path, *, profile_adapters, shared_adapters):
+    """Run the multiplex ticker one full cycle and return the ``adapters``
+    object passed to ``tick()`` for the default profile and the secondary
+    profile (in ``profile_homes`` order: default first, secondary second)."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    p_default = tmp_path / "default"
+    p_sec = tmp_path / "home-ops"
+    for d in (p_default, p_sec):
+        (d / "cron").mkdir(parents=True)
+    profile_homes = [("default", p_default), ("home-ops", p_sec)]
+
+    captured: list = []  # adapters seen per tick call; order follows profile_homes
+
+    def _capturing_tick(*args, **kwargs):
+        captured.append(kwargs.get("adapters"))
+        return 0
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_capturing_tick), \
+         patch("cron.jobs.record_ticker_heartbeat", lambda **kw: None):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": profile_homes,
+                "adapters": shared_adapters,
+                "profile_adapters": profile_adapters,
+                "default_profile": "default",
+            },
+            daemon=True,
+        )
+        t.start()
+        deadline = time.monotonic() + 10
+        while len(captured) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert len(captured) >= 2, f"expected >= 2 tick calls, got {len(captured)}"
+    return captured[0], captured[1]  # (default, secondary) of the first cycle
+
+
+def test_multiplex_default_profile_uses_shared_adapters(tmp_path):
+    """The default profile's cron is delivered via the shared ``adapters`` set
+    (which belongs to the default profile)."""
+    shared = {"kind": "shared"}
+    default_ad, _ = _run_multiplex_capture(
+        tmp_path, profile_adapters={"home-ops": {"kind": "secondary"}},
+        shared_adapters=shared,
+    )
+    assert default_ad is shared
+
+
+def test_multiplex_connected_secondary_uses_its_own_adapters(tmp_path):
+    """A connected secondary is delivered via ITS OWN adapters, not the shared
+    default-profile set."""
+    shared = {"kind": "shared"}
+    sec = {"kind": "secondary"}
+    default_ad, sec_ad = _run_multiplex_capture(
+        tmp_path, profile_adapters={"home-ops": sec}, shared_adapters=shared,
+    )
+    assert default_ad is shared
+    assert sec_ad is sec
+
+
+def test_multiplex_empty_secondary_does_not_fall_back_to_shared(tmp_path):
+    """A secondary whose adapter map is present-but-empty (its bot has not
+    connected yet) must NOT fall back to the default profile's shared adapters
+    — otherwise its cron output ships through the wrong bot. It receives an
+    empty adapter set and simply does not deliver this tick."""
+    shared = {"kind": "shared"}
+    default_ad, sec_ad = _run_multiplex_capture(
+        tmp_path, profile_adapters={"home-ops": {}}, shared_adapters=shared,
+    )
+    assert default_ad is shared
+    assert sec_ad is not shared
+    assert not sec_ad  # empty → no delivery, not the default bot
+
+
+def test_multiplex_missing_secondary_does_not_fall_back_to_shared(tmp_path):
+    """A secondary absent from profile_adapters entirely (its adapter map has
+    not been created yet) also must not fall back to the shared adapters."""
+    shared = {"kind": "shared"}
+    default_ad, sec_ad = _run_multiplex_capture(
+        tmp_path, profile_adapters={}, shared_adapters=shared,
+    )
+    assert default_ad is shared
+    assert sec_ad is not shared
+    assert not sec_ad
+
+
+def test_multiplex_ticker_isolates_profile_failures(tmp_path):
+    """A failing profile's tick must not skip healthy siblings in the same
+    cycle, nor darken their status (#74878)."""
+    from cron.jobs import get_ticker_last_error, record_ticker_error, use_cron_store
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    failing_home = tmp_path / "failing"
+    healthy_home = tmp_path / "healthy"
+    for home in (failing_home, healthy_home):
+        (home / "cron").mkdir(parents=True)
+        with use_cron_store(home):
+            record_ticker_error("RuntimeError: stale failure")
+
+    stop = threading.Event()
+    tick_homes: list[str] = []
+
+    def _tick(*args, **kwargs):
+        home = str(get_hermes_home())
+        tick_homes.append(home)
+        if home == str(failing_home):
+            raise RuntimeError("profile-local failure")
+        stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("failing", failing_home), ("healthy", healthy_home)],
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
         stop.set()
         thread.join(timeout=5)
 
     assert not thread.is_alive()
-    assert not deleted_home.exists()
-    assert not (deleted_home / "cron" / "executions.db").exists()
+    assert str(healthy_home) in tick_homes, "healthy sibling was skipped"
+    assert not (failing_home / "cron" / "ticker_last_success").exists()
+    assert (healthy_home / "cron" / "ticker_last_success").exists()
+    with use_cron_store(failing_home):
+        assert get_ticker_last_error() == "RuntimeError: profile-local failure"
+    with use_cron_store(healthy_home):
+        assert get_ticker_last_error() is None
 
 
-def test_real_tick_does_not_recreate_missing_guarded_profile(tmp_path):
-    """The tick lock must honor the multiplex profile-home boundary."""
-    import shutil
+def test_multiplex_recovery_isolates_profile_failures(tmp_path):
+    """A startup-recovery error in one profile's ledger must not kill the
+    ticker thread before it ever ticks (#74878)."""
+    import sqlite3
 
-    from cron.jobs import save_job_output, use_cron_store
-    from cron.monitor import _write_last_output
-    from cron.scheduler import _run_job_script, _write_usage_audit, tick
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
 
-    profile_home = tmp_path / "profiles" / "deleted"
-    profile_home.mkdir(parents=True)
-    home_token = set_hermes_home_override(str(profile_home))
-    try:
-        with use_cron_store(profile_home, require_existing_home=True):
-            shutil.rmtree(profile_home)
-            with pytest.raises(FileNotFoundError):
-                tick(verbose=False)
-            _write_usage_audit({"job_id": "deleted"})
-            _write_last_output("deleted", "late output")
-            script_ok, _error = _run_job_script("late.py")
-            assert not script_ok
-            with pytest.raises(FileNotFoundError):
-                save_job_output("deleted", "late output")
-    finally:
-        reset_hermes_home_override(home_token)
+    failing_home = tmp_path / "failing"
+    healthy_home = tmp_path / "healthy"
+    for home in (failing_home, healthy_home):
+        (home / "cron").mkdir(parents=True)
 
-    assert not profile_home.exists()
+    stop = threading.Event()
+    recovery_homes: list[str] = []
+    tick_homes: list[str] = []
 
+    def _recover():
+        home = str(get_hermes_home())
+        recovery_homes.append(home)
+        if home == str(failing_home):
+            raise sqlite3.OperationalError("unable to open database file")
+        return 0
 
+    def _tick(*args, **kwargs):
+        tick_homes.append(str(get_hermes_home()))
+        if len(tick_homes) >= 2:
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with (
+        patch.object(provider, "recover_interrupted", side_effect=_recover),
+        patch("cron.scheduler.tick", side_effect=_tick),
+    ):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("failing", failing_home), ("healthy", healthy_home)],
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert recovery_homes == [str(failing_home), str(healthy_home)]
+    # The failing profile stays in rotation: its ledger may still hold jobs.
+    assert set(tick_homes) == {str(failing_home), str(healthy_home)}

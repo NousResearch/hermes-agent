@@ -83,6 +83,7 @@ import { ToolRunTicker } from './run-ticker'
 // false, so every row currently owns its own chrome; kept as a seam for any
 // future embedding surface.
 const ToolEmbedContext = createContext(false)
+const ToolRunDisclosureContext = createContext<string | null>(null)
 
 // A search hit's title is result *content* inside an expanded row, not one of
 // the scaffolding lines, so it keeps the brighter secondary grey.
@@ -356,6 +357,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
+  const runDisclosureId = useContext(ToolRunDisclosureContext)
   const toolViewMode = useStore($toolViewMode)
 
   // `ToolFallback` rebuilds the `part` wrapper each render, defeating the memos
@@ -570,7 +572,18 @@ function ToolEntry({ part }: ToolEntryProps) {
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
           action={dismissAction}
-          onToggle={hasExpandableContent ? () => setToolDisclosureOpen(disclosureId, !open) : undefined}
+          onToggle={
+            hasExpandableContent
+              ? () => {
+                  // Opening a row is newer intent than an earlier group collapse.
+                  if (!open && runDisclosureId) {
+                    setToolDisclosureOpen(runDisclosureId, true)
+                  }
+
+                  setToolDisclosureOpen(disclosureId, !open)
+                }
+              : undefined
+          }
           open={open}
           trailing={trailing}
         >
@@ -811,7 +824,7 @@ export function splitRunItems(toolNames: readonly string[]): RunItem[] {
  */
 // The one grey line that stands in for a run of tool calls — "Explored 3
 // files, ran 5 commands". Live, it narrates in the present tense above the
-// ticker and offers no toggle, since there is nothing settled to unfold yet.
+// ticker by default; its toggle can reveal the activity before it settles.
 function ToolRunHeader({
   completedAt,
   live,
@@ -860,7 +873,8 @@ interface ToolRunState {
 // re-render the group on every text delta in the turn. The run only changes
 // when a call arrives or one finishes; cache on exactly that.
 function useToolRun(startIndex: number, endIndex: number): ToolRunState {
-  const cache = useRef<null | { signature: string; value: ToolRunState }>(null)
+  const { locale } = useI18n()
+  const cache = useRef<null | { signature: string; tools: readonly ToolPart[]; value: ToolRunState }>(null)
 
   return useAuiState(state => {
     const parts = state.message.parts
@@ -882,12 +896,28 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
         tool =>
           `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}:${tool.timestamp ?? ''}:${tool.completedAt ?? ''}`
       )
-      .concat(String(live))
+      .concat(String(live), state.message.id, locale)
       .join('|')
 
-    if (cache.current?.signature !== signature) {
+    // The arguments may arrive after tool.start. Compare references rather
+    // than stringify potentially huge args/results on every streaming tick.
+    const sameInputs =
+      cache.current?.tools.length === timelineTools.length &&
+      timelineTools.every((tool, index) => {
+        const previous = cache.current!.tools[index]
+
+        return (
+          tool.args === previous.args &&
+          tool.result === previous.result &&
+          tool.toolName === previous.toolName &&
+          tool.isError === previous.isError
+        )
+      })
+
+    if (cache.current?.signature !== signature || !sameInputs) {
       cache.current = {
         signature,
+        tools: timelineTools,
         value: {
           completedAt: timelineTools.reduce<number | undefined>(
             (latest, tool) =>
@@ -900,7 +930,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
           ),
           count: tools.length,
           entryIds: tools.map(tool => toolEntryDisclosureId(state.message.id, tool)),
-          key: tools[0]?.toolCallId ?? '',
+          key: `${state.message.id}:${tools[0]?.toolCallId ?? ''}`,
           live,
           startedAt: timelineTools.reduce<number | undefined>(
             (earliest, tool) =>
@@ -959,7 +989,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   // A lone call is already its own one-line summary; heading it with a second
   // line would say the same thing twice.
   if (count < 2) {
-    return <>{children}</>
+    return <ToolRunDisclosureContext.Provider value={disclosureId}>{children}</ToolRunDisclosureContext.Provider>
   }
 
   // Two things a one-line window can't hold. An approval is a question the
@@ -968,27 +998,28 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   // keeps going. Either one hands the run back its full height until the run
   // settles and the row can be reached through the summary instead.
   const blocked = Boolean(approval) && pendingApprovalTool
-  const unfurled = blocked || rowOpen
-  const expanded = live ? unfurled : (persistedOpen ?? false)
+  const expanded = blocked || (persistedOpen ?? rowOpen)
 
   return (
-    <div
-      className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
-      data-slot="tool-block"
-      data-tool-group=""
-      ref={enterRef}
-    >
-      <ToolRunHeader
-        completedAt={completedAt}
-        live={live}
-        onToggle={live ? undefined : () => setToolDisclosureOpen(disclosureId, !expanded)}
-        open={expanded}
-        startedAt={startedAt}
-        summary={summary}
-      />
-      {live && !unfurled && <ToolRunTicker>{children}</ToolRunTicker>}
-      {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
-    </div>
+    <ToolRunDisclosureContext.Provider value={disclosureId}>
+      <div
+        className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
+        data-slot="tool-block"
+        data-tool-group=""
+        ref={enterRef}
+      >
+        <ToolRunHeader
+          completedAt={completedAt}
+          live={live}
+          onToggle={blocked ? undefined : () => setToolDisclosureOpen(disclosureId, !expanded)}
+          open={expanded}
+          startedAt={startedAt}
+          summary={summary}
+        />
+        {live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
+        {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
+      </div>
+    </ToolRunDisclosureContext.Provider>
   )
 }
 

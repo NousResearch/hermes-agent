@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 
 def _build_telegram_stubs():

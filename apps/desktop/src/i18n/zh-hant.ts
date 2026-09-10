@@ -290,6 +290,13 @@ export const zhHant = defineLocale({
   },
 
   settings: {
+    plugins: {
+      installModal: {
+        installFromGit: '從 Git 安裝',
+        reviewRepository: '檢查儲存庫',
+        repoPlaceholder: 'https://github.com/owner/repo'
+      }
+    },
     closeSettings: '關閉設定',
     exportConfig: '匯出設定',
     importConfig: '匯入設定',
@@ -1342,6 +1349,10 @@ export const zhHant = defineLocale({
     emptyDesc: '當 Hermes 為你的工作建立技能與記憶時，會顯示在這裡。'
   },
   agents: {
+    extendedTranscript: '完整記錄尾端',
+    transcriptTruncated: '顯示最新 16 KiB',
+    transcriptUnavailable: '即時記錄無法使用',
+
     close: '關閉代理',
     title: '派生樹',
     subtitle: '目前回合的子代理即時活動。',
@@ -1353,6 +1364,14 @@ export const zhHant = defineLocale({
     streaming: '串流傳輸中',
     files: '檔案',
     moreFiles: count => `還有 ${count} 個檔案`,
+    moreAgents: count => `還有 ${count} 個子代理`,
+    queued: '排隊中',
+    waitingActivity: '等待活動',
+    steer: '引導',
+    steerPlaceholder: '此子代理的指令',
+    steerQueued: '已排隊，等待下一個檢查點',
+    stopRequested: '已請求停止',
+    requestRejected: '子代理未接受請求',
     delegation: index => `派發 ${index}`,
     workers: count => `${count} 個工作單元`,
     workersActive: count => `${count} 個活躍`,
@@ -1526,6 +1545,38 @@ export const zhHant = defineLocale({
     unknown: '未知',
     hintPendingRestart: '在狀態列重新啟動閘道以套用此變更。',
     hintGatewayStopped: '在狀態列啟動閘道以建立連線。',
+    restartNeeded: '已儲存。請重新啟動訊息閘道以套用新設定。',
+    restartNow: '立即重新啟動',
+    restarting: '正在重新啟動…',
+    restartFailedManual: '閘道重新啟動失敗 — 請手動重新啟動並檢查閘道日誌。',
+    telegramQr: {
+      title: '選擇連接 Telegram 機器人的方式',
+      subtitle: '兩種方式都會連接由你控制的機器人，憑證僅儲存在此 Hermes 安裝中。',
+      quickSetup: '快速設定',
+      recommended: '推薦',
+      quickHelp: '掃描 QR 碼並在 Telegram 中確認。Hermes 會自動建立機器人並偵測你的 Telegram 使用者 ID。',
+      createWithQr: '以 QR 碼建立',
+      starting: '正在啟動…',
+      replaceWarning: 'Telegram 憑證已設定。儲存後，新的 QR 設定或機器人權杖將取代目前的機器人。',
+      scanHint: '用手機上的 Telegram 應用程式掃描，或在這台電腦上開啟連結。',
+      waiting: '等待 Telegram 確認…',
+      expiresIn: remaining => `${remaining} 後到期`,
+      expired: '已到期',
+      openTelegram: '開啟 Telegram',
+      ready: '機器人已建立',
+      allowedUsers: '允許的使用者',
+      ownerDetected: '已偵測擁有者',
+      addAtLeastOne: '請至少新增一個 Telegram 使用者 ID。',
+      userIdPlaceholder: 'Telegram 使用者 ID',
+      add: '新增',
+      numericOnly: '允許的 Telegram 使用者 ID 必須是數字。',
+      saveAndRestart: '儲存並重新啟動',
+      applying: '正在儲存…',
+      pairingExpired: 'Telegram 配對已到期。請重新開始 QR 設定。',
+      stillWaiting: detail => `仍在等待 Telegram。出錯後重試：${detail}`,
+      savedRestarting: 'Telegram 已儲存；閘道正在重新啟動…',
+      savedRestartFailed: detail => `Telegram 已儲存；閘道重新啟動失敗${detail}`
+    },
     credentialsSet: '憑證已設定',
     needsSetup: '需要設定',
     gatewayStopped: '訊息閘道已停止',
@@ -1754,8 +1805,8 @@ export const zhHant = defineLocale({
     title: '排程工作',
     count: count => `${count} 個工作`,
     modelImpact: {
-      title: '排程工作需要檢查',
-      message: count => `在您檢查模型設定之前，${count} 個排程工作將被略過。`,
+      title: '排程工作將繼續使用原模型',
+      message: count => `${count} 個未固定的排程工作將繼續使用建立時的模型執行。固定它們或設定 cron.model 以遷移。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 個`,
       review: '檢查排程工作',
       saveFailed: 'Hermes 未儲存該模型變更。',
@@ -1951,13 +2002,23 @@ export const zhHant = defineLocale({
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: '閘道與設定檔',
+      rename: '重新命名群組',
+      aliasLabel: '顯示名稱',
+      aliasHint: '僅變更顯示名稱；閘道和設定檔名稱維持不變。',
+      resetName: '重設名稱',
+      moveUp: '上移',
+      moveDown: '下移',
+      reorder: '調整群組順序',
+      actions: '群組動作'
+    },
     nav: {
       'new-session': '新工作階段',
       skills: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
-      cron: '排程工作',
-      'session-import': '匯入工作階段'
+      cron: '排程工作'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',
@@ -1977,11 +2038,14 @@ export const zhHant = defineLocale({
     shiftClickHint: 'Shift + 點擊聊天以釘選 · 拖曳以重新排序',
     noWorkspace: '無工作區',
     projectEmpty: '尚無工作階段',
+    projectLoadFailed: '會話載入失敗',
     noSessions: '尚無工作階段',
     noFilterMatches: '沒有工作階段符合這些篩選條件',
     projects: {
+      showAllSessions: '顯示所有工作階段',
       sectionLabel: '專案',
       home: '主頁',
+      autoDiscovered: '自動探索',
       newButton: '新增專案',
       createTitle: '新增專案',
       createDesc: '為工作區命名並新增一個或多個資料夾。',
@@ -2925,7 +2989,7 @@ export const zhHant = defineLocale({
     newSessionTab: '新增工作階段分頁',
     newTab: '新增分頁',
     pluginDisabled: pluginId => `外掛「${pluginId}」已停用`,
-    pluginDisabledBody: '在 設定 → 外掛 中重新啟用即可恢復面板。',
+    pluginDisabledBody: '在 技能與工具 → 外掛 中重新啟用即可恢復面板。',
     missingPane: paneId => `缺少面板：${paneId}`,
     editTitle: '版面配置',
     editHint: '選擇一個版面配置，或在區域之間拖曳面板。',
@@ -3009,7 +3073,10 @@ export const zhHant = defineLocale({
         streaming: '串流連線錯誤'
       },
       errorRetry: '重試',
+      errorStartNewSession: '開始新工作階段',
       errorSwitchProvider: '切換服務商',
+      errorSignInAgain: provider => `重新登入 ${provider}`,
+      errorOauthExpired: provider => `您的 ${provider} 登入已過期或被撤銷。請重新登入以繼續對話。`,
       errorOpenLogs: '開啟日誌',
       errorOpenLogsFailed: '無法開啟日誌資料夾',
       errorOpenDesktopLogs: '開啟桌面端日誌',

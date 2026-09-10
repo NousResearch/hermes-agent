@@ -284,6 +284,8 @@ export interface SessionUsageResponse {
   compressions?: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_status?: 'estimated' | 'exact'
   cost_usd?: number
@@ -591,6 +593,33 @@ export interface DelegationStatusResponse {
 
 export interface DelegationPauseResponse {
   paused?: boolean
+}
+
+export interface AsyncDelegationRecord {
+  delegation_id: string
+  goal?: string | null
+  role?: string | null
+  model?: string | null
+  status?: string | null
+  dispatched_at?: number | null
+  completed_at?: number | null
+  subagent_ids?: string[]
+}
+
+export interface SubagentListResponse {
+  subagents: {
+    subagent_id: string
+    parent_id?: string | null
+    delegation_id?: string | null
+    depth?: number | null
+    goal?: string | null
+    model?: string | null
+    started_at?: number | null
+    status?: string | null
+    tool_count?: number | null
+    last_tool?: string | null
+  }[]
+  delegations: AsyncDelegationRecord[]
 }
 
 export interface SubagentInterruptResponse {

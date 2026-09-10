@@ -8,6 +8,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -255,10 +256,8 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
 
     Yields ``(kind, start, end, at_command_start)`` events that tile *command* exactly:
     ``ws`` (one whitespace char), ``comment`` (``#`` up to, not including, the newline),
-    ``op`` (``&& || ;; ; | & ( )``), ``word`` (one ``_read_shell_token`` token). Comments open
-    only at command start (after newline, an operator, or a leading ``VAR=val``) in sudo mode.
-    Background mode (compound-background semantics) additionally opens comments anywhere
-    outside a token, emits ``escape`` for a bare ``\\x``, ops ``&>``, ``{ `` and a closing
+    ``op`` (``&& || ;; ; | & ( )``), ``word`` (one ``_read_shell_token`` token). Comments open at word boundaries.
+    Background mode (compound-background semantics) additionally emits ``escape`` for a bare ``\\x``, ops ``&>``, ``{ `` and a closing
     ``}``, and tracks ``(...)``/``{ ... }`` depth: inside a group nothing is an operator, so
     every non-structural char (whitespace included) surfaces as a single ``skip`` event.
     """
@@ -273,7 +272,7 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         if ch.isspace():
             kind, end = ("skip" if grouped else "ws"), i + 1
             at_start = at_start or ch == "\n"
-        elif ch == "#" and (background or at_start):
+        elif ch == "#":
             end = command.find("\n", i)
             kind, end = "comment", (n if end == -1 else end)
         elif background and ch == "\\" and i + 1 < n:
@@ -300,17 +299,61 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
 
 
 def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
-    """Rewrite only real unquoted sudo command words (at a command-start position, see
-    ``_scan_shell``), not plain text mentions; comments are copied through verbatim.
-    Returns the rewritten command and the number of sudo invocations rewritten."""
+    """Rewrite literal sudo executable words, preserving their spelling and arguments.
+
+    Follow ordinary env options/assignments, not shell payloads or env split strings:
+    interpreting those requires a second parser and rewriting inside another quoting layer.
+    """
     out: list[str] = []
     sudo_count = 0
+    in_env = env_operand = env_options = False
+    value_options = {"-u", "--unset", "-C", "--chdir", "-a", "--argv0"}
+    flag_options = {"-i", "--ignore-environment", "-0", "--null", "-v", "--debug"}
     for kind, start, end, at_start in _scan_shell(command):
         text = command[start:end]
-        if kind == "word" and at_start and text == "sudo":
-            text = "sudo -S -p ''"
-            sudo_count += 1
         out.append(text)
+        if kind == "op" or (kind == "ws" and text == "\n"):
+            in_env = env_operand = env_options = False
+        if kind != "word" or not (at_start or in_env):
+            continue
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            in_env = False
+            continue
+        # Redirections and expansions are not literal executable paths.
+        if len(words) != 1 or any(char in text for char in "$`*?[]~<>{}"):
+            in_env = False
+            continue
+        word = words[0]
+        if in_env:
+            if env_operand:
+                env_operand = False
+                continue
+            if env_options and word in {"-", "--"}:
+                env_options = False
+                continue
+            if env_options and word in value_options:
+                env_operand = True
+                continue
+            if env_options and (word in flag_options or
+                    any(word.startswith(opt + "=") for opt in value_options if opt.startswith("--")) or
+                    any(word.startswith(opt) and len(word) > 2 for opt in ("-u", "-C", "-a"))):
+                continue
+            if env_options and word.startswith("-"):
+                in_env = False
+                continue
+            if _looks_like_env_assignment(word):
+                env_options = False
+                continue
+        elif _looks_like_env_assignment(text):
+            continue
+        executable = word.rsplit("/", 1)[-1]
+        in_env = executable == "env"
+        env_options = in_env
+        if executable == "sudo":
+            out[-1] += " -S -p ''"
+            sudo_count += 1
     return "".join(out), sudo_count
 
 
@@ -392,7 +435,7 @@ def _rewrite_compound_background(command: str) -> str:
 
 
 def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
-    """Rewrite bare ``sudo`` to ``sudo -S -p ''`` when a password is available (shared by every
+    """Rewrite command-position ``sudo`` executables to ``sudo -S -p ''`` when a password is available (shared by every
     execution environment). Returns ``(command, sudo_stdin)``: ``sudo_stdin`` is one password
     line per sudo invocation that the caller must PREPEND to the process stdin (sudo -S consumes
     exactly one line and passes the rest through, so it's safe alongside the caller's own

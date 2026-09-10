@@ -125,6 +125,7 @@ Set these in `config.yaml` under `platforms.weixin.extra`:
 | `split_multiline_messages` | `false` | When `true`, split multi-line replies into multiple chat messages (legacy behavior). When `false`, keep multi-line replies as one message unless they exceed the length limit. |
 | `text_batch_delay_seconds` | `3.0` | Quiet period (seconds) before a buffered burst of rapid text messages is flushed as one combined request. iLink delivers messages individually, so this debounce avoids one agent invocation per fragment. Set `0` to dispatch each message immediately. |
 | `text_batch_split_delay_seconds` | `5.0` | Extended flush delay used when the latest fragment is near the split threshold (long messages iLink may have chunked). |
+| `use_provider_stt` | `false` | When `true`, trust WeChat's built-in speech-to-text for voice messages instead of downloading the raw audio and re-transcribing it via Hermes' own STT pipeline. WeChat's STT is very accurate for Chinese audio but produces garbled output for other languages, so the default is `false`. Enable this if you mainly receive Chinese voice messages and want to skip the extra transcription step. |
 
 ## Access Policies
 
@@ -195,7 +196,7 @@ The adapter receives media attachments from users, downloads them from the WeCha
 | **Images** | Downloaded, AES-decrypted, and cached as JPEG. |
 | **Video** | Downloaded, AES-decrypted, and cached as MP4. |
 | **Files** | Downloaded, AES-decrypted, and cached. Original filename is preserved. |
-| **Voice** | If a text transcription is available, it's extracted as text. Otherwise the audio (SILK format) is downloaded and cached. |
+| **Voice** | The raw audio (SILK format) is downloaded and re-transcribed by Hermes' own STT pipeline. WeChat's built-in transcription is ignored by default because it is unreliable for non-Chinese audio. Set `use_provider_stt: true` to trust WeChat's transcription directly and skip the download + re-transcription step (recommended for predominantly-Chinese conversations). |
 
 **Quoted messages:** Media from quoted (replied-to) messages is also extracted, so the agent has context about what the user is replying to.
 
@@ -327,7 +328,7 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 | Bot ignores group messages | Group policy defaults to `disabled`. Set `WEIXIN_GROUP_POLICY=open` or `allowlist` — but note that QR-login iLink bot identities (`...@im.bot`) typically cannot receive ordinary WeChat group messages at all. If the gateway logs show no raw inbound events for group messages, the limitation is on the iLink side, not in Hermes. |
 | Media download/upload fails | Ensure `cryptography` is installed. Check network access to `novac2c.cdn.weixin.qq.com` |
 | `Blocked unsafe URL (SSRF protection)` | The outbound media URL points to a private/internal address. Only public URLs are allowed |
-| Voice messages show as text | If WeChat provides a transcription, the adapter uses the text. This is expected behavior |
+| Voice messages show as text | By default the adapter downloads the raw audio and re-transcribes it via Hermes' STT pipeline, ignoring WeChat's built-in transcription (which is unreliable for non-Chinese audio). If you only receive Chinese voice messages and want to use WeChat's transcription directly, set `use_provider_stt: true` under `platforms.weixin.extra`. |
 | Messages appear duplicated | The adapter deduplicates by message ID. If you see duplicates, check if multiple gateway instances are running |
 | `iLink POST ... HTTP 4xx/5xx` | API error from the iLink service. Check your token validity and network connectivity |
 | Terminal QR code doesn't render | Reinstall with the messaging extra: `cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"`. Alternatively, open the URL printed above the QR |

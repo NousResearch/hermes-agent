@@ -880,3 +880,157 @@ class TestWeixinVoiceGatewayHandoff:
             "the wrong transcript instead of re-transcribing (#27300)."
         )
 
+
+class TestWeixinUseProviderSTT:
+    """Tests for the ``use_provider_stt`` config flag.
+
+    When enabled, the adapter trusts Weixin's built-in STT text for voice
+    messages instead of downloading the raw audio and re-transcribing via
+    the central STT pipeline.  This is useful for Chinese speakers where
+    Weixin's STT is already very accurate, avoiding an unnecessary
+    transcription round-trip.
+    """
+
+    def _make_voice_item(self, text: str = "") -> dict:
+        return {
+            "type": weixin.ITEM_VOICE,
+            "voice_item": {
+                "text": text,
+                "media": {
+                    "encrypt_query_param": "q",
+                    "aes_key": "a" * 32,
+                    "full_url": "https://example.invalid/voice.silk",
+                },
+            },
+        }
+
+    def _make_adapter(self, use_provider_stt: bool) -> WeixinAdapter:
+        return WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={"account_id": "test-account", "use_provider_stt": use_provider_stt},
+            )
+        )
+
+    def test_extract_text_returns_provider_text_when_enabled(self):
+        """When use_provider_stt=True, _extract_text returns Weixin's STT
+        text even when raw audio media is present."""
+        item_list = [self._make_voice_item(text="今天天气怎么样")]
+        result = weixin._extract_text(item_list, use_provider_stt=True)
+        assert result == (
+            "[Voice transcription provided by Weixin]\n"
+            "今天天气怎么样"
+        )
+
+    def test_extract_text_drops_provider_text_when_disabled(self):
+        """When use_provider_stt=False (default), _extract_text returns
+        empty for a voice item that has both text and media, forcing the
+        central STT pipeline to re-transcribe."""
+        item_list = [self._make_voice_item(text="今天天气怎么样")]
+        result = weixin._extract_text(item_list, use_provider_stt=False)
+        assert result == ""
+
+    def test_extract_text_returns_provider_text_when_no_media(self):
+        """Even with use_provider_stt=False, if no media is present the
+        provider text is the only content available — it must be returned
+        (existing #65022 behavior)."""
+        item = {
+            "type": weixin.ITEM_VOICE,
+            "voice_item": {"text": "只有文字没有音频"},
+        }
+        result = weixin._extract_text([item], use_provider_stt=False)
+        assert result == (
+            "[Voice transcription provided by Weixin]\n"
+            "只有文字没有音频"
+        )
+
+    @pytest.mark.asyncio
+    async def test_download_voice_skips_when_provider_stt_enabled(self, tmp_path, monkeypatch):
+        """When use_provider_stt=True and voice_item.text is present,
+        _download_media returns None (no download needed)."""
+        adapter = self._make_adapter(use_provider_stt=True)
+        adapter._cdn_base_url = "https://example.invalid"
+        adapter._poll_session = Mock()
+
+        download_called = False
+
+        async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
+                                 aes_key_b64, full_url, timeout_seconds):
+            nonlocal download_called
+            download_called = True
+            return b"\x00FAKE"
+
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        item = self._make_voice_item(text="你好")
+        result, _mime = await adapter._download_media(item, weixin._INBOUND_MEDIA[weixin.ITEM_VOICE])
+
+        assert result is None
+        assert not download_called, (
+            "_download_media should skip the download when use_provider_stt "
+            "is enabled and provider text is present."
+        )
+
+    @pytest.mark.asyncio
+    async def test_download_voice_downloads_when_provider_stt_disabled(self, tmp_path, monkeypatch):
+        """When use_provider_stt=False (default), _download_media still
+        downloads the audio even when voice_item.text is set."""
+        adapter = self._make_adapter(use_provider_stt=False)
+        adapter._cdn_base_url = "https://example.invalid"
+        adapter._poll_session = Mock()
+
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes_async",
+                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}")))
+
+        async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
+                                 aes_key_b64, full_url, timeout_seconds):
+            return b"\x00FAKE"
+
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        item = self._make_voice_item(text="你好")
+        result, _mime = await adapter._download_media(item, weixin._INBOUND_MEDIA[weixin.ITEM_VOICE])
+
+        assert result is not None, (
+            "_download_media must still download the audio when "
+            "use_provider_stt is disabled (default behavior, #27300)."
+        )
+        assert result.endswith(".silk")
+
+    @pytest.mark.asyncio
+    async def test_download_voice_still_downloads_when_no_provider_text(self, tmp_path, monkeypatch):
+        """When use_provider_stt=True but voice_item.text is empty,
+        _download_media must still download the audio."""
+        adapter = self._make_adapter(use_provider_stt=True)
+        adapter._cdn_base_url = "https://example.invalid"
+        adapter._poll_session = Mock()
+
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes_async",
+                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}")))
+
+        async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
+                                 aes_key_b64, full_url, timeout_seconds):
+            return b"\x00FAKE"
+
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        item = self._make_voice_item(text="")
+        result, _mime = await adapter._download_media(item, weixin._INBOUND_MEDIA[weixin.ITEM_VOICE])
+
+        assert result is not None, (
+            "_download_media must download the audio even when "
+            "use_provider_stt is enabled if the provider text is empty."
+        )
+
+    def test_config_default_is_false(self):
+        """The default for use_provider_stt must be False (preserve #27300
+        behavior for non-Chinese audio)."""
+        adapter = _make_adapter()
+        assert adapter._use_provider_stt is False
+
+    def test_config_reads_true_from_extra(self):
+        """use_provider_stt=True in config.extra must be picked up."""
+        adapter = self._make_adapter(use_provider_stt=True)
+        assert adapter._use_provider_stt is True
+

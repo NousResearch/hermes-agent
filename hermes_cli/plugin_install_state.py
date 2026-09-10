@@ -256,7 +256,7 @@ def _recover_install_transaction() -> None:
 
     plugins_dir = _plugins_dir()
     try:
-        target = _sanitize_plugin_name(name, plugins_dir)
+        target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     except ValueError as exc:
         raise PluginOperationError(str(exc)) from exc
     transaction_root = plugins_dir / transaction_dir

@@ -636,27 +636,6 @@ def _read_manifest_for_install(plugin_dir: Path) -> dict:
     return manifest
 
 
-def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
-    """Move the validated clone into place and persist metadata; on any failure restore the
-    previous tree (if one was replaced) and the previous metadata sidecar, then re-raise."""
-    replaced_existing = target.exists()
-    if replaced_existing:
-        os.replace(target, backup)
-    try:
-        os.replace(tmp_target, target)
-        _write_install_metadata(new_metadata)
-    except Exception:
-        if target.exists():
-            shutil.rmtree(target)
-        if replaced_existing and backup.exists():
-            os.replace(backup, target)
-        if old_metadata:
-            _write_install_metadata(old_metadata)
-        else:
-            _install_metadata_path().unlink(missing_ok=True)
-        raise
-
-
 def _install_plugin_core(
     identifier: str,
     *,
@@ -987,15 +966,17 @@ def _remove_plugin_core(target: Path) -> None:
         from hermes_cli.config import config_write_lock
 
         with config_write_lock():
+            plugins_dir = _plugins_dir()
+            plugin_name = target.relative_to(plugins_dir).as_posix()
             metadata = _read_install_metadata()
             updated = dict(metadata)
-            tracked = updated.pop(target.name, None) is not None
-            staging = Path(tempfile.mkdtemp(prefix=".install-remove-", dir=target.parent))
+            tracked = updated.pop(plugin_name, None) is not None
+            staging = Path(tempfile.mkdtemp(prefix=".install-remove-", dir=plugins_dir))
             backup = staging / "previous-plugin"
-            was_enabled, was_disabled = _plugin_membership(target.name)
+            was_enabled, was_disabled = _plugin_membership(plugin_name)
             _write_install_transaction({
                 "version": 1,
-                "plugin_name": target.name,
+                "plugin_name": plugin_name,
                 "transaction_dir": staging.name,
                 "replaced_existing": True,
                 "old_metadata": metadata,
@@ -1003,18 +984,18 @@ def _remove_plugin_core(target: Path) -> None:
                 "was_disabled": was_disabled,
             })
             try:
-                secure_replace(target, backup, target.parent)
+                secure_replace(target, backup, plugins_dir)
                 if tracked:
                     _write_install_metadata(updated)
                 _mutate_plugin_state_locked(
-                    enabled_remove={target.name}, disabled_remove={target.name}
+                    enabled_remove={plugin_name}, disabled_remove={plugin_name}
                 )
                 secure_unlink(_install_transaction_path(), get_hermes_home(), missing_ok=True)
             except BaseException:
                 _recover_install_transaction()
                 raise
             try:
-                secure_rmtree(staging, target.parent)
+                secure_rmtree(staging, plugins_dir)
             except OSError as exc:
                 logger.warning("Plugin removal committed; cleanup deferred for %s: %s", staging, exc)
 
@@ -1038,17 +1019,8 @@ _get_disabled_set = functools.partial(_config_name_set, "plugins", "disabled")
 _get_enabled_set = functools.partial(_config_name_set, "plugins", "enabled")
 
 
-def _save_disabled_set(disabled: set) -> None:
-    _write_config_value("plugins", "disabled", sorted(disabled))
-
-
 def _save_enabled_set(enabled: set) -> None:
     _write_config_value("plugins", "enabled", sorted(enabled))
-
-
-def _save_plugin_sets(enabled: set, disabled: set) -> None:
-    _save_enabled_set(enabled)
-    _save_disabled_set(disabled)
 
 
 _BASIC_AUTH_PLUGIN_KEYS = frozenset({"basic", "dashboard_auth/basic"})
@@ -1067,13 +1039,6 @@ def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
         return False
     plugins_cfg["disabled"] = sorted(set(disabled) - _BASIC_AUTH_PLUGIN_KEYS)
     return True
-
-
-def _discard_key_and_leaf(names: set, key: str) -> None:
-    """Drop *key* and its bare leaf (``observability/langfuse`` -> ``langfuse``) from *names*, so a
-    stale legacy bare-name entry can't keep vetoing the canonical key."""
-    names.discard(key)
-    names.discard(key.split("/")[-1])
 
 
 def _mutate_plugin_state_locked(

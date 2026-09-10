@@ -1245,6 +1245,79 @@ def test_remove_cleans_enabled_state_in_same_transaction(tmp_path: Path) -> None
     assert "demo" not in plugins_cmd._get_enabled_set()
 
 
+def test_nested_remove_cleans_metadata_and_both_membership_lists() -> None:
+    import hermes_cli.plugins_cmd as plugins_cmd
+    from hermes_cli.config import load_config, save_config
+
+    plugins_dir = Path(os.environ["HERMES_HOME"]) / "plugins"
+    target = plugins_dir / "category" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.json").write_text('{"name":"demo"}', encoding="utf-8")
+    plugins_cmd._write_install_metadata(
+        {"category/demo": {"source": "https://example.com/demo.git"}}
+    )
+    config = load_config()
+    config["plugins"]["enabled"] = ["category/demo"]
+    config["plugins"]["disabled"] = ["category/demo"]
+    save_config(config, preserve_plugin_state=False)
+
+    plugins_cmd._remove_plugin_core(target)
+
+    assert not target.exists()
+    assert "category/demo" not in plugins_cmd._read_install_metadata()
+    assert "category/demo" not in plugins_cmd._get_enabled_set()
+    assert "category/demo" not in plugins_cmd._get_disabled_set()
+
+
+def test_interrupted_nested_remove_recovers_plugin_and_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_cli.plugins_cmd as plugins_cmd
+    from hermes_cli.config import load_config, save_config
+
+    plugins_dir = Path(os.environ["HERMES_HOME"]) / "plugins"
+    target = plugins_dir / "category" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.json").write_text('{"name":"demo"}', encoding="utf-8")
+    metadata: dict[str, dict[str, object]] = {
+        "category/demo": {"source": "https://example.com/demo.git"}
+    }
+    plugins_cmd._write_install_metadata(metadata)
+    config = load_config()
+    config["plugins"]["enabled"] = ["category/demo"]
+    config["plugins"]["disabled"] = ["category/demo"]
+    save_config(config, preserve_plugin_state=False)
+    mutate = plugins_cmd._mutate_plugin_state_locked
+
+    def interrupt(**changes):
+        mutate(**changes)
+        raise RuntimeError("injected interruption")
+
+    monkeypatch.setattr(plugins_cmd, "_mutate_plugin_state_locked", interrupt)
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        plugins_cmd._remove_plugin_core(target)
+
+    assert target.is_dir()
+    assert plugins_cmd._read_install_metadata() == metadata
+    assert "category/demo" in plugins_cmd._get_enabled_set()
+    assert "category/demo" in plugins_cmd._get_disabled_set()
+    assert not plugins_cmd._install_transaction_path().exists()
+
+
+def test_plain_save_config_preserves_plugin_lists() -> None:
+    from hermes_cli.config import load_config, read_raw_config, save_config
+
+    save_config(
+        {"plugins": {"enabled": ["current"], "disabled": []}},
+        preserve_plugin_state=False,
+    )
+    stale = load_config()
+    stale["plugins"]["enabled"] = ["stale-writer"]
+    save_config(stale)
+
+    assert read_raw_config()["plugins"]["enabled"] == ["current"]
+
+
 def test_concurrent_remove_and_install_preserve_new_provenance(
     tmp_path: Path, monkeypatch
 ) -> None:

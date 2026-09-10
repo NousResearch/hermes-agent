@@ -140,12 +140,24 @@ PRIVACY_PREFIX = (
 )
 
 # Credential-shaped strings we never want to ship to a peer in a task body.
+#
+# Each token pattern is anchored with a negative lookbehind so it cannot match
+# from the *middle* of a longer token. Without it, the generic `sk-` rule
+# matches inside our own task ids: `protocol.new_task_id()` returns
+# "task-" + uuid4().hex[:16], which contains "sk-" followed by 16 hex chars,
+# so redact_outbound() rewrote every task id as "ta" + "sk-[redacted]".
+#
+# `\b` is NOT sufficient here — the "k"/"-" transition inside "task-" is itself
+# a word boundary, so `\bsk-` still matches. The lookbehind is required.
+#
+# sk-ant- must precede the generic sk- rule; otherwise the generic rule matches
+# first and Anthropic keys lose their vendor tag.
 _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "sk-[redacted]"),
-    (re.compile(r"sk-ant-[A-Za-z0-9_\-]{16,}"), "sk-ant-[redacted]"),
-    (re.compile(r"ghp_[A-Za-z0-9]{20,}"), "ghp_[redacted]"),
-    (re.compile(r"xox[bap]-[A-Za-z0-9\-]{10,}"), "xox-[redacted]"),
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "AKIA[redacted]"),
+    (re.compile(r"(?<![A-Za-z0-9_\-])sk-ant-[A-Za-z0-9_\-]{16,}"), "sk-ant-[redacted]"),
+    (re.compile(r"(?<![A-Za-z0-9_\-])sk-[A-Za-z0-9_\-]{16,}"), "sk-[redacted]"),
+    (re.compile(r"(?<![A-Za-z0-9_\-])ghp_[A-Za-z0-9]{20,}"), "ghp_[redacted]"),
+    (re.compile(r"(?<![A-Za-z0-9_\-])xox[bap]-[A-Za-z0-9\-]{10,}"), "xox-[redacted]"),
+    (re.compile(r"(?<![A-Za-z0-9_\-])AKIA[0-9A-Z]{16}"), "AKIA[redacted]"),
     (re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"), "[redacted-jwt]"),
     (re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}"), "Bearer [redacted]"),
     (re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"), "[redacted-email]"),

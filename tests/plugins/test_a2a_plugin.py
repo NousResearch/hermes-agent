@@ -194,6 +194,36 @@ class TestOutboundRedaction:
         text = "The answer is 42 and the build passed."
         assert security.redact_outbound(text) == text
 
+    def test_own_identifiers_survive_redaction(self):
+        """Task/context ids must reach the peer intact.
+
+        `new_task_id()` is "task-" + 16 hex chars, which contains "sk-" followed
+        by 16 word chars — the generic OpenAI-key pattern matched inside it and
+        rewrote every id as "ta" + "sk-[redacted]", so two agents could not
+        exchange the ids of the messages they were discussing.
+        """
+        task_id, context_id = protocol.new_task_id(), protocol.new_context_id()
+        assert security.redact_outbound(task_id) == task_id
+        assert security.redact_outbound(context_id) == context_id
+        both = f"re {task_id} in {context_id}"
+        assert security.redact_outbound(both) == both
+
+    def test_credentials_still_redacted_when_glued_to_other_text(self):
+        """The boundary anchor must not open a hole: real keys still go."""
+        for probe in (
+            "sk-" + "a" * 24,
+            "key=sk-" + "b" * 24,
+            "(sk-" + "c" * 24 + ")",
+            "ghp_" + "d" * 22,
+            "xoxb-" + "e" * 14,
+            "AKIA" + "F" * 16,
+        ):
+            assert "[redacted]" in security.redact_outbound(probe), probe
+
+    def test_anthropic_key_keeps_its_vendor_tag(self):
+        out = security.redact_outbound("sk-ant-api03-" + "a" * 24)
+        assert out == "sk-ant-[redacted]"
+
 
 class TestAudit:
     def test_audit_writes_jsonl(self, monkeypatch, tmp_path):

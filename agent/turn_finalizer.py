@@ -426,6 +426,8 @@ def _apply_output_hooks(
         conversation_history=list(messages),
         model=agent.model,
         platform=platform,
+        sender_id=getattr(agent, "_user_id", None) or "",
+        chat_id=getattr(agent, "_chat_id", None) or "",
     )
     return final_response, transformed, pre_transform
 

@@ -18,7 +18,6 @@ import {
   Info,
   Keyboard,
   KeyRound,
-  Package,
   RefreshCw,
   Search,
   Settings2,
@@ -40,7 +39,6 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
-import { SKILLS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
@@ -50,8 +48,8 @@ import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
+import { movedSettingsTabRedirect } from './moved-tabs'
 import { NotificationsSettings } from './notifications-settings'
-import { PluginsSettings } from './plugins-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
@@ -67,7 +65,6 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'keys',
   'notifications',
   'billing',
-  'plugins',
   'sessions',
   'about'
 ]
@@ -78,17 +75,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
 
-  // MCP moved out of Settings into Capabilities (/skills?tab=mcp). Keep old
-  // `/settings?tab=mcp` deep links working — `useRouteEnumParam` would silently
-  // coerce the unknown tab to the default view otherwise. Preserve `server=` so
-  // an old bookmark still lands on (and highlights) the selected server.
+  // MCP and Plugins moved out of Settings into Capabilities. Keep old
+  // `/settings?tab=mcp|plugins` deep links working — `useRouteEnumParam` would
+  // silently coerce the unknown tab to the default view otherwise.
   useEffect(() => {
-    const params = new URLSearchParams(search)
+    const redirect = movedSettingsTabRedirect(search)
 
-    if (params.get('tab') === 'mcp') {
-      const server = params.get('server')
-      const suffix = server ? `&server=${encodeURIComponent(server)}` : ''
-      navigate(`${SKILLS_ROUTE}?tab=mcp${suffix}`, { replace: true })
+    if (redirect) {
+      navigate(redirect, { replace: true })
     }
   }, [navigate, search])
 
@@ -282,13 +276,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('keys')
       },
       {
-        active: activeView === 'plugins',
-        icon: Package,
-        id: 'plugins',
-        label: t.settings.nav.plugins,
-        onSelect: () => setActiveView('plugins')
-      },
-      {
         active: activeView === 'sessions',
         icon: Archive,
         id: 'sessions',
@@ -423,8 +410,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       <NotificationsSettings />
     ) : activeView === 'billing' ? (
       <BillingSettings />
-    ) : activeView === 'plugins' ? (
-      <PluginsSettings />
     ) : (
       <SessionsSettings />
     )

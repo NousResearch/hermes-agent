@@ -141,7 +141,7 @@ class TestGenerate:
         result = provider.generate("a cat", aspect_ratio="portrait")
         assert result["success"] is True
 
-        assert captured["model"] == "gpt-5.5"
+        assert captured["model"] == "gpt-5.6-luna"
         assert captured["store"] is False
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
@@ -465,3 +465,55 @@ class TestRegistration:
         codex_plugin.register(_Ctx())
         assert len(registered) == 1
         assert registered[0].name == "openai-codex"
+
+
+class TestCodexChatModel:
+    """Resolution precedence for the host chat model (#106683: ``gpt-5.5`` retired → 404).
+
+    The default is bumped to ``gpt-5.6-luna`` (a served Codex Responses model), and an
+    override chain (explicit → ``OPENAI_CODEX_CHAT_MODEL`` → scoped config → top-level
+    config → default) lets a fleet pin a model when OpenAI retires the default."""
+
+    def test_default_is_served_luna_model(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_CODEX_CHAT_MODEL", raising=False)
+        assert codex_plugin._resolve_chat_model(config={}) == "gpt-5.6-luna"
+
+    def test_explicit_wins_over_env_and_config(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_CODEX_CHAT_MODEL", "gpt-5.6-sol")
+        assert codex_plugin._resolve_chat_model(
+            "gpt-5.6-terra", config={"openai-codex": {"chat_model": "gpt-5.6-terra"}}) == "gpt-5.6-terra"
+
+    def test_env_var_overrides_config(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_CODEX_CHAT_MODEL", "gpt-5.6-sol")
+        assert codex_plugin._resolve_chat_model(
+            config={"openai-codex": {"chat_model": "gpt-5.6-terra"}}) == "gpt-5.6-sol"
+
+    def test_scoped_config_overrides_top_level(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_CODEX_CHAT_MODEL", raising=False)
+        cfg = {"openai-codex": {"chat_model": "gpt-5.6-sol"}, "chat_model": "gpt-5.6-terra"}
+        assert codex_plugin._resolve_chat_model(config=cfg) == "gpt-5.6-sol"
+
+    def test_top_level_config_used_when_scoped_absent(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_CODEX_CHAT_MODEL", raising=False)
+        assert codex_plugin._resolve_chat_model(config={"chat_model": "gpt-5.6-terra"}) == "gpt-5.6-terra"
+
+    def test_blank_values_fall_through(self, monkeypatch):
+        # Empty strings / whitespace must not short-circuit the chain.
+        monkeypatch.setenv("OPENAI_CODEX_CHAT_MODEL", "  ")
+        assert codex_plugin._resolve_chat_model(
+            "   ", config={"openai-codex": {"chat_model": ""}, "chat_model": "  "}) == "gpt-5.6-luna"
+
+    def test_payload_uses_env_override(self, provider, monkeypatch):
+        # Integration: the env override reaches the wire payload, not just the resolver.
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setenv("OPENAI_CODEX_CHAT_MODEL", "gpt-5.6-sol")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt, size=size, quality=quality, input_images=input_images))
+            return {"b64": _b64_png(), "source": "final"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+        provider.generate("a cat", aspect_ratio="portrait")
+        assert captured["model"] == "gpt-5.6-sol"

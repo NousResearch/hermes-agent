@@ -22,8 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_b64_image, success_response
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
-    StaticImageGenProvider, collect_source_images, error_factory, prompt_required_error,
-    resolve_static_model, size_for)
+    StaticImageGenProvider, collect_source_images, error_factory, load_image_gen_config,
+    prompt_required_error, resolve_static_model, size_for)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,12 @@ logger = logging.getLogger(__name__)
 _MAX_ERROR_BODY_CHARS = 500
 
 # Hosts the ``image_generation`` tool call; ``API_MODEL`` does the image work.
-_CODEX_CHAT_MODEL = "gpt-5.5"
+# ``gpt-5.5`` was retired by the ChatGPT/Codex backend around 2026-09-08 (404 model_not_found on
+# every Codex-signed box). ``gpt-5.6-luna`` is a currently-served Codex Responses model (it has
+# pricing in ``agent/usage_pricing`` and a context window in ``agent/model_metadata``). Override
+# via ``OPENAI_CODEX_CHAT_MODEL`` / ``image_gen.openai-codex.chat_model`` / ``image_gen.chat_model``
+# so the next retirement doesn't hard-break the tool — see ``_resolve_chat_model`` and issue #106683.
+_CODEX_CHAT_MODEL = "gpt-5.6-luna"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation and image editing "
@@ -77,6 +82,32 @@ def _summarize_error_body(body: str) -> str:
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return resolve_static_model(
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
+
+
+def _resolve_chat_model(
+    explicit: Optional[str] = None, config: Optional[Dict[str, Any]] = None
+) -> str:
+    """Host chat model that carries the Codex ``image_generation`` tool call.
+
+    Mirrors ``_resolve_model``'s precedence but without a fixed catalog (the host model is a
+    single OpenAI Responses model id, not one of the image tiers), so any non-empty string
+    wins. Precedence: *explicit* → ``OPENAI_CODEX_CHAT_MODEL`` →
+    ``image_gen.openai-codex.chat_model`` → ``image_gen.chat_model`` → ``_CODEX_CHAT_MODEL``.
+    The override exists so a fleet can pin a served model when OpenAI retires the default
+    (#106683: ``gpt-5.5`` 404'd and the constant was the only source — the next ``hermes
+    update`` reverted any source edit)."""
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    env_override = os.environ.get("OPENAI_CODEX_CHAT_MODEL")
+    if isinstance(env_override, str) and env_override.strip():
+        return env_override.strip()
+    cfg = load_image_gen_config() if config is None else config
+    scoped = cfg.get("openai-codex")
+    scoped_chat = scoped.get("chat_model") if isinstance(scoped, dict) else None
+    for candidate in (scoped_chat, cfg.get("chat_model")):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return _CODEX_CHAT_MODEL
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -181,7 +212,7 @@ def _build_responses_payload(
     nudged by ``instructions``."""
     content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}, *(input_images or [])]
     return {
-        "model": _CODEX_CHAT_MODEL,
+        "model": _resolve_chat_model(),
         "store": False,
         "instructions": _CODEX_INSTRUCTIONS,
         "input": [{"type": "message", "role": "user", "content": content}],

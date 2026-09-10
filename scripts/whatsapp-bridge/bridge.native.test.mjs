@@ -121,7 +121,8 @@ import {
   assert.deepEqual(event.readReceiptKey, {
     id: 'incoming-1',
     remoteJid: '15551234567@s.whatsapp.net',
-    participant: '15550001111@s.whatsapp.net',
+    // (patch 004) DM keys must NOT carry participant — WhatsApp ignores
+    // group-shaped receipts on DMs. Groups still include it (test below).
     fromMe: false,
   });
   assert.equal(event.hasQuotedMessage, true);

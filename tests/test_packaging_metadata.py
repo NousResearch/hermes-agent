@@ -74,6 +74,23 @@ _UPDATE_DOWNGRADE_GUARD_FLOORS = {
 }
 
 
+def test_core_python_multipart_floor_blocks_ghsa_5rvq_cxj2_64vf():
+    """Core installs must reject python-multipart versions affected by GHSA-5RVQ-CXJ2-64VF."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    core = data["project"]["dependencies"]
+    specs = [dep for dep in core if _distribution_name(dep) == "python-multipart"]
+
+    assert specs, "python-multipart must stay a declared core dependency for dashboard uploads"
+    assert any(
+        ">=0.0.30" in spec and "<1" in spec
+        for spec in specs
+    ), (
+        "GHSA-5RVQ-CXJ2-64VF affects python-multipart <0.0.30; the core "
+        "dependency floor must force upgrades instead of accepting vulnerable "
+        "already-installed versions"
+    )
+
+
 def _version_tuple(spec: str) -> tuple[int, ...]:
     # "1.0.1" -> (1, 0, 1); tolerant of pre/post suffixes by truncating.
     head = spec.split("+", 1)[0]

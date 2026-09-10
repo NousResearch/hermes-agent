@@ -167,6 +167,8 @@ def _last_run_display(job: Dict[str, Any]) -> str:
     last_status = job["last_status"]
     if last_status == "ok":
         return color("ok", Colors.GREEN)
+    if last_status == "delivery_queued":
+        return color("delivery_queued: completion unverified; do not resend", Colors.YELLOW)
     if last_status == "delivery_failed":
         # Agent succeeded but the result never reached the user — not green; last_error is None.
         return color(f"delivery_failed: {job.get('last_delivery_error') or '?'}", Colors.YELLOW)
@@ -216,6 +218,8 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
 def _job_warnings(job: Dict[str, Any]) -> List[str]:
     """Delivery / fire warning lines for one job in ``cron list``."""
     lines = []
+    if queued := job.get("last_delivery_queued"):
+        lines.append(f"Delivery queued (completion unverified; do not resend): {queued}")
     if job.get("last_delivery_error"):
         lines.append(f"{color('⚠ Delivery failed:', Colors.YELLOW)} {job['last_delivery_error']}")
     # A live adapter acked the last send but returned no message_id / raw_response
@@ -491,7 +495,7 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
-    if last_status and last_status not in {"ok", "delivery_failed"}:
+    if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
         issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
     if delivery_err := str(job.get("last_delivery_error") or "").strip():
         issues.append(f"last delivery failed: {delivery_err}")
@@ -571,7 +575,10 @@ def cron_create(args):
         action="create", schedule=args.schedule, prompt=args.prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
-        no_agent=getattr(args, "no_agent", False) or None, **_job_api_kwargs(args))
+        no_agent=getattr(args, "no_agent", False) or None,
+        **({"paused": args.paused, "paused_reason": getattr(args, "paused_reason", None)}
+           if getattr(args, "paused", False) or getattr(args, "paused_reason", None) is not None else {}),
+        **_job_api_kwargs(args))
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -580,7 +587,10 @@ def cron_create(args):
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     _print_job_details(result.get("job", {}))
-    print(f"  Next run: {result['next_run_at']}")
+    if not result.get("job", {}).get("enabled", True):
+        print("  Created PAUSED — resume to schedule, or explicitly run now.")
+    else:
+        print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
 

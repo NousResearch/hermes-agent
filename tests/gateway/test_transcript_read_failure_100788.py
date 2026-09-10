@@ -89,6 +89,26 @@ class TestSlashCommandsOnUnreadableTranscript:
         assert "unreadable" in HISTORY_UNREADABLE
         assert "not a new conversation" in HISTORY_UNREADABLE
 
+    @pytest.mark.asyncio
+    async def test_btw_replies_history_unreadable_on_read_failure(self):
+        """The except-branch must actually run: after the Sep 2026 decomposition the
+        constant lived in slash_commands_status but was not imported by slash_commands,
+        so this path raised NameError (#102117 follow-up)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from gateway.slash_commands_status import HISTORY_UNREADABLE
+        from tests.gateway.test_background_command import _make_event, _make_runner
+
+        runner = _make_runner()
+        store = AsyncMock()
+        store.get_or_create_session.return_value = MagicMock(session_id="s1")
+        store.load_transcript.side_effect = TranscriptReadError("malformed")
+        store._store = runner.session_store
+        runner._async_session_store = store
+
+        result = await runner._handle_btw_command(_make_event(text="/btw what?"))
+        assert result == HISTORY_UNREADABLE
+
     def test_every_transcript_reading_handler_catches_the_error(self):
         """No `await ...load_transcript(` in the mixin may be left uncaught."""
         import inspect

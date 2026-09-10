@@ -20,7 +20,8 @@ except ImportError:
     aiohttp = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 logger = logging.getLogger(__name__)

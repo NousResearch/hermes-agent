@@ -621,6 +621,117 @@ def test_top_level_require_mention_bridges_to_telegram(monkeypatch, tmp_path):
         assert tg_cfg.extra.get("require_mention") is True
 
 
+def test_inject_observed_group_context_defaults_on_and_is_config_scoped():
+    """The turn runner reads the active profile's YAML, never a bridged process env."""
+    from gateway.run_turn_runner import _telegram_inject_observed_group_context_enabled
+
+    assert _telegram_inject_observed_group_context_enabled({}) is True
+    assert _telegram_inject_observed_group_context_enabled(None) is True
+    assert _telegram_inject_observed_group_context_enabled(
+        {"telegram": {"inject_observed_group_context": False}}
+    ) is False
+    assert _telegram_inject_observed_group_context_enabled(
+        {"telegram": {"inject_observed_group_context": "false"}}
+    ) is False
+    assert _telegram_inject_observed_group_context_enabled(
+        {"telegram": {"extra": {"inject_observed_group_context": False}}}
+    ) is False
+    # The gateway's own platform section is the other documented place a telegram setting lives.
+    assert _telegram_inject_observed_group_context_enabled(
+        {"gateway": {"platforms": {"telegram": {"inject_observed_group_context": False}}}}
+    ) is False
+    assert _telegram_inject_observed_group_context_enabled(
+        {"gateway": {"platforms": {"telegram": {"extra": {"inject_observed_group_context": False}}}}}
+    ) is False
+    # ``hermes gateway setup`` may write gateway.platforms as a list of names; a non-dict shape
+    # must fall back to the default instead of raising.
+    assert _telegram_inject_observed_group_context_enabled(
+        {"gateway": {"platforms": ["telegram"]}, "telegram": "not-a-mapping"}
+    ) is True
+
+
+def test_inject_observed_group_context_is_per_profile_and_never_process_global(tmp_path, monkeypatch):
+    """Two multiplexed profiles keep independent values and nothing lands in the process env."""
+    import os
+
+    from agent.secret_scope import set_multiplex_active
+    from gateway.run import _load_gateway_config, _profile_runtime_scope
+    from gateway.run_turn_runner import _telegram_inject_observed_group_context_enabled as enabled
+    from plugins.platforms.telegram.adapter import _apply_yaml_config
+
+    homes = {}
+    for name, value in (("optout", "false"), ("optin", "true")):
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            f"telegram:\n  inject_observed_group_context: {value}\n", encoding="utf-8")
+        homes[name] = home
+
+    monkeypatch.delenv("TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT", raising=False)
+
+    with _profile_runtime_scope(homes["optout"], {}, hydrate_secrets=False):
+        # The adapter's YAML→env bridge is the multiplex leak surface (#72348): a secondary
+        # profile must not publish this setting where every other profile would read it.
+        set_multiplex_active(True)
+        try:
+            _apply_yaml_config({}, {"inject_observed_group_context": False})
+        finally:
+            set_multiplex_active(False)
+        assert enabled(_load_gateway_config()) is False
+        assert "TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT" not in os.environ
+
+    with _profile_runtime_scope(homes["optin"], {}, hydrate_secrets=False):
+        assert enabled(_load_gateway_config()) is True
+        assert "TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT" not in os.environ
+
+
+def test_build_gateway_agent_history_can_withhold_observed_prompt_context():
+    """Opting out still leaves observed rows persisted, but excludes them from the live prompt."""
+    from gateway.run import _build_gateway_agent_history
+
+    history = [
+        {"role": "user", "content": "[Alice|111] side chatter", "observed": True},
+        {"role": "assistant", "content": "Earlier reply"},
+    ]
+    channel_prompt = "observed Telegram group context"
+
+    injected_history, injected_context = _build_gateway_agent_history(
+        history, channel_prompt=channel_prompt, inject_observed_context=True,
+    )
+    withheld_history, withheld_context = _build_gateway_agent_history(
+        history, channel_prompt=channel_prompt, inject_observed_context=False,
+    )
+
+    assert injected_context == "[Alice|111] side chatter"
+    assert withheld_context is None
+    assert injected_history == withheld_history == [{"role": "assistant", "content": "Earlier reply"}]
+    assert history[0]["observed"] is True
+
+
+def test_turn_runner_loads_observed_context_according_to_the_profile_setting():
+    """The production caller must pass the profile's flag into the replay builder."""
+    from gateway.run_turn_runner import TurnRunner
+
+    runner = object.__new__(TurnRunner)
+    runner._ctx = SimpleNamespace(
+        history=[{"role": "user", "content": "[Alice|111] side chatter", "observed": True}],
+        channel_prompt="observed Telegram group context",
+        user_config={"telegram": {"inject_observed_group_context": False}},
+        session_id="telegram-group-session",
+        session_key="key",
+    )
+
+    agent_history, observed_group_context, _media = runner._load_turn_history(object(), False)
+
+    assert agent_history == []
+    assert observed_group_context is None
+
+    # Default (no setting): the observed row still rides the addressed turn's context block.
+    runner._ctx.user_config = {}
+    _history, observed_group_context, _media = runner._load_turn_history(object(), False)
+    assert observed_group_context == "[Alice|111] side chatter"
+
+
 # ---------------------------------------------------------------------------
 # Helpers for location / media observe+attribution tests
 # ---------------------------------------------------------------------------

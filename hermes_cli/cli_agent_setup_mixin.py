@@ -175,13 +175,10 @@ class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
     def _current_interim_assistant_callback(self):
-        """Keep progress narration independent of reasoning visibility and token streaming."""
+        """Keep progress narration independent of reasoning visibility, token streaming, and tool progress."""
         from cli import CLI_CONFIG
         display = CLI_CONFIG.get("display") or {}
-        if (
-            getattr(self, "tool_progress_mode", "all") == "off"
-            or not display.get("interim_assistant_messages", True)
-        ):
+        if not display.get("interim_assistant_messages", True):
             return None
         return self._on_interim_assistant
 
@@ -295,8 +292,8 @@ class CLIAgentSetupMixin:
 
     def _resolve_fallback_runtime(self, primary_exc):
         """Primary provider resolution failed: on an AuthError try each fallback entry in
-        order and switch to the first that resolves. None when the error is not auth-related
-        or no fallback resolves."""
+        order and switch the CLI's requested_provider/model to the first that resolves.
+        None when the error is not auth-related or no fallback resolves."""
         from cli import _cprint, logger
         from hermes_cli.auth import AuthError
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -373,7 +370,7 @@ class CLIAgentSetupMixin:
             select_provider_and_model()
         except (KeyboardInterrupt, EOFError, SystemExit):
             print()
-            _cprint("  Setup cancelled. Run 'hermes model' to try again.")
+            _cprint("  Setup cancelled. Run 'hermes model' any time.")
             return False
         except Exception as exc:
             logger.debug("first-run provider setup failed: %s", exc)
@@ -597,6 +594,14 @@ class CLIAgentSetupMixin:
                 seed_credits_at_session_start(self.agent)
             except Exception:
                 pass
+
+            # Restore conversation history if resuming
+            if self._resumed and self._session_db and not self.conversation_history:
+                if not self._load_resumed_history_late():
+                    return False
+            if self.conversation_history:
+                self.agent.messages = self.conversation_history
+                self.agent._session_messages = self.conversation_history
             self._active_agent_route_signature = _route_signature(effective_model, runtime)
 
             # Force-create DB row on /title intent, then apply title.
@@ -624,7 +629,7 @@ class CLIAgentSetupMixin:
         """Return a safe-resume error without materializing transcript rows.
 
         ``tip_only`` matches call sites that load only the tip session's rows — counting
-        the full lineage there would over-reject compressed sessions with a small
+        the full lineage there would over-reject heavily-compressed sessions with a small
         tip. Generic guard failures fail OPEN; only a genuine over-limit result blocks."""
         if not self._session_db:
             return None

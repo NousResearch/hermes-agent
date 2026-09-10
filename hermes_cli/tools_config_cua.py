@@ -242,6 +242,9 @@ def _report_repair_or_upgrade(ok: bool, *, repair_existing: bool, binary, before
                               driver_cmd: str) -> bool:
     """Post-installer verdict: a repair must leave a usable contract; upgrades show before/after."""
     if ok and repair_existing:
+        # A same-version repair can replace bundle resources without changing
+        # the executable fingerprint. Never reuse the pre-repair failure.
+        _CUA_DRIVER_CONTRACT_CACHE.clear()
         repaired = _cua_driver_contract_status()
         if not repaired.get("ready"):
             return _fail("    cua-driver was reinstalled, but its runtime contract is still "
@@ -261,7 +264,8 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
     """Install or refresh the cua-driver binary used by Computer Use.
     Re-running the upstream installer (always the latest release tag) is the canonical upgrade.
     ``upgrade=False`` (toolset enable flow) keeps a compatible installation, repairs an
-    old/incomplete one and installs when missing; ``upgrade=True`` always refreshes."""
+    old/incomplete one and installs when missing; ``upgrade=True`` refreshes the
+    standard installation, but an explicit command override stays user-managed."""
     system = platform.system()
     if system not in ("Darwin", "Windows", "Linux"):
         if not upgrade:  # silent under `hermes update`, which calls this for every user
@@ -319,6 +323,12 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
                          f"    Repair it from an interactive terminal with: {_UPGRADE_CMD}",
                          warn=False)
         _print_info("    Repairing it with the current upstream installer.")
+
+    if override and upgrade:
+        _print_info("    HERMES_CUA_DRIVER_CMD selects a user-managed driver; skipping the "
+                    "standard installer. Update that binary directly, or unset the override "
+                    "before refreshing the standard driver.")
+        return True
 
     # upgrade=True path — refresh to the latest upstream release.
     if not _cua_install_target_writable():

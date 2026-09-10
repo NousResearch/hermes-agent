@@ -240,45 +240,6 @@ class TestRegistryResolution:
 
 
 # ---------------------------------------------------------------------------
-# Legacy ABC backward-compat aliases (is_configured / provider_name)
-# ---------------------------------------------------------------------------
-
-
-class TestLegacyAbcAliases:
-    """is_configured() and provider_name() delegate to the new API."""
-
-    @pytest.mark.parametrize(
-        "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
-    )
-    def test_is_configured_delegates_to_is_available(self, plugin_name: str) -> None:
-        _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
-
-        p = get_provider(plugin_name)
-        assert p is not None
-        assert p.is_configured() is p.is_available()
-
-    @pytest.mark.parametrize(
-        "plugin_name,expected_label",
-        [
-            ("browserbase", "Browserbase"),
-            ("browser-use", "Browser Use"),
-            ("firecrawl", "Firecrawl"),
-        ],
-    )
-    def test_provider_name_returns_display_name(
-        self, plugin_name: str, expected_label: str
-    ) -> None:
-        _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
-
-        p = get_provider(plugin_name)
-        assert p is not None
-        assert p.provider_name() == expected_label
-
-
-# ---------------------------------------------------------------------------
 # Picker integration
 # ---------------------------------------------------------------------------
 

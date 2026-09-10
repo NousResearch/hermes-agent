@@ -14,7 +14,7 @@ import logging
 
 import pytest
 
-from gateway import config as gateway_config
+from gateway import config_env as gateway_config_env
 from gateway.config import Platform, load_gateway_config
 
 
@@ -127,7 +127,7 @@ def test_env_credentials_still_populate_extra_when_yaml_disables(tmp_path, monke
 @pytest.fixture()
 def _fresh_warn_dedup(monkeypatch):
     """The explicit-disable notice is one-time per process; start each test clean."""
-    monkeypatch.setattr(gateway_config, "_EXPLICIT_DISABLE_WARNED", set())
+    monkeypatch.setattr(gateway_config_env, "_EXPLICIT_DISABLE_WARNED", set())
 
 
 @pytest.mark.usefixtures("_fresh_warn_dedup")
@@ -188,12 +188,15 @@ def test_no_warning_when_disabled_and_no_env_credentials(tmp_path, monkeypatch, 
 
 
 def test_every_env_enable_branch_is_named_for_the_warning():
-    """Each platform routed through ``_enable_from_env`` needs a credential
-    entry so the WARNING can name what is being ignored."""
+    """Each platform routed through ``_enable_from_env`` (every ``_Cred`` row plus
+    the hand-written steps that call it) needs a credential entry so the WARNING
+    can name what is being ignored."""
     import inspect, re
 
-    src = inspect.getsource(gateway_config._apply_env_overrides)
-    routed = {Platform[name] for name in re.findall(r"_enable_from_env\(Platform\.([A-Z_]+)\)", src)}
+    src = inspect.getsource(gateway_config_env)
+    routed = {Platform[name] for name in re.findall(r"_enable_from_env\(config, Platform\.([A-Z_]+)\)", src)}
+    routed |= {step.platform for step in gateway_config_env._ENV_STEPS if isinstance(step, gateway_config_env._Cred)}
     routed.add(Platform.SLACK)  # Slack has its own inline copy of the logic
-    missing = {p.value for p in routed} - {p.value for p in gateway_config._ENV_ENABLE_CREDENTIALS}
+    assert len(routed) > 15
+    missing = {p.value for p in routed} - {p.value for p in gateway_config_env._ENV_ENABLE_CREDENTIALS}
     assert not missing, f"platforms without a credential entry for the explicit-disable warning: {missing}"

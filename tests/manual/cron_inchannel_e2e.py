@@ -46,6 +46,7 @@ HOME = _fresh_home()
 
 # Import AFTER HERMES_HOME is set.
 import cron.scheduler as sched  # noqa: E402
+from cron import scheduler_delivery as sched_delivery
 import gateway.mirror as mirror  # noqa: E402
 from gateway.config import GatewayConfig, Platform  # noqa: E402
 from gateway.session import SessionStore, SessionSource, build_session_key  # noqa: E402
@@ -74,7 +75,7 @@ def _run_scenario(name, chat_id, is_dm, reply_chat_type):
     class _Adapter:
         _session_store = store
 
-    ok = sched._seed_cron_channel_session(
+    ok = sched_delivery._seed_cron_channel_session(
         {"id": "brief-job", "name": "PR review brief"},
         _Adapter(), "slack", chat_id, BRIEF,
         is_dm=is_dm, user_id="U_HUMAN", chat_name="test",

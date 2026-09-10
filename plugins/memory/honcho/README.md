@@ -54,6 +54,35 @@ Multi-pass `.chat()` reasoning about the user, appended after base context.
 
 Both layers are joined, then truncated to fit `contextTokens` budget via `_truncate_to_budget` (tokens × 4 chars, word-boundary safe).
 
+### Current-Query Recall (opt-in)
+
+Set `"recallSync": true` in `$HERMES_HOME/honcho.json` (at the root or under
+`hosts.hermes`), or enable **Current-query recall** in the memory settings or
+`hermes honcho setup`. An explicit host-level `false` overrides root-level `true`.
+
+In `context` and `hybrid` modes, due base and dialectic retrievals use the current
+user request before inference. The whole wait, including session initialization,
+optional query rewriting and dialectic passes, uses `timeout` / `requestTimeout`
+seconds, or 5 seconds when unset, zero, negative or nonfinite. The first-turn wait
+settings continue to apply only to the default asynchronous mode.
+
+Timeouts, errors, busy workers and cadence gaps omit recall instead of reusing
+another query's context. A timed-out worker keeps its slot until it exits; its
+late result is discarded. Base and dialectic retain independent cadences and
+reasoning/depth settings. A completed empty lookup consumes its cadence; failed,
+timed-out or superseded operations do not advance either cadence. Empty dialectic
+results also increase the existing backoff. No previous-query cache or generic
+user-representation/card fallback is substituted for an empty query-scoped lookup.
+Session changes, shutdown, and new turn generations discard in-flight results,
+even when turn numbers repeat. The wait deadline does not cancel an SDK HTTP call;
+the occupied worker slot bounds accumulation until that call returns.
+`injectionFrequency: "first-turn"` suppresses only later
+base retrievals. Every dialectic pass includes the current request, including when
+rewriting is disabled or empty. Generic prewarm and post-turn automatic retrieval
+are disabled; message writes continue normally. `tools` mode is unchanged.
+
+The default is `false`, preserving background recall and cache reuse across turns.
+
 ### Latest-Message Query Rewrite (opt-in)
 
 When `queryRewrite: true`, dialectic pass 0 first uses the shared
@@ -207,6 +236,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `recallMode` | string | `"hybrid"` | `"hybrid"` (auto-inject + tools), `"context"` (auto-inject only, tools hidden), `"tools"` (tools only, no injection). Legacy `"auto"` → `"hybrid"` |
+| `recallSync` | boolean | `false` | Wait for current-query automatic recall within `timeout` / `requestTimeout` (5s when unset or invalid); omit late/busy results. Context/hybrid only |
 | `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (user observes self, AI observes others). Use `observation` object for granular control |
 | `observation` | object | — | Per-peer observation config (see Observation section) |
 

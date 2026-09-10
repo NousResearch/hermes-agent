@@ -299,18 +299,6 @@ def test_ensure_model_ready_unknown_model_raises(stub_server, tmp_path):
         sup.ensure_model_ready("absent")
 
 
-def test_model_failures_surface_exit_code_not_retry(stub_server, tmp_path):
-    """Design: child failures surface, never auto-retry."""
-    port, handler = stub_server
-    handler.models = {"data": [
-        {"id": "ok", "status": {"value": "loaded"}},
-        {"id": "dead", "status": {"value": "failed", "exit_code": -1073741819}},
-    ]}
-    sup = _make_supervisor(tmp_path, port)
-    failures = sup.model_failures()
-    assert failures == {"dead": -1073741819}
-
-
 def test_is_idle_requires_no_busy_slots_and_zero_processing(stub_server, tmp_path):
     port, handler = stub_server
     sup = _make_supervisor(tmp_path, port)

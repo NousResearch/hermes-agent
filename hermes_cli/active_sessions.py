@@ -127,6 +127,12 @@ class ActiveSessionRefusal(str):
         return obj
 
 
+def format_refusal_stderr(message: str) -> str:
+    """Keep the refusal contract across the one-shot CLI subprocess boundary."""
+    reason = getattr(message, "reason", "")
+    return f"hermes-refusal-reason: {reason}\n{message}" if reason else str(message)
+
+
 def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -> bool:
     """True when an existing lease belongs to the very caller re-acquiring it.
     Identity is (pid, live_session_id): pid alone lets two live sessions in one process

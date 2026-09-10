@@ -67,7 +67,8 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
              ("Total tokens:", n("total")), ("API calls:", n("calls"))]
     if usage.get("context_max"):
         pct = int(usage.get("context_percent") or 0)
-        rows.append(("Current context:", f"{n('context_used')} / {n('context_max')} ({pct}%)"))
+        mark = "~" if usage.get("context_estimated") else ""
+        rows.append(("Current context:", f"{mark}{n('context_used')} / {n('context_max')} ({mark}{pct}%)"))
     rows += [("Messages:", f"{message_count:,}"), ("Compressions:", n("compressions"))]
     model = usage.get("model") or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
     lines = ["Session Token Usage", "────────────────────────────────────────", f"Model: {model}"]
@@ -133,13 +134,14 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     if model := mirror.get("model") or usage.get("model") or "":
         lines.append(f"Model: {model}")
     lines.append(f"Provider: {mirror.get('provider') or 'auto'}")
-    context_used = int(usage.get("context_used") or usage.get("total") or 0)
+    context_used = int(usage.get("context_used") or 0)
+    mark = "~" if usage.get("context_estimated") else ""
     context_max = int(usage.get("context_max") or 0)
     if context_used and context_max:
         lines.append(
-            f"Context usage: ~{context_used:,} / {context_max:,} tokens ({(context_used / context_max) * 100:.1f}%)")
+            f"Context usage: {mark}{context_used:,} / {context_max:,} tokens ({mark}{(context_used / context_max) * 100:.1f}%)")
     elif context_used:
-        lines.append(f"Context usage: ~{context_used:,} tokens")
+        lines.append(f"Context usage: {mark}{context_used:,} tokens")
     if usage.get("compressions"):
         lines.append(f"Compressions: {int(usage.get('compressions') or 0):,}")
     return "\n".join(lines)

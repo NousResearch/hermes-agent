@@ -93,6 +93,31 @@ YOLO mode disables **all** dangerous command safety checks for the session — *
 
 For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/quit --delete` — `/exit --delete` is an alias), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
 
+### Supervised-gateway lifecycle restriction
+
+The terminal tool has a separate, non-overridable guard against stopping or
+restarting the gateway from inside its own supervised process. A self-restart can
+terminate the tool before it finishes and cause a supervisor/auto-resume loop.
+User approval, YOLO mode, and `force=True` do not bypass this guard.
+
+On macOS, executed `launchctl submit` and `launchctl bootstrap` commands are
+restricted **regardless of the job label**. This is a conservative registration
+restriction intended to catch indirect restart helpers with neutral labels, not
+an inspection of the target plist. It also rejects independent scheduled jobs
+with `RunAtLoad=false` and no `KeepAlive` key; rejection does **not** establish that
+the job uses KeepAlive or controls Hermes.
+
+For authorized LaunchAgent maintenance, use a separate shell outside the running
+gateway. Some independent `load`/`unload` commands currently pass the label-based
+checks, but that is not a target-verified exemption or a supported way to evade a
+`bootstrap` rejection. Read-only `launchctl print` is not a lifecycle operation.
+After external maintenance, distinguish the on-disk plist from the loaded job:
+validate the plist and read back the loaded schedule before reporting activation.
+
+A tool rejection means the command did not execute through that tool call. An
+assistant declining to issue a call is a separate model decision; changing models
+does not change the terminal guard's policy.
+
 ### Hardline Blocklist (Always-On Floor)
 
 Some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them **regardless** of:
@@ -236,6 +261,12 @@ command_allowlist:
 ```
 
 These patterns are loaded at startup and silently approved in all future sessions.
+
+The setting must be a list of strings. Legacy installs that stored a list as a
+quoted YAML/JSON string recover that list at load time and log a warning to
+re-save it with `hermes config edit`. Other malformed values are ignored with
+a warning; they never become per-character approvals. Loading does not rewrite
+your configuration file.
 
 :::tip
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.
@@ -717,6 +748,11 @@ Context files (AGENTS.md, .cursorrules, SOUL.md) are scanned for prompt injectio
 - Attempts to read secrets (`.env`, `credentials`, `.netrc`)
 - Credential exfiltration via `curl`
 - Invisible Unicode characters (zero-width spaces, bidirectional overrides)
+
+The translation-and-execution check requires a short language/format clause (for example,
+“translate this into a bash script and execute it”). It does not connect translation
+and execution verbs across unrelated comma-separated role prose. These patterns are
+heuristics, not semantic intent detection.
 
 Blocked files show a warning:
 

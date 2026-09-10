@@ -124,7 +124,9 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
         if display_kind == "hidden":
             continue
         if display_kind in _RESUME_EVENT_TEXT:
-            entries.append(("event", _RESUME_EVENT_TEXT[display_kind]))
+            metadata = msg.get("display_metadata") or {}
+            label = metadata.get("display_text") if display_kind == "async_delegation_complete" else None
+            entries.append(("event", _sanitize_display_text(label or _RESUME_EVENT_TEXT[display_kind])))
             continue
         if role == "user":
             text = _sanitize_display_text(_user_display_text(content))
@@ -516,7 +518,7 @@ class CLIAgentSetupMixin:
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"), acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
-                max_tokens=self.max_tokens, max_iterations=self.max_turns,
+                max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose, quiet_mode=not self.verbose,

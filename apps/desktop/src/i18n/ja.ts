@@ -2052,6 +2052,7 @@ export const ja = defineLocale({
     shiftClickHint: 'Shift クリックでピン留め · ドラッグで並べ替え',
     noWorkspace: 'ワークスペースなし',
     projectEmpty: 'セッションはまだありません',
+    projectLoadFailed: 'セッションの読み込みに失敗しました',
     noSessions: 'セッションはまだありません',
     noFilterMatches: 'このフィルターに一致するセッションはありません',
     projects: {

@@ -2544,6 +2544,7 @@ export const zh: Translations = {
     shiftClickHint: 'Shift+ 单击对话以置顶 · 拖动以重新排序',
     noWorkspace: '无工作区',
     projectEmpty: '暂无会话',
+    projectLoadFailed: '会话加载失败',
     noSessions: '暂无会话',
     noFilterMatches: '没有会话符合这些筛选条件',
     projects: {

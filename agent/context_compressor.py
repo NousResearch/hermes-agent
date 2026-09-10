@@ -22,6 +22,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.model_metadata import (
@@ -1637,7 +1638,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 }
 
 
-class ContextCompressor(MicroCompactionMixin, ContextEngine):
+class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngine):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
@@ -4668,23 +4669,6 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
         return self._finalize_compressed(compressed, messages, n_messages)
-
-    def _summarize_window(
-        self, messages: List[Dict[str, Any]], turns_to_summarize: List[Dict[str, Any]], scan: "_HandoffScan",
-        focus_topic: Optional[str], memory_context: str, bypass_cooldown: bool,
-    ) -> Optional[str]:
-        """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first."""
-        # Focus-topic derivation scans user turns; only pay when a summary is generated.
-        try:
-            return self._generate_summary(
-                turns_to_summarize, focus_topic=focus_topic or self._derive_auto_focus_topic(messages),
-                memory_context=memory_context, bypass_cooldown=bypass_cooldown,
-            )
-        except AuxiliaryExplicitCancellation:
-            # Cancellation is a true no-op: restore the scan's mutation before the exception escapes.
-            self._previous_summary = scan.previous_summary_before
-            self._summary_has_user_turn = scan.has_user_turn_before
-            raise
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,

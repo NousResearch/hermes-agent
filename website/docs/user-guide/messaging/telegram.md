@@ -736,7 +736,7 @@ unaffected.
 
 Topics with a `skill` field automatically load that skill when a new session starts in the topic. This works exactly like typing `/skill-name` at the start of a conversation — the skill content is injected into the first message, and subsequent messages see it in the conversation history.
 
-For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (due to idle timeout, daily reset, or manual `/reset`).
+For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (after an explicit `/new` or `/reset`).
 
 :::tip
 Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.

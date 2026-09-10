@@ -17,11 +17,9 @@ import { TextTab } from '@/components/ui/text-tab'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import {
-  authMcpServer,
   getActionStatus,
   getLogs,
   getMcpCatalog,
-  getMcpOAuthFlow,
   getUsageAnalytics,
   type HermesGateway,
   installMcpCatalogEntry,
@@ -527,6 +525,15 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // write its result into profile B's state after the user switched.
   const profileEpoch = useRef(0)
 
+  // Scoped Skills tabs remount when their owner changes; stop the old native
+  // OAuth waiter even when no app-wide profile-switch event is emitted.
+  useEffect(
+    () => () => {
+      profileEpoch.current += 1
+    },
+    [scopeProfileKey]
+  )
+
   // A profile switch invalidates the config query (see store/profile.ts), which
   // refetches the new backend's mcp.json. Reset ALL per-profile view state — the
   // draft (incl. a dirty one, so profile A's edits can't be saved into B), its
@@ -611,9 +618,8 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     try {
       const flow = await completeMcpDesktopOAuth({
         serverName,
-        start: name => authMcpServer(name, profile ?? undefined),
-        status: flowId => getMcpOAuthFlow(flowId, profile ?? undefined),
-        openExternal: url => window.hermesDesktop.openExternal(url)
+        profile,
+        cancelled: () => profileEpoch.current !== epoch
       })
 
       const result: McpTestResult = { ok: true, tools: flow.tools ?? [] }

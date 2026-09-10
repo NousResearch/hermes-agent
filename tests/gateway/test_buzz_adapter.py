@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.platforms.base import CachedMedia, MessageType
+from gateway.platforms.base import CachedMedia
+from gateway.platforms.event import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters

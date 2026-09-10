@@ -2378,6 +2378,7 @@ export const en: Translations = {
     shiftClickHint: 'Shift-click a chat to pin',
     noWorkspace: 'No workspace',
     projectEmpty: 'No sessions yet',
+    projectLoadFailed: 'Could not load sessions',
     noSessions: 'No sessions yet',
     noFilterMatches: 'No sessions match these filters',
     projects: {

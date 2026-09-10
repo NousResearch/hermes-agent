@@ -163,7 +163,7 @@ auxiliary:
 | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `idle_compact_after_seconds` | `0` | ≥0 seconds | Opt-in: compact up front when a session resumes after this many seconds idle (0 = disabled). Skips when context ≤ threshold × target_ratio; honors cooldown/anti-thrash/lock guards |
-| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
@@ -214,19 +214,21 @@ Plugin context engines can reuse the same resolution logic via
 override `update_model()` own their own compaction policy and may ignore the
 map.
 
-### Codex gpt-5.5 threshold autoraise
+### Codex gpt-5.x / Astra threshold autoraise
 
-The ChatGPT Codex OAuth backend hard-caps gpt-5.5 at a **272K** context window
+The ChatGPT Codex OAuth backend hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at a **272K** context window
 (the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
 GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
 half the window the model can actually use. When the active route is Codex
-OAuth (`provider: openai-codex`) and the model is gpt-5.5, Hermes raises the
+OAuth (`provider: openai-codex`) and the model is one of those families (Astra
+matches any slug containing `astra`; the opt-in `-900k` picker variants are
+excluded because they already unlock the wider window), Hermes raises the
 trigger to **85%** (~231K) and shows a notice with the opt-out command. The
 notice is shown once per profile — a marker under `$HERMES_HOME`
 (`.codex_gpt55_autoraise_notice`) records that it ran, so repeated agent/session
 inits (e.g. every inbound gateway message) don't re-emit it; if the raised
 threshold later changes it re-notifies once. Only this exact route is affected;
-gpt-5.5 on any other provider keeps your global `threshold`. To opt back down to
+the same models on any other provider keep your global `threshold`. To opt back down to
 the global value:
 
 ```bash

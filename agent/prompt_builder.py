@@ -1006,6 +1006,10 @@ def build_environment_hints() -> str:
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 
 
+# Marks the runtime block after project prose for persisted-prompt cwd validation.
+RUNTIME_ENVIRONMENT_HEADING = "# Hermes runtime environment"
+RUNTIME_ENVIRONMENT_END = "<!-- End Hermes runtime environment -->"
+
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2

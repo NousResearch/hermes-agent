@@ -404,7 +404,8 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
     monkeypatch.setattr(
         executions,
         "create_execution",
-        lambda jid, source: events.append("ledger") or {"id": "exec-1"},
+        lambda jid, source, _create=executions.create_execution:
+        events.append("ledger") or _create(jid, source=source),
     )
     monkeypatch.setattr(
         sched,
@@ -417,9 +418,9 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
 
     assert events == ["ledger", "claim"]
     assert claimed is not None
-    assert claimed["execution_id"] == "exec-1"
+    assert executions.get_execution(claimed["execution_id"])["status"] == "claimed"
     assert provider.fire_claimed(claimed) is True
-    assert events == ["ledger", "claim", ("run", "exec-1")]
+    assert events == ["ledger", "claim", ("run", claimed["execution_id"])]
 
 
 def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):

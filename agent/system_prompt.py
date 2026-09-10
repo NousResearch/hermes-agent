@@ -540,7 +540,7 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
     without tools or when probing fails (it must never block prompt build).
 
-    The workspace block is a live git probe that leads the context tier, ahead of the whole
+    The workspace block is a live git probe after project context, ahead of the whole
     volatile band; re-probing at the compaction rebuild re-emits different bytes for any
     repo that moved and defeats the keep-prompt fast path.  So the bytes are pinned per
     session on the agent, keyed by the resolved cwd (a gateway serves many cwds), and
@@ -566,9 +566,9 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
 
 
 def _post_workspace_parts(agent: Any) -> List[str]:
-    """Blocks that historically follow the workspace snapshot: environment
-    probe (config.yaml agent.environment_probe; one line, nothing when clean,
-    skipped for remote backends), bot-mode protocol, profile line, platform hint."""
+    """Blocks that follow the worktree-specific context: environment probe
+    (config.yaml agent.environment_probe; one line, nothing when clean, skipped
+    for remote backends), bot-mode protocol, profile line, platform hint."""
     parts: List[str] = []
     if getattr(agent, "_environment_probe", True):
         try:
@@ -602,11 +602,13 @@ def _join_tier(parts: List[Optional[str]]) -> str:
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
-    """Assemble the system prompt as three ordered cache tiers: ``stable`` (through
-    the coding operating brief when a workspace snapshot follows), ``context``
-    (snapshot, remaining session-stable guidance, caller ``system_message``,
-    context files) and ``volatile`` (skills index, memory, user profile, external
-    memory block, timestamp line).  Never re-rendered mid-session."""
+    """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
+    guidance and the coding brief), ``context`` (caller ``system_message``, project
+    context files, workspace snapshot and remaining workspace guidance) and
+    ``volatile`` (skills index, memory, user profile, external memory block,
+    timestamp line, runtime environment hints).  Worktree-dependent blocks follow project context so a
+    shared context file can remain in the longest common prefix across worktrees.
+    Never re-rendered mid-session."""
     # Model context window scales the context-file caps; stable per conversation.
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
@@ -624,22 +626,25 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
     stable_parts.extend(_alibaba_identity_part(agent))
-    stable_parts.append(_pb.build_environment_hints())
-    # Coding posture: operating brief stays in the stable prefix; the live
-    # git/workspace snapshot sits behind its own cache boundary, and the blocks
-    # below it must keep their historical post-snapshot position.
+    # Coding posture: the operating brief stays in the stable prefix. The
+    # environment block contains the current cwd/backend and belongs after
+    # project context, not ahead of a large shared AGENTS.md block.
+    environment_hints = _pb.build_environment_hints()
     coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(agent)
     stable_parts.extend(coding_prefix_parts)
     post_workspace_parts = _post_workspace_parts(agent)
-    # ── Context tier (cwd-dependent, may change between sessions) ─
+    # ── Context tier (project/worktree-dependent, may change between sessions) ──
     context_parts: List[str] = []
-    (context_parts if coding_workspace_parts else stable_parts).extend(
-        [*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts]
-    )
     # ephemeral_system_prompt is injected at API-call time only, never cached.
     if system_message is not None:
         context_parts.append(system_message)
     context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
+    if coding_workspace_parts:
+        context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
+    else:
+        # Preserve the stable placement for non-workspace sessions; there is no
+        # worktree snapshot whose later position would improve their prefix.
+        stable_parts.extend([*coding_trailing_parts, *post_workspace_parts])
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
@@ -648,6 +653,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
     volatile_parts.append(_timestamp_line(agent))
+    # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
+    # host examples cannot shadow it during persisted-prompt validation.
+    if environment_hints:
+        # Embedder hints are prose too; reserve the delimiter for the renderer.
+        environment_hints = environment_hints.replace(_pb.RUNTIME_ENVIRONMENT_HEADING, "> " + _pb.RUNTIME_ENVIRONMENT_HEADING)
+        volatile_parts.append(f"{_pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{environment_hints}\n\n{_pb.RUNTIME_ENVIRONMENT_END}")
     return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}
 
 

@@ -4,9 +4,45 @@ watch_match, watch_disabled, watch_overflow_*, async_delegation) into the
 TUI inject into the agent conversation."""
 
 import time
+from dataclasses import dataclass
 from contextlib import suppress
 
 _DONE = ("completed", "success")
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessNotificationBatch:
+    """Keep completion identity until the owning surface starts its turn."""
+
+    notifications: tuple[tuple[dict, str], ...]
+
+    def render(self, registry) -> str | None:
+        messages = [text for event, text in self.notifications
+                    if not registry.is_completion_consumed(event.get("session_id", ""))]
+        if not messages:
+            return None
+        if len(messages) == 1:
+            return messages[0]
+        header = (f"[IMPORTANT: {len(messages)} background processes completed. "
+                  "Treat these results as one batch and give one consolidated response; "
+                  "preserve failures and actionable results.]")
+        return "\n\n".join((header, *messages))
+
+
+def group_process_notifications(notifications):
+    """Group consecutive completions only; watches and delegations are barriers."""
+    batch = []
+    for event, text in notifications:
+        if event.get("type", "completion") == "completion":
+            batch.append((event, text))
+        else:
+            if batch:
+                yield tuple(batch)
+                batch = []
+            yield ((event, text),)
+    if batch:
+        yield tuple(batch)
+
 
 
 def _format_age(seconds: float) -> str:
@@ -143,8 +179,9 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         evt,
         f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
         f"A background fan-out unit you dispatched earlier — {unit} — has finished; its consolidated results are "
-        "below. Other units from the same delegate_task call (other groups / ungrouped tasks) report separately as "
-        "they finish. You may have moved on since dispatching — act on these or re-dispatch if things have changed.",
+        "below. Any other units from the same delegate_task call report separately as they finish. You may have "
+        "moved on since dispatching — act on these or re-dispatch if things have changed. If you are still waiting "
+        "on siblings, end your turn after acting on this one.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     if evt.get("error") and not results:
@@ -214,6 +251,42 @@ def _format_async_delegation(evt: dict) -> str:
         if summary:
             lines += ["Partial output:", summary]
     return "\n".join(lines)
+
+
+def async_delegation_display_text(evt: dict) -> str:
+    """Compact UI title; the separate model notification retains all task evidence."""
+    raw_results = evt.get("results")
+    results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
+    results = results or [evt]
+    goals = evt.get("goals") or []
+    labels, titles = [], []
+    status_labels = {"failed": "Failed", "error": "Failed", "cancelled": "Cancelled",
+                     "interrupted": "Interrupted", "timeout": "Timed Out", "stalled": "Stalled",
+                     "unknown": "Unknown", "rejected": "Failed"}
+    for result in results:
+        status = result.get("status") or ("failed" if result.get("error") else "completed")
+        label = ("Incomplete" if _is_truncated(result) else "Completed") if status in _DONE else (
+            status_labels.get(status, "Incomplete"))
+        labels.append(label)
+        index = result.get("task_index", 0)
+        goal = goals[index] if 0 <= index < len(goals) else result.get("goal", "")
+        titles.append(" ".join(str(goal or "Background task").split()))
+    if len(results) == 1:
+        return f"Subagent Task {labels[0]}: {titles[0]}"
+    outcome = labels[0] if len(set(labels)) == 1 else "Finished with Issues"
+    title = " ".join(str(evt.get("group") or "").split()) or "; ".join(titles)
+    return f"Subagent Tasks {outcome}: {title} ({len(results)} tasks)"
+
+
+class SubagentNotification(str):
+    """Keep queued model text string-compatible, with a separate human preview."""
+
+    display_text: str
+
+    def __new__(cls, text: str, event: dict):
+        instance = super().__new__(cls, text)
+        instance.display_text = async_delegation_display_text(event)
+        return instance
 
 
 def _delegation_attribution_line(evt: dict) -> "str | None":

@@ -170,6 +170,7 @@ def _reap_idle_sessions() -> None:
         _close_session_by_id(
             sid, end_reason="idle_timeout",
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
+    _repair_missing_ws_orphan_reaps()
     _enforce_session_cap()
     _reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
@@ -179,6 +180,34 @@ def _reap_idle_sessions() -> None:
         trim_memory(reason="idle reaper periodic trim")
     except Exception as exc:  # debug, not warning — a persistent failure would repeat every scan.
         logger.debug("idle reaper memory trim failed: %s: %s", type(exc).__name__, exc)
+
+
+def _repair_missing_ws_orphan_reaps() -> None:
+    """Re-arm detached sessions whose disconnect path lost its teardown timer.
+
+    A resident record otherwise vouches for its lease during every orphan sweep,
+    while the live process prevents PID pruning. Reusing the normal WS grace
+    path preserves reconnect and in-flight-work protections instead of stealing
+    the lease directly.
+    """
+    if _WS_ORPHAN_REAP_GRACE_S <= 0:
+        return
+    # A socket can be closed before its disconnect cleanup reaches the sentinel.
+    # Reuse that cleanup (including surviving viewers), never revoke a fence from
+    # a stale liveness snapshot.
+    with _sessions_lock:
+        closed_transports = [session.get("transport") for session in _sessions.values()
+                             if session.get("transport") is not _detached_ws_transport
+                             and _transport_is_dead(session.get("transport"))]
+    for transport in closed_transports:
+        _close_sessions_for_transport(transport)
+    with _sessions_lock:
+        missing = [
+            sid for sid, session in _sessions.items()
+            if _ws_session_is_detached(session) and sid not in _pending_ws_reaps
+        ]
+        for sid in missing:
+            _schedule_ws_orphan_reap(sid)
 
 
 def _reclaim_orphaned_leases() -> None:

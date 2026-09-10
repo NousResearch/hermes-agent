@@ -84,11 +84,14 @@ def _setup_bridge_dir(tmp_path: Path) -> Path:
     """Create a real bridge dir with bridge.js + package.json + creds."""
     bridge_dir = tmp_path / "whatsapp-bridge"
     bridge_dir.mkdir()
-    (bridge_dir / "bridge.js").write_text("// current bridge code\n")
-    (bridge_dir / "package.json").write_text('{"name": "bridge"}\n')
+    (bridge_dir / "bridge.js").write_text("// current bridge code\n", encoding="utf-8")
+    (bridge_dir / "package.json").write_text('{"name": "bridge"}\n', encoding="utf-8")
     session_path = tmp_path / "session"
     session_path.mkdir()
-    (session_path / "creds.json").write_text("{}")
+    (session_path / "creds.json").write_text(
+        '{"noiseKey": {"private": "a"}, "signedIdentityKey": {"private": "b"}}',
+        encoding="utf-8",
+    )
     return bridge_dir
 
 
@@ -99,7 +102,8 @@ def _fresh_node_modules(bridge_dir: Path) -> None:
     nm = bridge_dir / "node_modules"
     nm.mkdir()
     (nm / ".hermes-pkg-hash").write_text(
-        _file_content_hash(bridge_dir / "package.json")
+        _file_content_hash(bridge_dir / "package.json"),
+        encoding="utf-8",
     )
 
 
@@ -108,7 +112,7 @@ class TestFileContentHash:
         from plugins.platforms.whatsapp.adapter import _file_content_hash
 
         f = tmp_path / "x.js"
-        f.write_text("abc")
+        f.write_text("abc", encoding="utf-8")
         h = _file_content_hash(f)
         assert len(h) == 16
         assert h == _file_content_hash(f)  # deterministic

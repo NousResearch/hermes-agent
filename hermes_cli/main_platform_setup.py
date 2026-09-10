@@ -124,10 +124,10 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
 
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
-    from hermes_cli.main import _require_tty, get_hermes_home
+    from hermes_cli.main import _require_tty
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import find_node_executable, get_hermes_dir, with_hermes_node_path
     _say("", "⚕ WhatsApp Setup", "=" * 50)
 
     wa_mode = _whatsapp_choose_mode(get_env_value, save_env_value)
@@ -144,7 +144,10 @@ def cmd_whatsapp(args):
 
     _whatsapp_allowed_users(wa_mode, get_env_value, save_env_value)
 
-    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from gateway.platforms.whatsapp_common import (
+        has_valid_whatsapp_creds,
+        resolve_whatsapp_bridge_dir,
+    )
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
     if not bridge_script.exists():
@@ -154,9 +157,12 @@ def cmd_whatsapp(args):
         return
 
     # Existing session: re-pair or keep.
-    session_dir = get_hermes_home() / "whatsapp" / "session"
+    # Resolve the session dir through the exact resolver the gateway adapter and
+    # dashboard use, so the wizard can never pair into a directory nothing reads
+    # (hardcoding the legacy path let writer and reader diverge — see #85391).
+    session_dir = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
     session_dir.mkdir(parents=True, exist_ok=True)
-    if (session_dir / "creds.json").exists():
+    if has_valid_whatsapp_creds(session_dir / "creds.json"):
         print("✓ Existing WhatsApp session found")
         if _yes_no("\n  Re-pair? This will clear the existing session. [y/N] "):
             shutil.rmtree(session_dir, ignore_errors=True)
@@ -182,7 +188,7 @@ def cmd_whatsapp(args):
             cwd=str(bridge_dir), env=with_hermes_node_path())
 
     print()
-    if not (session_dir / "creds.json").exists():
+    if not has_valid_whatsapp_creds(session_dir / "creds.json"):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
         return
     # Only enable WhatsApp now that pairing actually succeeded (see above).

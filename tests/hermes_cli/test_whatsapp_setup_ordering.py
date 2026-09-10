@@ -40,7 +40,7 @@ def _env_value(hermes_home: Path, key: str) -> str | None:
     env_file = hermes_home / ".env"
     if not env_file.exists():
         return None
-    for line in env_file.read_text().splitlines():
+    for line in env_file.read_text(encoding="utf-8").splitlines():
         if "=" not in line:
             continue
         k, _, v = line.partition("=")
@@ -80,7 +80,7 @@ def test_aborted_setup_does_not_enable_whatsapp(isolated_home, monkeypatch):
 
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") is None, (
         "Setup aborted before pairing — WHATSAPP_ENABLED must not be set. "
-        f"Got .env: {(isolated_home / '.env').read_text() if (isolated_home / '.env').exists() else '(missing)'}"
+        f"Got .env: {(isolated_home / '.env').read_text(encoding='utf-8') if (isolated_home / '.env').exists() else '(missing)'}"
     )
 
 
@@ -95,7 +95,9 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
     # Pre-create a paired session WITHOUT WHATSAPP_ENABLED in .env.
     session = isolated_home / "whatsapp" / "session"
     session.mkdir(parents=True)
-    (session / "creds.json").write_text("{}")
+    (session / "creds.json").write_text(
+        '{"noiseKey": {"private": "a"}, "signedIdentityKey": {"private": "b"}}'
+    )
     monkeypatch.setenv("WHATSAPP_MODE", "bot")
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
 
@@ -138,3 +140,61 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     # The skip-rebar branch should have set the env var on its way out.
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+
+
+def test_wizard_finds_creds_at_resolver_path_not_hardcoded_legacy(
+    isolated_home, monkeypatch
+):
+    """Bug 1 (#85391): the wizard must resolve the session dir through the same
+    ``get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")`` the
+    gateway adapter and dashboard use, not a hardcoded legacy path.
+
+    Here the empty legacy stub is absent, so the resolver points at the
+    consolidated ``platforms/whatsapp/session``. A valid pairing lives there.
+    A wizard that hardcoded ``whatsapp/session`` would see no creds and drop
+    into QR pairing; the correct wizard finds the existing pairing and, on
+    "keep session", re-asserts ``WHATSAPP_ENABLED``.
+    """
+    from hermes_cli.main_platform_setup import cmd_whatsapp
+
+    # Populate ONLY the consolidated (new) path; leave the legacy dir absent.
+    session = isolated_home / "platforms" / "whatsapp" / "session"
+    session.mkdir(parents=True)
+    (session / "creds.json").write_text(
+        '{"noiseKey": {"private": "a"}, "signedIdentityKey": {"private": "b"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+
+    inputs = iter(["n", "n"])
+
+    def fake_input(_prompt=""):
+        try:
+            return next(inputs)
+        except StopIteration:
+            return "n"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_a, **_kw: MagicMock(returncode=0, stderr=""),
+    )
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/npm")
+    _orig_exists = Path.exists
+
+    def _stub_exists(self):
+        if self.name == "node_modules":
+            return True
+        return _orig_exists(self)
+
+    monkeypatch.setattr(Path, "exists", _stub_exists)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cmd_whatsapp(MagicMock())
+
+    # Existing pairing was found at the resolver path → keep-session branch ran.
+    assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+    assert "Existing WhatsApp session found" in buf.getvalue()

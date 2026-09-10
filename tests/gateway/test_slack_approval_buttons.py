@@ -180,6 +180,46 @@ class TestSlackApprovalAction:
         assert len(section_text) <= 3000
 
     @pytest.mark.asyncio
+    async def test_resolves_click_when_team_id_differs_from_send_time(self):
+        """Enterprise Grid / Slack Connect: the click payload's team id can
+        differ from the team id resolved when the approval was sent (the
+        home workspace vs. the guest team the clicking user belongs to).
+        The dedup key must not depend on the two team ids matching, or every
+        such click is silently dropped and the request always times out.
+        """
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "9999.1111"})
+        mock_client.chat_update = AsyncMock()
+
+        await adapter.send_exec_approval(
+            chat_id="C1",
+            command="rm -rf /tmp/x",
+            session_key="agent:main:slack:group:C1:9999.1111",
+            description="test",
+            metadata={"team_id": "T_HOME"},
+        )
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "9999.1111", "blocks": []},
+            "channel": {"id": "C1"},
+            "team": {"id": "T_GUEST_ENTERPRISE_GRID_TEAM"},
+            "user": {"name": "alice", "id": "U_ALICE"},
+        }
+        action = {
+            "action_id": "hermes_approve_once",
+            "value": "agent:main:slack:group:C1:9999.1111",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        mock_resolve.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_global_allowlist_blocks_unauthorized_click(self, monkeypatch):
         adapter = _make_adapter()
         adapter._approval_resolved["1234.5678"] = False

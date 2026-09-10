@@ -4559,7 +4559,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, metadata: Optional[Dict[str, Any]],
         build: Callable[[], Tuple[str, list]], label: str, *,
         resolved: Optional[Dict[Any, bool]] = None, resolved_max: int = 0,
-        team_scoped_key: bool = True, sanitize: bool = True) -> SendResult:
+        team_scoped_key: bool = True, channel_scoped_key: bool = False,
+        sanitize: bool = True) -> SendResult:
         """Shared body of the Block Kit prompt senders: DM-resolve, ``build()`` -> ``(fallback
         text, blocks)``, post, then mark the message unresolved in ``resolved`` (double-click
         guard). Any failure is logged as ``<label> failed`` and returned, never raised."""
@@ -4573,7 +4574,9 @@ class SlackAdapter(BasePlatformAdapter):
             msg_ts = result.get("ts", "")
             if msg_ts and resolved is not None:
                 key = msg_ts
-                if team_scoped_key:
+                if channel_scoped_key:
+                    key = self._workspace_message_marker(chat_id, msg_ts)
+                elif team_scoped_key:
                     key = self._workspace_message_marker(self._metadata_team_id(metadata), msg_ts)
                 resolved[key] = False
                 self._trim_oldest_dict_entries(resolved, resolved_max)
@@ -4616,7 +4619,8 @@ class SlackAdapter(BasePlatformAdapter):
 
         return await self._send_interactive_prompt(
             chat_id, metadata, _build, "send_exec_approval",
-            resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)
+            resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX,
+            channel_scoped_key=True)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -5248,7 +5252,7 @@ class SlackAdapter(BasePlatformAdapter):
         choice = self._APPROVAL_CHOICES.get(action_id, "deny")
         # Double-click guard (atomic pop). Also accept the bare ts: the approval may
         # have been stored without a team id while the click carries one.
-        approval_key = self._workspace_message_marker(team_id, msg_ts)
+        approval_key = self._workspace_message_marker(channel_id, msg_ts)
         if msg_ts in self._approval_resolved:
             approval_key = msg_ts
         if self._approval_resolved.pop(approval_key, True):

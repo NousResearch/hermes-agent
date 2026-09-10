@@ -299,6 +299,13 @@ export const ja = defineLocale({
   },
 
   settings: {
+    plugins: {
+      installModal: {
+        installFromGit: 'Git からインストール',
+        reviewRepository: 'リポジトリを確認',
+        repoPlaceholder: 'https://github.com/owner/repo'
+      }
+    },
     closeSettings: '設定を閉じる',
     exportConfig: '設定を書き出す',
     importConfig: '設定を読み込む',
@@ -1395,6 +1402,10 @@ export const ja = defineLocale({
     emptyDesc: 'Hermes がスキルやメモリを蓄積すると、ここに表示されます。'
   },
   agents: {
+    extendedTranscript: '詳細な実行ログ',
+    transcriptTruncated: '最新の 16 KiB を表示',
+    transcriptUnavailable: 'ライブログは利用できません',
+
     close: 'エージェントを閉じる',
     title: 'スポーンツリー',
     subtitle: '現在のターンのライブサブエージェントのアクティビティ。',
@@ -1406,6 +1417,14 @@ export const ja = defineLocale({
     streaming: 'ストリーミング中',
     files: 'ファイル',
     moreFiles: count => `+${count} 件のファイル`,
+    moreAgents: count => `ほか ${count} 件のエージェント`,
+    queued: '待機中',
+    waitingActivity: 'アクティビティ待ち',
+    steer: '指示',
+    steerPlaceholder: 'このサブエージェントへの指示',
+    steerQueued: '次のチェックポイントで処理します',
+    stopRequested: '停止を要求しました',
+    requestRejected: 'サブエージェントが要求を受け付けませんでした',
     delegation: index => `委任 ${index}`,
     workers: count => `${count} ワーカー`,
     workersActive: count => `${count} アクティブ`,
@@ -1579,6 +1598,40 @@ export const ja = defineLocale({
     unknown: '不明',
     hintPendingRestart: 'この変更を適用するにはステータスバーからゲートウェイを再起動してください。',
     hintGatewayStopped: 'ステータスバーからゲートウェイを起動して接続してください。',
+    restartNeeded: '保存しました。新しい設定を反映するにはメッセージングゲートウェイを再起動してください。',
+    restartNow: '今すぐ再起動',
+    restarting: '再起動中…',
+    restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
+    telegramQr: {
+      title: 'Telegram ボットの接続方法を選択',
+      subtitle: 'どちらの方法でも、あなたが管理するボットを接続し、資格情報はこの Hermes にのみ保存されます。',
+      quickSetup: 'クイックセットアップ',
+      recommended: '推奨',
+      quickHelp:
+        'QR コードをスキャンして Telegram で確認します。Hermes がボットを作成し、あなたの Telegram ユーザー ID を自動検出します。',
+      createWithQr: 'QR で作成',
+      starting: '開始中…',
+      replaceWarning:
+        'Telegram の資格情報はすでに設定されています。保存すると新しい QR セットアップまたはトークンが現在のボットを置き換えます。',
+      scanHint: 'スマートフォンの Telegram アプリでスキャンするか、このコンピューターでリンクを開いてください。',
+      waiting: 'Telegram を待機中…',
+      expiresIn: remaining => `有効期限: ${remaining}`,
+      expired: '期限切れ',
+      openTelegram: 'Telegram を開く',
+      ready: 'ボットを作成しました',
+      allowedUsers: '許可ユーザー',
+      ownerDetected: '所有者を検出',
+      addAtLeastOne: 'Telegram ユーザー ID を 1 つ以上追加してください。',
+      userIdPlaceholder: 'Telegram ユーザー ID',
+      add: '追加',
+      numericOnly: 'Telegram ユーザー ID は数字で入力してください。',
+      saveAndRestart: '保存して再起動',
+      applying: '保存中…',
+      pairingExpired: 'Telegram のペアリングが期限切れです。新しい QR セットアップを開始してください。',
+      stillWaiting: detail => `Telegram を待機中。エラー後に再試行: ${detail}`,
+      savedRestarting: 'Telegram を保存しました。ゲートウェイを再起動中…',
+      savedRestartFailed: detail => `Telegram を保存しましたが、ゲートウェイの再起動に失敗しました${detail}`
+    },
     credentialsSet: '認証情報を設定しました',
     needsSetup: '設定が必要',
     gatewayStopped: 'メッセージングゲートウェイが停止中',
@@ -1827,8 +1880,9 @@ export const ja = defineLocale({
     title: 'スケジュール済みジョブ',
     count: count => `${count} 件のジョブ`,
     modelImpact: {
-      title: 'スケジュール済みジョブの確認が必要です',
-      message: count => `モデル設定を確認するまで、${count} 件のスケジュール済みジョブがスキップされます。`,
+      title: 'スケジュール済みジョブは元のモデルで実行されます',
+      message: count =>
+        `ピン留めされていない ${count} 件のスケジュール済みジョブは、作成時のモデルで引き続き実行されます。移行するにはピン留めするか cron.model を設定してください。`,
       detailMore: (names, remaining) => `${names}、ほか ${remaining} 件`,
       review: 'スケジュール済みジョブを確認',
       saveFailed: 'Hermes はモデルの変更を保存しませんでした。',
@@ -2026,13 +2080,23 @@ export const ja = defineLocale({
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: 'ゲートウェイとプロファイル',
+      rename: 'グループ名を変更',
+      aliasLabel: '表示名',
+      aliasHint: '表示名のみ変更します。ゲートウェイ名とプロファイル名は変わりません。',
+      resetName: '名前をリセット',
+      moveUp: '上に移動',
+      moveDown: '下に移動',
+      reorder: 'グループを並べ替え',
+      actions: 'グループの操作'
+    },
     nav: {
       'new-session': '新しいセッション',
       skills: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: 'スケジュール済みジョブ',
-      'session-import': 'セッションを取り込む'
+      cron: 'スケジュール済みジョブ'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',
@@ -2052,11 +2116,14 @@ export const ja = defineLocale({
     shiftClickHint: 'Shift クリックでピン留め · ドラッグで並べ替え',
     noWorkspace: 'ワークスペースなし',
     projectEmpty: 'セッションはまだありません',
+    projectLoadFailed: 'セッションの読み込みに失敗しました',
     noSessions: 'セッションはまだありません',
     noFilterMatches: 'このフィルターに一致するセッションはありません',
     projects: {
+      showAllSessions: 'すべてのセッションを表示',
       sectionLabel: 'プロジェクト',
       home: 'ホーム',
+      autoDiscovered: '自動検出',
       newButton: '新規プロジェクト',
       createTitle: '新規プロジェクト',
       createDesc: 'ワークスペースに名前を付け、1つ以上のフォルダを追加します。',
@@ -3030,7 +3097,7 @@ export const ja = defineLocale({
     newSessionTab: '新しいセッションタブ',
     newTab: '新しいタブ',
     pluginDisabled: pluginId => `プラグイン「${pluginId}」を無効化しました`,
-    pluginDisabledBody: '設定 → プラグイン で再有効化するとペインが戻ります。',
+    pluginDisabledBody: 'スキルとツール → プラグイン で再有効化するとペインが戻ります。',
     missingPane: paneId => `ペインが見つかりません: ${paneId}`,
     editTitle: 'レイアウト',
     editHint: 'レイアウトを選ぶか、ペインをゾーン間へドラッグ。',
@@ -3116,7 +3183,11 @@ export const ja = defineLocale({
         streaming: 'ストリーミング接続のエラー'
       },
       errorRetry: '再試行',
+      errorStartNewSession: '新しいセッションを開始',
       errorSwitchProvider: 'プロバイダーを切り替え',
+      errorSignInAgain: provider => `${provider} に再度サインイン`,
+      errorOauthExpired: provider =>
+        `${provider} のサインインが期限切れか取り消されました。続けるには再度サインインしてください。`,
       errorOpenLogs: 'ログを開く',
       errorOpenLogsFailed: 'ログフォルダを開けませんでした',
       errorOpenDesktopLogs: 'デスクトップのログを開く',

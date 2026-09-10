@@ -173,11 +173,9 @@ test.describe('GlyphSpinner (compositor animation)', () => {
     expect(parked.playState).toBe('paused')
     expect(parked.willChange).toBe('auto')
 
-    // 2. The global gate: window blur / minimize / document-hidden, which
-    //    main.tsx drives by arming this attribute on the root. The strip must
-    //    be named in that rule, or every spinner keeps animating behind an
-    //    inactive window — the CPU burn the original ticker's pause
-    //    controller existed to avoid.
+    // 2. The global gate: window minimize / document-hidden, which
+    //    main.tsx drives by arming this attribute on the root. Visible windows
+    //    keep animating even when another app has focus.
     const globallyPaused = await page.evaluate(strip => {
       const root = document.documentElement
       const had = root.hasAttribute('data-renderer-animations-paused')

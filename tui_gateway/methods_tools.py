@@ -6,6 +6,7 @@ Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / 
 """
 
 import sys
+from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -1331,6 +1332,7 @@ def _plugin_rows() -> list[dict]:
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
     pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
+    ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
         status = pc._plugin_status(name, enabled, disabled, key=key)
@@ -1339,10 +1341,16 @@ def _plugin_rows() -> list[dict]:
         if status == "not enabled" and source == "bundled" and pc._bundled_default_on(_dir):
             status = "enabled"
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
+        # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
+        # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
+        _dir_path = Path(str(_dir)) if _dir else None
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
             "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
-            **cat.catalog_row_fields(_dir, pins)})
+            "install_dir": str(_dir_path) if _dir_path else "",
+            "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
+            **cat.catalog_row_fields(_dir, pins),
+            **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 
 
@@ -1373,7 +1381,8 @@ def _plugins_install(rid, params):
     if not ident and not catalog_name:
         return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', or 'catalog_name'")
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
-        ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None)
+        ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
+        ref=str(params.get("ref") or "").strip() or None)
     return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed")
 
 

@@ -404,6 +404,8 @@ class AIAgent(
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+        # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
+        self._turn_author = None
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
         self._is_user_initiated_turn = False
 
@@ -634,10 +636,11 @@ class AIAgent(
     @staticmethod
     def _provider_model_requires_responses_api(model: str, *, provider: Optional[str] = None) -> bool:
         """Return True when this provider/model pair should use Responses API."""
+        from hermes_cli.providers import is_actual_route
         normalized_provider = (provider or "").strip().lower()
         # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
-        if normalized_provider in ("nous", "custom"):
+        if normalized_provider in ("nous", "custom") or is_actual_route(provider):
             return False
         if normalized_provider == "copilot":
             try:
@@ -891,6 +894,10 @@ class AIAgent(
             return
         try:
             sync_kwargs = {"session_id": self.session_id or "", **({"messages": messages} if messages is not None else {})}
+            # Stashed by build_turn_context() for this turn, None on a human turn.
+            turn_author = getattr(self, "_turn_author", None)
+            if turn_author is not None:
+                sync_kwargs["turn_author"] = turn_author
             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
             if not is_trivial_prompt(user_text):

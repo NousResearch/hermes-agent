@@ -48,7 +48,8 @@ def test_registry_names_resolve_into_the_table():
         assert cmd is not None and HermesCLI._slash_handler(cmd.name) is not None, name
     # Preserve historical dispatch while allowing new convention-based handlers.
     dispatched = {c.name for c in COMMAND_REGISTRY if HermesCLI._slash_handler(c.name)}
-    assert set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit"} <= dispatched
+    # New convention handlers must remain reachable without freezing the registry.
+    assert (set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit", "login", "wisdom"}) <= dispatched
 
 
 def _cli():

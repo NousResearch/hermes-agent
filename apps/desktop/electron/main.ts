@@ -19,7 +19,6 @@ import {
   ipcMain,
   Menu,
   nativeTheme,
-  Notification,
   powerMonitor,
   powerSaveBlocker,
   protocol,
@@ -170,7 +169,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
-import { createEventDeduper } from './event-dedupe'
+import { createAmbientClaimArbiter } from './event-dedupe'
 import {
   buildTerminalScript,
   resolveTerminalLaunch,
@@ -203,6 +202,7 @@ import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gatewa
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import { clearStaleGitLocks } from './gitlock'
+import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -222,6 +222,7 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
@@ -270,6 +271,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { registerNativeNotifications } from './notification-ipc'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
@@ -902,6 +904,9 @@ const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
 const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
+// Nous free tier gate, decided ONCE here and stamped onto every backend spawn
+// (desktopBackendSpawnEnv) and the renderer (hermes:launch-flags).
+const GUEST_ONBOARDING = guestOnboardingEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -7085,6 +7090,17 @@ function installPreviewShortcut(window) {
     // — no `previewShortcutActive` gate, so it works for every closeable tab.
     if (isCloseTabShortcut) {
       event.preventDefault()
+
+      // ⌘W in the HUD is "leave HUD mode", not "close a tab in the app
+      // window". Routing it to the main renderer closed the app's tab out
+      // from under the user while the HUD stayed put; routing it through the
+      // HUD's own close path hands the session back like the exit button.
+      if (hudWindow && !hudWindow.isDestroyed() && window === hudWindow) {
+        closeHudWindow()
+
+        return
+      }
+
       sendClosePreviewRequested()
 
       return
@@ -10725,6 +10741,9 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
+      // Same launch-time free-tier decision the local spawns get; the POSIX
+      // spawn command adds HERMES_GUEST_ONBOARDING=1 only when this is on.
+      guestOnboarding: GUEST_ONBOARDING,
       signal: lease.signal
     })
   } catch (error: any) {
@@ -12654,25 +12673,28 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     backend.args,
     hiddenWindowsChildOptions({
       cwd: hermesCwd,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        ...backend.env,
-        // Pin the gateway's tool/terminal cwd to the same directory we chose for
-        // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
-        // can still point at the install dir even when spawn cwd is home.
-        TERMINAL_CWD: hermesCwd,
-        HERMES_DASHBOARD_SESSION_TOKEN: token,
-        // Marks this dashboard backend as desktop-spawned so it runs the cron
-        // scheduler tick loop (the gateway isn't running under the app).
-        HERMES_DESKTOP: '1',
-        // Exact parent identity lets the backend self-exit after an unclean
-        // Desktop death without mistaking a reused PID for its owner. If the
-        // optional marker probe fails, retain legacy PID-only tracking.
-        ...parentIdentityEnv,
-        HERMES_WEB_DIST: webDist,
-        ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-      },
+      env: desktopBackendSpawnEnv(
+        {
+          ...process.env,
+          HERMES_HOME,
+          ...backend.env,
+          // Pin the gateway's tool/terminal cwd to the same directory we chose for
+          // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
+          // can still point at the install dir even when spawn cwd is home.
+          TERMINAL_CWD: hermesCwd,
+          HERMES_DASHBOARD_SESSION_TOKEN: token,
+          // Marks this dashboard backend as desktop-spawned so it runs the cron
+          // scheduler tick loop (the gateway isn't running under the app).
+          HERMES_DESKTOP: '1',
+          // Exact parent identity lets the backend self-exit after an unclean
+          // Desktop death without mistaking a reused PID for its owner. If the
+          // optional marker probe fails, retain legacy PID-only tracking.
+          ...parentIdentityEnv,
+          HERMES_WEB_DIST: webDist,
+          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+        },
+        GUEST_ONBOARDING
+      ),
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -13071,30 +13093,33 @@ async function startHermes() {
       backend.args,
       hiddenWindowsChildOptions({
         cwd: hermesCwd,
-        env: {
-          ...process.env,
-          // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
-          // resolves to the SAME location our resolveHermesHome() picked. Without
-          // this pin, Python falls back to ~/.hermes on every platform — fine on
-          // mac/linux (where our default matches), but on Windows our default is
-          // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
-          // Mismatch would split config / sessions / .env / logs across two
-          // directories. install.ps1 sets HERMES_HOME via setx; the desktop
-          // can't reliably do that, so we set it inline for every spawn.
-          HERMES_HOME,
-          ...backend.env,
-          TERMINAL_CWD: hermesCwd,
-          HERMES_DASHBOARD_SESSION_TOKEN: token,
-          // Marks this dashboard backend as desktop-spawned so it runs the cron
-          // scheduler tick loop (the gateway isn't running under the app).
-          HERMES_DESKTOP: '1',
-          // Exact parent identity lets the backend self-exit after an unclean
-          // Desktop death without mistaking a reused PID for its owner. If the
-          // optional marker probe fails, retain legacy PID-only tracking.
-          ...parentIdentityEnv,
-          HERMES_WEB_DIST: webDist,
-          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-        },
+        env: desktopBackendSpawnEnv(
+          {
+            ...process.env,
+            // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
+            // resolves to the SAME location our resolveHermesHome() picked. Without
+            // this pin, Python falls back to ~/.hermes on every platform — fine on
+            // mac/linux (where our default matches), but on Windows our default is
+            // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+            // Mismatch would split config / sessions / .env / logs across two
+            // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+            // can't reliably do that, so we set it inline for every spawn.
+            HERMES_HOME,
+            ...backend.env,
+            TERMINAL_CWD: hermesCwd,
+            HERMES_DASHBOARD_SESSION_TOKEN: token,
+            // Marks this dashboard backend as desktop-spawned so it runs the cron
+            // scheduler tick loop (the gateway isn't running under the app).
+            HERMES_DESKTOP: '1',
+            // Exact parent identity lets the backend self-exit after an unclean
+            // Desktop death without mistaking a reused PID for its owner. If the
+            // optional marker probe fails, retain legacy PID-only tracking.
+            ...parentIdentityEnv,
+            HERMES_WEB_DIST: webDist,
+            ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+          },
+          GUEST_ONBOARDING
+        ),
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']
       })
@@ -13879,11 +13904,13 @@ function closePetOverlay() {
 // app's composer (slash commands, attachments, queue, voice) instead of a
 // lookalike that drifts. Entering HUD mode hides the main window; leaving
 // restores it.
-let hudWindow = null
+let hudWindow: BrowserWindow | null = null
 
-// Whether the main window was visible when HUD mode was entered, so exiting
-// puts the desktop back as it was rather than raising a window the user had
-// already minimized.
+// Whether closing the HUD should bring the main window back. Armed whenever a
+// live main window exists at HUD-open time, visible or not: the HUD hides the
+// app window itself, so a main window minimized or behind another app when
+// the HUD opened still needs a surface back — arming only on `isVisible()`
+// left the user with NO Hermes window after the second toggle (#88513).
 let hudRestoreMainWindow = false
 
 // The session the HUD is currently on, reported by its renderer whenever the
@@ -14274,16 +14301,17 @@ function spawnHudWindow(sessionId, profile) {
   win.on('closed', () => {
     if (hudWindow === win) {
       hudWindow = null
+    } else if (hudWindow && !hudWindow.isDestroyed()) {
+      // Superseded by a profile respawn: the replacement owns the shortcut,
+      // the main-window restore and the toggles. Nothing to hand back.
+      return
     }
 
-    // Closed from its own side (⌘W) — closeHudWindow()'s dispose() never ran,
-    // so the global snap shortcut would otherwise stay registered (and stuck
-    // taken) with no HUD left to apply it to. dispose() is idempotent, so
-    // this is safe even if closeHudWindow() already released it.
+    // Whether the close came from closeHudWindow() or from the window's own
+    // side (a crashed renderer, a native close), this is the one teardown:
+    // release the global snap shortcut, put the app back so the user is never
+    // left with no surface, and correct every window's toggle.
     hudSnapShortcut.dispose()
-
-    // Put the app back so the user is never left with no surface, and
-    // correct every window's toggle.
     restoreMainWindowFromHud()
     broadcastHudState(false)
   })
@@ -14297,17 +14325,31 @@ function spawnHudWindow(sessionId, profile) {
   return win
 }
 
-// Put the app window back the way HUD mode found it.
+// Put the app window back, and give it the keyboard. `focusWindow`, not a bare
+// `show()`: show() alone leaves a minimized window minimized, and on macOS a
+// shown-but-not-key window means the user is looking at the app with the
+// caret still belonging to whatever the HUD was floating over.
 function restoreMainWindowFromHud() {
   if (!hudRestoreMainWindow) {
     return
   }
 
   hudRestoreMainWindow = false
+  focusWindow(mainWindow)
+}
 
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show()
+// Take the HUD window down. The 'closed' handler stays attached so ONE path
+// owns the teardown (snap shortcut, main-window restore, close broadcast)
+// whether the window went via the exit button, ⌘W, a profile respawn, or the
+// grace deadline — detaching it before close() was how a renderer that never
+// answered the close left an always-on-top HUD nobody could dismiss and no
+// broadcast to correct the toggles.
+function destroyHudWindow(win: BrowserWindow) {
+  if (hudWindow === win) {
+    hudWindow = null
   }
+
+  requestHudClose(win)
 }
 
 function openHudWindow(sessionId, profile) {
@@ -14317,16 +14359,16 @@ function openHudWindow(sessionId, profile) {
     // Pointed at another PROFILE: the live renderer is bound to the old
     // profile's backend, and a renderer adopts its backend exactly once at
     // boot — an in-place goto would resolve the id against the wrong backend
-    // (the #82285 fallback). Respawn against the right one.
+    // (the #82285 fallback). Respawn against the right one. The old window's
+    // 'closed' handler sees `hudWindow` already pointing at the replacement,
+    // so it neither restores main nor broadcasts a false "closed".
     if (profileKey && hudProfile !== profileKey) {
-      const win = hudWindow
-      hudWindow = null
-      win.removeAllListeners('closed')
-      win.destroy()
+      const previous = hudWindow
 
       hudSessionId = sessionId || null
       hudProfile = profileKey
       hudWindow = spawnHudWindow(sessionId, profileKey)
+      previous.destroy()
       broadcastHudState(true)
       registerHudSnapShortcut()
 
@@ -14349,7 +14391,7 @@ function openHudWindow(sessionId, profile) {
     return hudWindow
   }
 
-  hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+  hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed())
   hudSessionId = sessionId || null
   hudProfile = profileKey
   hudWindow = spawnHudWindow(sessionId, profileKey)
@@ -14360,23 +14402,20 @@ function openHudWindow(sessionId, profile) {
 }
 
 function closeHudWindow() {
-  hudSnapShortcut.dispose()
-
   const win = hudWindow
-  hudWindow = null
 
   if (win && !win.isDestroyed()) {
-    // Null'd first so the 'closed' handler doesn't broadcast a second time.
-    win.removeAllListeners('closed')
-    win.close()
+    destroyHudWindow(win)
+
+    return
   }
 
+  // No live HUD (a renderer that died, a toggle racing the close): still
+  // release what an open HUD holds, so the toggles read right.
+  hudWindow = null
+  hudSnapShortcut.dispose()
   restoreMainWindowFromHud()
   broadcastHudState(false)
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    focusWindow(mainWindow)
-  }
 }
 
 // ── Quick Entry ─────────────────────────────────────────────────────────────
@@ -16773,92 +16812,12 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   return handleHermesApiRequest(request).finally(releaseProfileDeletion)
 })
 
-// One deduper per cross-window cue — the choke point every window shares. Main
-// handles IPC serially, so the first window to claim a key wins with no race.
-const isDuplicateNotification = createEventDeduper()
-const claimedAmbientCue = createEventDeduper()
+// Main serializes cross-window ambient claims (see event-dedupe.ts for why a
+// spoken reply holds its claim far longer than a beep).
+const ownsAmbientCue = createAmbientClaimArbiter()
+ipcMain.handle('hermes:ambient:claim', (_event, key) => ownsAmbientCue(String(key ?? '')))
 
-// A window asks "do I own this ambient cue (turn-end sound / spoken reply)?".
-// The first caller within the window gets true; peers get false and stay quiet.
-ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
-
-ipcMain.handle('hermes:notify', (_event, payload) => {
-  if (!Notification.isSupported()) {
-    return false
-  }
-
-  // Multiple full windows each run their own renderer throttle, so the same
-  // kind+session can arrive here twice. Collapse it at this single choke point.
-  // Return true (not false): a notification for the event IS being shown by the
-  // first caller, so the settings "send test" success probe stays honest.
-  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`)) {
-    return true
-  }
-
-  // Action buttons render only on signed macOS builds; elsewhere they're dropped
-  // and the body click still works.
-  const actions = Array.isArray(payload?.actions) ? payload.actions : []
-  const icon = typeof payload?.icon === 'string' && payload.icon.trim() ? payload.icon.trim() : undefined
-
-  const notification = new Notification({
-    title: payload?.title || 'Hermes',
-    body: payload?.body || '',
-    silent: Boolean(payload?.silent),
-    ...(icon ? { icon } : {}),
-    actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
-  })
-
-  notification.on('click', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return
-    }
-
-    focusWindow(mainWindow)
-
-    if (payload?.sessionId) {
-      mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
-    }
-
-    // Plugin / session-less activation — serializable path (+ optional notifyId
-    // for renderer callbacks). Same vocabulary as hermes://index-network/….
-    if (payload?.activate || payload?.notifyId) {
-      mainWindow.webContents.send('hermes:notification-activate', {
-        activate: payload?.activate,
-        notifyId: payload?.notifyId,
-        tag: payload?.tag
-      })
-    }
-  })
-  notification.on('action', (_actionEvent, index) => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return
-    }
-
-    const action = actions[index]
-
-    if (!action?.id) {
-      return
-    }
-
-    // Approvals keep the existing session-scoped channel.
-    if (payload?.sessionId && !payload?.notifyId && !payload?.activate) {
-      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload.sessionId, actionId: action.id })
-
-      return
-    }
-
-    focusWindow(mainWindow)
-    mainWindow.webContents.send('hermes:notification-activate', {
-      actionId: action.id,
-      activate: action.activate || payload?.activate,
-      notifyId: payload?.notifyId,
-      tag: payload?.tag
-    })
-  })
-  notification.show()
-
-  return true
-})
+registerNativeNotifications({ getMainWindow: () => mainWindow, focusWindow })
 
 // Data-URL file load cap (composer attach + local previews). Main owns the
 // persisted MB value so every IPC read honours Settings → Chat without the
@@ -17256,7 +17215,8 @@ ipcMain.on('hermes:translucency:support', event => {
 // only strips internal flags.
 ipcMain.on('hermes:launch-flags', event => {
   event.returnValue = {
-    localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin'
+    localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin',
+    guestOnboarding: GUEST_ONBOARDING
   }
 })
 

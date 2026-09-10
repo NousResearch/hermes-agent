@@ -190,12 +190,16 @@ class GatewayInboundMixin:
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # In DMs: offer pairing code. In groups: silently ignore.
+            # DMs get a pairing code, groups are ignored. A bot cannot pair, and answering one mid-cooldown is outbound traffic.
             if (
                 source.chat_type == "dm"
+                and not getattr(source, "is_bot", False)
                 and self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) == "pair"
             ):
                 await self._hm_offer_pairing_code(source)
+            return None
+        # The busy path charged this event on arrival; a drained follow-up must not pay twice.
+        if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
             return None
         return event, source, False
 

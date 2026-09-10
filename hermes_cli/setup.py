@@ -403,12 +403,9 @@ def _apply_default_agent_settings(config: dict):
     config.setdefault("display", {})["tool_progress"] = "all"
     config.setdefault("compression", {})["enabled"] = True
     config["compression"]["threshold"] = 0.50
-    # Never auto-reset (the gateway default); written explicitly so it is visible in config.yaml.
-    config.setdefault("session_reset", {})["mode"] = "none"
     save_config(config)
     print_success("Applied recommended defaults:")
     _info("  Max iterations: 150", "  Tool progress: all", "  Compression threshold: 0.50",
-          "  Session reset: never (use /reset or compression)",
           "  Run `hermes setup agent` later to customize.")
 
 
@@ -435,26 +432,8 @@ _TOOL_PROGRESS_HELP = (
     "  verbose — Full args, results, and debug logs",
     "  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)",
 )
-_SESSION_RESET_HELP = (
-    "Messaging sessions (Telegram, Discord, etc.) accumulate context over time.",
-    "Each message adds to the conversation history, which means growing API costs.", "",
-    "To manage this, sessions can automatically reset after a period of inactivity",
-    "or at a fixed time each day. When a reset happens, the agent saves important",
-    "things to its persistent memory first — but the conversation context is cleared.", "",
-    "You can also manually reset anytime by typing /reset in chat.", "",
-)
-_SESSION_RESET_CHOICES = [
-    "Inactivity + daily reset (reset whichever comes first)",
-    "Inactivity only (reset after N minutes of no messages)",
-    "Daily only (reset at a fixed hour each day)",
-    "Never auto-reset (recommended - context lives until /reset or context compression)",
-    "Keep current settings",
-]
-_SESSION_RESET_MODES = ("both", "idle", "daily", "none")  # index 4 = keep current
-
-
 def setup_agent_settings(config: dict):
-    """Configure agent behavior: iterations, progress display, compression, session reset."""
+    """Configure agent behavior: iterations, progress display and compression."""
     print_header("Agent Settings")
     _info(f"   Guide: {_DOCS_BASE}/user-guide/configuration", None)
 
@@ -497,37 +476,7 @@ def setup_agent_settings(config: dict):
         config["compression"]["threshold"] = threshold
     print_success(f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}")
 
-    # ── Session Reset Policy ──
-    print_header("Session Reset Policy")
-    _info(*_SESSION_RESET_HELP)
-    _prompt_session_reset(config.setdefault("session_reset", {}))
     save_config(config)
-
-
-def _prompt_session_reset(reset_cfg: dict) -> None:
-    """Pick the session reset mode and its idle/daily parameters in place."""
-    current_mode = reset_cfg.get("mode", "none")
-    current_idle, current_hour = reset_cfg.get("idle_minutes", 1440), reset_cfg.get("at_hour", 4)
-    default_reset = _SESSION_RESET_MODES.index(current_mode) if current_mode in _SESSION_RESET_MODES else 3
-    reset_idx = prompt_choice("Session reset mode:", _SESSION_RESET_CHOICES, default_reset)
-    mode = _SESSION_RESET_MODES[reset_idx] if 0 <= reset_idx < len(_SESSION_RESET_MODES) else None
-    if mode is None:  # keep current settings
-        return
-    reset_cfg["mode"] = mode
-    if mode in ("both", "idle"):
-        _prompt_int_setting(reset_cfg, "idle_minutes", "  Inactivity timeout (minutes)", current_idle, lambda v: v > 0)
-    if mode in ("both", "daily"):
-        _prompt_int_setting(reset_cfg, "at_hour", "  Daily reset hour (0-23, local time)", current_hour, lambda v: 0 <= v <= 23)
-    idle_now, hour_now = reset_cfg.get("idle_minutes", 1440), reset_cfg.get("at_hour", 4)
-    if mode == "none":
-        print_info("Sessions will never auto-reset. Context is managed only by compression.")
-        print_warning("Long conversations will grow in cost. Use /reset manually when needed.")
-    else:
-        print_success({
-            "both": f"Sessions reset after {idle_now} min idle or daily at {hour_now}:00",
-            "idle": f"Sessions reset after {idle_now} min of inactivity",
-            "daily": f"Sessions reset daily at {hour_now}:00",
-        }[mode])
 
 
 # ── Section 5: Tool Configuration (delegates to unified tools_config.py) ──
@@ -631,20 +580,6 @@ def run_setup_wizard(args):
             return None
 
 
-def _backup_config_file(config_path: Path) -> Path | None:
-    """Back up config.yaml before setup modifies it; None when absent or copy fails."""
-    if not config_path.exists():
-        return None
-    import shutil
-    from datetime import datetime
-    backup_path = config_path.with_suffix(f".yaml.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-    try:
-        shutil.copy2(config_path, backup_path)
-        return backup_path
-    except Exception:
-        return None
-
-
 def _run_setup_section(config: dict, section: str) -> None:
     """``hermes setup <section>``: run one SETUP_SECTIONS entry under the banner."""
     entry = next(((label, func) for key, label, func in SETUP_SECTIONS if key == section), None)
@@ -714,16 +649,19 @@ def _run_setup_wizard_impl(args):
         managed_error("run setup wizard")
         return
     ensure_hermes_home()
+    # Back up BEFORE --reset: save_config below overwrites the very file we copy (#3522, #77299).
+    config_path = get_config_path()
+    from hermes_cli.config_backups import backup_config
+    _backup_path = backup_config(config_path, "pre-setup")
     if getattr(args, "reset", False):
         save_config(copy.deepcopy(DEFAULT_CONFIG))
         print_success("Configuration reset to defaults.")
+        if _backup_path:  # --reset may exit before the end-of-wizard notice
+            _info(f"Previous config backed up to: {_backup_path}")
     reconfigure_requested = bool(getattr(args, "reconfigure", False))
     quick_requested = bool(getattr(args, "quick", False))
     config = load_config()
     hermes_home = get_hermes_home()
-    # Back up existing config before setup modifies it (#3522)
-    config_path = get_config_path()
-    _backup_path = _backup_config_file(config_path)
 
     # Non-interactive environments (headless SSH, Docker, CI/CD)
     if getattr(args, 'non_interactive', False) or not is_interactive_stdin():

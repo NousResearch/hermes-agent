@@ -21,8 +21,11 @@ from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from gateway.platforms.base import (BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-                                    cache_document_from_bytes, cache_image_from_bytes)
+from gateway.platforms.base import (
+    BasePlatformAdapter, SendResult,
+    cache_document_from_bytes, cache_image_from_bytes,
+)
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
@@ -141,7 +144,18 @@ def _open_smtp(host: str, port: int, security: str, ctx: ssl.SSLContext, smtp_cl
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID: 163/NetEase require it after LOGIN (else every UID command
-    returns ``BYE Unsafe Login``); other servers may reject it, so failures are swallowed."""
+    returns ``BYE Unsafe Login``); other servers may reject it, so failures are swallowed.
+
+    Sent only when the server advertises ``ID`` (RFC 2971 requires advertising it): a server
+    without the extension can answer an untagged ``* BYE Unknown command.`` and close the
+    connection, which imaplib cannot surface here — the failure appears one command later
+    as a misleading SELECT error and the adapter retries forever (Purelymail, #39856).
+    ``imap.capabilities`` is populated by imaplib at connect, so the check is free."""
+    if "ID" not in imap.capabilities:
+        logger.debug(
+            "[Email] Server does not advertise IMAP ID capability; skipping ID"
+        )
+        return
     try:
         try:
             from hermes_cli import __version__ as _hermes_version
@@ -703,10 +717,10 @@ class EmailAdapter(BasePlatformAdapter):
         return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """One email per batch: local files attached, URL images linked in the body (no remote download); base-class fallback on failure."""
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
         body_parts, local_paths = [], []
         for image_url, alt_text in images:
@@ -719,12 +733,13 @@ class EmailAdapter(BasePlatformAdapter):
             else:
                 logger.warning("[Email] Skipping missing image: %s", local_path)
         if not local_paths and not body_parts:
-            return
+            return SendResult(success=False, error="no valid images in batch")
         try:
-            await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
+            message_id = await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
+        return SendResult(success=True, message_id=message_id)
 
     def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""

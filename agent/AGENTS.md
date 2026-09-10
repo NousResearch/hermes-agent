@@ -59,7 +59,10 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   commands (`agent/skill_commands.py`) inject as a user message; subdirectory `AGENTS.md` hints
   (`agent/subdirectory_hints.py`) append to the tool result (head+tail truncated past `_MAX_HINT_CHARS = 32_000`, with a warning).
 - **Strict role alternation.** Never two same-role messages in a row; never a synthetic user
-  message injected mid-loop. Cron deliveries live in their own session for this reason.
+  message injected mid-loop. The one exception is `/steer`, delivered as a standalone user row
+  after a tool result (`assistant(tool_calls) → tool → user` is legal on every provider path) —
+  never smeared onto the already-persisted tool row, which append-only persistence would leave
+  divergent from the live request. Cron deliveries live in their own session for this reason.
 - **Context files** (`agent/prompt_builder.py`) load from the CWD only at startup and are capped
   (`CONTEXT_FILE_MAX_CHARS` / dynamic cap from the context window / `context_file_max_chars`).
   Never load an install-tree `AGENTS.md` as project context (PR #64611); subdirectory hints reject
@@ -85,7 +88,7 @@ cache break — keep it the only one. Full detail:
   `agent/model_metadata.py` holds context lengths and capabilities.
 - **Auxiliary (side-LLM) work** — curator, vision, embedding, title generation, session_search,
   compression — resolves through `agent/auxiliary_client.py::_resolve_auto_route`; each task can pin
-  its own `provider/model/base_url/max_tokens/reasoning_effort` under `auxiliary:` in config.yaml.
+  its own `provider/model/base_url/reasoning_effort` under `auxiliary:` in config.yaml.
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
   against a temp `HERMES_HOME`, not mocks (root rubric).
 

@@ -13,21 +13,37 @@ import * as jsxRuntime from 'react/jsx-runtime'
 
 import * as sdk from './index'
 
-const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
-} as const
+type SdkGlobals = {
+  __HERMES_PLUGIN_SDK__: typeof sdk
+  __HERMES_REACT__: typeof React
+  __HERMES_REACT_JSX__: typeof jsxRuntime
+  __HERMES_REACT_JSX_DEV__: typeof jsxDevRuntime
+}
+
+/** The live namespaces — resolved on EVERY call, never captured at module init.
+ *
+ *  LOCAL PATCH (2026-09-10): a module-level map can be built BEFORE `./index`
+ *  assigns its namespace binding (bundler ordering is not a contract), and
+ *  `Object.keys(undefined)` in shimUrl then fails EVERY runtime plugin with
+ *  "Cannot convert undefined or null to object". Reading the bindings here is
+ *  order-independent. */
+function sdkGlobals(): SdkGlobals {
+  return {
+    __HERMES_PLUGIN_SDK__: sdk,
+    __HERMES_REACT__: React,
+    __HERMES_REACT_JSX__: jsxRuntime,
+    __HERMES_REACT_JSX_DEV__: jsxDevRuntime
+  }
+}
 
 export function installPluginSdk(): void {
-  Object.assign(globalThis, GLOBALS)
+  Object.assign(globalThis, sdkGlobals())
 }
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.
  *  Export names come from the namespace itself, so the list can't drift. */
-function shimUrl(globalKey: keyof typeof GLOBALS): string {
-  const names = Object.keys(GLOBALS[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
+function shimUrl(globalKey: keyof SdkGlobals): string {
+  const names = Object.keys(sdkGlobals()[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
 
   const source =
     `const m = globalThis.${globalKey};\n` +

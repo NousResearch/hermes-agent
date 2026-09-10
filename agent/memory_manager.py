@@ -16,7 +16,8 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
+from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, is_trivial_prompt
+from agent.memory_recall_planner import MemoryRecallPlanner
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
@@ -293,7 +294,8 @@ class MemoryManager:
     swallows per-provider exceptions.
     """
 
-    def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
+    def __init__(self, *, external_prefetch_timeout: Optional[float] = None,
+                 recall_planner_config: Any = None) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
@@ -305,6 +307,8 @@ class MemoryManager:
         self._external_prefetch_timeout = timeout
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
         self._external_prefetch_lock = threading.Lock()
+        self._recall_planner = MemoryRecallPlanner(recall_planner_config)
+        self._last_prefetch_injected = False
         # Single-worker background executor for end-of-turn sync/prefetch, created lazily so
         # the builtin-only path spawns no threads; one worker serializes a provider's writes.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
@@ -391,15 +395,29 @@ class MemoryManager:
     # providers get just the user's instruction (None for a bare invocation).
     _strip_skill_scaffolding = staticmethod(extract_user_instruction_from_skill_message)
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
+    def prefetch_all(self, query: str, *, session_id: str = "",
+                     history: Optional[List[Dict[str, Any]]] = None) -> str:
         """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
             return ""
-        parts = self._each_provider(
-            "prefetch failed (non-fatal)", lambda p: self._prefetch_provider(p, clean_query, session_id=session_id),
+        external = next((p for p in self._providers if p.name != "builtin"), None)
+        planned_query = self._recall_planner.route_query(
+            external,
+            clean_query,
+            history or [],
+            previous_turn_recall_injected=self._last_prefetch_injected,
         )
-        return "\n\n".join(p for p in parts if p and p.strip())
+        if not planned_query:
+            self._last_prefetch_injected = False
+            return ""
+        parts = self._each_provider(
+            "prefetch failed (non-fatal)",
+            lambda p: self._prefetch_provider(p, planned_query, session_id=session_id),
+        )
+        merged = "\n\n".join(p for p in parts if p and p.strip())
+        self._last_prefetch_injected = bool(merged)
+        return merged
 
     def _prefetch_provider(self, provider: MemoryProvider, query: str, *, session_id: str = "") -> str:
         """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external
@@ -595,7 +613,24 @@ class MemoryManager:
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        self._each_provider("on_turn_start failed", lambda p: p.on_turn_start(turn_number, message, **kwargs))
+        """Notify providers without bypassing the host's current-query recall gate.
+
+        An active planner must be the first component allowed to disclose the current
+        query to an external provider. Providers still receive the lifecycle tick, but
+        with an empty message until :meth:`prefetch_all` supplies the planned query.
+        Trivial turns likewise carry no recall query and clear the previous-turn signal.
+        """
+        trivial = is_trivial_prompt(message)
+        if trivial:
+            self._last_prefetch_injected = False
+        external = next((p for p in self._providers if p.name != "builtin"), None)
+        planner_controls_query = self._recall_planner.effective_mode(external) == "active"
+
+        def _notify(provider: MemoryProvider) -> None:
+            provider_message = "" if provider is external and (trivial or planner_controls_query) else message
+            provider.on_turn_start(turn_number, provider_message, **kwargs)
+
+        self._each_provider("on_turn_start failed", _notify)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
@@ -618,6 +653,10 @@ class MemoryManager:
         share the same worker. If the executor is unavailable, ``_submit_background`` degrades to inline
         execution — the pre-#16454 synchronous behavior, slow but correct.
         """
+        # This host-side signal belongs to the old conversational session.  Provider
+        # extraction and rebinding are intentionally queued, but a new turn can start
+        # before that worker reaches ``on_session_switch``.
+        self._last_prefetch_injected = False
         if not self._providers:
             return
         snapshot = list(messages or [])
@@ -628,19 +667,27 @@ class MemoryManager:
             except Exception as e:  # pragma: no cover
                 logger.warning("Session-boundary extraction failed: %s", e)
             try:
-                self.on_session_switch(new_session_id, parent_session_id=parent_session_id, reset=True, reason=reason)
+                self.on_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=True,
+                    reason=reason,
+                    reset_prefetch_state=False,
+                )
             except Exception as e:  # pragma: no cover
                 logger.warning("Session-boundary switch failed: %s", e)
 
         self._submit_background(_run)
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False,
-                          rewound: bool = False, **kwargs) -> None:
+                          rewound: bool = False, reset_prefetch_state: bool = True, **kwargs) -> None:
         """Notify providers that ``AIAgent.session_id`` rotated without teardown
         (``/resume``, ``/branch``, ``/reset``, ``/new``, compression). ``rewound=True``
         (``/undo``): same id, truncated transcript."""
         if not new_session_id:
             return
+        if reset_prefetch_state:
+            self._last_prefetch_injected = False
         if rewound:  # forward only when set so it never pollutes providers' **kwargs
             kwargs["rewound"] = True
         self._each_provider(
@@ -771,6 +818,7 @@ class MemoryManager:
 
     def shutdown_all(self) -> None:
         """Drain the background executor (bounded), then shut providers down in reverse order."""
+        self._recall_planner.shutdown()
         self._drain_sync_executor()
         self._each_provider("shutdown failed", lambda p: p.shutdown(), level=logging.WARNING,
                             providers=self._providers[::-1])

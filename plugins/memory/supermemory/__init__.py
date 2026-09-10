@@ -325,6 +325,9 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "supermemory"
 
+    def supports_current_query_recall_planning(self) -> bool:
+        return True
+
     def is_available(self) -> bool:
         # Key presence only, no SDK import check: the SDK is lazy-installed in initialize(), so gating on
         # importability here is a chicken-and-egg trap on sealed venvs. Mirrors honcho/mem0.

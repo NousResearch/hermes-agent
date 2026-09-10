@@ -1197,6 +1197,9 @@ class _TurnUpload:
 class OpenVikingMemoryProvider(MemoryProvider):
     """Full bidirectional memory via OpenViking context database."""
 
+    def supports_current_query_recall_planning(self) -> bool:
+        return True
+
     def backup_paths(self) -> List[str]:
         """The resolved ovcli config (default ~/.openviking/ovcli.conf) so endpoint/api-key
         survive backup/import. The backup walk itself drops paths outside $HOME."""

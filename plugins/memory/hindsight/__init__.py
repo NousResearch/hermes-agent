@@ -349,6 +349,10 @@ class HindsightMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "hindsight"
 
+    def supports_current_query_recall_planning(self) -> bool:
+        """Only synchronous recall consumes this turn's query."""
+        return self._recall_sync
+
     def is_available(self) -> bool:
         try:
             cfg = _load_config()

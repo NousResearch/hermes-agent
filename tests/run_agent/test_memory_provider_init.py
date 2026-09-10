@@ -95,7 +95,13 @@ def test_close_shuts_down_memory_provider():
 
 def test_aiagent_forwards_user_id_alt_to_memory_provider():
     provider = RecordingMemoryProvider()
-    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+    cfg = {
+        "memory": {
+            "provider": "recording",
+            "recall_planner": {"mode": "active", "timeout_seconds": 1.25},
+        },
+        "agent": {},
+    }
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
@@ -124,6 +130,9 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["user_id"] == "open-id"
     assert provider.init_kwargs["user_id_alt"] == "union-id"
     assert provider.init_kwargs["platform"] == "feishu"
+    planner = getattr(getattr(agent, "_memory_manager"), "_recall_planner")
+    assert planner.config.mode == "active"
+    assert planner.config.timeout_seconds == 1.25
     assert "warning_callback" not in provider.init_kwargs
     assert "status_callback" not in provider.init_kwargs
 

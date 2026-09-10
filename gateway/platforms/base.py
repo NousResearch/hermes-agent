@@ -770,6 +770,13 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
     return (name, f"{name}-wal", f"{name}-shm", f"{name}-journal")
 
 
+_MEDIA_DELIVERY_LEGACY_CACHE_DIRS = (
+    "image_cache",
+    "audio_cache",
+    "video_cache",
+    "document_cache",
+    "browser_screenshots",
+)
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
 # files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
 # agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
@@ -796,7 +803,7 @@ def _profile_cache_roots() -> List[Path]:
     when HERMES_HOME is symlinked under a denied prefix and $HOME is not that prefix). See issue #31733.
     """
     try:
-        profile_dirs = [p for p in (_HERMES_ROOT / "profiles").iterdir() if p.is_dir()]
+        profile_dirs = [p for p in (get_hermes_home() / "profiles").iterdir() if p.is_dir()]
     except OSError:
         return []
     return [p / "cache" / subdir for p in profile_dirs for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
@@ -829,12 +836,24 @@ def _kanban_attachment_roots() -> List[Path]:
 
 def _media_delivery_allowed_roots() -> List[Path]:
     """Return roots from which model-emitted local media may be delivered."""
-    operator_roots = (
-        root for chunk in os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "").split(os.pathsep)
-        for raw_root in chunk.split(",")
-        if (root := Path(os.path.expanduser(raw_root.strip()))).is_absolute())
-    return [*map(Path, MEDIA_DELIVERY_SAFE_ROOTS), *_profile_cache_roots(),
-            *_kanban_attachment_roots(), *operator_roots]
+    roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
+    # Profile selection can change HERMES_HOME after this module is imported.
+    # Resolve the active profile's managed caches at validation time.
+    active_home = get_hermes_home()
+    roots.extend(active_home / "cache" / subdir for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS)
+    roots.extend(active_home / subdir for subdir in _MEDIA_DELIVERY_LEGACY_CACHE_DIRS)
+    roots.extend(_profile_cache_roots())
+    roots.extend(_kanban_attachment_roots())
+    extra_roots = os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "")
+    for chunk in extra_roots.split(os.pathsep):
+        for raw_root in chunk.split(","):
+            raw_root = raw_root.strip()
+            if not raw_root:
+                continue
+            root = Path(os.path.expanduser(raw_root))
+            if root.is_absolute():
+                roots.append(root)
+    return roots
 
 
 def _media_delivery_recency_seconds() -> float:

@@ -239,15 +239,15 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_busy_input_mode(cls) -> str:
-        """Gateway drain-time busy-input behavior from env/config (default ``interrupt``)."""
+        """Gateway drain-time busy-input behavior from env/config (default ``queue``)."""
         mode = cls._env_or_cfg_str("HERMES_GATEWAY_BUSY_INPUT_MODE", "display", "busy_input_mode").lower()
-        return mode if mode in {"queue", "steer"} else "interrupt"
+        return mode if mode in _BUSY_INPUT_MODES else "queue"
 
     @classmethod
     def _load_busy_text_mode(cls) -> str:
         """Normal busy TEXT follow-up behavior.
 
-        ``busy_input_mode`` is the source of truth (default ``interrupt``); legacy ``busy_text_mode``
+        ``busy_input_mode`` is the source of truth (default ``queue``); legacy ``busy_text_mode``
         is honored only when explicitly set so existing queue setups keep working.
         """
         from gateway.run import GatewayRunner
@@ -273,8 +273,8 @@ class GatewayConfigLoadersMixin:
     def _snapshot_profile_busy_modes(self, profile_name: str, config: dict) -> None:
         """Cache a routed profile's busy policy for this gateway lifetime."""
         input_mode, text_mode = self._busy_modes_from_config(
-            config, fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
-            fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
+            config, fallback_input=getattr(self, "_busy_input_mode", "queue"),
+            fallback_text=getattr(self, "_busy_text_mode", "queue"),
         )
         self.__dict__.setdefault("_busy_input_modes_by_profile", {})[profile_name] = input_mode
         self.__dict__.setdefault("_busy_text_modes_by_profile", {})[profile_name] = text_mode
@@ -293,7 +293,7 @@ class GatewayConfigLoadersMixin:
 
     def _effective_busy_mode(self, source: SessionSource, attr: str) -> str:
         """Busy mode from the routed profile snapshot (``attr``: ``_busy_input_mode`` / ``_busy_text_mode``)."""
-        fallback = getattr(self, attr, "interrupt")
+        fallback = getattr(self, attr, "queue")
         profile_name = self._busy_profile_name_for_source(source)
         if not profile_name:
             return fallback

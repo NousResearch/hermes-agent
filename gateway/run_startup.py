@@ -90,6 +90,26 @@ class GatewayStartupMixin:
             drained += 1
         return drained
 
+    def _restore_durable_inbound_queue(self) -> int:
+        """Add persisted inbound obligations to the existing startup queue without acknowledging them.
+
+        Adapter admission is only RAM ownership.  The spool stays until final
+        output transfers to the delivery ledger (or a ledger-disabled send is
+        confirmed), so a second restart cannot lose the original user turn.
+        """
+        try:
+            from gateway.shutdown_flush import recover_durable_inbound_events
+
+            events = recover_durable_inbound_events()
+        except Exception:
+            logger.exception("Could not restore durable inbound queue")
+            return 0
+        for event in events:
+            self._queue_startup_restore_event(event)
+        if events:
+            logger.info("Restored %d durable inbound message(s) into startup queue", len(events))
+        return len(events)
+
     def _start_startup_warmup(self) -> None:
         """Kick off the boot turn-machinery warm-up so it overlaps the network-bound platform
         connects; ``_finish_startup_restore`` awaits it (bounded)."""
@@ -365,7 +385,7 @@ class GatewayStartupMixin:
         # No early return on an empty claim: the boot sweep may have ADOPTED flood-refused rows that are
         # not due yet, and those still need their timer armed below.
         try:
-            from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed
+            from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed, output_payload
         except Exception:
             logger.debug("delivery ledger import failed", exc_info=True)
             return 0
@@ -383,7 +403,24 @@ class GatewayStartupMixin:
                 content = row.get("marker", RECOVERED_MARKER) + content
             metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             try:
-                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
+                payload = await asyncio.to_thread(output_payload, row["obligation_id"])
+                if payload is not None:
+                    metadata = payload["metadata"]
+                from gateway.platforms.base import SendResult
+                result = SendResult(success=True)
+                if payload is None or not payload["text_complete"]:
+                    kwargs = {"reply_to": payload["reply_to"]} if payload and payload.get("reply_to") else {}
+                    result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata, **kwargs)
+                    if getattr(result, "success", False):
+                        await asyncio.to_thread(mark_delivered, row["obligation_id"],
+                                                BasePlatformAdapter._delivery_receipt_ids(result))
+                if payload and getattr(result, "success", False):
+                    source = SessionSource(platform=Platform(row["platform"]), chat_id=row["chat_id"],
+                                           thread_id=row.get("thread_id"))
+                    complete = await adapter._deliver_ledger_attachments(
+                        row["obligation_id"], MessageEvent(text="", source=source))
+                    if not complete:
+                        continue  # attachment sender retained the specific failure
             except Exception as send_err:
                 logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
                 result = None
@@ -1248,6 +1285,7 @@ class GatewayStartupMixin:
         )
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
+        self._restore_durable_inbound_queue()
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
         # Surface state.db init failures to messaging platforms before the user loses data.

@@ -11,10 +11,16 @@ import pytest
 
 from gateway.shutdown_flush import (
     _serialise_value,
+    acknowledge_durable_inbound_event,
     flush_overflow_to_file,
     flush_pending_to_file,
+    record_durable_inbound_event,
+    recover_durable_inbound_events,
     recover_pending_to_db,
 )
+from gateway.config import Platform
+from gateway.platforms.event import MessageEvent
+from gateway.session import SessionSource
 
 
 def _make_flush_dir(tmp_path: Path) -> Path:
@@ -148,6 +154,64 @@ def test_serialise_object_with_text():
     assert result is not None
     assert result["text"] == "msg"
     assert result["session_id"] == "sid"
+
+
+def test_durable_queued_inbound_round_trips_once_before_ack(tmp_path, monkeypatch):
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    event = MessageEvent(
+        text="finish the original request too",
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="456"),
+        message_id="789",
+    )
+
+    assert record_durable_inbound_event("agent:main:telegram:dm:123", event)
+    assert record_durable_inbound_event("agent:main:telegram:dm:123", event)
+    assert len(list(flush_dir.glob("inbound-*.json"))) == 1
+    restored = recover_durable_inbound_events()
+    assert [item.text for item in restored] == ["finish the original request too"]
+    acknowledge_durable_inbound_event(restored[0])
+    assert recover_durable_inbound_events() == []
+
+
+def test_durable_inbound_replays_in_arrival_order_not_hash_order(tmp_path, monkeypatch):
+    import gateway.shutdown_flush as shutdown_flush
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: flush_dir)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="456")
+    for text, message_id in (("first", "z"), ("second", "a"), ("third", "m")):
+        assert record_durable_inbound_event(
+            "agent:main:telegram:dm:123",
+            MessageEvent(text=text, source=source, message_id=message_id),
+        )
+    assert [item.text for item in recover_durable_inbound_events()] == [
+        "first", "second", "third",
+    ]
+
+
+def test_recovery_transfers_existing_outbound_reply_without_rerunning_input(tmp_path, monkeypatch):
+    from gateway import delivery_ledger as ledger
+    import gateway.shutdown_flush as shutdown_flush
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: flush_dir)
+    monkeypatch.setattr(ledger, "_db_path", lambda: tmp_path / "state.db")
+    session_key = "agent:main:telegram:dm:123"
+    event = MessageEvent(
+        text="finish the original request",
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="456"),
+        message_id="789",
+    )
+    assert record_durable_inbound_event(session_key, event)
+    inbound_id = shutdown_flush.durable_inbound_obligation_id(event)
+    outbound_id = ledger.compute_obligation_id(session_key, "", "", stable_inbound_id=inbound_id)
+    assert ledger.record_obligation(
+        obligation_id=outbound_id, session_key=session_key, platform="telegram", chat_id="123",
+        thread_id=None, content="canonical first reply", preserve_existing=True,
+    )
+    assert recover_durable_inbound_events() == []
+    assert ledger.obligation_state(outbound_id) == "pending"
 
 
 def test_get_flush_dir_uses_get_hermes_home(tmp_path, monkeypatch):

@@ -318,6 +318,7 @@ class GatewayNotificationsMixin:
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        inbound_event: Optional[MessageEvent] = None,
     ) -> None:
         """Deliver a queued response using the normal text+attachment split.
 
@@ -326,6 +327,23 @@ class GatewayNotificationsMixin:
         ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
         stays unledgered."""
         from gateway.run import _strip_response_attachments_for_direct_send
+        obligation_id = None
+        transfer_event = inbound_event or MessageEvent(
+            text="", source=source, ledger_message_id=inbound_message_id)
+        from gateway.platforms.base import SendResult
+        if session_key and isinstance(adapter, BasePlatformAdapter):
+            media_files, _ = adapter.extract_media(response)
+            manifest = adapter._delivery_manifest(media_files, [], [], "[[as_document]]" in response) if deliver_media else []
+            obligation_id, already_owned = await adapter._record_delivery_obligation(
+                transfer_event, session_key,
+                _strip_response_attachments_for_direct_send(response, adapter), adapter, False,
+                attachments=manifest, metadata=metadata, reply_to=event_message_id)
+            if already_owned:
+                return
+            if text_already_delivered and obligation_id:
+                await adapter._finalize_delivery_obligation(
+                    obligation_id, SendResult(success=True, message_id=getattr(stream_consumer, "message_id", None)),
+                    transfer_event, adapter)
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:
@@ -344,6 +362,9 @@ class GatewayNotificationsMixin:
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
+                            if obligation_id:
+                                await adapter._finalize_delivery_obligation(
+                                    obligation_id, _edit_res, transfer_event, adapter)
                             logger.info(
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
@@ -366,10 +387,13 @@ class GatewayNotificationsMixin:
                 if not _reconciled:
                     await self._send_queued_final_text(
                         adapter, source, text_content, metadata, event_message_id, session_key,
-                        inbound_message_id)
+                        inbound_message_id, inbound_event=transfer_event, obligation_id=obligation_id)
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
+            return
+        if obligation_id:
+            await adapter._deliver_ledger_attachments(obligation_id, transfer_event)
             return
         await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
@@ -380,6 +404,7 @@ class GatewayNotificationsMixin:
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
         event_message_id: Optional[str], session_key: Optional[str],
         inbound_message_id: Optional[str] = None,
+        inbound_event: Optional[MessageEvent] = None, obligation_id: Optional[str] = None,
     ):
         """Send a queued-lane final through the same ledger bracket as the normal final
         (``send_final_ledgered``). This lane used to call ``adapter.send`` bare and discard the
@@ -391,8 +416,9 @@ class GatewayNotificationsMixin:
         the base contract and sends without a session key keep the plain send."""
         if session_key and isinstance(adapter, BasePlatformAdapter):
             result, _ = await adapter.send_final_ledgered(
-                MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
-                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
+                inbound_event or MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
+                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id,
+                obligation_id=obligation_id)
         else:
             result = await adapter.send(source.chat_id, text_content, metadata=metadata)
         if not getattr(result, "success", False):

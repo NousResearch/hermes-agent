@@ -12,10 +12,12 @@ deletes each file on success), ``flush_agent_history_to_file`` (DB flush raised)
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import itertools
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -30,6 +32,11 @@ TRANSCRIPT_CAP_DROP_REASON = "transcript_cap_drop"
 # Monotonic tiebreaker so same-second spool files replay in drop order.
 _TRANSCRIPT_SPOOL_SEQ = itertools.count()
 
+DURABLE_INBOUND_REASON = "durable_inbound"
+_DURABLE_INBOUND_ID_KEY = "_hermes_durable_inbound_id"
+_DURABLE_INBOUND_PATH_KEY = "_hermes_durable_inbound_path"
+_DURABLE_INBOUND_LOCK = threading.Lock()
+
 
 def _get_flush_dir():
     """Return the pending-messages flush directory under the active HERMES_HOME."""
@@ -41,10 +48,15 @@ def _get_flush_dir():
     return flush_dir
 
 
-def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> Path:
+def _write_payload(
+    flush_dir: Path,
+    payload: Dict[str, Any],
+    *,
+    file_name: str | None = None,
+) -> Path:
     """Atomically write one private, uniquely named recovery payload; return its path."""
     from utils import atomic_json_write
-    final_path = flush_dir / f"pending-{uuid.uuid4().hex}.json"
+    final_path = flush_dir / (file_name or f"pending-{uuid.uuid4().hex}.json")
     atomic_json_write(final_path, payload, mode=0o600, default=str)
     if os.name == "posix":
         # Persist the directory entry too; keep the published file (the only recovery copy) even if
@@ -61,6 +73,314 @@ def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> Path:
             finally:
                 os.close(directory_fd)
     return final_path
+
+
+def _json_safe_value(value: Any) -> Any:
+    """Return a JSON-safe value without losing a user turn to rich metadata."""
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _durable_inbound_id(session_key: str, event: Any) -> str:
+    """Give one inbound event a stable, private spool identity.
+
+    Platform message/update ids are stable across a restart.  Some adapters do
+    not expose either, so keep one generated id on the in-memory event before
+    its first acknowledgement.
+    """
+    metadata = getattr(event, "metadata", None)
+    if isinstance(metadata, dict):
+        existing = str(metadata.get(_DURABLE_INBOUND_ID_KEY) or "").strip()
+        if existing:
+            return existing
+    source = getattr(event, "source", None)
+    identity = "|".join(
+        str(value or "")
+        for value in (
+            session_key,
+            getattr(getattr(source, "platform", None), "value", None),
+            getattr(source, "chat_id", None),
+            getattr(source, "thread_id", None),
+            getattr(event, "message_id", None),
+            getattr(event, "platform_update_id", None),
+            getattr(event, "timestamp", None),
+        )
+    )
+    value = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    if isinstance(metadata, dict):
+        metadata[_DURABLE_INBOUND_ID_KEY] = value
+    return value
+
+
+def durable_inbound_obligation_id(event: Any) -> str:
+    """Return the already-persisted inbound identity, never a new one.
+
+    ``record_durable_inbound_event`` is the sole owner that creates this id.
+    Consumers may use it to derive the matching outbound delivery identity,
+    but must not invent a second inbound identity after dispatch begins.
+    """
+    metadata = getattr(event, "metadata", None)
+    if not isinstance(metadata, dict):
+        return ""
+    return str(metadata.get(_DURABLE_INBOUND_ID_KEY) or "").strip()
+
+
+def _next_durable_inbound_sequence(flush_dir: Path) -> int:
+    """Allocate the next persisted FIFO sequence from surviving records.
+
+    Wall time can move backwards after NTP/RTC correction, so ``time_ns`` is
+    not an arrival ordering authority.  A gateway owns this private spool
+    exclusively; under that process contract, scanning its small bounded
+    pending set gives a restart-stable monotonic sequence without another
+    queue or database.
+    """
+    highest = 0
+    for path in flush_dir.glob("inbound-*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("reason") != DURABLE_INBOUND_REASON:
+                continue
+            highest = max(highest, int(payload.get("arrival_sequence", 0)))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+    return highest + 1
+
+
+def _has_durable_outbound_transfer(session_key: str, inbound_obligation_id: str) -> bool:
+    """Whether an existing delivery-ledger row owns this inbound turn.
+
+    The delivery ledger is the only outbound owner.  Its stable-id helper is
+    deliberately reused here so a crash after its durable write but before
+    inbound unlink never causes the agent to regenerate a second reply.
+    """
+    if not session_key or not inbound_obligation_id:
+        return False
+    try:
+        from gateway.delivery_ledger import (
+            inbound_transfer_state,
+            ledger_enabled,
+        )
+
+        if not ledger_enabled():
+            return False
+
+        # Exhausted delivery is still transferred, not permission to rerun tools.
+        return inbound_transfer_state(session_key, inbound_obligation_id) is not None
+    except Exception:
+        logger.debug("Could not resolve durable outbound transfer", exc_info=True)
+        return False
+
+
+def _serialise_inbound_event(event: Any) -> Optional[dict]:
+    """Serialise the normalized event shape required to replay it safely."""
+    source = getattr(event, "source", None)
+    platform = getattr(getattr(source, "platform", None), "value", None)
+    chat_id = getattr(source, "chat_id", None)
+    if not platform or not chat_id:
+        return None
+    source_fields = (
+        "chat_id", "chat_name", "chat_type", "user_id", "user_name",
+        "thread_id", "chat_topic", "user_id_alt", "chat_id_alt", "is_bot",
+        "scope_id", "guild_id", "parent_chat_id", "message_id",
+        "role_authorized", "profile", "auto_thread_created",
+        "auto_thread_initial_name", "prospective_thread_id",
+    )
+    event_fields = (
+        "input_members",
+        "text", "user_id", "user_name", "message_id", "platform_update_id",
+        "media_urls", "media_types", "media_text_inlined", "reply_to_message_id",
+        "reply_to_text", "reply_to_author_id", "reply_to_author_name",
+        "reply_to_is_own_message", "prompt_response", "auto_skill",
+        "channel_prompt", "channel_context", "internal", "allow_gateway_control",
+    )
+    return {
+        "source": {
+            "platform": platform,
+            **{
+                field: _json_safe_value(getattr(source, field, None))
+                for field in source_fields
+            },
+        },
+        "message_type": getattr(getattr(event, "message_type", None), "value", "text"),
+        "timestamp": getattr(getattr(event, "timestamp", None), "isoformat", lambda: None)(),
+        "metadata": _json_safe_value(getattr(event, "metadata", {}) or {}),
+        **{
+            field: _json_safe_value(getattr(event, field, None))
+            for field in event_fields
+        },
+    }
+
+
+def record_durable_inbound_event(session_key: str, event: Any) -> bool:
+    """Persist an accepted queued inbound event before its acknowledgement.
+
+    Returning ``False`` means the caller must not claim the message was queued:
+    the only authoritative copy would still be volatile memory.
+    """
+    try:
+        data = _serialise_inbound_event(event)
+        if data is None:
+            return False
+        obligation_id = _durable_inbound_id(session_key, event)
+        flush_dir = _get_flush_dir()
+        # A hash is an identity, not an arrival sequence.  Nor is wall time:
+        # NTP/RTC correction can move it backwards.  The durable FIFO sequence
+        # survives restart and the id remains the dedupe key.
+        with _DURABLE_INBOUND_LOCK:
+            matches = list(flush_dir.glob(f"inbound-*-{obligation_id}.json"))
+            legacy_path = flush_dir / f"inbound-{obligation_id}.json"
+            if legacy_path.exists():
+                matches.append(legacy_path)
+            if matches:
+                existing_path = sorted(matches)[0]
+                metadata = getattr(event, "metadata", None)
+                if isinstance(metadata, dict):
+                    metadata[_DURABLE_INBOUND_PATH_KEY] = existing_path.name
+                return True
+            arrival_sequence = _next_durable_inbound_sequence(flush_dir)
+            final_path = flush_dir / (
+                f"inbound-{arrival_sequence:020d}-{obligation_id}.json"
+            )
+            _write_payload(
+                flush_dir,
+                {
+                    "session_key": session_key,
+                    "reason": DURABLE_INBOUND_REASON,
+                    "obligation_id": obligation_id,
+                    "arrival_sequence": arrival_sequence,
+                    "ts": int(time.time()),
+                    "data": data,
+                },
+                file_name=final_path.name,
+            )
+        metadata = getattr(event, "metadata", None)
+        if isinstance(metadata, dict):
+            metadata[_DURABLE_INBOUND_PATH_KEY] = final_path.name
+        return True
+    except Exception as exc:
+        logger.warning("Unable to durably queue inbound event for %s: %s", session_key, exc)
+        return False
+
+
+def _deserialise_inbound_event(data: Any) -> Any:
+    """Rebuild a normalized MessageEvent from a durable inbound payload."""
+    if not isinstance(data, dict):
+        raise ValueError("inbound payload data is not an object")
+    source_data = data.get("source")
+    if not isinstance(source_data, dict):
+        raise ValueError("inbound payload has no source")
+    from datetime import datetime
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    platform = Platform(str(source_data.get("platform") or ""))
+    source_kwargs = {key: value for key, value in source_data.items() if key != "platform"}
+    source = SessionSource(platform=platform, **source_kwargs)
+    raw_timestamp = data.get("timestamp")
+    try:
+        timestamp = datetime.fromisoformat(raw_timestamp) if raw_timestamp else datetime.now()
+    except (TypeError, ValueError):
+        timestamp = datetime.now()
+    message_type = MessageType(str(data.get("message_type") or "text"))
+    event_kwargs = {
+        key: data.get(key)
+        for key in (
+            "input_members",
+            "text", "user_id", "user_name", "message_id", "platform_update_id",
+            "media_urls", "media_types", "media_text_inlined", "reply_to_message_id",
+            "reply_to_text", "reply_to_author_id", "reply_to_author_name",
+            "reply_to_is_own_message", "prompt_response", "auto_skill",
+            "channel_prompt", "channel_context", "internal", "allow_gateway_control",
+        )
+        if key in data
+    }
+    event_kwargs["metadata"] = data.get("metadata") or {}
+    return MessageEvent(source=source, message_type=message_type, timestamp=timestamp, **event_kwargs)
+
+
+def recover_durable_inbound_events() -> list[Any]:
+    """Load durable queued input without acknowledging it yet.
+
+    Dispatching to an adapter merely transfers an event to RAM.  The record
+    stays until a durable outbound response obligation exists (or that response
+    is confirmed delivered when the ledger is disabled).  Invalid payloads
+    stay on disk for an explicit operator failure rather than being silently
+    lost.
+    """
+    try:
+        candidates = sorted(_get_flush_dir().glob("inbound-*.json"))
+    except Exception as exc:
+        logger.warning("Cannot scan durable inbound queue: %s", exc)
+        return []
+    events = []
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("reason") != DURABLE_INBOUND_REASON:
+                continue
+            event = _deserialise_inbound_event(payload.get("data"))
+            metadata = getattr(event, "metadata", None)
+            if isinstance(metadata, dict):
+                metadata[_DURABLE_INBOUND_ID_KEY] = str(payload["obligation_id"])
+                metadata[_DURABLE_INBOUND_PATH_KEY] = path.name
+            if _has_durable_outbound_transfer(
+                str(payload.get("session_key") or ""),
+                str(payload.get("obligation_id") or ""),
+            ):
+                # The matching outbound row is already authoritative.  This
+                # is the recovery half of the one inbound→outbound transfer;
+                # never re-run the user turn just because the previous process
+                # died before it unlinked the inbound file.
+                acknowledge_durable_inbound_event(event)
+                continue
+            try:
+                arrival_sequence = int(payload.get("arrival_sequence"))
+            except (TypeError, ValueError):
+                # Compatibility ordering for the short-lived time-ns format
+                # and older hash-named records. New writes never use wall time.
+                arrival_sequence = int(payload.get("arrival_ns", payload.get("ts", 0)))
+            events.append((arrival_sequence, path.name, event))
+        except Exception as exc:
+            logger.warning("Cannot restore durable inbound event %s: %s", path, exc)
+    return [event for _arrival_sequence, _name, event in sorted(events)]
+
+
+def acknowledge_durable_inbound_event(event: Any) -> None:
+    """Remove one durable input only after its terminal response/transfer."""
+    event = getattr(event, "terminal_event", None) or event
+    if getattr(event, "input_members", None):
+        from types import SimpleNamespace
+        for member in event.input_members:
+            acknowledge_durable_inbound_event(SimpleNamespace(metadata={
+                _DURABLE_INBOUND_ID_KEY: member["inbound_id"]}))
+        return
+    metadata = getattr(event, "metadata", None)
+    obligation_id = str(metadata.get(_DURABLE_INBOUND_ID_KEY) or "") if isinstance(metadata, dict) else ""
+    if not obligation_id:
+        return
+    try:
+        flush_dir = _get_flush_dir()
+        file_name = (
+            str(metadata.get(_DURABLE_INBOUND_PATH_KEY) or "")
+            if isinstance(metadata, dict) else ""
+        )
+        if file_name and Path(file_name).name == file_name:
+            (flush_dir / file_name).unlink(missing_ok=True)
+            return
+        # Compatibility with records written before arrival-order filenames.
+        legacy_path = flush_dir / f"inbound-{obligation_id}.json"
+        if legacy_path.exists():
+            legacy_path.unlink()
+            return
+        for path in flush_dir.glob(f"inbound-*-{obligation_id}.json"):
+            path.unlink(missing_ok=True)
+    except Exception as exc:
+        logger.warning("Unable to acknowledge durable inbound event %s: %s", obligation_id, exc)
+
 
 
 def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **extra: Any) -> bool:
@@ -82,8 +402,12 @@ def flush_pending_to_file(pending: Dict[str, Any], *, reason: str = "shutdown") 
         return 0
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
     for session_key, value in list(pending.items()):
-        if value is not None:
-            flushed += _flush_value(flush_dir, "pending", session_key, value, reason=reason, ts=ts)
+        if value is None:
+            continue
+        metadata = getattr(value, "metadata", None)
+        if isinstance(metadata, dict) and metadata.get(_DURABLE_INBOUND_ID_KEY):
+            continue
+        flushed += _flush_value(flush_dir, "pending", session_key, value, reason=reason, ts=ts)
     if flushed:
         logger.info("Flushed %d pending message(s) to %s (reason=%s)", flushed, flush_dir, reason)
     return flushed

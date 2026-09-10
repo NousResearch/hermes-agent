@@ -184,6 +184,60 @@ export const roseTheme: DashboardTheme = {
   },
 };
 
+/** Deep underworld blue-violet. Matches the CLI and Desktop Hades skin. */
+export const hadesTheme: DashboardTheme = {
+  name: "hades",
+  label: "Hades",
+  description: "Deep underworld blue-violet with cool accents",
+  palette: {
+    background: { hex: "#0F172A", alpha: 1 },
+    midground: { hex: "#7EB8F6", alpha: 1 },
+    foreground: { hex: "#DCEBFF", alpha: 0.04 },
+    warmGlow: "rgba(96, 165, 250, 0.28)",
+    noiseOpacity: 0.75,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    letterSpacing: "-0.005em",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.75rem",
+  },
+  terminalBackground: "#0B1220",
+  terminalForeground: "#DCEBFF",
+  colorOverrides: {
+    card: "#111827",
+    cardForeground: "#DCEBFF",
+    popover: "#111827",
+    popoverForeground: "#DCEBFF",
+    primary: "#7EB8F6",
+    primaryForeground: "#0F172A",
+    secondary: "#1E3A8A",
+    secondaryForeground: "#DCEBFF",
+    accent: "#1D4ED8",
+    accentForeground: "#DCEBFF",
+    muted: "#1E293B",
+    mutedForeground: "#93A4BC",
+    border: "#334155",
+    input: "#334155",
+    ring: "#60A5FA",
+    destructive: "#F87171",
+    destructiveForeground: "#1F0A0A",
+    success: "#4ADE80",
+    warning: "#FBBF24",
+  },
+  seriesColors: {
+    inputTokenAccent: "#93C5FD",
+    outputTokenAccent: "#60A5FA",
+  },
+  swatchColors: ["#0F172A", "#7EB8F6", "#1E3A8A"],
+};
+
 /** Light mode — vivid Nous-blue accents on a cream canvas. */
 export const nousBlueTheme: DashboardTheme = {
   name: "nous-blue",
@@ -234,6 +288,7 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   "nous-blue": nousBlueTheme,
   midnight: midnightTheme,
   ember: emberTheme,
+  hades: hadesTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,

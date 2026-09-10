@@ -1461,6 +1461,7 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "assignee": "assignee ASC, created_at ASC",
     "title": "title ASC, id ASC",
     "updated": "started_at DESC NULLS LAST, created_at DESC",
+    "completed-desc": "completed_at DESC NULLS LAST, id DESC",
 }
 
 
@@ -1490,7 +1491,13 @@ def list_tasks(
             raise ValueError(f"order_by must be one of {sorted(VALID_SORT_ORDERS.keys())}")
         query += f" ORDER BY {VALID_SORT_ORDERS[order_by]}"
     else:
-        query += " ORDER BY priority DESC, created_at ASC"
+        # When filtering by done status and no explicit sort is given,
+        # default to completed_at DESC so the most recently finished
+        # tasks surface at the top.
+        if status == "done":
+            query += f" ORDER BY {VALID_SORT_ORDERS['completed-desc']}"
+        else:
+            query += " ORDER BY priority DESC, created_at ASC"
     if limit:
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()

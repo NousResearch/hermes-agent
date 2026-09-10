@@ -1,0 +1,146 @@
+diff --git a/plugins/memory/mem0/_backend.py b/plugins/memory/mem0/_backend.py
+index 014417f..3f1e117 100644
+--- a/plugins/memory/mem0/_backend.py
++++ b/plugins/memory/mem0/_backend.py
+@@ -156,6 +156,11 @@ class SelfHostedBackend(Mem0Backend):
+ class OSSBackend(Mem0Backend):
+     """Wraps mem0.Memory for self-hosted (OSS) mode."""
+ 
++    # Vector stores whose mem0 pydantic config schema accepts embedding_model_dims.
++    # Others (e.g. chroma) reject it as an extra field and auto-detect dims
++    # from the embedder's own output instead.
++    _DIMS_AWARE_PROVIDERS = {"qdrant", "pgvector", "elasticsearch", "milvus"}
++
+     def __init__(self, oss_config: dict):
+         import os
+         from mem0 import Memory
+@@ -183,6 +188,8 @@ class OSSBackend(Mem0Backend):
+         if "path" in vs_config:
+             vs_config["path"] = os.path.expanduser(vs_config["path"])
+ 
++        vs_provider = str(vector_store.get("provider") or "qdrant").strip().lower()
++
+         embedder_config = oss_config.get("embedder", {}).get("config", {})
+         dims = embedder_config.get("embedding_dims")
+         if not dims:
+@@ -190,10 +197,14 @@ class OSSBackend(Mem0Backend):
+             model = embedder_config.get("model", "")
+             dims = KNOWN_DIMS.get(model)
+         if dims:
+-            vs_config["embedding_model_dims"] = dims
+-            self._recreate_collection_if_dims_changed(
+-                vector_store.get("provider", "qdrant"), vs_config, dims,
+-            )
++            # mem0's pydantic schema only allows embedding_model_dims for
++            # vector stores that actually use it (qdrant/pgvector/elasticsearch/
++            # milvus). Chroma's config schema rejects unknown extra fields, so
++            # injecting it there raises a ValidationError; chroma auto-detects
++            # dims from the embedder's own output instead.
++            if vs_provider in self._DIMS_AWARE_PROVIDERS:
++                vs_config["embedding_model_dims"] = dims
++            self._recreate_collection_if_dims_changed(vs_provider, vs_config, dims)
+ 
+         vector_store["config"] = vs_config
+ 
+diff --git a/tests/plugins/memory/test_mem0_backend.py b/tests/plugins/memory/test_mem0_backend.py
+index e40e9c3..800df70 100644
+--- a/tests/plugins/memory/test_mem0_backend.py
++++ b/tests/plugins/memory/test_mem0_backend.py
+@@ -152,6 +152,98 @@ class TestOSSBackend:
+         assert "api_base" not in captured["embedder"]["config"]
+         assert raw == before
+ 
++    @staticmethod
++    def _stub_mem0(monkeypatch, captured):
++        import sys
++        import types
++
++        class Memory:
++            @staticmethod
++            def from_config(config):
++                captured.update(config)
++                return FakeOSSMemory()
++
++        stub_mem0 = types.ModuleType("mem0")
++        stub_mem0.Memory = Memory  # type: ignore[attr-defined]
++        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
++
++    def test_chroma_does_not_receive_embedding_model_dims(self, monkeypatch):
++        # Regression test for #75963: chroma's mem0 pydantic schema rejects
++        # embedding_model_dims as an extra field. nomic-embed-text is in
++        # KNOWN_DIMS, so this used to trigger the hardcoded injection and
++        # raise ValidationError against a real chroma store.
++        captured = {}
++        self._stub_mem0(monkeypatch, captured)
++        raw = {
++            "vector_store": {
++                "provider": "chroma",
++                "config": {"collection_name": "test", "path": "/tmp/test_chroma"},
++            },
++            "llm": {"provider": "ollama", "config": {"model": "qwen2.5:3b"}},
++            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
++        }
++
++        OSSBackend(raw)
++
++        assert "embedding_model_dims" not in captured["vector_store"]["config"]
++
++    def test_qdrant_still_receives_embedding_model_dims(self, monkeypatch):
++        # No regression: qdrant's schema accepts embedding_model_dims and
++        # relies on it being set, so the known-model lookup must still fire.
++        captured = {}
++        self._stub_mem0(monkeypatch, captured)
++        raw = {
++            "vector_store": {
++                "provider": "qdrant",
++                "config": {"collection_name": "test", "path": "/tmp/test_qdrant"},
++            },
++            "llm": {"provider": "ollama", "config": {"model": "qwen2.5:3b"}},
++            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
++        }
++
++        OSSBackend(raw)
++
++        assert captured["vector_store"]["config"]["embedding_model_dims"] == 768
++
++    def test_chroma_with_unknown_model_still_skips_dims(self, monkeypatch):
++        # Workaround case from the issue (e.g. bge-m3): dims already came out
++        # None before the fix, so this must keep passing after it too.
++        captured = {}
++        self._stub_mem0(monkeypatch, captured)
++        raw = {
++            "vector_store": {
++                "provider": "chroma",
++                "config": {"collection_name": "test", "path": "/tmp/test_chroma"},
++            },
++            "llm": {"provider": "ollama", "config": {"model": "qwen2.5:3b"}},
++            "embedder": {"provider": "ollama", "config": {"model": "bge-m3"}},
++        }
++
++        OSSBackend(raw)
++
++        assert "embedding_model_dims" not in captured["vector_store"]["config"]
++
++    def test_explicit_embedding_dims_respects_provider_allowlist_for_chroma(self, monkeypatch):
++        # Even when the caller sets embedding_dims explicitly (bypassing
++        # KNOWN_DIMS), chroma still must not receive the field.
++        captured = {}
++        self._stub_mem0(monkeypatch, captured)
++        raw = {
++            "vector_store": {
++                "provider": "chroma",
++                "config": {"collection_name": "test", "path": "/tmp/test_chroma"},
++            },
++            "llm": {"provider": "ollama", "config": {"model": "qwen2.5:3b"}},
++            "embedder": {
++                "provider": "ollama",
++                "config": {"model": "custom-embedder", "embedding_dims": 1024},
++            },
++        }
++
++        OSSBackend(raw)
++
++        assert "embedding_model_dims" not in captured["vector_store"]["config"]
+ 
+ httpx = pytest.importorskip("httpx")
+ 

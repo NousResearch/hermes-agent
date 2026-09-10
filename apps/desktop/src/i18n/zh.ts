@@ -1974,7 +1974,7 @@ export const zh: Translations = {
       backup: '创建备份',
       backupDesc: '打包配置、记忆、技能与会话',
       debugShare: '调试分享',
-      debugShareDesc: '上传脱敏报告与日志，获取可分享链接（6 小时后自动删除）',
+      debugShareDesc: '上传脱敏报告与日志，获取可分享链接（paste.rs 6 小时后自动删除；dpaste.com 备用链接保留 1 天且不可删除）',
       debugShareRunning: '正在上传调试报告…',
       debugShareLinks: '分享链接',
       debugShareFailed: '调试分享失败',

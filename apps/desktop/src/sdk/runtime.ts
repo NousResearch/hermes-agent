@@ -13,23 +13,34 @@ import * as jsxRuntime from 'react/jsx-runtime'
 
 import * as sdk from './index'
 
-const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
-} as const
-
 /** Specifier -> injected global, longest keys first (matches rewrite order). */
 const SPECIFIER_GLOBALS = {
   '@hermes/plugin-sdk': '__HERMES_PLUGIN_SDK__',
   'react/jsx-dev-runtime': '__HERMES_REACT_JSX_DEV__',
   'react/jsx-runtime': '__HERMES_REACT_JSX__',
   react: '__HERMES_REACT__'
-} as const satisfies Record<string, keyof typeof GLOBALS>
+} as const
+
+type GlobalKey = (typeof SPECIFIER_GLOBALS)[keyof typeof SPECIFIER_GLOBALS]
+
+/** Read the injected namespaces NOW, not at module evaluation. This module
+ *  sits in an import cycle (sdk/index -> contrib/* -> contrib/runtime-loader
+ *  -> sdk/runtime -> sdk/index), and production bundlers may evaluate a
+ *  module-scope capture before the bindings it references are assigned —
+ *  which is exactly how every disk plugin ended up failing to load. Both
+ *  entry points below run long after module evaluation, so reading here is
+ *  always safe. */
+export function pluginNamespaces(): Record<GlobalKey, Record<string, unknown> | undefined> {
+  return {
+    __HERMES_PLUGIN_SDK__: sdk as unknown as Record<string, unknown>,
+    __HERMES_REACT__: React as unknown as Record<string, unknown>,
+    __HERMES_REACT_JSX__: jsxRuntime as unknown as Record<string, unknown>,
+    __HERMES_REACT_JSX_DEV__: jsxDevRuntime as unknown as Record<string, unknown>
+  }
+}
 
 export function installPluginSdk(): void {
-  Object.assign(globalThis, GLOBALS)
+  Object.assign(globalThis, pluginNamespaces())
 }
 
 /** Shim body for one injected namespace. The namespace rides as a parameter
@@ -65,8 +76,8 @@ export function shimSource(
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.
  *  Export names come from the namespace itself, so the list can't drift. */
-function shimUrl(globalKey: keyof typeof GLOBALS, specifier: string): string {
-  const source = shimSource(globalKey, GLOBALS[globalKey] as Record<string, unknown> | undefined, specifier)
+function shimUrl(globalKey: GlobalKey, specifier: string): string {
+  const source = shimSource(globalKey, pluginNamespaces()[globalKey], specifier)
 
   return URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
 }

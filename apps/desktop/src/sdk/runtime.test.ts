@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { shimSource } from './runtime'
+import { sdkImportMap, shimSource } from './runtime'
 
 describe('plugin SDK shim source', () => {
   it('fails loudly at import time when the namespace is missing, naming the piece', () => {
@@ -18,5 +18,19 @@ describe('plugin SDK shim source', () => {
 
     expect(source).toContain('export const { ping } = m')
     expect(source).not.toContain('not-an-identifier!')
+  })
+
+  it('builds a usable shim URL for every supported specifier without throwing', () => {
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:fake-shim')
+
+    try {
+      const map = sdkImportMap()
+
+      for (const specifier of ['@hermes/plugin-sdk', 'react', 'react/jsx-runtime', 'react/jsx-dev-runtime']) {
+        expect(map[specifier]).toBe('blob:fake-shim')
+      }
+    } finally {
+      createObjectURL.mockRestore()
+    }
   })
 })

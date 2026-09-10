@@ -11,8 +11,13 @@ from tools import browser_tool_cloud as bt_cloud
 def _isolate_browser_state(monkeypatch):
     monkeypatch.setattr(browser_tool, "_active_sessions", {})
     monkeypatch.setattr(browser_tool, "_session_last_activity", {})
+    monkeypatch.setattr(browser_tool, "_retired_browser_tasks", set())
+    monkeypatch.setattr(browser_tool, "_browser_task_states", {})
+    monkeypatch.setattr(browser_tool, "_browser_task_generations", {})
+    monkeypatch.setattr(browser_tool, "_browser_task_cleanup_reasons", {})
+    monkeypatch.setattr(browser_tool, "_pending_provider_cleanups", {})
     monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda task_id: None)
+    monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda *_a, **_kw: None)
 
 
 def test_browser_use_preserves_provider_timeout(monkeypatch):
@@ -53,6 +58,7 @@ def test_live_cloud_session_is_reused(monkeypatch):
     }
     browser_tool._active_sessions["task-1"] = existing
     provider = Mock()
+    provider.close_session.return_value = True
     monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
 
     session = bt_session._get_session_info("task-1")
@@ -72,6 +78,7 @@ def test_expired_cloud_session_is_replaced_without_reusing_dead_cdp(monkeypatch)
     browser_tool._session_last_activity["task-1"] = 1.0
 
     provider = Mock()
+    provider.close_session.return_value = True
     provider.create_session.return_value = {
         "session_name": "replacement",
         "bb_session_id": "browser-session-new",

@@ -2,9 +2,9 @@
 
 Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle."""
 
-import contextlib
 import os
-from typing import Tuple
+import time
+from typing import Any, Optional, Tuple
 
 from tools.browser_tool_origin import origin_module as _origin
 
@@ -98,7 +98,12 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
         return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
 
 
-def _ensure_cdp_supervisor(task_id: str) -> None:
+def _ensure_cdp_supervisor(
+    task_id: str,
+    target_id: Optional[str] = None,
+    *,
+    expected_generation: Optional[int] = None,
+) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
     Idempotent (``get_or_start`` skips an existing ``(task_id, cdp_url)`` and restarts on URL change), so safe on
@@ -107,10 +112,19 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     snapshots just lack ``pending_dialogs`` / ``frame_tree``.
     """
     _bt = _origin()
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id, {})
+        if expected_generation is None:
+            raw_generation = session_info.get("_lifecycle_generation")
+            if isinstance(raw_generation, int) and not isinstance(raw_generation, bool):
+                expected_generation = raw_generation
+
     cdp_url = _get_cdp_override()
+    # A shared endpoint may already contain unrelated pages. Do not attach to
+    # its first page before agent-browser publishes this task's exact pin.
+    if cdp_url and target_id is None:
+        return
     if not cdp_url:
-        with _bt._cleanup_lock:
-            session_info = _bt._active_sessions.get(task_id, {})
         maybe = str(session_info.get("cdp_url") or "")
         if maybe:
             cdp_url = _resolve_cdp_override(maybe)
@@ -118,8 +132,37 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
         return
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        from tools import browser_tool_lifecycle as _lifecycle
+
         policy, timeout_s = _get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=cdp_url, dialog_policy=policy, dialog_timeout_s=timeout_s)
+
+        def _publication_allowed() -> bool:
+            bare_task_id = _bt._bare_task_id_for_session_key(task_id)
+            with _bt._cleanup_lock:
+                current = _bt._active_sessions.get(task_id)
+                if current is None:
+                    return False
+                if _lifecycle._task_state_locked(bare_task_id) in {
+                    _lifecycle.BrowserTaskState.RETIRING,
+                    _lifecycle.BrowserTaskState.RETIRED,
+                }:
+                    return False
+                if expected_generation is None:
+                    return True
+                return (
+                    _lifecycle._task_generation_locked(bare_task_id)
+                    == expected_generation
+                    and current.get("_lifecycle_generation") == expected_generation
+                )
+
+        SUPERVISOR_REGISTRY.get_or_start(
+            task_id=task_id,
+            cdp_url=cdp_url,
+            target_id=target_id,
+            dialog_policy=policy,
+            dialog_timeout_s=timeout_s,
+            publish_guard=_publication_allowed,
+        )
     except Exception as exc:
         _bt.logger.debug("CDP supervisor attach for task=%s failed (non-fatal): %s", task_id, exc)
 
@@ -131,3 +174,73 @@ def _stop_cdp_supervisor(task_id: str) -> None:
         SUPERVISOR_REGISTRY.stop(task_id)
     except Exception as exc:
         _origin().logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)
+
+
+def _pinned_cdp_target_id(task_id: str) -> Optional[str]:
+    """Return agent-browser's active pinned page target for ``task_id``."""
+    from tools import browser_tool_session as _session
+
+    result = _session._run_browser_command(task_id, "tab", ["list"], timeout=10)
+    if not result.get("success"):
+        return None
+    tabs = result.get("data", {}).get("tabs", [])
+    for tab in tabs if isinstance(tabs, list) else []:
+        if isinstance(tab, dict) and tab.get("active") and tab.get("type") == "page":
+            target_id = str(tab.get("targetId") or "").strip()
+            if target_id:
+                return target_id
+    return None
+
+
+def _close_shared_cdp_target_confirmed(cdp_url: str, target_id: str) -> bool:
+    """Close one shared-CDP target and verify that exact ID disappeared."""
+    _bt = _origin()
+    target_id = str(target_id or "").strip()
+    cdp_url = str(cdp_url or "").strip()
+    if not target_id or not cdp_url:
+        return False
+    try:
+        from tools.browser_cdp_tool import _cdp_call, _run_async
+    except Exception:
+        return False
+
+    def _targets() -> Optional[list[dict[str, Any]]]:
+        try:
+            result = _run_async(
+                _cdp_call(cdp_url, "Target.getTargets", {}, None, 10.0)
+            )
+            raw = result.get("targetInfos", [])
+            return raw if isinstance(raw, list) else None
+        except Exception as exc:
+            _bt.logger.debug("Could not verify shared-CDP target %s: %s", target_id, exc)
+            return None
+
+    try:
+        _run_async(
+            _cdp_call(
+                cdp_url,
+                "Target.closeTarget",
+                {"targetId": target_id},
+                None,
+                10.0,
+            )
+        )
+    except Exception as exc:
+        # The response can be lost after Chrome performed the close. Exact
+        # absence is authoritative; any other outcome remains retryable.
+        _bt.logger.debug("Shared-CDP close for target %s was uncertain: %s", target_id, exc)
+
+    deadline = time.monotonic() + 2.0
+    while True:
+        targets = _targets()
+        if targets is not None:
+            if not any(
+                isinstance(target, dict) and target.get("targetId") == target_id
+                for target in targets
+            ):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+        elif time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)

@@ -114,7 +114,8 @@ class _KeylessFirecrawlClient:
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731
-    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats})  # noqa: E731
+    scrape = lambda self, *, url, formats, headers=None: self._post(  # noqa: E731
+        "/v2/scrape", {"url": url, "formats": formats, **({"headers": headers} if headers else {})})
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -239,16 +240,22 @@ _SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or u
 _UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
 
 
-async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Dict[str, Any]:
+async def _scrape_one(url: str, formats: List[str], format: Optional[str],
+                      headers: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Scrape one URL (60s timeout) and re-check SSRF + website policy against the
-    post-redirect URL. Never raises for scrape errors; returns an error entry instead."""
+    post-redirect URL. Never raises for scrape errors; returns an error entry instead.
+    ``headers`` (optional): request headers forwarded to the scrape call; omitted
+    entirely when unset so the call is unchanged (#74177)."""
     if blocked := check_website_access(url):
         logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
         return _error_entry(url, blocked["message"], blocked=blocked)
     try:
         logger.info("Firecrawl scraping: %s", url)
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            scrape_kwargs: Dict[str, Any] = {"url": url, "formats": formats}
+            if headers:
+                scrape_kwargs["headers"] = headers
+            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, **scrape_kwargs), timeout=60)
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)
@@ -303,7 +310,10 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
 
     async def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         """Per-URL scrape; failures become items with an ``error`` field.
-        ``format``: "markdown" | "html" | both (markdown preferred)."""
+        ``format``: "markdown" | "html" | both (markdown preferred).
+        ``headers``: optional ``Dict[str, str]`` of HTTP request headers
+        (e.g. ``User-Agent``, ``Referer``) forwarded to Firecrawl's scrape
+        API; omitted from the call entirely when unset (#74177)."""
         from tools.interrupt import is_interrupted as _is_interrupted
         if _is_interrupted():
             return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
@@ -311,8 +321,13 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
             return await asyncio.to_thread(keyless_extract, "Firecrawl", "firecrawl", urls, logger)
         format = kwargs.get("format")
         formats = [format] if format in ("markdown", "html") else ["markdown", "html"]
+        # Only forward request headers when the caller supplied a non-empty mapping —
+        # omitting the argument keeps the scrape call identical to prior behavior (#74177).
+        headers = kwargs.get("headers") or None
+        if headers is not None and not isinstance(headers, dict):
+            headers = None
         return [
-            {"url": url, "error": "Interrupted", "title": ""} if _is_interrupted() else await _scrape_one(url, formats, format)
+            {"url": url, "error": "Interrupted", "title": ""} if _is_interrupted() else await _scrape_one(url, formats, format, headers)
             for url in urls
         ]
 

@@ -53,7 +53,7 @@ class StreamFallbackMixin:
             # No visible streaming preview exists for this adapter, so
             # nobody has seen the prefix — stripping it would silently
             # truncate the delivered/persisted reply by the preview length
-            (#95753: A2A persisted "ter, good copy..." for
+            # (#95753: A2A persisted "ter, good copy..." for
             # "Peter, good copy...").
             return final_text
         prefix = self._fallback_prefix or self._visible_prefix()

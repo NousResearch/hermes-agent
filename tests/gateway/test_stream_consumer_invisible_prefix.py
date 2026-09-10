@@ -13,6 +13,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
@@ -58,3 +60,28 @@ def test_magicmock_default_does_not_flip_the_flag():
     )
     consumer._last_sent_text = "Pe"
     assert consumer._continuation_text("Peter, good copy") == "ter, good copy"
+
+
+@pytest.mark.asyncio
+async def test_invisible_adapter_empty_continuation_still_sends_notify_final():
+    """Fast single-turn reply whose streamed preview already equals the final
+    text (#87822): pre-fix, ``_continuation_text`` returned "" and
+    ``_fallback_when_nothing_unseen`` settled the turn with NO send at all —
+    the gateway then suppressed its final send and the A2A caller received
+    TASK_STATE_COMPLETED with no text parts (the pending future resolved via
+    ``on_processing_complete()`` with ""). With ``HAS_VISIBLE_STREAM=False``
+    the continuation is always the full final text, so a notify-marked send
+    happens even in this empty-continuation shape."""
+    consumer = _make_consumer(has_visible_stream=False)
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "mango"
+    consumer._already_sent = True
+
+    await consumer._send_fallback_final("mango")
+
+    adapter = consumer.adapter
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.kwargs["content"] == "mango"
+    assert adapter.send.await_args.kwargs["metadata"]["notify"] is True
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True

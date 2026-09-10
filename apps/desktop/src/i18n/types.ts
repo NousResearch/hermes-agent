@@ -2910,6 +2910,10 @@ export interface Translations {
     popOut: string
     linkHint: string
     sourceLineTitle: string
+    jumpToChange: string
+    jumpToChangeTitle: string
+    backToReading: string
+    noChangesSinceOpen: string
     source: string
     renderedPreview: string
     diff: string

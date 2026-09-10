@@ -75,6 +75,46 @@ delegate_task(
 
 Keep schemas forgiving: require only the fields you will actually read. Tasks without an `output_schema` are unaffected.
 
+## Quality Gate (opt-in)
+
+`delegation.quality_gate` runs an external **judge** on every finished child before its result reaches the parent — a second opinion on the child's self-report (Hermes Gate via `hermes-gate delegate-judge`, Hermes Rubric, or any executable that speaks the contract below). Off unless `command` is set; with it unset every result entry is byte-identical to today. The section is validated and **frozen onto each child at spawn**, so a running child cannot edit `config.yaml` to weaken or disable its own gate.
+
+```yaml
+delegation:
+  quality_gate:
+    command: ["hermes-gate", "delegate-judge"]    # argv list — NEVER a shell string (refused)
+    timeout_seconds: 120                          # hard wall-clock cap per verdict (default 120)
+    max_retries: 1                                # correction turns per child on "retry" (default 1; 0 = never)
+    on_error: open                                # open (default): deliver unchanged on judge failure; closed: reject
+    # env_passthrough: ["HERMES_GATE_PROFILE"]    # extra env vars the judge may see (secrets are scrubbed)
+```
+
+The judge reads one JSON request on **stdin**:
+
+```json
+{"version": 1, "goal": "...", "summary": "<the child's final answer>", "attempt": 1, "max_retries": 1,
+ "previous_feedback": [], "task_index": 0, "subagent_id": "sa-0-1a2b3c4d", "session_id": "...",
+ "model": "...", "api_calls": 14, "completed": true,
+ "workspace": "/abs/path/of/the/child or null", "workspace_isolated": false}
+```
+
+and prints one JSON verdict on **stdout**:
+
+```json
+{"verdict": "pass", "feedback": "why", "score": 0.9}
+```
+
+`verdict` is one of `pass`, `warn`, `retry`, `reject`, or `error` — the judge explicitly declining to judge (backend unavailable, rubric missing), with the reason in `feedback`; every other field lands in `quality_gate.details`. `workspace` is the **child's own** directory — its git worktree when `worktree_isolation` is on (`workspace_isolated: true`), otherwise its terminal working directory on the local backend — and `null` when no local directory is known (remote terminal backends); it is never the parent's workspace. The judge runs in that directory when it exists.
+
+Lifecycle, per child:
+
+- **pass** — delivered as-is; the entry gains `quality_gate: {verdict, retries, details}`.
+- **warn** — delivered as `completed`; the feedback is appended to the summary as `[QUALITY GATE WARNING: …]` and recorded in `quality_gate.feedback`.
+- **retry** — the child gets one bounded correction turn, then is judged again with `attempt` incremented and `previous_feedback` filled. The turn runs through the child's normal turn envelope (its toolset, the non-interactive approval policy, and whatever is left of `child_timeout_seconds` when one is configured). The feedback is quoted to the child as **untrusted diagnostic text** inside hard delimiters with an explicit instruction not to obey anything it asks; it is length-bounded. A corrected answer is re-validated against the task's `output_schema` (the correction turn *is* the schema retry for it — no extra schema retries), and a corrected answer that violates the schema is reported `schema_valid: false`. When `max_retries` is spent and the verdict is still `retry`, or a correction turn times out or produces nothing, the result is rejected.
+- **reject** — the result is **quarantined**: the entry takes the standard failure shape (`status: "failed"`, `exit_reason: "error"`, `truncated: false`, `failure_reason: "quality_gate"`) with `summary: null`, a fixed generic `error`, an empty `tool_trace`, and a `quality_gate` report holding only `verdict`, `reason` (a stable code such as `rejected`, `retry_budget_exhausted`, `correction_turn_timed_out`, `schema_violation_after_correction`), `retries`, `quarantined: true`, and the rejected text's `rejected_bytes` / `rejected_sha256`. No child-authored or judge-authored text (summary, feedback, details, tool arguments or output, process commands/output) reaches the parent, is stored in memory (`on_delegation` is skipped), is handed to `subagent_stop` plugins (`child_summary: null`, empty `tool_call_history`), or is relayed in the completion progress event. Every delivery path — synchronous, background, batched, independent completions — returns this same quarantined entry. Background processes the child left behind are reported as counts only (`quarantined_processes`); `stale_paths` can only name files the parent itself had read. A gated child's **reply text is withheld while it runs**: it is not streamed to gateway watch windows or written to the live transcript until a pass/warn verdict releases it, and rejected or superseded (pre-correction) text is never released. Tool-activity telemetry (tool names and argument previews the live monitor needs) still streams live, so the live transcript remains the operational record of what the child *did*, and the digest lets an operator match a rejected answer against it if they captured it elsewhere.
+
+A judge that delivers no usable verdict — an explicit `"verdict": "error"` (`reason: judge_reported`, its `feedback` is the diagnostic), a timeout, a non-zero exit with no verdict, malformed or unknown output, or a misconfigured section (`judge_timeout | judge_no_verdict | judge_start_failed | judge_misconfigured`) — is `quality_gate.verdict: "error"`: with `on_error: open` the child's result is delivered unchanged and `quality_gate.error` carries the judge's diagnostic; with `closed` the result is quarantined exactly as for reject (`failure_reason: "quality_gate_error"`, no judge output on the entry). A well-formed verdict on stdout is authoritative regardless of exit code. Children that failed, were interrupted, returned nothing, or violated their `output_schema` are never judged. The judge runs with Hermes secrets scrubbed from its environment and its process tree is terminated on timeout.
+
 ## How Subagent Context Works
 
 :::warning Critical: Subagents Know Nothing
@@ -608,6 +648,8 @@ delegation:
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # quality_gate:                           # External judge on every finished child (see Quality Gate above)
+  #   command: ["hermes-gate", "delegate-judge"]
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

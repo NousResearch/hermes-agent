@@ -106,20 +106,27 @@ class DeliveryTarget:
     thread_id: Optional[str] = None
     is_origin: bool = False
     is_explicit: bool = False  # True if chat_id was explicitly specified
+    # Raw target string when the platform name is unknown. The platform falls
+    # back to LOCAL for routing, but the original name is preserved so
+    # deliver() can report {success: False, error: unknown_platform} instead
+    # of silently misrouting to local files. (COMBINE: upstream contract.)
+    unknown_platform: Optional[str] = None
 
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
-        """Parse "origin" | "local" | "<platform>" | "<platform>:<chat_id>[:<thread_id>]"."""
+        """Parse "origin" | "local" | "<platform>" | "<platform>:<chat_id>[:<thread_id>"."""
         target = target.strip()
         if target.lower() == "origin":
             return (cls(platform=origin.platform, chat_id=origin.chat_id, thread_id=origin.thread_id, is_origin=True)
                     if origin else cls(platform=Platform.LOCAL, is_origin=True))
-        # Platform names are case-insensitive; chat/thread ids keep case. Unknown platforms -> local.
+        # Platform names are case-insensitive; chat/thread ids keep case. Unknown platforms ->
+        # LOCAL for routing but preserve the raw target so deliver() reports
+        # unknown_platform instead of silently saving locally.
         parts = target.split(":", 2)
         try:
             platform = Platform(parts[0].lower())
         except ValueError:
-            return cls(platform=Platform.LOCAL)
+            return cls(platform=Platform.LOCAL, unknown_platform=target)
         return (cls(platform=platform, chat_id=parts[1], thread_id=parts[2] if len(parts) > 2 else None, is_explicit=True)
                 if len(parts) > 1 else cls(platform=platform))
 
@@ -161,6 +168,11 @@ class DeliveryRouter:
         """Deliver content to all targets; returns per-target results keyed by target string."""
         results = {}
         for target in targets:
+            # Unknown platform names: report instead of silently misrouting to local.
+            if target.unknown_platform is not None:
+                results[target.to_string()] = {
+                    "success": False, "error": f"unknown_platform: {target.unknown_platform}"}
+                continue
             # Skip targets proven permanently unreachable (deleted group, blocked bot, deactivated user) —
             # re-sending each tick wastes flood-control budget. Self-healing: a later successful send
             # clears the flag. LOCAL/origin-without-chat targets are never dead-tracked.
@@ -234,6 +246,8 @@ class DeliveryRouter:
         except Exception:
             pass
 
+    def _deliver_local(self, content: str, job_id: Optional[str], job_name: Optional[str],
+                       metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Save content to local files."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = self.output_dir / (job_id or "misc") / f"{timestamp}.md"

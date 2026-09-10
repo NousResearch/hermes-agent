@@ -40,6 +40,34 @@ def test_readonly_profile_corruption_raises_without_recovery_file(tmp_path, monk
     assert [p for p in tmp_path.iterdir() if p.is_file()]==[profile]
 
 
+@pytest.mark.parametrize("malformed_pool", [[], None, {"openai-codex": {"id": "broken"}}])
+@pytest.mark.parametrize("malformed_source", ["profile", "root"])
+def test_readonly_malformed_pool_never_silently_falls_back_or_writes(
+    tmp_path, monkeypatch, malformed_pool, malformed_source,
+):
+    profile = tmp_path / "profile.json"
+    root = tmp_path / "root.json"
+    profile.write_text(json.dumps({"providers": {}, "credential_pool": {"openai-codex": []}}))
+    root_entries = [{"id": "root"}]
+    root.write_text(json.dumps({"providers": {}, "credential_pool": {"openai-codex": root_entries}}))
+    malformed = profile if malformed_source == "profile" else root
+    malformed.write_text(json.dumps({"providers": {}, "credential_pool": malformed_pool}))
+    monkeypatch.setattr(auth, "_auth_file_path", lambda: profile)
+    monkeypatch.setattr(auth, "_global_auth_file_path", lambda: root)
+    monkeypatch.setattr(auth, "_global_auth_store_cache", None)
+    monkeypatch.setattr(auth_store_readonly, "_auth_store_paths", lambda: (profile, root))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+
+    with pytest.raises(ValueError, match="credential_pool"):
+        auth.read_credential_pool("openai-codex", read_only=True)
+    with pytest.raises(ValueError, match="credential_pool"):
+        auth_store_readonly.read_credential_pool()
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
+    # Strict diagnostics must not change the operational reader's legacy fallback.
+    assert auth.read_credential_pool("openai-codex") == (
+        root_entries if malformed_source == "profile" else [])
+
+
 def test_fresh_reader_uses_real_profile_paths_without_operational_imports(tmp_path):
     user=tmp_path/'user'; root=user/'.hermes'; profile=root/'profiles/work'
     profile.mkdir(parents=True)

@@ -51,6 +51,12 @@ def _read_store(path: Path | None) -> dict[str, Any]:
         raise ValueError("Auth store is not valid JSON") from None
     if not isinstance(raw, dict):
         raise ValueError("Auth store has an unsupported shape")
+    if "credential_pool" in raw:
+        pool = raw["credential_pool"]
+        if not isinstance(pool, dict) or any(
+            not isinstance(entries, list) for entries in pool.values()
+        ):
+            raise ValueError("Auth store credential_pool must map providers to lists")
     # Legacy systems stores contain no credential pool. Do not migrate them.
     if not any(isinstance(raw.get(key), dict) for key in ("providers", "credential_pool", "systems")):
         raise ValueError("Auth store has an unsupported shape")

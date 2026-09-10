@@ -1,12 +1,12 @@
 ---
 sidebar_position: 10
 title: "Voice Mode"
-description: "Real-time voice conversations with Hermes Agent — CLI, Telegram, Discord (DMs, text channels, and voice channels)"
+description: "Real-time voice conversations with Hermes Agent — CLI, Telegram, Discord (DMs, text channels, and voice channels), Matrix calls"
 ---
 
 # Voice Mode
 
-Hermes Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels.
+Hermes Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels and Matrix calls.
 
 If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md).
 
@@ -34,7 +34,7 @@ A paid [Nous Portal](/user-guide/features/tool-gateway) subscription supplies th
 |---------|----------|-------------|
 | **Interactive Voice** | CLI | Press Ctrl+B to record, agent auto-detects silence and responds |
 | **Auto Voice Reply** | Telegram, Discord | Agent sends spoken audio alongside text responses |
-| **Voice Channel** | Discord | Bot joins VC, listens to users speaking, speaks replies back |
+| **Voice Channel** | Discord, Matrix | Bot joins the voice channel / call, listens to users speaking, speaks replies back |
 
 ## Requirements
 
@@ -417,6 +417,83 @@ Only users listed in `DISCORD_ALLOWED_USERS` can interact via voice. Other users
 # ~/.hermes/.env
 DISCORD_ALLOWED_USERS=284102345871466496
 ```
+
+---
+
+## Matrix Calls (MatrixRTC)
+
+The same live-call feature on Matrix. Start a call from your Matrix client, then run
+`/voice join` in that room: Hermes joins the room's MatrixRTC call (MSC4143) through the
+homeserver's LiveKit focus, transcribes what it hears, and speaks the reply back into the call.
+
+### Requirements
+
+- **A LiveKit focus.** The homeserver must advertise one in `/.well-known/matrix/client`
+  under `org.matrix.msc4143.rtc_foci` — the same focus Element Call uses. Hermes discovers
+  it, exchanges an OpenID token for a LiveKit JWT, and joins the SFU as a headless
+  participant.
+- **An unencrypted room.** Hermes joins the media plane only and does not take part in
+  encrypted call setup.
+- **The LiveKit SDK.** Installed on first `/voice join` (or up front with
+  `uv pip install -e ".[matrix-rtc]"`). It is a ~40 MB native wheel, so it is deliberately
+  kept out of `[matrix]` — text-only Matrix deployments never pull it.
+
+### Commands
+
+Run these in the room the call belongs to:
+
+```
+/voice join      Bot joins the room's call
+/voice channel   Alias for /voice join
+/voice leave     Bot leaves the call
+/voice status    Show voice mode and who else is on the call
+```
+
+:::info
+You must be in the call before running `/voice join` — Hermes joins the call *you* are in,
+reading the room's RTC membership state to find it.
+:::
+
+### How It Works
+
+Same pipeline as Discord — silence-detected utterances, Whisper STT, the full agent turn,
+TTS back into the call — with four Matrix-specific differences:
+
+- **Transcripts land on the room's own session**, the same one the room's typed messages
+  use, so a spoken question and a typed follow-up share one conversation.
+- **Barge-in works.** While Hermes is speaking, its own voice is discarded rather than
+  transcribed; speech loud enough and long enough to be a real interruption stops the reply
+  instead.
+- **Hermes appears in the call UI like any other participant.** On join it publishes an
+  `org.matrix.msc3401.call.member` state event for its own device — the same event Element
+  writes — and clears it on leave. `/voice status` lists everyone else on the call. If the
+  room's power levels require a moderator for that state event, the write is refused, the
+  call still works, and `gateway.log` carries a `could not publish call membership` warning
+  with the homeserver's error — raise the bot's power level to fix it.
+- **`/voice leave` always works.** Restarting the gateway drops the audio connection but
+  not that state event, so Hermes is left in the call UI as a silent participant. Running
+  `/voice leave` in the room clears it, whether or not this gateway process was the one
+  that joined.
+
+Access control is the same allowlist that governs text: audio from a user Hermes would not
+answer in the room is dropped before it reaches STT.
+
+### Tuning
+
+```yaml
+matrix:
+  rtc:
+    silence_threshold: 1.5     # seconds of silence that end an utterance
+    min_speech_duration: 0.5   # shorter bursts are treated as noise
+    speech_rms: 200            # loudness (0-32767) a frame must clear to count as speech
+    barge_in_duration: 0.3     # unbroken seconds of speech that interrupt a reply
+    barge_in_rms: 200          # same floor, applied while Hermes is the one talking
+```
+
+Defaults suit a normal room. `speech_rms` is the important one: a LiveKit call delivers
+audio frames continuously, comfort noise included, so silence is measured by *level*, not by
+frames stopping. Raise it in a noisy room — background sound above the floor holds a turn
+open and cuts replies short; lower it if quiet speakers are being missed.
 
 ---
 

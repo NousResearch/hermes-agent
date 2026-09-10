@@ -137,6 +137,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "aiohttp-socks==0.11.0",
         "aiohttp==3.14.3",
     ),
+    # MatrixRTC voice channels (MSC4143) — the LiveKit SDK is a ~40MB native wheel and
+    # only the headless call participant needs it, so it stays out of platform.matrix.
+    "platform.matrix_rtc": (
+        "livekit==1.1.14",
+    ),
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
         "alibabacloud-dingtalk==2.2.42",

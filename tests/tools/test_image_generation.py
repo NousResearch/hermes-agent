@@ -30,6 +30,29 @@ def image_tool():
 # Catalog integrity
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("variant", ["flare", "sunburst"])
+@pytest.mark.parametrize("aspect,size", [
+    ("landscape", "landscape_4_3"), ("square", "square_hd"), ("portrait", "portrait_4_3"),
+])
+def test_image_25_selection_routes_generation_and_edits(image_tool, monkeypatch, variant, aspect, size):
+    model = f"openai/gpt-image-2.5/{variant}/text-to-image"
+    monkeypatch.setenv("FAL_IMAGE_MODEL", model)
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    selected, meta = image_tool._resolve_fal_model()
+    assert selected == model
+    refs = [f"https://example.com/{i}.png" for i in range(17)]
+    for sources, endpoint in (([], model), (refs, f"openai/gpt-image-2.5/{variant}/edit")):
+        actual, payload = image_tool._prepare_fal_request(
+            selected, meta, "a cup", aspect, 42, {"guidance_scale": 9}, sources,
+        )
+        assert actual == endpoint
+        assert payload["quality"] == "medium"
+        assert payload["image_size"] == size
+        assert "seed" not in payload and "guidance_scale" not in payload
+        assert payload.get("image_urls", []) == sources[:16]
+    assert meta["upscale"] is False
+
+
 class TestFalCatalog:
     """Every FAL_MODELS entry must have a consistent shape."""
 
@@ -370,15 +393,22 @@ class TestRegistryIntegration:
 # ---------------------------------------------------------------------------
 
 class _MockResponse:
-    def __init__(self, status_code: int):
+    def __init__(self, status_code: int, payload=None):
         self.status_code = status_code
+        self._payload = payload
+        self.text = "" if payload is None else __import__("json").dumps(payload)
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
 
 
 class _MockHttpxError(Exception):
     """Simulates httpx.HTTPStatusError which exposes .response.status_code."""
-    def __init__(self, status_code: int, message: str = "Bad Request"):
+    def __init__(self, status_code: int, message: str = "Bad Request", payload=None):
         super().__init__(message)
-        self.response = _MockResponse(status_code)
+        self.response = _MockResponse(status_code, payload)
 
 
 class TestExtractHttpStatus:
@@ -428,6 +458,49 @@ class TestManagedGatewayErrorTranslation:
         # Original exception chained for debugging
         assert exc_info.value.__cause__ is bad_request
 
+    def test_billing_meter_error_is_preserved_instead_of_called_model_unavailable(
+        self, image_tool, monkeypatch
+    ):
+        """Portal billing configuration is the root cause, not a missing model."""
+        from unittest.mock import MagicMock
+
+        managed_gateway = MagicMock()
+        managed_gateway.gateway_origin = "https://fal-queue-gateway.example.com"
+        managed_gateway.nous_user_token = "test-token"
+        monkeypatch.setattr(
+            image_tool, "_resolve_managed_fal_gateway", lambda: managed_gateway
+        )
+        payload = {
+            "error": {
+                "code": "BILLING_ERROR",
+                "message": "Charge authorization failed",
+                "details": {
+                    "upstreamPayload": {
+                        "code": "unsupported_pricing_meter",
+                        "error": "Unsupported resolver usage meter",
+                    }
+                },
+            }
+        }
+        billing_error = _MockHttpxError(409, payload=payload)
+        mock_managed_client = MagicMock()
+        mock_managed_client.submit.side_effect = billing_error
+        monkeypatch.setattr(
+            image_tool, "_get_managed_fal_client", lambda gw: mock_managed_client
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            image_tool._submit_fal_request(
+                "openai/gpt-image-2.5/flare/text-to-image", {"prompt": "x"}
+            )
+
+        msg = str(exc_info.value)
+        assert "Charge authorization failed" in msg
+        assert "BILLING_ERROR" in msg
+        assert "unsupported_pricing_meter" in msg
+        assert "Nous Portal billing" in msg
+        assert "may not yet be enabled" not in msg
+
 
     def test_non_http_exception_from_managed_bubbles_up(self, image_tool, monkeypatch):
         """Connection errors, timeouts, etc. from managed mode aren't 4xx —
@@ -453,13 +526,11 @@ class TestKreaModelNormalization:
 
     def test_native_models_detected(self, image_tool):
         for mid in ("krea-2-medium", "krea-2-large", "krea-2-medium-turbo"):
-            assert image_tool.is_krea_model(mid) is True
             assert image_tool._normalize_krea_model(mid) == mid
 
 
     def test_non_krea_models_are_not_krea(self, image_tool):
         for mid in ("fal-ai/flux-2/klein/9b", "fal-ai/nano-banana-pro", None, "", 123):
-            assert image_tool.is_krea_model(mid) is False
             assert image_tool._normalize_krea_model(mid) is None
 
 

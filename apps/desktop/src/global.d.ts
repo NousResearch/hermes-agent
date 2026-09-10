@@ -1,6 +1,7 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
@@ -862,6 +863,7 @@ export interface DesktopConnectionConfigInput {
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
   cloudOrg?: string
+  cloudName?: string
   sshHost?: string
   sshUser?: string
   sshPort?: number | null
@@ -1235,23 +1237,6 @@ export interface HermesApiRequest {
   // through the owning connection, not the local profile pool. Omit / '' to
   // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
-}
-
-export interface HermesNotification {
-  title?: string
-  body?: string
-  silent?: boolean
-  kind?: string
-  sessionId?: string
-  /** Dedupe discriminator for session-less notifications (e.g. plugin id). */
-  tag?: string
-  /** Absolute icon path for Electron `Notification`. */
-  icon?: string
-  /** Resolved hash-router path opened on body click (plugin / deeplink-compatible). */
-  activate?: string
-  /** Renderer handle for onActivate / onAction callbacks. */
-  notifyId?: string
-  actions?: { id: string; text: string; activate?: string }[]
 }
 
 export interface HermesPreviewTarget {

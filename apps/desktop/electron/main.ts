@@ -19,7 +19,6 @@ import {
   ipcMain,
   Menu,
   nativeTheme,
-  Notification,
   powerMonitor,
   powerSaveBlocker,
   protocol,
@@ -270,6 +269,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { registerNativeNotifications } from './notification-ipc'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
@@ -346,6 +346,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { fetchRosterSourceData } from './roster-source-fetch'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -9304,6 +9305,7 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       token?: object
       headers?: object
       org?: string
+      name?: string
       savedSsh?: object
     } = {
       mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
@@ -9338,6 +9340,12 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
     // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
     // reopen into the same org for a per-profile cloud connection.
     if (cleaned.mode === 'cloud') {
+      const cloudName = String(entry.name || '').trim()
+
+      if (cloudName) {
+        cleaned.name = cloudName
+      }
+
       const org = String(entry.org || '').trim()
 
       if (org) {
@@ -9865,12 +9873,12 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
 // under — persisted so Settings can reopen into the same org; omitted from the
 // block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: object) {
+function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: object, name?: string) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
 
-  const block: { url: string; authMode: string; token: object; headers?: object; org?: string } = {
+  const block: { url: string; authMode: string; token: object; headers?: object; org?: string; name?: string } = {
     url: normalizeRemoteBaseUrl(remoteUrl),
     authMode,
     token
@@ -9880,6 +9888,12 @@ function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: ob
 
   if (Object.keys(remoteHeaders).length > 0) {
     block.headers = remoteHeaders
+  }
+
+  const nameValue = typeof name === 'string' ? name.trim() : ''
+
+  if (nameValue) {
+    block.name = nameValue
   }
 
   const orgValue = typeof org === 'string' ? org.trim() : ''
@@ -9919,6 +9933,19 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   // inherit the saved org. A plain 'remote' connection never carries an org
   // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
+
+  // A saved name belongs to this exact gateway, not another instance in the same org.
+  const cloudName =
+    mode === 'cloud'
+      ? String(
+          input.cloudName ??
+            (existingBlock.url && normalizeRemoteBaseUrl(remoteUrl) === normalizeRemoteBaseUrl(existingBlock.url)
+              ? existingBlock.name
+              : '') ??
+            ''
+        ).trim()
+      : ''
+
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
 
   const remoteHeaders =
@@ -9962,7 +9989,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     if (remoteLike) {
       profiles[key] = {
         mode,
-        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders)
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
       }
     } else {
       const localEntry = localProfileEntry(rawExistingBlock)
@@ -9982,7 +10009,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders)
+    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
     : existingMode === 'ssh'
       ? rawExistingBlock
       : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
@@ -10686,6 +10713,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
     result = await lifecycle({
       ssh,
+      platform,
       profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
       remoteHermesPath: sshConfig.remoteHermesPath || '',
       ownershipId: sshOwnershipKey(profile),
@@ -14184,13 +14212,12 @@ function spawnHudWindow(sessionId, profile) {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
-    // Same rationale as the pet overlay: on Windows/Linux keep the helper out
-    // of the taskbar/alt-tab list; on macOS use an NSPanel so the frameless
-    // window never becomes the app's cmd-tab anchor.
+    // Keep the interactive macOS HUD as an ordinary NSWindow. NSPanel defaults
+    // hidesOnDeactivate to true, which removes the HUD while the user works in
+    // another app; the floating/all-spaces setup below supplies overlay behavior.
     skipTaskbar: !IS_MAC,
     hasShadow: false,
     alwaysOnTop: true,
-    type: IS_MAC ? 'panel' : undefined,
     // Clips the vibrancy layer to the HUD's silhouette rather than a hard
     // rectangle — the frost stops where the window's corners do.
     roundedCorners: true,
@@ -15700,11 +15727,13 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             )
           )
 
-          const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+          const { body, installId } = await fetchRosterSourceData(
+            () => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+            () => probeConnectionInstallId(connection.id, descriptor)
+          )
 
-          // Cached with a TTL, so the 5s roster poll usually pays zero extra
-          // requests for the backend-identity probe.
-          const installId = await probeConnectionInstallId(connection.id, descriptor)
+          // The install-id probe is TTL-cached, so the 5s roster poll usually
+          // pays zero extra requests; on a miss it runs beside /api/profiles.
 
           const profiles = Array.isArray(body?.profiles)
             ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
@@ -16744,92 +16773,11 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   return handleHermesApiRequest(request).finally(releaseProfileDeletion)
 })
 
-// One deduper per cross-window cue — the choke point every window shares. Main
-// handles IPC serially, so the first window to claim a key wins with no race.
-const isDuplicateNotification = createEventDeduper()
+// Main serializes cross-window ambient claims.
 const claimedAmbientCue = createEventDeduper()
-
-// A window asks "do I own this ambient cue (turn-end sound / spoken reply)?".
-// The first caller within the window gets true; peers get false and stay quiet.
 ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
 
-ipcMain.handle('hermes:notify', (_event, payload) => {
-  if (!Notification.isSupported()) {
-    return false
-  }
-
-  // Multiple full windows each run their own renderer throttle, so the same
-  // kind+session can arrive here twice. Collapse it at this single choke point.
-  // Return true (not false): a notification for the event IS being shown by the
-  // first caller, so the settings "send test" success probe stays honest.
-  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`)) {
-    return true
-  }
-
-  // Action buttons render only on signed macOS builds; elsewhere they're dropped
-  // and the body click still works.
-  const actions = Array.isArray(payload?.actions) ? payload.actions : []
-  const icon = typeof payload?.icon === 'string' && payload.icon.trim() ? payload.icon.trim() : undefined
-
-  const notification = new Notification({
-    title: payload?.title || 'Hermes',
-    body: payload?.body || '',
-    silent: Boolean(payload?.silent),
-    ...(icon ? { icon } : {}),
-    actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
-  })
-
-  notification.on('click', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return
-    }
-
-    focusWindow(mainWindow)
-
-    if (payload?.sessionId) {
-      mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
-    }
-
-    // Plugin / session-less activation — serializable path (+ optional notifyId
-    // for renderer callbacks). Same vocabulary as hermes://index-network/….
-    if (payload?.activate || payload?.notifyId) {
-      mainWindow.webContents.send('hermes:notification-activate', {
-        activate: payload?.activate,
-        notifyId: payload?.notifyId,
-        tag: payload?.tag
-      })
-    }
-  })
-  notification.on('action', (_actionEvent, index) => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return
-    }
-
-    const action = actions[index]
-
-    if (!action?.id) {
-      return
-    }
-
-    // Approvals keep the existing session-scoped channel.
-    if (payload?.sessionId && !payload?.notifyId && !payload?.activate) {
-      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload.sessionId, actionId: action.id })
-
-      return
-    }
-
-    focusWindow(mainWindow)
-    mainWindow.webContents.send('hermes:notification-activate', {
-      actionId: action.id,
-      activate: action.activate || payload?.activate,
-      notifyId: payload?.notifyId,
-      tag: payload?.tag
-    })
-  })
-  notification.show()
-
-  return true
-})
+registerNativeNotifications({ getMainWindow: () => mainWindow, focusWindow })
 
 // Data-URL file load cap (composer attach + local previews). Main owns the
 // persisted MB value so every IPC read honours Settings → Chat without the

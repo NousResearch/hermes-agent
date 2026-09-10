@@ -485,6 +485,10 @@ class RaftAdapter(BasePlatformAdapter):
 
     async def handle_message(self, event: MessageEvent) -> None:
         """Accept Raft wake hints without interrupting an active Hermes turn."""
+        if event.internal:
+            # Durable gateway wakes need the base session fence and admission receipt.
+            await super().handle_message(event)
+            return
         if not self._message_handler:
             return
         session_key = build_session_key(

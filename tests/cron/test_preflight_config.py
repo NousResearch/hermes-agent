@@ -127,7 +127,7 @@ class TestMissingProviderKeyBlocks:
     def test_single_alert_across_two_ticks_and_blocked_status(self, tmp_path):
         """Two ticks of a blocked job through run_one_job deliver exactly ONE
         alert and persist last_status='blocked_config'."""
-        job = _job()
+        job = _job(failure_deliver="slack:alerts")
         deliveries = []
 
         def fake_deliver(execution_id, job, content, **kwargs):
@@ -229,7 +229,7 @@ class TestOptOut:
         (tmp_path / "config.yaml").write_text(
             "cron:\n  preflight: false\n", encoding="utf-8"
         )
-        job = _job()
+        job = _job(failure_deliver="slack:alerts")
         deliveries = []
 
         def fake_deliver(execution_id, job, content, **kwargs):

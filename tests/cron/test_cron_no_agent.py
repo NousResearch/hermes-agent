@@ -242,9 +242,10 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
         ),
     )
     monkeypatch.setattr(
-        scheduler,
-        "_deliver_result",
-        lambda _job, content, **_kwargs: delivered.append(content),
+        "cron.delivery_queue.enqueue",
+        lambda execution_id, _job, content, **_kwargs: (
+            delivered.append(content) or {"status": "pending"}
+        ),
     )
 
     assert scheduler.run_one_job(job) is True

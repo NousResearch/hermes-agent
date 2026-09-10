@@ -1090,15 +1090,16 @@ def drain_delivery_queue(adapters, loop) -> int:
     # open/create entirely until a worker has actually queued something.
     if not _path().exists():
         return 0
-    return drain(
-        lambda queued_job, queued_content, queued_for_failure: _deliver_result(
-            queued_job,
-            queued_content,
-            adapters=adapters,
-            loop=loop,
+    def send(queued_job, queued_content, queued_for_failure):
+        error = _deliver_result(
+            queued_job, queued_content, adapters=adapters, loop=loop,
             for_failure=queued_for_failure,
         )
-    )
+        if not error and queued_for_failure:
+            _mark_incident_alerted(queued_job.get("_failure_incident_id"))
+        return error
+
+    return drain(send)
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
@@ -2694,7 +2695,12 @@ def _save_compose_deliver(
     execution_id = job.get('execution_id')
     if execution_id and not job.get('no_agent'):
         from cron.delivery_queue import enqueue
-        queued = enqueue(execution_id, job, deliver_content, for_failure=not d.success)
+        if _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "local":
+            return
+        queued_job = dict(job)
+        if d.failure_incident_id:
+            queued_job["_failure_incident_id"] = d.failure_incident_id
+        queued = enqueue(execution_id, queued_job, deliver_content, for_failure=not d.success)
         job['last_delivery_queued'] = {'canonical': {'status': queued['status'], 'execution_id': execution_id}}
         return
     d.unresolved_origin = (

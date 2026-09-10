@@ -163,7 +163,7 @@ def test_guard_is_released_and_job_refires_after_sessiondb_hang(owner_run, monke
                 assert len(calls) == 2
                 assert agent_cls.call_count == 1
                 final_job = jobs.get_job(saved["id"])
-                assert final_job and final_job["last_status"] == "delivery_queued"
+                assert final_job and final_job["last_status"] == "ok"
         finally:
             release.set()
             scheduler._shutdown_parallel_pool()

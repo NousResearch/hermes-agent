@@ -30,7 +30,7 @@ def _job(**overrides):
         "enabled": True,
         "state": "scheduled",
         "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
-        "deliver": "local",
+        "deliver": "slack:alerts",
         "model": "test-model",
         "provider": None,
         "provider_snapshot": "openrouter",
@@ -44,6 +44,10 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
     """Run one run_one_job tick whose agent raises ``error`` (the failure
     path that composes the per-run failure ping). Mirrors the preflight alert-once
     harness so the incident gating is exercised through the real scheduler."""
+
+    (tmp_path / "config.yaml").write_text(
+        "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n"
+    )
 
     def fake_deliver(execution_id, jb, content, **kwargs):
         deliveries.append(content)

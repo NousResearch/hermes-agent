@@ -1,0 +1,172 @@
+"""Profile-owned non-inference room controls and roster discovery.
+
+The legacy local room driver creates TUI agents, so it is not an execution
+capability of this transport. Room metadata still uses the existing durable
+room protocol, on the authority's database rather than the install-wide default.
+"""
+import asyncio
+from pathlib import Path
+
+from hermes_state_runtime import RuntimeStoreError
+
+
+GROUP_METHODS = {
+    'groups.capabilities': 'session:read',
+    'groups.list': 'session:read',
+    'groups.state': 'session:read',
+    'groups.log': 'session:read',
+    'groups.create': 'session:control',
+    'groups.rename': 'session:control',
+    'groups.disband': 'session:control',
+}
+_FIELDS = {
+    'groups.capabilities': set(),
+    'groups.list': {'limit', 'offset', 'include_disbanded'},
+    'groups.state': {'room_id', 'include_disbanded'},
+    'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
+    'groups.create': {'room_id', 'name', 'members'},
+    'groups.rename': {'room_id', 'event_id', 'name'},
+    'groups.disband': {'room_id'},
+    'profiles.list': {'include_sessions'},
+}
+
+
+async def dispatch_group_control(connection, method, params):
+    authority, actor = connection.authority, connection.actor
+    capability = GROUP_METHODS.get(method, 'session:read')
+    if capability not in actor.capabilities:
+        raise RuntimeStoreError('permission_denied')
+    if actor.profile_id != authority.profile_id:
+        raise RuntimeStoreError('profile_mismatch')
+    if method not in _FIELDS or not isinstance(params, dict) or set(params) - (_FIELDS[method] | {'profile'}):
+        raise RuntimeStoreError('invalid_params')
+    home = Path(authority.profile_id)
+    if Path(authority.db.db_path).resolve().parent != home.resolve():
+        raise RuntimeStoreError('profile_mismatch')
+    from hermes_cli.profiles import profile_matches_home
+    profile = params.get('profile')
+    if profile is not None and not isinstance(profile, str):
+        raise RuntimeStoreError('invalid_params')
+    if profile and not profile_matches_home(profile, home):
+        raise RuntimeStoreError('profile_mismatch')
+    supplied = {key: value for key, value in params.items() if key != 'profile'}
+
+    def invoke():
+        from gateway.run import _profile_runtime_scope
+        from gateway.hosted_rooms import HostedRoomError
+        with _profile_runtime_scope(home):
+            if method == 'profiles.list':
+                return _profiles(authority, actor, home, supplied)
+            try:
+                return _group(authority, home, method, supplied)
+            except HostedRoomError as exc:
+                raise RuntimeStoreError(getattr(exc, 'reason', None) or 'invalid_params') from exc
+            except (ValueError, TypeError) as exc:
+                raise RuntimeStoreError('invalid_params') from exc
+    return await asyncio.to_thread(invoke)
+
+
+def _group(authority, home, method, params):
+    from gateway import hosted_rooms as rooms
+    db_path = authority.db.db_path
+    gateway_id = rooms.local_authority_gateway_id()
+
+    def capabilities():
+        return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': False,
+                'persistent_process': True, 'authority_gateway_id': gateway_id,
+                'room_link': {'enabled': False, 'reason': 'canonical_driver_required'},
+                'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
+                'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT}
+
+    def listing():
+        limit, offset = params.get('limit', rooms.MAX_ROOM_LIST_LIMIT), params.get('offset', 0)
+        result = rooms.list_rooms(db_path, **params)
+        return {'rooms': result, 'next_offset': offset + limit if len(result) == limit else None}
+
+    def create():
+        from gateway.hosted_room_discussion import validate_roster
+        name = home.name if home.parent.name == 'profiles' else 'default'
+        profiles = {name}
+        if name == 'default' and (home / 'profiles').is_dir():
+            profiles.update(path.name for path in (home / 'profiles').iterdir() if path.is_dir())
+        members = validate_roster(params.get('members'), local_profiles=profiles)
+        normalized = [{'member_id': m.member_id, 'profile': m.profile, 'handle': m.handle,
+                       'target': dict(m.target or {}),
+                       **({'display_name': m.display_name} if m.display_name else {})} for m in members]
+        return {'room': rooms.create_room(db_path, room_id=params.get('room_id'),
+                name=params.get('name'), members=normalized, authority_gateway_id=gateway_id)}
+
+    def disband():
+        from gateway.hosted_room_driver import list_tasks
+        # Metadata control must not destroy an active execution or bypass Stop.
+        if any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
+               for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
+            raise RuntimeStoreError('runtime_coordination_required')
+        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
+        return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
+                expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
+
+    handlers = {
+        'groups.capabilities': capabilities,
+        'groups.list': listing,
+        'groups.create': create,
+        'groups.state': lambda: {'room': rooms.room_state(db_path, **params)},
+        'groups.log': lambda: rooms.read_events(db_path, **params),
+        'groups.rename': lambda: {'room': rooms.rename_room(db_path, **params)},
+        'groups.disband': disband,
+    }
+    return handlers[method]()
+
+
+def _profiles(authority, actor, home, params):
+    from hermes_cli.profiles import _profile_info, read_profile_meta
+    import yaml
+    include_sessions = params.get('include_sessions', True)
+    if type(include_sessions) is not bool:
+        raise RuntimeStoreError('invalid_params')
+    name = home.name if home.parent.name == 'profiles' else 'default'
+    profile = _profile_info(name, home, is_default=name == 'default')
+    row = {'name': name, 'path': str(home), 'is_default': profile.is_default,
+           'model': profile.model, 'provider': profile.provider,
+           'description': profile.description or '', 'display_name': profile.display_name or '',
+           'skill_count': profile.skill_count or 0}
+    path = home / 'profile.yaml'
+    meta = yaml.safe_load(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    meta = meta if isinstance(meta, dict) else {}
+    revisions = meta.get('_ui_meta_revisions')
+    row['ui_meta_revisions'] = {str(k): max(0, v) for k, v in revisions.items()
+                              if type(v) is int} if isinstance(revisions, dict) else {}
+    if isinstance(meta.get('ui_meta'), dict):
+        row['ui_meta'] = meta['ui_meta']
+    row['has_avatar'] = any((home / 'assets' / f'avatar.{ext}').is_file() for ext in ('png', 'jpg', 'webp'))
+    if include_sessions:
+        row.update(last_session=None, worker_session=None, canonical_session=None)
+        # Discovery is read-only: no legacy restore/unarchive or new SessionDB handle.
+        def summary(session):
+            tip = authority.db.get_compression_tip(session['id']) or session['id']
+            target = authority.db.get_session(tip) or session
+            with authority.db._lock:
+                message = authority.db._conn.execute(
+                    "SELECT content FROM messages WHERE session_id=? AND active=1 "
+                    "AND role IN ('user','assistant') AND TRIM(COALESCE(content,''))!='' "
+                    "ORDER BY id DESC LIMIT 1", (tip,)).fetchone()
+            text = ' '.join(str(message[0] or '').split()) if message else ''
+            return {'id': session['id'], 'resolved_id': tip, 'title': target.get('title') or '',
+                    'root_title': session.get('title') or '',
+                    'preview': text[:80] + '...' if len(text) > 80 else text,
+                    'started_at': target.get('started_at') or 0,
+                    'last_active': target.get('last_activity_at') or target.get('started_at') or 0,
+                    'message_count': target.get('message_count') or 0}
+
+        # The named registry is not a recency window and canonical chats are hidden.
+        canonical = authority.db.get_session_by_title('Bot Chat')
+        if (canonical and canonical.get('user_id') == actor.subject
+                and str(canonical.get('chat_id') or '').startswith('local-') and not canonical.get('archived')):
+            row['canonical_session'] = summary(canonical)
+        with authority.db._lock:
+            latest = authority.db._conn.execute(
+                "SELECT id FROM sessions WHERE user_id=? AND chat_id LIKE 'local-%' AND archived=0 "
+                "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1", (actor.subject,)).fetchone()
+        if latest:
+            row['last_session'] = summary(authority.db.get_session(latest[0]))
+    return {'profiles': [row], 'bot_mode_protocol': True}

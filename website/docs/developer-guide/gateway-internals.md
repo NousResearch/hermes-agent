@@ -8,6 +8,28 @@ description: "How the messaging gateway boots, authorizes users, routes sessions
 
 The messaging gateway is the long-running process that connects Hermes to 20+ external messaging platforms through a unified architecture.
 
+## Canonical group metadata and profile discovery
+
+The authenticated canonical WebSocket exposes `groups.capabilities`, `groups.list`,
+`groups.state`, and `groups.log` with `session:read`; `groups.create`,
+`groups.rename`, and `groups.disband` require `session:control`. These reuse the
+hosted-room metadata protocol in the owning authority's database. An explicit
+`profile` selector must resolve to that authority's home. Disband refuses rooms
+with unsettled driver work rather than bypassing Stop.
+
+This is **metadata management, not hosted-room inference**. The existing local
+hosted-room driver still uses legacy TUI session handlers; the canonical surface
+therefore reports `driver: false` and does not advertise send, retry, approval,
+or peer-grant operations. It never imports that driver to execute a group turn.
+
+`profiles.list` requires `session:read` and returns only the authenticated
+profile, including its display metadata and avatar presence. `include_sessions`
+defaults to true: previews are limited to that actor's canonical local bindings,
+and `canonical_session` resolves the exact hidden `Bot Chat` title, not the most
+recent conversation. Discovery does not create, restore, or unarchive sessions,
+open sibling profile databases, or run inference. Cross-profile discovery requires
+a separately authenticated connection to the relevant owner.
+
 ## Shared authority pending-input snapshots
 
 `session.resume` returns each pending admission with its original `input_id` and

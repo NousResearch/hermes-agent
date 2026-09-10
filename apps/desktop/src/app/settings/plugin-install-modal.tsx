@@ -22,7 +22,7 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
@@ -57,6 +57,7 @@ export function PluginInstallModal() {
   const [installDesktop, setInstallDesktop] = useState(true)
   const [enableAgent, setEnableAgent] = useState(true)
   const [forceReinstall, setForceReinstall] = useState(false)
+  const [pinRef, setPinRef] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
   const probeToken = useRef(0)
@@ -69,6 +70,7 @@ export function PluginInstallModal() {
     setInstallDesktop(true)
     setEnableAgent(true)
     setForceReinstall(false)
+    setPinRef('')
     setInstalling(false)
     setInstallError(null)
   }, [])
@@ -195,6 +197,7 @@ export function PluginInstallModal() {
           force: forceReinstall,
           enable: enableAgent,
           catalogName: request.catalogName,
+          ref: pinRefTrimmed || undefined,
           profile: request.profile
         })
 
@@ -280,6 +283,8 @@ export function PluginInstallModal() {
 
   const open = request !== null && !onSettings
   const busy = phase === 'probing' || installing
+  const pinRefTrimmed = pinRef.trim().toLowerCase()
+  const pinRefInvalid = pinRefTrimmed !== '' && !COMMIT_SHA_RE.test(pinRefTrimmed)
 
   return (
     <Dialog
@@ -433,7 +438,9 @@ export function PluginInstallModal() {
                       className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
                     />
                     <span>
-                      {[...(probe.warnings ?? []), probe.insecure ? m.insecureWarning : ''].filter(Boolean).join(' ')}
+                      {[...new Set([...(probe.warnings ?? []), probe.insecure ? m.insecureWarning : ''])]
+                        .filter(Boolean)
+                        .join(' ')}
                     </span>
                   </div>
                 )}
@@ -453,6 +460,28 @@ export function PluginInstallModal() {
                       {m.forceReinstall}
                     </span>
                     <Switch checked={forceReinstall} disabled={busy} onCheckedChange={setForceReinstall} />
+                  </label>
+                )}
+
+                {!request.catalogName && probe.agent && (
+                  <label className="block space-y-1">
+                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                      {m.pinToCommit}
+                    </span>
+                    <Input
+                      aria-invalid={pinRefInvalid || undefined}
+                      aria-label={m.pinToCommit}
+                      disabled={busy || !installAgent}
+                      onChange={event => setPinRef(event.target.value)}
+                      placeholder={m.pinToCommitPlaceholder}
+                      spellCheck={false}
+                      value={pinRef}
+                    />
+                    <span
+                      className={`block text-[length:var(--conversation-caption-font-size)] ${pinRefInvalid ? 'text-destructive' : 'text-(--ui-text-tertiary)'}`}
+                    >
+                      {pinRefInvalid ? m.pinToCommitInvalid : m.pinToCommitHint}
+                    </span>
                   </label>
                 )}
               </div>
@@ -475,7 +504,10 @@ export function PluginInstallModal() {
               {m.reviewRepository}
             </Button>
           ) : (
-            <Button disabled={busy || phase !== 'ready' || !probe?.ok} onClick={() => void handleInstall()}>
+            <Button
+              disabled={busy || phase !== 'ready' || !probe?.ok || pinRefInvalid}
+              onClick={() => void handleInstall()}
+            >
               {installing ? m.installing : m.install}
             </Button>
           )}

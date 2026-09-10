@@ -128,13 +128,9 @@ class TestDeepseekVSeriesPassThrough:
 
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
-class TestDeepseekCanonicalAndReasonerMapping:
-    """Retired aliases and fuzzy names rewrite to deepseek-flash.
-
-    DeepSeek cut off ``deepseek-chat`` / ``deepseek-reasoner`` on
-    2026-07-24; sending them on the wire returns HTTP 400.
-    """
-
+class TestDeepseekRetiredAliasesAndCustomSlugs:
+    """Only the two retired aliases are rewritten; every other id is the user's and reaches the
+    wire as typed (a shape allow-list swallowed the vendor's own ``deepseek-flash``, #107206)."""
 
     def test_provider_path_rewrites_reasoner(self):
         assert (
@@ -143,14 +139,14 @@ class TestDeepseekCanonicalAndReasonerMapping:
         )
 
     @pytest.mark.parametrize("model", [
+        "deepseek-v4.1-flash",
+        "deepseek-v4-flash-0731",
         "deepseek-r1",
-        "deepseek-r1-0528",
-        "deepseek-think-v3",
-        "deepseek-reasoning-preview",
-        "deepseek-cot-experimental",
+        "deepseek-next-preview",
+        "my-fine-tune",
     ])
-    def test_reasoner_keywords_map_to_flash(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-flash"
+    def test_unknown_ids_pass_through_untouched(self, model):
+        assert _normalize_for_deepseek(model) == model
 
 
 # ── Regression: issue #78796 ───────────────────────────────────────────

@@ -48,6 +48,7 @@ import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
+import { watchDeadSessionPrune } from '@/store/dead-session-prune'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -480,6 +481,10 @@ watchSessionPins()
 
 // Release unread-write guards once a list page confirms the value we wrote.
 watchUnreadWriteGuard()
+
+// Drop local pins/drafts/queued prompts whose sessions no longer exist on the
+// backend — otherwise every boot re-requests the dead ids and 404s on each.
+watchDeadSessionPrune()
 
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.

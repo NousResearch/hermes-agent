@@ -141,6 +141,10 @@ def test_terminal_callback_follows_canonical_drain_without_polling(owner, monkey
     sid = rpc.create(**coords, title='Group: room')['session_id']
     async def execute(authority, ref, row):
         return 'canonical reply'
+    # This RPC component fixture supplies the service gate explicitly; daemon
+    # coverage exercises the real durable member/task authorizer.
+    authority.runner._adapter_for_source = lambda source: authority.runner.adapters[source.platform]
+    authority.hosted_room_service = SimpleNamespace(check_admission=lambda ref, row: True)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     monkeypatch.setattr(authority, '_schedule', SessionAuthority._schedule.__get__(authority))
     done, receipts = threading.Event(), []

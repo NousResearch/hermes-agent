@@ -175,6 +175,18 @@ def run_tool_round(
                     agent.stream_delta_callback(None)
         return _verdict("break")
 
+    from agent.kanban_stop import successful_kanban_terminal_transition
+    if successful_kanban_terminal_transition(
+        messages=messages, tool_calls=assistant_message.tool_calls,
+    ):
+        # A completed/blocked kanban worker must not make another provider call: the
+        # durable {"ok": true} tool result is this turn's terminal state. final_response
+        # must be non-None (not just falsy) for the finalizer to mark this ``completed``
+        # rather than reading the tool-ending turn as stuck mid-flight.
+        _turn_exit_reason = "kanban_terminal_transition"
+        final_response = final_response or ""
+        return _verdict("break")
+
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real

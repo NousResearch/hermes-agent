@@ -382,8 +382,7 @@ export const ar = defineLocale({
       archivedChats: 'المحادثات المؤرشفة',
       about: 'حول',
       notifications: 'الإشعارات',
-      keybinds: 'اختصارات لوحة المفاتيح',
-      plugins: 'الإضافات'
+      keybinds: 'اختصارات لوحة المفاتيح'
     },
     plugins: {
       title: 'إضافات سطح المكتب',
@@ -1069,6 +1068,10 @@ export const ar = defineLocale({
     failedToUpdate: name => `فشل تحديث ${name}`
   },
   agents: {
+    extendedTranscript: 'سجل موسّع',
+    transcriptTruncated: 'عرض أحدث 16 KiB',
+    transcriptUnavailable: 'السجل المباشر غير متاح',
+
     close: 'إغلاق الوكلاء',
     title: 'شجرة التوليد',
     subtitle: 'نشاط الوكلاء الفرعيين المباشر للدور الحالي.',
@@ -1080,6 +1083,14 @@ export const ar = defineLocale({
     streaming: 'جار البث',
     files: 'الملفات',
     moreFiles: count => `+${count} ملفات إضافية`,
+    moreAgents: count => `${count} وكلاء إضافيون`,
+    queued: 'في قائمة الانتظار',
+    waitingActivity: 'بانتظار النشاط',
+    steer: 'توجيه',
+    steerPlaceholder: 'تعليمات لهذا الوكيل الفرعي',
+    steerQueued: 'في انتظار نقطة التحقق التالية',
+    stopRequested: 'تم طلب الإيقاف',
+    requestRejected: 'لم يقبل الوكيل الفرعي الطلب',
     delegation: index => `التفويض ${index}`,
     workers: count => `${count} عامل`,
     workersActive: count => `${count} نشط`,
@@ -1278,6 +1289,38 @@ export const ar = defineLocale({
     unknown: 'غير معروف',
     hintPendingRestart: 'تحتاج إعادة تشغيل لتطبيق التغييرات.',
     hintGatewayStopped: 'البوابة متوقفة.',
+    restartNeeded: 'تم الحفظ. أعد تشغيل بوابة المراسلة لتطبيق الإعدادات الجديدة.',
+    restartNow: 'إعادة التشغيل الآن',
+    restarting: 'جارٍ إعادة التشغيل…',
+    restartFailedManual: 'فشلت إعادة تشغيل البوابة — أعد تشغيلها يدويًا وتحقق من سجلات البوابة.',
+    telegramQr: {
+      title: 'اختر طريقة ربط بوت Telegram',
+      subtitle: 'كلا الخيارين يربط بوتًا تتحكم به ويحفظ بياناته في هذا التثبيت من Hermes فقط.',
+      quickSetup: 'إعداد سريع',
+      recommended: 'موصى به',
+      quickHelp: 'امسح رمز QR وأكّد في Telegram. سينشئ Hermes البوت ويكتشف معرّف مستخدم Telegram الخاص بك تلقائيًا.',
+      createWithQr: 'إنشاء عبر QR',
+      starting: 'جارٍ البدء…',
+      replaceWarning: 'بيانات Telegram مُعدّة بالفعل. سيحل إعداد QR الجديد أو رمز البوت محل البوت الحالي عند الحفظ.',
+      scanHint: 'امسح بتطبيق Telegram على هاتفك، أو افتح الرابط على هذا الجهاز.',
+      waiting: 'في انتظار Telegram…',
+      expiresIn: remaining => `ينتهي خلال ${remaining}`,
+      expired: 'منتهي',
+      openTelegram: 'افتح Telegram',
+      ready: 'تم إنشاء البوت',
+      allowedUsers: 'المستخدمون المسموح لهم',
+      ownerDetected: 'تم اكتشاف المالك',
+      addAtLeastOne: 'أضف معرّف مستخدم Telegram واحدًا على الأقل.',
+      userIdPlaceholder: 'معرّف مستخدم Telegram',
+      add: 'إضافة',
+      numericOnly: 'يجب أن تكون معرّفات مستخدمي Telegram أرقامًا.',
+      saveAndRestart: 'حفظ وإعادة التشغيل',
+      applying: 'جارٍ الحفظ…',
+      pairingExpired: 'انتهت صلاحية اقتران Telegram. ابدأ إعداد QR جديدًا.',
+      stillWaiting: detail => `ما زلنا ننتظر Telegram. إعادة المحاولة بعد: ${detail}`,
+      savedRestarting: 'تم حفظ Telegram؛ تجري إعادة تشغيل البوابة…',
+      savedRestartFailed: detail => `تم حفظ Telegram؛ فشلت إعادة تشغيل البوابة${detail}`
+    },
     credentialsSet: 'بيانات الاعتماد مضبوطة',
     needsSetup: 'يحتاج إعدادا',
     gatewayStopped: 'البوابة متوقفة',
@@ -1552,8 +1595,9 @@ export const ar = defineLocale({
   cron: {
     close: 'إغلاق',
     modelImpact: {
-      title: 'تحتاج المهام المجدولة إلى المراجعة',
-      message: count => `سيتم تخطي ${count} من المهام المجدولة حتى تراجع إعدادات النموذج الخاصة بها.`,
+      title: 'تبقى المهام المجدولة على نموذجها الأصلي',
+      message: count =>
+        `${count} من المهام المجدولة غير المثبتة ستواصل العمل على النموذج الذي أُنشئت به. ثبّتها أو اضبط cron.model لنقلها.`,
       detailMore: (names, remaining) => `${names} و${remaining} أخرى`,
       review: 'مراجعة المهام المجدولة',
       saveFailed: 'لم يحفظ Hermes تغيير النموذج هذا.',
@@ -1723,6 +1767,17 @@ export const ar = defineLocale({
     missingBody: 'لم يعد هذا الناتج موجودًا في السجل المحلي.'
   },
   sidebar: {
+    gatewayGroups: {
+      grouping: 'البوابة والملف الشخصي',
+      rename: 'إعادة تسمية المجموعة',
+      aliasLabel: 'اسم العرض',
+      aliasHint: 'يتغير اسم العرض فقط؛ تبقى أسماء البوابة والملف الشخصي دون تغيير.',
+      resetName: 'إعادة تعيين الاسم',
+      moveUp: 'نقل لأعلى',
+      moveDown: 'نقل لأسفل',
+      reorder: 'إعادة ترتيب المجموعة',
+      actions: 'إجراءات المجموعة'
+    },
     nav: {
       'new-session': 'جلسة جديدة',
       skills: 'المهارات',
@@ -1731,8 +1786,7 @@ export const ar = defineLocale({
       chat: 'المحادثة',
       settings: 'الإعدادات',
       cron: 'المهام المجدولة',
-      agents: 'الوكلاء',
-      'session-import': 'استيراد جلسة'
+      agents: 'الوكلاء'
     },
     searchAria: 'البحث في الجلسات',
     searchPlaceholder: 'البحث في الجلسات...',
@@ -1752,11 +1806,14 @@ export const ar = defineLocale({
     shiftClickHint: 'استخدم Shift للتحديد المتعدد',
     noWorkspace: 'بدون مساحة عمل',
     projectEmpty: 'لا توجد جلسات بعد',
+    projectLoadFailed: 'تعذر تحميل الجلسات',
     noSessions: 'لا توجد جلسات بعد',
     noFilterMatches: 'لا توجد جلسات تطابق عوامل التصفية هذه',
     projects: {
+      showAllSessions: 'عرض جميع الجلسات',
       sectionLabel: 'المشاريع',
       home: 'الرئيسية',
+      autoDiscovered: 'مكتشف تلقائيًا',
       newButton: 'مشروع جديد',
       createTitle: 'مشروع جديد',
       createDesc: 'سمِّ مساحة العمل وأضف مجلدا أو أكثر.',
@@ -2591,7 +2648,7 @@ export const ar = defineLocale({
     closeToRight: 'إغلاق ما على اليمين',
     closeAll: 'إغلاق الكل',
     pluginDisabled: pluginId => `الإضافة "${pluginId}" معطلة`,
-    pluginDisabledBody: 'أعد تفعيلها من الإعدادات ← الإضافات لإرجاع اللوحة.',
+    pluginDisabledBody: 'أعد تفعيلها من القدرات ← الإضافات لإرجاع اللوحة.',
     missingPane: paneId => `لوحة مفقودة: ${paneId}`,
     editTitle: 'التخطيطات',
     editHint: 'اختر تخطيطا، أو اسحب اللوحات بين المناطق.',
@@ -2673,7 +2730,11 @@ export const ar = defineLocale({
         streaming: 'خطأ في اتصال البث'
       },
       errorRetry: 'إعادة المحاولة',
+      errorStartNewSession: 'بدء جلسة جديدة',
       errorSwitchProvider: 'تبديل المزوّد',
+      errorSignInAgain: provider => `تسجيل الدخول إلى ${provider} مجدداً`,
+      errorOauthExpired: provider =>
+        `انتهت صلاحية تسجيل دخولك إلى ${provider} أو تم إلغاؤه. سجّل الدخول مجدداً لمتابعة المحادثة.`,
       errorOpenLogs: 'فتح السجلات',
       errorOpenLogsFailed: 'تعذّر فتح مجلد السجلات',
       errorOpenDesktopLogs: 'فتح سجلات سطح المكتب',

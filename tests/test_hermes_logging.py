@@ -138,9 +138,8 @@ class TestSetupLogging:
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
         ).read_text()
-        assert "profile-routed cron record" not in (
-            hermes_home / "logs" / "agent.log"
-        ).read_text()
+        default_log = hermes_home / "logs" / "agent.log"
+        assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text()
 
     def test_profile_routing_accepts_home_discovered_after_startup(self, hermes_home, tmp_path):
         """Live cron membership extends the routing allowlist without restart."""
@@ -167,9 +166,8 @@ class TestSetupLogging:
         assert "late profile cron record" in (
             profile_home / "logs" / "agent.log"
         ).read_text()
-        assert "late profile cron record" not in (
-            hermes_home / "logs" / "agent.log"
-        ).read_text()
+        default_log = hermes_home / "logs" / "agent.log"
+        assert not default_log.exists() or "late profile cron record" not in default_log.read_text()
 
 
 

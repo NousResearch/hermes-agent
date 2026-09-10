@@ -500,6 +500,8 @@ export interface Translations {
         lockedDesc: string
         unlockedDesc: string
         statusLocked: string
+        statusNotDetected: string
+        statusOff: string
         statusUnlocked: string
         unlock: string
         unlocking: string
@@ -3379,6 +3381,15 @@ export interface Translations {
     vaultUnlockSendFailed: string
     vaultUnlockTitle: (name: string) => string
     vaultUnlockDesc: (name: string) => string
+    vaultSaveSendFailed: string
+    vaultSaveTitle: (site: string) => string
+    vaultSaveDesc: (origin: string) => string
+    vaultSaveIdentifierLabel: string
+    vaultSaveIdentifierPlaceholder: string
+    vaultSavePasswordPlaceholder: string
+    vaultSaveFootnote: string
+    vaultSaveDecline: string
+    vaultSaveConfirm: string
     vaultUnlockPlaceholder: string
     vaultUnlockKeepLocked: string
     vaultUnlockConfirm: string

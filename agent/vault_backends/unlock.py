@@ -26,6 +26,9 @@ _sessions: Dict[tuple[str, str], tuple[str, float]] = {}   # (profile home, back
 _callback_tls = threading.local()
 
 UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> master password ("" = cancelled)
+# (origin, site label) -> {"identifier": str, "password": str} or None when the user declines. The
+# surface owns the masked fields; the tool stores the answer in the local vault and fills at once.
+SaveLoginPrompt = Callable[[str, str], Optional[Dict[str, str]]]
 
 
 def set_unlock_prompt_callback(cb: Optional[UnlockPrompt]) -> None:
@@ -35,6 +38,15 @@ def set_unlock_prompt_callback(cb: Optional[UnlockPrompt]) -> None:
 
 def get_unlock_prompt_callback() -> Optional[UnlockPrompt]:
     return getattr(_callback_tls, "prompt", None)
+
+
+def set_save_login_prompt_callback(cb: Optional[SaveLoginPrompt]) -> None:
+    """Register the surface's "save this login" prompt (identifier + masked password), per thread."""
+    _callback_tls.save_login = cb
+
+
+def get_save_login_prompt_callback() -> Optional[SaveLoginPrompt]:
+    return getattr(_callback_tls, "save_login", None)
 
 
 def _key(backend: str) -> tuple[str, str]:

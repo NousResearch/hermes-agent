@@ -108,16 +108,25 @@ def is_installed(name: str) -> bool:
     return shutil.which("bw") is not None
 
 
+def is_enabled(name: str) -> bool:
+    """An installed manager is a login source unless the user opted out (``vault.<name>.enabled: false``).
+    Zero-config on purpose: a user with ``bw``/``op`` on PATH should never have to discover a toggle."""
+    section = _cfg().get(name) or {}
+    if isinstance(section, dict) and section.get("enabled") is False:
+        return False
+    return is_installed(name)
+
+
 def enabled_backends() -> List[LoginBackend]:
-    """Local first (always on), then each enabled external manager, in config order."""
+    """Local first (always on), then every detected external manager the user has not turned off."""
     from agent.vault_backends.local import LocalLoginBackend
 
     cfg = _cfg()
     out: List[LoginBackend] = [LocalLoginBackend()]
     for cls in external_backend_classes():
-        section = cfg.get(cls.name) or {}
-        if isinstance(section, dict) and section.get("enabled"):
-            out.append(cls(section))
+        if is_enabled(cls.name):
+            section = cfg.get(cls.name) or {}
+            out.append(cls(section if isinstance(section, dict) else {}))
     return out
 
 

@@ -97,7 +97,10 @@ def _(rid, params: dict) -> dict:
     enabled = bool(params.get("enabled"))
     cfg = load_config()
     section = cfg.setdefault("vault", {}).setdefault(name, {})
-    section["enabled"] = enabled
+    if enabled:
+        section.pop("enabled", None)  # detected managers are on by default; this removes the opt-out
+    else:
+        section["enabled"] = False
     if not enabled:
         lock(name)
     save_config(cfg)

@@ -440,7 +440,7 @@ export const en: Translations = {
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
-      vault: 'Credential Vault'
+      vault: 'Passwords & Logins'
     },
     plugins: {
       title: 'Desktop plugins',
@@ -511,20 +511,20 @@ export const en: Translations = {
       }
     },
     vault: {
-      title: 'Credential Vault',
+      title: 'Passwords & Logins',
       blurb:
-        'Encrypted local credentials the agent can use to sign into sites without ever seeing the password. Labels, origins, and login identifiers are visible; passwords never are.',
+        'Say "log into GitHub" and the agent signs in for you. The first time it meets a sign-in page it asks you for the login right there; after that it just works. Passwords are encrypted on this machine and filled straight into the page — the model never sees them.',
       count: n => `${n} saved`,
       loadFailed: 'Could not load vault items',
-      empty: 'No saved credentials yet',
+      empty: 'Nothing saved yet',
       emptyDesc:
-        'Add a login and the agent can sign into that site for you — it types the username itself and fills the password from the vault without ever seeing it.',
-      add: 'Add credential',
-      addTitle: 'Add credential',
+        'You don\'t have to add anything here. Ask the agent to sign into a site and it will ask you for the login once, on the spot. Use Add if you prefer to enter one ahead of time.',
+      add: 'Add',
+      addTitle: 'Add a login, card or address',
       addDescription: 'Stored encrypted on this machine. The agent never sees the password.',
-      added: 'Credential saved to the vault.',
+      added: 'Saved.',
       adding: 'Saving…',
-      addConfirm: 'Save to vault',
+      addConfirm: 'Save',
       kindField: 'Kind',
       kinds: { login: 'Login', payment: 'Payment card', address: 'Address' },
       labelField: 'Label',
@@ -553,20 +553,22 @@ export const en: Translations = {
       countryField: 'Country',
       optional: '(optional)',
       createdOn: date => `Added ${date}`,
-      deleteAction: 'Delete credential',
-      deleteTitle: 'Delete credential?',
-      deleteDescription: label => `"${label}" will be removed from the encrypted vault. This cannot be undone.`,
+      deleteAction: 'Remove saved item',
+      deleteTitle: 'Delete this item?',
+      deleteDescription: label => `"${label}" will be removed. This cannot be undone.`,
       deleteConfirm: 'Delete',
       sources: {
         title: 'Password managers',
         blurb:
-          'Let the agent sign in with logins from your password manager. You unlock it once per session with your master password; only a session token is kept in memory, and the agent never sees it or any password.',
+          'Installed password managers are picked up automatically. The agent asks you to unlock one the first time it needs a login from it (once per session); only a session token stays in memory, and the agent never sees your master password or any login.',
         toggleFailed: 'Could not update password manager',
-        notInstalled: name => `${name} CLI not found on this machine. Install it, then turn this on.`,
-        disabledDesc: 'Off. Turn on to let the agent use logins from this manager.',
-        lockedDesc: 'Locked. Unlock now, or the agent will ask you the first time it needs a login.',
+        notInstalled: name => `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
+        disabledDesc: 'Detected but turned off for Hermes.',
+        lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
         unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',
         statusLocked: 'Locked',
+        statusNotDetected: 'Not detected',
+        statusOff: 'Off',
         statusUnlocked: 'Unlocked',
         unlock: 'Unlock',
         unlocking: 'Unlocking…',
@@ -3894,7 +3896,17 @@ export const en: Translations = {
       `The agent wants to sign into a site with a login saved in ${name}. Enter your master password to unlock it for this session — it goes straight to ${name} on this machine and is never stored or shown to the agent.`,
     vaultUnlockPlaceholder: 'Master password',
     vaultUnlockKeepLocked: 'Keep locked',
-    vaultUnlockConfirm: 'Unlock'
+    vaultUnlockConfirm: 'Unlock',
+    vaultSaveSendFailed: 'Could not save the login',
+    vaultSaveTitle: site => `Save your ${site} login?`,
+    vaultSaveDesc: origin =>
+      `Hermes reached a sign-in page at ${origin} and has no login for it. Enter it once here; it is encrypted on this machine and filled into the page without the model ever seeing the password.`,
+    vaultSaveIdentifierLabel: 'Email or username',
+    vaultSaveIdentifierPlaceholder: 'you@example.com',
+    vaultSavePasswordPlaceholder: 'Password',
+    vaultSaveFootnote: 'Manage saved logins in Settings → Passwords & Logins.',
+    vaultSaveDecline: "Don't save",
+    vaultSaveConfirm: 'Save & sign in'
   },
 
   desktop: {

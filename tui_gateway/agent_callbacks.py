@@ -4,6 +4,8 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 
 from __future__ import annotations
 
+import json
+
 import contextlib
 import threading
 
@@ -171,10 +173,22 @@ def _wire_callbacks(sid: str):
     set_secret_capture_callback(secret_cb)
     # External password-manager unlock: the renderer shows a masked master-password card; the
     # answer is consumed by the manager CLI on stdin and only a session token stays in memory.
-    from agent.vault_backends.unlock import set_current_session_id, set_unlock_prompt_callback
+    from agent.vault_backends.unlock import (set_current_session_id, set_save_login_prompt_callback,
+                                             set_unlock_prompt_callback)
     set_current_session_id(sid)  # an unlock made on this turn belongs to this session (released with it)
     set_unlock_prompt_callback(lambda backend, display_name: _block(
         "vault.unlock.request", sid, {"backend": backend, "display_name": display_name}, timeout=120))
+
+    def save_login_cb(origin, site):
+        # The renderer shows identifier + masked password; the JSON answer goes straight to the vault store.
+        raw = _block("vault.save_login.request", sid, {"origin": origin, "site": site}, timeout=180)
+        try:
+            data = json.loads(raw) if raw else None
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) and data.get("password") else None
+
+    set_save_login_prompt_callback(save_login_cb)
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:

@@ -459,15 +459,17 @@ export function VaultSettings() {
                     {v.sources.unlock}
                   </Button>
                 ))}
-              <Switch
-                aria-label={source.display_name}
-                checked={source.enabled}
-                disabled={setSourceEnabled.isPending || (!source.installed && !source.enabled)}
-                onCheckedChange={enabled => {
-                  triggerHaptic('selection')
-                  setSourceEnabled.mutate({ name: source.name, enabled })
-                }}
-              />
+              {source.installed && (
+                <Switch
+                  aria-label={source.display_name}
+                  checked={source.enabled}
+                  disabled={setSourceEnabled.isPending}
+                  onCheckedChange={enabled => {
+                    triggerHaptic('selection')
+                    setSourceEnabled.mutate({ name: source.name, enabled })
+                  }}
+                />
+              )}
             </span>
           }
           description={
@@ -483,11 +485,15 @@ export function VaultSettings() {
           title={
             <span className="flex items-center gap-2">
               <span>{source.display_name}</span>
-              {source.enabled && (
-                <Pill tone={source.unlocked ? 'primary' : 'muted'}>
-                  {source.unlocked ? v.sources.statusUnlocked : v.sources.statusLocked}
-                </Pill>
-              )}
+              <Pill tone={source.enabled && source.unlocked ? 'primary' : 'muted'}>
+                {!source.installed
+                  ? v.sources.statusNotDetected
+                  : !source.enabled
+                    ? v.sources.statusOff
+                    : source.unlocked
+                      ? v.sources.statusUnlocked
+                      : v.sources.statusLocked}
+              </Pill>
             </span>
           }
         />

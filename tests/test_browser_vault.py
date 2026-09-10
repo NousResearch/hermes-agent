@@ -260,19 +260,17 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 
 class TestBrowserVaultTools:
-    def test_check_fn_false_when_vault_empty(self, tmp_path):
+    def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
+        """The vault tools ride with the browser toolset: an empty vault must still expose
+        browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""
         from tools import browser_vault_tool
 
         empty = VaultStore(base_dir=tmp_path / "empty-vault")
         with patch("agent.vault_store.get_vault_store", return_value=empty):
-            assert browser_vault_tool._check_vault_available() is False
-
-    def test_check_fn_true_with_items(self, store):
-        from tools import browser_vault_tool
-
-        _add_login(store)
-        with patch("agent.vault_store.get_vault_store", return_value=store):
-            assert browser_vault_tool._check_vault_available() is True
+            with patch("tools.browser_tool_install.check_browser_requirements", return_value=True):
+                assert browser_vault_tool._check_vault_available() is True
+            with patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
+                assert browser_vault_tool._check_vault_available() is False
 
     def test_list_returns_identifier_never_password(self, store):
         from tools import browser_vault_tool
@@ -605,3 +603,62 @@ def test_every_registered_tool_schema_declares_openai_style_parameters():
     missing = [entry.name for entry in registry.get_all_entries()
                if "parameters" not in entry.schema or "input_schema" in entry.schema]
     assert not missing, missing
+
+
+class TestSaveLoginPrompt:
+    """browser_vault_save_login: the surface prompt supplies the login, the tool stores it bound to the page
+    origin and fills. The password must never come back in the tool result."""
+
+    def test_saves_to_page_origin_and_never_echoes_the_password(self, store, monkeypatch):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        seen = {}
+
+        def prompt(origin, site):
+            seen["origin"], seen["site"] = origin, site
+            return {"identifier": "tek@acme.test", "password": "hunter2-very-secret"}
+
+        unlock_mod.set_save_login_prompt_callback(prompt)
+        monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
+        monkeypatch.setattr(browser_vault_tool, "browser_vault_fill",
+                            lambda handle, task_id=None: json.dumps({"success": True, "filled_fields": 1}))
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+            out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t1"))
+        unlock_mod.set_save_login_prompt_callback(None)
+
+        assert out["success"] is True and out["identifier"] == "tek@acme.test"
+        assert "hunter2" not in json.dumps(out)
+        assert seen == {"origin": "https://acme.test", "site": "acme.test"}
+        [meta] = store.list_items()
+        assert meta.origin == "https://acme.test" and meta.identifier == "tek@acme.test"
+
+    def test_declined_or_headless_stores_nothing(self, store, monkeypatch):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
+        with patch("agent.vault_store.get_vault_store", return_value=store):
+            unlock_mod.set_save_login_prompt_callback(lambda origin, site: None)
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                declined = json.loads(browser_vault_tool.browser_vault_save_login())
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=False):
+                headless = json.loads(browser_vault_tool.browser_vault_save_login())
+            unlock_mod.set_save_login_prompt_callback(None)
+        assert declined["error_type"] == "save_declined"
+        assert headless["error_type"] == "prompt_unavailable"
+        assert store.list_items() == []
+
+
+class TestManagerAutoDetection:
+    def test_installed_manager_is_a_source_without_config_and_config_can_opt_out(self):
+        from agent.vault_backends import base
+
+        with patch.object(base, "is_installed", return_value=True):
+            with patch.object(base, "_cfg", return_value={}):
+                assert {b.name for b in base.enabled_backends()} == {"local", "onepassword", "bitwarden"}
+            with patch.object(base, "_cfg", return_value={"bitwarden": {"enabled": False}}):
+                assert {b.name for b in base.enabled_backends()} == {"local", "onepassword"}
+        with patch.object(base, "is_installed", return_value=False), patch.object(base, "_cfg", return_value={}):
+            assert [b.name for b in base.enabled_backends()] == ["local"]

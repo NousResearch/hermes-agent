@@ -1247,7 +1247,8 @@ def _enable_gateway_prompts() -> None:
 # Blocking bridges whose `*.respond` tolerates a late reply (allow_expired=True): on timeout the tool
 # returns empty, but a slow renderer could still answer and hit a raw 4009 — `.expire` tears the card down.
 _EXPIRING_REQUESTS = frozenset({
-    "secret.request", "sudo.request", "vault.unlock.request", "clarify.request", "terminal.read.request",
+    "secret.request", "sudo.request", "vault.unlock.request", "vault.save_login.request", "clarify.request",
+    "terminal.read.request",
     "preview.read.request", "preview.act.request", "window.read.request", "mcp.setup.request",
     "tour.request",
 })

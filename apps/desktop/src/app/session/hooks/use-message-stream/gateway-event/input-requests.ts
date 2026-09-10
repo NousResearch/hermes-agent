@@ -13,11 +13,14 @@ import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
+  $vaultSaveLoginRequests,
   $vaultUnlockRequests,
+  clearVaultSaveLoginRequest,
   clearVaultUnlockRequest,
   receiveApprovalRequest,
   setSecretRequest,
   setSudoRequest,
+  setVaultSaveLoginRequest,
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { requestScrollToBottom } from '@/store/thread-scroll'
@@ -159,6 +162,17 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         sessionId,
         title: translateNow('notifications.native.inputTitle')
       })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.save_login.expire') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const request = sessionId ? $vaultSaveLoginRequests.get()[sessionId] : undefined
+
+    if (requestId && request && request.requestId === requestId) {
+      clearVaultSaveLoginRequest(sessionId, requestId)
     }
 
     return true
@@ -330,6 +344,32 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
 
       dispatchNativeNotification({
         body: promptText || envVar || translateNow('notifications.native.inputBody'),
+        kind: 'input',
+        sessionId,
+        title: translateNow('notifications.native.inputTitle')
+      })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.save_login.request') {
+    // The agent is on a sign-in page with no saved login: identifier + masked password card; the
+    // answer is stored in the encrypted vault by the backend and filled at once (never shown to the model).
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (requestId) {
+      const origin = typeof payload?.origin === 'string' ? payload.origin : ''
+      const site = typeof payload?.site === 'string' ? payload.site : origin
+
+      setVaultSaveLoginRequest({ origin, requestId, sessionId: sessionId ?? null, site })
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      }
+
+      dispatchNativeNotification({
+        body: translateNow('prompts.vaultSaveTitle', site),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')

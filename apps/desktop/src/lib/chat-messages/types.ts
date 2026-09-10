@@ -120,6 +120,9 @@ export type GatewayEventPayload = {
   // vault.unlock.request (external password-manager unlock)
   backend?: string
   display_name?: string
+  /** vault.save_login.request */
+  origin?: string
+  site?: string
   // terminal.read.request / preview.read.request (GUI agent reading the
   // in-app terminal pane or the browser/preview pane)
   start?: number

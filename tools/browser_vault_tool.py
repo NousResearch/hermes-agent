@@ -39,13 +39,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _check_vault_available() -> bool:
-    """Schema-gate: the tools appear only when the local vault has items or an external manager is enabled.
-    Registered uncached: the answer is per profile (vault dir + config) and the registry's TTL cache is keyed
-    per profile only under multiplex; the probe is a local file stat, cheap enough to run every pass."""
+    """Schema-gate: the vault tools ride with the browser. An empty vault still needs
+    browser_vault_save_login so the agent can offer to remember a login the first time it meets a
+    form; hiding the tools until an item exists meant nobody ever discovered the feature."""
     try:
-        from agent.vault_backends import enabled_backends
-        from agent.vault_store import get_vault_store
-        return get_vault_store().has_items() or any(b.needs_unlock for b in enabled_backends())
+        from tools.browser_tool_install import check_browser_requirements
+        return bool(check_browser_requirements())
     except Exception:
         return False
 
@@ -234,6 +233,9 @@ def browser_vault_list() -> str:
                 entry["identifier_type"] = meta.identifier_type
             items.append(entry)
     out: Dict[str, Any] = {"success": True, "items": items}
+    if not items:
+        out["hint"] = ("No saved logins. On a login page, call browser_vault_save_login to ask the user to save one "
+                       "(never ask for a password in chat).")
     if locked:
         out["locked"] = locked
     if errors:
@@ -268,6 +270,43 @@ def browser_vault_unlock(backend_name: str) -> str:
     finally:
         del master
     return json.dumps({"success": True, "backend": backend.name})
+
+
+def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
+    """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
+    vault bound to that origin, and fill the password at once. The values never enter the conversation."""
+    from agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
+    from agent.vault_store import get_vault_store
+
+    effective_task_id = task_id or "default"
+    origin = _current_page_origin(effective_task_id)
+    if not origin:
+        return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
+    prompt = get_save_login_prompt_callback()
+    if prompt is None or not can_prompt_here():
+        return json.dumps({"success": False, "error_type": "prompt_unavailable",
+                           "error": (f"This session cannot ask the user for a login (headless/cron/API). Tell them to run "
+                                     f"`hermes vault add` or use Desktop → Settings → Passwords & Logins for {origin}.")})
+    host = origin.split("://", 1)[-1]
+    site = label.strip() or host
+    answer = prompt(origin, host)  # the prompt names the site by host: the user recognises URLs, not agent labels
+    if not answer or not answer.get("password") or not answer.get("identifier"):
+        return json.dumps({"success": False, "error_type": "save_declined",
+                           "error": "The user chose not to save a login for this site. Do not ask again this turn."})
+    identifier = str(answer["identifier"]).strip()
+    id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
+    try:
+        meta = get_vault_store().add_item("login", site, {"identifier_type": id_type, "identifier": identifier,
+                                                        "password": str(answer["password"])}, origin=origin)
+    except Exception as exc:
+        return json.dumps({"success": False, "error_type": "save_failed", "error": str(exc)[:200]})
+    finally:
+        answer.clear()
+    filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
+    return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
+                       "identifier_type": id_type, "fill": filled,
+                       "next": "Type the identifier into the username field if the form has one, then submit."},
+                      ensure_ascii=False)
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
@@ -500,6 +539,27 @@ BROWSER_VAULT_FILL_SCHEMA = {
 }
 
 
+BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
+    "name": "browser_vault_save_login",
+    "description": (
+        "The current page is a login form and browser_vault_list has no item for its origin: ask the user, "
+        "through a masked prompt in their UI, to save the login for this site. Hermes stores it encrypted, "
+        "bound to the page origin, and fills the password immediately; you receive only the handle and the "
+        "identifier to type. Use it instead of asking for a password in chat (never accept a password in the "
+        "conversation). A save_declined result means stop asking for this turn."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"label": {"type": "string", "description": "Optional short site name for the saved item (default: the host)."}},
+        "required": [],
+    },
+}
+
+
+def _handle_vault_save_login(args: Dict[str, Any], **kwargs) -> str:
+    return browser_vault_save_login(label=str(args.get("label") or ""), task_id=kwargs.get("task_id"))
+
+
 def _handle_vault_list(args: Dict[str, Any], **kwargs) -> str:
     return browser_vault_list()
 
@@ -532,6 +592,15 @@ registry.register(
     toolset="browser",
     schema=BROWSER_VAULT_UNLOCK_SCHEMA,
     handler=_handle_vault_unlock,
+    check_fn=_check_vault_available,
+    emoji="🔐",
+)
+
+registry.register(
+    name="browser_vault_save_login",
+    toolset="browser",
+    schema=BROWSER_VAULT_SAVE_LOGIN_SCHEMA,
+    handler=_handle_vault_save_login,
     check_fn=_check_vault_available,
     emoji="🔐",
 )

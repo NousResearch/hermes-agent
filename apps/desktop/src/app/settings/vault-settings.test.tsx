@@ -59,7 +59,7 @@ describe('VaultSettings', () => {
     requestGateway.mockResolvedValue({ items: [] })
     renderVault()
 
-    await waitFor(() => expect(screen.getByText('No saved credentials yet')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Nothing saved yet')).toBeTruthy())
     expect(requestGateway).toHaveBeenCalledWith('vault.list', {})
   })
 
@@ -89,12 +89,12 @@ describe('VaultSettings', () => {
     requestGateway.mockResolvedValue({ items: [] })
     renderVault()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Add credential' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add' }))
     fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'x' } })
     fireEvent.change(screen.getByLabelText('Site origin'), { target: { value: 'not-a-url' } })
     fireEvent.change(screen.getByLabelText('Identifier'), { target: { value: 'me@example.com' } })
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save to vault' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(screen.getByText('Enter a valid URL like https://example.com.')).toBeTruthy())
     expect(requestGateway).not.toHaveBeenCalledWith('vault.add', expect.anything())
@@ -106,12 +106,12 @@ describe('VaultSettings', () => {
     )
     renderVault()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Add credential' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add' }))
     fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'GitHub work' } })
     fireEvent.change(screen.getByLabelText('Site origin'), { target: { value: 'https://github.com' } })
     fireEvent.change(screen.getByLabelText('Identifier'), { target: { value: 'me@example.com' } })
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 's3cret' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save to vault' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith('vault.add', {
@@ -134,8 +134,8 @@ describe('VaultSettings', () => {
     renderVault()
 
     await waitFor(() => expect(screen.getByText('GitHub work')).toBeTruthy())
-    fireEvent.click(screen.getByRole('button', { name: 'Delete credential' }))
-    await waitFor(() => expect(screen.getByText('Delete credential?')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Remove saved item' }))
+    await waitFor(() => expect(screen.getByText('Delete this item?')).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
     await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.remove', { id: 'vault_abc123' }))
@@ -168,9 +168,10 @@ describe('VaultSettings', () => {
     renderVault()
 
     await waitFor(() => expect(screen.getByText('GitHub via 1Password')).toBeTruthy())
-    expect(screen.queryByRole('button', { name: 'Delete credential' })).toBeNull()
-    // Not-installed manager can't be switched on; the installed one can be unlocked.
-    expect(screen.getByRole('switch', { name: 'Bitwarden' })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('button', { name: 'Remove saved item' })).toBeNull()
+    // A manager that isn't installed has nothing to switch (detection is automatic); the installed one can be unlocked.
+    expect(screen.queryByRole('switch', { name: 'Bitwarden' })).toBeNull()
+    expect(screen.getByRole('switch', { name: '1Password' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))
     await waitFor(() => expect(screen.getByText('Unlock 1Password')).toBeTruthy())
 

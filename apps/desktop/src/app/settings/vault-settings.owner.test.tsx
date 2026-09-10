@@ -112,13 +112,13 @@ it("a late list response from profile A never paints under profile B", async () 
 it('vault.add secrets never enter the mutation cache', async () => {
   respond = async (_profile, method) => (method === 'vault.sources' ? { sources } : method === 'vault.list' ? { items: [] } : { id: 'created' })
   const view = mount()
-  fireEvent.click(await screen.findByRole('button', { name: 'Add credential' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Add' }))
 
   for (const [label, value] of [['Label', 'fixture'], ['Site origin', 'https://example.com'], ['Identifier', 'fixture@example.com'], ['Password', 'fixture-retained-password']] as const) {
     fireEvent.change(screen.getByLabelText(label), { target: { value } })
   }
 
-  fireEvent.click(screen.getByRole('button', { name: 'Save to vault' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
   await waitFor(() => expect(calls.some(c => c.method === 'vault.add')).toBe(true))
   expect((calls.find(c => c.method === 'vault.add')!.params.secret as Record<string, string>).password).toBe('fixture-retained-password')
   await waitFor(() => expect(screen.queryByLabelText('Password')).toBeNull())

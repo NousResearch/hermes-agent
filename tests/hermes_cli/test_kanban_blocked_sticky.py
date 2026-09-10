@@ -157,6 +157,73 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# create_task(initial_status="blocked") must be sticky (#107512)
+# ---------------------------------------------------------------------------
+
+
+def test_create_task_initial_status_blocked_is_sticky(kanban_home: Path) -> None:
+    """Parent-less ``create_task(..., initial_status="blocked")`` parks the
+    task for human ops: status stays ``blocked``, a ``blocked`` event makes
+    ``_has_sticky_block`` True, and ``recompute_ready`` must not emit
+    ``promoted`` across repeated dispatcher ticks."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="parked for human ops", initial_status="blocked")
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb._has_sticky_block(conn, tid)
+
+        for _ in range(2):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0, "create(initial_status=blocked) must not auto-promote"
+            assert kb.get_task(conn, tid).status == "blocked"
+
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "blocked" in kinds
+        assert "promoted" not in kinds
+
+
+def test_create_task_default_is_not_stuck_blocked(kanban_home: Path) -> None:
+    """Default ``create_task`` (no ``initial_status``) stays on the normal
+    ready path and is not sticky-blocked."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="plain create")
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert not kb._has_sticky_block(conn, tid)
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_create_task_initial_blocked_unblocks_to_ready(kanban_home: Path) -> None:
+    """Explicit ``unblock_task`` clears a create-time sticky block; a
+    parent-less task lands ``ready`` and later ticks do not re-block it."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="parked then unblocked", initial_status="blocked")
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+        assert not kb._has_sticky_block(conn, tid)
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_parent_gated_todo_still_promotes_when_parent_completes(kanban_home: Path) -> None:
+    """A default/todo child under an unfinished parent still promotes to
+    ``ready`` once the parent is completed and ``recompute_ready`` runs."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="unfinished parent")
+        child = kb.create_task(conn, title="gated child", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, child).status == "todo"
+
+        assert kb.complete_task(conn, parent, result="done")
+        assert kb.get_task(conn, parent).status == "done"
+        # complete_task already runs recompute_ready so children see ``done``.
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, child).status == "ready"
+
+
+# ---------------------------------------------------------------------------
 # Schema-init recovery on legacy DBs is covered by
 # tests/hermes_cli/test_kanban_db.py::test_connect_migrates_legacy_db_before_optional_column_indexes
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test

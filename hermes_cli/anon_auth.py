@@ -43,9 +43,11 @@ ANON_SECRET_HEADER = "x-anonymous-api-secret"
 # The shared secret gates the anonymous surface during its integration phase. It is a deployment
 # secret (Sid's), read from the environment only.
 ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
-# Dev lever: "1" makes the guest carry inference even when explicit providers exist; "new" also
-# bypasses the shared store and mints a fresh guest for this process. Overrides ``nous.guest: false``.
-FORCE_GUEST_ENV = "HERMES_FORCE_GUEST"
+# Launch gate for the whole free tier while it is pre-GA: exactly "1" turns it on for this process
+# (CLI, gateway, serve backend alike); anything else leaves every surface behaving as if the free
+# tier did not exist. ``guest_enabled`` is the only reader. Not a user preference: never written to
+# config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
+GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
 # Copy shared by every surface that names the free tier (R-USR-1): never guest / anonymous / account.
 FREE_TIER_LABEL = "Nous · free tier"
@@ -66,18 +68,11 @@ def _anon_err(message: str, code: str) -> AuthError:
     return AuthError(message, code=code)
 
 
-def force_guest_mode() -> str:
-    """``""`` (off), ``"1"`` or ``"new"``; anything else truthy counts as ``"1"``."""
-    raw = (os.environ.get(FORCE_GUEST_ENV) or "").strip().lower()
-    if not raw or raw in {"0", "false", "no", "off"}:
-        return ""
-    return "new" if raw == "new" else "1"
-
-
 def guest_enabled() -> bool:
-    """``nous.guest`` (default True), overridden by the dev lever."""
-    if force_guest_mode():
-        return True
+    """The free tier is on for this process: the launch gate is set AND ``nous.guest`` (default
+    True) has not switched it off. The only place either is read."""
+    if (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() != "1":
+        return False
     try:
         from hermes_cli.config import load_config_readonly
         nous_cfg = load_config_readonly().get("nous")
@@ -282,15 +277,13 @@ def _mint_locked(client: httpx.Client, portal: str, auth_store: Dict[str, Any]) 
 
 _background_lock = threading.Lock()
 _background_started = False
-# Per-process memos for the blocking path. ``_mint_failed``: one failed mint is enough for a process
-# (several bootstrap sites call in sequence; a 429 or a closed gate must not be hit twice);
-# ``clear_dead_guest`` resets it because a retired credential is a reason to mint again.
-# ``_forced_new_done``: ``HERMES_FORCE_GUEST=new`` re-mints once per process, not on every resolution.
+# Per-process memo for the blocking path: one failed mint is enough for a process (several bootstrap
+# sites call in sequence; a 429 or a closed gate must not be hit twice); ``clear_dead_guest`` resets
+# it because a retired credential is a reason to mint again.
 _mint_failed = False
-_forced_new_done = False
 
 
-def _reconcile_and_provision(*, force: str, timeout_seconds: float) -> Optional[Dict[str, Any]]:
+def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[Dict[str, Any]]:
     """The lifecycle body, run under profile lock THEN shared lock (the documented order).
 
     1. The shared store is the identity of record for this Hermes root. If it holds an identity
@@ -298,7 +291,6 @@ def _reconcile_and_provision(*, force: str, timeout_seconds: float) -> Optional[
        sibling profile's sign-in, and never overwrites it).
     2. Otherwise the profile's own identity stands.
     3. Nothing anywhere: mint, persisting the credential before exchanging it.
-    ``force == "new"`` skips 1 and 2.
     """
     from hermes_cli.auth import (
         _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
@@ -310,18 +302,17 @@ def _reconcile_and_provision(*, force: str, timeout_seconds: float) -> Optional[
         auth_store = _load_auth_store()
         profile_state = _load_provider_state(auth_store, "nous")
         with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds, 5.0)):
-            if force != "new":
-                shared = _read_shared_nous_state()
-                if shared and _shared_identity_key(shared) != _shared_identity_key(profile_state):
-                    state = dict(shared)
-                    _save_provider_state(auth_store, "nous", state)
-                    _save_auth_store(auth_store)
-                    logger.debug("Nous identity adopted from the shared store")
-                    return state
-                if profile_state:
-                    if not shared:
-                        _write_shared_nous_state(profile_state)
-                    return profile_state
+            shared = _read_shared_nous_state()
+            if shared and _shared_identity_key(shared) != _shared_identity_key(profile_state):
+                state = dict(shared)
+                _save_provider_state(auth_store, "nous", state)
+                _save_auth_store(auth_store)
+                logger.debug("Nous identity adopted from the shared store")
+                return state
+            if profile_state:
+                if not shared:
+                    _write_shared_nous_state(profile_state)
+                return profile_state
             verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
             with _nous_http_client(timeout_seconds, verify) as client:
                 return _mint_locked(client, portal, auth_store)
@@ -333,29 +324,23 @@ def ensure_portal_identity(
     """Make sure this profile has a Nous identity (guest or account); mint a guest only if the shared
     store has none. Returns the ``providers.nous`` state, or None (disabled / non-blocking / failed).
 
-    Order: ``nous.guest`` gate -> reconcile with the shared store -> mint. Locks are taken profile
+    Order: ``guest_enabled`` gate -> reconcile with the shared store -> mint. Locks are taken profile
     first, then shared, matching every other Nous path. Non-blocking mode runs on a daemon thread
     and returns None immediately; a failure there is logged at DEBUG (the guest is a fallback; a
     fallback failing is not an error).
     """
-    global _mint_failed, _forced_new_done
+    global _mint_failed
     if not guest_enabled():
         return None
-    force = force_guest_mode()
-    if force == "new" and _forced_new_done:
-        force = "1"
-    if _mint_failed and force != "new" and not current_nous_state():
+    if _mint_failed and not current_nous_state():
         return None  # this process already tried and failed; do not hammer the portal
 
     if blocking:
         try:
-            result = _reconcile_and_provision(force=force, timeout_seconds=timeout_seconds)
+            return _reconcile_and_provision(timeout_seconds=timeout_seconds)
         except Exception:
             _mint_failed = True
             raise
-        if force == "new":
-            _forced_new_done = True
-        return result
 
     global _background_started
     with _background_lock:
@@ -366,7 +351,7 @@ def ensure_portal_identity(
     def _run() -> None:
         global _background_started
         try:
-            _reconcile_and_provision(force=force, timeout_seconds=timeout_seconds)
+            _reconcile_and_provision(timeout_seconds=timeout_seconds)
         except Exception as exc:
             logger.debug("Nous free tier background setup skipped: %s", exc)
             # A transient failure must not consume the process's only attempt: release the latch

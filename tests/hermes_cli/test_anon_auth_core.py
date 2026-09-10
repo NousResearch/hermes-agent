@@ -71,7 +71,7 @@ def portal(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", PORTAL)
     monkeypatch.setenv("HERMES_ANON_API_SECRET", "test-secret")
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.delenv("HERMES_FORCE_GUEST", raising=False)
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     from hermes_cli import auth_nous
@@ -90,7 +90,6 @@ def portal(monkeypatch, tmp_path):
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
     anon_auth._background_started = False
     anon_auth._mint_failed = False
-    anon_auth._forced_new_done = False
     # resolve_nous_access_token memoises the last token for 5 s across the process; a token minted
     # by an earlier test must not be served to this one.
     from hermes_cli import auth as auth_mod
@@ -157,15 +156,20 @@ class TestIdentityLifecycle:
         with pytest.raises(anon_auth.AuthError):
             resolve_provider("auto")
 
-    def test_force_guest_overrides_opt_out_and_new_bypasses_shared_store(self, portal, monkeypatch):
-        _write_config(monkeypatch, guest=False)
-        monkeypatch.setenv("HERMES_FORCE_GUEST", "1")
-        first = anon_auth.ensure_portal_identity(blocking=True)
-        assert anon_auth.is_guest_state(first)
-        monkeypatch.setenv("HERMES_FORCE_GUEST", "new")
-        second = anon_auth.ensure_portal_identity(blocking=True)
-        assert second["anon_token"] != first["anon_token"]
-        assert portal.minted == 2
+    def test_launch_gate_off_means_no_free_tier_at_all(self, portal, monkeypatch):
+        """Without ``HERMES_GUEST_ONBOARDING=1`` the free tier does not exist: no mint, no portal
+        traffic, ``nous.guest``'s default is never consulted, and an identity already on disk is
+        not treated as enabled. The env var is the only lever; ``0``/``true``/anything but ``1`` is off."""
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+        for raw in ("", "0", "true", "yes", "new"):
+            monkeypatch.setenv("HERMES_GUEST_ONBOARDING", raw)
+            assert anon_auth.guest_enabled() is False
+            assert anon_auth.ensure_portal_identity(blocking=True) is None
+        assert portal.calls == []
+        with pytest.raises(anon_auth.AuthError):
+            resolve_provider("auto")
+        monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+        assert anon_auth.guest_enabled() is True
 
 
 class TestExplicitProvision:

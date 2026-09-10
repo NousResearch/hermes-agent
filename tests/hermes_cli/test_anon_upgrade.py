@@ -99,7 +99,7 @@ def portal(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", PORTAL)
     monkeypatch.setenv("HERMES_ANON_API_SECRET", "test-secret")
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.delenv("HERMES_FORCE_GUEST", raising=False)
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     from hermes_cli import auth_nous
@@ -117,7 +117,6 @@ def portal(monkeypatch, tmp_path):
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
     anon_auth._background_started = False
     anon_auth._mint_failed = False
-    anon_auth._forced_new_done = False
     return fake
 
 

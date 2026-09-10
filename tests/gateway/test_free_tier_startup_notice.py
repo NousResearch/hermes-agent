@@ -48,7 +48,7 @@ def _account_state() -> dict:
 def nous_runner(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.delenv("HERMES_FORCE_GUEST", raising=False)
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     # Provider precedence gates the line and is answered from persisted state only (no network at boot).
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)

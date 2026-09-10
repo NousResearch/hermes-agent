@@ -29,7 +29,7 @@ GUEST_STATE = {
 def guest_home(monkeypatch, tmp_path):
     """Seed a guest identity as the only Nous state and keep every row builder offline."""
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.delenv("HERMES_FORCE_GUEST", raising=False)
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY", "LM_API_KEY", "LM_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     _save_auth_store({"active_provider": "nous", "providers": {"nous": dict(GUEST_STATE)}})

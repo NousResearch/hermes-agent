@@ -29,7 +29,7 @@ def _call(method: str, params: dict | None = None) -> dict:
 @pytest.fixture
 def guest(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.delenv("HERMES_FORCE_GUEST", raising=False)
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     with _auth_store_lock():
         store = _load_auth_store()
         store.setdefault("providers", {})["nous"] = {
@@ -78,6 +78,7 @@ def test_billing_state_answers_the_free_tier_locally(guest, monkeypatch):
 
 def test_status_without_an_identity_starts_the_background_setup_once(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     calls = []
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: calls.append(kw) or None)
     status = _call("free_tier.status")
@@ -89,7 +90,7 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
     """``free_tier.provision`` is the guided setup's explicit request: it calls provision_free_tier
     (the one explicit minting entry point) only when no identity exists, and reports the outcome."""
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.delenv("HERMES_FORCE_GUEST", raising=False)
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     calls = []
 
     def fake_provision(**kw):

@@ -82,6 +82,7 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
+import { $alwaysUseProfileDropdown } from '@/store/profile-picker-prefs'
 import {
   $profileRemoteOverrides,
   openRemoteOverrideDialog,
@@ -149,6 +150,7 @@ export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
   const profiles = useStore($profiles)
+  const alwaysUseDropdown = useStore($alwaysUseProfileDropdown)
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
@@ -223,7 +225,7 @@ export function ProfileRail() {
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
   // The threshold counts the whole fleet: fourteen squares are fourteen
   // squares wherever they live.
-  const condensed = profiles.length + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
+  const condensed = alwaysUseDropdown || profiles.length + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
 
   const switchToRest = (agent: FleetAgent) => {
     const key = fleetRouteKey(agent.connectionId, agent.profile)
@@ -455,7 +457,7 @@ export function ProfileRail() {
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             onSelectRest={switchToRest}
-            profiles={named}
+            profiles={defaultProfile ? [defaultProfile, ...named] : named}
             restGroups={restGroups}
           />
         </div>
@@ -719,9 +721,9 @@ function ImportProfileButton({ label }: { label: string }) {
   )
 }
 
-// The condensed rail: every named profile in one compact menu. The trigger
-// shows the active profile (tinted initial + name); on default/all scope it
-// falls back to the placeholder since the left toggle pill carries that state.
+// Include default as well as named profiles: a forced single-profile dropdown
+// still needs a selectable home, and fleet mode's pinned pill only selects All.
+// The trigger shows the active profile; All falls back to the placeholder.
 function ProfileDropdown({
   activeKey,
   colors,
@@ -765,7 +767,7 @@ function ProfileDropdown({
                 <ProfileGlyph
                   aria-hidden="true"
                   color={resolveProfileColor(activeProfile.name, colors)}
-                  isDefault={false}
+                  isDefault={activeProfile.is_default ?? false}
                   name={activeProfile.name}
                 />
                 <span className="truncate">{profileLabel(activeProfile)}</span>
@@ -791,6 +793,7 @@ function ProfileDropdown({
           {profiles.map(profile => (
             <ProfileDropdownItem
               color={resolveProfileColor(profile.name, colors)}
+              isDefault={profile.is_default ?? false}
               key={profile.name}
               label={profileLabel(profile)}
               name={profile.name}
@@ -832,7 +835,14 @@ function ProfileDropdown({
 
 // One dropdown row per profile — its own component so each row can own a
 // hover-intent prewarm timer (see useProfilePrewarm).
-function ProfileDropdownItem({ color, label, name }: { color: null | string; label: string; name: string }) {
+interface ProfileDropdownItemProps {
+  color: null | string
+  isDefault: boolean
+  label: string
+  name: string
+}
+
+function ProfileDropdownItem({ color, isDefault, label, name }: ProfileDropdownItemProps) {
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
 
   return (
@@ -843,7 +853,7 @@ function ProfileDropdownItem({ color, label, name }: { color: null | string; lab
       value={name}
     >
       <span className="flex min-w-0 items-center gap-1.5">
-        <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
+        <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
         <span className="truncate">{label}</span>
       </span>
     </DropdownMenuRadioItem>

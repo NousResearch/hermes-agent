@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopAgentRoster, DesktopConnectionsRegistry } from '@/global'
+import { setAlwaysUseProfileDropdown } from '@/store/profile-picker-prefs'
 
 import { ProfileRail } from './profile-switcher'
 
@@ -123,7 +124,8 @@ const connectionsRegistry = connectionsStore.$connectionsRegistry as ReturnType<
   typeof atom<DesktopConnectionsRegistry | null>
 >
 
-const { $profiles, $profileScope } = await import('@/store/profile')
+const { $activeGatewayProfile, $profiles, $profileScope, setShowAllProfiles } = await import('@/store/profile')
+const gatewayProfile = $activeGatewayProfile as ReturnType<typeof atom<string>>
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
 const profileScope = $profileScope as ReturnType<typeof atom<string>>
 const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
@@ -208,7 +210,9 @@ afterEach(() => {
   connectionsRegistry.set(null)
   activeConnectionId.set(null)
   profileScope.set('default')
+  gatewayProfile.set('default')
   profiles.set([{ is_default: true, name: 'default' }])
+  setAlwaysUseProfileDropdown(false)
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
 })
 
@@ -352,5 +356,102 @@ describe('ProfileRail fleet mode', () => {
 
     expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
     expect(container.querySelector('[data-slot="profile-rail-rest-square"]')).toBeNull()
+  })
+
+  it('forces a usable dropdown even with only the default profile', async () => {
+    render(<ProfileRail />)
+    expect(screen.queryByRole('button', { name: 'Profiles' })).toBeNull()
+    act(() => setAlwaysUseProfileDropdown(true))
+
+    const trigger = screen.getByRole('button', { name: 'Profiles' })
+    expect(trigger.textContent).toContain('default')
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    const home = await screen.findByRole('menuitemradio', { name: 'default' })
+    expect(home.getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByRole('menuitem', { name: 'New profile' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Import profile…' })).toBeTruthy()
+    fireEvent.click(home)
+    expect(selectProfile).toHaveBeenCalledWith('default')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage profiles…' }))
+    expect(navigate).toHaveBeenCalledWith('/profiles')
+
+    act(() => setAlwaysUseProfileDropdown(false))
+    expect(screen.queryByRole('button', { name: 'Profiles' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'New profile' })).toBeTruthy()
+  })
+
+  it('overrides automatic mode through roster and context changes without losing navigation', async () => {
+    let loadRoster!: (value: DesktopAgentRoster) => void
+    getAgentRoster.mockReturnValueOnce(new Promise<DesktopAgentRoster>(resolve => (loadRoster = resolve)))
+    armFleet()
+    connectionsRegistry.set({
+      ...registry,
+      connections: registry.connections.filter(connection => connection.id !== 'vps')
+    })
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 11 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
+    ])
+    const view = render(<ProfileRail />)
+
+    // At the existing boundary: 12 active profiles + one undiscovered remote
+    // default. OFF keeps squares; ON overrides before the roster has arrived.
+    expect(screen.queryByRole('button', { name: 'Profiles' })).toBeNull()
+    act(() => setAlwaysUseProfileDropdown(true))
+    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
+    await act(async () => loadRoster(roster))
+    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
+
+    // The named remote arrival crosses the automatic threshold: OFF still
+    // condenses here, then returns to squares when the active list shrinks.
+    act(() => setAlwaysUseProfileDropdown(false))
+    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
+    act(() =>
+      profiles.set([
+        { is_default: true, name: 'default' },
+        { is_default: false, name: 'scout' }
+      ])
+    )
+    expect(screen.queryByRole('button', { name: 'Profiles' })).toBeNull()
+    act(() => setAlwaysUseProfileDropdown(true))
+
+    const openDropdown = () => fireEvent.keyDown(screen.getByRole('button', { name: 'Profiles' }), { key: 'ArrowDown' })
+    openDropdown()
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: 'scout' }))
+    expect(selectProfile).toHaveBeenCalledWith('scout')
+    act(() => {
+      gatewayProfile.set('scout')
+      profileScope.set('scout')
+    })
+    expect(screen.getByRole('button', { name: 'Profiles' }).textContent).toContain('scout')
+
+    fireEvent.click(screen.getByRole('button', { name: 'All profiles on this gateway' }))
+    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+    act(() => profileScope.set('*'))
+    openDropdown()
+    const home = await screen.findByRole('menuitemradio', { name: 'default' })
+    expect(home.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(home)
+    expect(selectProfile).toHaveBeenCalledWith('default')
+
+    // Named and default routes on the other gateway retain both identities.
+    for (const name of ['omer', 'default']) {
+      openDropdown()
+      fireEvent.click(await screen.findByRole('menuitem', { name: `${name} · This device` }))
+      expect(selectConnection).toHaveBeenCalledWith('local', { profile: name })
+      await act(async () => Promise.resolve())
+    }
+
+    act(() => {
+      activeConnectionId.set('local')
+      gatewayProfile.set('default')
+      profileScope.set('default')
+      profiles.set([{ is_default: true, name: 'default' }])
+    })
+    expect(screen.getByRole('button', { name: 'Profiles' }).textContent).toContain('default')
+    expect(view.container.querySelector('[data-slot="profile-rail-rest-square"]')).toBeNull()
+    openDropdown()
+    expect(await screen.findByRole('menuitem', { name: 'scout · Pandora' })).toBeTruthy()
   })
 })

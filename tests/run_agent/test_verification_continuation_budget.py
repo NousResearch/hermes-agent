@@ -38,7 +38,7 @@ def agent(tmp_path, monkeypatch):
         )
     instance._cached_system_prompt = "stable test prompt"
     instance._session_db = None
-    instance._session_json_enabled = False
+
     instance.save_trajectories = False
     instance.compression_enabled = False
     instance._cleanup_task_resources = lambda *_a, **_kw: None
@@ -251,5 +251,3 @@ def test_streamed_interim_then_different_summary_not_marked_previewed(agent, mon
     # CRITICAL: response_previewed must be False — the interim narration was
     # NOT the final response, so the CLI must render the summary.
     assert result["response_previewed"] is False
-
-

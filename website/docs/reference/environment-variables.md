@@ -330,6 +330,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `TELEGRAM_REQUIRE_MENTION` | Require an explicit trigger before responding in Telegram groups. Equivalent to `telegram.require_mention` in `config.yaml`. |
 | `TELEGRAM_MENTION_PATTERNS` | JSON array, newline-separated list, or comma-separated list of regex wake-word patterns accepted when Telegram group mention gating is enabled. Equivalent to `telegram.mention_patterns`. |
 | `TELEGRAM_EXCLUSIVE_BOT_MENTIONS` | When enabled, explicit `@...bot` mentions in Telegram groups route only to the mentioned bot usernames before reply or wake-word fallbacks run. Default: `true`. Equivalent to `telegram.exclusive_bot_mentions`. |
+| `TELEGRAM_BOTS_REQUIRE_MENTION` | When enabled, a message sent by another bot must explicitly `@thisbot` to trigger a response — a quote-reply alone is ignored, which stops two bots from replying to each other forever. Human replies are unaffected. Default: `false`. Equivalent to `telegram.bots_require_mention`. |
 | `TELEGRAM_REPLY_TO_MODE` | Reply-reference behavior: `off`, `first` (default), or `all`. Matches the Discord pattern. |
 | `TELEGRAM_IGNORED_THREADS` | Comma-separated Telegram forum topic/thread IDs where the bot never responds |
 | `TELEGRAM_PROXY` | Proxy URL for Telegram connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
@@ -635,6 +636,7 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_BUTTON_LABEL` | Postback button label (default: `Get answer`). |
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
+| `LINE_EXPIRED_TEXT` | Reply when a postback button whose cached answer is gone (expired / lost with process state) is tapped (default: `That request has expired — send your message again.`). |
 
 ### ntfy (push notifications)
 
@@ -884,8 +886,6 @@ Unset the variable or remove it from `.env` to restore normal writes (still subj
 
 | Variable | Description |
 |----------|-------------|
-| `SESSION_IDLE_MINUTES` | Reset sessions after N minutes of inactivity (default: 1440) |
-| `SESSION_RESET_HOUR` | Daily reset hour in 24h format (default: 4 = 4am) |
 | `HERMES_SESSION_ID` | **Exported automatically into every tool subprocess** Hermes spawns (`terminal`, `execute_code`, persistent shell, Docker/Singularity backends, delegated subagent runs). Set by the agent to the current session ID; user scripts called from tools can read it to correlate their output, telemetry, or side effects with the originating Hermes session. **You should not set this manually** — overriding it from a parent shell only takes effect outside an agent run, and is overwritten the moment the agent starts a session. |
 | `AI_AGENT` | **Set to `hermes-agent` by the CLI and gateway entry points** (only when not already set by an outer harness), and exported into every terminal-tool shell — including remote backends (Docker, SSH, Modal, Daytona, Singularity, Vercel). The emerging cross-agent standard for child-process attribution — generic tooling (e.g. huggingface_hub's agent detection) reads it to know it runs under an AI agent. The value matches Hermes' id in the public agent-harness registry. Don't set manually. |
 | `HERMES_AGENT` | **Set to `true` by the CLI and gateway entry points** and exported into every terminal-tool shell so child processes can detect they run inside Hermes specifically. Don't set manually. |

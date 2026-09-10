@@ -14,6 +14,10 @@ any discrete card."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 import hermes_cli.local_runtime.hardware as hw
 
 GIB = 1 << 30
@@ -183,6 +187,18 @@ def test_smi_resolver_caches_and_survives_empty_path(monkeypatch):
     assert hw._nvidia_smi_path() == "/usr/bin/nvidia-smi"
     assert hw._nvidia_smi_path() == "/usr/bin/nvidia-smi"
     assert len(calls) == 1
+
+
+@pytest.mark.linux_only
+def test_smi_resolver_uses_wsl_driver_path_when_path_is_empty(monkeypatch):
+    """WSL exposes nvidia-smi through the Windows driver directory even
+    when a service PATH cannot resolve it."""
+    wsl_smi = Path("/usr/lib/wsl/lib/nvidia-smi")
+    monkeypatch.setattr(hw, "_smi_path_cache", None)
+    monkeypatch.setattr(hw.shutil, "which", lambda name: None)
+    monkeypatch.setattr(hw.Path, "exists", lambda candidate: candidate == wsl_smi)
+
+    assert hw._nvidia_smi_path() == str(wsl_smi)
 
 
 # ── probe cache ──────────────────────────────────────────────

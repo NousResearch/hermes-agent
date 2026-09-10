@@ -4147,6 +4147,16 @@ class GatewayRunner(
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(context.source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
+            # Bind the session id too: without it the ContextVar is explicitly
+            # "" for the turn, and only the turn that constructs the AIAgent
+            # (set_current_session_id in agent_init) ever sets it — inside the
+            # executor-thread copy of that one turn's context. Every later turn
+            # on a cached agent copied the handler context where it was "",
+            # and _inject_session_context_env treats an explicitly-empty var as
+            # authoritative, so the terminal tool exported HERMES_SESSION_ID=""
+            # over the correct os.environ mirror. Compression rotations still
+            # rebind via _compress_context (#76354).
+            session_id=str(context.session_id) if context.session_id else "",
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,

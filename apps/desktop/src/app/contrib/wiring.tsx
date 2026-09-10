@@ -58,7 +58,7 @@ import {
   normalizeProfileKey,
   refreshActiveProfile
 } from '@/store/profile'
-import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
+import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -113,6 +113,7 @@ import {
   SETTINGS_ROUTE,
   syncWorkspaceRoute
 } from '../routes'
+import { SessionImportView } from '../session-import'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
@@ -600,6 +601,31 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [startSessionInWorkspace, startWorkSessionRequest])
 
+  // "New project" DRAG completion: the dialog created a project that was
+  // dropped onto a chat zone (tab-strip slot / pane edge / pane center). Open
+  // its fresh session draft exactly there — the same `openNewSessionTile`
+  // create path the new-session drags use — so the project starts, and stays,
+  // where it was dropped. Consume-once: drop the request after handling.
+  const newProjectSessionRequest = useStore($newProjectSessionRequest)
+
+  useEffect(() => {
+    if (!newProjectSessionRequest) {
+      return
+    }
+
+    const { path, placement } = newProjectSessionRequest
+
+    $newProjectSessionRequest.set(null)
+    void openNewSessionTile(placement.dir, {
+      anchor: placement.anchor,
+      before: placement.before,
+      cwd: path,
+      // Same draft-tab contract as onNewSessionSplit: a center/strip drop is
+      // an unlisted draft tab until its first turn; an edge split lists.
+      listed: placement.dir === 'center' ? false : undefined
+    })
+  }, [newProjectSessionRequest, openNewSessionTile])
+
   const composer = useComposerActions({ activeSessionId, currentCwd, requestGateway })
 
   const branchInNewChat = useCallback(
@@ -992,7 +1018,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     },
     onNavigate: selectSidebarItem,
     onNewSessionInWorkspace: path => startSessionInWorkspace(path, { openTab: true }),
-    onNewSessionSplit: dir => void openNewSessionTile(dir),
+    onNewSessionSplit: (dir, opts) =>
+      void openNewSessionTile(dir, {
+        ...opts,
+        // A CENTER drop stacks a fresh TAB: keep the existing draft-tab
+        // contract and leave it out of the sidebar until its first turn
+        // persists (same as the tab-strip "+" and the occupied-project "+").
+        // An EDGE drop SPLITS a visible pane — list it like every other split.
+        listed: dir === 'center' ? false : undefined
+      }),
     onPasteClipboardImage: opts => composer.pasteClipboardImage(opts),
     onPickFiles: () => void composer.pickContextPaths('file'),
     onPickFolders: () => void composer.pickContextPaths('folder'),
@@ -1110,20 +1144,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
-  // Pane-registered tools (preview's monitor/devtools cluster) anchor flush
-  // against the static system cluster — in the tree layout the titlebar band
-  // sits ABOVE the grid, so AppShell's pane-width anchoring doesn't apply.
-  // Count every button the static cluster actually renders: four systemTools
-  // (layout, haptics, keybinds, settings) PLUS the always-present
-  // right-sidebar toggle (see titlebar-controls.tsx). A shared width that
-  // under-counts leaves the find bar, the titlebar header padding, and the
-  // pane-cluster anchor overlapping the fifth button.
-  const SYSTEM_TOOL_COUNT = 5
-  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
-  const systemToolsWidth = titlebarToolsWidthCss(SYSTEM_TOOL_COUNT)
+  // App controls live on the left; flip and the right toggle share the right.
+  const titlebarToolsWidth = titlebarToolsWidthCss(2)
 
-  const titlebarToolsWidth =
-    paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
+  const leftToolsWidth = titlebarToolsWidthCss(
+    4 + [...leftTitlebarTools, ...rightTitlebarTools].filter(tool => !tool.hidden).length
+  )
 
   return (
     <ContribWiringContext.Provider value={api}>
@@ -1133,10 +1159,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           {
             '--titlebar-controls-left': `${controlsPos.left}px`,
             '--titlebar-controls-top': `${controlsPos.top}px`,
+            '--titlebar-controls-width': leftToolsWidth,
             '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
             '--titlebar-tools-right': titlebarToolsRight,
-            '--titlebar-tools-width': titlebarToolsWidth,
-            '--shell-preview-toolbar-gap': systemToolsWidth
+            '--titlebar-tools-width': titlebarToolsWidth
           } as CSSProperties
         }
       >
@@ -1211,6 +1237,18 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             }}
           />
         </Suspense>
+      )}
+
+      {currentView === 'session-import' && (
+        <SessionImportView
+          key={`${activeConnectionId}:${activeGatewayProfile}`}
+          onClose={closeOverlayToPreviousRoute}
+          onOpenSession={sessionId => {
+            closeOverlayToPreviousRoute()
+            openSession(sessionId, navigate, 'stack')
+          }}
+          owner={{ connectionId: activeConnectionId || 'local', profile: activeGatewayProfile }}
+        />
       )}
 
       {commandCenterOpen && (

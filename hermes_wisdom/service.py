@@ -569,6 +569,7 @@ class WisdomService:
             raise PackagePolicyError(
                 "setup requires explicit acceptance of the local telemetry and private-draft disclosure"
             )
+        checkpoint = self.store.feed_checkpoint()
         capability = self.client.capability()
         org_id = self.client.display_org_id
         if not org_id:
@@ -577,17 +578,44 @@ class WisdomService:
             )
         if not ORG_ID_RE.fullmatch(org_id):
             raise WisdomValidationError("team organization identity is malformed")
-        installation_id = self.store.existing_installation_identity()
-        if installation_id is None or self.store.active_org_id() not in {None, org_id}:
+        previous_org = self.store.active_org_id() or checkpoint["organization_id"]
+        installation_id = (
+            checkpoint["installation_id"]
+            if checkpoint["organization_id"] == org_id
+            else self.store.existing_installation_identity()
+        )
+        if installation_id is None or previous_org not in {None, org_id}:
             installation_id = "hwi_" + uuid.uuid4().hex
-        registered = self.client.register_identity(installation_id)
+        try:
+            registered = self.client.register_identity(installation_id)
+        except WisdomConflict as exc:
+            if exc.code != "identity_conflict":
+                raise
+            # A different signed-in account cannot reuse the old owner's
+            # installation. Do not treat revocation or transport errors this way.
+            installation_id = "hwi_" + uuid.uuid4().hex
+            registered = self.client.register_identity(installation_id)
+        from .account_session import resume_feed
+
+        generation = resume_feed(
+            self.store,
+            self.client,
+            org_id=org_id,
+            installation_id=installation_id,
+            generation=checkpoint["generation"],
+        )
         managed = get_skills_dir() / "_wisdom"
         # Publish the server-verified org marker before switching the local
         # ledger. A crash may temporarily select the new verified org while
         # setup asks to resume, but can never keep loading the stale org after
         # Gateway accepted the change.
-        managed_org = _write_active_org_marker(managed, org_id)
-        self.store.activate_installation_identity(installation_id, org_id)
+        with self.store.transaction() as db:
+            self.store.check_feed_generation(db, generation)
+            managed_org = _write_active_org_marker(managed, org_id)
+            self.store.activate_installation_identity(
+                installation_id, org_id, _db=db
+            )
+            db.execute("UPDATE feed_state SET resume_required=0 WHERE singleton=1")
         recovered = self.reconcile_pending_install_records()
         recovered.extend(self.consumption.recover())
         candidates = self.scan_candidates()

@@ -75,6 +75,13 @@ token expiry and temporary connection/server failures do not cancel it.
 Cached feed notices are retired on sign-out without deleting their history or
 delivery receipts. A feed response started before sign-out cannot restore those
 notices or advance the saved cursor, even after you re-verify the same team.
+Re-verifying after sign-out quietly catches up the feed before making Wisdom
+active. Announcements accumulated while signed out do not become new advice;
+published skills remain available to browse. A failed catch-up leaves the
+profile unverified, and rerunning setup resumes from the saved page. Changing
+teams or accounts uses that identity's feed scope, not the previous cursor.
+This does not remove installed skills or discard operation and delivery recovery
+records; current installation and moderation state still reconcile normally.
 
 Assessment claims are local to one profile and organization, with three-minute
 leases and three bounded attempts. Idle sessions poll at most once a minute

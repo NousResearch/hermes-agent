@@ -1343,14 +1343,16 @@ def test_org_change_switches_marker_before_local_ledger(monkeypatch, tmp_path: P
     monkeypatch.setattr(
         store,
         "activate_installation_identity",
-        lambda *_args: (_ for _ in ()).throw(OSError("injected ledger failure")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected ledger failure")),
     )
 
     with pytest.raises(OSError, match="injected ledger"):
         service.setup(disclosure_accepted=True)
 
     assert (skills / "_wisdom" / ".active_org").read_text() == "org-2\n"
-    assert store.active_org_id() == "org-1"
+    # Setup is fenced until the new ledger commit succeeds; the old team must
+    # not remain authoritative after the filesystem marker has switched.
+    assert store.active_org_id() is None
 
 
 def test_approval_requires_a_complete_review_receipt(tmp_path: Path):

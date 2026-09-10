@@ -15,7 +15,7 @@ from typing import Any, Iterator
 from hermes_constants import get_hermes_home
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def utc_now() -> str:
@@ -372,6 +372,7 @@ class WisdomStore:
                     "ALTER TABLE wisdom_organization "
                     "ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0"
                 )
+            db.execute("SAVEPOINT wisdom_feed_schema")
             feed_columns = {
                 str(row[1]) for row in db.execute("PRAGMA table_info(feed_state)")
             }
@@ -383,6 +384,24 @@ class WisdomStore:
                 "SELECT verified_org_id FROM installation_identity WHERE singleton=1"
             ).fetchone()
             active_org_id = str(active_org[0]) if active_org and active_org[0] else None
+            scope_columns = {
+                "organization_id": "TEXT",
+                "installation_id": "TEXT",
+                "resume_required": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for column, definition in scope_columns.items():
+                if column not in feed_columns:
+                    db.execute(f"ALTER TABLE feed_state ADD COLUMN {column} {definition}")
+            if any(column not in feed_columns for column in scope_columns):
+                # A persisted feed without a verified team is suspended, even
+                # on older profiles that predate generation fencing.
+                db.execute(
+                    """UPDATE feed_state SET organization_id=?,
+                    installation_id=(SELECT installation_id FROM installation_identity WHERE singleton=1),
+                    resume_required=CASE WHEN ? IS NULL THEN 1 ELSE 0 END""",
+                    (active_org_id, active_org_id),
+                )
+            db.execute("RELEASE SAVEPOINT wisdom_feed_schema")
             if active_org_id:
                 sequence_row = db.execute(
                     "SELECT COALESCE(MAX(qualification_sequence),0) FROM local_event "
@@ -1233,9 +1252,15 @@ class WisdomStore:
             )
             return installation_id
 
-    def activate_installation_identity(self, installation_id: str, org_id: str) -> None:
+    def activate_installation_identity(
+        self,
+        installation_id: str,
+        org_id: str,
+        *,
+        _db: sqlite3.Connection | None = None,
+    ) -> None:
         now = utc_now()
-        with self.transaction() as db:
+        with self.transaction() if _db is None else nullcontext(_db) as db:
             db.execute(
                 "UPDATE managed_install SET state='inactive',updated_at=? "
                 "WHERE org_id<>? AND state='active'",
@@ -1546,11 +1571,34 @@ class WisdomStore:
         return self.feed_position()[0]
 
     def feed_position(self) -> tuple[str | None, int]:
+        checkpoint = self.feed_checkpoint()
+        return checkpoint["cursor"], checkpoint["generation"]
+
+    def feed_checkpoint(self) -> dict[str, Any]:
         with self.transaction() as db:
             row = db.execute(
-                "SELECT cursor,generation FROM feed_state WHERE singleton=1"
+                "SELECT * FROM feed_state WHERE singleton=1"
             ).fetchone()
-            return (str(row[0]) if row and row[0] else None, int(row[1]) if row else 0)
+            return dict(row) if row else {
+                "cursor": None,
+                "generation": 0,
+                "organization_id": None,
+                "installation_id": None,
+                "resume_required": 0,
+            }
+
+    @staticmethod
+    def check_feed_generation(db: sqlite3.Connection, expected: int) -> None:
+        row = db.execute(
+            "SELECT generation FROM feed_state WHERE singleton=1"
+        ).fetchone()
+        if (int(row[0]) if row else 0) != expected:
+            from .client import WisdomConflict
+
+            raise WisdomConflict(
+                "Wisdom account changed while fetching the feed; sign in and retry",
+                code="account_session_changed",
+            )
 
     def persist_feed_page(
         self,
@@ -1580,16 +1628,7 @@ class WisdomStore:
         inserted = 0
         with self.transaction() as db:
             if expected_generation is not None:
-                row = db.execute(
-                    "SELECT generation FROM feed_state WHERE singleton=1"
-                ).fetchone()
-                if (int(row[0]) if row else 0) != expected_generation:
-                    from .client import WisdomConflict
-
-                    raise WisdomConflict(
-                        "Wisdom account changed while fetching the feed; sign in and retry",
-                        code="account_session_changed",
-                    )
+                self.check_feed_generation(db, expected_generation)
             for event in events:
                 kind = str(event["kind"])
                 cadence = cadences.get(

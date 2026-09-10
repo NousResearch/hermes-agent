@@ -3910,6 +3910,21 @@ def schedule_task(
 ) -> bool:
     """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
     until ``unblock_task`` re-gates it."""
+    row = conn.execute(
+        "SELECT status, current_run_id, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    has_active_claim = row["status"] == "running" and row["worker_pid"] is not None
+    if has_active_claim:
+        termination = _terminate_reclaimed_worker(row["worker_pid"], row["claim_lock"], task_id=task_id)
+        if not termination.get("terminated"):
+            _defer_reclaim_for_live_worker(
+                conn, task_id, row["claim_lock"], int(time.time()),
+                termination, reason="schedule_termination_unverified",
+            )
+            return False
     with write_txn(conn):
         params: list[Any] = [task_id]
         sql = """
@@ -4439,6 +4454,7 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
     _pid_alive,
+    _set_worker_pid,
     _terminate_reclaimed_worker,
     _worker_survived_termination,
     _worker_terminal_timeout_env,

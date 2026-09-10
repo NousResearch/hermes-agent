@@ -2535,6 +2535,37 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self._aux_context_ceiling = None
         self._base_threshold_percent, self.threshold_percent, self.threshold_tokens = self._derive_trigger(
             model, context_length, provider)
+        # Re-derive the per-route auto-raise (Codex-route gpt-5.4/5.5/5.6/Astra → 0.85,
+        # Arcee Trinity → 0.75, codex-spark → 0.70) for the new model and apply it on
+        # top of _derive_trigger's user-override resolution, so a switch TO an
+        # autoraise-eligible model raises mid-session and a switch AWAY drops back to
+        # the user's global threshold instead of keeping a stale auto-raised value
+        # (#63009). Autoraises only ever RAISE; never lower a user's higher value.
+        _autoraise_pct: float | None = None
+        try:
+            from agent.auxiliary_client import _compression_threshold_for_model
+
+            # Respect the compression.codex_gpt55_autoraise opt-out on re-derive
+            # (same read as init's _compression_threshold, evaluated per switch).
+            _autoraise_enabled = True
+            try:
+                from hermes_cli.config import load_config_readonly as _lcfg
+
+                _comp_cfg = ((_lcfg() or {}).get("compression") or {})
+                _autoraise_enabled = bool(_comp_cfg.get("codex_gpt55_autoraise", True))
+            except Exception:
+                pass
+            _autoraise_pct = _compression_threshold_for_model(
+                model, provider=provider, api_mode=api_mode,
+                allow_codex_gpt55_autoraise=_autoraise_enabled,
+            )
+        except Exception:
+            _autoraise_pct = None
+        if _autoraise_pct is not None and _autoraise_pct > self._base_threshold_percent:
+            self._base_threshold_percent = _autoraise_pct
+            self.threshold_percent = self._effective_threshold_percent(context_length, self._base_threshold_percent)
+            self.threshold_tokens = self._compute_threshold_tokens(
+                context_length, self.threshold_percent, self.max_tokens)
         self._apply_threshold_tokens_cap()
         # Reset to None so the property recomputes via the mode-aware path (not the legacy formula).
         self._tail_token_budget = None

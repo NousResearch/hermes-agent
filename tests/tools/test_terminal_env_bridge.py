@@ -388,6 +388,50 @@ def test_handoff_drops_launcher_bridged_selection_before_first_call(
         reset_hermes_home_override(launch_token)
 
 
+def test_launch_profile_unscoped_after_secondary_bridge(monkeypatch, tmp_path):
+    """#107422: in a multiplexed dashboard process the launch (primary) profile
+    runs WITHOUT a home override — its context is the process default home.
+    A secondary profile's unscoped path (agent build probe, execute_code)
+    bridges docker first; the launch profile's own tool call must re-bridge
+    from its own config instead of reading the latched docker selection."""
+    launch_home = tmp_path / "root"
+    docker_home = tmp_path / "root" / "profiles" / "web"
+    docker_home.mkdir(parents=True)
+    (launch_home / "config.yaml").write_text("terminal:\n  backend: local\n")
+    (docker_home / "config.yaml").write_text(
+        "terminal:\n  backend: docker\n  docker_image: sandbox/image:1\n"
+        "  docker_volumes:\n    - /secondary/vol:/vol\n"
+    )
+    # The launch profile has NO context-local override: its home is the
+    # process default (HERMES_HOME env -> platform default), like a launch
+    # profile in a multiplexed dashboard process.
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    # Launch-profile call first (unscoped context).
+    assert terminal_tool._get_env_config()["env_type"] == "local"
+
+    # The secondary profile's unscoped path bridges docker under its
+    # context-local override and latches it into the process env.
+    profile_token = set_hermes_home_override(str(docker_home))
+    try:
+        config = terminal_tool._get_env_config()
+    finally:
+        reset_hermes_home_override(profile_token)
+
+    assert config["env_type"] == "docker"
+    assert os.environ["TERMINAL_ENV"] == "docker"
+
+    # Back in the launch profile's unscoped context: the latched secondary
+    # selection must not stick — the launch profile resolves local again,
+    # and the secondary profile's owned image/volume selections are gone
+    # from the ambient env (the launch bridge may backfill its own defaults
+    # for omitted keys; the secondary profile's values must not survive).
+    assert terminal_tool._get_env_config()["env_type"] == "local"
+    assert os.environ["TERMINAL_ENV"] == "local"
+    assert os.environ.get("TERMINAL_DOCKER_IMAGE") != "sandbox/image:1"
+    assert "/secondary/vol" not in (os.environ.get("TERMINAL_DOCKER_VOLUMES") or "")
+
+
 def test_defaults_backfill_when_neither_config_nor_env_selects_backend():
     _write_config("{}\n")
 

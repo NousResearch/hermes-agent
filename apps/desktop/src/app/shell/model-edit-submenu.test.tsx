@@ -28,6 +28,7 @@ function renderSubmenu(opts: {
   effort?: string
   fastControl: FastControl
   isActive?: boolean
+  model?: string
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
   reasoning: boolean
@@ -42,7 +43,7 @@ function renderSubmenu(opts: {
             effort={opts.effort ?? 'medium'}
             fastControl={opts.fastControl}
             isActive={opts.isActive ?? true}
-            model="m1"
+            model={opts.model ?? 'm1'}
             onSelectModel={opts.onSelectModel ?? vi.fn()}
             onSetOptions={opts.onSetOptions}
             provider="p1"
@@ -60,6 +61,19 @@ function renderSubmenu(opts: {
 // ever writes directly again, picking an effort for a kanban card would reach
 // over and change the user's live chat.
 describe('ModelEditSubmenu reports edits without performing them', () => {
+  it('shows the unmodified model id above the options', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      model: 'cubyok/gpt-5.6-terra',
+      onSetOptions: vi.fn(),
+      reasoning: true
+    })
+
+    const rawId = screen.getByText('cubyok/gpt-5.6-terra')
+
+    expect(rawId.className).toContain('text-foreground')
+  })
+
   it('param fast: reports the toggle', () => {
     const onSetOptions = vi.fn()
     renderSubmenu({ fastControl: { kind: 'param', on: true }, onSetOptions, reasoning: false })

@@ -107,6 +107,7 @@ function ModelEditSubmenuBody({
   effort,
   fastControl,
   isActive,
+  model,
   onSelectModel,
   onSetOptions,
   reasoning
@@ -140,46 +141,53 @@ function ModelEditSubmenuBody({
   const hasFast = fastControl.kind !== 'none'
   const fastOn = fastControl.kind === 'none' ? false : fastControl.on
 
-  return !hasFast && !reasoning ? (
-    <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
-  ) : (
+  return (
     <>
-      <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
-      {showThinkingToggle ? (
-        <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-          {copy.thinking}
-          <Switch
-            checked={thinkingOn}
-            className="ml-auto"
-            onCheckedChange={checked => onSetOptions({ effort: checked ? effortValue || defaultEffort : 'none' })}
-            size="xs"
-          />
-        </DropdownMenuItem>
-      ) : null}
-      {hasFast ? (
-        <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-          {copy.fast}
-          <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
-        </DropdownMenuItem>
-      ) : null}
-      {reasoning ? (
+      <div className="truncate px-2.5 pb-1 pt-2 text-xs text-foreground" title={model}>
+        {model}
+      </div>
+      {!hasFast && !reasoning ? (
+        <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
+      ) : (
         <>
-          <DropdownMenuSeparator className="mx-0" />
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
-          <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
-            {REASONING_EFFORTS.map(value => (
-              <DropdownMenuRadioItem
-                className={dropdownMenuRow}
-                key={value}
-                onSelect={event => event.preventDefault()}
-                value={value}
-              >
-                {copy[value]}
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
+          {showThinkingToggle ? (
+            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
+              {copy.thinking}
+              <Switch
+                checked={thinkingOn}
+                className="ml-auto"
+                onCheckedChange={checked => onSetOptions({ effort: checked ? effortValue || defaultEffort : 'none' })}
+                size="xs"
+              />
+            </DropdownMenuItem>
+          ) : null}
+          {hasFast ? (
+            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
+              {copy.fast}
+              <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
+            </DropdownMenuItem>
+          ) : null}
+          {reasoning ? (
+            <>
+              <DropdownMenuSeparator className="mx-0" />
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
+              <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
+                {REASONING_EFFORTS.map(value => (
+                  <DropdownMenuRadioItem
+                    className={dropdownMenuRow}
+                    key={value}
+                    onSelect={event => event.preventDefault()}
+                    value={value}
+                  >
+                    {copy[value]}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </>
+          ) : null}
         </>
-      ) : null}
+      )}
     </>
   )
 }

@@ -1197,7 +1197,9 @@ describe('mergeFinalAssistantText', () => {
     expect(result[0]).toMatchObject({ text: 'final answer', timestamp: 12.5, type: 'text' })
   })
 
-  it('removes all text parts and appends the final text', () => {
+  it('preserves pre-tool text and appends the later final response', () => {
+    // These deltas precede the tool call: they belong to an earlier model
+    // response, not to the provisional draft of the final being settled.
     const parts = [
       { type: 'text' as const, text: 'streamed delta 1' },
       { type: 'text' as const, text: 'streamed delta 2' },
@@ -1206,8 +1208,11 @@ describe('mergeFinalAssistantText', () => {
 
     const result = mergeFinalAssistantText(parts, 'final answer')
 
-    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
-    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'final answer' })
+    expect(result.filter(p => p.type === 'text').map(p => p.text)).toEqual([
+      'streamed delta 1',
+      'streamed delta 2',
+      'final answer'
+    ])
     expect(result.some(p => p.type === 'tool-call')).toBe(true)
   })
 

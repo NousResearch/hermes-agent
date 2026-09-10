@@ -230,15 +230,33 @@ def _previous_tool_round(messages: Any) -> list:
 
 
 def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
+    """Append the steer marker as a standalone user row after the newest tool message OF THE
+    CURRENT TURN; otherwise put the text back so the post-tool-execution drain / next turn
+    delivers it later.
+
+    The newest tool message must belong to the current turn — i.e. sit AFTER the last user row.
+    On a turn's first iteration (e.g. a steer typed while an attached image is still being
+    preprocessed, before the first API call), the newest tool message is the prior turn's result,
+    which precedes the current user prompt. Inserting the steer after it would smear the correction
+    into already-persisted history ahead of the current prompt, where the turn silently ignores it
+    (#107272). So stop the scan at the current user row and re-queue instead — the steer then lands
+    as the next turn, matching the acknowledged 'arrives after the next tool call' contract rather
+    than being lost."""
     for _si in range(len(messages) - 1, -1, -1):
         _sm = messages[_si]
-        if isinstance(_sm, dict) and _sm.get("role") == "tool":
+        if not isinstance(_sm, dict):
+            continue
+        _role = _sm.get("role")
+        if _role == "tool":
             from agent.prompt_builder import steer_user_row
             messages.insert(_si + 1, steer_user_row(steer_text))
             logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
             return
+        if _role == "user":
+            # Reached the current user turn before any tool result: the current turn hasn't produced
+            # one yet, so there is nowhere in it to attach the steer. Re-queue for the next turn
+            # rather than injecting after a stale prior-turn tool result (#107272).
+            break
     from agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)
 

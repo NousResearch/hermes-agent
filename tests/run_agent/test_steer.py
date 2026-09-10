@@ -682,6 +682,35 @@ class TestPreApiCallSteerDrain:
         agent._pending_steer = _pre_api_steer
         assert agent._pending_steer == "early steer"
 
+    def test_pre_api_drain_restashes_when_newest_tool_is_from_a_prior_turn(self):
+        """A steer typed on a turn's first iteration (e.g. while an attached image is still
+        preprocessing) must NOT be attached to a prior turn's tool result that sits before the
+        current user prompt — it would land in stale history and be silently ignored (#107272).
+
+        The newest tool message here belongs to the PREVIOUS turn (before the current user row),
+        so the steer is re-queued for the next turn instead of injected."""
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+
+        agent = _bare_agent()
+        prior_tool_row = {"role": "tool", "content": "prior result", "tool_call_id": "tc0"}
+        messages = [
+            {"role": "user", "content": "earlier prompt"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "tc0", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            prior_tool_row,
+            {"role": "assistant", "content": "earlier answer"},
+            # Current turn's user prompt (image already preprocessed): no tool result yet.
+            {"role": "user", "content": "describe this image"},
+        ]
+        before = list(messages)
+        agent.steer("This resembles Markdown's # and ##.")
+        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer())
+
+        # History is untouched — nothing was smeared after the prior-turn tool result.
+        assert messages == before
+        # The steer is re-queued so the turn finalizer surfaces it as the next turn.
+        assert agent._pending_steer == "This resembles Markdown's # and ##."
 
 
 class TestSteerMarkerContract:

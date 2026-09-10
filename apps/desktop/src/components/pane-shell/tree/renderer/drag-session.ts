@@ -334,6 +334,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     if (finished) {
       return
     }
+
     finished = true
 
     if (raf) {

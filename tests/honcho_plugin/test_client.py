@@ -411,6 +411,19 @@ class TestGetHonchoClient:
 
         assert mock_honcho.call_args.kwargs["api_key"] == "explicit-local-key"
 
+    def test_sends_host_header_on_every_client(self):
+        """Every client carries the X-Honcho-Host default header: host key and Hermes version,
+        nothing per-user."""
+        from hermes_cli import __version__
+
+        cfg = HonchoClientConfig(api_key="k", workspace_id="hermes", host="hermes")
+        with patch("honcho.Honcho", return_value=MagicMock(name="Honcho")) as mock_honcho:
+            get_honcho_client(cfg)
+
+        assert mock_honcho.call_args.kwargs["default_headers"] == {
+            "X-Honcho-Host": f"hermes/{__version__}",
+        }
+
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),
         reason="honcho SDK not installed"

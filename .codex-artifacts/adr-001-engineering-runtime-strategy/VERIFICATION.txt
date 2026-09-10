@@ -1,0 +1,34 @@
+ADR-001 Final Review - Verification Record
+
+CHANGED_BRANCH=feat/engineering-foundation
+CHANGED_FIELD=ADR status and V1 codex_app_server support policy
+ORIGINAL_SHA256=D3067287EA228D253303D450DDE0FACBA4E033F005CE1A56777463669408861F
+MODIFIED_SHA256=367A58668C6637DCF71E33A0E531239209CD5C1E80D0D6EA0B52B5DA7E599BB9
+
+MODIFIED_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\adr-001-engineering-runtime-strategy\MODIFIED_FILE.md
+DIFF_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\adr-001-engineering-runtime-strategy\DIFF_FILE.patch
+VERIFICATION_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\adr-001-engineering-runtime-strategy\VERIFICATION.txt
+ROLLBACK_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\adr-001-engineering-runtime-strategy\ROLLBACK.sh
+
+BASELINE
+Command: $p='.codex-artifacts/adr-001-engineering-runtime-strategy/MODIFIED_FILE.md'; $h=(Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash; $c=Get-Content -LiteralPath $p -Raw; if($h-ne'D3067287EA228D253303D450DDE0FACBA4E033F005CE1A56777463669408861F'-or-not$c.Contains('- **Status:** Proposed')-or-not$c.Contains('若启用，只能作为明确标记的 delegated runtime')){Write-Output "BASELINE_RESULT=FAIL;SHA256=$h"; exit 1}; Write-Output "BASELINE_RESULT=PASS;STATUS=Proposed;CODEX_APP_SERVER=delegated_runtime_allowed;SHA256=$h"; exit 0
+Input: pre-edit ADR snapshot
+Literal output/result: BASELINE_RESULT=PASS;STATUS=Proposed;CODEX_APP_SERVER=delegated_runtime_allowed;SHA256=D3067287EA228D253303D450DDE0FACBA4E033F005CE1A56777463669408861F
+Exit status: 0
+
+MODIFIED
+Command: $p='docs/decisions/ADR-001-engineering-runtime-strategy.md'; $h=(Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash; $c=Get-Content -LiteralPath $p -Raw; $ok=$c.Contains('- **Status:** Accepted')-and$c.Contains('`codex_app_server` 不受 V1 Engineering Surface 支持。')-and$c.Contains('V1 不允许把 `codex_app_server` 作为 delegated runtime。')-and$c.Contains('delegated `codex_app_server` integration 仅作为延期的未来可能性保留')-and-not$c.Contains('若启用，只能作为明确标记的 delegated runtime'); if(-not$ok){Write-Output "MODIFIED_RESULT=FAIL;SHA256=$h"; exit 1}; Write-Output "MODIFIED_RESULT=PASS;STATUS=Accepted;CODEX_APP_SERVER=unsupported_not_delegated_deferred;SHA256=$h"; exit 0
+Input: docs/decisions/ADR-001-engineering-runtime-strategy.md
+Literal output/result: MODIFIED_RESULT=PASS;STATUS=Accepted;CODEX_APP_SERVER=unsupported_not_delegated_deferred;SHA256=367A58668C6637DCF71E33A0E531239209CD5C1E80D0D6EA0B52B5DA7E599BB9
+Exit status: 0
+
+ROLLBACK
+Command: & 'C:\Program Files\Git\bin\bash.exe' -lc 'set -euo pipefail; root=.codex-artifacts/adr-001-engineering-runtime-strategy/rollback-test; mkdir -p "$root/docs/decisions"; cp docs/decisions/ADR-001-engineering-runtime-strategy.md "$root/docs/decisions/ADR-001-engineering-runtime-strategy.md"; chmod +x .codex-artifacts/adr-001-engineering-runtime-strategy/ROLLBACK.sh; ./.codex-artifacts/adr-001-engineering-runtime-strategy/ROLLBACK.sh "$root"; actual=$(sha256sum "$root/docs/decisions/ADR-001-engineering-runtime-strategy.md" | cut -d" " -f1 | tr "[:lower:]" "[:upper:]"); expected=D3067287EA228D253303D450DDE0FACBA4E033F005CE1A56777463669408861F; if [[ "$actual" != "$expected" ]]; then printf "ROLLBACK_RESTORED=FAIL;SHA256=%s\n" "$actual"; exit 1; fi; printf "ROLLBACK_RESTORED=PASS;STATUS=Proposed;CODEX_APP_SERVER=delegated_runtime_allowed;SHA256=%s\n" "$actual"'; exit $LASTEXITCODE
+Input: .codex-artifacts/adr-001-engineering-runtime-strategy/rollback-test/docs/decisions/ADR-001-engineering-runtime-strategy.md (separate copy)
+Literal output/result: ROLLBACK_RESULT=restored:.codex-artifacts/adr-001-engineering-runtime-strategy/rollback-test/docs/decisions/ADR-001-engineering-runtime-strategy.md
+Literal output/result: ROLLBACK_RESTORED=PASS;STATUS=Proposed;CODEX_APP_SERVER=delegated_runtime_allowed;SHA256=D3067287EA228D253303D450DDE0FACBA4E033F005CE1A56777463669408861F
+Exit status: 0
+Restored behavior/status: the rollback copy restored Status=Proposed and the prior codex_app_server delegated-runtime allowance; the requested target and MODIFIED_FILE remain changed.
+
+TEST_POLICY
+Tests/builds/lint: NOT RUN (documentation-only change; diff inspection only).

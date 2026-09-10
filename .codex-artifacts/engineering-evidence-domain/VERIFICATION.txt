@@ -1,0 +1,46 @@
+Engineering Evidence Domain - Verification Record
+
+CHANGED_BRANCH=feat/engineering-foundation
+CHANGED_FIELD=Hermes-independent Engineering Evidence domain model
+ORIGINAL_SHA256=ABSENT
+MODIFIED_SHA256=D7F83D9DF63A0252008DD755B497C19A700EE4B594A32FCA892A62922238A8C7
+
+MODIFIED_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\engineering-evidence-domain\MODIFIED_FILE.py
+DIFF_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\engineering-evidence-domain\DIFF_FILE.patch
+VERIFICATION_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\engineering-evidence-domain\VERIFICATION.txt
+ROLLBACK_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\engineering-evidence-domain\ROLLBACK.sh
+
+BASELINE
+Command: & 'C:\Program Files\Git\bin\bash.exe' -lc 'HERMES_PYTHON=/c/Users/LENOVO/AppData/Local/Temp/hermes-engineering-agent-pytest-venv/Scripts/python.exe scripts/run_tests.sh tests/engineering/domain/test_workflow.py'
+Input: tests/engineering/domain/test_workflow.py before Evidence changes
+Literal output/result: === Summary: 1 files, 15 tests passed, 0 failed (100% complete) in 2.7s (32 workers) ===
+Exit status: 0
+
+MODIFIED EVIDENCE TEST
+Command: & 'C:\Program Files\Git\bin\bash.exe' -lc 'HERMES_PYTHON=/c/Users/LENOVO/AppData/Local/Temp/hermes-engineering-agent-pytest-venv/Scripts/python.exe scripts/run_tests.sh tests/engineering/domain/test_evidence.py'
+Input: tests/engineering/domain/test_evidence.py
+Literal output/result: === Summary: 1 files, 22 tests passed, 0 failed (100% complete) in 1.4s (32 workers) ===
+Exit status: 0
+
+MODIFIED WORKFLOW REGRESSION TEST
+Command: & 'C:\Program Files\Git\bin\bash.exe' -lc 'HERMES_PYTHON=/c/Users/LENOVO/AppData/Local/Temp/hermes-engineering-agent-pytest-venv/Scripts/python.exe scripts/run_tests.sh tests/engineering/domain/test_workflow.py'
+Input: tests/engineering/domain/test_workflow.py after Evidence changes
+Literal output/result: === Summary: 1 files, 15 tests passed, 0 failed (100% complete) in 1.2s (32 workers) ===
+Exit status: 0
+
+STATIC REVIEW
+Input: engineering/domain/__init__.py; engineering/domain/evidence.py; tests/engineering/domain/test_evidence.py
+Literal output/result: FORBIDDEN_RUNTIME_OR_EXECUTION_REFERENCES=0
+Literal output/result: DIFF_CHECK=PASS;FILES=3
+Exit status: 0
+
+ROLLBACK
+Command: & 'C:\Program Files\Git\bin\bash.exe' -lc 'set -euo pipefail; root=.codex-artifacts/engineering-evidence-domain/rollback-test; mkdir -p "$root/engineering/domain" "$root/tests/engineering/domain"; cp engineering/domain/__init__.py "$root/engineering/domain/__init__.py"; cp engineering/domain/evidence.py "$root/engineering/domain/evidence.py"; cp tests/engineering/domain/test_evidence.py "$root/tests/engineering/domain/test_evidence.py"; chmod +x .codex-artifacts/engineering-evidence-domain/ROLLBACK.sh; ./.codex-artifacts/engineering-evidence-domain/ROLLBACK.sh "$root"; git show HEAD:engineering/domain/__init__.py > "$root/expected-domain-init.py"; if ! cmp -s "$root/expected-domain-init.py" "$root/engineering/domain/__init__.py" || [[ -e "$root/engineering/domain/evidence.py" ]] || [[ -e "$root/tests/engineering/domain/test_evidence.py" ]]; then printf "ROLLBACK_RESTORED=FAIL\n"; exit 1; fi; rm -- "$root/expected-domain-init.py"; printf "ROLLBACK_RESTORED=PASS;DOMAIN_INIT=HEAD;NEW_FILES=ABSENT\n"'; exit $LASTEXITCODE
+Input: .codex-artifacts/engineering-evidence-domain/rollback-test (separate copy)
+Literal output/result: ROLLBACK_RESULT=restored_evidence_domain:.codex-artifacts/engineering-evidence-domain/rollback-test
+Literal output/result: ROLLBACK_RESTORED=PASS;DOMAIN_INIT=HEAD;NEW_FILES=ABSENT
+Exit status: 0
+Restored behavior/status: the rollback copy restored engineering/domain/__init__.py to HEAD and removed Evidence source/tests; the requested source and MODIFIED_FILE remain changed.
+
+TEST_POLICY
+Only the focused Evidence test file and existing workflow regression test file were run. No broad suite, build, lint, persistence, orchestrator, plugin, or Hermes runtime checks were added.

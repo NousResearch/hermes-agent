@@ -26,6 +26,23 @@ The SQLite database stores:
 - Timestamps (started_at, ended_at)
 - Parent session ID (for compression-triggered session splitting)
 
+### Authenticated gateway session ownership
+
+Sessions created through the canonical gateway are owned by the authenticated
+identity, not its display name. Dashboard identities include the auth provider,
+verified OAuth issuer (when present), and subject. A password account and an OAuth
+account with the same subject do not share ownership; changing OAuth issuers also
+changes the owner. HTTP session mutations and WebSocket controls use the same key.
+Reconnects and daemon restarts retain creation and mutation retry receipts for the
+same identity. Private native bootstrap identities keep their existing owner keys
+and session IDs.
+
+Older remote sessions whose receipts contain only a bare subject cannot establish
+which provider owned them. They remain stored but are not automatically assigned to
+the first authenticated account requesting them. This is not a change to the
+personal dashboard's general operator permissions or a guarantee of isolation for
+all historical messaging sessions.
+
 ### What Counts Toward Context
 
 Hermes stores session history so it can resume conversations, but it does not

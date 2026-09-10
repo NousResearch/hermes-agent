@@ -79,7 +79,9 @@ def _session_mutation_context(request, profile):
     if native is not None:
         subject = native['subject']
     elif session is not None:
-        subject = session.user_id
+        from gateway.session_identity import authenticated_subject
+        subject = authenticated_subject({"user_id": session.user_id,
+            "provider": session.provider, "issuer": session.issuer})
     elif not getattr(request.app.state, 'auth_required', False) and _has_valid_session_token(request):
         subject = 'dashboard-token'
     else:

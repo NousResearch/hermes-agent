@@ -20,7 +20,8 @@ class AuthorityConnection:
         if (not identity.get('user_id')
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()
-        self.actor = Principal(str(identity.get('user_id') or 'unbound'),
+        from gateway.session_identity import authenticated_subject
+        self.actor = Principal(authenticated_subject(identity),
                                identity.get('profile_id', authority.profile_id),
                                capabilities, uuid.uuid4().hex)
         self.subscriptions = {}

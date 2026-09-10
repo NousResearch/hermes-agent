@@ -263,12 +263,27 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
             result = await list_method()
         else:
             # mcp 2.0 takes params=PaginatedRequestParams, 1.x takes cursor=.
+            # Inspect before awaiting: an internal TypeError is not a signature mismatch.
+            import inspect
+
             try:
+                signature = inspect.signature(list_method)
+            except (TypeError, ValueError):
+                accepts_params = True  # Opaque callables use the current SDK convention.
+            else:
+                accepts_params = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    or (p.name == "params" and p.kind != inspect.Parameter.POSITIONAL_ONLY)
+                    for p in signature.parameters.values()
+                )
+            if accepts_params:
                 import mcp.types as _types  # late: keeps the SDK import lazy
                 _params_cls = getattr(_types, "PaginatedRequestParams", None)
-                result = await (list_method(params=_params_cls(cursor=cursor)) if _params_cls is not None
-                                else list_method(cursor=cursor))
-            except TypeError:
+                if _params_cls is not None:
+                    result = await list_method(params=_params_cls(cursor=cursor))
+                else:
+                    result = await list_method(cursor=cursor)
+            else:
                 result = await list_method(cursor=cursor)
         if cache_meta_out is not None and not items:
             for key, snake, camel in (("ttl_ms", "ttl_ms", "ttlMs"), ("cache_scope", "cache_scope", "cacheScope")):
@@ -386,6 +401,9 @@ _servers: Dict[str, MCPServerTask] = {}
 # Profile registry scope per live connection (None outside multiplex) so a multiplexed
 # /reload-mcp tears down only its own profile's servers.
 _server_scope_keys: Dict[str, Optional[str]] = {}
+# Registry scopes that have adopted a live server connection. The owning scope above remains
+# authoritative for connection teardown; this set preserves visibility for shared connections.
+_server_tool_scopes: Dict[str, set] = {}
 _server_connecting: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
 # Lazy startup: servers registered from the schema cache without connecting; popped on
@@ -610,6 +628,14 @@ def _server_registry_scope(name: str) -> Optional[str]:
     if name in _server_scope_keys:
         return _server_scope_keys[name]
     return _mcp_registry_scope()
+
+
+def _server_visible_in_scope(name: str, scope: Optional[str]) -> bool:
+    """Whether a live server is visible from ``scope`` without changing its teardown owner."""
+    if scope is None:
+        return True
+    return (_server_scope_keys.get(name) == scope
+            or scope in _server_tool_scopes.get(name, ()))
 
 
 # Cross-process discovery guard: advisory file lock so gateway + CLI + TUI don't all discover.

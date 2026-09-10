@@ -913,6 +913,8 @@ test('spawnRemoteDashboard always spawns serve (legacy dashboard path removed)',
 test('READY_RE accepts both serve and dashboard sentinels', () => {
   assert.equal(READY_RE.exec('HERMES_BACKEND_READY port=4321')?.[1], '4321')
   assert.equal(READY_RE.exec('HERMES_DASHBOARD_READY port=8765')?.[1], '8765')
+  // The remote log is `>> log 2>&1`, so a stderr chunk without a newline can be spliced onto the sentinel.
+  assert.equal(READY_RE.exec('INFO  Started server process [4711]HERMES_BACKEND_READY port=65238')?.[1], '65238')
 })
 
 test('spawnRemoteDashboard rejects when no pid is returned', async () => {
@@ -997,7 +999,14 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
   ])
 
-  const result = await connect(connectDeps(ssh, { adoptServedToken: async () => 'the-served-token' }))
+  const result = await connect(
+    connectDeps(ssh, {
+      adoptServedToken: async () => 'the-served-token',
+      platform: { os: 'Linux', arch: 'x86_64' }
+    })
+  )
+
+  assert.equal(ssh.calls.filter(command => command === 'uname -s; uname -m').length, 0)
   assert.equal(result.reused, false)
   assert.equal(result.remotePort, 51999)
   assert.equal(result.localPort, 50001)

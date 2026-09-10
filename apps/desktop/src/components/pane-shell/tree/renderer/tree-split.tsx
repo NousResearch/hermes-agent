@@ -87,7 +87,21 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
   return useSyncExternalStore(cb => $paneStates.listen(cb), snapshot, snapshot)
 }
 
-export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boolean; rootRow?: boolean }) {
+export function TreeSplit({
+  node,
+  root,
+  rootRow,
+  topEdge = false,
+  leftEdge = false,
+  rightEdge = false
+}: {
+  node: SplitNode
+  root?: boolean
+  rootRow?: boolean
+  topEdge?: boolean
+  leftEdge?: boolean
+  rightEdge?: boolean
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
@@ -720,10 +734,13 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
             )}
             {!narrowCollapsed && (
               <TreeNode
+                leftEdge={leftEdge && (!horizontal || i === visibleOrder[0])}
                 node={child}
                 parentAxis={axis}
                 railSide={horizontal ? railSideFor(i) : undefined}
+                rightEdge={rightEdge && (!horizontal || i === visibleOrder[visibleOrder.length - 1])}
                 rootRow={rootRow || childRootRow(child)}
+                topEdge={topEdge && (horizontal || i === visibleOrder[0])}
               />
             )}
           </div>

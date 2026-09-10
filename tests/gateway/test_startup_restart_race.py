@@ -109,7 +109,7 @@ def make_startup_runner(tmp_path):
     async def no_op_watcher(*args, **kwargs):
         await asyncio.Event().wait()
 
-    runner._session_expiry_watcher = no_op_watcher
+    runner._session_housekeeping_watcher = no_op_watcher
     runner._platform_reconnect_watcher = no_op_watcher
     runner._run_process_watcher = no_op_watcher
     runner._safe_adapter_disconnect = gateway_run.GatewayRunner._safe_adapter_disconnect.__get__(

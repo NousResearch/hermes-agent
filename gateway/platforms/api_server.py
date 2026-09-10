@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
@@ -820,6 +820,99 @@ _MEDIA_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".webp": "image/webp", ".bmp": "image/bmp"}
 _MEDIA_IMG_EXT = set(_MEDIA_MIME)
 _MEDIA_DATA_URL_MAX_BYTES = 5 * 1024 * 1024  # skip images larger than 5MB
+
+
+_MEDIA_HOLDBACK_WORD = "MEDIA"
+# How much text may accumulate after a bare "MEDIA" sighting before giving up
+# on it becoming a real tag and releasing it as plain text. Generous enough
+# for any real MEDIA:<path> (paths are rarely anywhere near this long), small
+# enough that an ordinary prose mention of the word "media" doesn't visibly
+# stall a live stream for long.
+_MEDIA_HOLDBACK_CAP = 400
+
+
+class StreamingMediaTagResolver:
+    """Buffers streamed text so a ``MEDIA:<path>`` tag is never split across
+    two delta chunks, then resolves completed tags to inline data URLs.
+
+    Real per-token LLM streaming can (and does) land a ``MEDIA:`` tag's
+    characters across several separate delta chunks. ``_resolve_media_to_data_urls``
+    only recognizes a COMPLETE tag, so calling it on each raw delta
+    independently -- what every SSE/streaming call site in this file did
+    before this class existed -- lets a split tag pass through untouched:
+    confirmed in production (2026-07-28) as literal ``MEDIA:/path...`` text
+    reaching a live client instead of an image, across every streaming
+    endpoint in this module (only the non-streaming responses ever called
+    the resolver).
+
+    Usage: call :meth:`feed` with each incoming delta and emit whatever it
+    returns (may be empty -- text is being held back pending more input);
+    call :meth:`flush` once at stream end and emit its (possibly empty)
+    return value before closing.
+    """
+
+    __slots__ = ("_pending",)
+
+    def __init__(self) -> None:
+        self._pending: str = ""
+
+    def feed(self, text: str) -> str:
+        """Feed one delta chunk; return the text now safe to emit (resolved)."""
+        if not text:
+            return ""
+        self._pending += text
+        safe, self._pending = self._split_safe_boundary(self._pending)
+        return _resolve_media_to_data_urls(safe) if safe else ""
+
+    def flush(self) -> str:
+        """Release and resolve whatever is still held back (stream end)."""
+        if not self._pending:
+            return ""
+        remainder = self._pending
+        self._pending = ""
+        return _resolve_media_to_data_urls(remainder)
+
+    @staticmethod
+    def _split_safe_boundary(buffer: str) -> Tuple[str, str]:
+        """Split *buffer* into (safe_to_emit, held_back).
+
+        Anchored on "MEDIA:" -- WITH the colon, not the bare word. An
+        earlier version searched for bare "MEDIA" and broke on exactly the
+        realistic case this whole class exists for: a delivered path
+        containing the substring "media" anywhere in a component (a
+        directory or filename like ".../social_media_post.png", or even a
+        test fixture's own tempdir name) rfind()-matched THAT occurrence
+        instead of the real tag start, releasing part of the actual
+        "MEDIA:<path>" tag as unresolved plain text. The colon is what makes
+        a tag start unambiguous -- "media" as an ordinary word/path
+        component is never immediately followed by ":" in real text.
+
+        Falls back to holding a trailing partial prefix of the literal
+        string "MEDIA:" (e.g. buffer ending in "...see ME" -- next chunk
+        might complete it) only when no confirmed "MEDIA:" exists yet.
+        Bounded by ``_MEDIA_HOLDBACK_CAP`` so a "MEDIA:" that never resolves
+        to a valid tag doesn't hold the stream hostage -- matches the
+        existing design principle elsewhere in this file that validation,
+        not a length guess, is the oracle for whether a tag is real: once
+        released past the cap, ``_resolve_media_to_data_urls`` still leaves
+        a genuinely invalid/nonexistent path as visible plain text.
+        """
+        upper = buffer.upper()
+        idx = upper.rfind(_MEDIA_HOLDBACK_WORD + ":")
+        if idx != -1:
+            tail = buffer[idx:]
+            if len(tail) > _MEDIA_HOLDBACK_CAP:
+                return buffer, ""
+            return buffer[:idx], tail
+        # No confirmed "MEDIA:" yet. Check only the buffer's TAIL (not any
+        # mid-buffer occurrence, which is just a word/path component, e.g.
+        # "social_media_post.png") for a partial prefix of "MEDIA:" that the
+        # next chunk could still complete.
+        word = _MEDIA_HOLDBACK_WORD
+        for n in range(min(len(word), len(buffer)), 0, -1):
+            if upper.endswith(word[:n]):
+                return buffer[:-n], buffer[-n:]
+        return buffer, ""
 
 
 def _resolve_media_to_data_urls(text: str) -> str:
@@ -3117,9 +3210,34 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._set_run_status(
             run_id, "queued", session_id=session_id, model=ctx["body"].get("model", self._model_name))
 
+        # Buffers raw deltas so a MEDIA:<path> tag split across chunk
+        # boundaries still resolves to an inline data URL instead of leaking
+        # as literal text to a client rendering deltas live -- the eventual
+        # "assistant.completed" event below already carries the fully
+        # resolved text, but a client that renders each delta as it arrives
+        # (the common UX pattern this event stream exists for) would
+        # otherwise see the raw tag flash by first. See
+        # StreamingMediaTagResolver's docstring.
+        _delta_media_resolver = StreamingMediaTagResolver()
+
         def _delta(delta: str) -> None:
             if delta:
-                events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
+                safe_text = _delta_media_resolver.feed(delta)
+                if safe_text:
+                    events.enqueue("assistant.delta", {"message_id": message_id, "delta": safe_text})
+
+        def _flush_delta_media_resolver() -> None:
+            """Emit whatever the MEDIA-tag resolver is still holding back.
+
+            Idempotent -- ``flush()`` clears its own buffer, so a second call
+            on an already-flushed path is a no-op returning "".
+            """
+            try:
+                remainder = _delta_media_resolver.flush()
+            except Exception:
+                return
+            if remainder:
+                events.enqueue("assistant.delta", {"message_id": message_id, "delta": remainder})
 
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
@@ -3138,6 +3256,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
+                # Release any MEDIA-tag holdback before the terminal event.
+                # feed() retains all text from the last "MEDIA:" onward, so
+                # failing without flushing silently swallows text this stream
+                # used to deliver (raw, but delivered).
+                _flush_delta_media_resolver()
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3172,6 +3295,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             finally:
                 self._active_run_agents.pop(run_id, None)
                 self._release_run_owner_if_forgotten(run_id)
+                # Safety net for any terminal path that reaches neither the
+                # success flush nor the except above -- notably cancellation.
+                # Must precede the close sentinel. Idempotent, so this is a
+                # no-op on paths that already flushed.
+                _flush_delta_media_resolver()
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 

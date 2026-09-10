@@ -360,7 +360,7 @@ export const opsCommands: SlashCommand[] = [
 
               const rows: [string, string][] = entries.map(e => {
                 const ts = e.finished_at ? new Date(e.finished_at * 1000).toLocaleString() : '?'
-                const label = e.label || `${e.count} subagents`
+                const label = e.label || `${e.count} subagent${e.count === 1 ? '' : 's'}`
 
                 return [`${ts} · ${e.count}×`, `${label}\n  ${e.path}`]
               })

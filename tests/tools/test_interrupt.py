@@ -1,6 +1,6 @@
 """Tests for the interrupt system.
 
-Run with: python -m pytest tests/test_interrupt.py -v
+Run with: python -m pytest tests/tools/test_interrupt.py -v
 """
 
 import queue

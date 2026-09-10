@@ -19,6 +19,13 @@ const MAX_WIDTH = 90
 
 type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
+type ModelOptionsRequestParams = {
+  explicit_only?: true
+  include_unconfigured?: true
+  refresh?: true
+  session_id?: string
+}
+
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
 export function providerIndexAfterClearingFilter(
@@ -30,6 +37,22 @@ export function providerIndexAfterClearingFilter(
   }
 
   return providerRows.findIndex(row => row.provider.slug === provider.slug)
+}
+
+// The TUI picker defaults to the full provider universe with setup
+// affordances ("paste KEY to activate"), so it opts into unconfigured
+// rows — the backend defaults to the configured subset for desktop chat
+// pickers (#56974). ^a flips to that same explicit-providers subset.
+export function modelOptionsRequestParams(
+  sessionId: string | null,
+  initialRefresh: boolean,
+  hideUnconfigured: boolean
+): ModelOptionsRequestParams {
+  return {
+    ...(sessionId ? { session_id: sessionId } : {}),
+    ...(initialRefresh ? { refresh: true } : {}),
+    ...(hideUnconfigured ? { explicit_only: true } : { include_unconfigured: true })
+  }
 }
 
 export function ModelPicker({
@@ -55,6 +78,7 @@ export function ModelPicker({
   const [keyError, setKeyError] = useState('')
   // Type-to-filter query, scoped per stage (cleared on stage change).
   const [filter, setFilter] = useState('')
+  const [hideUnconfigured, setHideUnconfigured] = useState(false)
 
   const { stdout } = useStdout()
   // Pin the picker to a stable width so the FloatBox parent (which shrinks-
@@ -66,16 +90,18 @@ export function ModelPicker({
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
-    gw.request<ModelOptionsResponse>('model.options', {
-      ...(sessionId ? { session_id: sessionId } : {}),
-      ...(initialRefresh ? { refresh: true } : {}),
-      // The TUI picker shows the full provider universe with setup
-      // affordances ("paste KEY to activate"), so opt into unconfigured
-      // rows — the backend now defaults to the configured subset for
-      // desktop chat pickers (#56974).
-      include_unconfigured: true
-    })
+    let cancelled = false
+
+    setLoading(true)
+    gw.request<ModelOptionsResponse>(
+      'model.options',
+      modelOptionsRequestParams(sessionId, initialRefresh, hideUnconfigured)
+    )
       .then(raw => {
+        if (cancelled) {
+          return
+        }
+
         const r = asRpcResult<ModelOptionsResponse>(raw)
 
         if (!r) {
@@ -100,10 +126,18 @@ export function ModelPicker({
         setLoading(false)
       })
       .catch((e: unknown) => {
+        if (cancelled) {
+          return
+        }
+
         setErr(rpcErrorMessage(e))
         setLoading(false)
       })
-  }, [gw, initialRefresh, sessionId])
+
+    return () => {
+      cancelled = true
+    }
+  }, [gw, hideUnconfigured, initialRefresh, sessionId])
 
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
@@ -434,6 +468,14 @@ export function ModelPicker({
       return
     }
 
+    if (key.ctrl && ch === 'a' && stage === 'provider') {
+      setHideUnconfigured(v => !v)
+      setFilter('')
+      setProviderIdx(0)
+
+      return
+    }
+
     // Any other printable single character extends the filter.
     if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
       setFilter(v => v + ch)
@@ -563,6 +605,8 @@ export function ModelPicker({
 
     const { items, offset } = windowItems(rows, providerIdx, VISIBLE)
     const noMatches = !!filter.trim() && rows.length === 0
+    const providerToggleHint = hideUnconfigured ? '^a show all' : '^a hide unconfigured'
+    const providerOverlayHint = `↑/↓ select · Enter choose · ^d disconnect · ${providerToggleHint} · Esc clear/back · q close`
 
     return (
       <Box flexDirection="column" width={width}>
@@ -624,7 +668,7 @@ export function ModelPicker({
           persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
           {allowPersistGlobal ? ' · ^g toggle' : ' only'}
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter choose · ^d disconnect · Esc clear/back · q close</OverlayHint>
+        <OverlayHint t={t}>{providerOverlayHint}</OverlayHint>
       </Box>
     )
   }

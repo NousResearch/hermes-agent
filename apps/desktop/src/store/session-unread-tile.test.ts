@@ -63,7 +63,10 @@ describe('completed-unread dot follows the focused session', () => {
     return { finishTurn, session, tree }
   }
 
-  it('clears the dot when an already-open tile is fronted', async () => {
+  // First test in the file pays jsdom env init + full module transform, which
+  // hit the 15s file budget twice under CI load. The wider deadline only
+  // absorbs a starved runner — the body itself is synchronous.
+  it('clears the dot when an already-open tile is fronted', { timeout: 30_000 }, async () => {
     const { finishTurn, session, tree } = await setup()
 
     tree.noteActiveTreeGroup('grp-main')

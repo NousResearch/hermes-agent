@@ -5,6 +5,14 @@ import { translateNow } from '@/i18n'
 
 export interface DesktopBootState extends DesktopBootProgress {
   visible: boolean
+  /**
+   * Machine-readable failure kind for renderer-side boot failures. `undefined`
+   * for main-process failures (which never set it). 'ipc-bridge' marks the
+   * dead-preload state (#92927): every recovery action that round-trips
+   * through window.hermesDesktop is a silent no-op there, so the overlay must
+   * swap to reload + repair copy instead of the bridge-dependent buttons.
+   */
+  errorKind?: 'ipc-bridge' | (string & {})
 }
 
 const INITIAL_BOOT_STATE: DesktopBootState = {
@@ -37,10 +45,16 @@ export function applyDesktopBootProgress(progress: DesktopBootProgress) {
   // boot failure — failDesktopBoot is terminal for this boot cycle.
   const error = progress.error ?? (current.running ? null : current.error)
 
+  // The stable main-process failure code (see DesktopBootProgress.errorCode)
+  // latches exactly like `error`: cleared by progress updates while running,
+  // preserved after a terminal failure so the overlay keeps its guidance.
+  const errorCode = progress.errorCode ?? (current.running ? null : current.errorCode)
+
   $desktopBoot.set({
     ...current,
     ...progress,
     error,
+    errorCode,
     progress: mergedProgress,
     visible: progress.running || mergedProgress < 100 || Boolean(error)
   })
@@ -79,6 +93,9 @@ export function resumeDesktopBootForRetry(message: string) {
   $desktopBoot.set({
     ...current,
     error: null,
+    // Lifting the error for the bounded retry lifts its code too.
+    errorCode: undefined,
+    errorKind: undefined,
     message,
     phase: 'renderer.boot.retry',
     running: true,
@@ -92,6 +109,9 @@ export function completeDesktopBoot(message = translateNow('boot.ready')) {
   $desktopBoot.set({
     ...current,
     error: null,
+    // The failure code latches with `error`; a completed boot clears both.
+    errorCode: undefined,
+    errorKind: undefined,
     message,
     phase: 'renderer.ready',
     progress: 100,
@@ -101,11 +121,15 @@ export function completeDesktopBoot(message = translateNow('boot.ready')) {
   })
 }
 
-export function failDesktopBoot(message: string) {
+export function failDesktopBoot(message: string, errorKind?: DesktopBootState['errorKind']) {
   const current = $desktopBoot.get()
   $desktopBoot.set({
     ...current,
     error: message,
+    // A renderer-side failure has no main-process code; drop any stale one so
+    // the overlay can't key a new failure on an old classification.
+    errorCode: undefined,
+    errorKind,
     message: translateNow('boot.desktopBootFailedWithMessage', message),
     phase: 'renderer.error',
     progress: clampProgress(current.progress),

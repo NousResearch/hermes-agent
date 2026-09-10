@@ -134,6 +134,15 @@ export const en: Translations = {
       back: 'Back',
       openLogs: 'Open logs',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
+      ipcBridgeTitle: 'Desktop IPC bridge is unavailable',
+      ipcBridgeDescription:
+        "The desktop's IPC bridge failed to load — usually the app bundle was left torn by an interrupted update. Restart Hermes; if it persists, repair the install.",
+      ipcBridgeHint:
+        'Restart Hermes (Retry reloads the window). If the bridge is still unavailable, repair the install from a terminal: run hermes desktop --force-build, or re-run hermes update.',
+      rpcProbeFailedHint:
+        'The install may be broken by an interrupted update — repair it from a terminal: run hermes desktop --force-build, or re-run hermes update.',
+      rpcProbeUnavailableHint:
+        'This runtime cannot open a WebSocket to verify the backend. Restart Hermes; if it persists, the runtime is missing WebSocket support.',
       remoteSignInHint: signInLabel =>
         `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
       signOutAndSignIn: 'Sign out & sign in',

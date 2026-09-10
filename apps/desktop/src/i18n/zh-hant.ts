@@ -131,6 +131,11 @@ export const zhHant = defineLocale({
       back: '返回',
       openLogs: '開啟記錄',
       repairHint: '修復會重新執行安裝程式，在新機器上可能需要幾分鐘。',
+      ipcBridgeTitle: '桌面 IPC 橋接不可用',
+      ipcBridgeDescription: '桌面 IPC 橋接載入失敗——通常是中斷的更新導致應用程式套件損壞。請重新啟動 Hermes；若仍失敗，請修復安裝。',
+      ipcBridgeHint: '重新啟動 Hermes（重試會重新載入視窗）。若橋接仍不可用，請在終端機中修復安裝：執行 hermes desktop --force-build，或重新執行 hermes update。',
+      rpcProbeFailedHint: '安裝可能因更新中斷而損壞——請在終端機中修復：執行 hermes desktop --force-build，或重新執行 hermes update。',
+      rpcProbeUnavailableHint: '目前執行環境無法開啟 WebSocket 以驗證後端。請重新啟動 Hermes；若問題持續，表示執行環境缺少 WebSocket 支援。',
       remoteSignInHint: signInLabel =>
         `先登出已儲存的遠端瀏覽器工作階段，然後開啟${signInLabel}。使用本機閘道可切換至內建後端。`,
       signOutAndSignIn: '登出並重新登入',

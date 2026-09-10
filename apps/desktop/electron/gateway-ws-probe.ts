@@ -120,6 +120,13 @@ function probeGatewayWebSocket<T>(
       }
 
       opened = true
+      // The socket opened: the connect deadline has done its job. Disarm it
+      // so the post-upgrade grace window (or a slow frame) can't be cut
+      // short by a connect timer that outlives the handshake it guarded.
+      if (connectTimer !== null) {
+        clearTimeout(connectTimer)
+        connectTimer = null
+      }
       // Upgrade accepted. Give the server a brief window to reject the
       // credential post-handshake (early close) before declaring success.
       graceTimer = setTimeout(() => {

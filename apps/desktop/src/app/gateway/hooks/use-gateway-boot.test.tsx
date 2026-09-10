@@ -1940,3 +1940,67 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 })
+
+describe('useGatewayBoot dead IPC bridge (#92927)', () => {
+  const RETRY_KEY = 'hermes.desktop.ipc-bridge-reload-attempt'
+
+  function removeBridge() {
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  }
+
+  function stubReload() {
+    const reload = vi.fn()
+    // jsdom's Location#reload is non-configurable, so shadow window.location
+    // itself instead of redefining the method.
+    const location = { ...window.location, reload }
+    Object.defineProperty(window, 'location', { configurable: true, value: location })
+
+    return reload
+  }
+
+  beforeEach(() => {
+    window.localStorage.removeItem(RETRY_KEY)
+  })
+
+  it('re-arms the bridge once with a reload when window.hermesDesktop never loaded', async () => {
+    removeBridge()
+    const reload = stubReload()
+
+    render(<Harness />)
+    await flushAsync()
+
+    // One bounded re-arm attempt — the only lever a bridgeless renderer has —
+    // then stop: no boot error yet, the reload will re-run preload.
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(window.localStorage.getItem(RETRY_KEY)).toBe('1')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('fails boot with the ipc-bridge kind when the reload re-arm was already spent', async () => {
+    window.localStorage.setItem(RETRY_KEY, '1')
+    removeBridge()
+    const reload = stubReload()
+
+    render(<Harness />)
+    await flushAsync()
+
+    // Second consecutive dead bridge: terminal, surfaced as the distinct
+    // ipc-bridge failure so the recovery overlay can show repair copy instead
+    // of bridge-dependent dead-end buttons.
+    expect(reload).not.toHaveBeenCalled()
+    expect($desktopBoot.get().error).toContain('IPC bridge')
+    expect($desktopBoot.get().errorKind).toBe('ipc-bridge')
+  })
+
+  it('clears the re-arm ledger once a boot completes with the bridge armed', async () => {
+    window.localStorage.setItem(RETRY_KEY, '1')
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
+
+    render(<Harness />)
+    await flushAsync()
+    await advanceBackoff()
+
+    expect($desktopBoot.get().error).toBeNull()
+    expect(window.localStorage.getItem(RETRY_KEY)).toBeNull()
+  })
+})

@@ -281,7 +281,27 @@ export function BootFailureOverlay() {
   // guidance instead of the generic remote-failure copy (#85335).
   const cloudDown = Boolean(boot.isCloudBackendDown)
 
-  if (remoteReauth) {
+  // A dead IPC bridge (#92927: preload never armed after a torn update) makes
+  // every recovery action that round-trips through window.hermesDesktop a
+  // silent no-op — Repair, Gateway settings, Open logs. The overlay must not
+  // offer dead ends: keep only Retry (a plain window reload, the one action
+  // that works bridgeless) and say what actually repairs the install.
+  const ipcBridgeDown = boot.errorKind === 'ipc-bridge'
+
+  // A reachable backend whose JSON-RPC dispatcher never answered (#92927) —
+  // or a runtime that cannot open the verifying WebSocket. main classifies
+  // these and attaches a stable code (see DesktopBootProgress.errorCode), so
+  // the overlay keys on the code instead of string-matching the message —
+  // the same pattern as isCloudBackendDown. Both are local failures: the
+  // full local recovery set stays, only the hint carries the specific
+  // localized guidance.
+  const rpcProbeFailed = boot.errorCode === 'gateway.rpc-probe-failed'
+  const rpcProbeUnavailable = boot.errorCode === 'gateway.rpc-unavailable'
+
+  if (ipcBridgeDown) {
+    actions = [retryAction]
+    hint = copy.ipcBridgeHint
+  } else if (remoteReauth) {
     actions = [
       {
         key: 'signin',
@@ -337,7 +357,7 @@ export function BootFailureOverlay() {
       },
       { ...settingsAction, variant: 'ghost' }
     ]
-    hint = copy.repairHint
+    hint = rpcProbeFailed ? copy.rpcProbeFailedHint : rpcProbeUnavailable ? copy.rpcProbeUnavailableHint : copy.repairHint
   }
 
   if (view === 'connect') {
@@ -381,10 +401,22 @@ export function BootFailureOverlay() {
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
+              {ipcBridgeDown
+                ? copy.ipcBridgeTitle
+                : remoteReauth
+                  ? copy.remoteTitle
+                  : cloudDown
+                    ? copy.cloudDownTitle
+                    : copy.title}
             </h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth ? copy.remoteDescription : cloudDown ? copy.cloudDownDescription : copy.description}
+              {ipcBridgeDown
+                ? copy.ipcBridgeDescription
+                : remoteReauth
+                  ? copy.remoteDescription
+                  : cloudDown
+                    ? copy.cloudDownDescription
+                    : copy.description}
             </p>
           </div>
         </div>
@@ -402,10 +434,12 @@ export function BootFailureOverlay() {
                   {action.label}
                 </Button>
               ))}
-              <Button onClick={openLogs} variant="ghost">
-                <FileText />
-                {copy.openLogs}
-              </Button>
+              {ipcBridgeDown ? null : (
+                <Button onClick={openLogs} variant="ghost">
+                  <FileText />
+                  {copy.openLogs}
+                </Button>
+              )}
             </div>
             <p className="text-xs text-muted-foreground">{hint}</p>
           </div>

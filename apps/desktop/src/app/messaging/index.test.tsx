@@ -110,17 +110,26 @@ async function renderMessaging() {
 }
 
 describe('MessagingView profile scope', () => {
-  it('follows the active profile instead of targeting primary when there is no override', async () => {
-    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+  // First test in the file pays jsdom env init + the settings-scope/index module
+  // transform, which tripped vitest's 15s testTimeout under CI load (2026-09-07,
+  // run 34150907291). The widen deadline absorbs the cold start; the body itself
+  // is still synchronous after the dynamic imports resolve. Same pattern as
+  // store/session-unread-tile.test.ts's cold-start budget.
+  it(
+    'follows the active profile instead of targeting primary when there is no override',
+    { timeout: 30_000 },
+    async () => {
+      const { $settingsScopeOverride } = await import('@/store/settings-scope')
 
-    $settingsScopeOverride.set(null)
-    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+      $settingsScopeOverride.set(null)
+      getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
 
-    await renderMessaging()
+      await renderMessaging()
 
-    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(undefined))
-    expect(getPairing).toHaveBeenCalledWith(undefined)
-  })
+      await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(undefined))
+      expect(getPairing).toHaveBeenCalledWith(undefined)
+    }
+  )
 })
 
 describe('MessagingView setup-guide link', () => {

@@ -1127,6 +1127,15 @@ export interface DesktopCloudAgentSignInResult {
 
 export interface DesktopBootProgress {
   error: string | null
+  /**
+   * Stable machine-readable failure code carried by `error` (main-process
+   * classification; see electron/gateway-rpc-probe.ts). 'gateway.rpc-probe-failed'
+   * = the backend is reachable but its JSON-RPC dispatcher never answered
+   * (usually a torn update, #92927); 'gateway.rpc-unavailable' = the runtime
+   * cannot open a WebSocket to verify it (a capability problem, not a broken
+   * install). Absent for renderer-side failures and legacy errors.
+   */
+  errorCode?: string | null
   fakeMode: boolean
   /** True when the boot failure is a Nous Cloud agent that is down (HTTP 502/503/504). */
   isCloudBackendDown?: boolean

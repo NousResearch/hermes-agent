@@ -116,6 +116,24 @@ test('probe times out when the socket never opens', async () => {
   assert.match(result.reason, /Timed out/)
 })
 
+test('probe disarms the connect timer on open: the grace window may outlast connectTimeoutMs', async () => {
+  const { FakeWs, instances } = makeFakeWs()
+
+  const promise = probeGatewayWebSocket('ws://host/api/ws?token=t', {
+    WebSocketImpl: FakeWs,
+    connectTimeoutMs: 20,
+    readyGraceMs: 60
+  })
+
+  instances[0].emit('open')
+  // The upgrade was accepted; only the post-upgrade grace window remains.
+  // The connect timer must be disarmed at open — otherwise a slow-but-fine
+  // handshake is misreported as "Timed out waiting for the WebSocket to
+  // open" when the grace window outlasts the connect timeout.
+  const result = await promise
+  assert.deepEqual(result, { ok: true })
+})
+
 test('probe fails gracefully when the constructor throws', async () => {
   class ThrowingWs {
     constructor() {

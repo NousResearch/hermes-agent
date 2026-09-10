@@ -198,6 +198,7 @@ import {
   resolveGatewayFileBackend,
   writeBufferToFile
 } from './gateway-file-download'
+import { probeGatewayRpc, rpcProbeBootError } from './gateway-rpc-probe'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
@@ -1671,6 +1672,9 @@ let nativeThemeListenerInstalled = false
 
 let bootProgressState = {
   error: null,
+  // Stable failure code (see DesktopBootProgress.errorCode); null until a
+  // classified failure publishes one.
+  errorCode: null,
   fakeMode: BOOT_FAKE_MODE,
   isCloudBackendDown: false,
   message: 'Waiting to start Hermes backend',
@@ -2242,6 +2246,9 @@ function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
     ...bootProgressState,
     ...update,
     error: update.error === undefined ? bootProgressState.error : update.error,
+    // Rides with `error` exactly like `retryable` below: preserved by updates
+    // that don't carry it, cleared by updates that pass an explicit value.
+    errorCode: update.errorCode === undefined ? bootProgressState.errorCode : update.errorCode,
     fakeMode: BOOT_FAKE_MODE || Boolean(update.fakeMode),
     progress: nextProgress,
     // `retryable` rides with `error`: it survives updates that preserve the
@@ -2266,7 +2273,9 @@ async function advanceBootProgress(phase, message, progress) {
     message,
     progress,
     running: true,
-    error: null
+    error: null,
+    // Clear the failure code alongside the error so a new attempt starts clean.
+    errorCode: null
   })
 
   if (BOOT_FAKE_MODE) {
@@ -12795,6 +12804,20 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     )
   }
 
+  // #92927: HTTP + WS-token readiness is not enough. A backend left half-updated
+  // by an interrupted `hermes update` (Windows venv lock, updater exit 2) still
+  // accepts the WS upgrade while its JSON-RPC dispatcher is dead — declaring it
+  // ready boots the renderer into a silent empty shell (dead BOTS pane, no
+  // bridge). Require the one round-trip every desktop surface depends on.
+  const rpcProbe = await probeGatewayRpc(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+
+  if (!rpcProbe.ok) {
+    // Single-source error builder (gateway-rpc-probe.ts): the torn-install
+    // guidance lives in one place for both boots, and the unavailable-runtime
+    // case gets a distinct capability message instead of repair advice.
+    throw rpcProbeBootError(`Hermes backend for profile "${profile}"`, rpcProbe)
+  }
+
   return {
     baseUrl,
     mode: 'local',
@@ -13262,6 +13285,18 @@ async function startHermes() {
       )
     }
 
+    // #92927: same degraded-install guard as the pool spawn — a torn update can
+    // leave the backend HTTP/WS-reachable with a dead JSON-RPC dispatcher, and
+    // boot would silently proceed into the empty-shell state the issue reports
+    // (empty BOTS pane, "Desktop IPC bridge is unavailable"). Require one RPC
+    // round-trip so this boot fails into the recovery overlay instead.
+    const rpcProbe = await probeGatewayRpc(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+
+    if (!rpcProbe.ok) {
+      // Same single-source error builder as the pool spawn above.
+      throw rpcProbeBootError('Local Hermes backend', rpcProbe)
+    }
+
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',
@@ -13313,6 +13348,12 @@ async function startHermes() {
     // only consumes the structured result (#85335).
     const isCloudBackendDown = Boolean(error && typeof error === 'object' && (error as any).isCloudBackendDown === true)
 
+    // Same structured-classification pattern for the gateway RPC probe
+    // (#92927): rpcProbeBootError attaches a stable code, which the overlay
+    // keys on for the localized repair guidance.
+    const errorCode =
+      error && typeof error === 'object' && typeof (error as any).code === 'string' ? (error as any).code : undefined
+
     const statusCode = Number(
       error && typeof error === 'object' && Number.isInteger((error as any).statusCode)
         ? (error as any).statusCode
@@ -13347,6 +13388,7 @@ async function startHermes() {
     updateBootProgress(
       {
         error: message,
+        errorCode,
         isCloudBackendDown: isCloudBackendDown || undefined,
         message: `Desktop boot failed: ${message}`,
         phase: 'backend.error',

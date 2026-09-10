@@ -144,6 +144,28 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
   return connection.mode === 'local' ? 'local' : null
 }
 
+// Ledger key for the bounded dead-bridge re-arm (#92927). An interrupted
+// `hermes update` can leave the app bundle torn so the preload never arms:
+// `window.hermesDesktop` is undefined and the renderer has no IPC bridge.
+// The ONLY lever a bridgeless renderer has is a reload (it re-runs preload),
+// so the first dead boot re-arms once via reload; a second consecutive dead
+// boot is terminal and surfaces the ipc-bridge failure kind. The key is
+// cleared as soon as any boot runs with the bridge present.
+//
+// Ledger scoping: `localStorage` is shared per-origin, so every renderer
+// window reads the SAME key — two windows booting concurrently against a
+// dead bridge share this ledger, and the second one can observe the first's
+// spent re-arm and go straight to the terminal failure without spending a
+// reload of its own. That is deliberate rather than a race to fix: the
+// desktop boots a single window (helper windows only open after the primary
+// boot has a live bridge), both windows run the same bundle/preload against
+// the same backend, and the terminal overlay's Retry IS a plain reload — so
+// a window that lands terminal still has a one-click path to the re-arm. We
+// deliberately keep the ledger in localStorage (not sessionStorage or a
+// per-window key) so it survives app restarts: a persistently torn bundle
+// must not be made to waste a reload on every launch.
+export const IPC_BRIDGE_RELOAD_ATTEMPT_KEY = 'hermes.desktop.ipc-bridge-reload-attempt'
+
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
   handleGatewayEvent: (event: RpcEvent) => void
@@ -200,7 +222,22 @@ export function useGatewayBoot({
     }
 
     if (!desktop) {
-      failDesktopBoot('Desktop IPC bridge is unavailable.')
+      // #92927: a torn bundle (interrupted update) leaves preload un-armed, so
+      // the IPC bridge never binds. Re-arm once via reload — the only lever a
+      // bridgeless renderer has; a second consecutive dead boot is terminal
+      // and the overlay surfaces the actionable repair copy.
+      try {
+        if (!window.localStorage.getItem(IPC_BRIDGE_RELOAD_ATTEMPT_KEY)) {
+          window.localStorage.setItem(IPC_BRIDGE_RELOAD_ATTEMPT_KEY, '1')
+          window.location.reload()
+
+          return () => void (cancelled = true)
+        }
+      } catch {
+        // Storage or reload unavailable — fall through to the terminal failure.
+      }
+
+      failDesktopBoot(translateNow('boot.errors.ipcBridgeUnavailable'), 'ipc-bridge')
       setSessionsLoading(false)
 
       return () => void (cancelled = true)
@@ -214,6 +251,14 @@ export function useGatewayBoot({
       beforeConnectionSwitch: () => callbacksRef.current.beforeConnectionSwitch(),
       refreshSessions: shouldPublish => callbacksRef.current.refreshSessions(shouldPublish)
     })
+
+    // The bridge armed for this boot: any previous dead-bridge episode is
+    // resolved, so the one-shot re-arm ledger is spent and can be dropped.
+    try {
+      window.localStorage.removeItem(IPC_BRIDGE_RELOAD_ATTEMPT_KEY)
+    } catch {
+      // Storage unavailable — nothing to clear.
+    }
 
     // --- Reconnect-after-sleep machinery -------------------------------------
     // macOS sleep silently drops the renderer's WebSocket. The backend Python

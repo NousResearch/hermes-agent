@@ -133,6 +133,15 @@ export const ja = defineLocale({
       back: '戻る',
       openLogs: 'ログを開く',
       repairHint: '修復はインストーラーを再実行します。新しいマシンでは数分かかる場合があります。',
+      ipcBridgeTitle: 'デスクトップIPCブリッジを利用できません',
+      ipcBridgeDescription:
+        'デスクトップのIPCブリッジを読み込めませんでした。通常は、中断された更新によりアプリバンドルが破損しています。Hermesを再起動してください。それでも解決しない場合は、インストールを修復してください。',
+      ipcBridgeHint:
+        'Hermesを再起動してください（再試行でウィンドウを再読み込みします）。それでもブリッジを利用できない場合は、ターミナルから修復してください：hermes desktop --force-build を実行するか、hermes update を再実行します。',
+      rpcProbeFailedHint:
+        'インストールが中断された更新で壊れている可能性があります——ターミナルから修復してください：hermes desktop --force-build を実行するか、hermes update を再実行してください。',
+      rpcProbeUnavailableHint:
+        'このランタイムはバックエンドを検証するための WebSocket を開けません。Hermes を再起動してください。それでも続く場合は、ランタイムに WebSocket サポートがありません。',
       remoteSignInHint: signInLabel =>
         `保存済みのリモートブラウザセッションからサインアウトし、${signInLabel}を開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。`,
       signOutAndSignIn: 'サインアウトして再サインイン',

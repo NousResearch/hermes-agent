@@ -876,6 +876,34 @@ class TestSameOriginChatGroupScoping:
                              user_id_alt=user_id_alt, thread_id=thread_id)
 
 
+    def test_same_origin_honors_adapter_registered_override(self, tmp_path):
+        """An adapter-registered shared scope must flip the IDOR guard the
+        same way it flips the session key: with group_sessions_per_user=False
+        registered for the platform, co-members share the session (guard
+        allows); without the registration the config default (per-user)
+        blocks. Exercises the real SessionStore resolution, not the mock."""
+        from gateway.session import SessionStore
+
+        runner = _make_runner()
+        runner.config.group_sessions_per_user = True
+        runner.session_store = SessionStore(
+            sessions_dir=tmp_path, config=runner.config
+        )
+        alice, bob = self._src("alice"), self._src("bob")
+        assert runner._same_origin_chat(alice, bob) is False
+
+        runner.session_store.register_platform_session_scope(
+            "discord",
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
+        )
+        assert runner._same_origin_chat(alice, bob) is True
+        # The runner-side key every slash/control consumer uses must be byte-identical
+        # to the store's routing key, else control plane and persistence split.
+        store_key = runner.session_store.get_or_create_session(alice).session_key
+        assert store_key == "agent:main:discord:group:guild-123"
+        assert runner._session_key_for_source(alice) == store_key
+
     def test_dm_cross_user_blocked_without_chat_id(self):
         # No-chat_id DM: build_session_key falls back to the participant id
         # (user_id_alt or user_id), so two different participants are different

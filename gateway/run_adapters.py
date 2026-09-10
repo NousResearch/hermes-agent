@@ -23,7 +23,7 @@ from gateway.config import Platform, platform_binds_port as _platform_binds_port
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
-from gateway.session import SessionSource
+from gateway.session import SessionSource, SessionStore, config_session_scope
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -1005,7 +1005,8 @@ class GatewayAdapterLifecycleMixin:
                 credential_claim, claimed, profile_name, platform, "credential"
             ) or self._refuse_duplicate_claim(listener_claim, claimed, profile_name, platform, "listener"):
                 continue
-            self._configure_profile_adapter(adapter, profile_name, platform)
+            self._configure_profile_adapter(
+                adapter, profile_name, platform, scope_defaults=config_session_scope(profile_cfg))
             try:
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     success = await self._connect_initial_adapter_with_timeout(adapter, platform)
@@ -1029,16 +1030,40 @@ class GatewayAdapterLifecycleMixin:
             logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
         return connected
 
+    def _register_adapter_session_scope(
+        self, adapter, profile: Optional[str] = None, scope_defaults: Optional[tuple] = None,
+    ) -> None:
+        """Register the adapter's ``config.extra`` isolation flags with the store, keyed (profile,
+        platform), so plugin/out-of-tree platforms with no config.platforms entry key sessions the way
+        the adapter asks. Runs at handler wiring — BEFORE ``connect()``, which is where Telegram polling
+        / webhooks go inbound-reachable. A missing or explicit ``None`` flag becomes the OWNING gateway
+        config's default (``scope_defaults``: a secondary profile's; the primary's otherwise) and is
+        written back, so the adapter's own key derivation reads the same concrete tuple. Bare/legacy
+        runners without a real store (test doubles) skip registration."""
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+        store = getattr(self, "session_store", None)
+        if not isinstance(extra, dict) or not isinstance(store, SessionStore):
+            return
+        defaults = scope_defaults or config_session_scope(getattr(self, "config", None))
+        for key, default in zip(("group_sessions_per_user", "thread_sessions_per_user"), defaults):
+            if extra.get(key) is None:
+                extra[key] = default
+        store.register_platform_session_scope(
+            adapter.platform.value, group_sessions_per_user=extra["group_sessions_per_user"],
+            thread_sessions_per_user=extra["thread_sessions_per_user"], profile=profile)
+
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        busy_text_mode: Optional[str] = None,
+        busy_text_mode: Optional[str] = None, profile: Optional[str] = None,
+        scope_defaults: Optional[tuple] = None,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
         adapter.set_message_handler(message_handler or self._primary_message_handler())
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
+        self._register_adapter_session_scope(adapter, profile=profile, scope_defaults=scope_defaults)
         adapter.set_busy_session_handler(busy_session_handler or self._handle_active_session_busy_message)
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
@@ -1051,9 +1076,11 @@ class GatewayAdapterLifecycleMixin:
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
 
     def _configure_profile_adapter(
-        self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform
+        self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform,
+        scope_defaults: Optional[tuple] = None,
     ) -> None:
-        """Install the profile-scoped handlers shared by startup and reconnect."""
+        """Install the profile-scoped handlers shared by startup and reconnect. ``scope_defaults`` is
+        the OWNING profile's gateway isolation defaults (its config, not the primary's)."""
         # Runtime status is process-scoped: key on profile:platform so health shows WHICH secondary failed.
         adapter._runtime_status_platform_key = f"{profile_name}:{platform.value}"
         # Declare ownership BEFORE any inbound event: adapter-level session keys are derived at ingress,
@@ -1071,6 +1098,7 @@ class GatewayAdapterLifecycleMixin:
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
+            profile=profile_name, scope_defaults=scope_defaults,
             busy_text_mode=(
                 text_modes.get(profile_name, self._busy_text_mode)
                 if isinstance(text_modes, dict)
@@ -1096,7 +1124,8 @@ class GatewayAdapterLifecycleMixin:
         # Hydrate external secret sources off-loop so they cannot starve heartbeats.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_config = load_gateway_config().platforms.get(platform)
+            profile_gateway_cfg = load_gateway_config()
+            profile_config = profile_gateway_cfg.platforms.get(platform)
             if profile_config is None or not profile_config.enabled:
                 return None, None
             # Startup credential gate mirror: a removed credential must not rebuild.
@@ -1116,7 +1145,9 @@ class GatewayAdapterLifecycleMixin:
                 )
                 return None, None
             try:
-                self._configure_profile_adapter(adapter, profile_name, platform)
+                self._configure_profile_adapter(
+                    adapter, profile_name, platform,
+                    scope_defaults=config_session_scope(profile_gateway_cfg))
                 success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
             except BaseException:
                 # Caller never sees this adapter; release its partial resources here.
@@ -1442,11 +1473,6 @@ class GatewayAdapterLifecycleMixin:
     def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Instantiate the adapter for a platform: plugin registry first, then built-ins."""
         from gateway.run import _instantiate_builtin_adapter
-        if hasattr(config, "extra") and isinstance(config.extra, dict):
-            config.extra.setdefault("group_sessions_per_user", self.config.group_sessions_per_user)
-            config.extra.setdefault(
-                "thread_sessions_per_user", getattr(self.config, "thread_sessions_per_user", False)
-            )
         with _log_suppressed(logging.DEBUG, "Platform registry lookup for '%s' failed: %s", platform.value):
             from gateway.platform_registry import platform_registry
             if platform_registry.is_registered(platform.value):

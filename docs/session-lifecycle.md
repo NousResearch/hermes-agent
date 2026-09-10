@@ -472,12 +472,12 @@ agent's system prompt. It tells the agent:
 ### Construction (`build_session_context`)
 
 ```python
-def build_session_context(source, config, session_entry=None) -> SessionContext
+def build_session_context(source, config, session_entry=None, session_store=None) -> SessionContext
 ```
 
 1. Collects connected platforms from config.
 2. Collects home channels for each platform.
-3. Determines `shared_multi_user_session` via `is_shared_multi_user_session()`.
+3. Determines `shared_multi_user_session` via `is_shared_multi_user_session()` — pass `session_store` so adapter-declared scope overrides are honored; omitting it falls back to the gateway-config defaults, which can disagree with the session key.
 4. Attaches session metadata (key, id, timestamps) if `session_entry` is provided.
 
 ### PII Redaction (`build_session_context_prompt`)

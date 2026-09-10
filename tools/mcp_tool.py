@@ -19,11 +19,11 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
+from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, _parse_boolish, mcp_field
 from tools.mcp_tool_config import _get_mcp_stderr_log, _npx_cached_bin
 from tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
 from tools.mcp_tool_transport import MCPServerTransportMixin
@@ -438,7 +438,7 @@ _CONNECT_RETRY_BASE_BACKOFF_SEC, _CONNECT_RETRY_MAX_BACKOFF_SEC = 30.0, 600.0
 
 # Per-server circuit breaker: closed -> open (calls short-circuit until the cooldown) ->
 # half-open (next call probes). Mutate only via _bump_server_error / _reset_server_error.
-# After _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns a "server unreachable" message
+# After the configured threshold of consecutive failures, the handler returns a "server unreachable" message
 # that tells the model to stop retrying, preventing the 90-iteration burn loop described in #10447. State
 # machine: closed    — error count below threshold; all calls go through. open      — threshold reached;
 # calls short-circuit until the cooldown elapses. half-open — cooldown elapsed; the next call is a probe
@@ -448,7 +448,46 @@ _CONNECT_RETRY_BASE_BACKOFF_SEC, _CONNECT_RETRY_MAX_BACKOFF_SEC = 30.0, 600.0
 # — they keep the count and timestamp in sync.
 _server_error_counts: Dict[str, int] = {}
 _server_breaker_opened_at: Dict[str, float] = {}
-_CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
+
+# Circuit breaker settings — read from config on each check (lightweight, no caching).
+# Defaults match the historical hardcoded values for backward compatibility.
+# These module-level constants are only used as fallbacks if config read fails, and mirror
+# mcp.circuit_breaker.* in hermes_cli/config_defaults.py (the canonical merge source) — keep in sync.
+_CIRCUIT_BREAKER_DEFAULT_ENABLED = True
+_CIRCUIT_BREAKER_DEFAULT_THRESHOLD = 3
+_CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC = 60.0
+
+
+def _get_circuit_breaker_config() -> Tuple[bool, int, float]:
+    """Read circuit breaker settings from config.yaml.
+
+    Returns:
+        Tuple of (enabled, threshold, cooldown_seconds)
+
+    Reads from ``mcp.circuit_breaker.*`` on every call (config is cached internally
+    by ``load_config_readonly``). Falls back to safe defaults on any error.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+        mcp_config = config.get("mcp", {})
+        cb_config = mcp_config.get("circuit_breaker", {})
+
+        enabled = _parse_boolish(cb_config.get("enabled"), _CIRCUIT_BREAKER_DEFAULT_ENABLED)
+        threshold = int(cb_config.get("threshold", _CIRCUIT_BREAKER_DEFAULT_THRESHOLD))
+        cooldown = float(cb_config.get("cooldown_seconds", _CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC))
+
+        # Sanity checks
+        if threshold < 1:
+            threshold = 1
+        if cooldown < 0:
+            cooldown = 0.0
+
+        return enabled, threshold, cooldown
+
+    except Exception:
+        # Best-effort: on any error, use defaults
+        return _CIRCUIT_BREAKER_DEFAULT_ENABLED, _CIRCUIT_BREAKER_DEFAULT_THRESHOLD, _CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC
 
 # Trust-tier gating (``trust: full | untrusted``): on an untrusted server every write-capable
 # call (discovery-time ``readOnlyHint`` not exactly True; malformed fails closed) needs approval
@@ -463,10 +502,15 @@ _TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 
 
 def _bump_server_error(server_name: str) -> None:
-    """Count a failure; at the threshold (re)stamp the breaker-open time."""
+    """Count a failure; at the configured threshold (re)stamp the breaker-open time.
+
+    When the circuit breaker is disabled (``mcp.circuit_breaker.enabled=false``), errors are
+    still tracked for diagnostics but the breaker is never opened.
+    """
+    enabled, threshold, _ = _get_circuit_breaker_config()
     n = _server_error_counts.get(server_name, 0) + 1
     _server_error_counts[server_name] = n
-    if n >= _CIRCUIT_BREAKER_THRESHOLD:
+    if enabled and n >= threshold:
         _server_breaker_opened_at[server_name] = time.monotonic()
 
 

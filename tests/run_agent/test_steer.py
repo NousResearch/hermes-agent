@@ -23,6 +23,8 @@ def _bare_agent() -> AIAgent:
     agent = object.__new__(AIAgent)
     agent._pending_steer = None
     agent._pending_steer_lock = threading.Lock()
+    agent._pending_kanban_note = None
+    agent._pending_kanban_note_lock = threading.Lock()
     agent._pending_redirect = None
     agent._pending_redirect_lock = threading.Lock()
     agent._model_request_active = threading.Event()
@@ -62,6 +64,15 @@ class TestSteerDrain:
         assert agent._drain_pending_steer() == "hello"
         assert agent._pending_steer is None
 
+
+class TestKanbanNote:
+    def test_drain_returns_and_clears_without_using_steer(self):
+        agent = _bare_agent()
+
+        assert agent.kanban_note("use the v2 API") is True
+        assert agent._pending_steer is None
+        assert agent._drain_pending_kanban_note() == "use the v2 API"
+        assert agent._pending_kanban_note is None
 
 
 class TestActiveTurnRedirect:
@@ -532,6 +543,20 @@ class TestSteerInjection:
         ]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
         assert messages[-1]["content"] == "output"  # unchanged
+
+    def test_kanban_note_stays_on_tool_output_without_user_authority(self):
+        from agent.prompt_builder import KANBAN_COMMENT_MARKER_OPEN
+
+        agent = _bare_agent()
+        agent.kanban_note("use the v2 API")
+        messages = [{"role": "tool", "content": "output", "tool_call_id": "a"}]
+
+        agent._apply_pending_kanban_note_to_tool_results(messages, num_tool_msgs=1)
+
+        assert messages[-1]["role"] == "tool"
+        assert KANBAN_COMMENT_MARKER_OPEN in messages[-1]["content"]
+        assert "use the v2 API" in messages[-1]["content"]
+        assert "OUT-OF-BAND USER MESSAGE" not in messages[-1]["content"]
 
 
     def test_marker_labels_text_as_out_of_band_user_message(self):

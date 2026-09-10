@@ -442,21 +442,24 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
 
 
-# Live operator-note injection: poll the task for new comments and steer them in
-# OUT-OF-BAND, so a user can talk to a running task without block → comment → unblock.
-# Watermarked per task (seeded on first poll: that history is already in the context).
+# Live Kanban-comment injection: task comments are durable worker context, not
+# OUT-OF-BAND user steering. Watermarked per task so prior thread history is not
+# re-injected.
 _COMMENT_POLL_MIN_INTERVAL_SECONDS = 6.0
 _comment_poll_last_attempt: float = 0.0
 _comment_watermark: dict[str, int] = {}
 
 
 def inject_new_comments_from_env(agent: Any) -> bool:
-    """Steer new operator comments on the worker's task into ``agent``; True iff a
-    steer was injected; never raises. Own comments (``HERMES_PROFILE``) are skipped."""
+    """Inject new Kanban comments into ``agent``; never raises.
+
+    Comments are not user messages. The separate ``kanban_note`` method keeps
+    them outside the /steer authority channel. Own comments are skipped.
+    """
     global _comment_poll_last_attempt
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
-    if (not tid or agent is None or not hasattr(agent, "steer")
+    if (not tid or agent is None or not hasattr(agent, "kanban_note")
             or (now - _comment_poll_last_attempt) < _COMMENT_POLL_MIN_INTERVAL_SECONDS):
         return False
     _comment_poll_last_attempt = now
@@ -477,14 +480,14 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     fresh = [c for c in rows if (c.author or "").strip() != own and (c.body or "").strip()]
     if not fresh:
         return False
-    lines = [f"- {c.author or 'operator'}: {c.body.strip()}" for c in fresh]
-    note = ("New note" + ("s" if len(fresh) > 1 else "")
-            + " on your kanban task from the operator (delivered mid-run). "
+    lines = [f"- {c.author or 'unknown'}: {c.body.strip()}" for c in fresh]
+    note = ("New Kanban comment" + ("s" if len(fresh) > 1 else "")
+            + " (delivered mid-run; this is not a message from the user). "
             + "Take it into account for the work you're doing right now:\n" + "\n".join(lines))
     try:
-        return bool(agent.steer(note))
+        return bool(agent.kanban_note(note))
     except Exception:
-        logger.debug("comment-inject: steer failed", exc_info=True)
+        logger.debug("comment-inject: note delivery failed", exc_info=True)
         return False
 
 

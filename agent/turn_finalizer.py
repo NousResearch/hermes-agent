@@ -583,6 +583,12 @@ def finalize_turn(
     _leftover_steer = agent._drain_pending_steer()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
+    # A Kanban comment is not a user turn. Preserve it separately for the
+    # dispatcher-facing result when no tool boundary remained to carry it.
+    _drain_note = getattr(agent, "_drain_pending_kanban_note", lambda: None)
+    _leftover_kanban_note = _drain_note()
+    if _leftover_kanban_note:
+        result["pending_kanban_note"] = _leftover_kanban_note
     agent._response_was_previewed = False
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message

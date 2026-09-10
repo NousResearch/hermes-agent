@@ -516,6 +516,9 @@ _CONTROL_STATE: Dict[str, Any] = {
     # batch — no interrupt, no new user turn (role alternation preserved).
     "_pending_steer": None,
     "_pending_steer_lock": threading.Lock,
+    # Kanban comments share the safe post-tool boundary but are never user steering.
+    "_pending_kanban_note": None,
+    "_pending_kanban_note_lock": threading.Lock,
     # Active-turn redirect: keep the valid turn prefix, cancel only the in-flight request,
     # rebuild the tail with the correction. Drained at a role-safe boundary.
     "_pending_redirect": None,

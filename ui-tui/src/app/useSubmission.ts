@@ -347,7 +347,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       const live = getUiState()
 
-      if (!live.sid || live.gatewayConnected === false) {
+      if (!live.sid) { return sys('session not ready — draft kept; reconnect or choose a session') }
+
+      if (live.gatewayConnected === false) {
         composerActions.pushHistory(toHistory)
         const retained = composerActions.enqueue(submission.text, submission.display, destination)
 

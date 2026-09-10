@@ -156,6 +156,16 @@ it('retains disconnected input durably on its old destination without dispatchin
   } finally { h.cleanup() }
 })
 
+it('refuses unbound Enter without clearing the draft or claiming a queued input', () => {
+  const h = mount()
+  try {
+    patchUiState({ sid: null })
+    h.submission.dispatchSubmission('unbound draft')
+    expect(h.queue.queueRef.current).toEqual([])
+    expect(h.calls).toEqual([])
+  } finally { h.cleanup() }
+})
+
 it('discards unknown execution with its generation, retaining the row on refusal', async () => {
   const h = mount()
 

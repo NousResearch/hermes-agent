@@ -87,6 +87,91 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 
 ## Resolved
 
+### ERR-2026-09-09-003 — MEDIUM — `query_session_listing` visibility filter can hide older eligible sessions
+
+- **Opened:** 2026-09-09 · **Base:** hermes@990473a79c (21 behind upstream/main)
+- **Run:** RUN-2026-09-09-001 (opened + resolved same run)
+- **Source:** AGENT D follow-through on the `session_listing.py` sparse-match
+  hardening scoped but not started in `RUN-2026-09-08-005`; note
+  `D:\logs\SESSION-LISTING-ADAPTIVE-WIDENING_2026-09-09.md`.
+- **What:** `hermes_cli/session_listing.py::query_session_listing` fetched a
+  single fixed `limit * 4` window from `list_sessions_rich`, then filtered
+  unnamed / current-session rows in Python. If enough newer unnamed sessions
+  filled that window, an older *named* session that would be displayable was
+  never fetched and so never shown — the same failure shape as the `hermes logs`
+  sparse-match bug (`ERR-2026-09-08-008`).
+- **Confidence:** Confirmed Fact — the fixed-window fetch + after-the-fact Python
+  filter is in the code; `test_older_named_session_survives_many_newer_unnamed`
+  and `test_widens_more_than_once` reproduce the miss and the fix.
+- **Exposure / impact:** wrong output only (a listing / picker omits a session
+  the caller asked to see); no data loss, nothing shipped incorrectly. Two
+  callers, `limit` 10/50.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-09 — `limit <= 0` returns `[]` before any query; the
+  fetch widens `limit * (4, 8, 16)` from row 0 (never `OFFSET`), stopping when
+  `limit` displayable rows survive or the DB returns a short window; the filter
+  is factored to `_displayable()`. `tests/hermes_cli/test_session_listing.py` +5.
+  Resolving change: `CHG-2026-09-09-002`.
+
+### ERR-2026-09-09-002 — HIGH — `bootstrap-north-forge.ps1` never checks `-VenvDir` and `-DataDir` against each other
+
+- **Opened:** 2026-09-09 · **Base:** hermes@990473a79c (21 behind upstream/main)
+- **Run:** RUN-2026-09-09-001 (opened + resolved same run)
+- **Source:** AGENT D "R1" bootstrap-safety pass; note
+  `D:\logs\NORTH-FORGE-R1-VENV-CLEANUP_2026-09-09.md`.
+- **What:** the path guard (`ERR-2026-09-07-003` / `CHG-2026-09-07-015`) checks
+  `-VenvDir` and `-DataDir` each against the **checkout**, but never against
+  **each other**. A caller passing an equal / trailing-separator / case-variant /
+  nested `VenvDir`+`DataDir` pair (only reachable via explicit `-VenvDir` /
+  `-DataDir` — the default `north-forge.cmd` path derives siblings and is
+  unaffected) would have a `-Force` rebuild's `Remove-Item -Recurse` on `VenvDir`
+  delete `HERMES_HOME`.
+- **Confidence:** Confirmed Fact — reproduced by
+  `test_reject_venv_equals_or_contains_data` (×4 mangles) before the guard.
+- **Exposure / impact:** data-loss class (destroys the data folder), but only on
+  a non-default explicit-overlap invocation; nothing shipped that does this.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-09 — new `if (Test-PathOverlap $VenvDir $DataDir) { … exit 1 }`
+  guard after the existing RepoRoot guards (those byte-unchanged); equal /
+  trailing-sep / case / nested all rejected. Resolving change: `CHG-2026-09-09-001`.
+
+### ERR-2026-09-09-001 — HIGH — `bootstrap-north-forge.ps1` reused / deleted a venv dir with no proof it owned it
+
+- **Opened:** 2026-09-09 · **Base:** hermes@990473a79c (21 behind upstream/main)
+- **Run:** RUN-2026-09-09-001 (opened + resolved same run)
+- **Source:** AGENT D "R1" bootstrap-safety pass; note
+  `D:\logs\NORTH-FORGE-R1-VENV-CLEANUP_2026-09-09.md`. Follow-on to
+  `ERR-2026-09-07-006` (`CHG-2026-09-07-020`) — readiness was made a real probe
+  there, but ownership was still never established.
+- **What:** `bootstrap` decided "already bootstrapped?" from a bare `hermes.exe`
+  + `.nf-bootstrapped` existence check, and its only cleanup line was
+  `if ($Force -and (Test-Path $VenvDir)) { Remove-Item -Recurse -Force }`. So an
+  interrupted extract, a bare `Scripts\` tree, or an unrelated directory sitting
+  at `<checkout>-venv` was either trusted as a working venv or — under `-Force` —
+  recursively deleted, with nothing proving North Forge had created it. Readiness
+  failure was conflated with the right to delete.
+- **Confidence:** Confirmed Fact — the existence-only early return and the
+  `-Force`-gated `Remove-Item` are in the pre-change script; the new state-matrix
+  tests (`_R1_CASES` ×6, `test_force_does_not_override_unknown_directory`,
+  `test_direct_bootstrap_refuses_unknown_venv_dir_without_preflight`) exercise
+  every shape.
+- **Exposure / impact:** could delete an operator's unrelated directory that
+  happened to be at the sibling venv path (e.g. a hand-made `…-venv` folder), or
+  silently run against a half-built venv. Default path lands a real venv; no
+  known field loss, but the `-Force`/GUI-repair path is exactly where a
+  clean-machine retest would exercise it.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-09 — readiness (`Test-NfVenvReady`) and ownership (new
+  read-only `scripts/lib/nf-venv-state.ps1` → `Get-NfVenvState`) are now separate
+  decisions feeding a `create` / `rebuild` / `refuse` / `none` state table.
+  `UnknownDirectory` / `UnsafePath` ⇒ unconditional `refuse` (`-Force` does not
+  override); `EmptyDirectory` populated in place; the single `Remove-Item` is
+  immediately preceded by a canonical-path + ownership re-check; every decision
+  logs `venv_state= ownership= action= reason=`; the data-folder skin seed runs
+  only on first-time `create`. `nf-preflight.ps1` reduced to a repair *request*.
+  `+11` path-safety tests, `+2` launcher-hardening (preflight-never-runs / GUI
+  path), preflight source test rewritten. Resolving change: `CHG-2026-09-09-001`.
+
 ### ERR-2026-09-08-011 — MEDIUM — `hermes_time.get_timezone()` can publish a zone under a stale cache identity
 
 - **Opened:** 2026-09-08 · **Base:** hermes@7ee2b69151 (0 behind upstream/main)
@@ -699,3 +784,6 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-08-010 | 2026-09-08 | MEDIUM | CLI / model select | `auth_model_picker._confirm_selection_guards()` `except Exception: warnings = []` — a guard-registry error is indistinguishable from "no warnings", so a flagged model is saved silently | RESOLVED | CHG-2026-09-08-023 — non-`ImportError` → log + `False` (model unchanged); `ImportError` still `True`. +4 tests |
 | ERR-2026-09-08-011 | 2026-09-08 | MEDIUM | Timezone cache | `hermes_time.get_timezone()` publishes `(name, tz)` under a cache identity captured before the outside-lock resolve; a profile / `HERMES_TIMEZONE` switch mid-resolve poisons the slot or returns the wrong profile's zone | RESOLVED | CHG-2026-09-08-025 — re-read the identity after the resolve, retry on a shift. +2 tests |
 | ERR-2026-09-08-012 | 2026-09-08 | LOW | Access-tier tooling | `scripts/nf-setup.ps1` `$script:NfExit = $LASTEXITCODE` can be `$null` if `& $pyExe` never launches → `if ($script:NfExit -ne 0)` fires → `Provisioning failed (exit )`. Fails safe (no record written); message uninformative | OPEN | — (do not fix here — access-tier code; coerce null→nonzero in a dedicated change) |
+| ERR-2026-09-09-001 | 2026-09-09 | HIGH | Launcher / bootstrap tooling | `bootstrap-north-forge.ps1` trusted a bare `hermes.exe`+marker existence check and, under `-Force`, ran `Remove-Item -Recurse` on any `$VenvDir` that merely existed — a partial/unrelated dir at `<checkout>-venv` was reused or deleted with no ownership proof (readiness failure conflated with the right to delete) | RESOLVED | CHG-2026-09-09-001 — readiness (`Test-NfVenvReady`) and ownership (new read-only `scripts/lib/nf-venv-state.ps1`) split into a `create`/`rebuild`/`refuse`/`none` state table; `UnknownDirectory`/`UnsafePath` ⇒ unconditional refuse (`-Force` ≠ deletion override); re-check immediately before the one `Remove-Item`; `+13` tests |
+| ERR-2026-09-09-002 | 2026-09-09 | HIGH | Launcher / bootstrap tooling | `bootstrap-north-forge.ps1` checked `-VenvDir` and `-DataDir` each against the checkout but never against each other → an equal/nested/case-variant pair let a `-Force` rebuild `Remove-Item -Recurse` on `VenvDir` delete `HERMES_HOME` (explicit-override path only; default `north-forge.cmd` unaffected) | RESOLVED | CHG-2026-09-09-001 — new `Test-PathOverlap $VenvDir $DataDir` guard after the existing RepoRoot guards; equal/trailing-sep/case/nested all rejected; `test_reject_venv_equals_or_contains_data` ×4 |
+| ERR-2026-09-09-003 | 2026-09-09 | MEDIUM | `hermes` sessions CLI | `query_session_listing` fetched a fixed `limit*4` window then filtered unnamed/current rows in Python — enough newer unnamed sessions hid an older *named* displayable session that was never fetched (same shape as `ERR-2026-09-08-008`) | RESOLVED | CHG-2026-09-09-002 — `limit<=0` ⇒ `[]` before any query; adaptive widening `limit*(4,8,16)` always from row 0, stop when `limit` displayable rows survive or the DB returns short; filter factored to `_displayable()`; `+5` tests |

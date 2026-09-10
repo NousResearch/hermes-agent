@@ -8,6 +8,95 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.8.2] — 2026-09-09 — hermes@0e9fc2cc15 (0 behind upstream/main — rebased onto origin/main)
+
+**`RUN-2026-09-09-001` — landed two AGENT-D changes that were code-complete and
+locally verified but never committed** (recovered from a `hermes-update`
+autostash dated 2026-09-09 01:42): the **R1** bootstrap venv-cleanup rework and
+the `session_listing.py` adaptive-widening fix that `RUN-2026-09-08-005` scoped
+and carried forward. Each is its own commit with its own `CHG-`/`ERR-`.
+**PATCH** — reliability fixes to launcher/bootstrap tooling and a CLI listing
+path; no new capability, no schema or engine change. Committed on base
+`hermes@3e0ddfb05d` (`NF-v0.8.1` HEAD), then `git pull --rebase origin main` — the
+2 code commits rebased **0 conflicts** over a +26-commit `origin/main` advance and
+then a second advance (`f12feace3a` → `4d2bb83617`, PR #22/#23/#24 + an upstream
+`Merge branch 'main'`) that arrived between rebase and push; no incoming commit
+touches any of the changed files. Pushed. Base coordinate stamped at the rebase.
+
+Opened + resolved same run: `ERR-2026-09-09-001`, `ERR-2026-09-09-002` (both
+R1), `ERR-2026-09-09-003` (session listing). AGENT D's own notes
+(`D:\logs\NORTH-FORGE-R1-VENV-CLEANUP_2026-09-09.md`,
+`D:\logs\SESSION-LISTING-ADAPTIVE-WIDENING_2026-09-09.md`) had provisionally
+earmarked `ERR-2026-09-08-013/014` + `CHG-2026-09-08-026/027`; reassigned to
+today's sequence per the "`NNN` resets each day" rule (README § Naming).
+
+Verification (on the rebased tree, `scripts/run_tests.sh` targeted):
+`test_bootstrap_north_forge_path_safety` 25 (14 pre-existing + 11 R1),
+`test_nf_preflight_readiness` 10, `test_bootstrap_launcher_hardening` 15
+(13 + 2 R1 direct-path), `test_session_listing` 18 (13 + 5). **68/68.** A full
+`run_tests.sh` was not run — same reason as `RUN-2026-09-08-004/005`
+(`.git/index.lock` contention + a large pre-existing `tests/acp/**` ·
+`tests/agent/**` failure baseline unrelated to any changed file).
+
+### Fixed
+
+- **CHG-2026-09-09-001** — **`bootstrap-north-forge.ps1` is now the single,
+  ownership-gated authority for cleaning the sibling venv directory.** It decided
+  "already bootstrapped?" from a bare `hermes.exe` + `.nf-bootstrapped` existence
+  check and, under `-Force`, ran `Remove-Item -Recurse` on `$VenvDir` whenever
+  that path merely existed — so a partial, interrupted, or entirely unrelated
+  directory at `<checkout>-venv` was either silently trusted as a venv
+  (`ERR-2026-09-09-001`) or destroyed, with no proof North Forge created it; and
+  `-VenvDir` / `-DataDir`, each checked against the checkout, were never checked
+  against **each other**, so an overlapping pair let a `-Force` rebuild delete
+  `HERMES_HOME` (`ERR-2026-09-09-002`). New `scripts/lib/nf-venv-state.ps1` — a
+  pure, read-only classifier `Get-NfVenvState` (states `Absent` /
+  `EmptyDirectory` / `OwnedNorthForgeVenv` / `RecognizablePythonVenv` /
+  `UnknownDirectory` / `UnsafePath`; evidence order: a readable `.nf-bootstrapped`
+  `repo=` line, matching or foreign, then a `pyvenv.cfg` that actually parses;
+  anything else is `UnknownDirectory`) that never deletes, writes, exits, or
+  emits. `bootstrap` runs that classifier and `Test-NfVenvReady` as **separate**
+  decisions and drives a `create` / `rebuild` / `refuse` / `none` state table:
+  `UnknownDirectory` and `UnsafePath` are refused unconditionally — `-Force` is a
+  rebuild *request*, never a deletion override — `EmptyDirectory` is populated in
+  place, and the one `Remove-Item` is immediately preceded (nothing in between) by
+  a re-check of the canonical path and ownership. Every decision logs a stable
+  `venv_state= ownership= action= reason=` line. The skin seed into the data
+  folder now runs only on a first-time `create`, never on a `rebuild` — a repair
+  does not touch `HERMES_HOME` at all. `nf-preflight.ps1` no longer derives
+  `-Force` from `python.exe` existence or labels the venv; on a failed probe it
+  just requests a repair (`action=bootstrap-repair`,
+  `result=repair-ok | repair-incomplete | repair-refused-or-failed`). The existing
+  RepoRoot overlap guards, `Test-PathOverlap`, and `Get-CanonicalDir` are
+  byte-unchanged. Paths: `scripts/bootstrap-north-forge.ps1`,
+  `scripts/nf-preflight.ps1`, `scripts/lib/nf-venv-state.ps1`,
+  `tests/test_bootstrap_north_forge_path_safety.py`,
+  `tests/test_bootstrap_launcher_hardening.py`,
+  `tests/test_nf_preflight_readiness.py`. Ref: `ERR-2026-09-09-001`,
+  `ERR-2026-09-09-002`. Run: RUN-2026-09-09-001.
+
+- **CHG-2026-09-09-002** — **`query_session_listing` widens its DB fetch
+  adaptively so the post-fetch visibility filter can't hide older eligible
+  sessions.** It fetched one fixed `limit * 4` window from `list_sessions_rich`,
+  then filtered unnamed / current-session rows in Python — enough newer unnamed
+  sessions in that window pushed an older *named*, displayable session out of the
+  fetch entirely and it never showed (the same shape as the `hermes logs`
+  sparse-match bug `ERR-2026-09-08-008`; `ERR-2026-09-09-003`). Now `limit <= 0`
+  returns `[]` before any query, and the fetch widens `limit * (4, 8, 16)` —
+  always from row 0, never `OFFSET` pagination, so a concurrent insert can't skip
+  or double a row — stopping as soon as `limit` displayable rows survive the
+  filter or the DB returns a short window. 16× is the ceiling; the two callers
+  pass `limit` 10/50, so the widest fetch is a few hundred rows from one indexed
+  query, and no session-count clamp exists on this path (none was invented). The
+  existing filter is factored out to `_displayable()`; SQL scoping, search
+  behaviour, `ORDER BY`, and the "never exceeds `limit`" guarantee are unchanged.
+  This is the `session_listing.py` sparse-match hardening scoped but not started
+  in `RUN-2026-09-08-005`. Paths: `hermes_cli/session_listing.py`,
+  `tests/hermes_cli/test_session_listing.py`. Ref: `ERR-2026-09-09-003`.
+  Run: RUN-2026-09-09-001.
+
+---
+
 ## [NF-v0.8.1] — 2026-09-08 — hermes@c076d653a2 (0 behind upstream/main — rebased onto origin/main)
 
 **`RUN-2026-09-08-005` — consolidated commit pass: two batches of small

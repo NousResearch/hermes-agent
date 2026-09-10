@@ -3,19 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { loadRuntimePlugin } from '@/contrib/runtime-loader'
 
-import { namespaceExportNames, resetSdkImportMapCache, sdkImportMap } from './runtime'
+import { namespaceExportNames, pluginNamespaces, resetSdkImportMapCache, sdkImportMap } from './runtime'
 
 // Evidence: since the 2026-09-10 desktop build, every disk-door plugin fails
 // at sdk-*.js module-graph prep with
 //   TypeError: Cannot convert undefined or null to object
-// before register() runs — including a zero-import plugin. The production
-// throw is Object.keys(GLOBALS[key]) inside shimUrl (via sdkImportMap), which
-// loadRuntimePlugin always invokes. The live slot that goes null in a
-// production Electron graph is `import * as jsxDevRuntime from
-// 'react/jsx-dev-runtime'` (__HERMES_REACT_JSX_DEV__): Vite/Rolldown interop
-// or a missing jsx-dev-runtime in the packaged renderer. A naive
-// loadRuntimePlugin(zero-import) test is NOT red here — vitest's graph has a
-// real jsx-dev-runtime namespace. The helper IS the Object.keys call.
+// before register() runs — including a zero-import plugin. Production
+// Rolldown hoists `__HERMES_PLUGIN_SDK__` as a var still undefined when a
+// module-scope snapshot runs; Object.keys then throws inside shimUrl.
+// Call-time pluginNamespaces() reads the live binding. namespaceExportNames
+// still guards a slot that stays null (e.g. jsx-dev-runtime).
 
 function stubBlobAsDataUrl(): () => void {
   const createObjectURL = vi
@@ -45,7 +42,7 @@ function stubBlobAsDataUrl(): () => void {
 
 describe('namespaceExportNames (disk-door sdk shim prep)', () => {
   it('does not throw TypeError when a live namespace is null/undefined', () => {
-    // Arrange the failing GLOBALS slot the production graph actually hits.
+    // Arrange the failing live-namespace slot the production graph can still hit.
     expect(() => namespaceExportNames(undefined)).not.toThrow(TypeError)
     expect(() => namespaceExportNames(null)).not.toThrow(TypeError)
     expect(namespaceExportNames(undefined)).toEqual([])
@@ -72,6 +69,18 @@ describe('namespaceExportNames (disk-door sdk shim prep)', () => {
   })
 })
 
+describe('pluginNamespaces (call-time resolve)', () => {
+  it('reads the SDK after initialization so host/cn exist for named imports', () => {
+    // Production cycle-time snapshot of `sdk` is undefined (#107288). An empty
+    // shim then fails `import { host, cn }` at link time. Call-time resolve
+    // must see the live namespace, not that snapshot.
+    const names = namespaceExportNames(pluginNamespaces().__HERMES_PLUGIN_SDK__)
+
+    expect(names).toEqual(expect.arrayContaining(['host', 'cn']))
+    expect(names.length).toBeGreaterThan(0)
+  })
+})
+
 describe('sdkImportMap', () => {
   it('keeps every specifier key (including jsx-dev-runtime) so imports stay supported', () => {
     const map = sdkImportMap()
@@ -80,6 +89,22 @@ describe('sdkImportMap', () => {
     expect(map.react).toMatch(/^(blob:|data:)/)
     expect(map['react/jsx-runtime']).toMatch(/^(blob:|data:)/)
     expect(map['react/jsx-dev-runtime']).toMatch(/^(blob:|data:)/)
+  })
+
+  it('SDK shim lists host and cn so import { host, cn } can link', () => {
+    const restore = stubBlobAsDataUrl()
+    try {
+      resetSdkImportMapCache()
+      const url = sdkImportMap()['@hermes/plugin-sdk']
+      const encoded = url.replace(/^data:text\/javascript;base64,/, '')
+      const source = Buffer.from(encoded, 'base64').toString('utf8')
+
+      expect(source).toMatch(/export const \{[^}]*\bhost\b/)
+      expect(source).toMatch(/export const \{[^}]*\bcn\b/)
+    } finally {
+      restore()
+      resetSdkImportMapCache()
+    }
   })
 })
 

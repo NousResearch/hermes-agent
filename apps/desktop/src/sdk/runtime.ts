@@ -13,22 +13,35 @@ import * as jsxRuntime from 'react/jsx-runtime'
 
 import * as sdk from './index'
 
-const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
-} as const
+/**
+ * Resolve live namespaces at call time — never snapshot them in a
+ * module-scope object. This file sits in
+ * `sdk/index → contrib/* → runtime-loader → sdk/runtime → sdk/index`.
+ * Rolldown emits the SDK namespace as a hoisted `var`; a module-scope
+ * `{ __HERMES_PLUGIN_SDK__: sdk }` therefore captures `undefined` and
+ * every disk plugin that imports `{ host, cn }` fails to link. Callers
+ * (`installPluginSdk`, `shimUrl`) only run after the app is up.
+ */
+export function pluginNamespaces() {
+  return {
+    __HERMES_PLUGIN_SDK__: sdk,
+    __HERMES_REACT__: React,
+    __HERMES_REACT_JSX__: jsxRuntime,
+    __HERMES_REACT_JSX_DEV__: jsxDevRuntime
+  }
+}
+
+type PluginGlobalKey = keyof ReturnType<typeof pluginNamespaces>
 
 export function installPluginSdk(): void {
-  Object.assign(globalThis, GLOBALS)
+  Object.assign(globalThis, pluginNamespaces())
 }
 
 /**
  * Named exports a live `import * as` namespace can re-export on a shim.
- * Production Electron/Rolldown graphs may bind a specifier (notably
- * `react/jsx-dev-runtime`) to null/undefined — `Object.keys` then throws
- * `TypeError: Cannot convert undefined or null to object`, which kills
+ * A cycle-time snapshot or a missing production binding (notably
+ * `react/jsx-dev-runtime`) can still be null — `Object.keys` then throws
+ * `TypeError: Cannot convert undefined or null to object` and kills
  * every disk plugin because `sdkImportMap()` walks all four slots first.
  */
 export function namespaceExportNames(ns: unknown): string[] {
@@ -41,8 +54,8 @@ export function namespaceExportNames(ns: unknown): string[] {
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.
  *  Export names come from the namespace itself, so the list can't drift. */
-function shimUrl(globalKey: keyof typeof GLOBALS): string {
-  const names = namespaceExportNames(GLOBALS[globalKey])
+function shimUrl(globalKey: PluginGlobalKey): string {
+  const names = namespaceExportNames(pluginNamespaces()[globalKey])
 
   // Read the live global at evaluation time. If installPluginSdk() did not
   // stick (or a slot is null), coerce to {} so `m.default` / destructure

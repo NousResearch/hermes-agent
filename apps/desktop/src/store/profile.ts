@@ -817,9 +817,10 @@ export function selectProfile(name: string): void {
   // profile.set() and reload the window. Once activation succeeds, remember
   // the selection for the next Desktop launch through the persistence-only
   // IPC instead (#79886). Registry-source picks name ANOTHER source's
-  // profiles, so only a primary-backend activation updates the startup
-  // preference.
-  const onPrimary = activeGatewayConnectionId() == null
+  // profiles, so only a primary-backend or explicit-local activation updates
+  // the startup preference (#107528).
+  const connectionId = activeGatewayConnectionId()
+  const onPrimary = connectionId == null || connectionId === LOCAL_CONNECTION_ID
 
   const shouldRememberStartupProfile = onPrimary ? isLocalDesktopProfile(target) : Promise.resolve(false)
 

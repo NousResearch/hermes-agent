@@ -201,6 +201,24 @@ describe('selectProfile startup preference (#79886)', () => {
     await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
   })
 
+  it('remembers a local rail switch when the explicit local source is live (#107528)', async () => {
+    activeGatewayConnectionId.mockReturnValue('local')
+
+    selectProfile('searxng')
+
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('searxng'))
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('searxng'))
+  })
+
+  it('remembers Default on the explicit local source after successful activation (#107528)', async () => {
+    activeGatewayConnectionId.mockReturnValue('local')
+
+    selectProfile('default')
+
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'default'))
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('default'))
+  })
+
   it('does not replace the local startup preference for a profile SSH override', async () => {
     activeGatewayConnectionId.mockReturnValue(null)
 

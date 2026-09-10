@@ -99,3 +99,76 @@ def test_workspaces_root_also_honors_explicit_board_over_env(monkeypatch, tmp_pa
     assert "sycode-trading" in str(path), (
         f"explicit board should override HERMES_KANBAN_WORKSPACES_ROOT, got {path}"
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI --board boundary (os-reviewer P1 on PR#107195 / t_11c4afd8): a
+# worker-pinned env (HERMES_KANBAN_DB/HERMES_KANBAN_BOARD) must not outrank
+# an explicit `hermes kanban --board B ...` invocation, which resolves via
+# scoped_current_board() rather than a direct board= call argument. The
+# original fix only prioritized the direct argument; --board went through
+# _board_path(..., board=None) and so still lost to the env pin.
+# ---------------------------------------------------------------------------
+
+def test_scoped_current_board_context_trumps_kanban_db_env(monkeypatch, tmp_path):
+    """kb.scoped_current_board() (what CLI --board and the dashboard
+    plugin_api use) must resolve like an explicit board= call even while
+    HERMES_KANBAN_DB pins a different, worker-injected path."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "worker-pinned.db"))
+    with kb.scoped_current_board("sycode-trading"):
+        path = kb.kanban_db_path()
+    assert "sycode-trading" in str(path), (
+        f"scoped --board context should override HERMES_KANBAN_DB, got {path}"
+    )
+
+
+def test_cli_board_flag_trumps_worker_env_pin_end_to_end(monkeypatch, tmp_path):
+    """Real boundary: a worker shell pinned via HERMES_KANBAN_DB/BOARD (the
+    exact env every dispatcher-spawned kanban worker runs with) invokes
+    `hermes kanban --board B create ...` through the actual CLI parser.
+    Only board B's physical database may receive the write; the pinned
+    board's database must not also contain the task."""
+    import argparse
+
+    from hermes_cli import kanban as kc
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    kb.create_board("worker-own-board")
+    kb.create_board("target-board")
+
+    # Simulate the ambient env every MCP/dispatcher-spawned worker carries:
+    # pinned to its OWN board, distinct from the one it explicitly targets.
+    worker_pinned_db = kb.kanban_db_path(board="worker-own-board")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(worker_pinned_db))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "worker-own-board")
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", "--board", "target-board", "create", "cross-board task"])
+    rc = kc.kanban_command(args)
+    assert rc == 0
+
+    target_db = kb.kanban_db_path(board="target-board")
+    assert target_db != worker_pinned_db
+
+    from hermes_cli import kanban_db_connect as kbc
+    with kbc.connect(board="target-board") as conn:
+        rows = conn.execute("SELECT title FROM tasks").fetchall()
+    assert any(r[0] == "cross-board task" for r in rows), (
+        "explicit --board flag must land the write on the target board, "
+        f"got rows={rows!r} in {target_db}"
+    )
+
+    # And the worker's own pinned board must NOT have received the write —
+    # this is the exact silent-misroute failure class the fix closes.
+    with kbc.connect(board="worker-own-board") as conn:
+        own_rows = conn.execute("SELECT title FROM tasks").fetchall()
+    assert not any(r[0] == "cross-board task" for r in own_rows), (
+        f"--board must not fall through to the worker's env-pinned board, "
+        f"but found the task there too: {own_rows!r}"
+    )

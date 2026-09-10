@@ -1,2 +1,0 @@
-"""Index interaction code
-"""

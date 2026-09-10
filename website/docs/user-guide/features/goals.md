@@ -71,7 +71,11 @@ What you'll see:
 | `/goal gate remove <N>` | Remove the Nth gate (1-based). |
 | `/goal gate clear` | Remove all gates. |
 
-Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
+The classic CLI, TUI, Desktop, dashboard chat, and messaging gateway use one shared `/goal` command handler. This includes draft/show, inline contracts, wait/unwait, quality gates, and the clear/stop/done aliases. Desktop goal controls use the same handler, too. ACP does not currently advertise or implement `/goal`.
+
+`/goal draft <text>` both creates the goal and starts its first turn, including when drafting is unavailable and Hermes falls back to a free-form goal. `draft` is a whole-word subcommand: `/goal drafting docs` keeps `drafting docs` as the literal objective without calling the draft model.
+
+Messaging platforms retain their access rules: `/goal gate add` requires an explicitly configured gateway admin; listing, removing, and clearing gates remain available for recovery. Rendering and turn scheduling are surface-specific, but command parsing and persisted goal changes are shared.
 
 ## Completion contracts
 

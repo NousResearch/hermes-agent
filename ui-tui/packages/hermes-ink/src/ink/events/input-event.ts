@@ -2,8 +2,20 @@ import { nonAlphanumericKeys, type ParsedKey } from '../parse-keypress.js'
 
 import { Event } from './event.js'
 
-const inputForSpecialSequence = (name: string): string =>
-  name === 'space' ? ' ' : name === 'return' || name === 'escape' ? '' : name
+const inputForSpecialSequence = (name: string, shift: boolean): string => {
+  const input = name === 'space' ? ' ' : name === 'return' || name === 'escape' ? '' : name
+
+  // Extended-key protocols (CSI u / xterm modifyOtherKeys) report printable
+  // letters as their lowercase keycode, so Shift+R arrives as name 'r' with
+  // shift=true. Re-apply shift to a single lowercase letter so the composer
+  // receives 'R', not 'r'. Keybinding consumers still see the lowercase
+  // canonical name via key.name — only the inserted text is case-restored.
+  if (shift && input.length === 1 && input >= 'a' && input <= 'z') {
+    return input.toUpperCase()
+  }
+
+  return input
+}
 
 export type Key = {
   upArrow: boolean
@@ -112,7 +124,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // so the raw "[57358u" doesn't leak into the prompt. See #38781.
       input = ''
     } else {
-      input = inputForSpecialSequence(keypress.name)
+      input = inputForSpecialSequence(keypress.name, keypress.shift)
     }
 
     processedAsSpecialSequence = true
@@ -130,7 +142,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // guards against future terminal behavior.
       input = ''
     } else {
-      input = inputForSpecialSequence(keypress.name)
+      input = inputForSpecialSequence(keypress.name, keypress.shift)
     }
 
     processedAsSpecialSequence = true

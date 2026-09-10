@@ -168,7 +168,7 @@ def _profile_create(args):
     if cloned:
         source_label = clone_from or get_active_profile_name()
         if clone_all:
-            print(f"Full copy from {source_label} (excluding session history, backups, and snapshots).")
+            print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
         # Auto-clone Honcho config for the new profile (only with clone operations)

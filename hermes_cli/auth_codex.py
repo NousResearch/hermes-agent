@@ -212,13 +212,42 @@ def _refresh_payload_access_token(
     return payload, access
 
 
+_SSL_TROUBLE_MARKERS = ("[SSL:", "_ssl.c", "UNEXPECTED_EOF")
+
+
+def _ssl_interop_hint(exc: BaseException) -> str:
+    """Actionable hint for device-login transport errors that look like TLS middlebox interference.
+
+    OpenSSL 3.5+ advertises post-quantum hybrid groups (e.g. X25519MLKEM768) by default, and some
+    intercepting middleboxes reject the resulting larger TLS 1.3 ClientHello — while curl, using a
+    different TLS stack, still works, so the failure masquerades as a Codex outage (#106384).
+    httpx wraps the ``ssl.SSLError`` in a ``ConnectError``/``ConnectTimeout`` whose text usually
+    repeats the OpenSSL message; the cause chain is checked too in case it doesn't.
+    """
+    import ssl
+
+    chain = (exc, exc.__cause__, exc.__context__)
+    if not any(
+        isinstance(err, ssl.SSLError) or any(marker in str(err) for marker in _SSL_TROUBLE_MARKERS)
+        for err in chain if err is not None
+    ):
+        return ""
+    return (
+        " This looks like a TLS handshake failure rather than a Codex outage: some networks reject"
+        " the larger TLS 1.3 ClientHello that OpenSSL 3.5+ sends by default (post-quantum hybrid"
+        " groups). Workaround: point OPENSSL_CONF at a config restricting Groups to classic curves"
+        " (x25519:secp256r1:secp384r1:x448), or test with TLS 1.2 — see the Codex note in"
+        " https://hermes-agent.nousresearch.com/docs/integrations/providers"
+    )
+
+
 def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "httpx.Response":
     """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``."""
     try:
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             return client.post(url, **kwargs)
     except Exception as exc:
-        raise _codex_err(f"{failure[0]}: {exc}", failure[1])
+        raise _codex_err(f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
 
 
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
@@ -729,10 +758,15 @@ def _codex_poll_authorization_code(
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             while time.monotonic() - start < max_wait:
                 time.sleep(poll_interval)
-                poll_resp = client.post(
-                    f"{issuer}/api/accounts/deviceauth/token",
-                    json={"device_auth_id": device_auth_id, "user_code": user_code},
-                    headers={"Content-Type": "application/json"})
+                try:
+                    poll_resp = client.post(
+                        f"{issuer}/api/accounts/deviceauth/token",
+                        json={"device_auth_id": device_auth_id, "user_code": user_code},
+                        headers={"Content-Type": "application/json"})
+                except Exception as exc:
+                    raise _codex_err(
+                        f"Device auth polling request failed: {exc}{_ssl_interop_hint(exc)}",
+                        "device_code_poll_error") from exc
                 if poll_resp.status_code == 200:
                     code_resp = poll_resp.json()
                     break

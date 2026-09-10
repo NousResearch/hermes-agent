@@ -915,10 +915,16 @@ def test_progress_reads_existing_board_without_using_mutating_connection(kanban_
 
 
 def test_progress_snapshot_includes_committed_wal_without_touching_source_sidecars(
-    kanban_home,
+    kanban_home, monkeypatch,
 ):
     import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    import hermes_state_wal
     from gateway.progress_queries import resolve_progress_query
+
+    # Pin WAL: a host running a WAL-reset-vulnerable SQLite (see hermes_state_wal) falls back to
+    # journal_mode=DELETE, which never creates a -wal sidecar -- this test is specifically about
+    # WAL-sidecar handling, so it must not depend on the host's linked SQLite version.
+    monkeypatch.setattr(hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False)
 
     source_path = kb.kanban_db_path(board=BOARD)
     conn = _hermes_cli_kanban_db_connect.connect(board=BOARD)

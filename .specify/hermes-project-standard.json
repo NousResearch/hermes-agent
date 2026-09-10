@@ -8,8 +8,8 @@
   "migration_mode": "brownfield-missing-only",
   "project_class": "full",
   "project_id": "hermes-execution-router-api",
-  "project_version": "0.1.0",
+  "project_version": "0.1.1",
   "schema_version": 1,
   "standard_version": "2.0.0",
-  "version_state": "DRAFT"
+  "version_state": "ACCEPTED"
 }

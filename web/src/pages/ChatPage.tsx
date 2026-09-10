@@ -695,6 +695,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
+      // Bare F11 → browser fullscreen. xterm.js claims every function key
+      // for the PTY (F11 = CSI 23~), so once the chat terminal has focus
+      // Chrome never sees its own fullscreen shortcut — the fullscreen
+      // hardware key "stops working" after switching tabs and back (focus
+      // returns to the xterm textarea). Return false without
+      // preventDefault so xterm ignores the key and the browser acts.
+      if (
+        ev.key === "F11" &&
+        !ev.ctrlKey &&
+        !ev.metaKey &&
+        !ev.altKey &&
+        !ev.shiftKey
+      ) {
+        return false;
+      }
+
       // Copy: Cmd+C on macOS, Ctrl+C or Ctrl+Shift+C elsewhere. Copy only
       // when xterm has a selection; without one Ctrl+C still reaches the TUI
       // as SIGINT.

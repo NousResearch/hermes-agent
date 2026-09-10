@@ -425,7 +425,7 @@ export function TreeGroup({
 
   return (
     <div
-      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-editor-surface-background)"
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-editor-surface-background) [container-type:inline-size] [container-name:pane-zone]"
       data-tree-group={node.id}
       data-window-top={topEdge || undefined}
       // Advertises the visible tab strip so panes can drop their own
@@ -440,7 +440,12 @@ export function TreeGroup({
         setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
       }}
       ref={ref}
-      style={wcOverlap ? { paddingTop: wcOverlap.y + wcOverlap.height } : undefined}
+      style={
+        {
+          '--pane-titlebar-height': `${TITLEBAR_HEIGHT}px`,
+          paddingTop: wcOverlap ? wcOverlap.y + wcOverlap.height : undefined
+        } as CSSProperties
+      }
     >
       {wcOverlap && (
         <div
@@ -500,12 +505,13 @@ export function TreeGroup({
           bounds, strip refs, focus ownership and split geometry as the body. */}
       {(headerVisible || topEdge) && (
         <div
-          className="flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
+          className="relative flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
           data-panel-header=""
-          style={topEdge ? { height: TITLEBAR_HEIGHT } : undefined}
+          data-titlebar-tabs={topEdge && headerVisible && (leftEdge || rightEdge) ? true : undefined}
+          style={topEdge ? { height: `var(--panel-header-height, ${TITLEBAR_HEIGHT}px)` } : undefined}
         >
           {topEdge && leftEdge && (
-            <div className="flex shrink-0">
+            <div className="flex shrink-0" data-titlebar-reserve="left">
               <div className="w-(--titlebar-controls-left,14px) [-webkit-app-region:drag]" data-window-drag-handle="" />
               <div className="relative w-(--titlebar-controls-width,96px)">
                 <div
@@ -698,7 +704,7 @@ export function TreeGroup({
             <div className="min-w-0 flex-1 [-webkit-app-region:drag]" />
           )}
           {topEdge && rightEdge && (
-            <div className="flex shrink-0">
+            <div className="flex shrink-0" data-titlebar-reserve="right">
               <div
                 className="w-6"
                 data-window-drag-handle=""
@@ -772,16 +778,17 @@ export function TreeGroup({
       {editMode && !dragging && !isEmpty && !node.minimized && (
         <ZoneMenu {...zoneMenu}>
           <div
+            className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
             // z-50: pane CONTENT may carry its own stacked chrome (the
             // terminal rail is z-40) — the edit veil must cover all of it.
             // The scrim mixes the accent over the CHROME BG (not transparent)
             // so it properly dims content in dark themes instead of leaving a
             // barely-tinted wash; the light blur reads as "edit mode" the same
             // way the zone editor's backdrop does.
-            className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
+            data-pane-edit-veil=""
             onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, active?.title ?? activeId)}
             style={{
-              top: topEdge ? TITLEBAR_HEIGHT : headerVisible ? 28 : 0,
+              top: topEdge ? `var(--panel-header-height, ${TITLEBAR_HEIGHT}px)` : headerVisible ? 28 : 0,
               background:
                 'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
               outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'

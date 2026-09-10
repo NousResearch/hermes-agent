@@ -274,7 +274,7 @@ export function TreeSplit({
           element,
           index,
           initial: side.fixed ? side.size : sizeOf(element),
-          // A minimized rail is its 28px strip: it neither donates nor takes,
+          // A minimized zone keeps its rendered strip: it neither donates nor takes,
           // and its remembered weight must survive the gesture so restoring
           // it brings back the size it had before it was folded.
           minimized: child.type === 'group' && Boolean(child.minimized),
@@ -704,7 +704,11 @@ export function TreeSplit({
               collapsed
                 ? { display: 'none' }
                 : minimized
-                  ? { flex: `0 0 ${MINIMIZED_TRACK}` }
+                  ? {
+                      // Rows keep a narrow rail; columns follow the rendered
+                      // strip height, including two-row top-edge headers.
+                      flex: `0 0 ${horizontal ? MINIMIZED_TRACK : 'auto'}`
+                    }
                   : {
                       // One flexbox formula for everything: a sized zone is
                       // grow-0 shrink-1 from its preferred basis (it yields

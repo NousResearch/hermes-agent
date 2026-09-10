@@ -206,7 +206,9 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 Top-edge panels extend into the native titlebar band. Their tab strips remain
 inside their own zones so tab drops, focus, and split boundaries use the same
-geometry. Lower panels keep local headers. Empty header space moves the window;
+geometry. Lower panels keep local headers. Edge panels at 420px or narrower place their
+tabs on a second row below the window controls, retaining the full tab and
+restore hit targets while resizing. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.
 

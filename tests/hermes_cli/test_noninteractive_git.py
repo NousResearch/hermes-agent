@@ -97,6 +97,86 @@ class TestNoninteractiveGitEnv:
         assert values["sequence.editor"] == "true"
         assert values["diff.external"] == ""
 
+    def test_carries_user_safe_directory_past_config_isolation(self, tmp_path, monkeypatch):
+        """safe.directory survives GIT_CONFIG_GLOBAL=/dev/null (#dubious-ownership on NFS).
+
+        git honours safe.directory only from global/system config, and both are blanked here. If
+        it is not re-injected, every internal git call fails "detected dubious ownership" on a
+        repo whose st_uid != geteuid() -- an NFS/CIFS mount without idmapping, a shared checkout,
+        a container with a remapped uid -- even though the user configured it correctly.
+        """
+        gitconfig = tmp_path / "gitconfig"
+        gitconfig.write_text(
+            "[safe]\n\tdirectory = /mnt/nfs/repo\n\tdirectory = /srv/shared/other\n",
+            encoding="utf-8",
+        )
+        empty_system = tmp_path / "system-gitconfig"
+        empty_system.write_text("", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_system))
+
+        env = noninteractive_git_env()
+        pairs = [
+            (env[f"GIT_CONFIG_KEY_{idx}"], env[f"GIT_CONFIG_VALUE_{idx}"])
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+        ]
+        safe = [value for key, value in pairs if key == "safe.directory"]
+
+        assert "/mnt/nfs/repo" in safe
+        assert "/srv/shared/other" in safe
+        # Isolation is still in force: the values ride the KEY_n channel, not the config file.
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert env["GIT_CONFIG_SYSTEM"] == os.devnull
+        # And the hardening overrides are untouched by the appended entries.
+        assert ("core.pager", "cat") in pairs
+        assert ("credential.helper", "") in pairs
+
+    def test_safe_directory_absent_when_user_configured_none(self, tmp_path, monkeypatch):
+        """No user entries -> no injected entries; the env is exactly as it was before."""
+        gitconfig = tmp_path / "gitconfig"
+        gitconfig.write_text("[user]\n\tname = nobody\n", encoding="utf-8")
+        empty_system = tmp_path / "system-gitconfig"
+        empty_system.write_text("", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+        # Pin the system scope too: a real /etc/gitconfig on the test host may carry its own
+        # safe.directory entries, which would otherwise leak in and mask the assertion.
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_system))
+
+        env = noninteractive_git_env()
+        keys = [env[f"GIT_CONFIG_KEY_{idx}"] for idx in range(int(env["GIT_CONFIG_COUNT"]))]
+
+        assert "safe.directory" not in keys
+
+    def test_ambient_safe_directory_injection_is_not_trusted(self, tmp_path, monkeypatch):
+        """A caller-supplied GIT_CONFIG_KEY_n=safe.directory is dropped, not laundered through.
+
+        Only what the user's own config file says is carried; ambient injection stays stripped so
+        this cannot become a path-trust escalation vector.
+        """
+        gitconfig = tmp_path / "gitconfig"
+        gitconfig.write_text("[safe]\n\tdirectory = /mnt/nfs/repo\n", encoding="utf-8")
+        empty_system = tmp_path / "system-gitconfig"
+        empty_system.write_text("", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_system))
+
+        env = noninteractive_git_env(
+            {
+                **os.environ,
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "safe.directory",
+                "GIT_CONFIG_VALUE_0": "/attacker/controlled",
+            }
+        )
+        safe = [
+            env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+            if env[f"GIT_CONFIG_KEY_{idx}"] == "safe.directory"
+        ]
+
+        assert "/attacker/controlled" not in safe
+        assert "/mnt/nfs/repo" in safe
+
     def test_ssh_host_key_prompts_fail_closed(self):
         """core.sshCommand is pinned to BatchMode ssh (#104591).
 

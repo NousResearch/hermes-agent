@@ -232,6 +232,42 @@ _GIT_CONFIG_OVERRIDES = {
 }
 
 
+def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
+    """The user's configured ``safe.directory`` values, read from their real global/system config.
+
+    Read with ``git config --get-all`` under *base_env* (the caller's untouched environment) so an
+    explicit ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` still points at the file the user means.
+    Best-effort: any failure (git missing, malformed config, timeout) yields no entries and leaves
+    the caller exactly as it behaved before.
+    """
+    env = dict(base_env)
+    # --get-all itself must not be derailed by ambient injection or an interactive prompt.
+    for key in list(env):
+        if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
+            env.pop(key, None)
+    env.pop("GIT_CONFIG_COUNT", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    values: list[str] = []
+    seen: set[str] = set()
+    for scope in ("--global", "--system"):
+        try:
+            proc = subprocess.run(
+                ["git", "config", scope, "--get-all", "safe.directory"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=5, stdin=subprocess.DEVNULL, env=env, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode != 0:
+            continue
+        for line in proc.stdout.splitlines():
+            entry = line.strip()
+            if entry and entry not in seen:
+                seen.add(entry)
+                values.append(entry)
+    return values
+
+
 def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:
     """Environment for *internal* git invocations that must never prompt.
 
@@ -258,6 +294,9 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     for input nobody can type.
     """
     env = dict(base if base is not None else os.environ)
+    # Captured before the isolation below rewrites GIT_CONFIG_GLOBAL/SYSTEM to /dev/null --
+    # reading after that point would resolve the user's config to an empty file.
+    safe_directories = _user_safe_directories(base if base is not None else os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
     # Drop caller-supplied config injection; the GIT_CONFIG_COUNT block is rebuilt below so
@@ -272,8 +311,19 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     env["GIT_PAGER"] = "cat"
     env["PAGER"] = "cat"
     env["GIT_EDITOR"] = "true"
-    env["GIT_CONFIG_COUNT"] = str(len(_GIT_CONFIG_OVERRIDES))
-    for idx, (key, value) in enumerate(_GIT_CONFIG_OVERRIDES.items()):
+    overrides = list(_GIT_CONFIG_OVERRIDES.items())
+    # safe.directory is honoured ONLY from global/system config (git rejects it from repo-level
+    # config so a hostile repo cannot self-authorise), and both are blanked just above. Without
+    # re-injection every internal git call fails "detected dubious ownership" on any repo whose
+    # st_uid != geteuid() -- NFS/CIFS mounts without idmapping, shared checkouts, containers with
+    # a remapped uid -- even though the user's own `git config --global --add safe.directory` is
+    # correctly set and their interactive git works fine. Carried over the GIT_CONFIG_KEY_n
+    # channel, which survives GIT_CONFIG_GLOBAL=/dev/null. Read-only: it never widens the set
+    # beyond what the user already trusts, and the hardening overrides above still win because a
+    # later key of the same name takes precedence in git's config order.
+    overrides.extend(("safe.directory", value) for value in safe_directories)
+    env["GIT_CONFIG_COUNT"] = str(len(overrides))
+    for idx, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
     return env

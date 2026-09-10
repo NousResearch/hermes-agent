@@ -14,6 +14,16 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
 
 
+def _unwrap_worker_log_wrapper(cmd: list[str]) -> list[str]:
+    """Return the worker command after asserting the redaction wrapper shape."""
+    assert len(cmd) >= 6, f"cmd too short for the worker-log wrapper: {cmd}"
+    assert cmd[1:3] == ["-m", "hermes_cli.kanban_worker_log"], (
+        f"expected the kanban_worker_log wrapper module at cmd[1:3], got: {cmd[:5]}"
+    )
+    assert cmd[4] == "--", f"expected '--' after the wrapper log path, got: {cmd[:6]}"
+    return cmd[5:]
+
+
 @pytest.fixture
 def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, kb.Task]:
     root = tmp_path / ".hermes"
@@ -22,7 +32,6 @@ def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
     root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
     profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
 
     workspace = tmp_path / "candidate-worktree"
@@ -83,7 +92,7 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert captured_cmd[unit_index + 1] == "hermes-worker-kanban-t_candidate_restart-run-23"
     assert "MemoryMax=536870912" in captured_cmd
     separator = captured_cmd.index("--")
-    assert captured_cmd[separator + 1 : separator + 4] == ["hermes", "-p", "coder"]
+    assert _unwrap_worker_log_wrapper(captured_cmd[separator + 1 :])[:3] == ["hermes", "-p", "coder"]
     assert captured_cwd == str(workspace)
     assert captured_env["HERMES_KANBAN_TASK"] == task.id
     assert captured_env["HERMES_KANBAN_RUN_ID"] == "23"
@@ -138,7 +147,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     )
 
     assert kbd._default_spawn(task, str(workspace)) == 4243
-    assert captured_cmd[:3] == ["hermes", "-p", "coder"]
+    assert _unwrap_worker_log_wrapper(captured_cmd)[:3] == ["hermes", "-p", "coder"]
 
 
 @pytest.mark.linux_only
@@ -160,8 +169,17 @@ def test_real_user_systemd_scope_preserves_worker_context(
         "'run': os.environ.get('HERMES_KANBAN_RUN_ID'), "
         "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); time.sleep(0.5)"
     )
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: [sys.executable, "-c", script, str(receipt)])
+    # Provide a standalone payload. Patching only _resolve_hermes_argv would
+    # leave the normal Hermes-specific -p/--cli flags in front of Python -c.
+    monkeypatch.setattr(
+        kbd,
+        "_worker_argv",
+        lambda _task, _profile, _home: [sys.executable, "-c", script, str(receipt)],
+    )
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
+    # The systemd scope starts in the task workspace, not this checkout. Make
+    # the uninstalled wrapper module importable in this source-tree test.
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
 
     pid = kbd._default_spawn(task, str(workspace))
@@ -171,7 +189,9 @@ def test_real_user_systemd_scope_preserves_worker_context(
 
     assert receipt.exists()
     payload = json.loads(receipt.read_text(encoding="utf-8"))
-    assert payload["pid"] == pid
+    # The dispatcher tracks the scope's wrapper process. The worker itself is
+    # its child, so its PID is intentionally distinct.
+    assert payload["pid"] != pid
     assert payload["cwd"] == str(workspace)
     assert payload["task"] == task.id
     assert payload["run"] == "23"

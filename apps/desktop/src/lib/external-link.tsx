@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
 
-import { resolveBrandIcon } from './brand-icon'
+import { hasBrandIconHost, useBrandIcon } from './brand-icon-loader'
 import { cn } from './utils'
 
 const titleCache = new Map<string, string>()
@@ -280,11 +280,18 @@ export function ExternalLinkIcon({ className }: { className?: string }) {
 // to the brand name, which lands in the anchor's textContent and accessible
 // name — a PR link would read "GitHub#123".
 export function LinkBrandIcon({ className, href }: { className?: string; href: string }) {
-  const Icon = resolveBrandIcon(shortHostLabel(href))
+  const hostname = shortHostLabel(href)
+  const Icon = useBrandIcon(hostname)
 
-  return Icon ? (
-    <Icon aria-hidden className={cn('mr-1 inline size-[0.85em] align-[-0.12em] opacity-80', className)} title="" />
-  ) : null
+  if (!hasBrandIconHost(hostname)) {
+    return null
+  }
+
+  return (
+    <span aria-hidden className={cn('mr-1 inline-block size-[0.85em] align-[-0.12em]', className)}>
+      {Icon && <Icon className="size-full opacity-80" title="" />}
+    </span>
+  )
 }
 
 export function ExternalLink({

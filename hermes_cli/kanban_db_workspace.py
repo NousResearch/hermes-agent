@@ -423,12 +423,12 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
 
 def _configured_worktree_base(repo_root: Path) -> Optional[str]:
     """A shared-board source choice must survive the worker's profile boundary."""
-    import yaml
+    from hermes_cli.config import read_user_config_raw
 
     config_path = _kb.kanban_home() / "config.yaml"
     if not config_path.is_file():
         return None
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    config = read_user_config_raw(config_path) or {}
     refs = (config.get("kanban") or {}).get("worktree_base_refs", {})
     if not isinstance(refs, dict):
         raise ValueError("kanban.worktree_base_refs must map repository paths to Git refs")

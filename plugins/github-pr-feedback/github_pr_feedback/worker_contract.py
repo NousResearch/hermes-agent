@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from hermes_cli.config import _ENV_REF_RE, _expand_env_vars
+from hermes_cli.config import _ENV_REF_RE, _expand_env_vars, read_user_config_raw
 from hermes_cli.managed_scope import apply_managed_overlay
 from utils import env_var_enabled
 
@@ -133,7 +133,7 @@ def worker_contract_enabled(
         return False
     home = root if assignee == "default" else root / "profiles" / assignee
     try:
-        config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+        config = read_user_config_raw(home / "config.yaml")
     except (OSError, UnicodeError, yaml.YAMLError):
         return False
     raw_plugins = config.get("plugins") if isinstance(config, dict) else None

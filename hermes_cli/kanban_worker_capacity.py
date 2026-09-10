@@ -40,8 +40,10 @@ class WorkerCapacity:
 
             route = None
             try:
+                from hermes_cli.config import read_user_config_raw
+
                 path = Path(resolve_profile_env(normalize_profile_name(assignee))) / "config.yaml"
-                config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                config = read_user_config_raw(path) or {}
                 primary = config.get("model") or {}
                 route = (primary.get("provider"), primary.get("default"))
                 if self.local_first and not model:

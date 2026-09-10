@@ -724,8 +724,14 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     manage their own clients. Interrupt/abort/close semantics stay in callers.
     """
     if agent.api_mode == "codex_responses":
-        return agent._run_codex_stream(api_kwargs, client=make_client("codex_stream_request"),
-            on_first_delta=getattr(agent, "_codex_on_first_delta", None))
+        codex_client = make_client("codex_stream_request")
+        return _dispatch_provider_request(
+            agent, api_kwargs,
+            lambda authorized: agent._run_codex_stream(
+                authorized, client=codex_client,
+                on_first_delta=getattr(agent, "_codex_on_first_delta", None),
+            ),
+        )
     if agent.api_mode == "anthropic_messages":
         # Request-local client so the stale/interrupt watchdog aborts sockets
         # from the stranger thread while the worker owns the SDK close (#67142).
@@ -2195,7 +2201,8 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
         codex_kwargs = agent._build_api_kwargs(api_messages)
         codex_kwargs.pop("tools", None)
-        return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
+        response = _dispatch_provider_request(agent, codex_kwargs, agent._run_codex_stream)
+        return _summary_text(agent, response)
     return _attempt
 
 
@@ -2206,7 +2213,10 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
-        response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
+        response = _managed_summary_call(
+            agent, api_request_id, ant_kw,
+            lambda request: _dispatch_provider_request(agent, request, agent._anthropic_messages_create),
+            retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
@@ -2217,7 +2227,10 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
+            agent, api_request_id, summary_kwargs,
+            lambda request: _dispatch_provider_request(
+                agent, request, lambda authorized: summary_client.chat.completions.create(**authorized)),
+            retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
 
@@ -2245,6 +2258,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
     append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
+    # The physical summary call now goes through the same egress-firewall dispatch as every
+    # other provider request (previously bypassed it entirely), which requires
+    # agent._current_api_request_id to be a truthy request identity; stamp this call's id and
+    # restore whatever the surrounding turn had, since this runs outside the normal per-iteration
+    # dispatch that would otherwise set it.
+    prior_api_request_id = getattr(agent, "_current_api_request_id", "")
+    agent._current_api_request_id = summary_api_request_id
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
@@ -2268,6 +2288,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         logger.warning("Failed to get summary response: %s", e)
         final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
     finally:
+        agent._current_api_request_id = prior_api_request_id
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)
 

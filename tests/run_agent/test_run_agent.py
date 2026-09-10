@@ -2863,6 +2863,51 @@ class TestMcpParallelToolBatch:
 
 
 
+class TestHandleMaxIterationsEgressFirewall:
+    """The physical summary call for a protected-remote provider must go through the same
+    egress-firewall dispatch as any other request — previously it called agent._run_codex_stream
+    / agent._anthropic_messages_create / chat.completions.create directly, so a summary request
+    containing a path or secret the firewall would otherwise reject could still reach the
+    provider. Missing request identity is the firewall's own rejection signal, so a summary
+    call for a protected provider with no session/turn/policy identity set must fail closed
+    with that error rather than silently reaching the provider."""
+
+    def test_codex_summary_is_blocked_without_request_identity(self, agent):
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "gpt-5.5"
+        agent._cached_system_prompt = "You are helpful."
+        called = {"n": 0}
+
+        def fake_run_codex_stream(kwargs):
+            called["n"] += 1
+            raise AssertionError("must not reach the provider without firewall authorization")
+
+        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+            result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 90)
+
+        assert called["n"] == 0
+        assert "missing_request_identity" in result
+
+    def test_nous_summary_is_blocked_without_request_identity(self, agent):
+        agent.provider = "nous"
+        agent.base_url = "https://inference-api.nousresearch.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "stealth/ox-alpha"
+        agent._cached_system_prompt = "You are helpful."
+
+        def fake_create(**kwargs):
+            raise AssertionError("must not reach the provider without firewall authorization")
+
+        agent.client.chat.completions.create.side_effect = fake_create
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 90)
+
+        assert "missing_request_identity" in result
+
+
 class TestHandleMaxIterations:
     def test_summary_notice_uses_safe_print(self, agent):
         agent._print_fn = lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("closed"))
@@ -3001,6 +3046,11 @@ class TestHandleMaxIterations:
         agent.reasoning_config = {"enabled": False, "effort": "none"}
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
         agent._cached_system_prompt = "You are helpful."
+        # "nous" is a protected-egress provider: the summary call now goes through the
+        # same firewall dispatch as any other physical request, which requires identity.
+        agent.session_id = "session-1"
+        agent._current_turn_id = "turn-1"
+        agent._llm_egress_policy_digest = sha256(b"policy").hexdigest()
 
         result = agent._handle_max_iterations(
             [{"role": "user", "content": "do stuff"}], 32
@@ -3128,6 +3178,11 @@ class TestHandleMaxIterations:
         agent._base_url_hostname = "chatgpt.com"
         agent.model = "gpt-5.5"
         agent._cached_system_prompt = "You are helpful."
+        # "openai-codex" is a protected-egress provider: the summary call now goes through
+        # the same firewall dispatch as any other physical request, which requires identity.
+        agent.session_id = "session-1"
+        agent._current_turn_id = "turn-1"
+        agent._llm_egress_policy_digest = sha256(b"policy").hexdigest()
         captured = {}
 
         def fake_run_codex_stream(kwargs):

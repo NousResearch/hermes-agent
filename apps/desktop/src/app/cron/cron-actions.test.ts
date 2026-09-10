@@ -2,12 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const getCronJobs = vi.fn()
 const getApiRequestConnection = vi.fn<() => null | string>(() => null)
+const observeCronCompletions = vi.fn().mockResolvedValue(undefined)
 const triggerCronJob = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getApiRequestConnection: () => getApiRequestConnection(),
   getCronJobs: (...args: unknown[]) => getCronJobs(...args),
   triggerCronJob: (...args: unknown[]) => triggerCronJob(...args)
+}))
+
+vi.mock('@/store/cron-completion-notifications', () => ({
+  observeCronCompletions: (...args: unknown[]) => observeCronCompletions(...args)
 }))
 
 import { beginCronJobsRequest } from '@/store/cron'
@@ -21,7 +26,18 @@ describe('triggerAndRefreshCronJobs', () => {
     getApiRequestConnection.mockReset()
     getApiRequestConnection.mockReturnValue(null)
     getCronJobs.mockReset()
+    observeCronCompletions.mockClear()
     triggerCronJob.mockReset()
+  })
+
+  it('observes only an authoritative accepted cron snapshot', async () => {
+    const jobs = [{ id: 'daily', last_run_at: '2026-08-20T10:00:00+00:00' }]
+    getApiRequestConnection.mockReturnValue('gateway-a')
+    getCronJobs.mockResolvedValue(jobs)
+
+    await refreshCronJobs('work')
+
+    expect(observeCronCompletions).toHaveBeenCalledWith('gateway-a\0work', jobs)
   })
 
   it('replaces the local cache with the authoritative list after a trigger', async () => {

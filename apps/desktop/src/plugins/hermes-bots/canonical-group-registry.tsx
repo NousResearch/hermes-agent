@@ -1,6 +1,7 @@
 import { atom, Button, host, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
+import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
 
@@ -14,6 +15,7 @@ export function registerCanonicalGroup(route: CanonicalGroupRoute, room: Canonic
 }
 
 export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }) {
+  const labels = useCanonicalGroupLabels()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const [rooms, setRooms] = useState<Array<{ key: string; name: string }>>([])
@@ -34,7 +36,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
   }, [connectionId, profile, refresh])
 
   return <div className="grid gap-1 px-2">
-    <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">Refresh gateway groups</Button>
+    <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
     {error && <p role="alert">{error}</p>}
     {rooms.map(room => <Button key={room.key} onClick={() => onOpen(room.key)} variant="ghost">{room.name}</Button>)}
   </div>

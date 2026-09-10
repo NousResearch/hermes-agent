@@ -96,7 +96,7 @@ def list_session_providers() -> List[DashboardAuthProvider]:
     return [p for p in list_providers() if getattr(p, "supports_session", True)]
 
 
-def register_global_provider(provider: DashboardAuthProvider, *, scope: Optional[str] = None) -> None:
+def register_global_provider(provider: DashboardAuthProvider, *, scope: Optional[str] = None) -> bool:
     """Register a host-owned provider in the process-global slot (upsert). The registry is shared
     across every profile one dashboard process serves, so these outlive any per-home plugin
     manager: always targets ``_providers`` (never a per-home overlay), so a forced plugin
@@ -107,7 +107,8 @@ def register_global_provider(provider: DashboardAuthProvider, *, scope: Optional
     provider) rather than upserted — otherwise background plugin discovery for another profile
     (e.g. the dashboard UI following the machine's sticky active profile) can silently replace the
     provider actively validating an unrelated, already-authenticated Dashboard's sessions with one
-    signed for a different profile (#106608).
+    signed for a different profile (#106608). Returns whether the registration took effect, so the
+    caller can tell an operator apart from a silent no-op.
 
     Pairs with ``unregister_global_provider`` for teardown of the exact object still current (#91701).
     """
@@ -119,10 +120,11 @@ def register_global_provider(provider: DashboardAuthProvider, *, scope: Optional
             _log.warning(
                 "dashboard-auth: refusing to replace provider %r (owned by profile %r) with one "
                 "registered for profile %r", provider.name, owner, scope)
-            return
+            return False
         _providers[provider.name] = provider
         _provider_owners[provider.name] = scope
     _log_registered("global provider ", provider)
+    return True
 
 
 def unregister_global_provider(name: str, provider: DashboardAuthProvider) -> bool:

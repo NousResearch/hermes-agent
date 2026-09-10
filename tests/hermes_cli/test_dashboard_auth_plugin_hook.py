@@ -290,3 +290,30 @@ def test_same_profile_rediscovery_still_rotates_in_place():
 
     live = get_provider("basic")
     assert live.tag == "new"
+
+
+def test_owner_eviction_releases_name_for_other_profile():
+    """The name is not stuck forever if its owner dies without unregistering.
+
+    ``_provider_owners`` is only cleared by an identity-matched
+    ``unregister_global_provider`` call. If profile-a's manager is torn down
+    without ever making that call directly, the routine re-discovery eviction
+    path (``_evict_stale_persistent_registrations``) is what still reaches it
+    (via the tracked handle's release callback) — so a legitimate profile-b
+    registration is not locked out until process restart.
+    """
+    owner_manager, owner_ctx = _real_ctx(scope_key="profile-a")
+    owner_ctx.register_dashboard_auth_provider(_Basic("owner"))
+
+    owner_manager.unload()
+    owner_manager._evict_stale_persistent_registrations()
+    assert get_provider("basic") is None
+
+    _other_manager, other_ctx = _real_ctx(scope_key="profile-b")
+    other_ctx.register_dashboard_auth_provider(_Basic("legit"))
+
+    live = get_provider("basic")
+    assert live is not None and live.tag == "legit", (
+        "a different profile could not reclaim a name whose owner died "
+        "without unregistering"
+    )

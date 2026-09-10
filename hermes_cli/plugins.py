@@ -755,10 +755,17 @@ class PluginContext:
             # the WHOLE process, permanently disabling sign-in until restart (#91701). The handle still
             # disposes explicitly (identity- conditional), and a forced re-discovery rotates the provider in
             # place via the upsert.
-            register_global_provider(provider, scope=self._manager.scope_key)
+            registered = register_global_provider(provider, scope=self._manager.scope_key)
         except (TypeError, ValueError) as e:
             logger.warning("Plugin '%s' failed to register dashboard-auth provider %r: %s",
                            self.manifest.name, getattr(provider, "name", "?"), e)
+            return
+        if not registered:
+            # Refused: another profile's plugin manager already owns this name (#106608). The
+            # operator needs an actionable signal, not a silent no-op that looks like success.
+            logger.warning(
+                "Plugin '%s' dashboard-auth provider %r NOT registered: name owned by another "
+                "profile", self.manifest.name, registry_name)
             return
         handle = self._track("dashboard_auth_provider", registry_name,
                              lambda: unregister_global_provider(registry_name, provider), persistent=True)

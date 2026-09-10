@@ -1317,6 +1317,22 @@ class TestSessionStartInjection:
         formatted = _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX)
         assert [line for line in formatted.splitlines() if line.startswith("## ")] == headings
 
+    @pytest.mark.parametrize("submitted, headings", [
+        ('{"sessionStart": ["peerCard"]}', ["## User Peer Card"]),
+        ('{"sessionStart": []}', []),
+        ("", ["## Session Summary", "## User Representation", "## User Peer Card",
+              "## AI Self-Representation", "## AI Identity Card"]),
+    ], ids=["pin", "empty-list", "blank-clears-the-pin"])
+    def test_desktop_panel_writes_the_pin_the_provider_reads(self, submitted, headings):
+        from hermes_cli.web_routers.memory_providers import _apply_field_values
+        from plugins.memory.honcho.config_schema import CONFIG_SCHEMA
+
+        host_block = {"injection": {"sessionStart": ["summary"]}}
+        _apply_field_values(CONFIG_SCHEMA, {"injection": submitted}, lambda field: host_block)
+        raw = {"hosts": {"hermes": host_block}}
+        formatted = _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX)
+        assert [line for line in formatted.splitlines() if line.startswith("## ")] == headings
+
     def test_non_list_value_is_treated_as_unset(self):
         raw = {"injection": {"sessionStart": "summary"}}
         assert _provider_with_raw(raw)._session_start_components is None

@@ -38,11 +38,14 @@ class RoomService:
         self.calls.append(('stop', room_id, cancel_id, require_acknowledged))
         return 1
 
-    def retry_room_task(self, room_id, *, task_id):
-        self.calls.append(('retry', room_id, task_id))
+    def retry_room_task(self, room_id, *, task_id, member_id, execution_generation):
+        self.calls.append(('retry', room_id, task_id, member_id, execution_generation))
         return {'identity': SimpleNamespace(room_id=room_id, task_id=task_id,
                                            thread_id='thread', turn_id='turn'),
                 'status': 'queued', 'execution_generation': 3, 'cancel_generation': 2}
+
+    def discard_room_task(self, **params):
+        return self.retry_room_task(**params)
 
     def approve_room_task(self, room_id, *, member_id, task_id, execution_generation,
                           choice, request_id=None):
@@ -82,11 +85,14 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
             assert service.calls[-1] == ('send', 'owned', user_event_id('input'), payload)
             stopped = await call('groups.stop', room_id='owned', cancel_id='cancel-exact')
             assert stopped['result'] == {'cancelled': 1}
-            retried = await call('groups.retry', room_id='owned', task_id='task-exact')
+            retried = await call('groups.retry', room_id='owned', task_id='task-exact', member_id='one', execution_generation=2)
             assert retried['result']['task'] == {
                 'room_id': 'owned', 'task_id': 'task-exact', 'thread_id': 'thread',
                 'turn_id': 'turn', 'status': 'queued', 'execution_generation': 3,
                 'cancel_generation': 2}
+            assert service.calls[-1] == ('retry', 'owned', 'task-exact', 'one', 2)
+            discarded = await call('groups.discard', room_id='owned', task_id='task-exact', member_id='one', execution_generation=2)
+            assert discarded['result']['discarded'] is True
             approved = await call('groups.approve', room_id='owned', member_id='one',
                                   task_id='task-exact', execution_generation=3,
                                   choice='once', request_id='approval-exact')
@@ -115,6 +121,7 @@ def test_execution_controls_reject_foreign_actor_profile_room_and_unready_servic
                 'groups.send': {'event_id': 'input', 'payload': {'text': 'hello'}},
                 'groups.stop': {'cancel_id': 'cancel'},
                 'groups.retry': {'task_id': 'task'},
+                'groups.discard': {'task_id': 'task', 'member_id': 'one', 'execution_generation': 1},
                 'groups.approve': {'member_id': 'one', 'task_id': 'task',
                                    'execution_generation': 1, 'request_id': 'approval', 'choice': 'once'},
             }

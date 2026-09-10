@@ -200,15 +200,16 @@ class HostedRoomAuthorityRPC:
         if type(generation) is not int or generation < 1:
             raise RuntimeStoreError('invalid_params')
         matches = [(row, task) for row, task, hosted_generation in self._rows()
-                   if row['status'] == 'unknown'
+                   if (row['status'] == 'unknown' or (row['status'] == 'terminal' and row['outcome'] == 'interrupted'))
                    and task.task_id == params['expected_task_id']
                    and hosted_generation == generation]
         if len(matches) != 1:
             raise RuntimeStoreError('stale_generation')
         row, task = matches[0]
         # The public fence is hosted; the canonical CAS uses its own generation.
-        await self.authority.resolve_unknown(
-            self.principal, self.ref, row['admission_id'], row['generation'])
+        if row['status'] == 'unknown':
+            await self.authority.resolve_unknown(
+                self.principal, self.ref, row['admission_id'], row['generation'])
         return {'discarded': True, 'status': 'cancelled', 'task_id': task.task_id,
                 'execution_generation': generation}
 

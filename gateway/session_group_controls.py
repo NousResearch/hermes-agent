@@ -16,6 +16,7 @@ GROUP_METHODS = {
     'groups.send': 'session:submit',
     'groups.stop': 'session:control',
     'groups.retry': 'session:control',
+    'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
 }
 _FIELDS = {
@@ -28,7 +29,8 @@ _FIELDS = {
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     'groups.stop': {'room_id', 'cancel_id'},
-    'groups.retry': {'room_id', 'task_id'},
+    'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
+    'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
                        'choice', 'request_id'},
     'profiles.list': {'include_sessions'},
@@ -85,7 +87,7 @@ def _group(authority, actor, home, method, params):
         if not status.get('running') or status.get('stopping'):
             service = None
 
-    execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.approve'}
+    execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
@@ -182,14 +184,19 @@ def _execution_control(service, method, params):
         return {'event': event, 'client_event_id': params.get('event_id'),
                 'accepted': True, 'driver_started': True}
 
-    def retry():
-        task = service.retry_room_task(params.get('room_id'), task_id=params.get('task_id'))
+    def attempt_control():
+        if (type(params.get('execution_generation')) is not int
+                or params['execution_generation'] < 1
+                or not params.get('member_id') or not params.get('task_id')):
+            raise RuntimeStoreError('invalid_params')
+        operation = service.discard_room_task if method == 'groups.discard' else service.retry_room_task
+        task = operation(**params)
         identity = task['identity']
         receipt = {field: getattr(identity, field) for field in
                    ('room_id', 'task_id', 'thread_id', 'turn_id')}
         receipt.update({field: task[field] for field in
                         ('status', 'execution_generation', 'cancel_generation')})
-        return {'retried': True, 'task': receipt}
+        return {'discarded' if method == 'groups.discard' else 'retried': True, 'task': receipt}
 
     def approve():
         if (type(params.get('execution_generation')) is not int
@@ -203,7 +210,8 @@ def _execution_control(service, method, params):
         'groups.send': send,
         'groups.stop': lambda: {'cancelled': service.stop_room(
             params.get('room_id'), cancel_id=params.get('cancel_id') or 'desktop-stop')},
-        'groups.retry': retry,
+        'groups.retry': attempt_control,
+        'groups.discard': attempt_control,
         'groups.approve': approve,
     }
     return handlers[method]()

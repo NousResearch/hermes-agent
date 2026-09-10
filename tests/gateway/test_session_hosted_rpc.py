@@ -225,7 +225,7 @@ def test_discard_requires_exact_owned_unknown_tuple_without_replay(owner, monkey
     assert [(r['admission_id'], r['status']) for r in after] == [(row['admission_id'], 'terminal'), (follower['admission_id'], 'queued')]
     assert after[0]['outcome'] == 'interrupted'
     assert scheduled == [rpc.ref]
-    with pytest.raises(RuntimeStoreError, match='stale_generation'):
-        rpc.discard(**coords, **exact)
+    assert rpc.discard(**coords, **exact) == receipt
+    assert scheduled == [rpc.ref]
     assert rpc.info(**coords)['task_id'] == 'next'
     assert rpc.history(**coords)[-1]['status'] == 'cancelled'

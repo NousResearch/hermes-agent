@@ -217,6 +217,22 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    def test_openrouter_monthly_budget_403_is_billing(self):
+        e = MockAPIError(
+            "Budget limit exceeded (monthly limit). Contact your org admin.",
+            status_code=403,
+        )
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.billing
+        assert result.should_fallback is True
+
+    def test_unrelated_budget_403_stays_auth(self):
+        e = MockAPIError("Monthly budget report is unavailable", status_code=403)
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.auth
+
 
 
 
@@ -1710,5 +1726,4 @@ class TestServerInjectedParameterRejection:
         result = classify_api_error(e, provider="custom", model="m")
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
-
 

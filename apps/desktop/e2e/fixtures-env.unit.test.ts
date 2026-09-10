@@ -9,6 +9,7 @@ const ISOLATED_DESKTOP_ENV_KEYS = [
   'HERMES_DESKTOP_BOOT_FAKE',
   'HERMES_DESKTOP_BOOT_FAKE_ERROR',
   'HERMES_DESKTOP_IS_PACKAGED',
+  'HERMES_DESKTOP_FORCE_DEV',
 ] as const
 
 describe('buildAppEnvFromParent', () => {
@@ -29,7 +30,11 @@ describe('buildAppEnvFromParent', () => {
     const childEnv = buildAppEnvFromParent(parentEnv, sandbox, 'synthetic-repo-root')
 
     for (const key of ISOLATED_DESKTOP_ENV_KEYS) {
-      expect(childEnv).not.toHaveProperty(key)
+      if (key === 'HERMES_DESKTOP_FORCE_DEV') {
+        expect(childEnv[key]).toBe('1')
+      } else {
+        expect(childEnv).not.toHaveProperty(key)
+      }
     }
 
     expect(parentEnv).toEqual(parentSnapshot)

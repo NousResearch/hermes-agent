@@ -342,6 +342,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { isPackagedDesktopRuntime } from './runtime-mode'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -465,7 +466,7 @@ if (USER_DATA_OVERRIDE) {
 }
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
-const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+const IS_PACKAGED = isPackagedDesktopRuntime(app.isPackaged, process.env)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()

@@ -26,9 +26,10 @@ import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
+import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
+
 import { resolveElectronBinary } from './electron-binary'
 import { buildAppEnvFromParent } from './fixtures-env'
-import { type MockServerOptions, startMockServer } from './mock-server'
 import { installErrorBannerGuard } from './test'
 import { waitForPageWindowVisible } from './window-visibility'
 
@@ -510,11 +511,12 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
     HERMES_DESKTOP_BOOT_FAKE_STEP_MS: '120',
   })
 
-  // Clear dev-server + hermes-root overrides — the packaged binary
-  // should use its own bundled renderer, not the dev checkout.
+  // Clear development-only overrides — the packaged binary should use its
+  // own bundled renderer and its real packaged-mode resolution.
   delete (env as Record<string, string | undefined>).HERMES_DESKTOP_DEV_SERVER
   delete (env as Record<string, string | undefined>).HERMES_DESKTOP_HERMES
   delete (env as Record<string, string | undefined>).HERMES_DESKTOP_HERMES_ROOT
+  delete (env as Record<string, string | undefined>).HERMES_DESKTOP_FORCE_DEV
 
   const app = await _electron.launch({
     executablePath: PACKAGED_BINARY_PATH,

@@ -10,6 +10,7 @@ const INHERITED_DESKTOP_OVERRIDE_NAMES = [
   'HERMES_DESKTOP_BOOT_FAKE',
   'HERMES_DESKTOP_BOOT_FAKE_ERROR',
   'HERMES_DESKTOP_IS_PACKAGED',
+  'HERMES_DESKTOP_FORCE_DEV',
 ] as const
 
 const CREDENTIAL_SUFFIXES: string[] = [
@@ -92,6 +93,10 @@ export function buildAppEnvFromParent(
     HERMES_HOME: sandbox.hermesHome,
     HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
+    // Electron 41 can classify `electron <desktop-dir>` as packaged on
+    // Windows. E2E development fixtures need an explicit mode; the packaged
+    // fixture removes this before it launches the real bundle.
+    HERMES_DESKTOP_FORCE_DEV: '1',
     HERMES_DESKTOP_HERMES_ROOT: repoRoot,
     HERMES_DESKTOP_APP_NAME: `HermesE2E-${Date.now()}`,
     // `app.close()` in teardown must exit even when a spec leaves a turn

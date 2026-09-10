@@ -406,8 +406,8 @@ import {
   wrapHandoffForDetachedConsole
 } from './updater-process'
 import {
+  classifyProbeFailure,
   formatBlockerMessage,
-  formatProbeFailedMessage,
   scanVenvBlockers,
   stopSafeVenvBlockers
 } from './venv-blocker-scan'
@@ -4143,7 +4143,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       }
 
       if (scanOutcome.kind === 'probe-failure') {
-        const message = formatProbeFailedMessage(scanOutcome.error)
+        const { code, message } = classifyProbeFailure(
+          scanOutcome.error,
+          modeIsRemoteLike(readDesktopConnectionConfig().mode)
+        )
 
         rememberLog(`[updates] venv-blocker probe failed: ${scanOutcome.error}`)
         emitUpdateProgress({ stage: 'error', message, percent: null })
@@ -4151,7 +4154,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         // Same drain-semantics restore as the venv-blocked abort above.
         startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
 
-        return { ok: false, error: 'venv-probe-failed', message }
+        return { ok: false, error: code, message }
       }
     }
 

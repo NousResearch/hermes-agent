@@ -374,6 +374,8 @@ By default, once the bot has participated in a thread (auto-created on `@mention
 
 In **multi-bot threads** where users address one bot per turn, this default becomes a footgun — every other bot in the thread also fires on every message, burning credits and spamming the channel. Set `thread_require_mention: true` to disable the in-thread shortcut and gate threads the same way channels are gated. Explicit `@mentions` still work as before.
 
+When a Hermes bot **creates** a thread (`auto_thread` or `/thread`), it records itself as that thread's first owner. Other Hermes bots that later participate still need an `@mention` for follow-ups; the creating bot keeps the mention-free shortcut. Threads nobody created through Hermes stay on the participation shortcut above. `thread_require_mention: true` still wins over ownership.
+
 ```yaml
 discord:
   require_mention: true

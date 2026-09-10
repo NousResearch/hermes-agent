@@ -24,22 +24,46 @@ export function installPluginSdk(): void {
   Object.assign(globalThis, GLOBALS)
 }
 
+/**
+ * Named exports a live `import * as` namespace can re-export on a shim.
+ * Production Electron/Rolldown graphs may bind a specifier (notably
+ * `react/jsx-dev-runtime`) to null/undefined — `Object.keys` then throws
+ * `TypeError: Cannot convert undefined or null to object`, which kills
+ * every disk plugin because `sdkImportMap()` walks all four slots first.
+ */
+export function namespaceExportNames(ns: unknown): string[] {
+  if (ns == null || (typeof ns !== 'object' && typeof ns !== 'function')) {
+    return []
+  }
+
+  return Object.keys(ns).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
+}
+
 /** Build a shim ESM blob that re-exports a global namespace's live members.
  *  Export names come from the namespace itself, so the list can't drift. */
 function shimUrl(globalKey: keyof typeof GLOBALS): string {
-  const names = Object.keys(GLOBALS[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
+  const names = namespaceExportNames(GLOBALS[globalKey])
 
+  // Read the live global at evaluation time. If installPluginSdk() did not
+  // stick (or a slot is null), coerce to {} so `m.default` / destructure
+  // cannot throw TypeError: Cannot convert undefined or null to object.
   const source =
     `const m = globalThis.${globalKey};\n` +
-    `export default m.default ?? m;\n` +
+    `const ns = m != null && typeof m === 'object' ? m : {};\n` +
+    `export default ns.default ?? ns;\n` +
     // Guard the destructuring: `export const {  } = m` is a syntax error, so
     // only emit it when the namespace actually has named exports.
-    (names.length ? `export const { ${names.join(', ')} } = m;\n` : '')
+    (names.length ? `export const { ${names.join(', ')} } = ns;\n` : '')
 
   return URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
 }
 
 let cached: Record<string, string> | null = null
+
+/** Drop the specifier→shim cache so a later `sdkImportMap()` rebuilds blobs. */
+export function resetSdkImportMapCache(): void {
+  cached = null
+}
 
 /** Specifier -> shim URL map for the runtime loader (longest keys first). */
 export function sdkImportMap(): Record<string, string> {

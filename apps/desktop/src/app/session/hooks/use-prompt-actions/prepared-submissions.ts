@@ -57,8 +57,10 @@ export async function listPreparedImageDrafts(target: string, scopeKey: string) 
     const [scope, session, text, , displayKind, fromQueue, submissionId] = JSON.parse(key)
 
     // Restoring an ordinary draft must recreate its exact retry key. Queue and
-    // slash submissions have additional intent fields and own their recovery.
+    // slash submissions own their recovery. Historical slash keys intentionally
+    // omit submissionId, so the retained invocation must also be excluded.
     return scope === scopeKey && session === target && !displayKind && !fromQueue && !submissionId &&
+      !String(text).trimStart().startsWith('/') &&
       !entry.legacyAttempted && entry.attachments.some(attachment => attachment.kind === 'image')
       ? [{ key, text: String(text), attachments: entry.attachments }]
       : []

@@ -44,6 +44,18 @@ atomic-file journal is still written before transport admission and retired only
 after a matching accepted receipt. An unknown receipt retains it for explicit
 retry. Renderer-only localStorage recovery is not native crash durability.
 
+## Image history and recovery
+
+Canonical native image history carries image-routing hints followed by flattened
+`[screenshot]` parts. Desktop projects that complete suffix into attachment
+thumbnails without rewriting stored messages or image bytes. Caption prose and
+assistant text remain text; legacy `@image:` history keeps its existing rendering.
+
+The prepared-image recovery affordance offers only ordinary unqueued drafts in
+their original connection/profile/session. Slash invocations, legacy ambiguous
+attempts and other recovery identities stay in the journal unchanged; they are
+not offered as ordinary image drafts or automatically resubmitted by this view.
+
 ## Controls and metadata
 
 Live and replayed prompt projections retain `prompt_id` and execution generation,

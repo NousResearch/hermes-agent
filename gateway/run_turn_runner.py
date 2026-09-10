@@ -876,7 +876,7 @@ class TurnRunner:
         delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
         stream_delta_cb = None
         if delta_sinks:
-            def stream_delta_cb(text: str) -> None:
+            def stream_delta_cb(text: Optional[str]) -> None:
                 if ctx._run_still_current():
                     for sink in delta_sinks:
                         sink.on_delta(text)
@@ -884,6 +884,12 @@ class TurnRunner:
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            if stts is not None:
+                # Flush accepted deltas; completed commentary is a separate speech segment.
+                stts.on_delta(None)
+                if not already_streamed:
+                    stts.on_delta(text)
+                    stts.on_delta(None)
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
@@ -1176,7 +1182,9 @@ class TurnRunner:
                 if pdc is not None:
                     pdc[ctx.session_key] = bg_release
         # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose.
-        mem_notif = ctx.user_config.get("display", {}).get("memory_notifications")
+        # `display:` present-but-null yields None, not the {} default (same `or {}` guard as
+        # display_config.py / runtime_footer.py).
+        mem_notif = (ctx.user_config.get("display") or {}).get("memory_notifications")
         if isinstance(mem_notif, bool):
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"

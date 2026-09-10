@@ -19,8 +19,40 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
+from prompt_toolkit.utils import get_cwidth
 
 logger = logging.getLogger("hermes_cli.plugins")
+
+_CHROME_SURFACES = frozenset({"input_rule_top", "input_rule_bot", "status_bar_bg"})
+
+
+def _normalize_chrome_fragments(fragments: Any, width: int) -> list[tuple[str, str]]:
+    """Clamp renderer fragments to exactly *width* prompt-toolkit cells."""
+    from prompt_toolkit.utils import get_cwidth
+
+    width = max(0, int(width))
+    out: list[tuple[str, str]] = []
+    remaining = width
+    for item in fragments if isinstance(fragments, (list, tuple)) else ():
+        if remaining <= 0 or not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        style, text = str(item[0]), str(item[1])
+        if get_cwidth(text) <= remaining:
+            out.append((style, text))
+            remaining -= get_cwidth(text)
+            continue
+        clipped = ""
+        for char in text:
+            cells = get_cwidth(char)
+            if cells > remaining:
+                break
+            clipped += char
+            remaining -= cells
+        if clipped:
+            out.append((style, clipped))
+    if remaining:
+        out.append(("", " " * remaining))
+    return out
 
 # Allowlist of agent-turn hot-path hooks bounded by plugins.hook_callback_timeout (fail-open:
 # abandon without join — joining reintroduced a shutdown hang). Unlisted hooks run synchronously.
@@ -162,6 +194,28 @@ class PluginDispatchMixin:
             name: value for name, value in payload.items()
             if name in parameters and parameters[name].kind in keyword_kinds
         })
+
+    def render_chrome(self, surface: str, width: int, ctx: dict) -> list[tuple[str, str]] | None:
+        """Render plugin chrome, returning ``None`` for the built-in fallback."""
+        if surface not in _CHROME_SURFACES:
+            raise ValueError(f"unknown chrome surface: {surface}")
+        entry = self._chrome_renderers.get("default")
+        if not entry or entry.get("disabled"):
+            return None
+        try:
+            result = entry["callback"](surface, width, ctx)
+        except Exception:
+            entry["disabled"] = True
+            logger.warning("Chrome renderer failed; disabling it for this session", exc_info=True)
+            return None
+        if result is None:
+            return None
+        raw_width = sum(get_cwidth(str(item[1])) for item in result
+                        if isinstance(item, (list, tuple)) and len(item) == 2)
+        if raw_width != width:
+            logger.debug("Chrome renderer returned %d cells for %s; normalizing to %d",
+                         raw_width, surface, width)
+        return _normalize_chrome_fragments(result, width)
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.

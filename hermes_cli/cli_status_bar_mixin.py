@@ -1086,6 +1086,27 @@ class CLIStatusBarMixin:
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
+    def _apply_chrome_status_background(self, fragments, width: int):
+        from hermes_cli.plugins import get_plugin_manager
+        bg = get_plugin_manager().render_chrome("status_bar_bg", width, {
+            "session_id": getattr(self, "session_id", None),
+            "skin": getattr(getattr(self, "skin", None), "name", None) or "default",
+        })
+        if bg is None:
+            return fragments
+        bg_cells = []
+        for style, text in bg:
+            bg_cells.extend([style] * self._status_bar_display_width(text))
+        out = []
+        cell = 0
+        for style, text in fragments:
+            for char in text:
+                cells = max(1, self._status_bar_display_width(char))
+                bg_style = bg_cells[cell] if cell < len(bg_cells) else ""
+                out.append((f"{style} {bg_style}".strip() if bg_style else style, char))
+                cell += cells
+        return out
+
     def _get_status_bar_fragments(self):
         if (
             not self._status_bar_visible
@@ -1131,7 +1152,7 @@ class CLIStatusBarMixin:
             if total_width > width:
                 plain_text = "".join(text for _, text in frags)
                 return [(_SB, self._trim_status_bar_text(plain_text, width))]
-            return frags
+            return self._apply_chrome_status_background(frags, width)
         except Exception:
             return [(_SB, f" {self._build_status_bar_text()} ")]
 

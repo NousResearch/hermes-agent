@@ -2008,6 +2008,20 @@ class CLITuiMixin:
             Window(FormattedTextControl(fragments_fn), wrap_lines=True),
             filter=Condition(lambda: getattr(self, state_attr) is not None))
 
+    def _tui_chrome_fragments(self, surface: str, width: int):
+        from hermes_cli.plugins import get_plugin_manager
+        from hermes_cli.skin_engine import get_active_skin
+        skin = get_active_skin()
+        skin_name = getattr(skin, "name", None) or getattr(self, "skin", None) or "default"
+        return get_plugin_manager().render_chrome(surface, width, {
+            "session_id": getattr(self, "session_id", None),
+            "skin": skin_name,
+        })
+
+    def _tui_has_chrome_renderer(self) -> bool:
+        from hermes_cli.plugins import get_plugin_manager
+        return bool(get_plugin_manager()._chrome_renderers)
+
     def _tui_build_layout(self, kb):
         """Build the TUI widgets, Layout and Style; registers wrapper keybindings on ``kb``."""
         cli_ref = self
@@ -2039,12 +2053,26 @@ class CLITuiMixin:
         command_palette_widget = self._tui_overlay_widget(
             self._get_command_palette_display_fragments, "_command_palette_state")
         # Rules above/below the input; narrow terminals hide the bottom one to recover a row.
-        input_rule_top = Window(
-            char='─', height=lambda: cli_ref._tui_input_rule_height("top"), style='class:input-rule',
-        )
-        input_rule_bot = Window(
-            char='─', height=lambda: cli_ref._tui_input_rule_height("bottom"), style='class:input-rule',
-        )
+        if self._tui_has_chrome_renderer():
+            def _rule(surface):
+                return lambda: cli_ref._tui_chrome_fragments(
+                    surface, cli_ref._get_tui_terminal_width()) or [
+                        ('class:input-rule', '─' * cli_ref._get_tui_terminal_width())]
+            input_rule_top = Window(
+                content=FormattedTextControl(_rule("input_rule_top")),
+                height=lambda: cli_ref._tui_input_rule_height("top"),
+            )
+            input_rule_bot = Window(
+                content=FormattedTextControl(_rule("input_rule_bot")),
+                height=lambda: cli_ref._tui_input_rule_height("bottom"),
+            )
+        else:
+            input_rule_top = Window(
+                char='─', height=lambda: cli_ref._tui_input_rule_height("top"), style='class:input-rule',
+            )
+            input_rule_bot = Window(
+                char='─', height=lambda: cli_ref._tui_input_rule_height("bottom"), style='class:input-rule',
+            )
         image_bar = Window(
             content=FormattedTextControl(self._tui_image_bar_fragments),
             height=Condition(lambda: bool(cli_ref._attached_images)))

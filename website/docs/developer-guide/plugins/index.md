@@ -524,6 +524,7 @@ def register(ctx):
 - Called exactly once at startup
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
+- `ctx.register_chrome_renderer(fn)` registers a renderer for `input_rule_top`, `input_rule_bot`, and `status_bar_bg`. The callable receives `(surface, width, ctx)` where `ctx` includes `session_id` and `skin`, and returns prompt-toolkit `(style, text)` fragments or `None` to preserve the built-in chrome. Hermes normalizes fragments to the requested cell width; an exception logs once and disables the renderer for the session. The registration is unloaded with the plugin, and later registrations replace earlier ones.
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.

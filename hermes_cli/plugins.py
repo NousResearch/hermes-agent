@@ -894,6 +894,15 @@ class PluginContext:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
         return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
 
+    def register_chrome_renderer(self, callback: Callable) -> PluginRegistration:
+        """Register the plugin-owned renderer for TUI chrome surfaces."""
+        if not callable(callback):
+            raise TypeError("chrome renderer must be callable")
+        return self._register_entry(
+            "chrome_renderer", "default", self._manager._chrome_renderers,
+            {"callback": callback, "disabled": False},
+            "Plugin %s registered chrome renderer",)
+
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
@@ -1127,6 +1136,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
+        self._chrome_renderers: Dict[str, dict] = {}
         # Fallback hooks registered by a memory provider before general discovery.
         self._memory_hook_registrations: Dict[Tuple[str, str], List[PluginRegistration]] = {}
         self._middleware: Dict[str, List[Callable]] = {}

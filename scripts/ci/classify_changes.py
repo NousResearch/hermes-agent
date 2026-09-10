@@ -211,8 +211,15 @@ def ci_review_files(files: list[str]) -> list[str]:
     return sorted({f.strip() for f in files if f.strip() and _is_ci_review(f.strip())})
 
 
-def classify(files: list[str]) -> dict[str, bool]:
-    """Map changed paths to ``{lane: should_run}``."""
+def classify(files: list[str], compare_api_succeeded: bool = False) -> dict[str, bool]:
+    """Map changed paths to ``{lane: should_run}``.
+    
+    Args:
+        files: List of changed file paths
+        compare_api_succeeded: Whether the compare API successfully returned
+                               (either from the primary call or the PR files fallback).
+                               Defaults to False for backward compatibility (fail-open).
+    """
     files = [f.strip() for f in files if f.strip()]
     python = any(not _py_irrelevant(f) for f in files)
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
@@ -242,7 +249,32 @@ def classify(files: list[str]) -> dict[str, bool]:
         "ci_review": any(_is_ci_review(f) for f in files),
         "nix": python_prod or frontend or any(_is_nix(f) for f in files)
     }
-    if not files or any(f.startswith(".github/") for f in files):
+    
+    # Fail open for all lanes when file list is empty AND compare API didn't succeed.
+    # If the compare API succeeded (either from primary call or fallback), use the
+    # actual classification. This prevents false positives when the compare API
+    # temporarily fails but the PR files fallback recovers the actual file list.
+    if not files and not compare_api_succeeded:
+        ret["python"] = True
+        ret["python_prod"] = True
+        ret["docker"] = True
+        ret["docker_meta"] = True
+        ret["frontend"] = True
+        ret["site"] = True
+        ret["scan"] = True
+        ret["deps"] = True
+        ret["uv_lock"] = True
+        ret["npm_lock"] = True
+        ret["installer"] = True
+        ret["desktop_updater"] = True
+        ret["rust"] = True
+        ret["nix"] = True
+        ret["ci_review"] = True
+
+        # explicitly skip mcp catalog here. it's not needed unless those files are modified.
+    # Additional fail-open behavior: any .github/ change runs everything,
+    # regardless of compare API success (this is a deliberate safety measure).
+    elif any(f.startswith(".github/") for f in files):
         ret["python"] = True
         ret["python_prod"] = True
         ret["docker"] = True
@@ -320,7 +352,9 @@ def pull_request_changed_files() -> list[str]:
 
 def main() -> int:
     files = sys.stdin.read().splitlines()
-    if not any(f.strip() for f in files):
+    compare_api_succeeded = any(f.strip() for f in files)
+    
+    if not compare_api_succeeded:
         recovered = pull_request_changed_files()
         if recovered:
             print(
@@ -329,7 +363,9 @@ def main() -> int:
                 file=sys.stderr,
             )
             files = recovered
-    lanes = classify(files)
+            compare_api_succeeded = True  # Successfully recovered via fallback
+    
+    lanes = classify(files, compare_api_succeeded)
     out = "\n".join([
         *(f"{key}={str(value).lower()}" for key, value in lanes.items()),
         f"ci_review_files={json.dumps(ci_review_files(files))}",

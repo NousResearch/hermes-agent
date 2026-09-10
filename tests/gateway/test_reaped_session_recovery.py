@@ -22,7 +22,7 @@ from gateway.config import (
     PlatformConfig,
 )
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _INTERRUPT_REASON_STOP
 from gateway.session import SessionSource, SessionStore
 
 
@@ -138,8 +138,9 @@ async def test_reaped_session_message_reaches_cold_path(tmp_path):
 
     assert result == "COLD_PATH_REPLY"
     assert cold_path.await_count == 1
-    # Nothing was interrupt()-delivered into the dead runtime.
-    assert agent.interrupts == []
+    # Eviction interrupts the stale runtime before the slot is released; the inbound
+    # message still heals through the cold path instead of being interrupt()-delivered.
+    assert agent.interrupts == [_INTERRUPT_REASON_STOP]
 
 
 @pytest.mark.asyncio

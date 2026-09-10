@@ -484,9 +484,19 @@ class GatewayInboundMixin:
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            request_hard_interrupt(running_agent, _INTERRUPT_REASON_STOP)
+            try:
+                request_hard_interrupt(running_agent, _INTERRUPT_REASON_STOP)
+            except Exception:
+                # Best-effort: a raising interrupt ABI must not skip invalidate/release/cache
+                # eviction. On the reaped path that would land in `_hm_evict_reaped_agent`'s
+                # debug `except`; on the stale path it would escape into the inbound handler.
+                logger.debug("Evicted-agent interrupt failed for %s", _quick_key, exc_info=True)
         self._invalidate_session_run_generation(_quick_key, reason=reason)
         self._release_running_agent_state(_quick_key)
+        # `_interrupt_requested` is only cleared by the turn finalizer. Evict the cached
+        # instance after release so a wedged/still-draining run cannot silently kill the
+        # session's NEXT message (empty turn, #44212). Same contract as `/stop`.
+        self._evict_cached_agent(_quick_key)
 
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False

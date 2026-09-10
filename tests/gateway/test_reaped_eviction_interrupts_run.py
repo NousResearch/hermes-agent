@@ -33,14 +33,24 @@ class _RecordingAgent:
     def __init__(self, events, slot_holder):
         self.events = events
         self._slot_holder = slot_holder
+        self._interrupt_requested = False
 
     def hard_interrupt(self, message=None, **_kwargs):
         still_held = self._slot_holder() is self
+        self._interrupt_requested = True
         self.events.append(("interrupt", message, still_held))
 
     def interrupt(self, reason=None, **_kwargs):
         still_held = self._slot_holder() is self
+        self._interrupt_requested = True
         self.events.append(("interrupt", reason, still_held))
+
+
+class _RaisingAgent:
+    """Legacy / third-party interrupt ABI that raises — eviction must still complete."""
+
+    def hard_interrupt(self, message=None, **_kwargs):
+        raise RuntimeError("interrupt transport failed")
 
 
 class _ReapedStore:
@@ -56,12 +66,17 @@ def _make_inbound():
     assert issubclass(GatewayRunner, GatewayInboundMixin)
     runner = object.__new__(GatewayRunner)
     runner._persist_active_agents = lambda: None
+    runner._agent_cache_lock = None
+    runner._agent_cache = {}
+    runner._spawn_release_thread = lambda *a, **k: None
     return runner
 
 
-def _occupy(runner, key, agent):
+def _occupy(runner, key, agent, *, cached=True):
     state = runner._session_state(key)
     state.turn.agent = agent
+    if cached:
+        runner._agent_cache[key] = (agent, "sig", 0)
     return state
 
 
@@ -101,7 +116,12 @@ def test_reaped_eviction_interrupts_in_flight_run_before_slot_release():
     assert events.index(interrupt_events[0]) < events.index(release_events[0]), (
         "interrupt MUST happen before _release_running_agent_state empties the slot"
     )
+    assert agent._interrupt_requested is True
     assert _current_agent(runner, KEY) is None
+    assert KEY not in runner._agent_cache, (
+        "cached agent must be evicted after interrupt+release so a latched "
+        "_interrupt_requested cannot kill the next turn (#44212)"
+    )
 
 
 def test_evict_running_agent_interrupts_live_agent_directly():
@@ -117,7 +137,9 @@ def test_evict_running_agent_interrupts_live_agent_directly():
     assert events[0][0] == "interrupt"
     assert events[0][1] == _INTERRUPT_REASON_STOP
     assert events[0][2] is True
+    assert agent._interrupt_requested is True
     assert _current_agent(runner, KEY) is None
+    assert KEY not in runner._agent_cache
 
 
 def test_fail_open_no_session_state(monkeypatch):
@@ -131,12 +153,14 @@ def test_fail_open_no_session_state(monkeypatch):
         lambda *a, **k: calls.append((a, k)) or True,
     )
     runner = _make_inbound()
+    runner._agent_cache["missing-key"] = (object(), "sig", 0)
     runner._hm_evict_running_agent("missing-key", "reaped_session_eviction")
     assert calls == []
     # Invalidate creates persistent state; release must complete without crash.
     state = runner._peek_session_state("missing-key")
     assert state is not None
     assert state.turn.agent is None
+    assert "missing-key" not in runner._agent_cache
 
 
 def test_fail_open_none_agent(monkeypatch):
@@ -154,6 +178,7 @@ def test_fail_open_none_agent(monkeypatch):
     runner._hm_evict_running_agent(KEY, "reaped_session_eviction")
     assert calls == []
     assert _current_agent(runner, KEY) is None
+    assert KEY not in runner._agent_cache
 
 
 def test_fail_open_pending_sentinel(monkeypatch):
@@ -171,3 +196,16 @@ def test_fail_open_pending_sentinel(monkeypatch):
     runner._hm_evict_running_agent(KEY, "stale_running_agent_eviction")
     assert calls == []
     assert _current_agent(runner, KEY) is None
+    assert KEY not in runner._agent_cache
+
+
+def test_fail_open_raising_interrupt_still_releases_and_evicts():
+    """Raising ``request_hard_interrupt`` must not skip invalidate/release/cache eviction."""
+    runner = _make_inbound()
+    agent = _RaisingAgent()
+    _occupy(runner, KEY, agent)
+
+    runner._hm_evict_running_agent(KEY, "reaped_session_eviction")
+
+    assert _current_agent(runner, KEY) is None
+    assert KEY not in runner._agent_cache

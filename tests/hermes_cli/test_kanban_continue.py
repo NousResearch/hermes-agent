@@ -215,7 +215,7 @@ def test_manual_force_promotion_clears_prior_failure_recovery(kanban_home):
             ("old failure", task_id),
         )
         conn.commit()
-        ok, error = kb.promote_task(conn, task_id, actor="operator", force=True)
+        ok, error = kb.promote_task(conn, task_id, actor="operator")
         assert (ok, error) == (True, None)
         assert kb.get_task(conn, task_id).status == "ready"
         assert conn.execute(

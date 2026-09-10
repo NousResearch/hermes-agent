@@ -193,6 +193,7 @@ def test_rejected_stale_writer_adopts_authoritative_run_decision(kanban_home, mo
         run_id = claimed.current_run_id
     db_path = kb.kanban_db_path()
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
     initial = {**_decision(), "task_id": task_id, "run_id": run_id}
 
     first = SimpleNamespace(

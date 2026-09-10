@@ -53,11 +53,6 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
-# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
-# Slack click handler shows on a dead entry).
-_CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
-
-
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
 
@@ -183,7 +178,7 @@ class TurnRunner:
             if status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():
                 line = format_subagent_failure_line(
                     kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
-                    duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
+                    duration_seconds=kwargs.get("duration_seconds"),
                 )
                 self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error")
         except Exception:
@@ -806,8 +801,9 @@ class TurnRunner:
         })
 
     def combined_tool_complete_callback(self, call_id, tool_name, args, result):
-        if self._ctx.native_cot is not None:
-            self._ctx.native_cot.tool_completed(call_id, tool_name, args, result)
+        cot = self._ctx.native_cot
+        if cot is not None:
+            cot.tool_completed(call_id, tool_name, args, result)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
 
@@ -817,12 +813,14 @@ class TurnRunner:
             self.voice_ack_callback(call_id, tool_name, args)
         if self._ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
-        if self._ctx.native_cot is not None:
-            self._ctx.native_cot.tool_started(call_id, tool_name, args)
+        cot = self._ctx.native_cot
+        if cot is not None:
+            cot.tool_started(call_id, tool_name, args)
 
     def native_cot_commentary(self, text: str) -> None:
-        if self._ctx.native_cot is not None and self._ctx._run_still_current():
-            self._ctx.native_cot.commentary(text)
+        cot = self._ctx.native_cot
+        if cot is not None and self._ctx._run_still_current():
+            cot.commentary(text)
 
     async def start_native_cot(self) -> None:
         ctx = self._ctx
@@ -830,7 +828,8 @@ class TurnRunner:
             return
         adapter = self._runner._adapter_for_source(ctx.source)
         try:
-            ctx.native_cot = await adapter.start_native_cot(
+            start_native_cot = getattr(adapter, "start_native_cot")
+            ctx.native_cot = await start_native_cot(
                 ctx.source.chat_id,
                 ctx.inbound_message_id or ctx.event_message_id,
                 ctx.native_cot_mode,
@@ -840,19 +839,32 @@ class TurnRunner:
             logger.warning("Native COT create failed: type=%s", type(exc).__name__)
 
     async def finish_native_cot(self, result) -> None:
-        cot = self._ctx.native_cot
+        cot, self._ctx.native_cot = self._ctx.native_cot, None
         if cot is None:
             return
         reason = "error"
-        if isinstance(result, dict):
+        if isinstance(result, dict) and self._ctx._run_still_current():
             if result.get("interrupted"):
                 reason = "interrupted"
             elif not result.get("failed") and not result.get("error"):
                 reason = "done"
-        try:
-            await cot.finish(reason)
-        except Exception as exc:
-            logger.warning("Native COT finish failed: type=%s", type(exc).__name__)
+        # finish closes event admission synchronously; I/O runs under gateway shutdown ownership.
+        task = cot.finish(reason)
+        self._runner._retain_background_task(task)
+        # Bridge-compatible COT requests have a 15s per-call budget. Finalization can
+        # require one pending update plus complete, so do not cancel it at the old 3s cap.
+        deadline = asyncio.get_running_loop().call_later(35.0, task.cancel)
+
+        def finished(task):
+            deadline.cancel()
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                logger.warning("Native COT finish cancelled (shutdown or timeout)")
+            except Exception as exc:
+                logger.warning("Native COT finish failed: type=%s", type(exc).__name__)
+
+        task.add_done_callback(finished)
 
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────
 
@@ -863,8 +875,9 @@ class TurnRunner:
         # prev_tools may be list[str] or list[dict] with "name"/"result" keys. Normalise so
         # "tool_names" stays backward-compatible for user hooks that do ', '.join(tool_names).
         names = [(t.get("name") or "") if isinstance(t, dict) else str(t) for t in (prev_tools or [])]
-        if ctx.native_cot is not None:
-            ctx.native_cot.step(iteration, names)
+        cot = ctx.native_cot
+        if cot is not None:
+            cot.step(iteration, names)
         if not ctx._hooks_ref.loaded_hooks:
             return
         self._schedule(
@@ -978,10 +991,6 @@ class TurnRunner:
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
-                    # #105341: a consumer created only for interim commentary (text streaming off)
-                    # is never fed the final reply's deltas — mark it so the duplicate-risk
-                    # diagnostic in ``_run_agent_mark_streamed_delivery`` stays silent.
-                    stream_consumer.stream_deltas_enabled = want_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
@@ -1392,19 +1401,10 @@ class TurnRunner:
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
         # ambiguous falls through to the bounded wait so a late reply resolves.
-        response, answered = _clarify_send_then_wait(
-            fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
-        # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
-        # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
-        if not answered:
-            # No answer arrived (timeout, /new, run end): retire the native card so it stops
-            # looking answerable. Adapters without a persistent card have no such method.
-            retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
-            if callable(retire):
-                self._schedule(
-                    retire(ctx._status_adapter, clarify_id, _CLARIFY_EXPIRED_NOTICE),
-                    "Clarify card retire failed to schedule")
-        else:
+        response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+        # Only re-arm typing when the user actually answered — the undeliverable sentinel and the
+        # timeout/cancellation strings start with '[' and must pass through untouched.
+        if not (isinstance(response, str) and response.startswith("[")):
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
             # otherwise re-seeds lazily on the first delta: ~48s of dead air). request_reopen_seed is
             # a no-op outside the reopen-pending native state.
@@ -1424,7 +1424,6 @@ class TurnRunner:
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
         from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
-        from gateway.run_turn_runner_approval_settle import register_timeout_notice
         ctx = self._ctx
         adapter = ctx._status_adapter
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
@@ -1451,11 +1450,6 @@ class TurnRunner:
                     raise RuntimeError("send_exec_approval: loop unavailable")
                 outcome = _approval_send_outcome(fut, timeout=15)
                 if outcome == "sent":
-                    # Without this, a card whose timer runs out keeps live buttons and nobody
-                    # learns the command did NOT run (only the TUI registered a settle hook).
-                    register_timeout_notice(
-                        self, approval_data, command=cmd,
-                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
                     return
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
@@ -1511,9 +1505,6 @@ class TurnRunner:
             )
             if fut is not None:
                 fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
 
@@ -1867,16 +1858,7 @@ class TurnRunner:
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
             )
         except Exception as exc:
-            # Model/credential resolution failed before the turn began; the raw text (URLs, status
-            # codes) belongs in the log, and the chat gets the commands that fix it.
-            logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
-            return {
-                "final_response": (
-                    "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
-                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
-                    "failing, run `hermes doctor` on the host."),
-                "messages": [], "api_calls": 0, "tools": [],
-            }
+            return runner._agent_error_result(f"⚠️ Provider authentication failed: {exc}")
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config

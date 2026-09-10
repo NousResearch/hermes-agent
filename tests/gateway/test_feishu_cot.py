@@ -499,8 +499,50 @@ async def test_finish_closes_all_callbacks_before_waiting_for_update():
 
 
 @pytest.mark.asyncio
+async def test_bridge_request_budget_allows_slow_create_update_and_complete(monkeypatch):
+    transport = FakeCOTClient()
+
+    async def request(method, path, body=None):
+        if method == "PUT" or "/complete/" in path:
+            await asyncio.sleep(1.05)
+        return await transport.request_json(method, path, body)
+
+    client = FeishuCOTClient("app", "secret", "feishu", request_json=request)
+
+    async def start(*args):
+        await asyncio.sleep(0.7)
+        return await client.start(*args)
+
+    gateway = object.__new__(GatewayRunner)
+    monkeypatch.setattr(
+        gateway,
+        "_adapter_for_source",
+        lambda source: SimpleNamespace(start_native_cot=start),
+    )
+    ctx = TurnContext(
+        native_cot_mode="brief",
+        source=SimpleNamespace(chat_id="oc"),
+        _run_still_current=lambda: True,
+    )
+    turn = TurnRunner(gateway, ctx)
+    try:
+        await turn.start_native_cot()
+        assert ctx.native_cot is not None
+        ctx.native_cot.commentary("slow but healthy")
+        await turn.finish_native_cot({})
+        await asyncio.wait_for(asyncio.gather(*gateway._background_tasks), 6)
+        assert any(method == "PUT" for method, _, _ in transport.calls)
+        assert "/complete/" in transport.calls[-1][1]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["create", "update", "complete"])
 async def test_http_transport_timeout_cancels_without_late_side_effect(stage, monkeypatch):
+    import plugins.platforms.feishu.cot as cot_module
+
+    monkeypatch.setattr(cot_module, "COT_REQUEST_TIMEOUT_SECONDS", 0.01, raising=False)
     cancelled, release = asyncio.Event(), asyncio.Event()
     effects = []
     transport = FakeCOTClient()

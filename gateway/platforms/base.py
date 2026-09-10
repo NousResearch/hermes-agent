@@ -2295,7 +2295,7 @@ class BasePlatformAdapter(ABC):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
-        existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
+        existing._last_chunk_len = self.message_len_fn(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
             prior_task.cancel()

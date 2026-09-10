@@ -5741,9 +5741,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         await self._ensure_forum_commands(msg)
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
-        # A >4096-char command paste arrives as a near-limit COMMAND chunk plus TEXT continuations; dispatching
+        # A >4096 UTF-16 command paste arrives as a near-limit COMMAND chunk plus TEXT continuations; dispatching
         # immediately would orphan them. Near-limit commands go through text batching.
-        if len(event.text or "") >= self._SPLIT_THRESHOLD:
+        if self.message_len_fn(event.text or "") >= self._SPLIT_THRESHOLD:
             self._enqueue_text_event(event)
             return
         await self.handle_message(event)

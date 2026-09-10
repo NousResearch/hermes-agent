@@ -14,7 +14,7 @@
 //
 // It drives `$accentOverride`, which the theme context feeds through
 // `retintTheme`, so the whole app repaints against the REAL derivation on every
-// pointer move. Nothing persists: reload and you're back on the authored theme.
+// pointer move. The plugin provides an explicit Save action for persistence.
 //
 // Sizing note: the statusbar is `h-5` (20px). The TRIGGER must live inside that
 // band or it clips to a sliver; the panel is a popover and can be any size.
@@ -198,7 +198,7 @@ function HueRail({ lch, onPick }: { lch: Oklch; onPick: (h: number) => void }) {
   )
 }
 
-function AccentPicker() {
+function AccentPicker({ onSave }: { onSave: () => void }) {
   const { theme, renderedMode } = useTheme()
   const override = useValue($accentOverride)
   const painted = theme.colors.primary
@@ -253,6 +253,13 @@ function AccentPicker() {
         >
           reset
         </button>
+        <button
+          className="shrink-0 rounded-sm border border-(--dt-border) px-1.5 py-0.5 text-[11px]"
+          onClick={onSave}
+          type="button"
+        >
+          save
+        </button>
       </div>
 
       <div className="grid grid-cols-8 gap-1">
@@ -294,7 +301,7 @@ function AccentPicker() {
   )
 }
 
-export function AccentPickerTrigger() {
+export function AccentPickerTrigger({ onSave }: { onSave: () => void }) {
   const { theme } = useTheme()
 
   return (
@@ -318,7 +325,7 @@ export function AccentPickerTrigger() {
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-auto p-0" side="top">
-        <AccentPicker />
+        <AccentPicker onSave={onSave} />
       </PopoverContent>
     </Popover>
   )

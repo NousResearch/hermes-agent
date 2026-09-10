@@ -5,7 +5,8 @@
  * one color, and it works on any theme with any accent; this plugin is only the
  * control surface for it. That split is deliberate: the retint is core behavior
  * that Appearance settings and ⌘K should be able to drive too, while the
- * statusbar picker is an authoring tool most users never need.
+ * statusbar picker is an authoring tool most users never need. The picker can
+ * explicitly save its current accent through the plugin-scoped storage API.
  *
  * Ships OFF (`defaultEnabled: false`): it inventories in Settings ▸ Plugins and
  * registers nothing until the switch is flipped. With it off, `$accentOverride`
@@ -22,12 +23,20 @@ const plugin: HermesPlugin = {
   id: 'accent',
   name: 'Accent Picker',
   description:
-    'Pick the theme accent from an OKLCH color picker in the status bar; the palette re-derives live. Authoring tool — the color is not persisted.',
+    'Pick the theme accent from an OKLCH color picker in the status bar; the palette re-derives live. Press Save to persist the selected accent.',
   defaultEnabled: false,
   register(ctx) {
-    // The override is a scratch value, not a setting. Dropping it on unregister
-    // means disabling the plugin (or reloading) returns every surface to the
-    // authored theme instead of stranding a color with no control to clear it.
+    const savedAccent = ctx.storage.get<string | null>('savedAccent', null)
+
+    // Restore only an explicitly saved accent. Live changes remain previews
+    // until the user presses Save.
+    if (savedAccent) {
+      setAccentOverride(savedAccent)
+    }
+
+    // Dropping the override on unregister means disabling the plugin (or
+    // reloading) returns every surface to the authored theme. The saved value
+    // remains in plugin storage and is restored when the plugin is enabled.
     ctx.onDispose(() => setAccentOverride(null))
 
     ctx.registerMany([
@@ -35,7 +44,7 @@ const plugin: HermesPlugin = {
         id: 'picker',
         area: STATUSBAR_AREAS.right,
         order: 90,
-        render: () => <AccentPickerTrigger />
+        render: () => <AccentPickerTrigger onSave={() => ctx.storage.set('savedAccent', $accentOverride.get())} />
       },
       {
         id: 'reset',

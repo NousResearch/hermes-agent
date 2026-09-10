@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from typing import Optional
 
@@ -42,10 +43,21 @@ def record(chat_id, message_id, text: Optional[str]) -> None:
         if len(data) > _MAX_ENTRIES:  # trim oldest by timestamp
             for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - _MAX_ENTRIES]:
                 data.pop(k, None)
-        tmp = f"{path}.tmp.{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False)
-        os.replace(tmp, path)  # atomic; tolerates concurrent writers racing
+        fd, tmp = tempfile.mkstemp(
+            prefix=f"{os.path.basename(path)}.tmp.",
+            dir=os.path.dirname(path),
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+            os.replace(tmp, path)  # atomic; tolerates concurrent writers racing
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except Exception:
         return
 

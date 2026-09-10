@@ -219,7 +219,11 @@ Kanban workers only ever see their own profile's secrets). Terminal settings
 per profile on every routed turn: a profile that omits a terminal key gets the
 documented default, never the launch profile's value, and a profile whose
 `config.yaml`/`.env` cannot be parsed has terminal execution refused rather than
-run under another profile's sandbox policy. Kanban,
+run under another profile's sandbox policy. The media-delivery credential
+guard (the denylist behind `MEDIA:` attachments — `.env`, `auth.json`,
+`config.yaml`, `state.db`, session transcripts, OAuth token stores) covers every
+profile under `profiles/`, so no profile's turn can attach another profile's
+secrets or chat history to a reply. Kanban,
 profile-scoped skills/memory/SOUL, and model routing all behave per-profile
 exactly as they do with separate gateways.
 

@@ -188,6 +188,33 @@ def test_write_path_ignores_live_unhashed_dentry(tmp_path, force_wal, monkeypatc
 
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"),
+    reason="deleted-WAL /proc scan is Linux-only",
+)
+def test_iter_holders_flags_orphan_kept_alive_by_hardlink(tmp_path, force_wal):
+    """`st_nlink == 0` is not proof of an orphan either: a stale generation can keep a
+    surviving hard link (a backup, an operator copy) after the watched path itself is
+    unlinked or replaced, so `st_nlink` stays >= 1 on a truly orphaned inode. The guard
+    must still flag it by comparing the fd's identity against the CURRENT watched path,
+    not by trusting the link count."""
+    path = tmp_path / "state.db"
+    db = _make_db(path, "s", "held")
+    wal = _require_wal(db)
+    backup = tmp_path / "backup-wal"
+    os.link(wal, backup)  # keeps the old inode's nlink >= 1 after the unlink below
+    try:
+        _unlink_sidecars(path)
+        wal.write_bytes(b"new-generation")  # watched path recreated on a different inode
+        assert backup.stat().st_nlink >= 1
+        holders = iter_deleted_sqlite_sidecar_holders(path)
+        assert any(
+            target.removesuffix(" (deleted)").endswith("-wal") for _pid, target in holders
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
     reason="deleted-WAL write halt uses Linux unlink semantics",
 )
 def test_writer_halts_after_own_wal_unlinked(tmp_path, force_wal):

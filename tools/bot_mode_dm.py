@@ -363,7 +363,7 @@ def _run_local_turn(argv: list[str], dm_file: str) -> int:
 
     def _turn():
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, errors="replace")
 
     proc = _turn()
     if proc.returncode != 0:

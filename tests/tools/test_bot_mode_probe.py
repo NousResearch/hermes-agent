@@ -273,3 +273,111 @@ def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
     )
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after
+
+
+def _set_private(profile_dir, value="true"):
+    """Mark an existing bot profile private, preserving its other ui_meta keys."""
+    (profile_dir / "profile.yaml").write_text(
+        textwrap.dedent(
+            f"""\
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+                private: {value}
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_private_agent_is_not_listed_in_the_roster(tmp_path):
+    """A private agent leaves the mesh: teammates stop being told it exists."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+
+    assert "@researcher" in section
+    assert "@lucky" not in section
+
+
+def test_private_agent_still_gets_its_own_protocol_section(tmp_path):
+    """Private is about what OTHERS see. The agent keeps working and keeps its own tools —
+    hiding it must not silently disable Bot Mode for itself."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(lucky)
+
+    assert section.startswith("## Messaging other agents")
+    assert "You are `@lucky`" in section
+    assert "@researcher" in section
+
+
+def test_an_all_private_install_does_not_look_unmanaged(tmp_path):
+    """_roster also feeds _any_managed. Filtering there would switch Bot Mode off entirely
+    for an install where every agent is private — including the human's own access."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    only = _make_bot_profile(home, "lucky")
+    _set_private(only)
+
+    assert bot_mode_probe._any_managed(home) is True
+    assert bot_mode_probe.get_bot_mode_protocol_section(home).startswith("## Messaging other agents")
+
+
+def test_force_private_overrides_a_public_agent(tmp_path):
+    """The install-wide switch outranks each agent's own choice, never the other way round."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    _make_bot_profile(home, "lucky")
+    (home / "config.yaml").write_text("bots:\n  force_private: true\n", encoding="utf-8")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+
+    assert "@researcher" not in section
+    assert "@lucky" not in section
+
+
+def test_force_private_off_leaves_per_agent_choice_alone(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky)
+    (home / "config.yaml").write_text("bots:\n  force_private: false\n", encoding="utf-8")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+
+    assert "@researcher" in section
+    assert "@lucky" not in section
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "1", "True"])
+def test_private_accepts_hand_edited_yaml_truthies(tmp_path, value):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky, value)
+
+    assert "@lucky" not in bot_mode_probe.get_bot_mode_protocol_section(home)
+
+
+@pytest.mark.parametrize("value", ["false", "no", "0", "maybe", "''"])
+def test_unrecognised_private_values_stay_public(tmp_path, value):
+    """Fail OPEN: a typo must not silently remove an agent from the mesh."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky, value)
+
+    assert "@lucky" in bot_mode_probe.get_bot_mode_protocol_section(home)

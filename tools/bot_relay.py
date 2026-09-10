@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from tools.bot_mode_probe import _default_home, _hermes_root
+from tools.bot_mode_probe import _boolish, _default_home, _hermes_root
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,13 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
     handle = str(row.get("handle") or "").strip().lstrip("@") or ("hermes" if profile == "default" else profile)
     connection_id = str(row.get("connection_id") or "").strip()
     if not profile or not connection_id or not all(_HANDLE_RE.match(v) for v in (handle, profile, connection_id)):
+        return None
+    # An agent that went private on its own machine is dropped here as well as at the publisher.
+    # Enforcing it on BOTH sides means a peer running an older build — which advertises every
+    # managed profile unconditionally — cannot put a private agent back into this install's roster.
+    # Same permissive truth as the local flag (``_boolish``) — one definition, so the two
+    # sides of the relay can never drift on what counts as "private".
+    if _boolish(row.get("private")):
         return None
     out = {
         "profile": profile, "handle": handle, "connection_id": connection_id,

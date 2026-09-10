@@ -232,6 +232,12 @@ SKILLS_GUIDANCE = (
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
 )
 
+# The PR-inspection command below reads $HERMES_HOME and resolves `hermes` from PATH at the
+# worker's own shell, rather than a value baked in at prompt-build time: HERMES_HOME differs
+# per profile/account, and a python-side resolution cached in this module-level constant would
+# go stale (worker envs vary; this module is imported once per process). The dispatcher itself
+# requires `hermes` resolvable on PATH to spawn a worker at all, so a worker's inherited PATH
+# already carries it.
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from the shared board. Your task id is in "
@@ -262,7 +268,7 @@ KANBAN_GUIDANCE = (
     "roster. For worker-, decomposer-, or cron-created tasks, the producer has already fixed the scope: make the "
     "role-owned decision. Only then block, with the exact absent id/path and concrete external capability required.\n"
     "For GitHub PR intake, including PRs by Codex, Claude, or Hermes workers, use host Hermes: `env "
-    "HERMES_HOME=/Users/mikedemott/.hermes /Users/mikedemott/.local/bin/hermes github-pr-feedback inspect-pr "
+    "HERMES_HOME=\"$HERMES_HOME\" hermes github-pr-feedback inspect-pr "
     "--repository OWNER/REPO --pr-number N`; paginate issue comments, review comments, and reviews. For "
     "governed exact-head review use `github-pr-feedback submit-review` with `--event APPROVE|REQUEST_CHANGES|COMMENT`; "
     "do not use raw `gh pr view`, `gh api`, or curl. On protected routes, use governed JSON projection and direct "

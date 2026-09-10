@@ -1065,7 +1065,11 @@ def test_kanban_guidance_uses_governed_pr_inspection_for_remote_intake():
     from agent.prompt_builder import KANBAN_GUIDANCE
 
     assert "github-pr-feedback inspect-pr" in KANBAN_GUIDANCE
-    assert "/Users/mikedemott/.local/bin/hermes" in KANBAN_GUIDANCE
+    # $HERMES_HOME is read from the worker's own shell env, not baked in as the
+    # author's hardcoded macOS path -- other workers (other accounts, Linux,
+    # Windows) don't have that literal path.
+    assert 'HERMES_HOME="$HERMES_HOME"' in KANBAN_GUIDANCE
+    assert "/Users/mikedemott/.local/bin/hermes" not in KANBAN_GUIDANCE
     assert "Codex, Claude, or Hermes workers" in KANBAN_GUIDANCE
     assert "github-pr-feedback submit-review" in KANBAN_GUIDANCE
     assert "--event APPROVE|REQUEST_CHANGES|COMMENT" in KANBAN_GUIDANCE

@@ -2049,15 +2049,23 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
                     )
                     if failures >= effective_limit:
                         continue
-                    conn.execute(
+                    cur = conn.execute(
                         "UPDATE tasks SET status = ? "
                         "WHERE id = ? AND status = 'blocked'", (resume_status, task_id),
                     )
                 else:
-                    conn.execute(
+                    cur = conn.execute(
                         "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
                         (resume_status, task_id),
                     )
+                if cur.rowcount != 1:
+                    # The CAS lost (concurrent writer or a trigger with
+                    # RAISE(IGNORE)); nothing was promoted, so emit no event
+                    # and do not count it (#77140).
+                    _log.debug(
+                        "recompute_ready skipped %s: UPDATE matched no row", task_id,
+                    )
+                    continue
                 _append_event(
                     conn, task_id, "promoted",
                     {"status": resume_status} if resume_status != "ready" else None,

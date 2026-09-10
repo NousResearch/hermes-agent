@@ -228,8 +228,13 @@ def test_portal_review_rejects_invalid_control_before_upload(sharing, failure):
         (source / "SKILL.md").write_text("Changed since qualification")
     else:
         service.store.activate_installation_identity("installation", "other-org")
-    with pytest.raises((WisdomConflict, WisdomNotFound, ValueError)):
-        mediation.consent.resolve("org", shown["id"], actor, "review")
+    if failure == "expired":
+        result = mediation.consent.resolve("org", shown["id"], actor, "review")
+        assert result["state"] == "expired"
+        assert any(a.label == "Recheck" for a in interaction_view(result).actions)
+    else:
+        with pytest.raises((WisdomConflict, WisdomNotFound, ValueError)):
+            mediation.consent.resolve("org", shown["id"], actor, "review")
     assert service.client.uploaded == service.client.publications == 0
 
 
@@ -438,11 +443,12 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
     assert "Pending" not in expanded.to_text()
 
 
-def test_checks_toggle_is_read_only_and_preserves_consent(sharing):
+def test_checks_toggle_is_read_only_and_preserves_consent(sharing, monkeypatch):
     from hermes_wisdom.mediation_view import resolve_surface_action
     from hermes_wisdom.client import WisdomNotFound
 
     service, mediation, actor, shown, model, _, _ = sharing
+    monkeypatch.setattr("hermes_wisdom.mediation_view.WisdomConsent", lambda service: mediation.consent)
     with service.store.transaction() as db:
         row = db.execute(
             "SELECT plan_json FROM wisdom_consent WHERE id=?", (shown["id"],)

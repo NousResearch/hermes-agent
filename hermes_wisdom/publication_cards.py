@@ -146,7 +146,7 @@ class PublicationCards:
                     self.store.release_operation_lock(entity, token)
                     continue
                 view = interaction_view(
-                    WisdomConsent.project({
+                    WisdomConsent(self.service).project({
                         **row,
                         "state": "completed",
                         "plan": plan,

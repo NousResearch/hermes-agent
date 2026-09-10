@@ -393,9 +393,12 @@ class WisdomConsent:
             )
         return self.project(value)
 
-    @staticmethod
-    def project(value: dict[str, Any]) -> dict[str, Any]:
+    def project(self, value: dict[str, Any]) -> dict[str, Any]:
         plan = value["plan"]
+        # Read-only surfaces must not offer an approval the resolver will reject.
+        state = value["state"]
+        if state == "pending" and value["expires_at"] <= self.queue.clock():
+            state = "expired"
         blocked = bool(
             plan.get("modified")
             or plan.get("sensitive_expansion")
@@ -406,13 +409,13 @@ class WisdomConsent:
         return {
             "id": value["id"],
             "assessment_id": value["assessment_id"],
-            "state": value["state"],
+            "state": state,
             "operation": value["operation"],
             "expires_at": value["expires_at"],
             "facts": public_plan(plan),
             "actions": (
                 ["inspect"]
-                if value["state"] != "pending"
+                if state != "pending"
                 else ["defer", "inspect", "confirm"]
                 if not blocked
                 else ["defer", "inspect"]

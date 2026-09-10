@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,9 +45,12 @@ def test_local_checklist_does_not_claim_gateway_checks_have_run():
 
 
 @pytest.mark.parametrize("allowed", [True, False])
-def test_approval_card_surfaces_local_results_and_preserves_blocking(allowed):
+def test_approval_card_surfaces_local_results_and_preserves_blocking(allowed, tmp_path):
+    from hermes_wisdom.store import WisdomStore
+
     check = prepared_security_check([], "Safe", {"guard": {"allowed": allowed}})
-    interaction = WisdomConsent.project({
+    consent = WisdomConsent(SimpleNamespace(store=WisdomStore(tmp_path / "wisdom")))
+    interaction = consent.project({
         "id": "consent", "assessment_id": "assessment", "operation": "publish",
         "state": "pending", "expires_at": 9999999999,
         "plan": {"allowed": check["upload_allowed"], "security_check": check},

@@ -415,6 +415,42 @@ def test_recheck_creates_fresh_consent_without_applying_and_is_repeatable(consen
     instance.service.install_apply.assert_called_once()
 
 
+@pytest.mark.parametrize("consent", ["telegram", "slack"], indirect=True)
+def test_expired_review_reads_offer_recheck_without_renewing_consent(consent, monkeypatch):
+    from hermes_wisdom import mediation_view
+
+    instance, actor, identity, now = consent
+    old = instance.present("org", identity, actor)
+    monkeypatch.setattr(mediation_view, "WisdomConsent", lambda service: instance)
+    now[0] = old["expires_at"] - 0.01
+    assert "confirm" in instance.resolve("org", old["id"], actor, "inspect")["actions"]
+    now[0] = old["expires_at"]
+    for action in ("inspect", "checks.show", "checks.hide"):
+        view = mediation_view.resolve_surface_action(
+            instance.service, f"wi:agent:{action}:{old['id']}",
+            platform=actor.platform, actor_id=actor.actor_id, **actor.address,
+        )
+        assert view.summary == "Expired"
+        assert any(a.callback_data == f"wi:agent:recheck:{old['id']}" for a in view.actions)
+        assert not any(a.callback_data == f"wi:agent:confirm:{old['id']}" for a in view.actions)
+    pending = instance.pending("org")[0]
+    assert pending["state"] == "expired" and "confirm" not in pending["actions"]
+    with instance.service.store.transaction() as db:
+        stored = db.execute("SELECT state,expires_at FROM wisdom_consent WHERE id=?", (old["id"],)).fetchone()
+        assert tuple(stored) == ("pending", old["expires_at"])
+        assert db.execute("SELECT COUNT(*) FROM wisdom_consent_outcome").fetchone()[0] == 0
+    instance.service.install_apply.assert_not_called()
+    fresh = instance.resolve("org", old["id"], actor, "recheck")
+    assert fresh["id"] != old["id"] and fresh["expires_at"] > now[0]
+    assert "confirm" in fresh["actions"]
+    instance.service.install_apply.assert_not_called()
+    assert instance.resolve("org", old["id"], actor, "confirm")["state"] == "expired"
+    assert instance.resolve("org", fresh["id"], actor, "confirm")["state"] == "completed"
+    now[0] = fresh["expires_at"] + 1
+    assert instance.resolve("org", fresh["id"], actor, "inspect")["state"] == "completed"
+    instance.service.install_apply.assert_called_once()
+
+
 def test_recheck_requires_original_actor_and_address(consent):
     instance, actor, identity, _ = consent
     shown = instance.present("org", identity, actor)
@@ -460,12 +496,15 @@ def test_new_review_after_expiry_gets_new_id_old_button_stays_expired(consent):
 def test_replacement_legacy_review_uses_native_actor_bound_controls(
     consent, monkeypatch
 ):
+    import time
+
     from gateway.wisdom_command import WisdomCommandContext
     from hermes_wisdom.agent_led.actions import current_action_view
     from hermes_wisdom.mediation_view import resolve_surface_action
 
     monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "agent")
-    instance, actor, identity, _ = consent
+    instance, actor, identity, now = consent
+    now[0] = time.time()
     with instance.service.store.transaction() as db:
         db.execute(
             "UPDATE wisdom_assessment SET advice_json=? WHERE id=?",

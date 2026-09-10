@@ -90,7 +90,10 @@ forward. The `hermes wisdom act` compatibility command likewise returns current
 navigation without applying an operation.
 
 Changed packages, local edits, additional requirements, and expired consent
-require fresh review. Existing opted-in automatic updates continue unchanged.
+require fresh review. Reopening an expired card or its checks shows **Expired**
+with **Recheck** instead of a confirmation button. Recheck fetches a fresh plan;
+it does not approve it or revive the old confirmation. Existing opted-in
+automatic updates continue unchanged.
 
 ## Recovery and limits
 

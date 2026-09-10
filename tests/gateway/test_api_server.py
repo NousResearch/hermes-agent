@@ -17,6 +17,7 @@ import json
 import os
 import stat
 import sys
+import threading
 import time
 import types
 import uuid
@@ -33,6 +34,7 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _derive_chat_session_id,
     _hermes_version,
+    _maybe_post_turn_compress,
     _redact_api_error_text,
     _request_agent_overrides,
     check_api_server_requirements,
@@ -427,6 +429,93 @@ class TestAgentExecution:
         # arriving after this point can't reap work this turn left running.
         assert mock_agent._gateway_turn_process_task_id == ""
         assert mock_agent._gateway_turn_process_baseline == frozenset()
+
+
+class TestPostTurnCompaction:
+    def test_finish_turn_schedules_the_post_turn_gate(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = types.SimpleNamespace(
+            session_prompt_tokens=0,
+            session_completion_tokens=0,
+            session_total_tokens=0,
+            session_id="api-session",
+            _last_compaction_in_place=False,
+        )
+        result = {"messages": [{"role": "assistant", "content": "done"}]}
+
+        with patch("gateway.platforms.api_server._maybe_post_turn_compress") as post_turn:
+            completed, usage = adapter._finish_turn_result(
+                agent, result, "api-session", route=None, requested_runtime=None,
+                route_source="global", confirmed_runtime_lock=False)
+
+        assert completed is result
+        assert usage["total_tokens"] == 0
+        post_turn.assert_called_once_with(agent, result, "api-session")
+
+    def test_runs_after_an_over_threshold_api_turn(self):
+        done = threading.Event()
+        calls = []
+        compressor = types.SimpleNamespace(should_compress=MagicMock(return_value=True))
+
+        def _compress(messages, system_prompt, *, approx_tokens, task_id):
+            calls.append((messages, system_prompt, approx_tokens, task_id))
+            done.set()
+
+        agent = types.SimpleNamespace(
+            compression_enabled=True,
+            api_mode="openai",
+            _session_db=object(),
+            context_compressor=compressor,
+            _compress_context=_compress,
+            _cached_system_prompt="system",
+            tools=None,
+        )
+        messages = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+
+        with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=101):
+            _maybe_post_turn_compress(agent, {"messages": messages}, "api-session")
+
+        assert done.wait(2), "post-turn compression worker did not run"
+        compressor.should_compress.assert_called_once_with(101)
+        assert len(calls) == 1
+        compressed_messages, compressed_system_prompt, approx_tokens, task_id = calls[0]
+        assert compressed_messages == messages
+        assert compressed_messages is not messages
+        assert compressed_system_prompt is None
+        assert approx_tokens == 101
+        assert task_id == "api-session"
+
+    def test_skips_when_the_normal_compressor_gate_declines(self):
+        compressor = types.SimpleNamespace(should_compress=MagicMock(return_value=False))
+        agent = types.SimpleNamespace(
+            compression_enabled=True,
+            api_mode="openai",
+            _session_db=object(),
+            context_compressor=compressor,
+            _compress_context=MagicMock(),
+            _cached_system_prompt="system",
+            tools=None,
+        )
+
+        with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=99):
+            _maybe_post_turn_compress(agent, {"messages": [{"role": "user", "content": "hello"}]}, "api-session")
+
+        compressor.should_compress.assert_called_once_with(99)
+        agent._compress_context.assert_not_called()
+
+    def test_skips_background_rotation(self):
+        agent = types.SimpleNamespace(
+            compression_enabled=True,
+            compression_in_place=False,
+            context_compressor=MagicMock(),
+            _compress_context=MagicMock(),
+            _session_db=object(),
+        )
+
+        _maybe_post_turn_compress(agent, {"messages": [{"role": "user", "content": "hello"}]}, "api-session")
+
+        agent.context_compressor.should_compress.assert_not_called()
+        agent._compress_context.assert_not_called()
 
 
 class TestDisconnectedAgentReap:

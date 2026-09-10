@@ -3255,18 +3255,33 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     execution_id,
                 )
                 return False
+            ack_tmp_path = None
             try:
                 ack_path.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(ack_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                # Write to a sibling temp file and os.replace() it into place instead of
+                # creating ack_path directly: O_CREAT makes the directory entry (and thus
+                # Path.exists()) visible at open() time, before any bytes are written, so a
+                # poller that wins the race against a scheduler preemption here reads a
+                # zero-length file and raises json.decoder.JSONDecodeError (t_12a8ecc4).
+                # os.replace/rename is atomic on POSIX: the poller can only ever observe
+                # "no file yet" or "the fully-written file".
+                ack_tmp_path = ack_path.with_name(ack_path.name + f".tmp-{os.getpid()}")
+                fd = os.open(ack_tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
                     json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
                     ack_file.flush()
                     os.fsync(ack_file.fileno())
+                os.replace(ack_tmp_path, ack_path)
             except Exception:
                 logger.exception(
                     "Cron external worker could not publish ready acknowledgement for %s",
                     execution_id,
                 )
+                if ack_tmp_path is not None:
+                    try:
+                        ack_tmp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 return False
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id

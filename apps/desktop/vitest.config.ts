@@ -31,7 +31,11 @@ const electronNative: TestProjectConfiguration = {
       'scripts/run-short-session-hang-repro.test.mjs',
       'scripts/tasks-scroll.test.mjs',
       'electron/**/*.windows-live.test.ts'
-    ]
+    ],
+    // Several suites here shell out to real `git` many times per test. Process
+    // spawn on Windows costs far more than on POSIX, so the 5s default times
+    // out work that is progressing normally rather than hung.
+    testTimeout: process.platform === 'win32' ? 30_000 : 5_000
   }
 }
 

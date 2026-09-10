@@ -218,7 +218,13 @@ export const sessionCommands: SlashCommand[] = [
     help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
-      if (!arg) {
+      if (!arg.trim()) {
+        // Reuse the dynamic argument-completion menu instead of maintaining a
+        // second personality inventory in the TUI. dispatchSubmission clears
+        // the submitted slash command after this handler returns, so reopen
+        // the composer on the next microtask, after that clear has landed.
+        queueMicrotask(() => ctx.composer.setInput('/personality '))
+
         return
       }
 

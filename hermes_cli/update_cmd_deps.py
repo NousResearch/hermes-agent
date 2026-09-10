@@ -835,6 +835,14 @@ def _rebuild_desktop_after_update(
     except Exception:
         skip_desktop_build = False
     if skip_desktop_build:
+        if sys.platform == "darwin":
+            executable = _m()._desktop_packaged_executable(desktop_dir)
+            if executable is not None:
+                try:
+                    _m()._write_desktop_producer_receipt(executable, executable, rebuilt=False)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    print(f"  ⚠ Desktop candidate receipt failed: {exc}")
+                    return False
         print("  ✓ Desktop app up to date")
         return True
 

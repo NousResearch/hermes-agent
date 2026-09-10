@@ -4,10 +4,13 @@ Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_RO
 are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
-import logging
-import contextlib
 import argparse
+import contextlib
+import hashlib
+import json
+import logging
 import os
+import plistlib
 import re
 import shlex
 import shutil
@@ -16,9 +19,10 @@ import subprocess
 import sys
 import tempfile
 import time as _time_mod
+from datetime import datetime, timezone
 
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 from hermes_cli.main_tui_launch import _npm_lifecycle_env
 from hermes_cli.main_web_build import (
     _hash_source_tree, _nixos_build_env, _stamp_is_current, _write_build_stamp)
@@ -191,6 +195,168 @@ def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
     return unpacked
 
 
+_DESKTOP_PRODUCER_RECEIPT = ".hermes-desktop-producer-receipt.json"
+_DESKTOP_UPDATE_TRANSACTION_ENV = "HERMES_DESKTOP_UPDATE_TRANSACTION_ID"
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+
+def _desktop_macos_reader_state(app: Optional[Path]) -> str:
+    """Return ``none|present|unknown`` for open files under the exact app bundle.
+
+    ``lsof +D`` is deliberately fail-closed: only its documented no-match exit
+    can prove ``none``; missing tooling, timeout, malformed output, or any other
+    failure is ``unknown``.
+    """
+    if app is None or not app.exists():
+        return "none"
+    lsof = shutil.which("lsof")
+    if not lsof and Path("/usr/sbin/lsof").is_file():
+        lsof = "/usr/sbin/lsof"
+    if not lsof:
+        return "unknown"
+    try:
+        result = subprocess.run(
+            [lsof, "-F", "p", "+D", str(app.resolve())],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    pids = [line[1:] for line in (result.stdout or "").splitlines()
+            if line.startswith("p") and line[1:].isdigit()]
+    if result.returncode == 0 and pids:
+        return "present"
+    if (
+        result.returncode == 1
+        and not (result.stdout or "").strip()
+        and not (result.stderr or "").strip()
+    ):
+        return "none"
+    return "unknown"
+
+
+def _desktop_macos_strict_signature_valid(app: Path) -> bool:
+    """Independently require ``codesign --verify --deep --strict``."""
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+    try:
+        return _codesign_verify(codesign, app, check=False, text=True).returncode == 0
+    except OSError:
+        return False
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _run_candidate_fact(command: list[str], *, cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(f"candidate fact probe failed: {command[0]} exited {result.returncode}")
+    return result
+
+
+def _atomic_write_json_fsynced(path: Path, payload: dict) -> None:
+    """Replace *path* atomically and fsync both file and containing directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temp_path.unlink()
+
+
+def _write_desktop_producer_receipt(
+    artifact_executable: Path, exact_candidate_executable: Path, *, rebuilt: bool
+) -> Optional[Path]:
+    """Write the txid-bound macOS candidate receipt next to the signed app."""
+    transaction_id = os.environ.get(_DESKTOP_UPDATE_TRANSACTION_ENV)
+    if transaction_id is None:
+        return None
+    if not _UUID_RE.fullmatch(transaction_id):
+        raise RuntimeError("invalid desktop update transaction ID")
+
+    from hermes_cli.main import PROJECT_ROOT
+
+    artifact_app = artifact_executable.parents[2]
+    candidate_app = exact_candidate_executable.parents[2].resolve()
+    resources = artifact_app / "Contents" / "Resources"
+    app_asar = resources / "app.asar"
+    with (artifact_app / "Contents" / "Info.plist").open("rb") as stream:
+        info = plistlib.load(stream)
+
+    source_sha = _run_candidate_fact(["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise RuntimeError("post-update source SHA is unavailable")
+    source_status = _run_candidate_fact(
+        ["git", "status", "--porcelain", "--untracked-files=no"], cwd=PROJECT_ROOT
+    ).stdout
+    architectures = _run_candidate_fact(["/usr/bin/lipo", "-archs", str(artifact_executable)]).stdout.split()
+    if not architectures:
+        raise RuntimeError("candidate architecture is unavailable")
+    signature = _run_candidate_fact(
+        ["/usr/bin/codesign", "-dv", "--verbose=4", str(artifact_app)]
+    )
+    signing_text = "\n".join((signature.stdout or "", signature.stderr or ""))
+    authorities = re.findall(r"^Authority=(.+)$", signing_text, re.MULTILINE)
+    if "Signature=adhoc" in signing_text:
+        signing_policy, signing_identity = "adhoc", "-"
+    elif authorities:
+        signing_policy, signing_identity = "identity", authorities[0].strip()
+    else:
+        raise RuntimeError("candidate signing identity is unavailable")
+
+    required = {
+        "bundle_id": info.get("CFBundleIdentifier"),
+        "version": info.get("CFBundleShortVersionString"),
+        "build_version": info.get("CFBundleVersion"),
+    }
+    if not all(isinstance(value, str) and value for value in required.values()):
+        raise RuntimeError("candidate bundle metadata is incomplete")
+
+    receipt_path = artifact_app.parent / _DESKTOP_PRODUCER_RECEIPT
+    payload = {
+        "schema_version": 1,
+        "transaction_id": transaction_id,
+        "candidate_path": str(candidate_app),
+        "post_update_source_sha": source_sha,
+        "rebuilt": bool(rebuilt),
+        "build_timestamp": datetime.fromtimestamp(
+            artifact_executable.stat().st_mtime, timezone.utc
+        ).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "source_state": "clean" if not source_status.strip() else "dirty",
+        "architecture": sorted(set(architectures)),
+        **required,
+        "signing_policy": signing_policy,
+        "signing_identity": signing_identity,
+        "executable_sha256": _sha256_file(artifact_executable),
+        "app_asar_sha256": _sha256_file(app_asar),
+    }
+    _atomic_write_json_fsynced(receipt_path, payload)
+    return receipt_path
+
+
+def _macos_live_app(desktop_dir: Path) -> Optional[Path]:
+    executable = _desktop_packaged_executable(desktop_dir)
+    return executable.parents[2] if executable is not None else None
+
+
 def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
     live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
@@ -204,6 +370,10 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         live_root = release_dir / staged_root.name
         previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
         release_dir.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "darwin":
+            reader_state = _desktop_macos_reader_state(_macos_live_app(desktop_dir))
+            if reader_state != "none":
+                raise RuntimeError(f"macOS release reader state is {reader_state} immediately before promotion")
         shutil.rmtree(previous, ignore_errors=True)
         moved_aside = live_root.exists()
         if moved_aside:
@@ -220,7 +390,7 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             raise
         if moved_aside:
             shutil.rmtree(previous, ignore_errors=True)
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("desktop stage-and-swap failed, live app kept: %s", exc)
         return None
     finally:
@@ -1325,28 +1495,45 @@ def _run_desktop_pack_with_recovery(
 
 
 def _promote_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Path:
-    """Sign + integrity-gate the STAGED pack, then swap it over the live app. Exits (live app kept) on failure."""
+    """Validate a staged pack completely, then swap it over the repo release."""
     staged_executable = _desktop_packaged_executable_in(staging_dir)
-    # Locally-built apps are ad-hoc signed; make them relaunchable after an
-    # in-place self-update. Signs the STAGED bundle so the live app is never
-    # half-signed. No-op on non-macOS and on real-identity builds.
-    _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir)
+
+    def refuse(message: str) -> NoReturn:
+        _discard_desktop_staging(staging_dir)
+        print(f"✗ {message}")
+        print(_PREVIOUS_APP_KEPT)
+        raise SystemExit(1)
+
+    if staged_executable is None:
+        refuse(f"Desktop build produced no launchable app in {staging_dir}")
+
+    if sys.platform == "darwin":
+        reader_state = _desktop_macos_reader_state(_macos_live_app(desktop_dir))
+        if reader_state != "none":
+            refuse(f"Desktop candidate promotion refused: macOS release reader state is {reader_state}")
+        if not _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir):
+            refuse("Desktop candidate signing failed")
+        staged_app = staged_executable.parents[2]
+        if not _desktop_macos_strict_signature_valid(staged_app):
+            refuse("Desktop candidate failed strict macOS signature verification")
+        try:
+            staged_root = _desktop_unpacked_root(staged_executable, staging_dir)
+            final_executable = (
+                desktop_dir / "release" / staged_root.name / staged_executable.relative_to(staged_root)
+            )
+            _write_desktop_producer_receipt(staged_executable, final_executable, rebuilt=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            refuse(f"Desktop candidate receipt failed: {exc}")
 
     # Windows integrity gate: never declare the rebuild a success on a
     # Hermes.exe Windows cannot load. Verified on the STAGED exe, so a failure
     # simply discards staging and fails loudly for the updater's retry-once.
     verified_executable, rolled_back = _ensure_desktop_exe_launchable(desktop_dir, staged_executable)
-    if staged_executable is None or rolled_back or verified_executable is None:
-        _discard_desktop_staging(staging_dir)
-        if staged_executable is None:
-            print(f"✗ Desktop build produced no launchable app in {staging_dir}")
-        print(_PREVIOUS_APP_KEPT)
-        sys.exit(1)
+    if rolled_back or verified_executable is None:
+        refuse("Desktop build produced no launchable app")
     packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
     if packaged_executable is None:
-        print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
-        print(_PREVIOUS_APP_KEPT)
-        sys.exit(1)
+        refuse(f"Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
     return packaged_executable
 
 

@@ -48,6 +48,10 @@ def desktop_env(tmp_path, monkeypatch):
             return calls["build_needed"]
 
         @staticmethod
+        def _desktop_packaged_executable(_desktop_dir):
+            return None
+
+        @staticmethod
         def _run_logged_subprocess(cmd, cwd=None, env=None):
             calls["builds"] += 1
             return _Result(1, stdout="Error: [stage-native-deps] boom")

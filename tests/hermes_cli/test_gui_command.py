@@ -152,6 +152,8 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main_desktop._register_linux_desktop_entry"), \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
@@ -217,6 +219,8 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
          pytest.raises(SystemExit):
@@ -315,6 +319,8 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
          patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=True) as mock_dl, \
          patch("hermes_cli.main.subprocess.run", side_effect=pack_fail) as mock_run, \
@@ -1046,6 +1052,8 @@ def test_gui_skips_desktop_entry_off_linux(tmp_path, monkeypatch):
     with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
          patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
@@ -1108,6 +1116,8 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
@@ -1124,6 +1134,8 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
@@ -1205,6 +1217,8 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value={}), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
@@ -1256,6 +1270,8 @@ def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
@@ -1285,6 +1301,8 @@ def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
@@ -1312,6 +1330,8 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"), \
+         patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True), \
          patch("hermes_cli.config.load_config", return_value={}), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
          patch("hermes_cli.main_desktop._detect_linux_password_store") as mock_detect, \
@@ -1340,6 +1360,8 @@ def _gui_build_patches(root: Path, run_side_effect):
         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True),
         patch("hermes_cli.main_desktop._write_desktop_build_stamp"),
         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"),
+        patch("hermes_cli.main_desktop._desktop_macos_reader_state", return_value="none"),
+        patch("hermes_cli.main_desktop._desktop_macos_strict_signature_valid", return_value=True),
         patch("hermes_cli.main_desktop._register_linux_desktop_entry"),
         patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build", return_value=[]),
         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]),

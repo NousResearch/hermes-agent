@@ -231,6 +231,11 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import {
+  createDesktopUpdateIpcHandlers,
+  probeMacosSafePublisherCapability,
+  registerDesktopUpdateIpc
+} from './macos-update-containment'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -4299,6 +4304,18 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     updateInFlight = false
   }
 }
+
+const desktopUpdateIpcHandlers = createDesktopUpdateIpcHandlers({
+  applyUpdates,
+  checkUpdates,
+  isMac: IS_MAC,
+  checkErrorBranch: () => readDesktopUpdateConfig().branch,
+  publisherCapability: () => {
+    const handoff = resolvePosixScriptHandoff(resolveUpdateRoot())
+
+    return handoff ? probeMacosSafePublisherCapability(handoff) : null
+  }
+})
 
 async function handOffWindowsBootstrapRecovery(reason) {
   if (!IS_WINDOWS || !IS_PACKAGED) {
@@ -15924,7 +15941,7 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
           if (connection.kind === 'local') {
             // The app-managed runtime updates through the same pipeline as the
             // Settings → Updates button (marker + venv gate + relaunch flow).
-            const result: any = await applyUpdates({})
+            const result: any = await desktopUpdateIpcHandlers.apply({})
 
             return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
           }
@@ -17516,23 +17533,7 @@ const terminalIpc = registerTerminalIpc({
 
 const disposeTerminalSession = terminalIpc.disposeTerminalSession
 
-ipcMain.handle('hermes:updates:check', async () =>
-  checkUpdates().catch(error => ({
-    supported: true,
-    branch: readDesktopUpdateConfig().branch,
-    error: 'check-failed',
-    message: error?.message || String(error),
-    fetchedAt: Date.now()
-  }))
-)
-
-ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
-  applyUpdates(payload || {}).catch(error => ({
-    ok: false,
-    error: 'apply-failed',
-    message: error?.message || String(error)
-  }))
-)
+registerDesktopUpdateIpc(ipcMain, desktopUpdateIpcHandlers)
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 

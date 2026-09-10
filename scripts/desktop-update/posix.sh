@@ -39,7 +39,7 @@ ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
-SELF_TEST_TCC_HEAL=0
+SELF_TEST_TCC_HEAL=0 SELF_TEST_TRANSACTION=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -54,6 +54,7 @@ while [ $# -gt 0 ]; do
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
     --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
+    --self-test-transaction) SELF_TEST_TRANSACTION=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
@@ -616,7 +617,24 @@ tcc_pick_update_invoke() { # sets UPDATE_INVOKE; safety net past a failed heal
   fi
 }
 
+create_desktop_transaction() {
+  [ "$(uname)" = "Darwin" ] || return 0
+  HERMES_DESKTOP_UPDATE_TRANSACTION_ID="$(/usr/bin/python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)" || return 1
+  case "$HERMES_DESKTOP_UPDATE_TRANSACTION_ID" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) return 1 ;;
+  esac
+  export HERMES_DESKTOP_UPDATE_TRANSACTION_ID
+}
+
 # ── self-tests: no update, touch nothing ────────────────────────────────────
+if [ "$SELF_TEST_TRANSACTION" -eq 1 ]; then
+  trap - EXIT
+  create_desktop_transaction || { echo "transaction generation failed" >&2; exit 1; }
+  /usr/bin/python3 -c 'import json, os; value = os.environ.get("HERMES_DESKTOP_UPDATE_TRANSACTION_ID", ""); print(json.dumps({"transaction_id": value, "exported_transaction_id": value}))'
+  exit 0
+fi
+
 if [ "$SELF_TEST_TCC_HEAL" -eq 1 ]; then
   # Runs the REAL heal + invoke selection against --install-root and reports;
   # tests/test_desktop_update_tcc_heal.py drives the state matrix through it.
@@ -674,6 +692,14 @@ os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:]], env)
   exit 0
 fi
 
+if [ "$(uname)" = "Darwin" ]; then
+  create_desktop_transaction || {
+    FINAL_CODE=9
+    FINAL_MSG="Update aborted: a secure Desktop update transaction ID could not be created. Nothing was changed."
+    exit "$FINAL_CODE"
+  }
+fi
+
 # Electron terminates the entire detached updater process group during quit,
 # including the loopback status server.  Arm TERM immunity before `start_ui`
 # so the shim server and the later `hermes update` subprocess both inherit
@@ -697,7 +723,12 @@ if [ "${#STARTED_AT}" -ne "${#NOW}" ] \
     || [[ "$STARTED_AT" > "$NOW" || "$STARTED_AT" < "$MIN_STARTED_AT" ]]; then
   STARTED_AT="$NOW"
 fi
-printf '%s\n%s\n' "$$" "$STARTED_AT" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+if [ -n "${HERMES_DESKTOP_UPDATE_TRANSACTION_ID:-}" ]; then
+  printf '%s\n%s\n%s\n' "$$" "$STARTED_AT" "$HERMES_DESKTOP_UPDATE_TRANSACTION_ID" > "$MARKER" 2>/dev/null \
+    || log "WARNING: could not write update marker"
+else
+  printf '%s\n%s\n' "$$" "$STARTED_AT" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+fi
 
 if [ "$SELF_TEST_MARKER" -eq 1 ]; then
   trap - EXIT

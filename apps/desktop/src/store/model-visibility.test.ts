@@ -7,10 +7,13 @@ import {
   defaultVisibleKeys,
   effectiveVisibleKeys,
   emptyProviderSentinelKey,
+  isMultiVendorProvider,
   isProviderSentinel,
+  modelVendorPrefix,
   modelVisibilityKey,
   resolveVisibleKeys,
   setProviderVisibility,
+  splitFamiliesByPrefix,
   toggleModelVisibility
 } from './model-visibility'
 
@@ -325,5 +328,47 @@ describe('setProviderVisibility', () => {
     expect(next.has(modelVisibilityKey('nous', 'model'))).toBe(true)
     // The -fast sibling is represented by its base family, not its own key.
     expect(next.has(modelVisibilityKey('nous', 'model-fast'))).toBe(false)
+  })
+})
+
+describe('vendor-prefix model grouping (router aggregators like 9router)', () => {
+  it('extracts the first path segment as the upstream vendor prefix', () => {
+    expect(modelVendorPrefix('griph/deepseek-v4-flash')).toBe('griph')
+    expect(modelVendorPrefix('nexa/claude-fable-5')).toBe('nexa')
+    expect(modelVendorPrefix('  VIP/Some-Model  ')).toBe('vip')
+  })
+
+  it('returns no prefix for single-namespace providers', () => {
+    expect(modelVendorPrefix('claude-opus-4.8')).toBe('')
+    expect(modelVendorPrefix('')).toBe('')
+    // A trailing slash is not a vendor prefix.
+    expect(modelVendorPrefix('griph/')).toBe('')
+  })
+
+  it('flags a provider as multi-vendor only when it spans >1 prefix', () => {
+    expect(isMultiVendorProvider(['griph/a', 'griph/b', 'nexa/c'])).toBe(true)
+    expect(isMultiVendorProvider(['griph/a', 'griph/b'])).toBe(false)
+    expect(isMultiVendorProvider(['claude-opus-4.8', 'gpt-5.5'])).toBe(false)
+  })
+
+  it('splits families into consecutive runs by prefix without reordering', () => {
+    const families = collapseModelFamilies(['griph/a', 'griph/b', 'nexa/c', 'griph/d'])
+
+    const groups = splitFamiliesByPrefix(families)
+
+    expect(groups.map(g => g.prefix)).toEqual(['griph', 'nexa', 'griph'])
+    expect(groups[0].families.map(f => f.id)).toEqual(['griph/a', 'griph/b'])
+    expect(groups[1].families.map(f => f.id)).toEqual(['nexa/c'])
+    expect(groups[2].families.map(f => f.id)).toEqual(['griph/d'])
+  })
+
+  it('gives prefix-less models their own unlabeled run', () => {
+    const families = collapseModelFamilies(['claude-opus-4.8', 'griph/a'])
+
+    const groups = splitFamiliesByPrefix(families)
+
+    expect(groups[0].prefix).toBe('')
+    expect(groups[0].families.map(f => f.id)).toEqual(['claude-opus-4.8'])
+    expect(groups[1].prefix).toBe('griph')
   })
 })

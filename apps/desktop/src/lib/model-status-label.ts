@@ -109,6 +109,41 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
+// Router-style proxies (user providers pointed at an aggregator such as
+// 9router) expose every model under an upstream vendor prefix. Map the ones
+// we know to their public names; unknown prefixes fall back to their raw slug
+// so a new vendor still gets a header instead of vanishing into the flat list.
+const VENDOR_LABELS: Readonly<Record<string, string>> = {
+  griph: 'GripHub',
+  nexa: 'Nexa',
+  vip: 'LapakVIP',
+  kr: 'Kiro',
+  seek: 'Seek',
+  jwk: 'JWK',
+  guts: 'Guts',
+  kenari: 'Kenari',
+  qonek: 'Qonek',
+  amanai: 'AmanAI'
+}
+
+/** Display label for a router-proxy upstream vendor prefix (`griph` →
+ *  "GripHub"). Unknown prefixes are returned capitalized as-is. */
+export function modelVendorLabel(prefix: string): string {
+  const key = prefix.trim().toLowerCase()
+
+  if (!key) {
+    return ''
+  }
+
+  const known = VENDOR_LABELS[key]
+
+  if (known) {
+    return known
+  }
+
+  return key.charAt(0).toUpperCase() + key.slice(1)
+}
+
 /** Status bar trigger label — model name plus the live session state (effort/fast).
  *  `defaultEffort` is the profile's configured level, used when the surface has
  *  no explicit effort so the label never advertises a default the agent won't use. */

@@ -4,7 +4,8 @@ import {
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
-  modelDisplayParts
+  modelDisplayParts,
+  modelVendorLabel
 } from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
@@ -57,6 +58,15 @@ describe('model-status-label', () => {
     expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high', reasoningEffort: 'low' })).toBe(
       'GPT-5.5 · Low'
     )
+  })
+
+  it('maps known router-proxy vendor prefixes to friendly labels, capitalizes unknown ones', () => {
+    expect(modelVendorLabel('griph')).toBe('GripHub')
+    expect(modelVendorLabel('nexa')).toBe('Nexa')
+    expect(modelVendorLabel('vip')).toBe('LapakVIP')
+    // Unknown prefixes still get a header instead of merging into the flat list.
+    expect(modelVendorLabel('brandnew')).toBe('Brandnew')
+    expect(modelVendorLabel('')).toBe('')
   })
 
   it('returns just the placeholder name when there is no model', () => {

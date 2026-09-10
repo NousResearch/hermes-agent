@@ -13,15 +13,17 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelDisplayParts, modelVendorLabel } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import {
   $visibleModels,
   collapseModelFamilies,
   effectiveVisibleKeys,
+  isMultiVendorProvider,
   modelVisibilityKey,
   setProviderVisibility,
   setVisibleModels,
+  splitFamiliesByPrefix,
   toggleModelVisibility
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
@@ -143,27 +145,38 @@ export function ModelVisibilityDialog({
                     />
                   </div>
                   {!collapsed &&
-                    models.map(family => {
-                      const { name, tag } = modelDisplayParts(family.id)
-                      const key = modelVisibilityKey(provider.slug, family.id)
+                    (isMultiVendorProvider(allFamilies.map(family => family.id)) ? splitFamiliesByPrefix(models) : [{ families: models, prefix: '' }]).map(
+                      (branch, branchIndex) => (
+                        <div key={`${provider.slug}-branch-${branchIndex}`}>
+                          {branch.prefix ? (
+                            <div className="px-3 pb-0.5 pt-1.5 text-[0.5625rem] font-medium uppercase tracking-wider text-(--ui-text-tertiary)/80">
+                              {modelVendorLabel(branch.prefix)}
+                            </div>
+                          ) : null}
+                          {branch.families.map(family => {
+                            const { name, tag } = modelDisplayParts(family.id)
+                            const key = modelVisibilityKey(provider.slug, family.id)
 
-                      return (
-                        <label
-                          className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs hover:bg-(--ui-control-active-background)"
-                          key={key}
-                        >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
-                          </span>
-                          <Switch
-                            checked={visible.has(key)}
-                            onCheckedChange={() => toggle(provider, family.id)}
-                            size="xs"
-                          />
-                        </label>
+                            return (
+                              <label
+                                className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs hover:bg-(--ui-control-active-background)"
+                                key={key}
+                              >
+                                <span className="min-w-0 flex-1 truncate">
+                                  <HighlightMatches foldSeparators query={search} text={name} />
+                                  {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
+                                </span>
+                                <Switch
+                                  checked={visible.has(key)}
+                                  onCheckedChange={() => toggle(provider, family.id)}
+                                  size="xs"
+                                />
+                              </label>
+                            )
+                          })}
+                        </div>
                       )
-                    })}
+                    )}
                 </div>
               )
             })

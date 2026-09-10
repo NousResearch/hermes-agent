@@ -46,8 +46,9 @@ from hermes_state_telegram import SessionTelegramTopicsMixin
 from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 from hermes_state_dbfile import (
-    _canonical_sqlite_path, _connect_tracked_db, _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
-    _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
+    _canonical_sqlite_path, _connect_tracked_db, _fd_is_truly_unlinked, _read_sqlite_application_id,
+    _stat_sqlite_sidecar_identity, _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen,
+    is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
     refuse_deleted_wal_generation,
 )
@@ -981,8 +982,9 @@ class SessionDB(
         if sys.platform.startswith("linux"):
             watched = _watched_sqlite_sidecar_paths(self.db_path)
             try:
-                for target in _proc_fd_targets(os.getpid()):
-                    if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
+                for target, fd_path in _proc_fd_targets(os.getpid()):
+                    if (" (deleted)" in target and _canonical_sqlite_path(target) in watched
+                            and _fd_is_truly_unlinked(fd_path)):
                         return True
             except OSError:
                 return False

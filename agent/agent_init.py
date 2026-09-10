@@ -1202,11 +1202,23 @@ def _apply_display_config(agent, _agent_cfg, platform):
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
+    # Match _init_memory's normalization before deriving lifecycle context. A
+    # caller spelling cron with case/whitespace must not fall back to primary
+    # provider behavior while the store itself is already read-only.
+    _runtime_platform = (platform or "cli").strip().lower()
+    _agent_context = {
+        "cron": "cron",
+        "flush": "flush",
+        "subagent": "subagent",
+    }.get(_runtime_platform, "primary")
     kwargs = {
         "session_id": agent.session_id,
-        "platform": platform or "cli",
+        "platform": _runtime_platform,
         "hermes_home": str(get_hermes_home()),
-        "agent_context": "primary",
+        # ``platform`` identifies transport; ``agent_context`` identifies the
+        # lifecycle owner. Unattended cron must be explicit so providers can
+        # offer bounded recall without durable user/relationship writes.
+        "agent_context": _agent_context,
     }
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
@@ -1250,6 +1262,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
         "memory" in (agent.enabled_toolsets or [])
         and "memory" not in (agent.disabled_toolsets or [])
     )
+    _runtime_platform = (platform or "cli").strip().lower()
+    _memory_writes_enabled = _runtime_platform not in {"cron", "flush", "subagent"}
     if not skip_memory or _memory_toolset_requested:
         # Memory is optional — don't break agent init
         with suppress(Exception):
@@ -1267,6 +1281,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                     user_char_limit=mem_config.get("user_char_limit", 1375),
                     memory_enabled=agent._memory_enabled,
                     user_profile_enabled=agent._user_profile_enabled,
+                    writes_enabled=_memory_writes_enabled,
                 )
                 agent._memory_store.load_from_disk()
 
@@ -1278,10 +1293,16 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
+                agent._memory_manager = _MemoryManager(writes_enabled=_memory_writes_enabled)
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
-                    agent._memory_manager.add_provider(_mp)
+                    if _runtime_platform == "cron" and not getattr(_mp, "cron_read_only", False):
+                        _ra().logger.warning(
+                            "Memory provider '%s' is not certified for cron read-only context; holding it out",
+                            _mem_provider_name,
+                        )
+                    else:
+                        agent._memory_manager.add_provider(_mp)
                 elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
                     # unavailable_reason() reads config/probes importlib — skip it once warned.
                     _unavailable_reason = ""

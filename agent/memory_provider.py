@@ -58,6 +58,12 @@ def is_trivial_prompt(text: Optional[str]) -> bool:
 class MemoryProvider(ABC):
     """Abstract base class for memory providers."""
 
+    # Cron providers must explicitly prove that initialization, tools, lifecycle
+    # hooks, and shutdown cannot persist user/relationship memory. Providers that
+    # do not make that promise are held out of cron rather than relying on a
+    # transport flag that their implementation may ignore.
+    cron_read_only = False
+
     # Providers that durably checkpoint every successful on_pre_compress() set this to
     # PRE_COMPRESS_CHECKPOINT_API_VERSION; 1 = best-effort legacy.
     pre_compress_checkpoint_api_version = 1
@@ -79,8 +85,11 @@ class MemoryProvider(ABC):
 
         kwargs always include ``hermes_home`` (profile-scoped storage; never hardcode
         ``~/.hermes``) and ``platform``; may include ``agent_context`` ("primary" |
-        "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
-        ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``, ``user_id_alt``.
+        "subagent" | "cron" | "flush" — skip writes for non-primary contexts).
+        A provider setting ``cron_read_only = True`` is an explicit certification
+        that it honors that boundary for every lifecycle path. Other kwargs may
+        include ``agent_identity``, ``agent_workspace``, ``parent_session_id``,
+        ``user_id``, ``user_id_alt``.
         """
 
     def unavailable_reason(self) -> str:
@@ -120,6 +129,15 @@ class MemoryProvider(ABC):
 
     def shutdown(self) -> None:
         """Clean shutdown — flush queues, close connections."""
+
+    def shutdown_read_only(self) -> None:
+        """Close non-persistent resources without flushing durable memory.
+
+        Cron uses this hook because ``shutdown()`` is allowed to perform an
+        emergency persistence flush for a normal primary session. Providers
+        certified with ``cron_read_only = True`` should override it when they
+        own resources that need explicit release.
+        """
 
     # -- Optional hooks (override to opt in) ---------------------------------
 

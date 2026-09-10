@@ -305,6 +305,8 @@ def _tagged(resp: dict, tag: Optional[str]) -> dict:
 
 
 class SupermemoryMemoryProvider(MemoryProvider):
+    cron_read_only = True
+
     def __init__(self):
         self._api_key = self._session_id = self._hermes_home = ""
         self._client: Optional[_SupermemoryClient] = None

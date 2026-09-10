@@ -218,6 +218,32 @@ def test_local_auxiliary_route_bypasses_remote_egress(monkeypatch, tmp_path):
     dispatch.assert_not_called()
 
 
+@pytest.mark.parametrize("provider", ["nous-portal", "nousresearch"])
+def test_auxiliary_binding_protects_every_firewall_provider_not_just_three(provider):
+    """The main request path protects anthropic/openai-codex/nous AND nous-portal/nousresearch
+    (agent.llm_egress_runtime._PROTECTED_REMOTE_PROVIDERS); the auxiliary path must match that
+    exact set, not a narrower hand-copied one, or compression/vision calls routed through
+    nous-portal/nousresearch would skip authorization and sanitization entirely."""
+    client = SimpleNamespace(base_url="https://inference-api.nousresearch.com/v1")
+    binding = _auxiliary_egress_binding(
+        client, provider=provider, model="some-model", api_mode="chat_completions",
+    )
+    assert binding is not None
+
+
+def test_auxiliary_binding_protects_every_provider_under_kanban_protected_remote_marker(monkeypatch):
+    """HERMES_KANBAN_PROTECTED_REMOTE=1 makes authorize_agent_sdk_kwargs() treat EVERY provider
+    as protected on the main path (agent.llm_egress_runtime.authorize_agent_sdk_kwargs), not just
+    the exact firewall-owning ones -- a protected Kanban task's auxiliary calls (compression,
+    review, vision) must get the same treatment, even through an otherwise-unprotected provider."""
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    client = SimpleNamespace(base_url="http://127.0.0.1:11434/v1")
+    binding = _auxiliary_egress_binding(
+        client, provider="custom", model="some-local-model", api_mode="chat_completions",
+    )
+    assert binding is not None
+
+
 def test_only_compression_auxiliary_binding_gets_larger_exact_grant_caps():
     client = SimpleNamespace(base_url="https://chatgpt.com/backend-api/codex")
     compression_token = _RELAY_AUX_CALL_CONTEXT.set({"task": "compression"})

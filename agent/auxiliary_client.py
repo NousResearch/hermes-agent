@@ -2358,9 +2358,6 @@ _RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_relay_call", default=None)
 )
 
-_AUX_EGRESS_PROVIDERS = frozenset({"anthropic", "openai-codex", "nous"})
-
-
 def _auxiliary_egress_binding(
     client: Any,
     *,
@@ -2368,9 +2365,20 @@ def _auxiliary_egress_binding(
     model: str | None,
     api_mode: str | None,
 ) -> tuple[Any, Any] | None:
-    """Build the complete identity and route for protected auxiliary calls."""
+    """Build the complete identity and route for protected auxiliary calls.
+
+    Protected exactly like the main request path (`authorize_agent_sdk_kwargs`):
+    an exact firewall-owning provider (anthropic/openai-codex/nous/nous-portal/
+    nousresearch), OR every provider when ``HERMES_KANBAN_PROTECTED_REMOTE=1`` --
+    a compression/review/vision auxiliary call inside a protected Kanban task is
+    just as much an egress point as the main request, and previously skipped
+    authorization/sanitization entirely whenever it used a non-firewall provider.
+    """
+    from agent.llm_egress_runtime import provider_uses_egress_firewall
+
     normalized_provider = _normalize_aux_provider(provider)
-    if normalized_provider not in _AUX_EGRESS_PROVIDERS:
+    protected_remote_marker = os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
+    if not protected_remote_marker and not provider_uses_egress_firewall(normalized_provider):
         return None
     from agent.source_provenance import DEFAULT_POLICY_DIGEST
 

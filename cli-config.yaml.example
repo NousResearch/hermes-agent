@@ -1563,7 +1563,7 @@ stt:
   #   # EU-hosted whisper-large-v3-turbo. Uploads cap at 10 minutes of audio.
   #   model: "whisper-large-v3-turbo"
   #   language: ""            # blank = stt.language > auto-detect; ISO-639-1 to force
-  #   base_url: ""            # overrides MITTWALD_BASE_URL for STT only
+  #   base_url: ""            # wins over MITTWALD_STT_BASE_URL and MITTWALD_BASE_URL
 
 # Text-to-speech. Only the deepinfra and mittwald blocks are documented here —
 # the remaining providers (edge, openai, xai, minimax, mistral, gemini,

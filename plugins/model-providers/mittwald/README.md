@@ -11,8 +11,10 @@ hermes chat --provider mittwald --model Qwen3.6-35B-A3B-FP8
 
 The key is created per project in mStudio under **AI-Hosting** — it is *not* one of the
 profile API tokens under user settings, and those tokens do not work here. Put it in
-`~/.hermes/.env` as `MITTWALD_LLM_API_KEY` (`MITTWALD_AI_API_KEY` is also accepted).
-`MITTWALD_BASE_URL` overrides the endpoint.
+`~/.hermes/.env` as `MITTWALD_LLM_API_KEY`. `MITTWALD_AI_API_KEY` is accepted as an
+alternative name on every surface — chat, STT, TTS and embeddings — and is consulted
+only when the primary name is unset. `MITTWALD_BASE_URL` overrides the endpoint;
+`MITTWALD_STT_BASE_URL` overrides it for transcription alone.
 
 See [Access and usage](https://developer.mittwald.de/docs/v2/platform/aihosting/access-and-usage/access/).
 

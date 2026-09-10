@@ -500,7 +500,7 @@ stt:
   mittwald:
     model: "whisper-large-v3-turbo"
     language: ""              # optional ISO-639-1 hint; blank = auto-detect
-    # base_url: "..."         # overrides MITTWALD_BASE_URL for STT only
+    # base_url: "..."         # wins over MITTWALD_STT_BASE_URL and MITTWALD_BASE_URL
 ```
 
 ### Provider Details

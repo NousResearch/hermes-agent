@@ -153,18 +153,18 @@ class TestResolveGitExecutable:
             return_value="/resolved/git",
         ):
             with patch.object(pc.subprocess, "run") as run:
-                # First call is `git status --porcelain` (clean tree),
-                # second is the pull itself.
+                # `git status --porcelain` (clean tree), `remote get-url origin`, then the pull.
                 run.side_effect = [
                     MagicMock(returncode=0, stdout="", stderr=""),
+                    MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),
                     MagicMock(returncode=0, stdout="Already up to date\n", stderr=""),
                 ]
                 ok, msg = pc._git_pull_plugin_dir(tmp_path)
         assert ok is True
-        assert run.call_count == 2
+        assert run.call_count == 3
         for call in run.call_args_list:
             assert call.args[0][0] == "/resolved/git"
-        assert run.call_args_list[1].args[0][1:] == ["pull", "--ff-only"]
+        assert run.call_args_list[2].args[0][1:] == ["pull", "--ff-only"]
 
     def test_git_pull_clean_tree_never_stashes(self, tmp_path):
         import hermes_cli.plugins_cmd as pc
@@ -174,6 +174,7 @@ class TestResolveGitExecutable:
             with patch.object(pc.subprocess, "run") as run:
                 run.side_effect = [
                     MagicMock(returncode=0, stdout="", stderr=""),      # status
+                    MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),  # remote get-url
                     MagicMock(returncode=0, stdout="Updated\n", stderr=""),  # pull
                 ]
                 ok, msg = pc._git_pull_plugin_dir(tmp_path)
@@ -414,12 +415,13 @@ class TestCmdUpdate:
 
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="", stderr=""),        # status: clean
+            MagicMock(returncode=0, stdout="git@example.com:x.git", stderr=""),  # remote get-url
             MagicMock(returncode=0, stdout="Updated", stderr=""),  # pull
         ]
 
         cmd_update("test-plugin")
 
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

@@ -260,6 +260,8 @@ interface PaneTabStripProps extends React.ComponentProps<'div'> {
   listRef?: React.Ref<HTMLDivElement>
   /** Non-scrolling trailing chrome pinned to the right (the minimize chevron). */
   trailing?: React.ReactNode
+  /** Top-edge panel header shares the native window-control band. */
+  titlebar?: boolean
 }
 
 /**
@@ -272,7 +274,7 @@ interface PaneTabStripProps extends React.ComponentProps<'div'> {
  * `data-zone-tabstrip`, drop carets) ride on the usual div props.
  */
 export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(function PaneTabStrip(
-  { children, className, listRef, trailing, ...props },
+  { children, className, listRef, trailing, titlebar = false, ...props },
   ref
 ) {
   return (
@@ -281,7 +283,8 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
       // as one piece of chrome with the titlebar above it. No bottom rule — the
       // active tab's primary underline is the only seam.
       className={cn(
-        'group/pane-header relative flex h-7 shrink-0 select-none bg-(--ui-sidebar-surface-background) [-webkit-app-region:no-drag] [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]',
+        'group/pane-header relative flex min-w-0 shrink-0 select-none bg-(--ui-sidebar-surface-background) [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]',
+        titlebar ? 'h-full flex-1 [-webkit-app-region:drag]' : 'h-7 [-webkit-app-region:no-drag]',
         className
       )}
       ref={ref}
@@ -327,7 +330,7 @@ export function PaneStripGlyph({ active, disabled, icon, label, onSelect }: Omit
         aria-label={label}
         aria-pressed={active ?? undefined}
         className={cn(
-          'self-center bg-transparent select-none',
+          'self-center bg-transparent select-none [-webkit-app-region:no-drag]',
           active ? 'opacity-100' : 'opacity-60 hover:opacity-100'
         )}
         disabled={disabled}

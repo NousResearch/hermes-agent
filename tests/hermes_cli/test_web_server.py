@@ -3242,6 +3242,7 @@ class TestDenormalizeProviderSwitch:
         """ollama-local + a vendor/model slug → switch to openrouter and drop
         the stale local base_url (the issue's exact repro)."""
         from hermes_cli.web_server_config import _denormalize_config_from_web
+        from unittest.mock import patch as _patch
         from hermes_cli.config import save_config
 
         save_config({
@@ -3253,7 +3254,8 @@ class TestDenormalizeProviderSwitch:
             }
         })
 
-        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
+        with _patch("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter"):
+            result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
         model = result["model"]
         assert model["provider"] == "openrouter"
         assert model["default"] == "google/gemini-2.5-flash"
@@ -3265,14 +3267,16 @@ class TestDenormalizeProviderSwitch:
         """An explicit context-length override must persist alongside a
         provider switch."""
         from hermes_cli.web_server_config import _denormalize_config_from_web
+        from unittest.mock import patch as _patch
         from hermes_cli.config import save_config
 
         save_config({"model": {"default": "llama3.2", "provider": "ollama-local"}})
 
-        result = _denormalize_config_from_web({
-            "model": "google/gemini-2.5-flash",
-            "model_context_length": 128000,
-        })
+        with _patch("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter"):
+            result = _denormalize_config_from_web({
+                "model": "google/gemini-2.5-flash",
+                "model_context_length": 128000,
+            })
         model = result["model"]
         assert model["provider"] == "openrouter"
         assert model["context_length"] == 128000

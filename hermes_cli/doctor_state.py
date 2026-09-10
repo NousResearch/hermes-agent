@@ -80,9 +80,17 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
         lines.append(("info", "FTS tables: " + (", ".join(present) if present else "none"), ""))
     deferral = stats.get("fts_rebuild_deferral")
     if isinstance(deferral, dict):
-        lines.append(("warn", f"state.db FTS repair is blocked after {deferral.get('attempts') or '?'} deferral(s) "
-                      f"by PID(s) {deferral.get('holder_pids') or [] or 'unknown'}",
-                      "(stop the listed processes, then run 'hermes sessions optimize-storage' with the gateway stopped)"))
+        pids = deferral.get("holder_pids") or "unknown"
+        if deferral.get("futile"):
+            lines.append(("warn", f"state.db FTS repair is blocked by the same holder(s) PID(s) {pids} for "
+                          f"{deferral.get('holders_attempts') or '?'} consecutive deferral(s); waiting is futile",
+                          "(stop ONLY the listed process(es) — the gateway keeps running and its own retry "
+                          "rebuilds within a minute of the holder leaving)"))
+        else:
+            lines.append(("warn", f"state.db FTS repair is blocked after {deferral.get('attempts') or '?'} deferral(s) "
+                          f"by PID(s) {pids}",
+                          "(stop the listed processes; the gateway's own retry then rebuilds, or run "
+                          "'hermes sessions optimize-storage' with every holder stopped)"))
     # Oversized DB: suggest auto_prune, plus the offline optimize-storage pass when the FTS rebuild is
     # pending OR the DB predates the current trigram layout (fts_storage_version < FTS_STORAGE_VERSION).
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:

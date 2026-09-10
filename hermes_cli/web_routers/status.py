@@ -655,6 +655,9 @@ def _get_portal_status_sync():
         "logged_in": bool(auth.get("logged_in")), "portal_url": auth.get("portal_base_url"),
         "inference_url": auth.get("inference_base_url"),
         "provider": str((model_cfg or {}).get("provider") or ""),
+        # Free tier: a token exists, so logged_in stays true for callers that only ask "is there a
+        # credential"; surfaces that render an account must branch on free_tier first.
+        "free_tier": bool(auth.get("free_tier")), "account_tier": auth.get("account_tier"),
         "subscription_url": "https://portal.nousresearch.com/manage-subscription",
         "features": features}
 

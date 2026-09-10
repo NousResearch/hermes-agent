@@ -14,6 +14,7 @@ from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _apply_model_assignment_sync, _dashboard_code_skew_guard,
 )
+from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
 from hermes_cli.web_routers._common import http_failure
@@ -130,31 +131,8 @@ async def get_model_options(
 
 
 def _nous_recommended_default() -> dict:
-    from hermes_cli import models as m
-    from hermes_cli import models_pricing as mp
-    from hermes_cli.auth import get_provider_auth_state
-
-    model_ids = m.get_curated_nous_model_ids()
-    pricing = mp.get_pricing_for_provider("nous") or {}
-    free_tier = m.check_nous_free_tier(force_fresh=True)
-
-    try:
-        portal_url = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
-    except Exception:
-        portal_url = ""
-
-    # This endpoint picks the model a user lands on without choosing it, so an unreachable
-    # one is worse than in a picker. Narrow to policy BEFORE the tier split, so a rescued
-    # id still has to pass the free/paid predicate.
-    policy_allowed = mp.nous_policy_allowed_ids()
-    union = m.union_with_portal_free_recommendations if free_tier else m.union_with_portal_paid_recommendations
-    model_ids, pricing = union(model_ids, pricing, portal_url)
-    model_ids = mp.restrict_to_nous_policy(model_ids, policy_allowed, rescue_empty=True)
-    if free_tier:
-        model_ids, _unavailable = m.partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
-
-    model = m.pick_silent_default_model(model_ids, provider="nous")
-    return {"provider": "nous", "model": model, "free_tier": bool(free_tier)}
+    from hermes_cli.models import recommended_nous_default_model
+    return recommended_nous_default_model()
 
 
 @router.get("/api/model/recommended-default")
@@ -206,9 +184,12 @@ def get_auxiliary_models(profile: Optional[str] = None):
         tasks = []
         for slot in _AUX_TASK_SLOTS:
             slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+            base_url = str(slot_cfg.get("base_url", "") or "")
             tasks.append({
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
-                "model": str(slot_cfg.get("model", "") or ""), "base_url": str(slot_cfg.get("base_url", "") or ""),
+                "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
+                # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
+                "local_endpoint": is_local_endpoint(base_url),
             })
 
         model, provider = _main_model_fields(cfg.get("model", {}))

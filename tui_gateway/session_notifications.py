@@ -529,7 +529,8 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
 
     try:
         started = _run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
-                                     image_paths=[], terminal_callback=terminal_receipt)
+                                     image_paths=[], terminal_callback=terminal_receipt,
+                                     turn_author=claimed.get("author") or None)
     except Exception as exc:
         _notif_release_turn(session)
         terminal_receipt({"status": "failed", "error": str(exc)})

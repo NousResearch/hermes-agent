@@ -77,7 +77,35 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
     # Identity captured at classification time, so clients report the session
     # that actually failed — not whatever the composer points at later.
     identity = {k: v for k, v in (("provider", provider), ("model", model)) if v}
-    return {"layer": layer, "code": code, "retryable": bool(retryable), **identity}
+    surface = {"layer": layer, "code": code, "retryable": bool(retryable), **identity}
+    if layer == LAYER_AUTH and provider:
+        # OAuth providers are fixed by signing in again; API-key providers by
+        # replacing the key. The client's one-click recovery needs to know which
+        # and how to name the account it re-opens.
+        surface["auth_kind"] = _auth_kind(provider)
+        surface["provider_label"] = _provider_label(provider)
+    return surface
+
+
+def _provider_label(provider: str) -> str:
+    try:
+        from hermes_cli.models import provider_label
+
+        return provider_label(provider)
+    except Exception:  # pragma: no cover — advisory only
+        return provider
+
+
+def _auth_kind(provider: Optional[str]) -> str:
+    """``"oauth"`` for providers whose credential is an OAuth/subscription grant
+    (desktop Accounts tab), ``"api_key"`` for everything else."""
+    try:
+        from hermes_cli.provider_catalog import provider_catalog_by_slug
+
+        descriptor = provider_catalog_by_slug().get((provider or "").strip().lower())
+        return "oauth" if descriptor is not None and descriptor.tab == "accounts" else "api_key"
+    except Exception:  # pragma: no cover — advisory only
+        return "api_key"
 
 
 def _disk_full(candidate: Any) -> bool:

@@ -57,6 +57,28 @@ afterEach(() => {
 })
 
 describe('TreeGroup', () => {
+  it('keeps a top-edge strip inside its panel and yields native drag while moving a pane', () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { placement: 'main' },
+      id: 'terminal',
+      title: 'Terminal',
+      render: () => <div>Terminal</div>
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    render(<TreeGroup leftEdge node={terminalGroup(false)} rightEdge topEdge />)
+    const zone = container!.querySelector('[data-tree-group]')!
+    const strip = zone.querySelector<HTMLElement>('[data-zone-tabstrip]')!
+    const header = zone.querySelector<HTMLElement>('[data-panel-header]')!
+    expect(strip.closest('[data-tree-group]')).toBe(zone)
+    expect(header.contains(strip)).toBe(true)
+    expect(zone.querySelectorAll('[data-window-drag-handle]').length).toBeGreaterThan(0)
+    act(() => $treeDragging.set('terminal'))
+    expect(strip.style).toHaveProperty('WebkitAppRegion', 'no-drag')
+    act(() => $treeDragging.set(null))
+    expect(strip.style).toHaveProperty('WebkitAppRegion', '')
+  })
+
   it('points the docked-zone chevron in the collapse or restore action direction', () => {
     disposePane = registry.register({
       area: 'panes',

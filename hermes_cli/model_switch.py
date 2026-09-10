@@ -18,7 +18,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -1220,6 +1220,14 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     # Steps d.5 / e only apply while the request is still unrouted on the current provider.
     if st.resolved_alias or resolved_in_current_catalog or st.target_provider != current_provider:
         return None
+    if current_provider == "nous":
+        # The welcome host serves nous/welcome only; a model outside it needs an account or a key.
+        # Never hop to another provider on the user's behalf here (there is no key to hop to).
+        from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
+        if route_is_welcome_host(st.current_base_url) and st.new_model != GUEST_MODEL:
+            return st.fail(
+                f"{st.new_model} needs a Nous account or an API key. "
+                "Use /login to sign in, or /model to pick another provider.")
     config_routed = _route_configured_provider(st)  # d.5 — deliberately NOT gated on ``not is_custom``
     if isinstance(config_routed, ModelSwitchResult):
         return config_routed
@@ -1309,6 +1317,17 @@ def _creds_for_current_provider(st: _Switch) -> None:
             st.resolve_runtime(requested=st.current_provider)
         except Exception:
             pass
+        # Bare ``custom``/``local`` sessions whose base_url is session-only (not a trusted config
+        # ``model.base_url``) re-resolve to the OpenRouter DEFAULT — a host the user never picked
+        # (#74143). Keep the session endpoint + key then; a config-backed custom URL still wins so
+        # key/endpoint rotation is not pinned to a stale session.
+        if (
+            st.current_provider in {"custom", "local"} and st.current_base_url
+            and (not st.base_url or base_url_host_matches(st.base_url, "openrouter.ai"))
+            and not base_url_host_matches(st.current_base_url, "openrouter.ai")
+        ):
+            st.base_url, st.api_key = st.current_base_url, st.current_api_key
+            st.api_mode = determine_api_mode(st.current_provider, st.base_url)
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
@@ -1333,7 +1352,8 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
     # would otherwise 400 on tools+reasoning).
-    mandated_mode = host_mandated_api_mode(st.base_url)
+    from hermes_cli.providers import is_actual_route
+    mandated_mode = "chat_completions" if is_actual_route(st.target_provider, st.base_url) else host_mandated_api_mode(st.base_url)
     if mandated_mode is not None:
         st.api_mode = mandated_mode
     st.api_mode = st.api_mode or determine_api_mode(st.target_provider, st.base_url)

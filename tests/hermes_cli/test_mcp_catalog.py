@@ -747,6 +747,8 @@ class TestGitInstallShaRef:
 
         monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
         monkeypatch.setattr(mcp_catalog.shutil, "which", lambda x: "/usr/bin/git")
+        from hermes_cli import git_credentials
+        monkeypatch.setattr(git_credentials, "resolve_git_basic_auth", lambda url: None)
 
         from hermes_cli.mcp_catalog import get_entry
         entry = get_entry("demo")

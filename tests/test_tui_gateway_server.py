@@ -8974,6 +8974,36 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypatch):
+    """Under ``hermes serve`` the boot bootstrap owns the free-tier identity; ``setup.status`` reports
+    its record (blocking for it while it is in flight) instead of re-probing, so a client's first poll
+    sees the identity that exists rather than racing the mint."""
+    import threading
+    from hermes_cli import free_tier_bootstrap as fb
+    fb.reset_for_tests()
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured",
+                        lambda **_kw: pytest.fail("setup.status must read the record, not re-probe"))
+    release = threading.Event()
+
+    def slow_bootstrap():
+        release.wait(5)
+        with fb._lock:
+            fb._record = fb.SetupRecord(provider_configured=True, inference_provider="nous", free_tier=True,
+                                        has_identity=True, other_providers=False)
+            fb._done.set()
+    with fb._lock:
+        fb._started = True
+    threading.Thread(target=slow_bootstrap, daemon=True).start()
+    try:
+        release.set()
+        resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
+        assert resp["result"]["provider_configured"] is True
+        assert resp["result"]["ready"] is True and resp["result"]["free_tier"] is True
+        assert resp["result"]["inference_provider"] == "nous"
+    finally:
+        fb.reset_for_tests()
+
+
 def test_probe_credentials_emits_exact_empty_key_warning():
     agent = types.SimpleNamespace(api_key="", provider="openrouter")
 
@@ -10314,6 +10344,61 @@ def test_config_set_model_once_requires_live_session(monkeypatch):
 
     assert resp["error"]["code"] == 5001
     assert "/model --once requires a live session" in resp["error"]["message"]
+
+
+def test_config_set_model_sessionless_rejected(monkeypatch):
+    """Sessionless config.set model must 4001 before _apply_model_switch.
+
+    Missing session_id and a stale session_id miss both take the sessionless
+    branch; unscoped values and legacy --global must be rejected the same way
+    so a Desktop client cannot persist model.default before session.create.
+    """
+    called = {"n": 0}
+
+    def boom(*a, **k):
+        called["n"] += 1
+        raise AssertionError("_apply_model_switch must not run")
+
+    monkeypatch.setattr(server, "_apply_model_switch", boom)
+    for value in ["some-model", "some-model --provider openai-codex --global"]:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {"key": "model", "value": value},
+        })
+        assert resp["error"]["code"] == 4001
+        assert called["n"] == 0
+
+    resp = server.handle_request({
+        "id": "1", "method": "config.set",
+        "params": {"session_id": "missing-sid", "key": "model", "value": "some-model --global"},
+    })
+    assert resp["error"]["code"] == 4001
+    assert called["n"] == 0
+
+
+def test_config_set_model_live_session_still_applies_switch(monkeypatch):
+    """CONTROL: a live session still reaches _apply_model_switch, including --global."""
+    called = {"raw": []}
+
+    def fake_apply(sid, session, raw, **_kwargs):
+        called["raw"].append(raw)
+        return {"value": "some-model", "warning": "", "scope": "global"}
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_apply_model_switch", fake_apply)
+    try:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "some-model --provider openai-codex --global",
+            },
+        })
+        assert "error" not in resp
+        assert called["raw"] == ["some-model --provider openai-codex --global"]
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch):
@@ -20918,6 +21003,7 @@ def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
         session_key="branch-key",
         parent_session_id="parent-key",
         history=_branch_history(),
+        seeded=True,  # stamped by session.create: this history exists only in memory
     )
     try:
         db.create_session("branch-key", source="tui")

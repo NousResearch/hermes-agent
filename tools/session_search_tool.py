@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_state_common import _RESET_END_REASONS
+from hermes_state_common import _BOUNDARY_END_REASONS
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
@@ -36,8 +36,8 @@ _DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "mod
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
 # /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
 # carrying its transcript forward — unlike compression continuations and live delegation
-# children. Derived from the gateway set so the two cannot drift.
-_FRESH_RESET_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
+# children. The store's boundary set, so the two cannot drift.
+_FRESH_RESET_END_REASONS = _BOUNDARY_END_REASONS
 
 
 def _quiet(fn, default, msg, *log_args, with_exc: bool = False):

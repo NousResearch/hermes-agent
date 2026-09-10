@@ -90,6 +90,13 @@ class GatewayStartupMixin:
             drained += 1
         return drained
 
+    @staticmethod
+    def _start_free_tier_bootstrap() -> None:
+        """One bootstrap per process. `run_bootstrap` already records its own failure in the boot record
+        and never raises, so this is a plain call; it exists as a method so tests can seam it."""
+        from hermes_cli.free_tier_bootstrap import run_bootstrap
+        run_bootstrap(announce=False)
+
     def _start_startup_warmup(self) -> None:
         """Kick off the boot turn-machinery warm-up so it overlaps the network-bound platform
         connects; ``_finish_startup_restore`` awaits it (bounded)."""
@@ -1317,6 +1324,12 @@ class GatewayStartupMixin:
         if self._start_check_access_policy():
             return True
         await self._start_recover_previous_run()
+        # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
+        # demand-time site (provider resolution, /login, the connector token) is a read that needs the
+        # identity to already exist. Blocking here, before any adapter connects, is what keeps a fast
+        # first DM from arriving with nothing to resolve. With the launch gate unset this is a local
+        # inventory and no network.
+        await asyncio.get_running_loop().run_in_executor(None, self._start_free_tier_bootstrap)
         # Serialize startup restore against inbound: adapters receive as soon as they connect, so inbound
         # queues until every synthetic resume turn has finished.
         self._startup_restore_in_progress = True

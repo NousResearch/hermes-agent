@@ -54,6 +54,33 @@ class TestSyncExternalMemoryForTurn:
         agent._memory_manager.sync_all.assert_not_called()
         agent._memory_manager.queue_prefetch_all.assert_not_called()
 
+    # --- Per-turn author (stashed by build_turn_context) -----------------
+
+    def test_stashed_bot_author_reaches_sync_all(self):
+        agent = _bare_agent()
+        agent._turn_author = {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="Message from Alpha: status?", final_response="All green.", interrupted=False,
+        )
+
+        kwargs = agent._memory_manager.sync_all.call_args.kwargs
+        assert kwargs["turn_author"] == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+        assert kwargs["session_id"] == "test_session_001"
+
+    @pytest.mark.parametrize("stash", ["human turn", "no stash yet"])
+    def test_human_turn_or_agent_without_stash_sends_no_author_keyword(self, stash):
+        """A bare agent built before any turn has no stash; the sync must not depend on it."""
+        agent = _bare_agent()
+        if stash == "human turn":
+            agent._turn_author = None
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="status?", final_response="All green.", interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once()
+        assert "turn_author" not in agent._memory_manager.sync_all.call_args.kwargs
 
     # --- Normal completed turn still syncs ------------------------------
 

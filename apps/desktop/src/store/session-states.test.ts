@@ -1038,7 +1038,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     expect($focusedStoredSessionId.get()).toBeNull()
   })
 
-  it('sessions mode keeps collapsing to the primary selection (derivation gated to Bot Mode)', () => {
+  it('sessions-sidebar focus follows the visible main tab instead of a hidden primary selection', () => {
     $selectedStoredSessionId.set('primary-1')
     $layoutTree.set(
       split('row', [
@@ -1048,10 +1048,8 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     )
     noteActiveTreeGroup('grp-sessions')
 
-    // The main-zone tile must NOT answer here: in sessions mode the sidebar
-    // highlight follows the primary selection exactly as it always has.
     expect($workspaceMode.get()).toBe('sessions')
-    expect($focusedStoredSessionId.get()).toBe('primary-1')
+    expect($focusedStoredSessionId.get()).toBe('stacked')
   })
 })
 

@@ -596,6 +596,10 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
         models = row.get("models") or []
         if not models:
             continue
+        if row.get("free_tier_row"):
+            # The free tier's one model has no Portal pricing and no entitlement to read: pricing
+            # it would lock the only row a free-tier install can select.
+            continue
         try:
             pricing_kwargs = {"cached_only": True} if cached_only else {}
             raw_pricing = get_pricing_for_provider(slug, **pricing_kwargs) or {}

@@ -11,10 +11,13 @@
  *   no bubbles, not "no bubbles unless the agent sends one" — so the switch is
  *   mirrored to the gateway, where it takes the `tip` tool out of the model's
  *   schema, and the bridge drops a stray tip on top of that.
- * - `$retiredTips` is the hard-close ledger for the rotation. A tip the user ✕'d
- *   never comes back on its own; Settings → Reset is the only way, and that is
- *   the whole contract behind the ✕ being a heavier gesture than letting the
- *   bubble time out.
+ * - `$tipShownAt` is the seen ledger: every tip that reached the screen, with
+ *   when. The rotation walks the catalog ONCE against it, so a tip that timed
+ *   out is as finished as one the user closed — a second sighting of "type @
+ *   to attach a file" is the app forgetting it already said that.
+ * - `$retiredTips` is the hard-close ledger. A ✕ says the same thing louder and
+ *   is the one record a Reset does not need to respect on its own; Settings →
+ *   Reset clears both and starts the lap over.
  * - `$activeTip` is what is on screen. Ephemeral by design: a tip is a nicety,
  *   and one that survives a reload has overstayed.
  *
@@ -23,7 +26,7 @@
  * tip one and re-arms a schedule measured in hours.
  */
 
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { TIP_CATALOG, type TipSide } from '@/lib/tips/catalog'
@@ -70,9 +73,10 @@ export const $activeTip = atom<ActiveTip | null>(null)
 // model's schema entirely rather than staying on offer and being dropped.
 mirrorDisplayToggle('display.in_app_tips', ENABLED_KEY, $tipsEnabled)
 
-/** When each campaign tip (id outside the rotation catalog) last showed.
- *  Campaign tips re-offer on their own long clock instead of walking on;
- *  `$retiredTips` still owns the hard ✕. */
+/** When each tip last showed, by id. The rotation reads it as the seen set
+ *  (a catalog tip shows once); campaign tips (ids outside the catalog) read
+ *  it as a clock and re-offer on their own long schedule. `$retiredTips`
+ *  still owns the hard ✕. */
 export const $tipShownAt = persistentAtom<Record<string, number>>(
   'hermes.desktop.tips.shownAt.v1',
   {},
@@ -97,12 +101,22 @@ export function setTipsEnabled(enabled: boolean): void {
   $tipsEnabled.set(enabled)
 }
 
-/** Un-retire everything, and let the rotation start over from a full deck
- *  rather than from wherever a six-hour cooldown had left it. */
+/** Forget every sighting and un-retire everything, and let the rotation start
+ *  a fresh lap from a full deck rather than from wherever a six-hour cooldown
+ *  had left it. */
 export function resetTips(): void {
   $retiredTips.set([])
+  $tipShownAt.set({})
+  $lastTipId.set(null)
   $nextTipAt.set(null)
 }
+
+/** Catalog tips a Reset would bring back: shown once or ✕'d, counted once. */
+export const $spentTipCount = computed([$retiredTips, $tipShownAt], (retired, shownAt) => {
+  const ids = new Set([...retired, ...Object.keys(shownAt)])
+
+  return TIP_CATALOG.filter(def => ids.has(def.id)).length
+})
 
 /** Put a tip on screen, replacing whatever was there. */
 export function showTip(tip: ActiveTip): void {

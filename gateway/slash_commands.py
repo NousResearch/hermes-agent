@@ -28,6 +28,7 @@ from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
+from gateway.slash_commands_login import GatewayLoginCommandsMixin
 from gateway.slash_commands_status import HISTORY_UNREADABLE, GatewayStatusCommandsMixin
 from gateway.slash_commands_kensei import GatewayKenseiSlashMixin  # KENSEI CUSTOM
 from hermes_cli.config import atomic_config_write, cfg_get
@@ -159,6 +160,7 @@ def _home_thread_from_source(source) -> Optional[str]:
 
 
 class GatewaySlashCommandsMixin(
+    GatewayLoginCommandsMixin,
     GatewayModelCommandsMixin,
     GatewaySessionCommandsMixin,
     GatewayStatusCommandsMixin,
@@ -1178,8 +1180,8 @@ class GatewaySlashCommandsMixin(
         """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
         protect privacy; ``hermes debug share`` from the CLI does full uploads."""
         from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
-                                      _capture_dump, _schedule_auto_delete, collect_debug_report,
-                                      upload_to_pastebin)
+                                      _capture_dump, _is_dpaste_url, _schedule_auto_delete,
+                                      collect_debug_report, upload_to_pastebin)
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()
@@ -1188,11 +1190,15 @@ class GatewaySlashCommandsMixin(
                 urls = {"Report": upload_to_pastebin(report)}
             except Exception as exc:
                 return t("gateway.debug.upload_failed", error=exc)
-            _schedule_auto_delete(list(urls.values()))  # auto-deletion after 6 hours
+            _schedule_auto_delete(list(urls.values()))  # paste.rs only; dpaste.com has no delete
             label_width = max(len(k) for k in urls)
+            # The 6-hour line is only true for paste.rs; the privacy notice above already states
+            # the dpaste.com fallback retention, so drop the line rather than contradict it.
+            auto_delete = [] if any(map(_is_dpaste_url, urls.values())) else [
+                t("gateway.debug.auto_delete")]
             return "\n".join([_GATEWAY_PRIVACY_NOTICE, "", t("gateway.debug.header"), "",
                               *(f"`{label:<{label_width}}`  {url}" for label, url in urls.items()),
-                              "", t("gateway.debug.auto_delete"), t("gateway.debug.full_logs_hint"),
+                              "", *auto_delete, t("gateway.debug.full_logs_hint"),
                               t("gateway.debug.share_hint")])
 
         # _run_in_executor_with_context, not a bare hop: this collects the profile's logs/config off

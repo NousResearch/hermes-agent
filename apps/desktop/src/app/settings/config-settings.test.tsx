@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -78,14 +78,14 @@ describe('ConfigSettings autosave', () => {
       toggle.click()
       await vi.advanceTimersByTimeAsync(700)
 
-      await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
       expect(saveHermesConfig.mock.calls[0][0]).toEqual({ checkpoints: { enabled: true } })
 
       // Revert: flip it back to its original value and let autosave fire again.
       toggle.click()
       await vi.advanceTimersByTimeAsync(700)
 
-      await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
       // Must still explicitly send the reverted value — diffing against the
       // never-advanced page-load baseline would produce an empty patch here
       // (the field is back to its original value) and leave disk stuck at

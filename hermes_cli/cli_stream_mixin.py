@@ -250,6 +250,25 @@ class CLIStreamMixin:
             _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
             self._reasoning_buf = ""
 
+    def _agent_status_print(self, *args, **kwargs) -> None:
+        """``agent._print_fn`` for the interactive CLI: agent status lines (subagent completion ``✓ [set n · i/N]``,
+        background-process notices, spinner ``print_above`` text) arrive from other threads at any moment. While
+        a response or reasoning box is being streamed they are HELD and released at the box footer, so a line
+        never lands between two paragraphs of the reply. Outside a box they print immediately."""
+        from cli import _cprint
+        text = kwargs.get("sep", " ").join(str(a) for a in args)
+        if getattr(self, "_stream_box_live", False) or getattr(self, "_reasoning_box_opened", False):
+            self._held_status_lines = getattr(self, "_held_status_lines", []) + [text]
+            return
+        _cprint(text)
+
+    def _release_held_status_lines(self) -> None:
+        """Print status lines held while a box was open (called right after a box footer)."""
+        from cli import _cprint
+        held, self._held_status_lines = getattr(self, "_held_status_lines", []), []
+        for line in held:
+            _cprint(line)
+
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open, then flush deferred content."""
         from cli import _DIM, _RST, _cprint
@@ -262,6 +281,8 @@ class CLIStreamMixin:
         w = self._scrollback_box_width()
         _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
         self._reasoning_box_opened = False
+        if not getattr(self, "_stream_box_live", False):
+            self._release_held_status_lines()
         deferred = getattr(self, "_deferred_content", "")
         if deferred:
             self._deferred_content = ""
@@ -398,6 +419,7 @@ class CLIStreamMixin:
             if not text:
                 return
             self._stream_box_opened = True
+            self._stream_box_live = True  # header drawn; cleared at the footer
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
@@ -478,9 +500,11 @@ class CLIStreamMixin:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             self._emit_stream_line(line)
             self._stream_buf = ""
-        if self._stream_box_opened:
+        if self._stream_box_opened and getattr(self, "_stream_box_live", False):
             w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+        self._stream_box_live = False
+        self._release_held_status_lines()
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -497,6 +521,7 @@ class CLIStreamMixin:
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False
+        self._stream_box_live = False
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""

@@ -70,7 +70,8 @@ def _redact_cdp_output(value: Any, *, always_paths: tuple = (), flagged_paths: t
     redacted: Dict[str, Any] = {}
     for key, item in value.items():
         opaque = leaf(always_paths, key) or (leaf(flagged_paths, key) and base64_flagged)
-        redacted[key] = item if isinstance(item, str) and opaque else _redact_cdp_output(
+        out_key = redact_sensitive_text(key, force=True) if isinstance(key, str) else key  # by-value objects can carry a secret as a KEY
+        redacted[out_key] = item if isinstance(item, str) and opaque else _redact_cdp_output(
             item, always_paths=descend(always_paths, key), flagged_paths=descend(flagged_paths, key))
     return redacted
 

@@ -253,6 +253,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 |-----|------|---------|-------------|
 | `sessionStrategy` | string | `"per-directory"` | `"per-directory"`, `"per-session"`, `"per-repo"` (git root), `"global"` |
 | `sessionPeerPrefix` | bool | `false` | Prepend peer name to session keys |
+| `a2aSessions` | bool | `true` | Write DMs from other bots into their own session per sender bot. `false` skips bot-authored turns |
 | `sessions` | object | `{}` | Manual directory-to-session-name mappings |
 
 #### Session Name Resolution
@@ -272,6 +273,10 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 Gateway platforms always resolve via priority 3 (per-chat isolation) regardless of `sessionStrategy`. The strategy setting only affects CLI sessions.
 
 If `sessionPeerPrefix` is `true`, the peer name is prepended: `alice-hermes-agent`.
+
+#### Bot DMs (`a2aSessions`)
+
+In bot mode another Hermes profile can DM this agent. The relay marks that turn with author `bot:<profile>`. A gateway platform marks a bot sender with its platform user id and a bot flag. Either way the turn never reaches the human's session. With `a2aSessions: true` (default) the turn is written into `<session>:a2a:<this agent's aiPeer>:<sanitized sender id>-<8-char digest>`: the sender's message under the sender's peer, the reply under this agent's `aiPeer`. The `aiPeer` segment keeps two profiles that share a `workspace` and a session key from writing one sender's DMs into one session. A `bot:` sender is identified by its full id, `bot:<profile>` for a profile on this machine or `bot:<connection>/<profile>` for one relayed through a Desktop connection. Its peer is the `userPeerAliases` entry for that full id if one exists, else the id after `bot:` sanitized, with no `runtimePeerPrefix`. When sanitizing changed the id, or the result equals `peerName` or an alias target, a digest suffix is added the same way `runtimePeerPrefix` users get one, so a bot never lands on the operator's peer and two connections' `coder` stay apart. A platform bot resolves like any other runtime user: alias, then prefix. `pinUserPeer` never collapses a bot onto `peerName`. A bot whose peer would equal this agent's `aiPeer` is skipped, and so is every bot turn when `a2aSessions: false`. During a bot-authored turn `honcho_conclude` and `honcho_profile` refuse writes, because conclusions and cards describe the human. Recall still reads the human's session only.
 
 #### What each strategy produces
 

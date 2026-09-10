@@ -18,6 +18,7 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
     "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
     "text_to_speech",
     "todo_list", "memory",
@@ -34,6 +35,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     "computer_use",
+    # Service-gated connector account status and authorization links.
+    "manage_connections",
 ]
 
 # Webhook payloads are untrusted third-party content: no file/system execution.
@@ -124,6 +127,7 @@ TOOLSETS = {
     "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
     "context_engine": _ts("Runtime tools exposed by the active context engine"),
     "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
+    "connections": _ts("Remote connector discovery, execution, and account authorization", ["manage_connections"]),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
     "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
 

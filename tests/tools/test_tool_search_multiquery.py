@@ -78,13 +78,24 @@ class TestStemming:
         assert "mq_linear_create_issue" in names
         assert "mq_linear_list_issues" in names
 
-    def test_substring_fallback_still_uses_raw_name(self, issue_defs):
-        """Fallback matches the unstemmed tool name, unchanged by stemming."""
+    def test_rarest_query_token_gates_admission(self, issue_defs):
+        """A document that lacks the query's rarest token is not a result, however many
+        common tokens it shares. In this catalog 'issue' and 'linear' are each in two tools
+        and 'slack' in one, so 'slack' gates: the two linear tools share two of the three
+        query tokens and still do not come back."""
         from tools.tool_search import build_catalog, search_catalog
 
         catalog = build_catalog(issue_defs)
-        names = [h.name for h in search_catalog(catalog, "post_mess", limit=5)]
+        names = [h.name for h in search_catalog(catalog, "linear issue slack", limit=5)]
         assert names == ["mq_slack_post_message"]
+
+    def test_token_no_document_carries_admits_nothing(self, issue_defs):
+        """'send gmail email' against a catalog with no gmail tool returns nothing rather
+        than five tools that merely share 'message' or 'email'."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        catalog = build_catalog(issue_defs)
+        assert search_catalog(catalog, "post gmail message", limit=5) == []
 
     def test_single_token_stems_are_cached(self):
         from tools.tool_search_catalog import _stem, _tokenize
@@ -230,7 +241,8 @@ class TestCatalogRanking:
         assert search_catalog(catalog, "list", limit=1) == [catalog[0]]
 
     def test_precomputed_corpus_stats_preserve_results(self, issue_defs):
-        from tools.tool_search import _corpus_stats, build_catalog, search_catalog
+        from tools.tool_search import build_catalog, search_catalog
+        from tools.tool_search_catalog import _corpus_stats
 
         catalog = build_catalog(issue_defs)
         expected = search_catalog(catalog, "create issues", limit=3)

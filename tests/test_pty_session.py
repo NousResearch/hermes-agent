@@ -277,3 +277,64 @@ async def test_reaper_loop_invokes_reap(monkeypatch):
     except asyncio.CancelledError:
         pass
     assert calls["n"] >= 2
+
+
+async def _two_idle_sessions_first_close_gated(reg):
+    """Two detached (idle) sessions; k0's close() parks until ``release`` is set."""
+    from hermes_cli.pty_session import PtySession
+    bridges = []
+    for i in range(2):
+        bridge = FakeBridge([b""])
+        s = PtySession("k%d" % i, bridge, buffer_cap=1024, read_timeout=0.01)
+        await s.start()
+        s.detach(None)                        # unattached, last_detached_at set
+        reg._sessions[s.key] = s
+        bridges.append(bridge)
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    k0 = reg._sessions["k0"]
+    original_close = k0.close
+
+    async def gated_close():
+        entered.set()
+        await release.wait()
+        await original_close()
+
+    k0.close = gated_close
+    return bridges, entered, release
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reap_idle_is_idempotent():
+    """reap_idle is reached from attach_or_spawn and the run_reaper loop; both
+    may doom the same keys, so one reap can pop a key the other already took
+    while awaiting its close(). The second pop must skip, not raise."""
+    reg = make_registry(ttl=60.0)
+    bridges, entered, release = await _two_idle_sessions_first_close_gated(reg)
+
+    far_future = time.monotonic() + 10_000    # both idle past ttl → doomed
+    first = asyncio.create_task(reg.reap_idle(now=far_future))
+    await entered.wait()                      # k0 popped; first reap parked in close()
+    await reg.reap_idle(now=far_future)       # second reap takes k1
+
+    release.set()
+    await first                               # first reap reaches the taken k1
+    assert not reg._sessions
+    assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
+async def test_close_all_survives_key_popped_by_concurrent_reap():
+    """close_all snapshots keys, then awaits each close(); a reap that runs
+    during that await can remove a later key from the snapshot."""
+    reg = make_registry(ttl=60.0)
+    bridges, entered, release = await _two_idle_sessions_first_close_gated(reg)
+
+    closer = asyncio.create_task(reg.close_all())
+    await entered.wait()                      # close_all popped k0, parked in close()
+    await reg.reap_idle(now=time.monotonic() + 10_000)   # pops k1 meanwhile
+    release.set()
+    await closer                              # k1 of the snapshot is already gone
+
+    assert not reg._sessions
+    assert all(b.closed for b in bridges)

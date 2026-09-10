@@ -78,6 +78,25 @@ class TestImageTooLargeClassification:
         assert result.reason == FailoverReason.image_too_large
         assert result.retryable is True
 
+    def test_codex_400_patch_budget_message(self):
+        """OpenAI Codex Responses rejects a high-resolution image on its
+        30000-tile-patch ceiling with wording that contains none of the
+        image-size vocabulary ("requires N patches after processing,
+        exceeding the limit").  It used to fall through to format_error /
+        non-retryable, so the shrink recovery was bypassed and the session
+        kept failing (or failover re-sent the same invalid image) (#106337).
+        """
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "The image you provided requires 33174 patches after processing, "
+                "exceeding the limit of 30000. Please resize the image and try again."
+            ),
+        )
+        result = classify_api_error(err, provider="openai-codex", model="gpt-5.6-sol")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
     def test_unrelated_400_still_not_image_too_large(self):
         """The new "media" patterns must not widen into ordinary 400s."""
         err = _FakeApiError(
@@ -87,6 +106,43 @@ class TestImageTooLargeClassification:
         result = classify_api_error(err, provider="minimax", model="MiniMax-M3")
         assert result.reason != FailoverReason.image_too_large
 
+
+class TestImagePatchBudgetShrink:
+    def test_codex_patch_budget_shrinks_responses_image_under_budget(self):
+        """The Codex 400 names a tile-patch budget, not a pixel ceiling: a 5444x6200 PNG
+        (33174 patches) sails under the 8000 px default cap and would be left unshrunk,
+        burning the single retry (#106337). The cap derived from the rejection must make the
+        real shrink pass rewrite the Responses ``input_image`` part to within the budget."""
+        import io
+
+        from PIL import Image
+
+        from agent.conversation_compression import try_shrink_image_parts_in_messages
+
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "The image you provided requires 33174 patches after processing, "
+                "exceeding the limit of 30000. Please resize the image and try again."
+            ),
+        )
+        cap = _image_error_max_dimension(err)
+        assert cap is not None and cap < 8000
+
+        buf = io.BytesIO()
+        Image.new("RGB", (5444, 6200), (200, 30, 30)).save(buf, format="PNG")
+        url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+        msgs = [{"role": "user", "content": [{"type": "input_image", "image_url": url}]}]
+
+        assert try_shrink_image_parts_in_messages(msgs, max_dimension=cap) is True
+        shrunk = msgs[0]["content"][0]["image_url"]
+        w, h = Image.open(io.BytesIO(base64.b64decode(shrunk.split(",", 1)[1]))).size
+        assert -(-w // 32) * -(-h // 32) <= 30000
+
+        # "limit of N" without the patch vocabulary is not a dimension ceiling.
+        assert _image_error_max_dimension(_FakeApiError(
+            status_code=400, message="request exceeds the limit of 100 images per minute",
+        )) is None
 
 
 # ─── Shrink helper ───────────────────────────────────────────────────────────

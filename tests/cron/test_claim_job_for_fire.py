@@ -294,3 +294,34 @@ def test_manual_claim_still_refuses_a_paused_job(temp_home):
 
     assert claim_job_for_fire(job["id"], manual=True) is False
     assert get_job(job["id"]).get("paused_at") is not None
+
+
+def test_fresh_claim_from_a_dead_same_host_owner_is_reclaimable(temp_home):
+    """A claim younger than the TTL whose owner pid (same host) has exited is stale at once: a
+    ``hermes cron run`` killed mid-flight must not block the next manual run for the whole TTL
+    with "already being fired". A live owner's fresh claim still blocks."""
+    import os
+    import socket
+    import subprocess
+    import sys
+
+    from cron.jobs import claim_job_for_fire, create_job, load_jobs, save_jobs
+
+    jid = create_job(prompt="x", schedule="every 5m", name="s")["id"]
+    assert claim_job_for_fire(jid) is True
+
+    # Live same-host owner (this process) → still blocked.
+    jobs = load_jobs()
+    job = next(j for j in jobs if j["id"] == jid)
+    job["fire_claim"]["by"] = f"{socket.gethostname()}:{os.getpid()}:tok"
+    save_jobs(jobs)
+    assert claim_job_for_fire(jid) is False
+
+    # Owner that has provably exited → reclaimable despite the fresh timestamp.
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    jobs = load_jobs()
+    job = next(j for j in jobs if j["id"] == jid)
+    job["fire_claim"]["by"] = f"{socket.gethostname()}:{child.pid}:tok"
+    save_jobs(jobs)
+    assert claim_job_for_fire(jid) is True

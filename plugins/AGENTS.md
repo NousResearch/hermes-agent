@@ -30,6 +30,18 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   `plugin-llm-example`, `plugin-llm-async-example`) live in
   [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins), not here.
 
+## Plugin catalog (`plugin-catalog/`, Sep 2026)
+
+The ONLY discovery system for out-of-tree plugins. One YAML per entry, 40-hex SHA pin mandatory,
+human-merged via PR (`plugin-catalog/README.md` = admission policy; `plugin-catalog-ci.yml` clones
+each changed entry at its pin and runs `hermes plugins validate`). `removed.yaml` is the kill list —
+every install path (CLI, dashboard, TUI) refuses matches; only the CLI has a loud `--allow-removed`.
+Code: `hermes_cli/plugin_catalog.py` (loader, live refresh from
+`/docs/api/plugin-catalog.json` published by the docs build, in-tree fallback),
+`hermes_cli/plugins_cmd_catalog.py` (resolution, `.hermes-catalog.json` provenance sidecar,
+search/info/validate, re-pin on `update`, dashboard/TUI payloads). Never add a second name index:
+bare names resolve through the catalog or error.
+
 ## Plugin kinds and their discovery systems
 
 | Kind | Where | Discovery | Notes |

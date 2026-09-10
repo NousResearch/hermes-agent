@@ -332,7 +332,32 @@ def _post_provision(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"could not reach connector: {exc.reason}") from exc
 
-    if not isinstance(payload, dict) or not payload.get("secret"):
+    if not isinstance(payload, dict):
+        raise RuntimeError("connector returned an unexpected response")
+    # A response WITHOUT a secret is valid, not an error (connector F-004).
+    #
+    # `/relay/provision` used to hand the stored per-gateway secret back on every
+    # replay, to anyone who reached the endpoint with the right gatewayId. The
+    # connector now returns credential material only to a caller that proves
+    # ownership or possession, and answers `secretIssued: false` otherwise — with
+    # `secret`/`deliveryKey` absent rather than empty.
+    #
+    # Two legitimate shapes reach here, and neither is a failure:
+    #   * the SECOND and later platforms of a multi-platform boot. All platforms
+    #     share one gatewayId, so the first POST mints the secret and the rest are
+    #     replays of an unchanged binding. Raising here aborted every platform
+    #     after the first.
+    #   * a re-provision by a caller that legitimately no longer holds the secret;
+    #     `POST /relay/rotate` is the supported recovery path.
+    #
+    # Treat "no secret" as a value, and let the caller decide — it knows whether
+    # it already holds credentials. Only a malformed body is an error.
+    if not payload.get("secret") and payload.get("secretIssued") is not False:
+        # Fail closed on the discriminator itself. The ONLY credential-less shape
+        # the connector emits is literal JSON `false`. No key at all is a
+        # pre-F-004 connector (the old unexpected-response case); `true` with no
+        # secret, or any non-boolean value, is a malformed body. Accepting those
+        # would mark the platform provisioned with no credential in hand.
         raise RuntimeError("connector returned an unexpected response (no secret)")
     return payload
 
@@ -490,17 +515,42 @@ def self_provision_relay() -> bool:
             )
             continue
         provisioned.append(platform)
-        # Set creds in-process on the FIRST success (the per-gateway secret
-        # authenticates the outbound WS upgrade). Never logged.
-        if not os.environ.get("GATEWAY_RELAY_SECRET"):
+        # Set creds in-process on the first response that ACTUALLY CARRIES them.
+        # Never logged.
+        #
+        # `secret` may legitimately be absent (connector F-004 — see _post_provision):
+        # only a caller that proves ownership or possession is handed credential
+        # material, and every platform after the first in a multi-platform boot is
+        # a replay of an unchanged binding. Guard on the secret being PRESENT
+        # rather than on the response having arrived, or the first withheld
+        # response writes empty strings over the real values — and because the
+        # `if` tests the same env var it writes, an empty write looks "unset" on
+        # the next pass while deliveryKey has already been clobbered.
+        if result.get("secret") and not os.environ.get("GATEWAY_RELAY_SECRET"):
             os.environ["GATEWAY_RELAY_ID"] = str(result.get("gatewayId") or gateway_id)
-            os.environ["GATEWAY_RELAY_SECRET"] = str(result.get("secret") or "")
+            os.environ["GATEWAY_RELAY_SECRET"] = str(result["secret"])
             os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")
 
     if not provisioned:
         logger.warning(
             "relay self-provision failed for ALL platforms (%s); gateway will boot without relay auth",
             ",".join(p for p, _ in identities),
+        )
+        return False
+
+    if not os.environ.get("GATEWAY_RELAY_SECRET"):
+        # Every platform answered, none issued a credential: the connector holds a
+        # binding for this gatewayId that this caller could prove neither ownership
+        # of nor possession of (F-004). The routes are bound but the WS upgrade
+        # will be refused, so this is NOT a provision — do not report one. The
+        # operator's recovery path is POST /relay/rotate (or pinning
+        # GATEWAY_RELAY_SECRET).
+        logger.warning(
+            "relay self-provision withheld credentials for ALL platforms (%s): the connector "
+            "holds a binding for gateway_id=%s this caller could not prove ownership of; "
+            "gateway will boot without relay auth. Recover with POST /relay/rotate or pin "
+            "GATEWAY_RELAY_SECRET",
+            ",".join(provisioned), gateway_id,
         )
         return False
 

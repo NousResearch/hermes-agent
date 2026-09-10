@@ -69,6 +69,38 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Cross-nav between the Skills Hub and Plugin Catalog pages. */
+.crossNav {
+  display: inline-flex;
+  gap: 0.35rem;
+  margin: 0 0 1.25rem;
+  padding: 0.25rem;
+  border: 1px solid rgba(255, 215, 0, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.crossNavLink {
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+  padding: 0.3rem 0.9rem;
+  border-radius: 7px;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  text-decoration: none;
+  transition: all 0.15s;
+}
+
+.crossNavLink:hover {
+  color: #ffd700;
+  text-decoration: none;
+}
+
+.crossNavActive {
+  background: rgba(255, 215, 0, 0.08);
+  color: #ffd700;
+}
+
 .statsRow {
   display: flex;
   justify-content: center;

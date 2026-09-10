@@ -12,8 +12,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression, _sql_session_last_active,
-    is_automatic_end_reason)
+    _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression, _sql_session_last_active, is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -69,6 +68,49 @@ def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now:
 
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
+
+    def reopen_if_explicitly_closed(
+        self, session_id: str, *, provenance: str, patience_s: Optional[float] = None,
+    ) -> Optional[str]:
+        """Clear an explicit-close stamp (``tui_close``, ``cli_close``, ``webhook_complete``, ...) from a
+        session a HOST has just proven is still routed to it, returning the reason cleared or None (#106459).
+        Narrow twin of ``reopen_session()``: automatic stamps are left to publish (#88197); ``compression``,
+        boundary (reset reasons, CLI ``new_session``) and stamps with a published continuation own lineage
+        elsewhere and are never touched. The UPDATE is conditional on the exact stamp read, so a close
+        landing between read and write survives.
+
+        Only the routing host can make this call. Publication cannot: ``end_session()`` is first-stamp-wins,
+        so a close made during a turn that began on a stale stamp is a no-op write. Turn-lease admission
+        cannot: the TUI starts its worker before it reaches ``run_conversation()``, so ``session.close`` can
+        stamp ``tui_close`` in between and a late lease would clear a deliberate close. Call it under the
+        lock that makes the host's registry claim atomic with its teardown (#54878 on the routing table)."""
+        if not session_id:
+            return None
+
+        def _do(conn):
+            row = conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()
+            if row is None or row["ended_at"] is None:
+                return None
+            reason = row["end_reason"]
+            if is_automatic_end_reason(reason) or reason == "compression" or reason in _BOUNDARY_END_REASONS:
+                return None
+            superseded = conn.execute(
+                "SELECT 1 FROM sessions WHERE parent_session_id = ?"
+                + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="") + " LIMIT 1",
+                (session_id, session_id, session_id)).fetchone()
+            if superseded is not None:
+                return None
+            conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
+                "WHERE id = ? AND ended_at = ? AND end_reason = ?",
+                (session_id, row["ended_at"], reason))
+            return str(reason)
+        reason = self._execute_write(_do, patience_s=patience_s)
+        if reason is not None:
+            logger.warning(
+                "Session %s carried a stale %r end stamp while %s; cleared so the conversation can "
+                "compress and a later close is recorded (#106459)", session_id, reason, provenance)
+        return reason
 
     def find_live_compression_child(self, parent_session_id: str) -> Optional[Dict[str, Any]]:
         """The unique live direct child of a compression-ended session, else None. A stale
@@ -300,7 +342,9 @@ class SessionCompressionMixin:
     def restore_compression_failure_cooldown_row(self, session_id: str, snapshot: Dict[str, Any]) -> None:
         """Restore and verify an exact cooldown-row snapshot. Unlike record/clear this
         rollback API propagates write and verification failures: cancellation must not be
-        reported mutation-free when compensation failed."""
+        reported mutation-free when compensation failed. The tolerated exception is a
+        session row that vanished mid-attempt — before or after the compensating write —
+        since its cooldown died with it and there is nothing left to restore (#106271)."""
         if not snapshot.get("session_exists", False):
             if self.get_compression_failure_cooldown_row(session_id).get("session_exists", False):
                 raise RuntimeError("cannot restore absent compression cooldown row: session now exists")
@@ -311,12 +355,16 @@ class SessionCompressionMixin:
             cursor = conn.execute(
                 "UPDATE sessions SET compression_failure_cooldown_until = ?, "
                 "compression_failure_error = ? WHERE id = ?", (deadline, error, session_id))
-            if cursor.rowcount != 1:
-                raise RuntimeError(f"compression cooldown rollback session missing: {session_id}")
-        self._execute_write(_do)
+            return cursor.rowcount == 1
+        if not self._execute_write(_do):
+            logger.warning("compression cooldown rollback session missing: %s", session_id)
+            return
         actual = self.get_compression_failure_cooldown_row(session_id)
         expected = _cooldown_row(True, deadline, error)
         if actual != expected:
+            if not actual.get("session_exists", False):
+                logger.warning("compression cooldown rollback session missing after restore: %s", session_id)
+                return
             raise RuntimeError(
                 f"compression cooldown rollback verification failed: expected={expected!r}, actual={actual!r}")
 

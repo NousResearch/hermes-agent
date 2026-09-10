@@ -614,6 +614,7 @@ export const AppLayout = memo(function AppLayout({
                 onPromptOptimizationChoice={actions.answerPromptOptimization}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
+                onVaultUnlockSubmit={actions.answerVaultUnlock}
               />
             </PerfPane>
 

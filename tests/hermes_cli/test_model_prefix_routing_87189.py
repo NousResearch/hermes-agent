@@ -63,7 +63,10 @@ class TestVendorPrefixRouting:
         assert models.detect_provider_for_model("notaprovider/foo-model", "anthropic") is None
 
     def test_openrouter_slug_still_wins_over_prefix_routing(self, monkeypatch):
-        """Aggregator-native slugs keep their existing OpenRouter routing."""
+        """Aggregator-native slugs keep their existing OpenRouter routing (when OpenRouter is
+        authenticated — an unkeyed aggregator is never auto-selected)."""
+        from hermes_cli import models_detect
+        monkeypatch.setattr(models_detect, "provider_has_credentials", lambda p: p == "openrouter")
         monkeypatch.setattr(
             models, "_find_openrouter_slug", lambda _name: "deepseek/deepseek-chat"
         )
@@ -72,6 +75,8 @@ class TestVendorPrefixRouting:
         assert detected == ("openrouter", "deepseek/deepseek-chat")
 
     def test_bare_model_detection_unchanged(self, monkeypatch):
+        from hermes_cli import models_detect
+        monkeypatch.setattr(models_detect, "provider_has_credentials", lambda p: p == "deepseek")
         monkeypatch.setattr(models, "_find_openrouter_slug", lambda _name: None)
         detected = models.detect_provider_for_model("deepseek-chat", "anthropic")
         assert detected == ("deepseek", "deepseek-chat")

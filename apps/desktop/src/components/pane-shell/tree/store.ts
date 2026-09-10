@@ -190,7 +190,7 @@ function frontPaneInGroup(paneId: string) {
  *    removed from the tree and remembered so adoption doesn't re-add them.
  *    Reveal intent (a preview target, ⌘G) or a layout reset un-dismisses;
  *  - closing the sole pane from a plugin disables that plugin, preserving the
- *    discoverable Settings → Plugins recovery path for single-pane plugins.
+ *    discoverable Capabilities → Plugins recovery path for single-pane plugins.
  */
 const DISMISSED_KEY = 'hermes.desktop.dismissedPanes.v1'
 
@@ -755,6 +755,11 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
   })
 }
 
+/** Shared target for tab-number hints and shortcut dispatch. */
+export function treeTabSlotTarget(): GroupNode | null {
+  return tabTargetGroup(candidate => shownPanesInGroup(candidate).length >= 2)
+}
+
 /** ⌘1…⌘9: activate the Nth *visible* tab of the target zone — the first of
  *  hovered / focused / workspace that is a real tab strip (≥2 shown panes).
  *  Pointing at the sidebar (or nothing) therefore still switches main's tabs
@@ -763,7 +768,7 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
  *  must also route back to the chat) — or null so it falls back to its
  *  default (profile switch) when no zone qualifies. */
 export function activateTreeTabSlot(slot: number): null | string {
-  const group = tabTargetGroup(candidate => shownPanesInGroup(candidate).length >= 2)
+  const group = treeTabSlotTarget()
   const panes = group ? shownPanesInGroup(group) : []
 
   if (!group || slot < 1 || slot > panes.length) {
@@ -909,7 +914,7 @@ export function closeTreePane(paneId: string) {
     }
 
     // A single-pane plugin keeps the existing symmetric behavior: Close uses
-    // the same switch as Settings → Plugins. Its contribution unregisters but
+    // the same switch as Capabilities → Plugins. Its contribution unregisters but
     // the pane id stays in the tree, so re-enabling restores its exact place.
     const pluginId = source.slice('plugin:'.length)
     void setPluginEnabled(pluginId, false)

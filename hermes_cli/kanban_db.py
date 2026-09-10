@@ -26,6 +26,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+try:  # KENSEI FIX: move helpers reference _fcntl/_os/_hashlib aliases never imported
+    import fcntl as _fcntl
+except ImportError:  # Windows
+    _fcntl = None
+import os as _os  # noqa: E402  (KENSEI FIX: move helper aliases)
+import hashlib as _hashlib  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+
 from toolsets import get_toolset_names
 # KENSEI CUSTOM (fork re-anchor): activity-ledger best-effort import — must never break board writes.
 try:
@@ -1395,7 +1403,7 @@ def create_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     created_by: Optional[str] = None,
-    workspace_kind: str = "scratch",
+    workspace_kind: Optional[str] = None,
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
     tenant: Optional[str] = None,
@@ -1481,6 +1489,10 @@ def create_task(
     in its own projects.db, a matching canonical project-linked task in this
     board can supply the repo and branch convention. Its literal worktree is
     never reused; the new task still gets its own task-id-keyed path.
+    ``creator_task_id``: inherit durable session/subscriptions independently of
+    dependency edges; an explicit ``session_id`` still wins.
+    ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
+    an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
@@ -1504,6 +1516,19 @@ def create_task(
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
         )
+
+        raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+    # A project-scoped board anchors every new task to its project's repo
+    # (deterministic worktree + branch) without each surface repeating it.
+    # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
+    # it must not be upgraded to a worktree in the board's repo (#106342).
+    if project_id is None and workspace_kind != "scratch":
+        try:
+            project_id = (_board_meta_for(board).get("project_id") or "").strip() or None
+        except Exception:
+            pass
+    if workspace_kind is None:
+        workspace_kind = "scratch"
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -1514,153 +1539,12 @@ def create_task(
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
 
-    # Inherit the board's scoped project when the caller didn't name one, so a
-    # project-scoped board anchors every new task to that project's repo
-    # (deterministic worktree + branch) without each surface repeating it.
-    if project_id is None:
-        try:
-            _bmeta = read_board_metadata(board if board else get_current_board())
-            _board_project = (_bmeta.get("project_id") or "").strip()
-            if _board_project:
-                project_id = _board_project
-        except Exception:
-            pass
 
-    # Resolve an optional first-class Project link. A project-linked task is
-    # anchored to the project's primary repo as a git worktree, so its branch
-    # can be named deterministically (project slug + task id) instead of the
-    # random ``wt/<task-id>`` fallback the worker skill applies when no branch
-    # is set. Projects live in the creator's per-profile projects.db; the repo
-    # path is absolute (profile-independent) and the branch name is pure, so the
-    # cross-profile dispatcher needs no projects.db access at dispatch time.
-    project_obj = None
-    # Primary repo of a project-linked worktree task whose path we still need to
-    # derive (a fresh worktree dir under the repo, computed once task_id exists).
-    project_repo: Optional[str] = None
-    if project_id is not None:
-        project_id = str(project_id).strip() or None
-    if project_id:
-        from hermes_cli import projects_db as _pdb
-
-        try:
-            with _pdb.connect_closing() as _pconn:
-                project_obj = _pdb.get_project(_pconn, project_id)
-        except Exception:
-            project_obj = None
-        if project_obj is None and project_source_task_id:
-            # Worker profiles have their own projects.db, while the Kanban DB is
-            # intentionally shared. Recover routing only from a canonical
-            # project-linked source task in this same board. This carries the
-            # repo + project branch convention forward without copying or
-            # opening the creator profile's project store, and without reusing
-            # the source task's literal worktree path.
-            source_task = get_task(conn, str(project_source_task_id))
-            if (
-                source_task is not None
-                and source_task.project_id == project_id
-                and source_task.workspace_kind == "worktree"
-                and source_task.workspace_path
-            ):
-                source_path = Path(source_task.workspace_path)
-                if (
-                    source_path.is_absolute()
-                    and source_path.name == source_task.id
-                    and source_path.parent.name == ".worktrees"
-                ):
-                    project_slug = None
-                    if source_task.branch_name:
-                        prefix, separator, leaf = source_task.branch_name.partition("/")
-                        if separator and (
-                            leaf == source_task.id
-                            or leaf.startswith(f"{source_task.id}-")
-                        ):
-                            try:
-                                project_slug = _pdb.normalize_slug(prefix)
-                            except ValueError:
-                                project_slug = None
-                    if project_slug is None:
-                        try:
-                            project_slug = _pdb.normalize_slug(project_id)
-                        except ValueError:
-                            project_slug = None
-                    if project_slug:
-                        project_repo = str(source_path.parent.parent)
-                        project_obj = _pdb.Project(
-                            id=project_id,
-                            slug=project_slug,
-                            name=project_slug,
-                            created_at=0,
-                            primary_path=project_repo,
-                        )
-                        if workspace_kind == "scratch":
-                            workspace_kind = "worktree"
-
-        if project_obj is None:
-            # A project id/slug that doesn't resolve must not crash task
-            # creation or persist a dangling reference — drop the link and
-            # create the task as an ordinary (scratch) task.
-            project_id = None
-        else:
-            # Canonicalise (a slug may have been passed) and anchor the
-            # worktree under the project's primary repo.
-            project_id = project_obj.id
-            if workspace_kind == "scratch" and project_obj.primary_path:
-                workspace_kind = "worktree"
-            if (
-                workspace_kind == "worktree"
-                and workspace_path is None
-                and project_obj.primary_path
-            ):
-                # Defer the concrete path to the insert loop: it's a fresh
-                # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
-                project_repo = str(project_obj.primary_path)
-
+    project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
+        conn, project_id, project_source_task_id, workspace_kind, workspace_path
+    )
     parents = tuple(p for p in parents if p)
-
-    # Normalise + validate skills: strip whitespace, drop empties, dedupe
-    # (preserving order). Refuse commas inside a single name so we don't
-    # invisibly splatter a comma-joined string into one argv slot — the
-    # `hermes --skills X,Y` comma syntax is handled in the dispatcher,
-    # not here.
-    skills_list: Optional[list[str]] = None
-    if skills is not None:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        # Collect all toolset-name confusions up front so the user sees the
-        # whole list at once. Raising on the first hit is friendly when the
-        # input has one mistake, but agents that confuse skills with toolsets
-        # usually pass several at once (`skills=["web", "browser", "terminal"]`)
-        # and serial-correcting one per failure round-trips wastes tokens.
-        toolset_typos: list[str] = []
-        for s in skills:
-            if not s:
-                continue
-            name = str(s).strip()
-            if not name:
-                continue
-            if "," in name:
-                raise ValueError(
-                    f"skill name cannot contain comma: {name!r} "
-                    f"(pass a list of separate names instead of a comma-joined string)"
-                )
-            if name.casefold() in KNOWN_TOOLSET_NAMES:
-                toolset_typos.append(name)
-                continue
-            if name in seen:
-                continue
-            seen.add(name)
-            cleaned.append(name)
-        if toolset_typos:
-            quoted = ", ".join(repr(n) for n in toolset_typos)
-            noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
-            raise ValueError(
-                f"{quoted} {noun}, not skill name(s). "
-                "Put toolsets in the assignee profile's `toolsets:` config "
-                "instead of per-task skills. Skills are named skill bundles "
-                "(e.g. `blogwatcher`, `github-code-review`); toolsets are runtime "
-                "capabilities (e.g. `web`, `browser`, `terminal`)."
-            )
-        skills_list = cleaned
+    skills_list = _normalize_task_skills(skills)
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
@@ -1778,8 +1662,11 @@ def create_task(
                             project_repo, ".worktrees", task_id
                         )
                     if not branch_name:
-                        # _pdb was imported above when project_obj was resolved.
+                        # KENSEI re-anchor: _pdb used to be imported by the inline
+                        # project-resolution block; _resolve_project_link replaced
+                        # that block, so import it here (best-effort, never fatal).
                         try:
+                            from hermes_cli import projects_db as _pdb
                             branch_name = _pdb.branch_name_for(
                                 project_obj, task_id, title=title or ""
                             )
@@ -5065,11 +4952,11 @@ def request_changes(
 
 def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
-    force: bool = False, dry_run: bool = False,
+    dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
-    Refused while a parent is unfinished unless ``force``; ``dry_run`` only
-    validates. Returns ``(ok, reason)``."""
+    Refused while a parent is unfinished; ``dry_run`` only validates.
+    Returns ``(ok, reason)``."""
     cur_status = _task_status(conn, task_id)
     if cur_status is None:
         return False, f"task {task_id} not found"
@@ -5080,18 +4967,22 @@ def promote_task(
             f"'todo' or 'blocked'"
         )
 
-    if not force:
-        parents = conn.execute(
-            "SELECT t.id, t.status FROM tasks t "
-            "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?", (task_id,),
-        ).fetchall()
-        unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
-        if unsatisfied:
-            return False, (
-                f"unsatisfied parent dependencies: "
-                f"{', '.join(unsatisfied)} (use --force to override)"
-            )
+    # No override: claim_task demotes ready -> todo on an undone parent whichever
+    # writer set 'ready', so a forced promotion would only report a success the
+    # first claim silently reverts (#106195). The dependency itself is the knob.
+    parents = conn.execute(
+        "SELECT t.id, t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ?", (task_id,),
+    ).fetchall()
+    unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
+    if unsatisfied:
+        return False, (
+            f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
+            f"(the ready -> running claim re-checks parents, so promotion cannot "
+            f"bypass them; complete the parents or drop the link with "
+            f"`hermes kanban unlink <parent_id> {task_id}`)"
+        )
 
     if dry_run:
         return True, None
@@ -5103,9 +4994,7 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
-        _append_event(
-            conn, task_id, "promoted_manual", {"actor": actor, "reason": reason, "forced": force},
-        )
+        _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
 
     return True, None
 

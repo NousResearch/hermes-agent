@@ -35,7 +35,8 @@ def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gatew
         from hermes_cli.nous_account import (
             format_nous_portal_entitlement_message, get_nous_portal_account_info)
         message = format_nous_portal_entitlement_message(
-            get_nous_portal_account_info(force_fresh=force_fresh), capability=capability)
+            get_nous_portal_account_info(force_fresh=force_fresh), capability=capability,
+            in_chat=True)
         if message:
             return message
     except Exception:

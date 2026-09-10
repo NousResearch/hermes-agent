@@ -143,25 +143,37 @@ def _corpus_stats(catalog: List[CatalogEntry]) -> _CorpusStats:
     return doc_lengths, avg_dl, dict(doc_freq), len(catalog)
 
 
+def _gate_token(query_tokens: List[str], doc_freq: Dict[str, int], n_docs: int) -> str:
+    """The query token with the highest IDF: the word that names the intent. ``send``,
+    ``read``, ``create`` sit in dozens of tool documents and separate nothing; ``gmail``,
+    ``github``, ``incident`` sit in a few and separate everything. A document without this
+    token answered a different question, however many common tokens it shares."""
+    def _idf(token: str) -> float:
+        df = doc_freq.get(token, 0)
+        return math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+    return max(query_tokens, key=_idf)
+
+
 def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5, *,
                    corpus_stats: Optional[_CorpusStats] = None) -> List[CatalogEntry]:
     """Top-``limit`` catalog entries for ``query`` by BM25 (exact name match ranks first).
-    Falls back to a name-substring match only when NO query token appears in any document
-    (e.g. "hub" vs ``github_*``); the IDF variant is strictly positive, so a hit anywhere
-    suppresses the fallback."""
+
+    Admission is by the query's rarest token (:func:`_gate_token`), not by ``score > 0``:
+    BM25 is additive over the tokens a document shares with the query, so on a large catalog
+    ``score > 0`` admits one-token matches and fills every slot with them (measured: "send
+    gmail email" returned 5 incident tools that only shared ``email``). A token no document
+    carries admits nothing; the caller's empty-group hint tells the model to retry without it."""
     query_tokens = _tokenize(query) if catalog and limit > 0 else []
     if not query_tokens:
         return []
     corpus_stats = corpus_stats or _corpus_stats(catalog)
-    scored: List[Tuple[float, CatalogEntry]] = []
+    gate = _gate_token(query_tokens, corpus_stats[2], corpus_stats[3])
     exact_name = query.strip().lower()
-    for entry in catalog:
-        s = (float("inf") if entry.name.lower() == exact_name
-             else _bm25_score(query_tokens, entry._tokens, *corpus_stats))
-        if s > 0:
-            scored.append((s, entry))
-    if not scored:
-        scored = [(0.1, entry) for entry in catalog if query.lower() in entry.name.lower()]
+    scored = [
+        (float("inf") if entry.name.lower() == exact_name
+         else _bm25_score(query_tokens, entry._tokens, *corpus_stats), entry)
+        for entry in catalog
+        if entry.name.lower() == exact_name or gate in entry._tokens]
     scored.sort(key=lambda x: x[0], reverse=True)
     return [e for _, e in scored[:limit]]
 

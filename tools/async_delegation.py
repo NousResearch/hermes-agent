@@ -69,7 +69,7 @@ _LIVE_STATES = {"running", "stalling", "finalizing"}
 _ACTIVE_STATES = ("running", "stalling")
 # Routing origin persisted at dispatch so a restart-recovered completion can
 # reconstruct a full SessionSource (scope_id drives relay tenant egress).
-_ROUTING_KEYS = ("scope_id", "user_id", "user_name")
+_ROUTING_KEYS = ("scope_id", "user_id", "user_name", "message_id")
 # Structured stall metadata — additive, present only on stall finalizations.
 _STALL_META_KEYS = ("stalled_after_quiet_seconds", "stall_threshold_seconds", "stall_phase", "stall_grace_seconds")
 # Private stall bookkeeping on the record -> public field in list_async_delegations().
@@ -149,7 +149,7 @@ def _transaction() -> Iterator[sqlite3.Connection]:
 
 
 def _capture_routing_origin() -> Dict[str, Any]:
-    """Snapshot scope_id/user_id/user_name on the PARENT thread (the daemon worker
+    """Snapshot routing identity and reply anchor on the PARENT thread (the daemon worker
     has no contextvars) so a restart-replayed completion can rebuild a SessionSource.
     Best-effort: empty values are omitted."""
     try:

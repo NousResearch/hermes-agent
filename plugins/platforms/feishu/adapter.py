@@ -2504,10 +2504,11 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        root_id = getattr(message, "root_id", None)
+        thread_id = getattr(message, "thread_id", None) or root_id or None
         reply_to_message_id = (
             getattr(message, "parent_id", None) or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None) or None
+            or root_id or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
         sender_primary = (
@@ -2532,6 +2533,8 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            # Detached work needs a stable reply anchor; a seed message is its own root.
+            message_id=root_id or message_id,
         )
         normalized = MessageEvent(
             text=text, message_type=inbound_type, source=source, raw_message=data,
@@ -3528,32 +3531,30 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
 
             key_payload = {"file_key": file_key}
+            send_reply_to = reply_to
+            resolve_audio_anchor = bool(
+                not caption and resolved_message_type == "audio"
+                and (metadata or {}).get("thread_id") and not send_reply_to
+            )
+            if resolve_audio_anchor:
+                # Resolve before sending: a legal top-level create would bypass error-based recovery.
+                send_reply_to = (metadata or {}).get("reply_to_message_id")
+                if not send_reply_to:
+                    send_reply_to = await self._fetch_last_message_in_thread(metadata["thread_id"])
             message_response = await self._send_uploaded_key(
-                chat_id=chat_id, reply_to=reply_to, metadata=metadata, caption=caption,
+                chat_id=chat_id, reply_to=send_reply_to, metadata=metadata, caption=caption,
                 key_msg_type=resolved_message_type, key_payload=key_payload,
                 media_tag={"tag": "media", "file_key": file_key, "file_name": display_name},
             )
-            # Audio may fail with 99992402 under thread_id routing: retry as a reply to the
-            # thread's last message, then fall back to a plain chat_id send.
-            if (not caption
+            if (resolve_audio_anchor and send_reply_to
                     and not self._response_succeeded(message_response)
-                    and getattr(message_response, "code", None) == 99992402
-                    and resolved_message_type == "audio"
-                    and (metadata or {}).get("thread_id")):
-                payload = json.dumps(key_payload, ensure_ascii=False)
-                thread_msg_id = (metadata or {}).get("reply_to_message_id")
-                if not thread_msg_id:
-                    thread_msg_id = await self._fetch_last_message_in_thread((metadata or {}).get("thread_id"))
-                if thread_msg_id:
-                    logger.info("[Feishu] Audio: retrying via reply API in thread")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=thread_msg_id, metadata=metadata,
-                    )
-                if not self._response_succeeded(message_response):
-                    logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=None, metadata=None,
-                    )
+                    and getattr(message_response, "code", None) == 99992402):
+                # Only routing errors permit fallback; rate limits and revoked roots stay in-thread.
+                logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                message_response = await self._feishu_send_with_retry(
+                    chat_id=chat_id, msg_type="audio", payload=json.dumps(key_payload, ensure_ascii=False),
+                    reply_to=None, metadata=None,
+                )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
@@ -3602,9 +3603,12 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
         if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
-        elif chat_id.startswith("feishu_user_id:"):
+            # Feishu create accepts chat/user recipients, never an omt_ thread ID.
+            logger.warning(
+                "[Feishu] Thread send with no reply anchor for chat %s thread %s; "
+                "falling back to top-level chat send (thread context will be lost)", chat_id, thread_id,
+            )
+        if chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:
             receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"

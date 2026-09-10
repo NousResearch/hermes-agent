@@ -13,6 +13,7 @@ import json
 import logging
 import time
 from contextlib import suppress
+from copy import copy
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
@@ -825,16 +826,24 @@ class GatewayNotificationsMixin:
         parts = session_key.split(":")
         profile = parts[1] if len(parts) >= 5 and parts[0] == "agent" and parts[1] != "main" else None
         if session_key:
+            source = None
             try:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                    source = entry.origin
             except Exception as exc:
                 logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
-            cached_source = self._get_cached_session_source(session_key)
-            if cached_source is not None:
-                return cached_source
+            if source is None:
+                source = self._get_cached_session_source(session_key)
+            if source is not None:
+                message_id = str(evt.get("message_id") or "").strip()
+                if message_id and not getattr(source, "message_id", None):
+                    # Legacy origins lack anchors. Keep canonical identity and transport refs without
+                    # mutating shared session/cache state or replacing an existing root.
+                    source = copy(source)
+                    source.message_id = message_id
+                return source
             parse_key = ":".join(["agent", "main", *parts[2:]]) if profile else session_key
             derived = _parse_session_key(parse_key) or {}
         platform_name = str(evt.get("platform") or derived.get("platform") or "").strip().lower()
@@ -880,6 +889,7 @@ class GatewayNotificationsMixin:
         return SessionSource(
             platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=_opt("thread_id"),
             user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id, profile=profile,
+            message_id=_opt("message_id"),
         )
 
     async def _drain_watch_notifications(self, completion_queue) -> None:
@@ -1005,9 +1015,11 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            # Older producers may lack an anchor; use the canonical origin, never a foreground event.
+            message_id = str(evt.get("message_id") or "").strip() or getattr(source, "message_id", None)
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                message_id=message_id or None, metadata=metadata,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -1538,7 +1550,9 @@ class GatewayNotificationsMixin:
             with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
                 send_meta = {"thread_id": thread_id} if thread_id else None
                 await adapter.send(
-                    chat_id, message_text, metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+                    chat_id, message_text,
+                    reply_to=str(watcher.get("message_id") or "").strip() or getattr(source, "message_id", None),
+                    metadata=_non_conversational_metadata(send_meta, platform=platform_name),
                 )
 
     @staticmethod

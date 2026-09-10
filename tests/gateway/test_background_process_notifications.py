@@ -65,7 +65,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     return runner
 
 
-def _watcher_dict(session_id="proc_test", thread_id=""):
+def _watcher_dict(session_id="proc_test", thread_id="", message_id=""):
     d = {
         "session_id": session_id,
         "check_interval": 0,
@@ -74,6 +74,8 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
     }
     if thread_id:
         d["thread_id"] = thread_id
+    if message_id:
+        d["message_id"] = message_id
     return d
 
 
@@ -189,7 +191,8 @@ async def test_consumed_completion_skips_raw_notification_without_agent_notify(
 
 
 @pytest.mark.asyncio
-async def test_inject_watch_notification_routes_from_session_store_origin(monkeypatch, tmp_path):
+@pytest.mark.parametrize("event_anchor", [None, "  ", "om_explicit"])
+async def test_inject_watch_notification_routes_from_session_store_origin(monkeypatch, tmp_path, event_anchor):
     from gateway.session import SessionSource
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
@@ -202,12 +205,14 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
             thread_id="42",
             user_id="123",
             user_name="Emiliyan",
+            message_id="om_thread_root",
         )
     )
 
     evt = {
         "session_id": "proc_watch",
         "session_key": "agent:main:telegram:group:-100:42",
+        "message_id": event_anchor,
     }
 
     await runner._inject_watch_notification("[SYSTEM: Background process matched]", evt)
@@ -221,6 +226,80 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.thread_id == "42"
     assert synth_event.source.user_id == "123"
     assert synth_event.source.user_name == "Emiliyan"
+    assert synth_event.message_id == (event_anchor.strip() if event_anchor and event_anchor.strip() else "om_thread_root")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin_kind", ["persisted", "cached"])
+@pytest.mark.parametrize("origin_anchor", [None, "", "om_canonical"])
+async def test_legacy_source_anchor_survives_second_detach(monkeypatch, tmp_path, origin_kind, origin_anchor):
+    from gateway.session import SessionContext, SessionSource, SessionStore
+    from tools import async_delegation as ad
+    from tools.process_registry import process_registry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters.pop(Platform.TELEGRAM)
+    runner.adapters[Platform.FEISHU] = adapter
+    origin = SessionSource(
+        platform=Platform.FEISHU, chat_id="oc_canonical", chat_type="group", thread_id="omt_canonical",
+        user_id="ou_canonical", user_name="Canonical", scope_id="scope_canonical",
+        parent_chat_id="oc_parent", profile="default", message_id=origin_anchor,
+    )
+    sessions_dir = tmp_path / "legacy_sessions"
+    store = SessionStore(sessions_dir, runner.config)
+    entry = store.get_or_create_session(origin)
+    if origin_kind == "persisted":
+        # Reload the real persisted origin, including legacy records with no message_id field.
+        runner.session_store = SessionStore(sessions_dir, runner.config)
+        runner.session_store._ensure_loaded()
+        origin = runner.session_store._entries[entry.session_key].origin
+    else:
+        runner.session_store = SessionStore(tmp_path / "empty_sessions", runner.config)
+        monkeypatch.setattr(runner, "_get_cached_session_source", lambda key: origin)
+    transport_marker = object()
+    origin._transport_marker = transport_marker
+    original_identity = origin.to_dict()
+    evt = {
+        "session_key": entry.session_key, "message_id": "om_captured",
+        "platform": "telegram", "chat_id": "wrong_chat", "thread_id": "wrong_thread",
+        "user_id": "wrong_user", "scope_id": "wrong_scope", "profile": "wrong_profile",
+    }
+    assert await runner._inject_watch_notification("first completion", evt) is True
+    first = adapter.handle_message.await_args.args[0]
+    expected_anchor = origin.message_id or "om_captured"
+    assert first.message_id == "om_captured"
+    assert first.source.to_dict() == {**original_identity, "message_id": expected_anchor}
+    assert first.source._transport_marker is transport_marker
+    assert origin.to_dict() == original_identity
+    if not origin.message_id:
+        assert first.source is not origin
+    else:
+        assert first.source is origin
+
+    completions = queue.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", completions)
+    ad._reset_for_tests()
+    tokens = runner._set_session_env(SessionContext(
+        source=first.source, connected_platforms=[], home_channels={}, session_key=entry.session_key,
+    ))
+    try:
+        dispatched = ad.dispatch_async_delegation(
+            goal="second generation", context=None, toolsets=None, role="leaf", model="m",
+            session_key=entry.session_key, runner=lambda: {"status": "completed", "summary": "ok"},
+        )
+    finally:
+        runner._clear_session_env(tokens)
+    try:
+        assert dispatched["status"] == "dispatched"
+        second = await asyncio.to_thread(completions.get, True, 5)
+        assert second["message_id"] == expected_anchor
+        assert await runner._inject_watch_notification("second completion", second) is True
+        reinjected = adapter.handle_message.await_args.args[0]
+        assert reinjected.message_id == expected_anchor
+        assert reinjected.source.to_dict() == first.source.to_dict()
+    finally:
+        ad._reset_for_tests()
 
 
 @pytest.mark.asyncio
@@ -440,13 +519,51 @@ async def test_concise_mode_sends_pretty_message_not_raw_dump(monkeypatch, tmp_p
     runner = _build_runner(monkeypatch, tmp_path, "concise")
     adapter = runner.adapters[Platform.TELEGRAM]
 
-    await runner._run_process_watcher(_watcher_dict())
+    await runner._run_process_watcher(
+        _watcher_dict(thread_id="omt_topic", message_id="om_thread_root")
+    )
 
     adapter.send.assert_awaited_once()
     sent_text = adapter.send.await_args.args[1]
     assert sent_text.startswith("✅ Background task finished")
     assert "Here's the final output" not in sent_text
     assert "5000" not in sent_text
+    assert adapter.send.await_args.kwargs["reply_to"] == "om_thread_root"
+
+
+@pytest.mark.asyncio
+async def test_all_mode_threads_interim_and_final_notifications(monkeypatch, tmp_path):
+    """Both direct watcher send paths preserve the captured reply anchor."""
+    import tools.process_registry as pr_module
+
+    running = SimpleNamespace(
+        output_buffer="building\n", exited=False, exit_code=None,
+        command="make", started_at=None,
+    )
+    done = SimpleNamespace(
+        output_buffer="building\ndone\n", exited=True, exit_code=0,
+        command="make", started_at=None,
+    )
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry([running, done], consumed=False)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(
+        _watcher_dict(thread_id="omt_topic", message_id="om_thread_root")
+    )
+
+    assert adapter.send.await_count == 2
+    assert all(
+        call.kwargs["reply_to"] == "om_thread_root"
+        for call in adapter.send.await_args_list
+    )
 
 
 @pytest.mark.asyncio

@@ -37,6 +37,22 @@ import type {
   ThinkingMode
 } from '../types.js'
 
+import { Md } from './markdown.js'
+
+// Thinking renders through the markdown renderer with a monochrome theme so
+// paragraph breaks, lists, and headings keep breathing room — same shape as
+// the assistant reply, tinted the thinking color (Pi renders its thinking
+// through its full Markdown component too).
+const thinkingTheme = (t: Theme): Theme => ({
+  ...t,
+  color: {
+    ...t.color,
+    accent: t.color.thinking,
+    text: t.color.thinking,
+    muted: t.color.thinking
+  }
+})
+
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
 
@@ -637,8 +653,6 @@ export const Thinking = memo(function Thinking({
     return mode === 'full' ? boundedLiveRenderText(raw) : raw
   }, [mode, reasoning])
 
-  const lines = useMemo(() => preview.split('\n').map(line => line.replace(/\t/g, '  ')), [preview])
-
   if (!preview && !active) {
     return null
   }
@@ -648,14 +662,14 @@ export const Thinking = memo(function Thinking({
       <Box flexDirection="column" flexGrow={1}>
         {preview ? (
           mode === 'full' ? (
-            lines.map((line, index) => (
-              <Text color={t.color.thinking} key={index} wrap="wrap-trim">
-                {line || ' '}
-                {index === lines.length - 1 ? (
+            <>
+              <Md cols={undefined} t={thinkingTheme(t)} text={preview} />
+              {active ? (
+                <Text color={t.color.thinking}>
                   <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
-                ) : null}
-              </Text>
-            ))
+                </Text>
+              ) : null}
+            </>
           ) : (
             <Text color={t.color.thinking} wrap="truncate-end">
               {preview}

@@ -784,6 +784,8 @@ def upsert_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], now
                    target_profile, task_id, execution_generation, run_id,
                    session_id, created_at, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (*immutable, timestamp, timestamp))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, record["room_id"])
 
 
 def list_remote_run_receipts(

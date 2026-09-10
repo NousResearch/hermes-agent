@@ -1,5 +1,7 @@
 """Service share and raced publication preserve the original durable task."""
 import time
+import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 from gateway import hosted_rooms, hosted_room_driver as driver
@@ -27,6 +29,10 @@ def test_service_share_retains_bytes_and_reuses_frozen_task(tmp_path):
         'text': '@hermes inspect', 'thread_id': 'thread', 'attachments': manifest})
     before = driver.list_tasks(db, room_id='room')[0]
     assert before['payload']['attachments'][0]['event_id'] == event['event_id']
+    with closing(sqlite3.connect(db)) as conn, conn:
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'hosted_room_policy_%'").fetchall()
+        for (table,) in tables:
+            conn.execute(f'DROP TABLE "{table}"')
     restored = service_at(db)
     restored.prepare_room(restored.bindings()[0])
     assert driver.list_tasks(db, room_id='room')[0]['payload'] == before['payload']

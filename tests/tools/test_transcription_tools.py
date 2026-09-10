@@ -1063,7 +1063,7 @@ class TestLocalModelLock:
         load_count = 0
         load_started = threading.Event()
 
-        def slow_load(model_name, device="auto", compute_type="auto"):
+        def slow_load(model_name, device="auto", compute_type="auto", force_cpu=None):
             nonlocal load_count
             load_count += 1
             load_started.set()

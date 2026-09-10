@@ -1,0 +1,13 @@
+name: webtmux
+version: "1.0.0"
+description: Web-based tmux session access for Hermes Gateway
+author: User
+entry_point: adapter.py
+kind: platform
+required_env: []
+optional_env:
+  - WEBTMUX_HOST
+  - WEBTMUX_PORT
+  - WEBTMUX_ACCESS_CODE
+requires_backends:
+  - aiohttp

@@ -2306,6 +2306,25 @@ def _make_agent(
         with _sessions_lock:
             context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(_sessions.get(sid))
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    # ── KENSEI CUSTOM: restore agent mode from DB on build/resume ──
+    # Re-anchored from fork methods_session.py resume paths (upstream split them);
+    # _make_agent is the one seam every resume path (cold/lazy/eager/deferred) builds
+    # through. Uses the caller's (often profile-scoped) session_db so remote/profile
+    # resume reads agent_mode from the right db. See skill `agent-modes`.
+    try:
+        mode_db = session_db if session_db is not None else _get_db()
+        db_session = mode_db.get_session(key) if hasattr(mode_db, "get_session") else None
+        if db_session:
+            saved_mode = db_session.get("agent_mode", "auto") or "auto"
+            agent.agent_mode = saved_mode
+            with _sessions_lock:
+                if sid in _sessions:
+                    _sessions[sid]["agent_mode"] = saved_mode
+            if saved_mode != "auto":
+                from hermes_cli.mode_prompts import get_mode_prompt
+                agent.ephemeral_system_prompt = get_mode_prompt(saved_mode)
+    except Exception:
+        pass
     return agent
 
 

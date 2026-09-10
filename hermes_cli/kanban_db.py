@@ -4319,29 +4319,28 @@ def _assignee_is_known(assignee: Optional[str]) -> bool:
     dispatcher consults at spawn time so create-time and dispatch-time agree
     on what is a phantom. Local import here stays local: it lives in a module
     that peers import eagerly and would otherwise risk an import cycle.
+
+    2026-09-10 (catch-up merge): the ONLY thing added to the fleet's original
+    is the two ``except`` arms. A guard must not become a crash surface: if the
+    profile machinery cannot be imported or raises, the answer is "known", so a
+    broken profiles layer degrades to the pre-guard behaviour instead of
+    parking every card. An *empty* roster is deliberately NOT fail-open —
+    ``tests/hermes_cli/test_kanban_decompose_db.py`` pins parking as the
+    designed behaviour there (the 2026-08-30 junk-card incident), and a
+    fresh-install roster that answers No to a phantom name is answering
+    correctly. Whether a bare root should park is a product question, not
+    something to change inside a merge.
     """
     if not assignee:
         return True
     try:
-        from hermes_cli.profiles import list_profiles, profile_exists
+        from hermes_cli.profiles import profile_exists
     except Exception:  # noqa: BLE001 — a guard must not become a crash surface
         return True
     try:
-        if profile_exists(assignee):
-            return True
-        # FAIL OPEN on an EMPTY registry. `profile_exists` answers "is there a
-        # directory for this name", so a root with no named profiles answers No
-        # to every assignee — and this guard would then park every card in
-        # triage. That is an environment fault (a bare or unreadable root),
-        # never evidence that the assignee is a phantom: the whole point of the
-        # check is to catch a name that is wrong RELATIVE to a real roster.
-        # 2026-09-10: found when upstream's new tests, which run against a
-        # scratch HERMES_HOME, had their cards silently parked.
-        named = [p for p in list_profiles() if not getattr(p, "is_default", False)]
-        return not named
+        return bool(profile_exists(assignee))
     except Exception:  # noqa: BLE001
         return True
-
 
 def resolve_default_max_cost() -> Optional[float]:
     """Resolve the ``kanban.default_max_cost`` new-card fallback.

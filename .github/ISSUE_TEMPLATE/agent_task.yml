@@ -1,0 +1,144 @@
+name: "🤖 Agent Task"
+description: Structured work packet for Librarian → Architect/Hero8 → Coder/Hero7 or Copilot → Reviewer/Hero8.
+title: "[Agent Task]: "
+labels: ["needs-triage", "status/needs-plan"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template when an issue is intended to be picked up by an agent or converted into an agent-ready task queue item.
+
+        Default routing:
+        **Librarian researches → Hero8 architects/plans → Hero7 or Copilot implements → Hero8 reviews.**
+
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Agent lane
+      description: Which lane owns the next action?
+      options:
+        - Librarian research
+        - Hero8 architecture / planning
+        - Hero7 implementation
+        - Copilot implementation
+        - Hero8 review
+        - GuardianCOO audit / release gate
+        - Human decision needed
+    validations:
+      required: true
+
+  - type: dropdown
+    id: task-type
+    attributes:
+      label: Task type
+      options:
+        - Research
+        - Bug fix
+        - Feature
+        - Refactor
+        - Security / privacy hardening
+        - Tests / CI
+        - Documentation
+        - Operations / release
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 - critical
+        - P1 - high
+        - P2 - medium
+        - P3 - low
+    validations:
+      required: true
+
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What should be true when this task is complete?
+      placeholder: |
+        Make Hermes able to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and evidence
+      description: Include links, logs, source notes, related issues, prior decisions, and relevant files.
+      placeholder: |
+        Related issue/PR/session/source:
+        Relevant files:
+        Evidence:
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: Checkboxes should be concrete enough for a coding agent and reviewer to verify.
+      placeholder: |
+        - [ ] Behavior is implemented end-to-end
+        - [ ] Targeted tests pass
+        - [ ] Documentation or help text is updated if user-facing
+        - [ ] No secrets, credentials, PHI, or sensitive user data are exposed
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation-notes
+    attributes:
+      label: Implementation notes / likely files
+      description: Optional hints for Hero7, Copilot, or a human implementer. Avoid over-prescribing if exploration is needed.
+      placeholder: |
+        Likely files:
+        Suggested approach:
+        Constraints:
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: What should the agent not change?
+      placeholder: |
+        Do not change...
+
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk level
+      options:
+        - Low
+        - Medium
+        - High
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: approval-gates
+    attributes:
+      label: Approval gates
+      description: Check anything that requires explicit human approval before the final action.
+      options:
+        - label: Merge to default/protected branch
+        - label: Release or publish package/image/docs site
+        - label: Production-impacting workflow dispatch or deployment
+        - label: Secrets, repo settings, webhooks, permissions, or branch protection
+        - label: Safety-sensitive, privacy-sensitive, clinical, education, or vulnerable-user impact
+
+  - type: textarea
+    id: handoff
+    attributes:
+      label: Agent handoff instructions
+      description: Tell the next agent exactly what to do and what proof to return.
+      placeholder: |
+        Next agent:
+        Required proof:
+        Stop/ask conditions:
+    validations:
+      required: true

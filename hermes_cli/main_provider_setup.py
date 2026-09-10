@@ -758,6 +758,7 @@ def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
             "base_url": base_url,
             "api_key": entry.get("api_key", ""),
             "key_env": entry.get("key_env") or entry.get("api_key_env", ""),
+            "key_cmd": entry.get("key_cmd", ""),
             "model": model,
             "models": entry.get("models", {}),
             "models_discovered": entry.get("models_discovered", False),

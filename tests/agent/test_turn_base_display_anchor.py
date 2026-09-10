@@ -20,11 +20,8 @@ Covers:
 
 from types import SimpleNamespace
 
-from agent.model_metadata import (
-    anchored_context_tokens,
-    capture_usage_anchor,
-    estimate_messages_tokens_rough,
-)
+from agent.model_metadata import estimate_messages_tokens_rough
+from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
 
 
 def _msg(role, content, **extra):
@@ -177,21 +174,20 @@ class TestContextBreakdownPrefersTurnBaseAnchor:
 
 
 class TestInvalidationSitesClearTurnBaseAnchor:
-    def test_compression_invalidation_clears_both(self):
-        import inspect
-        from agent import conversation_compression
+    def test_clearing_the_anchor_clears_the_turn_base_too(self):
+        """Compaction and the codex-native rewrite clear via set_usage_anchor(None): both the
+        last-response anchor and the display turn-base anchor go; a later same-turn capture
+        (turn_base=False) leaves the turn-base untouched."""
+        from agent.usage_anchor import set_usage_anchor
 
-        src = inspect.getsource(conversation_compression)
-        block = src.split("agent._usage_anchor = None", 1)[1][:200]
-        assert "_turn_base_usage_anchor = None" in block
-
-    def test_codex_native_invalidation_clears_both(self):
-        import inspect
-        from agent import codex_runtime
-
-        src = inspect.getsource(codex_runtime)
-        block = src.split("agent._usage_anchor = None", 1)[1][:200]
-        assert "_turn_base_usage_anchor = None" in block
+        messages = [_msg("user", "a"), _msg("assistant", "b")]
+        agent = SimpleNamespace(_usage_anchor=None, _turn_base_usage_anchor=None, _session_db=None, session_id=None)
+        first = capture_usage_anchor(1_000, 10, messages)
+        set_usage_anchor(agent, first, turn_base=True)
+        set_usage_anchor(agent, capture_usage_anchor(2_000, 10, messages))
+        assert agent._turn_base_usage_anchor is first
+        set_usage_anchor(agent, None)
+        assert agent._usage_anchor is None and agent._turn_base_usage_anchor is None
 
     def test_agent_init_defines_turn_base_anchor(self):
         import inspect

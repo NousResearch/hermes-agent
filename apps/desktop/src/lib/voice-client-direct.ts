@@ -38,6 +38,8 @@ export interface DirectTtsConfig {
   model: null | string
   voice: null | string
   speed: null | number
+  /** Only set by providers whose speech endpoint takes a language field (mittwald). */
+  language?: null | string
 }
 
 interface RelayConfig {
@@ -290,6 +292,10 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
 
     if (tts.speed && tts.speed !== 1) {
       body.speed = tts.speed
+    }
+
+    if (tts.language) {
+      body.language = tts.language
     }
 
     const response = await fetch(`${tts.base_url.replace(/\/+$/, '')}/audio/speech`, {

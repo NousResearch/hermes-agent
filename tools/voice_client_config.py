@@ -139,6 +139,14 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         if not model:
             return _relay("no deepinfra stt model")
         return direct(STT_WIRE_OPENAI, deepinfra_base_url(section), api_key, model)
+    if provider == "mittwald":
+        # Not in ``_STT_KEYED``: the base URL honours ``stt.mittwald.base_url`` and the
+        # provider-wide MITTWALD_BASE_URL override, which that table's lookup skips.
+        api_key = tt._resolve_provider_key("MITTWALD_LLM_API_KEY", "mittwald")
+        if not api_key:
+            return _relay("no credentials")
+        return direct(STT_WIRE_OPENAI, env_base_url("MITTWALD_BASE_URL", tc.MITTWALD_STT_BASE_URL), api_key,
+                      section.get("model") or tc.DEFAULT_MITTWALD_STT_MODEL)
     return _relay(f"provider {provider!r} has no client wire")
 
 
@@ -193,6 +201,19 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
             return _relay("no deepinfra tts model")
         return _direct(TTS_WIRE_OPENAI, "deepinfra", deepinfra_base_url(di), api_key, model,
                        voice=di.get("voice") or "af_bella", speed=None)
+    if provider == "mittwald":
+        api_key = tts._resolve_provider_key("MITTWALD_LLM_API_KEY", "mittwald")
+        if not api_key:
+            return _relay("no credentials")
+        from tools.transcription_common import MITTWALD_STT_BASE_URL
+        mw = _section(tts_config, "mittwald")
+        return _direct(TTS_WIRE_OPENAI, "mittwald",
+                       str(mw.get("base_url") or MITTWALD_STT_BASE_URL).rstrip("/"), api_key,
+                       mw.get("model") or tts_tool_openai.DEFAULT_MITTWALD_TTS_MODEL,
+                       voice=mw.get("voice") or tts_tool_openai.DEFAULT_MITTWALD_TTS_VOICE, speed=None,
+                       # Word form, not ISO — the client forwards it verbatim.
+                       language=tts_tool_openai._mittwald_tts_language(
+                           mw.get("language") or tts_config.get("language")))
     # edge / minimax / xai / mistral / gemini / neutts / kittentts / piper: server-host-only
     # engines or wire shapes the desktop doesn't speak yet; the relay path serves them.
     return _relay(f"provider {provider!r} has no client wire")

@@ -1,4 +1,4 @@
-"""OpenAI-compatible TTS backends for ``tools.tts_tool``: OpenAI and DeepInfra.
+"""OpenAI-compatible TTS backends for ``tools.tts_tool``: OpenAI, DeepInfra and mittwald.
 
 Also owns the managed-gateway (Nous portal ``openai-audio`` proxy) route selection that
 decides where the OpenAI client points. Seams defined on the origin module (``_load_tts_config``,
@@ -29,6 +29,46 @@ DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # DeepInfra base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
+
+# mittwald AI Hosting — Qwen3-TTS. ``voice`` is mandatory (no server-side default) and
+# ``language`` takes a word form, not an ISO code ("de" is rejected with HTTP 400).
+DEFAULT_MITTWALD_TTS_MODEL = "Qwen3-TTS-12Hz-1.7B-CustomVoice"
+DEFAULT_MITTWALD_TTS_VOICE = "ryan"
+MITTWALD_TTS_VOICES = (
+    "aiden", "dylan", "eric", "ono_anna", "ryan", "serena", "sohee", "uncle_fu", "vivian")
+MITTWALD_TTS_LANGUAGES = (
+    "Auto", "Beijing_Dialect", "Chinese", "English", "French", "German", "Italian", "Japanese",
+    "Korean", "Portuguese", "Russian", "Sichuan_Dialect", "Spanish")
+# ISO-639-1 -> the word form the endpoint expects. Anything else (including an already
+# spelled-out language) is passed through unchanged rather than guessed at.
+_MITTWALD_TTS_LANGUAGE_BY_ISO: Dict[str, str] = {
+    "zh": "Chinese", "en": "English", "fr": "French", "de": "German", "it": "Italian",
+    "ja": "Japanese", "ko": "Korean", "pt": "Portuguese", "ru": "Russian", "es": "Spanish"}
+# Lower-cased word form -> its documented spelling, so a config value only differing in case
+# still reaches the endpoint in the spelling it accepts.
+_MITTWALD_TTS_LANGUAGE_BY_WORD: Dict[str, str] = {
+    language.lower(): language for language in MITTWALD_TTS_LANGUAGES}
+
+
+def _mittwald_tts_language(value: Any) -> Optional[str]:
+    """Word form for the ``language`` field, or None when nothing is configured.
+
+    ISO-639-1 codes are translated; a word form is matched case-insensitively against the
+    supported set and normalised to its documented spelling. Anything else is sent as-is
+    (and rejected with HTTP 400 by the endpoint), with a warning naming the valid values.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    mapped = _MITTWALD_TTS_LANGUAGE_BY_ISO.get(text.lower())
+    if mapped:
+        return mapped
+    canonical = _MITTWALD_TTS_LANGUAGE_BY_WORD.get(text.lower())
+    if canonical:
+        return canonical
+    logger.warning("TTS: mittwald does not accept language %r; supported values are %s",
+                   text, ", ".join(MITTWALD_TTS_LANGUAGES))
+    return text
 
 
 def _managed_openai_audio_route() -> Optional[tuple]:
@@ -82,13 +122,16 @@ def _has_openai_audio_backend() -> bool:
 def _generate_openai_tts(
     text: str, output_path: str, tts_config: Dict[str, Any], *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, model: Optional[str] = None, voice: Optional[str] = None,
-    speed: Optional[float] = None, instructions: Optional[str] = None) -> str:
+    speed: Optional[float] = None, instructions: Optional[str] = None,
+    extra_body: Optional[Dict[str, Any]] = None) -> str:
     """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
 
     Explicit kwargs let OpenAI-compatible backends (DeepInfra) supply credentials/model/voice
     and skip the managed-gateway resolution; otherwise the OpenAI auth chain and ``tts.openai``
     (speed falling back to ``tts.speed``) apply. ``instructions`` is forwarded only when truthy
-    so ``tts-1`` and strict OpenAI-compatible servers that reject unknown kwargs are unaffected."""
+    so ``tts-1`` and strict OpenAI-compatible servers that reject unknown kwargs are unaffected.
+    ``extra_body`` replaces the ``tts.openai.language`` -> ``lang_code`` default for backends
+    that spell the language field differently (mittwald)."""
     fallback_base: Optional[str] = None
     is_managed = False
     explicit_base_url = base_url is not None
@@ -122,7 +165,9 @@ def _generate_openai_tts(
         create_kwargs["speed"] = max(0.25, min(4.0, speed))
     if instructions:
         create_kwargs["instructions"] = instructions
-    if oai_config.get("language"):
+    if extra_body:
+        create_kwargs["extra_body"] = dict(extra_body)
+    elif extra_body is None and oai_config.get("language"):
         create_kwargs["extra_body"] = {"lang_code": oai_config["language"]}
     client = _origin()._import_openai_client()(api_key=api_key, base_url=base_url)
     try:
@@ -155,3 +200,24 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, A
         text, output_path, tts_config, api_key=api_key, base_url=deepinfra_base_url(di_config),
         model=model, voice=di_config.get("voice", DEFAULT_DEEPINFRA_TTS_VOICE),
         speed=float(di_config.get("speed", tts_config.get("speed", 1.0))))
+
+
+def _generate_mittwald_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio via mittwald AI Hosting (Qwen3-TTS), then delegate to the OpenAI-compatible handler."""
+    api_key = _origin()._resolve_provider_key("MITTWALD_LLM_API_KEY", "mittwald")
+    if not api_key:
+        raise ValueError("MITTWALD_LLM_API_KEY not set. Run `hermes setup` to configure, or set the env var directly.")
+    mw_config = _section(tts_config, "mittwald")
+    from tools.transcription_common import MITTWALD_STT_BASE_URL
+    base_url = str(mw_config.get("base_url") or MITTWALD_STT_BASE_URL).strip().rstrip("/")
+    language = _mittwald_tts_language(
+        mw_config.get("language") or (tts_config.get("language") if isinstance(tts_config, dict) else None))
+    return _origin()._generate_openai_tts(
+        text, output_path, tts_config, api_key=api_key, base_url=base_url,
+        model=mw_config.get("model") or DEFAULT_MITTWALD_TTS_MODEL,
+        voice=mw_config.get("voice") or DEFAULT_MITTWALD_TTS_VOICE,
+        speed=float(mw_config.get("speed", tts_config.get("speed", 1.0))),
+        instructions=mw_config.get("instructions") or None,
+        # {} (not None) so the shared handler cannot fall back to tts.openai.language/lang_code,
+        # which this endpoint rejects.
+        extra_body={"language": language} if language else {})

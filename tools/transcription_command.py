@@ -196,7 +196,7 @@ _PRE_TRANSCRIPTION_MUTABLE_FIELDS = ("prompt", "language", "model")
 # client-side (truncate with a warning, never error), ~4 chars/token.
 _WHISPER_PROMPT_TOKEN_CAP = 224
 _PROMPT_CHARS_PER_TOKEN = 4
-_WHISPER_PROMPT_CAPPED_PROVIDERS = frozenset({"local", "openai", "groq", "deepinfra"})
+_WHISPER_PROMPT_CAPPED_PROVIDERS = frozenset({"local", "openai", "groq", "deepinfra", "mittwald"})
 
 
 def _enforce_prompt_length_limit(prompt: Optional[str], provider: str) -> Optional[str]:

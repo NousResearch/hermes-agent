@@ -995,7 +995,7 @@ DEFAULT_CONFIG = {
     # NeuTTS/KittenTTS 2000).
     "tts": {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
-        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "gemini" | "deepinfra" | "mittwald" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -1056,6 +1056,16 @@ DEFAULT_CONFIG = {
             "voice": "default",
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for TTS only
         },
+        "mittwald": {
+            "model": "Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            # aiden, dylan, eric, ono_anna, ryan, serena, sohee, uncle_fu, vivian
+            "voice": "ryan",
+            # Word form or ISO-639-1 (mapped): Auto, Chinese, English, French, German,
+            # Italian, Japanese, Korean, Portuguese, Russian, Spanish, Beijing_Dialect,
+            # Sichuan_Dialect. "" = server default.
+            "language": "",
+            # optional "base_url" key overrides MITTWALD_BASE_URL for TTS only
+        },
     },
 
     "stt": {
@@ -1064,7 +1074,8 @@ DEFAULT_CONFIG = {
         "echo_transcripts": True,
         # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
         # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
+        # "deepinfra" | "mittwald". Global language hint unless a per-provider language
+        # overrides it. "en"
         # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
         "language": "en",
         # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
@@ -1111,6 +1122,11 @@ DEFAULT_CONFIG = {
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
+        },
+        "mittwald": {
+            "model": "whisper-large-v3-turbo",
+            "language": "",  # auto-detect; set "en", "de", ... (ISO 639-1) to force
+            # optional "base_url" key overrides MITTWALD_BASE_URL for STT only
         },
     },
 

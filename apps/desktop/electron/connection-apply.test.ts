@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   applyConnectionChange,
+  applyPrimaryProfileChange,
   commitConnectionFailure,
   resolveTerminalConnection,
   sshQuitShouldBlock,
@@ -69,6 +70,70 @@ describe('applyConnectionChange', () => {
       }
     })
     expect(events).toEqual(['cancel:worker', 'ssh:worker', 'pool:worker'])
+  })
+})
+
+describe('applyPrimaryProfileChange', () => {
+  it('drains and tears down the old profile SSH transport before the primary re-home', async () => {
+    const events: string[] = []
+
+    await expect(
+      applyPrimaryProfileChange({
+        cancelAndWait: async scope => events.push(`cancel:${scope}`),
+        nextProfile: 'worker',
+        previousSshScope: 'worker',
+        reload: () => events.push('reload'),
+        resetPreviewReach: async () => events.push('preview'),
+        teardownPrimary: async () => events.push('primary'),
+        teardownSsh: async scope => events.push(`ssh:${scope}`),
+        writeProfile: profile => {
+          events.push(`write:${profile}`)
+
+          return profile
+        }
+      })
+    ).resolves.toBe('worker')
+    expect(events).toEqual(['write:worker', 'cancel:worker', 'preview', 'ssh:worker', 'primary', 'reload'])
+  })
+
+  it('tears down the shared global SSH scope as the empty transport scope', async () => {
+    const events: string[] = []
+
+    await applyPrimaryProfileChange({
+      cancelAndWait: async scope => events.push(`cancel:${scope}`),
+      nextProfile: 'worker',
+      previousSshScope: null,
+      reload: () => events.push('reload'),
+      resetPreviewReach: async () => events.push('preview'),
+      teardownPrimary: async () => events.push('primary'),
+      teardownSsh: async scope => events.push(`ssh:${scope}`),
+      writeProfile: profile => profile
+    })
+
+    expect(events).toEqual(['cancel:', 'preview', 'ssh:', 'primary', 'reload'])
+  })
+
+  it('leaves SSH lifecycle untouched when the previous primary was not SSH-backed', async () => {
+    const events: string[] = []
+    const cancelAndWait = vi.fn()
+    const resetPreviewReach = vi.fn()
+    const teardownSsh = vi.fn()
+
+    await applyPrimaryProfileChange({
+      cancelAndWait,
+      nextProfile: 'worker',
+      previousSshScope: undefined,
+      reload: () => events.push('reload'),
+      resetPreviewReach,
+      teardownPrimary: async () => events.push('primary'),
+      teardownSsh,
+      writeProfile: profile => profile
+    })
+
+    expect(cancelAndWait).not.toHaveBeenCalled()
+    expect(resetPreviewReach).not.toHaveBeenCalled()
+    expect(teardownSsh).not.toHaveBeenCalled()
+    expect(events).toEqual(['primary', 'reload'])
   })
 })
 

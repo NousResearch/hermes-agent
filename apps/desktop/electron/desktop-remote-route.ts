@@ -68,6 +68,28 @@ export function v1SshTerminalPoolKey(route: { source: string }, profile?: null |
 }
 
 /**
+ * The SSH transport scope owned by the PRIMARY backend for a profile, for
+ * teardown on a hard profile re-home.
+ *
+ * - `undefined` — the resolved primary route is not SSH-backed; there is no
+ *   SSH lifecycle to tear down.
+ * - `null` — the global/settings SSH route: its transport lives under the
+ *   shared empty scope (`''`), which the dial also uses for every profile
+ *   that inherits it.
+ * - `string` — a per-profile SSH override: its transport lives under the
+ *   profile's scope key, exactly as the dial keyed it.
+ */
+export function primaryProfileSshScope(input: DesktopRemoteRouteInput): null | string | undefined {
+  const route = resolveDesktopRemoteRoute(input)
+
+  if (route?.kind !== 'ssh') {
+    return undefined
+  }
+
+  return route.source === 'profile' ? connectionScopeKey(input.profile) || '' : null
+}
+
+/**
  * Select one remote route with the existing precedence and freeze any exact
  * registry identity before I/O. A null result means the profile resolves
  * locally. Invalid dial data remains the dialler's error, except the existing

@@ -89,7 +89,7 @@ import {
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
-import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
+import { applyConnectionChange, applyPrimaryProfileChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -157,7 +157,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
-import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
+import { primaryProfileSshScope, resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -15478,14 +15478,12 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
 ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
-  assertCanMutateManagedPrimaryRouting()
   const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), String(id || ''))
   writeDesktopConnectionsRegistry(registry)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
 ipcMain.handle('hermes:connections:set-launch-mode', async (_event, mode) => {
-  assertCanMutateManagedPrimaryRouting()
   const registry = setConnectionLaunchMode(readDesktopConnectionsRegistry(), String(mode || ''))
   writeDesktopConnectionsRegistry(registry)
 
@@ -16178,14 +16176,12 @@ ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
   return cloudAgentSilentSignIn(dashboardUrl)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
-  assertCanMutateManagedPrimaryRouting()
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
-  assertCanMutateManagedPrimaryRouting()
   const previousConfig = readDesktopConnectionConfig()
   const previousRegistry = readDesktopConnectionsRegistry()
   const config = coerceDesktopConnectionConfig(payload, previousConfig)
@@ -16241,14 +16237,34 @@ ipcMain.handle('hermes:profile:remember', async (_event, name) => ({
   profile: writeActiveDesktopProfile(name)
 }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
-  assertCanMutateManagedPrimaryRouting()
-  const next = writeActiveDesktopProfile(name)
+  const previousProfile = primaryProfileKey()
+
+  const previousSshScope = primaryProfileSshScope({
+    config: readDesktopConnectionConfig(),
+    env: {
+      token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
+      url: process.env.HERMES_DESKTOP_REMOTE_URL
+    },
+    profile: previousProfile,
+    registry: readDesktopConnectionsRegistry()
+  })
 
   // Switching profiles is a backend re-home: relaunch the dashboard under the
   // new HERMES_HOME. Pool backends keep their own homes, so only the primary
-  // is torn down.
-  await teardownPrimaryBackendAndWait()
-  mainWindow?.reload()
+  // is torn down. An SSH-backed primary also owns a local forward to that
+  // backend: drain and close the OLD transport before the re-home, or the
+  // forward survives while its remote serve is reaped and every request
+  // through it resets until a full app restart (#95532).
+  const next = await applyPrimaryProfileChange({
+    cancelAndWait: scope => sshBootstrapCoordinator.cancelAndWait(scope),
+    nextProfile: name,
+    previousSshScope,
+    reload: () => mainWindow?.reload(),
+    resetPreviewReach: () => resetPreviewReach(),
+    teardownPrimary: () => teardownPrimaryBackendAndWait(),
+    teardownSsh: value => teardownSshConnection(value || null),
+    writeProfile: profile => writeActiveDesktopProfile(profile)
+  })
 
   return { profile: next }
 })

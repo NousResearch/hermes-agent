@@ -37,6 +37,45 @@ function commitConnectionFailure(current, starting, commit) {
   return true
 }
 
+/**
+ * Hard profile re-home (hermes:profile:set). Persist the new profile, then —
+ * when the PREVIOUS primary was SSH-backed — drain its bootstrap and close
+ * its transport + preview reach BEFORE the primary teardown/reload. The old
+ * local forward would otherwise keep LISTENing against a remote serve that
+ * the re-home reaps, and every request through it resets until a full app
+ * restart (#95532).
+ *
+ * `previousSshScope` follows primaryProfileSshScope(): `undefined` means the
+ * old primary was not SSH-backed (skip the SSH lifecycle), `null` means the
+ * global SSH transport under the shared empty scope, and a string is the
+ * profile override's named scope.
+ */
+async function applyPrimaryProfileChange({
+  cancelAndWait,
+  nextProfile,
+  previousSshScope,
+  reload,
+  resetPreviewReach,
+  teardownPrimary,
+  teardownSsh,
+  writeProfile
+}) {
+  const next = writeProfile(nextProfile)
+
+  if (previousSshScope !== undefined) {
+    const scope = previousSshScope || ''
+
+    await cancelAndWait(scope)
+    await resetPreviewReach()
+    await teardownSsh(scope)
+  }
+
+  await teardownPrimary()
+  reload()
+
+  return next
+}
+
 async function resolveTerminalConnection(getTarget, ensureBackend) {
   let target = getTarget()
 
@@ -103,6 +142,7 @@ async function teardownSshState(state, { cleanupRemote }) {
 
 export {
   applyConnectionChange,
+  applyPrimaryProfileChange,
   commitConnectionFailure,
   resolveTerminalConnection,
   resolveTerminalConnectionForSender,

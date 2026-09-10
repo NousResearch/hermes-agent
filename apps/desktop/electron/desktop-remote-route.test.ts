@@ -4,7 +4,7 @@ import { test } from 'vitest'
 
 import { normalizeRegistry, REGISTRY_VERSION } from './connection-registry'
 import { backendScopeKey } from './connection-registry'
-import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
+import { primaryProfileSshScope, resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 
 const tokenA = { encoding: 'plain', value: 'token-a' }
 const tokenB = { encoding: 'plain', value: 'token-b' }
@@ -192,6 +192,57 @@ test('v1 profile SSH pool key is the profile, not conn:id::profile', () => {
   assert.equal(route.connectionId, 'worker-ssh')
   assert.equal(v1SshTerminalPoolKey(route, 'worker'), 'worker')
   assert.notEqual(v1SshTerminalPoolKey(route, 'worker'), backendScopeKey(route.connectionId, 'worker'))
+})
+test('primary profile SSH scope: global SSH owns the shared empty scope', () => {
+  assert.equal(
+    primaryProfileSshScope({
+      config: { mode: 'ssh', remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' } },
+      profile: 'worker',
+      registry: registry('local', [])
+    }),
+    null
+  )
+})
+
+test('primary profile SSH scope: a profile override owns its named scope', () => {
+  assert.equal(
+    primaryProfileSshScope({
+      config: { mode: 'local', profiles: { worker: { mode: 'ssh', host: 'worker-box.test', user: 'hermes' } } },
+      profile: 'worker',
+      registry: registry('local', [])
+    }),
+    'worker'
+  )
+})
+
+test('primary profile SSH scope: the default profile override owns the default scope', () => {
+  assert.equal(
+    primaryProfileSshScope({
+      config: { mode: 'local', profiles: { default: { mode: 'ssh', host: 'box.test', user: 'hermes' } } },
+      profile: 'default',
+      registry: registry('local', [])
+    }),
+    'default'
+  )
+})
+
+test('primary profile SSH scope: local and non-SSH remote primaries own no SSH scope', () => {
+  assert.equal(
+    primaryProfileSshScope({
+      config: { mode: 'local' },
+      profile: 'default',
+      registry: registry('local', [])
+    }),
+    undefined
+  )
+  assert.equal(
+    primaryProfileSshScope({
+      config: { mode: 'remote', remote: { url: 'https://worker.test', authMode: 'token', token: tokenA } },
+      profile: 'default',
+      registry: registry('local', [])
+    }),
+    undefined
+  )
 })
 
 test('profile route omits identity when two registry entries match exactly', () => {

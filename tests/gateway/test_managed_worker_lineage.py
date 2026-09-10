@@ -100,6 +100,8 @@ def test_worker_lineage_and_settlement(tmp_path, mode, invariant):
                 assert 'AFTER_RESET' in json.dumps(snap['messages'])
                 assert query("SELECT session_id FROM messages WHERE role='user' AND content LIKE '%AFTER_RESET%'") == [(target,)]
                 assert query('SELECT DISTINCT target_session_id FROM session_admissions') == [(sid,)]
+                if mode != 'normal':
+                    assert query("SELECT json_extract(lineage_json,'$[#-1]') FROM session_admissions WHERE request_id='after'") == [(target,)]
             else:
                 await asyncio.sleep(.5)
                 rows = query("SELECT id FROM messages WHERE session_id=? AND role='user'", (target,))

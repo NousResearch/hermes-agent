@@ -80,6 +80,9 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
         # The private worker fence follows its physical assignment; admission/FIFO
         # generation and identity remain on the logical owner.
         conn.execute('UPDATE sessions SET runtime_generation=? WHERE id=?', (generation, sid))
+        if sid != owner:
+            conn.execute("UPDATE session_admissions SET lineage_json=json_insert(lineage_json,'$[#]',?) "
+                         "WHERE admission_id=?", (sid, admission_id))
         scope = dict(profile_id=authority.profile_id, session_id=sid, execution_id=execution_id,
                      generation=generation, pid=pid, birth=birth, secret=secret)
         claim = admission_fingerprint(canonical_target=sid, payload=scope | {'principal': principal_id})

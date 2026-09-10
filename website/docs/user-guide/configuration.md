@@ -174,11 +174,17 @@ an override that permits prompting can still interrupt a background check.
 
 ```yaml
 updates:
+  branch: main                    # Update target; --branch overrides once
   pre_update_backup: quick       # quick (state snapshot, default) | full (snapshot + HERMES_HOME zip) | off
   backup_keep: 5                 # Keep this many full pre-update backup zips
   non_interactive_local_changes: stash  # stash | discard
-  auto_switch_parked_branch: true       # auto-switch a clean, fully merged parked branch back to main
+  auto_switch_parked_branch: true       # auto-switch a clean, fully merged parked branch to the update target
 ```
+
+`updates.branch` selects the default update target and defaults to `main`. An explicit
+`hermes update --branch <name>` overrides it for that invocation. See
+[Updating Hermes Agent](../getting-started/updating.md#configuring-the-default-update-branch) for
+stable-release tracking and branch behavior.
 
 `pre_update_backup` is the single pre-update safety knob: `quick` (default) snapshots critical state files (pairing data, cron jobs, config, auth; files over 1 GiB are skipped) into `state-snapshots/`; `full` additionally zips all of `HERMES_HOME` into `backups/` and can add minutes on large homes; `off` disables both. Legacy booleans are honored (`true` → `full`, `false` → `off`).
 

@@ -2087,6 +2087,9 @@ DEFAULT_CONFIG = {
     },
 
     "updates": {
+        # Branch followed by update/check and the CLI + gateway /update relaunch paths.
+        # An explicit ``hermes update --branch`` overrides this value for one invocation.
+        "branch": "main",
         # Passive version/banner checks only; explicit `hermes update --check` remains enabled.
         "check": True,
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,

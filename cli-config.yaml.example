@@ -1966,6 +1966,9 @@ telemetry:
 # Update Behavior
 # =============================================================================
 updates:
+  # Branch followed by hermes update, --check, and /update. The command-line
+  # --branch option overrides this for one invocation. Default: main.
+  branch: main
   # Disable passive CLI/banner update checks with `hermes config set updates.check false`.
   # Explicit `hermes update --check` and `hermes update` remain available.
   check: true

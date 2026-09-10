@@ -36,6 +36,39 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     mock_run.assert_not_called()
 
 
+def test_check_for_updates_uses_configured_branch_and_scopes_cache(tmp_path, monkeypatch):
+    """Changing branches invalidates a fresh count and checks the configured target."""
+    import hermes_cli.banner as banner
+    from hermes_cli import __version__
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    (tmp_path / ".update_check").write_text(
+        json.dumps({
+            "ts": time.time(), "behind": 99, "ver": __version__, "branch": "main",
+        }),
+        encoding="utf-8",
+    )
+    repo_dir = tmp_path / "hermes-agent"
+    (repo_dir / ".git").mkdir(parents=True)
+    checked = []
+    monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: repo_dir)
+    monkeypatch.setattr(
+        banner, "_check_via_local_git",
+        lambda resolved_repo, branch: checked.append((resolved_repo, branch)) or 4,
+    )
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda _root: "git")
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: repo_dir)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {"updates": {"branch": "stable"}}
+    )
+
+    assert banner.check_for_updates() == 4
+    assert checked == [(repo_dir, "stable")]
+    cached = json.loads((tmp_path / ".update_check").read_text(encoding="utf-8"))
+    assert cached["branch"] == "stable"
+
+
 
 
 
@@ -61,7 +94,7 @@ def test_prefetch_non_blocking():
         assert banner._update_result == 5
 
 
-def test_upstream_main_sha_disables_git_prompts(monkeypatch):
+def test_upstream_branch_sha_disables_git_prompts(monkeypatch):
     """The passive HTTPS probe must never inherit the interactive terminal."""
     from hermes_cli import banner
 
@@ -69,8 +102,9 @@ def test_upstream_main_sha_disables_git_prompts(monkeypatch):
     run = MagicMock(return_value=completed)
     monkeypatch.setattr(banner.subprocess, "run", run)
 
-    assert banner._upstream_main_sha() is None
+    assert banner._upstream_branch_sha("stable") is None
     kwargs = run.call_args.kwargs
+    assert run.call_args.args[0][-1] == "refs/heads/stable"
     assert kwargs["stdin"] is banner.subprocess.DEVNULL
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert kwargs["env"]["GCM_INTERACTIVE"] == "Never"
@@ -231,7 +265,7 @@ def test_check_for_updates_does_not_cache_none(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     # Mock the internal functions to force the local-git path returning None
-    monkeypatch.setattr(banner, "_check_via_local_git", lambda rd: None)
+    monkeypatch.setattr(banner, "_check_via_local_git", lambda rd, branch: None)
     monkeypatch.setattr(
         "hermes_cli.config.detect_install_method", lambda root: "git"
     )
@@ -269,7 +303,3 @@ def test_check_for_updates_does_not_cache_none(tmp_path, monkeypatch):
 
     # The cache file must NOT have been written with a None result
     assert not cache_file.exists(), "None result must not be cached"
-
-
-
-

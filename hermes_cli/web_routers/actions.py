@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from hermes_cli import __version__
 from hermes_cli.config import format_docker_update_message, recommended_update_command_for_method
+from hermes_cli.update_cmd_branch import resolve_update_branch
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
 from hermes_cli.web_routers._common import http_failure
@@ -230,10 +231,10 @@ async def update_hermes():
     return {"ok": True, "pid": proc.pid, "name": "hermes-update", "action_id": action_id}
 
 
-def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
-    """Commits the local checkout is behind ``origin/main`` by, newest first; [] on any failure.
+def _recent_upstream_commits(n: int = 20, branch: str = "main") -> List[Dict[str, Any]]:
+    """Commits the checkout is behind its configured origin branch by; [] on any failure.
 
-    Logs the SAME range the behind-count uses (``HEAD..origin/main``, see
+    Logs the SAME range the behind-count uses (``HEAD..origin/<branch>``, see
     ``banner._check_via_local_git``), NOT ``@{upstream}``: on a feature branch that is
     the branch's own tip (zero commits), leaving the changelog empty while the count is non-zero.
     """
@@ -244,7 +245,7 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
         out = subprocess.run(
             [
                 "git", "-C", str(_server_path("PROJECT_ROOT")), "log", "--format=%H%x1f%s%x1f%an%x1f%ct",
-                "HEAD..origin/main", f"-n{int(n)}",
+                f"HEAD..origin/{branch}", f"-n{int(n)}",
             ],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
@@ -285,6 +286,7 @@ async def check_hermes_update(force: bool = False):
         }
 
     install_method = detect_install_method(_server_path("PROJECT_ROOT"))
+    branch = resolve_update_branch()
     payload: Dict[str, Any] = {
         "install_method": install_method, "current_version": __version__, "behind": None,
         "update_available": False, "can_apply": install_method == "git",
@@ -318,7 +320,7 @@ async def check_hermes_update(force: bool = False):
         # "What's changed" for the desktop's remote update overlay; git only,
         # best-effort (empty list on any failure).
         if install_method == "git":
-            payload["commits"] = await asyncio.to_thread(_recent_upstream_commits)
+            payload["commits"] = await asyncio.to_thread(_recent_upstream_commits, branch=branch)
     return payload
 
 

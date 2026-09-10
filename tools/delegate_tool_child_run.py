@@ -27,14 +27,54 @@ def _num(value: Any, default: int = 0) -> int:
     """int() for counters that may be mocks/None on test doubles."""
     return int(value) if isinstance(value, (int, float)) else default
 
+
+def _usage_counter(child: Any, canonical: str, legacy: Optional[str] = None) -> int:
+    """Read a canonical counter, falling back only for pre-canonical child agents."""
+    value = getattr(child, canonical, None)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return _num(getattr(child, legacy, 0)) if legacy else 0
+
+
 def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
+
+
+def _child_observability(child: Any) -> Dict[str, Any]:
+    """Stable identity plus legacy totals and canonical buckets for terminal results."""
+    return {
+        "model": _str_or_none(getattr(child, "model", None)),
+        "provider": _str_or_none(getattr(child, "provider", None)),
+        "session_id": _str_or_none(getattr(child, "session_id", None)),
+        "tokens": {
+            "input": _usage_counter(child, "session_prompt_tokens"),
+            "uncached_input": _usage_counter(
+                child, "session_input_tokens", "session_prompt_tokens"
+            ),
+            "output": _usage_counter(
+                child, "session_completion_tokens", "session_output_tokens"
+            ),
+            "visible_output": _usage_counter(
+                child, "session_output_tokens", "session_completion_tokens"
+            ),
+            "cache_read": _usage_counter(child, "session_cache_read_tokens"),
+            "cache_write": _usage_counter(child, "session_cache_write_tokens"),
+            "reasoning": _usage_counter(child, "session_reasoning_tokens"),
+        },
+    }
+
 
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> Dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""
     return {
-        "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": 0,
-        "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None),
+        "task_index": idx,
+        "status": status,
+        "summary": None,
+        "error": error,
+        "api_calls": _num(getattr(child, "api_call_count", 0)),
+        "duration_seconds": duration,
+        **_child_observability(child),
+        "_child_role": getattr(child, "_delegate_role", None),
     }
 
 def _append_missed_steer(entry: Dict[str, Any], late_steer: Optional[str]) -> None:
@@ -492,15 +532,11 @@ def _build_result_entry(
         "summary": summary,
         "api_calls": result.get("api_calls", 0),
         "duration_seconds": duration,
-        "model": _str_or_none(getattr(child, "model", None)),
+        **_child_observability(child),
         "exit_reason": exit_reason,
         # A budget-exhausted child still returns a summary (status stays
         # "completed"), so the parent needs this explicit flag.
         "truncated": exit_reason == "max_iterations",
-        "tokens": {
-            "input": _num(getattr(child, "session_prompt_tokens", 0)),
-            "output": _num(getattr(child, "session_completion_tokens", 0)),
-        },
         "tool_trace": _build_tool_trace(result.get("messages") or []),
         # Captured before the finally block calls child.close() so the parent thread can fire subagent_stop with the
         # correct role; stripped before the dict is serialised back to the model (as is _child_cost_usd, folded into
@@ -708,6 +744,7 @@ class _ChildRun:
         _error_entry = {
             "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": status,
             "api_calls": child_api_calls, "duration_seconds": duration,
+            **_child_observability(child),
             "timeout_seconds": child_timeout if is_timeout else None,
             "timed_out_after_seconds": duration if is_timeout else None,
             "timeout_phase": "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None,

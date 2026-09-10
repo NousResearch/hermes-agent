@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -142,3 +143,49 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# _systemd_timeout_stop_us
+# ---------------------------------------------------------------------------
+
+
+class TestSystemdTimeoutStopUs:
+    @staticmethod
+    def _fake_systemctl(responses):
+        """systemctl stub keyed by scope flag ('--user' present or not)."""
+
+        def _run(args, **kwargs):
+            scope = "user" if "--user" in args else "system"
+            stdout, returncode = responses.get(scope, ("", 1))
+            return subprocess.CompletedProcess(
+                args, returncode, stdout=stdout, stderr=""
+            )
+
+        return _run
+
+    def test_skips_user_scope_default_when_unit_not_found(self, monkeypatch):
+        # systemctl --user show answers exit 0 with systemd's DEFAULT timeout for a
+        # unit missing from the user scope; the real loaded system unit has 3min 30s.
+        responses = {
+            "user": ("LoadState=not-found\nTimeoutStopUSec=1min 30s\n", 0),
+            "system": ("LoadState=loaded\nTimeoutStopUSec=3min 30s\n", 0),
+        }
+        monkeypatch.setattr(sf.subprocess, "run", self._fake_systemctl(responses))
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+
+    def test_returns_none_when_unit_missing_from_both_scopes(self, monkeypatch):
+        responses = {
+            "user": ("LoadState=not-found\nTimeoutStopUSec=1min 30s\n", 0),
+            "system": ("LoadState=not-found\nTimeoutStopUSec=1min 30s\n", 0),
+        }
+        monkeypatch.setattr(sf.subprocess, "run", self._fake_systemctl(responses))
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") is None
+
+    def test_user_scope_still_wins_when_unit_is_loaded_there(self, monkeypatch):
+        responses = {
+            "user": ("LoadState=loaded\nTimeoutStopUSec=4min\n", 0),
+            "system": ("LoadState=loaded\nTimeoutStopUSec=2min\n", 0),
+        }
+        monkeypatch.setattr(sf.subprocess, "run", self._fake_systemctl(responses))
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 240 * 1_000_000

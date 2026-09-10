@@ -228,4 +228,11 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
         failed=f"[MCP embedded resource could not be cached: {mime or uri}]")
     if path is None:
         return err
-    return f"[MCP resource saved to {path} ({kind}, {len(raw_bytes)} bytes) — read it with read_file or terminal tools]"
+    # The footer tells the AGENT to read_file the path — that runs inside the active
+    # backend, so render where docker/modal/ssh see the mounted document cache, not
+    # the host path (#72389 class; sibling of the d78cdd7119 footer fix). MEDIA: tags
+    # above are intercepted by the host-side CLI/TUI renderer and keep the host path.
+    from tools.credential_files import to_agent_visible_cache_path
+
+    visible = to_agent_visible_cache_path(path)
+    return f"[MCP resource saved to {visible} ({kind}, {len(raw_bytes)} bytes) — read it with read_file or terminal tools]"

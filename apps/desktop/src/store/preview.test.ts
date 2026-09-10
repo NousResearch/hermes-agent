@@ -156,6 +156,25 @@ describe('preview store', () => {
     expect($previewTarget.get()?.renderMode).toBe('preview')
   })
 
+  // Markdown is NOT subject to the HTML source-first rule: it must flow through
+  // the store untouched so the preview component's auto-mode can land on the
+  // RENDERED view regardless of who opened it. If this ever starts forcing a
+  // renderMode, formatted-Markdown-by-default breaks everywhere at once.
+  it('leaves markdown targets unmodified so the component can render them formatted', () => {
+    const markdown = {
+      ...fileTarget('/work/README.md'),
+      language: 'markdown',
+      previewKind: 'text' as const
+    }
+
+    openPreview(markdown, 'file-browser')
+    expect($previewTarget.get()).toMatchObject({ kind: 'file', previewKind: 'text', language: 'markdown' })
+    expect($previewTarget.get()?.renderMode).toBeUndefined()
+
+    openPreview(markdown, 'tool-result')
+    expect($previewTarget.get()?.renderMode).toBeUndefined()
+  })
+
   it('falls back to a neighbouring tab when the active one closes, and clears the selection on the last', () => {
     openPreview(fileTarget('/work/one.html'), 'file-browser')
     openPreview(fileTarget('/work/two.html'), 'file-browser')

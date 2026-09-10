@@ -187,3 +187,66 @@ class TestIssue78796NvidiaPrefixRepair:
             == "anthropic/claude-sonnet-4.6"
         )
 
+
+# ── Regression: LM Studio matching-prefix strip ────────────────────────
+
+class TestLMStudioMatchingPrefixStrip:
+    """``lmstudio/<id>`` must lose its own provider prefix.
+
+    LM Studio's native server validates the model id against the ids it has
+    downloaded and rejects the prefixed form with a non-retryable HTTP 400
+    (``Invalid model identifier "lmstudio/<id>". Please specify a valid
+    downloaded model``, ``code=model_not_found``). ``lmstudio`` was absent
+    from every normalization set, so the name reached the API verbatim and
+    every turn failed. ``ollama-cloud`` — the analogous local-server
+    provider — was already covered.
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("lmstudio/qwen3-27b", "qwen3-27b"),
+        ("lmstudio/huihui-qwen3.8-27b-abliterated", "huihui-qwen3.8-27b-abliterated"),
+    ])
+    def test_matching_prefix_is_stripped(self, model, expected):
+        assert normalize_model_for_provider(model, "lmstudio") == expected
+
+    @pytest.mark.parametrize("model", [
+        "qwen3-27b",
+        "huihui-qwen3.8-27b-abliterated",
+    ])
+    def test_bare_id_untouched(self, model):
+        assert normalize_model_for_provider(model, "lmstudio") == model
+
+    def test_dots_preserved(self):
+        """LM Studio ids carry dots — they must not be mangled to hyphens."""
+        assert (
+            normalize_model_for_provider("lmstudio/qwen3.8-flash-next", "lmstudio")
+            == "qwen3.8-flash-next"
+        )
+
+    @pytest.mark.parametrize("model", [
+        "openai/gpt-4",
+        "z-ai/glm-5.2",
+        "ollama/qwen3",
+    ])
+    def test_foreign_prefix_untouched(self, model):
+        """Only the *matching* prefix is stripped.
+
+        An LM Studio endpoint can front a proxy whose route requires a
+        foreign prefix (LiteLLM-style ``ollama/…``), so a non-matching prefix
+        must survive — adding ``lmstudio`` to the strip set must not widen
+        into a general slash-stripper.
+        """
+        assert normalize_model_for_provider(model, "lmstudio") == model
+
+    @pytest.mark.parametrize("model,expected", [
+        ("lmstudio/lmstudio/qwen3-27b", "lmstudio/qwen3-27b"),
+        ("lmstudio/openai/gpt-4", "openai/gpt-4"),
+    ])
+    def test_exactly_one_prefix_level_is_stripped(self, model, expected):
+        """A stacked id loses only its own leading ``lmstudio/``.
+
+        Matches the one-level scope the other strip paths use: a leftover
+        prefix chain means the id was namespaced elsewhere, and guessing
+        further would mangle a legitimate route.
+        """
+        assert normalize_model_for_provider(model, "lmstudio") == expected

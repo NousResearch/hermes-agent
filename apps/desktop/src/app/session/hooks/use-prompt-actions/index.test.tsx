@@ -2845,6 +2845,67 @@ describe('usePromptActions restoreToMessage', () => {
     )
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
   })
+
+  it('resumes and retries once when restore hits a stale durable target', async () => {
+    const initialMessages = [
+      { id: 'u1', role: 'user' as const, parts: [textPart('first prompt')], rowId: 101 },
+      { id: 'a1', role: 'assistant' as const, parts: [textPart('first answer')], rowId: 102 },
+      { id: 'u2', role: 'user' as const, parts: [textPart('second prompt')], rowId: 103 }
+    ]
+
+    const refreshedMessages = [
+      { id: 'u1-forked', role: 'user' as const, parts: [textPart('first prompt')], rowId: 501 },
+      { id: 'a1-forked', role: 'assistant' as const, parts: [textPart('first answer')], rowId: 502 },
+      { id: 'u2-forked', role: 'user' as const, parts: [textPart('second prompt')], rowId: 503 }
+    ]
+
+    $messages.set(initialMessages as never)
+
+    let submitAttempts = 0
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })
+        }
+      }
+
+      return {} as never
+    })
+
+    const resumeStoredSession = vi.fn(async () => {
+      $messages.set(refreshedMessages as never)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={resumeStoredSession}
+        seedMessages={initialMessages as never}
+        storedSessionId="stored-restore"
+      />
+    )
+
+    await handle!.restoreToMessage('u1')
+
+    expect(resumeStoredSession).toHaveBeenCalledWith('stored-restore')
+    expect(submitAttempts).toBe(2)
+
+    const submitCalls = requestGateway.mock.calls.filter(([method]) => method === 'prompt.submit')
+    expect(submitCalls).toHaveLength(2)
+    expect(submitCalls[0]?.[1]).toMatchObject({
+      text: 'first prompt',
+      truncate_before_row_id: 101
+    })
+    expect(submitCalls[1]?.[1]).toMatchObject({
+      text: 'first prompt',
+      truncate_before_row_id: 501
+    })
+  })
 })
 
 describe('usePromptActions file attachment sync', () => {

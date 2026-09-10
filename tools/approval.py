@@ -306,6 +306,22 @@ def is_session_approved(session_key: str, pattern_key: str) -> bool:
     return any(alias in approved for alias in aliases)
 
 
+def _revoke_superseded_grants(required) -> None:
+    """A review-policy transition is a revocation. The config is live-reloaded and the grant key
+    carries the review policy, so a grant taken under the previous policy is merely *hidden* while
+    the other policy is active — and would revive once the operator switches back. Seeing the rule
+    under the current policy drops the superseded key from every session and from the persisted
+    allowlist, so the round trip cannot resurrect it (not even across a restart)."""
+    key = required.superseded_key
+    with _lock:
+        for approved in _session_approved.values():
+            approved.discard(key)
+        persisted = key in _permanent_approved
+        _permanent_approved.discard(key)
+    if persisted:
+        save_permanent_allowlist(_permanent_approved)
+
+
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
     with _lock:
@@ -935,6 +951,7 @@ def check_dangerous_command(command: str, env_type: str,
     if required is None and _command_matches_permanent_allowlist(command):
         return _approved()
     if required is not None:
+        _revoke_superseded_grants(required)
         is_dangerous, pattern_key, description = True, required.key, required.prompt_description
     else:
         is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -1040,6 +1057,8 @@ def check_all_command_guards(command: str, env_type: str,
     required = _match_approval_required_rule(command)
     if required is None and _command_matches_permanent_allowlist(command):
         return _approved()
+    if required is not None:
+        _revoke_superseded_grants(required)
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     # Outside CLI/gateway/ask flows we never block on approvals: each

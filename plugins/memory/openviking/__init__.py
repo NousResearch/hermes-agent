@@ -1245,6 +1245,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._conn_snapshot: Optional[tuple] = None
         self._failed_refresh: Optional[tuple] = None
         self._runtime_start_thread: Optional[threading.Thread] = None
+        # Prefetch cache: query -> (monotonic_timestamp, result_text).
+        # Warmed by queue_prefetch() in background; consumed by prefetch().
+        self._prefetch_cache: Dict[str, tuple] = {}
+        self._prefetch_lock = threading.Lock()
         self._runtime_start_pending = False
         self._shutting_down = False  # finalizers stop issuing network writes
 
@@ -1543,20 +1547,90 @@ class OpenVikingMemoryProvider(MemoryProvider):
             )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Session-start memory block (once per session) + query recall."""
+        """Session-start memory block (once per session) + query recall.
+        
+        Checks the prefetch cache first (warmed by queue_prefetch).
+        Falls back to a synchronous HTTP search on cache miss.
+        """
         query_text = _derive_openviking_user_text(query).strip()
         if not self._ensure_client():
             return ""
         effective_session_id = str(session_id or self._session_id or "").strip()
         parts = [self._session_start_memory_context(effective_session_id)]
         if len(query_text) >= _RECALL_QUERY_MIN_CHARS:
-            parts.append(self._search_prefetch_context(query_text, session_id=effective_session_id))
+            # Check prefetch cache first
+            cached = self._cached_prefetch(query_text, effective_session_id)
+            if cached is not None:
+                result = cached
+            else:
+                result = self._search_prefetch_context(query_text, session_id=effective_session_id)
+            parts.append(result)
         parts = [p for p in parts if p]
         return "## OpenViking Context\n" + "\n\n".join(parts) if parts else ""
 
+    # -- prefetch cache -------------------------------------------------------
+
+    _PREFETCH_CACHE_MAX = 32       # max cached entries
+    _PREFETCH_CACHE_TTL = 120.0    # seconds before a cached entry expires
+
+    def _prefetch_cache_key(self, query: str, session_id: str) -> str:
+        """Composite key: query text + session scope."""
+        return f"{query}\x00{session_id}"
+
+    def _cached_prefetch(self, query: str, session_id: str) -> Optional[str]:
+        """Return cached prefetch result if fresh, else None."""
+        key = self._prefetch_cache_key(query, session_id)
+        with self._prefetch_lock:
+            hit = self._prefetch_cache.get(key)
+            if hit is None:
+                return None
+            ts, text = hit
+            if time.monotonic() - ts > self._PREFETCH_CACHE_TTL:
+                del self._prefetch_cache[key]
+                return None
+            return text
+
+    def _store_prefetch(self, query: str, session_id: str, text: str) -> None:
+        """Store a prefetch result in the cache, evicting oldest if full."""
+        key = self._prefetch_cache_key(query, session_id)
+        with self._prefetch_lock:
+            self._prefetch_cache[key] = (time.monotonic(), text)
+            while len(self._prefetch_cache) > self._PREFETCH_CACHE_MAX:
+                oldest_key = min(
+                    self._prefetch_cache,
+                    key=lambda k: self._prefetch_cache[k][0],
+                )
+                del self._prefetch_cache[oldest_key]
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """OpenViking recall is current-query only; post-turn warming is unused."""
-        return
+        """Warm the prefetch cache in a background thread.
+        
+        After each turn, Hermes calls this with the user's message. The
+        background thread runs the search so that prefetch() on the next
+        turn is a dict lookup (~0ms) instead of an HTTP round-trip.
+        """
+        query_text = _derive_openviking_user_text(query).strip()
+        if not query_text or len(query_text) < _RECALL_QUERY_MIN_CHARS:
+            return
+        effective_session_id = str(session_id or self._session_id or "").strip()
+        if self._cached_prefetch(query_text, effective_session_id) is not None:
+            return
+        if not self._ensure_client():
+            return
+
+        def _warm() -> None:
+            try:
+                result = self._search_prefetch_context(
+                    query_text,
+                    session_id=effective_session_id,
+                )
+                if result:
+                    self._store_prefetch(query_text, effective_session_id, result)
+            except Exception as exc:
+                logger.debug("OpenViking background prefetch failed: %s", exc)
+
+        t = threading.Thread(target=_warm, daemon=True)
+        t.start()
 
     @staticmethod
     def _remaining_recall_timeout(deadline: float, per_request_timeout: float) -> float:

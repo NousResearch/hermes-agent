@@ -172,17 +172,16 @@ class SessionTranscriptMixin:
                 exc_info=True)
 
     def _live_compression_child(self, session_id: str) -> str:
-        """Transitive compression tip of *session_id* if it is a different, still-live row, else ""
-        (a depth-1 lookup misses multi-hop lineages). Uses the PARENT's proven owner handle: the
-        child's id is unpublished until its write succeeds, so a by-id lookup would hit the ambient
-        store."""
+        """Unique live canonical leaf of *session_id*'s compression chain, else "". The
+        conservative resolver walks every hop in one read snapshot and fails closed on forks,
+        closed canonical siblings, live intermediates, malformed metadata and cycles rather than
+        adopting a transcript heuristically. Uses the PARENT's proven owner handle: the child's id
+        is unpublished until its write succeeds, so a by-id lookup would hit the ambient store."""
         owner_db = self._db_for_session_id(session_id)
-        tip = owner_db.get_compression_tip(session_id) if owner_db is not None else None
-        if tip and tip != session_id:
-            tip_row = owner_db.get_session(tip)
-            if tip_row is not None and tip_row.get("ended_at") is None:
-                return str(tip)
-        return ""
+        if owner_db is None:
+            return ""
+        child = owner_db.find_live_compression_child(session_id)
+        return str(child["id"]) if child and child.get("id") else ""
 
     def _migrate_transcript_queue_to_child(
         self, session_id: str, queue_session_id: str, child_id: str, pending: list, msg
@@ -257,11 +256,27 @@ class SessionTranscriptMixin:
                         # only after the write succeeds — load-bearing for backlog order).
                         if _owner_key:
                             self._lazy("_session_owner_hints", dict)[child_id] = _owner_key
+                        reroute_succeeded = False
                         try:
                             self._append_transcript_message(child_id, msg)
                         except Exception as reroute_exc:
                             exc = reroute_exc
+                            # An FTS-only failure on the CHILD is retried against the child:
+                            # the generic retry below targets the closed parent and would
+                            # burn the one-shot rebuild on a write that cannot succeed.
+                            if (
+                                self._is_fts_corruption_error(reroute_exc)
+                                and self._rebuild_fts_once()
+                            ):
+                                try:
+                                    self._append_transcript_message(child_id, msg)
+                                except Exception as retry_exc:
+                                    exc = retry_exc
+                                else:
+                                    reroute_succeeded = True
                         else:
+                            reroute_succeeded = True
+                        if reroute_succeeded:
                             with self._transcript_retry_lock:
                                 pending = self._migrate_transcript_queue_to_child(
                                     session_id, queue_session_id, child_id, pending, msg)
@@ -288,7 +303,12 @@ class SessionTranscriptMixin:
                         exc = retry_exc
                     else:
                         with self._transcript_retry_lock:
-                            _ack_head()
+                            queue_empty = _ack_head()
+                            if not queue_empty:
+                                msg = pending[0]
+                        if queue_empty:
+                            self._drain_spooled_drops(session_id)
+                            return
                         continue
                 with self._transcript_retry_lock:
                     failures = self._transcript_append_failures.get(session_id, 0) + 1

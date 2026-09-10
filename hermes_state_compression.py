@@ -71,32 +71,130 @@ class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
     def find_live_compression_child(self, parent_session_id: str) -> Optional[Dict[str, Any]]:
-        """The unique live direct child of a compression-ended session, else None. A stale
-        agent whose parent was rotated elsewhere may recover only when the lineage names
-        exactly one live continuation; more than one fails closed."""
+        """The unique live leaf of a compression continuation chain, else None. A stale agent
+        whose parent was rotated elsewhere (possibly more than once) may recover only when
+        every hop names exactly one canonical continuation and the chain ends in a live leaf.
+
+        Every hop is resolved from one SQLite read snapshot. Malformed child metadata,
+        invalid lifecycle states, canonical forks (live or closed siblings), live
+        intermediates with descendants, and cycles fail closed rather than selecting a
+        transcript heuristically."""
         if not parent_session_id:
             return None
+
         with self._read_ctx() as conn:
-            if not _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (parent_session_id,)).fetchone()):
+            if conn is None or conn.in_transaction:
                 return None
-            rows = conn.execute(
-                """
-                SELECT s.*,
-                       COALESCE(sp.prompt, s.system_prompt)
-                           AS _system_prompt_resolved
-                FROM sessions s
-                LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
-                WHERE s.parent_session_id = ?
-                  AND s.ended_at IS NULL
-                """
-                + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="s.")
-                + """
-                ORDER BY s.started_at ASC
-                LIMIT 2
-                """,
-                (parent_session_id, parent_session_id, parent_session_id),
-            ).fetchall()
-        return self._session_row_dict(rows[0]) if len(rows) == 1 else None
+
+            def _canonical_children(session_id: str):
+                rows = conn.execute(
+                    """
+                    SELECT id, ended_at, end_reason, model_config, source
+                    FROM sessions
+                    WHERE parent_session_id = ?
+                    ORDER BY started_at ASC, id ASC
+                    """,
+                    (session_id,),
+                ).fetchall()
+                canonical = []
+                for row in rows:
+                    source = row["source"]
+                    if not isinstance(source, str) or not source:
+                        return None
+                    if source.lower() == "tool":
+                        continue
+
+                    raw_config = row["model_config"]
+                    if raw_config is None:
+                        model_config = {}
+                    elif not isinstance(raw_config, str):
+                        return None
+                    else:
+                        try:
+                            model_config = json.loads(raw_config)
+                        except (TypeError, ValueError):
+                            return None
+                        if not isinstance(model_config, dict):
+                            return None
+
+                    # Markers only disqualify a child when bound to the queried parent
+                    # (continuations inherit model_config verbatim); any other marker
+                    # shape is malformed lineage metadata and fails closed.
+                    markers = [
+                        marker
+                        for marker in ("_branched_from", "_delegate_from")
+                        if marker in model_config
+                    ]
+                    if len(markers) > 1:
+                        return None
+                    if markers:
+                        marker_value = model_config[markers[0]]
+                        if (
+                            not isinstance(marker_value, str)
+                            or not marker_value
+                            or marker_value != session_id
+                        ):
+                            return None
+                        continue
+                    canonical.append(row)
+                return canonical
+
+            # Explicit deferred transaction: both the pooled read-only connection and the
+            # writer run with isolation_level=None, so this pins one WAL snapshot for the
+            # whole walk (a concurrent rotation cannot be half-observed).
+            conn.execute("BEGIN")
+            try:
+                current_session_id = parent_session_id
+                seen: set[str] = set()
+                while current_session_id not in seen:
+                    seen.add(current_session_id)
+                    if not _ended_by_compression(
+                        conn.execute(_ENDED_ROW_SQL, (current_session_id,)).fetchone()
+                    ):
+                        return None
+
+                    children = _canonical_children(current_session_id)
+                    if children is None or len(children) != 1:
+                        return None
+                    child = children[0]
+                    child_id = child["id"]
+                    if (
+                        not isinstance(child_id, str)
+                        or not child_id
+                        or child_id in seen
+                    ):
+                        return None
+
+                    if child["ended_at"] is None:
+                        if child["end_reason"] is not None:
+                            return None
+                        descendants = _canonical_children(child_id)
+                        if descendants is None or descendants:
+                            return None
+                        live_child = conn.execute(
+                            """
+                            SELECT s.*,
+                                   COALESCE(sp.prompt, s.system_prompt)
+                                       AS _system_prompt_resolved
+                            FROM sessions s
+                            LEFT JOIN system_prompts sp
+                                ON sp.hash = s.system_prompt_hash
+                            WHERE s.id = ?
+                            """,
+                            (child_id,),
+                        ).fetchone()
+                        return (
+                            self._session_row_dict(live_child)
+                            if live_child is not None
+                            else None
+                        )
+                    if child["end_reason"] != "compression":
+                        return None
+                    current_session_id = child_id
+                return None
+            finally:
+                if conn.in_transaction:
+                    conn.rollback()
 
     def reopen_orphaned_compression_session(self, session_id: str) -> bool:
         """Reopen a compression parent only when no continuation was published (older

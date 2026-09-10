@@ -9,7 +9,7 @@ description: "Text-to-speech and voice message transcription across all platform
 Hermes Agent supports both text-to-speech output and voice message transcription across all messaging platforms.
 
 :::tip Nous Subscribers
-If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, OpenAI TTS is available through the **[Tool Gateway](tool-gateway.md)** without a separate OpenAI API key. New installs can run `hermes setup --portal` to log in and turn on every gateway tool at once; existing installs can pick **Nous Subscription** for just TTS via `hermes model` or `hermes tools`.
+If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, OpenAI Audio is available through the **[Tool Gateway](tool-gateway.md)** without a separate OpenAI API key. This covers both OpenAI TTS output and OpenAI-powered transcription of inbound voice messages. New installs can run `hermes setup --portal` to log in and turn on every gateway tool at once; existing installs can pick **Nous Subscription** via `hermes model` or `hermes tools`.
 :::
 
 ## Text-to-Speech
@@ -463,7 +463,22 @@ Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automat
 |----------|---------|------|---------| 
 | **Local Whisper** (default) | Good | Free | None needed |
 | **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
+| **OpenAI Audio via Nous Portal** | Good–Best | Nous subscription usage | Nous Portal OAuth |
 | **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
+
+:::tip Nous Portal transcription
+Nous Portal subscribers can route incoming voice messages through the managed OpenAI Audio gateway without a separate OpenAI API key:
+
+```yaml
+stt:
+  provider: "nous"
+  language: "ru"               # Set this to the language you normally speak
+  openai:
+    model: "gpt-4o-mini-transcribe"
+```
+
+`provider: "nous"` is the canonical Tool Gateway selection: Hermes uses your Nous Portal OAuth token and routes transcription through the managed OpenAI-compatible endpoint. `gpt-4o-mini-transcribe` is a good current choice for this path; available and recommended models may change. Restart the gateway after changing the configuration.
+:::
 
 :::info Zero Config
 Local transcription works out of the box when `faster-whisper` is installed. If that's unavailable, Hermes can also use a local `whisper` CLI from common install locations (like `/opt/homebrew/bin`) or a custom command via `HERMES_LOCAL_STT_COMMAND`.

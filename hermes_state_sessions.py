@@ -92,6 +92,7 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str = None, sources: List[str] = None,
     session_key: str = None, exclude_sources: List[str] = None, cwd_prefix: str = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
+    include_display_events: bool = False,
 ) -> Tuple[List[str], List[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -114,7 +115,9 @@ def _session_filter_where(
         ("s.session_key = ?", [session_key] if session_key else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
-        ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
+        ("(s.message_count >= ? OR EXISTS (SELECT 1 FROM session_display_events de "
+         "WHERE de.session_id = s.id))" if include_display_events and min_message_count == 1
+         else "s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
     ):
         if values:
             where.append(clause)
@@ -1190,15 +1193,19 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str = None, search_query: str = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str = None, include_hidden: bool = False,
+        include_display_events: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
-        ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
+        ``include_pinned`` back-fills pins the page missed, still obeying the other filters.
+        ``include_display_events`` admits command-only sessions at min_message_count=1 without
+        changing the stored or returned model-message count."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
+            include_display_events=include_display_events and self._display_events_available(),
         )
         if not include_hidden:
             where_clauses.append("s.hidden = 0")
@@ -1385,12 +1392,14 @@ class SessionSessionsMixin:
         self, source: str = None, sources: List[str] = None, cwd_prefix: str = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: List[str] = None,
+        include_display_events: bool = False,
     ) -> int:
         """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
+            include_display_events=include_display_events and self._display_events_available(),
         )
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
@@ -1491,11 +1500,12 @@ class SessionSessionsMixin:
         return bool(deleted)
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
-        """Delete *session_id* only if it has no messages, no title and no children; check and delete
+        """Delete *session_id* only if it has no messages/events, no title and no children; check and delete
         share one transaction so a concurrent flush can't be lost."""
+        display_guard = self._display_empty_guard()
         def _do(conn):
             cursor = conn.execute(
-                """
+                f"""
                 DELETE FROM sessions
                 WHERE id = ?
                   AND title IS NULL
@@ -1506,6 +1516,7 @@ class SessionSessionsMixin:
                       SELECT 1 FROM sessions child
                       WHERE child.parent_session_id = sessions.id
                   )
+                  {display_guard}
                 """,
                 (session_id,),
             )
@@ -1555,17 +1566,23 @@ class SessionSessionsMixin:
         "SELECT 1 FROM messages WHERE messages.session_id = sessions.id)"
     )
 
+    def _display_empty_guard(self) -> str:
+        return ("AND NOT EXISTS (SELECT 1 FROM session_display_events de WHERE de.session_id = sessions.id)"
+                if self._display_events_available() else "")
+
     def count_empty_sessions(self) -> int:
         """Count of empty, ended, non-archived sessions; ended_at guards a fresh session's first message."""
-        return self._read_one(f"SELECT COUNT(*) FROM sessions WHERE {self._EMPTY_SESSION_WHERE}")[0]
+        return self._read_one(
+            f"SELECT COUNT(*) FROM sessions WHERE {self._EMPTY_SESSION_WHERE} {self._display_empty_guard()}")[0]
 
     def delete_empty_sessions(self, sessions_dir: Optional[Path] = None) -> int:
         """Delete every empty, ended, non-archived session in one transaction, orphaning (not cascading)
         children; transcript files are swept too."""
         removed_ids: list[str] = []
+        display_guard = self._display_empty_guard()
         def _do(conn):
             session_ids = {row["id"] for row in conn.execute(
-                f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
+                f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE} {display_guard}"
             ).fetchall()}
             if not session_ids:
                 return 0

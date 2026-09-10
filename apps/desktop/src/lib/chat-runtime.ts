@@ -1,7 +1,7 @@
 import type { ThreadMessage } from '@assistant-ui/react'
 
 import type { QuickModelOption } from '@/app/chat/composer/types'
-import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
+import type { ClientSessionState, CommandDispatchResponse, CommandDisplayEvent } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalize } from '@/lib/text'
@@ -306,6 +306,29 @@ export function parseSlashCommand(command: string) {
   return match ? { name: match[1], arg: match[2].trim() } : { name: '', arg: '' }
 }
 
+export function parseCommandDisplayEvent(raw: unknown): CommandDisplayEvent | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined
+  }
+
+  const row = raw as Record<string, unknown>
+
+  if (
+    typeof row.id !== 'string' ||
+    !row.id.startsWith('display:') ||
+    row.id.length <= 8 ||
+    row.role !== 'system' ||
+    row.display_kind !== 'command_result' ||
+    typeof row.content !== 'string' ||
+    typeof row.timestamp !== 'number' ||
+    !Number.isFinite(row.timestamp)
+  ) {
+    return undefined
+  }
+
+  return { id: row.id, role: 'system', content: row.content, timestamp: row.timestamp, display_kind: 'command_result' }
+}
+
 export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | null {
   if (!raw || typeof raw !== 'object') {
     return null
@@ -316,9 +339,16 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
 
   switch (row.type) {
     case 'exec':
+    case 'plugin': {
+      const displayEvent = parseCommandDisplayEvent(row.display_event)
 
-    case 'plugin':
-      return { type: row.type, output: str(row.output) }
+      return {
+        type: row.type,
+        output: str(row.output),
+        ...(displayEvent ? { display_event: displayEvent } : {}),
+        ...(typeof row.persistence_error === 'string' ? { persistence_error: row.persistence_error } : {})
+      }
+    }
 
     case 'alias':
       return typeof row.target === 'string' ? { type: 'alias', target: row.target } : null

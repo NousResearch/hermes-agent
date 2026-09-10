@@ -399,6 +399,7 @@ export function getSessionMessages(
   page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
+  query.set('include_display_events', 'true')
 
   const sessionScope = sessionScoped(profile)
 

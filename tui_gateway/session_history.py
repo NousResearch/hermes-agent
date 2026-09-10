@@ -249,6 +249,10 @@ def _coerce_seed_history(value: Any) -> list[dict]:
         if not isinstance(item, dict) or item.get("role") not in ("user", "assistant", "system"):
             continue
         content = item.get("text") if item.get("content") is None else item.get("content")
+        if item.get("display_kind") == "command_result" or (
+            item.get("role") == "system" and isinstance(content, str) and content.startswith("slash:")
+        ):
+            continue
         if isinstance(content, str) and content.strip():
             history.append({"role": item["role"], "content": content})
     return history

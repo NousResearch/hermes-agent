@@ -646,10 +646,11 @@ export interface SessionMessage {
    * message — reactions — keys off this. Absent on a backend older than this app.
    *
    * The gateway resume path names it `row_id`; the REST transcript path
-   * (`SELECT *`) ships the same value as a numeric `id`. Read both.
+   * (`SELECT *`) ships the same value as a numeric `id`. Display-only command
+   * events use a string `display:<uuid>` in either projection. Read both.
    */
-  row_id?: number
-  id?: number
+  row_id?: number | string
+  id?: number | string
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string

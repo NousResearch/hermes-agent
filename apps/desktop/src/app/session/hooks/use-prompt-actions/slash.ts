@@ -4,7 +4,7 @@ import { type MutableRefObject, useCallback, useRef } from 'react'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
+import { parseCommandDispatch, parseCommandDisplayEvent, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
   type DesktopActionId,
@@ -54,6 +54,7 @@ import {
 import type {
   BrowserManageResponse,
   ClientSessionState,
+  CommandDisplayEvent,
   SessionCompressResponse,
   SessionTitleResponse,
   SlashExecResponse
@@ -132,7 +133,8 @@ interface SlashCommandDeps {
     sessionId: string,
     role: ChatMessage['role'],
     text: string,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    options?: Partial<Pick<ChatMessage, 'id' | 'timestamp' | 'displayKind'>>
   ) => void
   branchCurrentSession: () => Promise<boolean>
   busyRef: MutableRefObject<boolean>
@@ -186,6 +188,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
   return useCallback(
     async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
+      // One logical invocation, including alias routing and dispatch fallback.
+      const displayEventId = crypto.randomUUID()
+
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -211,7 +216,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // build-renderSlashOutput boilerplate every exec-style handler repeats.
       const withSlashOutput = async (
         ctx: SlashActionCtx
-      ): Promise<{ render: (text: string) => void; sessionId: string; storedSessionId: string | null } | null> => {
+      ): Promise<{
+        render: (text: string, event?: CommandDisplayEvent) => void
+        sessionId: string
+        storedSessionId: string | null
+      } | null> => {
         // A slash on a fresh draft creates the backend session; seed the
         // sidebar preview with the typed command so the row doesn't sit as
         // "Untitled session" (auto-title only fires after a full exchange,
@@ -237,12 +246,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // Header carries the command token only. The full invocation would
         // duplicate long args — `/goal <prose>` echoed the whole goal in the
         // mono header, then again in the backend notice right under it.
-        const render = (text: string) =>
+        const render = (text: string, event?: CommandDisplayEvent) =>
           appendSessionTextMessage(
             sessionId,
             'system',
-            ctx.recordInput ? slashStatusText(`/${ctx.name}`, text) : text,
-            storedSessionId
+            event ? event.content : ctx.recordInput ? slashStatusText(`/${ctx.name}`, text) : text,
+            storedSessionId,
+            event ? { id: event.id, timestamp: event.timestamp, displayKind: 'command_result' } : undefined
           )
 
         return { render, sessionId, storedSessionId }
@@ -269,6 +279,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         let slashExecError: unknown = null
 
+        const renderCommandResult = (body: string, result: SlashExecResponse | null) => {
+          renderSlashOutput(body, parseCommandDisplayEvent(result?.display_event))
+
+          if (result?.persistence_error?.trim()) {
+            notify({ kind: 'warning', message: result.persistence_error })
+          }
+        }
+
         const handleDispatch = async (
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
         ): Promise<void> => {
@@ -284,7 +302,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               applyGoalStatusText(sessionId, dispatch.output)
             }
 
-            renderSlashOutput(dispatch.output ?? '(no output)')
+            renderCommandResult(dispatch.output ?? '(no output)', dispatch)
 
             return
           }
@@ -380,7 +398,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         try {
           const result = await requestGateway<unknown>('slash.exec', {
             session_id: sessionId,
-            command: command.replace(/^\/+/, '')
+            command: command.replace(/^\/+/, ''),
+            display_event_id: displayEventId
           })
 
           const dispatch = parseCommandDispatch(result)
@@ -402,7 +421,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             applyGoalStatusText(sessionId, output.output)
           }
 
-          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
+          renderCommandResult(output?.warning ? `warning: ${output.warning}\n${body}` : body, output)
 
           return
         } catch (error) {
@@ -414,7 +433,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         try {
           const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
+            await requestGateway<unknown>('command.dispatch', {
+              session_id: sessionId,
+              name,
+              arg,
+              display_event_id: displayEventId
+            })
           )
 
           if (!dispatch) {

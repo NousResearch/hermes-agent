@@ -17,6 +17,8 @@ export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[numb
 export type ChatMessage = {
   id: string
   role: SessionMessage['role']
+  /** Persisted UI-only command output; never part of model/branch history. */
+  displayKind?: 'command_result'
   parts: ChatMessagePart[]
   /** Result body only; the system text remains the compact completion label. */
   asyncResult?: string

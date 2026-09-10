@@ -153,6 +153,7 @@ const COMPARED_FIELDS = [
   'asyncResult',
   'id',
   'role',
+  'displayKind',
   'pending',
   'error',
   // Structured failure layer — drives the error card's title and action row,
@@ -264,6 +265,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.role !== b.role ||
+    a.displayKind !== b.displayKind ||
     a.pending !== b.pending ||
     a.error !== b.error ||
     // Structural compare — the descriptor arrives as a fresh object per
@@ -325,6 +327,10 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
   const previousRoleCounts = new Map<string, number>()
 
   for (const message of previousMessages) {
+    if (message.displayKind === 'command_result') {
+      continue
+    }
+
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
     previousByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
@@ -333,6 +339,10 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
   const nextRoleCounts = new Map<string, number>()
 
   return nextMessages.map(message => {
+    if (message.displayKind === 'command_result') {
+      return message
+    }
+
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
 
@@ -531,7 +541,7 @@ export function preserveLocalPendingTurnMessages(
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
   for (const message of nextMessages) {
-    if (isGatewaySystemMarker(message)) {
+    if (isGatewaySystemMarker(message) || message.displayKind === 'command_result') {
       continue
     }
 
@@ -584,6 +594,14 @@ export function preserveLocalPendingTurnMessages(
   const replacements = new Map<string, ChatMessage>()
 
   for (const message of previousMessages) {
+    if (message.displayKind === 'command_result') {
+      if (!nextIds.has(message.id)) {
+        preserved.push(message)
+      }
+
+      continue
+    }
+
     if (isGatewaySystemMarker(message)) {
       continue
     }
@@ -1187,6 +1205,7 @@ export interface BranchMessage {
 // The copyable spine of a branch: user/assistant turns that carry text.
 export const toBranchMessages = (messages: ChatMessage[]): BranchMessage[] =>
   messages
+    .filter(message => message.displayKind !== 'command_result' && !message.id.startsWith('display:'))
     .map(message => ({ content: chatMessageText(message), role: message.role, source: message }))
     .filter(({ content, role }) => content.trim() && (role === 'assistant' || role === 'user'))
 

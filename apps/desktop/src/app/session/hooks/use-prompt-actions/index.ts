@@ -285,7 +285,9 @@ export function usePromptActions({
       role: ChatMessage['role'],
       text: string,
       storedSessionId?: string | null,
-      options: { appendAfterActiveReply?: boolean } = {}
+      options: { appendAfterActiveReply?: boolean } & Partial<
+        Pick<ChatMessage, 'id' | 'timestamp' | 'displayKind'>
+      > = {}
     ) => {
       // Strip ANSI: slash-command output from the backend worker carries SGR
       // color codes (e.g. "Unknown command" in red). The ESC byte is invisible
@@ -297,14 +299,20 @@ export function usePromptActions({
         return
       }
 
-      const messageId = `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const messageId = options.id ?? `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
       updateSessionState(
         sessionId,
         state => {
+          if (state.messages.some(message => message.id === messageId)) {
+            return state
+          }
+
           const message: ChatMessage = {
             id: messageId,
             role,
+            ...(options.timestamp !== undefined ? { timestamp: options.timestamp } : {}),
+            ...(options.displayKind ? { displayKind: options.displayKind } : {}),
             parts: [textPart(body)]
           }
 

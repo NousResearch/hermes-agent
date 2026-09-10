@@ -720,3 +720,101 @@ class TestUpscaleDispatchForwarding:
 
         image_tool._dispatch_to_plugin_provider("a cat", "square")
         assert "upscale" not in fake_provider.generate.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# Transparent background control
+# ---------------------------------------------------------------------------
+
+class TestBackgroundTransparency:
+    """``background`` flows from handler args through every route, normalized.
+
+    Invariant: a model/provider that cannot honor the param never receives
+    it (FAL: per-model ``supports`` filter; schema: not advertised), and a
+    supported one gets the exact OpenAI-compatible enum value.
+    """
+
+    _SUPPORTED_MODEL = "fal-ai/gpt-image-1.5"  # catalog supports: background
+    _UNSUPPORTED_MODEL = "fal-ai/flux-2/klein/9b"
+
+    def _fal_tool(self, image_tool, monkeypatch, *, model, captured):
+        monkeypatch.setenv("FAL_IMAGE_MODEL", model)
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+
+        def _fake_submit(endpoint, arguments=None):
+            captured.update(endpoint=endpoint, arguments=dict(arguments or {}))
+            return _FakeHandle({"images": [{"url": "https://fal/out.png"}]})
+
+        monkeypatch.setattr(image_tool, "_submit_fal_request", _fake_submit)
+
+    def test_handler_sends_normalized_background_to_fal(self, image_tool, monkeypatch):
+        import json as _json
+        captured = {}
+        self._fal_tool(image_tool, monkeypatch, model=self._SUPPORTED_MODEL, captured=captured)
+        out = image_tool._handle_image_generate(
+            {"prompt": "raven sticker", "background": "  TRANSPARENT "})
+        assert _json.loads(out)["success"] is True
+        assert captured["arguments"]["background"] == "transparent"
+
+    def test_handler_drops_background_for_model_without_support(self, image_tool, monkeypatch):
+        import json as _json
+        captured = {}
+        self._fal_tool(image_tool, monkeypatch, model=self._UNSUPPORTED_MODEL, captured=captured)
+        out = image_tool._handle_image_generate(
+            {"prompt": "raven", "background": "transparent"})
+        assert _json.loads(out)["success"] is True
+        assert "background" not in captured["arguments"]
+
+    def test_dispatch_forwards_normalized_background_to_provider(self, image_tool, monkeypatch):
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "krea")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+
+        image_tool._dispatch_to_plugin_provider("a cat", "square", background=" Opaque ")
+        kwargs = fake_provider.generate.call_args.kwargs
+        assert kwargs["background"] == "opaque"
+
+    def test_dispatch_omits_background_when_blank_or_absent(self, image_tool, monkeypatch):
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "krea")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+
+        image_tool._dispatch_to_plugin_provider("a cat", "square", background="   ")
+        image_tool._dispatch_to_plugin_provider("a cat", "square")
+        for call in fake_provider.generate.call_args_list:
+            assert "background" not in call.kwargs
+
+    def test_schema_advertises_background_only_when_declared(self, image_tool, monkeypatch):
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: None)
+
+        monkeypatch.setattr(
+            image_tool, "_resolve_fal_model",
+            lambda: (self._SUPPORTED_MODEL, image_tool.FAL_MODELS[self._SUPPORTED_MODEL]))
+        schema = image_tool._build_dynamic_image_schema()
+        bg = schema["parameters"]["properties"]["background"]
+        assert bg["enum"] == ["transparent", "opaque", "auto"]
+
+        monkeypatch.setattr(
+            image_tool, "_resolve_fal_model",
+            lambda: (self._UNSUPPORTED_MODEL, image_tool.FAL_MODELS[self._UNSUPPORTED_MODEL]))
+        schema = image_tool._build_dynamic_image_schema()
+        assert "background" not in schema["parameters"]["properties"]

@@ -308,6 +308,22 @@ When the FAL image pass runs, it uses these settings:
 
 If upscaling fails (network issue, rate limit), the original image is returned automatically. The response reports `upscaled: true/false` so the agent knows which resolution it got.
 
+## Transparent backgrounds
+
+### The `background` parameter (per-call opt-in)
+
+Backends with transparency control accept a `background` parameter:
+
+- `background: transparent` — RGBA PNG with a fully transparent background (ideal for stickers, logos, and overlays). The API only honours transparency for PNG output, so PNG is pinned alongside the parameter.
+- `background: opaque` — forces a solid background.
+- `background: auto` (default) — the model decides.
+
+The parameter is advertised only when the active backend declares support: the
+OpenAI plugin (`gpt-image-2` / `gpt-image-2.5`) always exposes it, and on FAL
+the schema gate follows each catalog model's declared `background` support
+(`gpt-image-1.5`, `gpt-image-2.5`). Models without it silently ignore the
+parameter, like every other per-model override.
+
 ## How It Works Internally
 
 1. **Model resolution** — `_resolve_fal_model()` reads `image_gen.model` from `config.yaml`, falls back to the `FAL_IMAGE_MODEL` env var, then to `fal-ai/flux-2/klein/9b`.

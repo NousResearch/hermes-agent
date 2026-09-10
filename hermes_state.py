@@ -983,8 +983,9 @@ class SessionDB(
             watched = _watched_sqlite_sidecar_paths(self.db_path)
             try:
                 for target, fd_path in _proc_fd_targets(os.getpid()):
-                    if (" (deleted)" in target and _canonical_sqlite_path(target) in watched
-                            and _fd_is_truly_unlinked(fd_path)):
+                    canonical = _canonical_sqlite_path(target)
+                    if (" (deleted)" in target and canonical in watched
+                            and _fd_is_truly_unlinked(fd_path, watched[canonical])):
                         return True
             except OSError:
                 return False

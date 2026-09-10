@@ -890,7 +890,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             except Exception:
                 logger.debug("Could not emit ACP provenance update after rotation for %s", session_id, exc_info=True)
 
-        final_response = result.get("final_response", "")
+        # ``final_response`` is not guaranteed to be a str: interrupted or
+        # truncation-exhausted turns come back with an explicit None (e.g.
+        # conversation_loop returns ``partial_response or None``). The
+        # ``.get`` default only covers an *absent* key, so normalize None
+        # here — otherwise the startswith below raises AttributeError,
+        # which the ACP host sees as a JSON-RPC -32603 internal error while
+        # the session stays is_running and queued follow-ups wedge (#87387).
+        final_response = result.get("final_response") or ""
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
         from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX

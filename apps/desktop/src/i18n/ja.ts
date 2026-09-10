@@ -281,6 +281,7 @@ export const ja = defineLocale({
     hideRightSidebar: '右サイドバーを非表示',
     showRightSidebar: '右サイドバーを表示',
     unreadSessions: count => (count === 1 ? '未読セッション 1 件' : `未読セッション ${count} 件`),
+    needsAttention: count => (count === 1 ? '要対応の項目が 1 件あります' : `要対応の項目が ${count} 件あります`),
     muteHaptics: '触覚フィードバックをオフ',
     unmuteHaptics: '触覚フィードバックをオン',
     openSettings: '設定を開く',
@@ -1517,8 +1518,16 @@ export const ja = defineLocale({
     settingsFields: '設定フィールド',
     mcpServers: 'MCP サーバー',
     archivedChats: 'アーカイブ済みチャット',
-    sections: { sessions: 'セッション', system: 'システム', usage: '使用状況' },
+    sections: {
+      attention: '要対応',
+      maintenance: 'メンテナンス',
+      sessions: 'セッション',
+      system: 'システム',
+      usage: '使用状況'
+    },
     sectionDescriptions: {
+      attention: '対応が必要なセッションや新しい結果を確認',
+      maintenance: '診断、バックアップ、キュレーター、メモリデータ',
       sessions: 'セッションの検索と管理',
       system: 'ステータス、ログ、システムアクション',
       usage: 'トークン、コスト、スキルの活動履歴'
@@ -1531,6 +1540,7 @@ export const ja = defineLocale({
       artifacts: { title: 'アーティファクト', detail: '生成された出力を閲覧' }
     },
     sectionEntries: {
+      attention: { title: '要対応パネル', detail: '対応が必要なセッションや新しい結果を確認' },
       sessions: { title: 'セッションパネル', detail: 'セッションの検索、ピン留め、管理' },
       system: { title: 'システムパネル', detail: 'ゲートウェイのステータス、ログ、再起動/更新' },
       usage: { title: '使用状況パネル', detail: 'トークン、コスト、スキルの活動' }
@@ -1545,6 +1555,7 @@ export const ja = defineLocale({
     exportSession: 'セッションをエクスポート',
     deleteSession: 'セッションを削除',
     noSessions: 'セッションはまだありません。',
+    noAttention: '現在、対応が必要な項目はありません。',
     gatewayRunning: 'メッセージングゲートウェイが実行中',
     gatewayStopped: 'メッセージングゲートウェイが停止中',
     hermesActiveSessions: (version, count) => `Hermes ${version} · アクティブセッション ${count}`,

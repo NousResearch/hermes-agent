@@ -272,6 +272,7 @@ export const zhHant = defineLocale({
     hideRightSidebar: '隱藏右側邊欄',
     showRightSidebar: '顯示右側邊欄',
     unreadSessions: count => (count === 1 ? '1 個未讀工作階段' : `${count} 個未讀工作階段`),
+    needsAttention: count => (count === 1 ? '有 1 個項目需要注意' : `有 ${count} 個項目需要注意`),
     muteHaptics: '靜音觸感回饋',
     unmuteHaptics: '開啟觸感回饋',
     openSettings: '開啟設定',
@@ -1464,8 +1465,16 @@ export const zhHant = defineLocale({
     settingsFields: '設定欄位',
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
-    sections: { sessions: '工作階段', system: '系統', usage: '使用量' },
+    sections: {
+      attention: '需要注意',
+      maintenance: '維護',
+      sessions: '工作階段',
+      system: '系統',
+      usage: '使用量'
+    },
     sectionDescriptions: {
+      attention: '查看等待你處理或有新結果的工作階段',
+      maintenance: '診斷、備份、維護器和記憶資料',
       sessions: '搜尋和管理工作階段',
       system: '狀態、記錄和系統動作',
       usage: '一段時間內的詞元、費用和技能活動'
@@ -1478,6 +1487,7 @@ export const zhHant = defineLocale({
       artifacts: { title: '成品', detail: '瀏覽產生的輸出' }
     },
     sectionEntries: {
+      attention: { title: '需要注意面板', detail: '查看等待你處理或有新結果的工作階段' },
       sessions: { title: '工作階段面板', detail: '搜尋、釘選和管理工作階段' },
       system: { title: '系統面板', detail: '閘道狀態、記錄、重新啟動/更新' },
       usage: { title: '使用量面板', detail: '詞元、費用和技能活動' }
@@ -1492,6 +1502,7 @@ export const zhHant = defineLocale({
     exportSession: '匯出工作階段',
     deleteSession: '刪除工作階段',
     noSessions: '暫無工作階段。',
+    noAttention: '目前沒有需要你注意的事項。',
     gatewayRunning: '訊息閘道執行中',
     gatewayStopped: '訊息閘道已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活躍工作階段 ${count}`,

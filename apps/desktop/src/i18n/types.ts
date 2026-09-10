@@ -317,6 +317,7 @@ export interface Translations {
     hideRightSidebar: string
     showRightSidebar: string
     unreadSessions: (count: number) => string
+    needsAttention: (count: number) => string
     muteHaptics: string
     unmuteHaptics: string
     openSettings: string
@@ -1540,10 +1541,10 @@ export interface Translations {
     settingsFields: string
     mcpServers: string
     archivedChats: string
-    sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
+    sections: Record<'attention' | 'maintenance' | 'sessions' | 'system' | 'usage', string>
+    sectionDescriptions: Record<'attention' | 'maintenance' | 'sessions' | 'system' | 'usage', string>
     nav: Record<'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts', { title: string; detail: string }>
-    sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
+    sectionEntries: Record<'attention' | 'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string
     refresh: string
@@ -1554,6 +1555,7 @@ export interface Translations {
     exportSession: string
     deleteSession: string
     noSessions: string
+    noAttention: string
     gatewayRunning: string
     gatewayStopped: string
     hermesActiveSessions: (version: string, count: number) => string

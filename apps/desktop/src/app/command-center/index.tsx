@@ -17,6 +17,7 @@ import {
   Activity,
   AlertCircle,
   BarChart3,
+  Bell,
   Bookmark,
   BookmarkFilled,
   Download,
@@ -29,6 +30,7 @@ import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { $attentionItems } from '@/store/attention'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionPinId } from '@/store/session'
 
@@ -37,11 +39,18 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
+import type { AttentionItem, AttentionOwner } from './attention'
 import { MaintenancePanel } from './maintenance'
 
-export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
+export type CommandCenterSection = 'attention' | 'maintenance' | 'sessions' | 'system' | 'usage'
 
-const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
+const SECTIONS = [
+  'attention',
+  'sessions',
+  'system',
+  'usage',
+  'maintenance'
+] as const satisfies readonly CommandCenterSection[]
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
@@ -54,6 +63,7 @@ type UsagePeriod = (typeof USAGE_PERIODS)[number]
 // component never re-renders from $sessions ticks while on System/Usage/etc.
 const EMPTY_SESSIONS: readonly never[] = []
 const EMPTY_PINNED: readonly string[] = []
+const EMPTY_ATTENTION: readonly AttentionItem[] = []
 
 interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
@@ -61,7 +71,7 @@ interface CommandCenterViewProps {
   onDeleteSession: (sessionId: string) => Promise<void>
   // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
   onNavigateRoute?: (path: string) => void
-  onOpenSession: (sessionId: string) => void
+  onOpenSession: (sessionId: string, owner?: AttentionOwner) => void
 }
 
 function formatTimestamp(value?: number | null): string {
@@ -142,6 +152,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
   const sessions = useStoreSelector($sessions, s => (section === 'sessions' ? s : EMPTY_SESSIONS))
   const pinnedSessionIds = useStoreSelector($pinnedSessionIds, s => (section === 'sessions' ? s : EMPTY_PINNED))
+  const attentionItems = useStoreSelector($attentionItems, items => (section === 'attention' ? items : EMPTY_ATTENTION))
 
   const [query, setQuery] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionInfo | null>(null)
@@ -309,13 +320,15 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       SECTIONS.map(value => ({
         active: section === value,
         icon:
-          value === 'sessions'
-            ? MessageCircle
-            : value === 'system'
-              ? Activity
-              : value === 'maintenance'
-                ? Wrench
-                : BarChart3,
+          value === 'attention'
+            ? Bell
+            : value === 'sessions'
+              ? MessageCircle
+              : value === 'system'
+                ? Activity
+                : value === 'maintenance'
+                  ? Wrench
+                  : BarChart3,
         id: value,
         label: cc.sections[value],
         onSelect: () => setSection(value)
@@ -358,7 +371,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
             </div>
           </header>
 
-          {section === 'sessions' ? (
+          {section === 'attention' ? (
+            <AttentionPanel items={attentionItems} onOpenSession={onOpenSession} />
+          ) : section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
                 <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
@@ -525,6 +540,96 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         />
       )}
     </OverlayView>
+  )
+}
+
+function AttentionPanel({
+  items,
+  onOpenSession
+}: {
+  items: readonly AttentionItem[]
+  onOpenSession: (sessionId: string, owner?: AttentionOwner) => void
+}) {
+  const { t } = useI18n()
+  const cc = t.commandCenter
+  const sidebar = t.sidebar
+
+  const groups = [
+    { icon: AlertCircle, kind: 'needs-input' as const, label: sidebar.row.needsInput },
+    { icon: MessageCircle, kind: 'unread' as const, label: sidebar.row.finishedUnread }
+  ]
+
+  if (items.length === 0) {
+    return <EmptyPanel description={cc.noAttention} title={cc.sections.attention} />
+  }
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="grid gap-5">
+        {groups.map(group => {
+          const groupedItems = items.filter(item => item.kind === group.kind)
+
+          if (groupedItems.length === 0) {
+            return null
+          }
+
+          return (
+            <section key={group.kind}>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                  {group.label}
+                </h3>
+                <span className="text-[0.65rem] tabular-nums text-(--ui-text-tertiary)">{groupedItems.length}</span>
+              </div>
+              <ul className="divide-y divide-(--ui-stroke-tertiary) rounded-lg border border-(--ui-stroke-tertiary)">
+                {groupedItems.map(item => {
+                  const Icon = group.icon
+                  const profile = item.profile === 'default' ? '' : ` · ${item.profile}`
+                  const timestamp = formatTimestamp(item.timestamp)
+
+                  return (
+                    <li key={item.id}>
+                      <button
+                        aria-label={`${group.label}: ${item.title}`}
+                        className="flex w-full items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-(--ui-control-hover-background) focus-visible:bg-(--ui-control-hover-background) focus-visible:outline-none"
+                        disabled={!item.owner}
+                        onClick={() => item.owner && onOpenSession(item.sessionId, item.owner)}
+                        type="button"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            'grid size-7 shrink-0 place-items-center rounded-md',
+                            item.kind === 'needs-input'
+                              ? 'bg-amber-500/12 text-amber-600 dark:text-amber-400'
+                              : 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400'
+                          )}
+                        >
+                          <Icon className="size-3.5" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                            {item.title}
+                          </span>
+                          <span className="mt-0.5 block truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                            {group.label}
+                            {timestamp ? ` · ${timestamp}` : ''}
+                            {profile}
+                          </span>
+                        </span>
+                        <span aria-hidden="true" className="shrink-0 text-(--ui-text-tertiary)">
+                          ›
+                        </span>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            </section>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 

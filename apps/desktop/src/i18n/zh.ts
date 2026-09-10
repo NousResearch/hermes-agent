@@ -272,6 +272,7 @@ export const zh: Translations = {
     hideRightSidebar: '隐藏右侧栏',
     showRightSidebar: '显示右侧栏',
     unreadSessions: count => (count === 1 ? '1 个未读会话' : `${count} 个未读会话`),
+    needsAttention: count => (count === 1 ? '有 1 项需要注意' : `有 ${count} 项需要注意`),
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',
@@ -1904,8 +1905,15 @@ export const zh: Translations = {
     settingsFields: '设置字段',
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',
-    sections: { maintenance: '维护', sessions: '会话', system: '系统', usage: '用量' },
+    sections: {
+      attention: '需要注意',
+      maintenance: '维护',
+      sessions: '会话',
+      system: '系统',
+      usage: '用量'
+    },
     sectionDescriptions: {
+      attention: '查看等待你处理的会话或有新结果的会话',
       maintenance: '诊断、备份、维护器与记忆数据',
       sessions: '搜索与管理会话',
       system: '状态、日志与系统操作',
@@ -1919,6 +1927,7 @@ export const zh: Translations = {
       artifacts: { title: '产物', detail: '浏览生成的输出' }
     },
     sectionEntries: {
+      attention: { title: '需要注意面板', detail: '查看等待你处理的会话或有新结果的会话' },
       sessions: { title: '会话面板', detail: '搜索、置顶与管理会话' },
       system: { title: '系统面板', detail: '网关状态、日志、重启/更新' },
       usage: { title: '用量面板', detail: '词元、成本与技能活动' }
@@ -1933,6 +1942,7 @@ export const zh: Translations = {
     exportSession: '导出会话',
     deleteSession: '删除会话',
     noSessions: '暂无会话。',
+    noAttention: '目前没有需要你注意的事项。',
     gatewayRunning: '消息网关运行中',
     gatewayStopped: '消息网关已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活跃会话 ${count}`,

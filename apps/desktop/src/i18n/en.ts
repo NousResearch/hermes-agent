@@ -280,6 +280,7 @@ export const en: Translations = {
     hideRightSidebar: 'Hide right sidebar',
     showRightSidebar: 'Show right sidebar',
     unreadSessions: count => (count === 1 ? '1 unread session' : `${count} unread sessions`),
+    needsAttention: count => (count === 1 ? '1 item needs your attention' : `${count} items need your attention`),
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
     openSettings: 'Open settings',
@@ -1736,8 +1737,15 @@ export const en: Translations = {
     settingsFields: 'Settings fields',
     mcpServers: 'MCP servers',
     archivedChats: 'Archived chats',
-    sections: { maintenance: 'Maintenance', sessions: 'Sessions', system: 'System', usage: 'Usage' },
+    sections: {
+      attention: 'Needs attention',
+      maintenance: 'Maintenance',
+      sessions: 'Sessions',
+      system: 'System',
+      usage: 'Usage'
+    },
     sectionDescriptions: {
+      attention: 'Review sessions waiting for you or with new results',
       maintenance: 'Diagnostics, backups, curator, and memory data',
       sessions: 'Search and manage sessions',
       system: 'Status, logs, and system actions',
@@ -1751,6 +1759,7 @@ export const en: Translations = {
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
     sectionEntries: {
+      attention: { title: 'Needs attention panel', detail: 'Review sessions waiting for you or with new results' },
       sessions: { title: 'Sessions panel', detail: 'Search, pin, and manage sessions' },
       system: { title: 'System panel', detail: 'Gateway status, logs, restart/update' },
       usage: { title: 'Usage panel', detail: 'Token, cost, and skill activity' }
@@ -1765,6 +1774,7 @@ export const en: Translations = {
     exportSession: 'Export session',
     deleteSession: 'Delete session',
     noSessions: 'No sessions yet.',
+    noAttention: 'Nothing needs your attention right now.',
     gatewayRunning: 'Messaging gateway running',
     gatewayStopped: 'Messaging gateway stopped',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Active sessions ${count}`,

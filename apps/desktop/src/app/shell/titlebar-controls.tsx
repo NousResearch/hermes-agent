@@ -13,6 +13,7 @@ import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { $attentionCount } from '@/store/attention'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { toggleHud } from '@/store/hud'
 import {
@@ -62,6 +63,7 @@ export type SetTitlebarToolGroup = (id: string, tools: readonly TitlebarTool[], 
 interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
   tools?: readonly TitlebarTool[]
+  onOpenAttention: () => void
   onOpenSettings: () => void
 }
 
@@ -129,7 +131,12 @@ function useModifierHeld(): boolean {
   return held
 }
 
-export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
+export function TitlebarControls({
+  leftTools = [],
+  onOpenAttention,
+  onOpenSettings,
+  tools = []
+}: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
@@ -139,7 +146,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
+  const attentionCount = useStore($attentionCount)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
+  const attentionBadge = attentionCount > 0 ? attentionCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
 
   const toggleHaptics = () => {
@@ -204,6 +213,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   // Static system tools — always pinned to the screen's right edge.
   const systemTools: TitlebarTool[] = [
+    {
+      badge: attentionBadge,
+      icon: <TitlebarIcon name="notifications" />,
+      id: 'attention',
+      label: t.titlebar.needsAttention(attentionCount),
+      onSelect: () => {
+        triggerHaptic('open')
+        onOpenAttention()
+      },
+      title: t.titlebar.needsAttention(attentionCount)
+    },
     {
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see

@@ -1522,13 +1522,31 @@ class GatewayTurnMixin:
     _FAILED_TURN_NOTICE = (
         "Your request was not processed. Send it again if you still want me to carry it out."
     )
+    _PARTIAL_FAILED_TURN_NOTICE = (
+        "This turn did not complete. Some actions may already have run; verify their effects "
+        "before resending."
+    )
 
-    def _hmwa_add_failed_turn_notice(self, response):
+    def _hmwa_add_failed_turn_notice(self, response, notice=None):
         """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
+        notice = notice or self._FAILED_TURN_NOTICE
         response = str(response or "").strip()
-        if self._FAILED_TURN_NOTICE in response:
+        if notice in response:
             return response
-        return f"{response}\n\n{self._FAILED_TURN_NOTICE}" if response else self._FAILED_TURN_NOTICE
+        return f"{response}\n\n{notice}" if response else notice
+
+    def _hmwa_failed_turn_notice(self, agent_result):
+        """Choose retry guidance without assuming completed tool effects can be repeated safely."""
+        messages = agent_result.get("messages", []) or []
+        history_offset = agent_result.get("history_offset", 0)
+        turn_messages = messages[history_offset:]
+        if any(
+            message.get("role") == "tool"
+            or (message.get("role") == "assistant" and message.get("tool_calls"))
+            for message in turn_messages
+        ):
+            return self._PARTIAL_FAILED_TURN_NOTICE
+        return self._FAILED_TURN_NOTICE
 
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
@@ -1636,6 +1654,7 @@ class GatewayTurnMixin:
     async def _hmwa_persist_turn_transcript(
         self, *, event, source, session_entry, session_key, agent_result, agent_messages,
         prepared, response, agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure,
+        failed_turn_notice,
     ):
         """Persist this turn to the transcript (session_meta on first turn, closed failed turn on
         transient failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
@@ -1687,7 +1706,7 @@ class GatewayTurnMixin:
                 # provider details; this row is gateway-owned and was not written by the agent.
                 await store.append_to_transcript(
                     sid,
-                    {"role": "assistant", "content": self._FAILED_TURN_NOTICE, "timestamp": ts},
+                    {"role": "assistant", "content": failed_turn_notice, "timestamp": ts},
                 )
             else:
                 # Only the NEW messages: history_offset (what the agent saw), not len(history), which
@@ -1797,7 +1816,7 @@ class GatewayTurnMixin:
                     session_entry.session_id,
                     {
                         "role": "assistant",
-                        "content": self._FAILED_TURN_NOTICE,
+                        "content": self._PARTIAL_FAILED_TURN_NOTICE,
                         "timestamp": time.time(),
                     },
                 )
@@ -1826,13 +1845,15 @@ class GatewayTurnMixin:
             if len(prepared.history) > 50:
                 return self._hmwa_add_failed_turn_notice(
                     "⚠️ Session too large for the model's context window.\nUse /compact to "
-                    "compress the conversation, or /reset to start fresh."
+                    "compress the conversation, or /reset to start fresh.",
+                    self._PARTIAL_FAILED_TURN_NOTICE,
                 )
             elif status_code == 400:
                 status_hint = " The request was rejected by the API."
         return self._hmwa_add_failed_turn_notice(
             f"Sorry, I encountered an unexpected error.{status_hint}\n"
-            "Try again or use /reset to start a fresh session."
+            "Use /reset to start a fresh session if needed.",
+            self._PARTIAL_FAILED_TURN_NOTICE,
         )
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
@@ -2036,8 +2057,9 @@ class GatewayTurnMixin:
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
+            failed_turn_notice = self._hmwa_failed_turn_notice(agent_result)
             if agent_failed_early and not is_context_overflow_failure:
-                response = self._hmwa_add_failed_turn_notice(response)
+                response = self._hmwa_add_failed_turn_notice(response, failed_turn_notice)
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
             )
@@ -2047,6 +2069,7 @@ class GatewayTurnMixin:
                 response=response, agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
+                failed_turn_notice=failed_turn_notice,
             )
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,

@@ -171,6 +171,51 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
     assert replay[-1]["content"] == "unrelated question"
 
 
+@pytest.mark.asyncio
+async def test_failed_turn_with_tool_activity_does_not_recommend_blind_retry(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": "API call failed after 3 retries: 500 Internal Server Error",
+            "error": "500 Internal Server Error",
+            "messages": [
+                {"role": "user", "content": "reset the password"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "function": {"name": "reset_password", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call-1", "content": "Password reset"},
+            ],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assistant_rows = [
+        call.args[1]
+        for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) >= 2 and call.args[1].get("role") == "assistant"
+    ]
+    assert len(assistant_rows) == 1
+    assert assistant_rows[0]["content"] == runner._PARTIAL_FAILED_TURN_NOTICE
+    assert runner._PARTIAL_FAILED_TURN_NOTICE in response
+    assert "not processed" not in response
+    assert "Send it again" not in response
+
+
 # ── Test 2: agent_failed_early with no _session_db → skip_db not True ─
 
 

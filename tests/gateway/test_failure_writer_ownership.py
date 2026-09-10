@@ -93,7 +93,7 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             store._transcript_reroutes.clear()
             assert store.has_input_owner(sid, owner) is owned, location
             before = db.message_count()
-            await runner._hmwa_agent_error_reply(
+            reply = await runner._hmwa_agent_error_reply(
                 RuntimeError("controlled post-compaction failure"),
                 MessageEvent(text="same", source=source, message_id=pid),
                 source, entry, entry.session_key, prepared,
@@ -104,7 +104,10 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             assert store.has_input_owner(sid, owner), location
             live_messages = db.get_messages(child)
             assert live_messages[-1]["role"] == "assistant"
-            assert "not processed" in live_messages[-1]["content"]
+            assert "Some actions may already have run" in live_messages[-1]["content"]
+            assert "not processed" not in live_messages[-1]["content"]
+            assert "Some actions may already have run" in reply
+            assert "not processed" not in reply
             if not owned:
                 persisted_user = live_messages[-2]
                 assert persisted_user["content"] == prepared.persist_user_message

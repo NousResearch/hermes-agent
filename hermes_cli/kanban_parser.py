@@ -154,7 +154,8 @@ _SPECS = [
             choices=sorted(kb.VALID_CONTEXT_ISOLATIONS),
             default="none",
             help="Worker context policy: 'task' excludes implicit cross-task history and "
-                 "profile memory/rules; default 'none' preserves normal context.",
+                 "suppresses profile memory/rules and preloaded skills; default 'none' "
+                 "preserves normal context.",
         ),
         _arg("--parent", action="append", default=[], help="Parent task id (repeatable)"),
         _arg("--workspace",

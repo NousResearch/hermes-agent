@@ -377,7 +377,8 @@ KANBAN_CREATE_SCHEMA = _schema(
             "description": (
                 "Worker context authority policy. 'task' excludes implicit "
                 "cross-task assignee history and suppresses the assignee "
-                "profile's memory/rules before session construction. "
+                "profile's memory/rules and preloaded skills before session "
+                "construction. "
                 "Defaults to 'none' (existing behavior)."
             ),
         },

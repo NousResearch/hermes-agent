@@ -364,9 +364,11 @@ def worker_publish(db, conn, sid, payload):
     _migrate_worker_automation(db, conn, sid, child)
     conn.execute('UPDATE sessions SET runtime_generation=? WHERE id=?', (worker['generation'], child))
     conn.execute('UPDATE worker_executions SET session_id=? WHERE execution_id=?', (child, worker['execution_id']))
-    conn.execute("UPDATE session_admissions SET target_session_id=?,lineage_json=json_insert(lineage_json,'$[#]',?) "
-                 "WHERE target_session_id=? AND generation=? AND status IN ('started','unknown')",
-                 (child, child, sid, worker['generation']))
+    # The FIFO/retry key is immutable; only physical lineage follows rotation.
+    conn.execute("UPDATE session_admissions SET lineage_json=json_insert(lineage_json,'$[#]',?) "
+                 "WHERE json_extract(lineage_json,'$[#-1]')=? AND generation=? AND owner_epoch=? "
+                 "AND status IN ('started','unknown')",
+                 (child, sid, worker['generation'], worker['owner_epoch']))
     return {'value': None, 'worker_assignment': {'parent': sid, 'session_id': child},
             'row_ids': [message['_row_id'] for message in payload['messages']]}
 

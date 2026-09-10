@@ -608,6 +608,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/software-development/software-development-ast-grep',
+                    'user-guide/skills/optional/software-development/software-development-board-gated-execution',
                     'user-guide/skills/optional/software-development/software-development-code-wiki',
                     'user-guide/skills/optional/software-development/software-development-grill-me',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',

@@ -369,9 +369,10 @@ all = [
   # [all], `uv sync --locked` on Windows tried to build it from sdist
   # and failed on `make`. Lazy-install routes that build to first use,
   # where the user is expected to have a toolchain available.
+  # MCP stays opt-in via [mcp]. Keeping it out of [all] avoids forcing
+  # Hermes' SDK major onto third-party MCP server environments.
   "hermes-agent[cron]",
   "hermes-agent[pty]",
-  "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",

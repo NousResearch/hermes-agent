@@ -152,3 +152,76 @@ def test_terminal_callback_follows_canonical_drain_without_polling(owner, monkey
     assert receipts[0]['text'] == 'canonical reply'
     rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
     assert rows[0]['status'] == 'terminal'
+
+
+def test_unknown_info_is_inactive_with_hosted_not_canonical_generation(owner):
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_state_runtime import claim_session_input, begin_runtime_epoch, recover_session_inputs
+    authority, loop, principal, _ = owner
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
+    coords = dict(profile='default', source='bot_room')
+    coords['session_id'] = rpc.create(**coords, title='Group: room')['session_id']
+    rpc.submit(**coords, prompt='lost', task=TaskIdentity('room', 'lost', 'thread', 'turn'), execution_generation=17, on_terminal=lambda receipt: None)
+    row = claim_session_input(authority.db, epoch=authority.epoch, session_id=coords['session_id'])
+    assert row['generation'] != 17
+    authority.epoch = begin_runtime_epoch(authority.db, instance_id='cold-info')
+    recover_session_inputs(authority.db, epoch=authority.epoch)
+    info = rpc.info(**coords)
+    assert info['active'] is False
+    assert info['status'] == 'unknown'
+    assert info['task_id'] == 'lost'
+    assert info['execution_generation'] == 17
+
+
+def test_discard_requires_exact_owned_unknown_tuple_without_replay(owner, monkeypatch):
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions, claim_session_input, begin_runtime_epoch, recover_session_inputs
+    authority, loop, principal, _ = owner
+    allowed = [True]
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: allowed[0])
+    coords = dict(profile='default', source='bot_room')
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    coords['session_id'] = sid
+    callbacks = []
+    rpc.submit(**coords, prompt='lost', task=TaskIdentity('room', 'lost', 'thread', 'turn'), execution_generation=17, on_terminal=callbacks.append)
+    exact = dict(expected_task_id='lost', execution_generation=17)
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        rpc.discard(**coords, **exact)  # queued is not unknown
+    row = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        rpc.discard(**coords, **exact)  # started is not unknown
+    follower = rpc.submit(**coords, prompt='next', task=TaskIdentity('room', 'next', 'thread', 'next'), execution_generation=18, on_terminal=callbacks.append)
+    authority.epoch = begin_runtime_epoch(authority.db, instance_id='cold-discard')
+    recover_session_inputs(authority.db, epoch=authority.epoch)
+    before = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+    for changed in ({'expected_task_id': 'other'}, {'execution_generation': row['generation']}, {'execution_generation': True}):
+        with pytest.raises(RuntimeStoreError, match='stale_generation|invalid_params'):
+            rpc.discard(**coords, **{**exact, **changed})
+    allowed[0] = False
+    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        rpc.discard(**coords, **exact)
+    allowed[0] = True
+    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        rpc.discard(**{**coords, 'session_id': 'foreign'}, **exact)
+    authority.db._execute_write(lambda conn: conn.execute('UPDATE session_admissions SET principal_id=? WHERE admission_id=?', ('foreign', row['admission_id'])))
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        rpc.discard(**coords, **exact)
+    authority.db._execute_write(lambda conn: conn.execute('UPDATE session_admissions SET principal_id=? WHERE admission_id=?', (principal.subject, row['admission_id'])))
+    assert list_session_admissions(authority.db, session_id=sid, pending_only=False) == before
+    assert not callbacks
+    scheduled = []
+    monkeypatch.setattr(authority, '_schedule', scheduled.append)
+    receipt = rpc.discard(**coords, **exact)
+    assert receipt['discarded'] is True
+    assert receipt['task_id'] == 'lost'
+    assert receipt['execution_generation'] == 17
+    after = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+    assert [(r['admission_id'], r['status']) for r in after] == [(row['admission_id'], 'terminal'), (follower['admission_id'], 'queued')]
+    assert after[0]['outcome'] == 'interrupted'
+    assert scheduled == [rpc.ref]
+    with pytest.raises(RuntimeStoreError, match='stale_generation'):
+        rpc.discard(**coords, **exact)
+    assert rpc.info(**coords)['task_id'] == 'next'
+    assert rpc.history(**coords)[-1]['status'] == 'cancelled'

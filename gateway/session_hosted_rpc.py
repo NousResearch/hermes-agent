@@ -107,9 +107,10 @@ class HostedRoomAuthorityRPC:
     def _terminal(self, row, task, generation):
         from gateway.session_results import admission_result
         saved = admission_result(self.authority.db, row['admission_id'])
-        if saved is None:
+        if saved is None and row['outcome'] != 'interrupted':
             raise RuntimeStoreError('storage_unavailable')
-        value = saved['result']
+        # Explicit unknown discard has no execution result to recover.
+        value = saved['result'] if saved is not None else {}
         status = {'completed': 'settled', 'interrupted': 'cancelled'}.get(row['outcome'], 'failed')
         receipt = {'status': status, 'text': value.get('final_response', ''),
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
@@ -166,8 +167,10 @@ class HostedRoomAuthorityRPC:
         for row, task, generation in rows:
             if row['status'] == 'terminal':
                 self._terminal(row, task, generation)
-        current = next(((row, task) for row, task, _ in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
-        result = {'active': current is not None, 'task_id': current[1].task_id if current else None,
+        current = next(((row, task, generation) for row, task, generation in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
+        result = {'active': current is not None and current[0]['status'] != 'unknown',
+                  'task_id': current[1].task_id if current else None,
+                  'execution_generation': current[2] if current else None,
                   'status': current[0]['status'] if current else 'idle'}
         snapshot = await self.authority.attach(self.principal, self.ref)
         if snapshot.prompts:
@@ -191,6 +194,23 @@ class HostedRoomAuthorityRPC:
         else:
             await self.authority.interrupt(self.principal, self.ref, row['generation'])
         return {'interrupted': True, 'status': 'interrupted'}
+
+    async def _discard(self, params):
+        generation = params['execution_generation']
+        if type(generation) is not int or generation < 1:
+            raise RuntimeStoreError('invalid_params')
+        matches = [(row, task) for row, task, hosted_generation in self._rows()
+                   if row['status'] == 'unknown'
+                   and task.task_id == params['expected_task_id']
+                   and hosted_generation == generation]
+        if len(matches) != 1:
+            raise RuntimeStoreError('stale_generation')
+        row, task = matches[0]
+        # The public fence is hosted; the canonical CAS uses its own generation.
+        await self.authority.resolve_unknown(
+            self.principal, self.ref, row['admission_id'], row['generation'])
+        return {'discarded': True, 'status': 'cancelled', 'task_id': task.task_id,
+                'execution_generation': generation}
 
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:
@@ -224,6 +244,10 @@ class HostedRoomAuthorityRPC:
 
     def interrupt(self, *, profile, session_id, source, expected_task_id):
         return self._call('interrupt', profile=profile, session_id=session_id, source=source, expected_task_id=expected_task_id)
+
+    def discard(self, *, profile, session_id, source, expected_task_id, execution_generation):
+        return self._call('discard', profile=profile, session_id=session_id, source=source,
+                          expected_task_id=expected_task_id, execution_generation=execution_generation)
 
     def approve(self, *, session_id, request_id, choice):
         return self._call('approve', session_id=session_id, request_id=request_id, choice=choice)

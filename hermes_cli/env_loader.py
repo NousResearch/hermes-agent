@@ -304,8 +304,22 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
                 except OSError:
                     pass
                 raise
-    except Exception:
-        pass  # best-effort — don't block gateway startup
+    except Exception as exc:
+        # Best-effort — don't block gateway startup. But say WHY the repair
+        # was skipped: on Windows a locked .env (open editor, OneDrive sync)
+        # makes atomic_replace raise PermissionError, and python-dotenv then
+        # parses the still-corrupted file — the exact mangled-values failure
+        # this function exists to prevent (#8908). Silent skip made that
+        # undiagnosable.
+        try:
+            sys.stderr.write(
+                f"⚠️  hermes env: could not repair corrupted {path}: {exc}. "
+                f"Values from this file may load mangled; close any program "
+                f"holding the file open and restart.\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
 
 
 def load_hermes_dotenv(

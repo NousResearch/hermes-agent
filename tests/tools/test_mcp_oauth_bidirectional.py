@@ -122,15 +122,8 @@ async def test_hermes_provider_forwards_asend_values(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypatch):
-    """A 401 response MUST flow into the inner generator and trigger the
-    SDK's 401 recovery branch.
-
-    With the broken wrapper, the inner generator sees ``response = None``
-    and the 401 check short-circuits into AttributeError. With the correct
-    bridge, the 401 is routed into the SDK's ``response.status_code == 401``
-    branch which begins discovery (yielding a metadata-discovery request).
-    """
+async def test_hermes_provider_refreshes_before_authorizing_after_401(tmp_path, monkeypatch):
+    """A resource 401 with a refresh token silently refreshes before browser auth."""
     # The SDK's httpx flavour (httpx2 on mcp >= 2.0): the provider is an
     # Auth subclass from that module and its auth_flow only accepts its own
     # Request/Response types.
@@ -185,27 +178,33 @@ async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypat
     # Drive to the first yield (outbound MCP request).
     outbound = await flow.__anext__()
 
-    # Reply with a 401 including a minimal WWW-Authenticate so the SDK's
-    # 401 branch can parse resource metadata from it. We just need something
-    # the SDK accepts before it tries to yield the metadata-discovery request.
     fake_401 = httpx.Response(
         401,
         request=outbound,
         headers={"www-authenticate": 'Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"'},
     )
 
-    # The correct bridge forwards the 401 into the SDK; the SDK then yields
-    # its NEXT request (a metadata-discovery GET). We assert we get a request
-    # back — any request. The broken bridge would have crashed with
-    # AttributeError before we ever reach this point.
-    next_request = await flow.asend(fake_401)
-    assert isinstance(next_request, httpx.Request), (
-        "wrapper must forward .asend() so the SDK's 401 branch can yield the "
-        "next request in the discovery flow"
-    )
+    refresh_request = await flow.asend(fake_401)
+    assert refresh_request.method == "POST"
+    assert b"grant_type=refresh_token" in refresh_request.content
 
-    # Clean up the generator — we don't need to complete the full dance.
-    await flow.aclose()
+    retry = await flow.asend(
+        httpx.Response(
+            200,
+            request=refresh_request,
+            json={
+                "access_token": "new_access",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": "new_refresh",
+            },
+        )
+    )
+    assert retry is req
+    assert retry.headers["authorization"] == "Bearer new_access"
+
+    with pytest.raises(StopAsyncIteration):
+        await flow.asend(httpx.Response(200, request=retry))
 
 
 @pytest.mark.asyncio

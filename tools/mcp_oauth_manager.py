@@ -218,7 +218,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         # into the inner generator via inner.asend(incoming), preserving the bidirectional contract.
         # Regression from PR #11383 caught by tests/tools/test_mcp_oauth_bidirectional.py.
         inner = super().async_auth_flow(request)
-        resource_lock_released = retry_after_concurrent_auth = False
+        resource_lock_released = retry_after_auth_recovery = False
         sent_access_token = None
         try:
             outgoing = await inner.__anext__()
@@ -241,8 +241,20 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                         and tokens is not None and tokens.access_token != sent_access_token):
                     self._add_auth_header(request)
                     await inner.aclose()
-                    retry_after_concurrent_auth = True
+                    retry_after_auth_recovery = True
                     break
+                # The SDK jumps directly from a resource 401 to authorization-code flow. Servers can
+                # reject an access token before its local expiry, so try the still-usable refresh token
+                # before allowing that branch to open a browser (#107059).
+                if getattr(incoming, "status_code", None) == 401 and self.context.can_refresh_token():
+                    refresh_request = await self._refresh_token()
+                    refresh_response = yield refresh_request
+                    await self._maybe_flag_poisoned_client(refresh_response)
+                    if await self._handle_refresh_response(refresh_response):
+                        self._add_auth_header(request)
+                        await inner.aclose()
+                        retry_after_auth_recovery = True
+                        break
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)
@@ -256,7 +268,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 import anyio
                 with anyio.CancelScope(shield=True):
                     await self.context.lock.acquire()
-        if retry_after_concurrent_auth:
+        if retry_after_auth_recovery:
             yield request
             self._persist_oauth_metadata_if_changed()
 

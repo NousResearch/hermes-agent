@@ -61,6 +61,14 @@ require fresh review. Existing opted-in automatic updates continue unchanged.
 
 ## Recovery and limits
 
+Signing out of Nous retires this profile's unfinished advice and pending
+confirmation controls. Sign in and re-verify your team with `hermes wisdom setup`
+before continuing Wisdom; this does not revive the old queued advice or its
+controls. Signing out of an unrelated model provider does not disconnect Wisdom.
+Completed operations and delivery evidence remain available for recovery. A send
+already dispatched can still arrive after sign-out; its receipt is retained for
+settlement without sending the card again.
+
 Assessment claims are local to one profile and organization, with three-minute
 leases and three bounded attempts. Idle sessions poll at most once a minute
 per profile/org, and proactive routing uses a ten-minute recent-activity window.

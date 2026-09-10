@@ -580,7 +580,6 @@ class MediationStore:
     ) -> bool:
         now = self.clock()
         with self.store.transaction() as db:
-            self._check_org(db, org)
             if not isinstance(receipt, DeliveryReceipt):
                 raise ValueError("a validated delivery receipt is required")
             from .delivery_outbox import stage_outcome
@@ -594,6 +593,13 @@ class MediationStore:
                 receipt=receipt,
                 introduced=introduced,
             )
+            # Sign-out cannot retract a dispatched send. Persist its receipt
+            # against the immutable reservation, but do not revive the session.
+            active = db.execute(
+                "SELECT verified_org_id FROM installation_identity WHERE singleton=1"
+            ).fetchone()
+            if active is None or active[0] != org:
+                return False
             owner = db.execute(
                 """SELECT a.owner_session,s.platform,s.address_json
                 FROM wisdom_assessment a JOIN wisdom_agent_session s

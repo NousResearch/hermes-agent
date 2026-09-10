@@ -115,6 +115,78 @@ def complete(d, **kwargs):
     )
 
 
+@pytest.mark.parametrize("provider", ["nous", "anthropic"])
+@pytest.mark.parametrize("state", ["pending", "assessing", "ready", "fallback"])
+def test_account_logout_cancels_unfinished_advice_without_relogin_replay(
+    delivery, monkeypatch, provider, state
+):
+    from hermes_cli.auth import _save_auth_store, clear_provider_auth
+
+    d = delivery
+    monkeypatch.setenv("HERMES_HOME", str(d.store.root.parent))
+    _save_auth_store({"providers": {provider: {"access_token": "fixture"}}})
+    with d.store.transaction() as db:
+        db.execute("UPDATE wisdom_assessment SET state=?", (state,))
+        db.execute(
+            """INSERT INTO wisdom_consent
+            (id,organization_id,assessment_id,owner_session,actor_id,platform,
+             operation,plan_json,state,expires_at,created_at,updated_at)
+            VALUES('confirmation','org',?,'session','actor','telegram','install',
+                   '{}','pending',2000,1000,1000)""",
+            (d.job["id"],),
+        )
+
+    assert clear_provider_auth(provider)
+    if provider != "nous":
+        assert d.store.active_org_id() == "org"
+        assert local(d)["state"] == state
+        return
+
+    assert d.store.active_org_id() is None
+    assert not clear_provider_auth("nous")
+    with pytest.raises(ValueError, match="no longer active"):
+        d.queue.enqueue("org", "feed:while-signed-out", {"kind": "notice"})
+    # Re-verifying the same member/team must not revive a pre-logout task or lease.
+    d.store.verify_installation_identity("org")
+    d.queue.register_session(
+        "org", session_key="session", session_id="session", platform="telegram",
+        actor_id="actor", private=True, available=True, user_activity=True,
+    )
+    assert d.queue.enqueue("org", "feed:event", d.job["reference"]) == d.job["id"]
+    assert d.queue.claim("org", "session") == []
+    assert not d.queue.save_advice("org", d.job["id"], d.job["lease_token"], {})
+    with d.store.transaction() as db:
+        assert db.execute("SELECT state FROM wisdom_consent").fetchone()[0] == "stale"
+
+
+def test_account_logout_retains_late_delivery_evidence_without_resending(delivery, monkeypatch):
+    from hermes_cli.auth import _save_auth_store, clear_provider_auth
+
+    d = delivery
+    monkeypatch.setenv("HERMES_HOME", str(d.store.root.parent))
+    _save_auth_store({"providers": {"nous": {"access_token": "fixture"}}})
+    start(d)
+    assert clear_provider_auth("nous")
+    assert d.store.active_org_id() is None
+    with pytest.raises(ValueError, match="reserved sender"):
+        d.queue.complete_delivery(
+            "org", d.job["id"], d.job["lease_token"],
+            receipt=receipt(destination="another-chat"),
+        )
+    assert row(d)["receipt_json"] is None
+    assert not complete(d)
+    assert row(d)["outcome"] == "acknowledged"
+    assert json.loads(row(d)["receipt_json"])["message_id"] == "19"
+    d.client.settle_notification_delivery.assert_not_called()
+
+    d.store.verify_installation_identity("org")
+    d.outbox.flush("org")
+    assert row(d)["state"] == "settled"
+    assert local(d)["state"] == "delivered"
+    assert d.queue.claim("org", "session") == []
+    d.client.settle_notification_delivery.assert_called_once()
+
+
 def test_intent_precedes_network_and_lost_claim_reuses_exact_request(delivery):
     d = delivery
 

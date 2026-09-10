@@ -14,7 +14,7 @@ import {
 } from '@/store/model-visibility'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
-import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
+import { isPointerMovingTowardSubmenu, ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -56,6 +56,32 @@ afterEach(() => {
   // disappears so an in-flight app-level poll cannot schedule another tick.
   $localRuntimeJobs.set([])
   vi.clearAllMocks()
+})
+
+describe('model submenu pointer grace', () => {
+  it('keeps a diagonal path aimed at the portaled submenu on the active row', () => {
+    const submenu = { bottom: 180, left: 300, right: 500, top: 60 }
+
+    expect(
+      isPointerMovingTowardSubmenu(
+        { x: 220, y: 80 },
+        { x: 250, y: 105 },
+        submenu
+      )
+    ).toBe(true)
+  })
+
+  it('allows a deliberate vertical move to a sibling row', () => {
+    const submenu = { bottom: 180, left: 300, right: 500, top: 60 }
+
+    expect(
+      isPointerMovingTowardSubmenu(
+        { x: 220, y: 80 },
+        { x: 250, y: 260 },
+        submenu
+      )
+    ).toBe(false)
+  })
 })
 
 // A minimal controller — these tests are about the CATALOG's own behaviour

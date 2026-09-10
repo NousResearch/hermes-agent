@@ -1,6 +1,15 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -50,6 +59,51 @@ import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-
  *  matches — check the row's alias set too (#87035). */
 function isCurrentProvider(provider: ModelOptionProvider, currentProvider: string): boolean {
   return provider.slug === currentProvider || (provider.aliases?.includes(currentProvider) ?? false)
+}
+
+interface PointerPoint {
+  x: number
+  y: number
+}
+
+interface PointerRect {
+  bottom: number
+  left: number
+  right: number
+  top: number
+}
+
+/**
+ * Return whether the pointer's current vector still enters an open portaled
+ * submenu. Radix owns the actual submenu grace timer; this small predicate
+ * only stops a sibling trigger from stealing the event while the pointer is
+ * on that natural diagonal path (#97505).
+ */
+export function isPointerMovingTowardSubmenu(
+  previous: PointerPoint,
+  current: PointerPoint,
+  submenu: PointerRect
+): boolean {
+  const dx = current.x - previous.x
+  const direction = dx > 0 ? 1 : dx < 0 ? -1 : 0
+
+  if (direction === 0) {
+    return false
+  }
+
+  const boundaryX = direction > 0 ? submenu.left : submenu.right
+  const distanceToBoundary = boundaryX - current.x
+
+  // Once the pointer has crossed the submenu edge it is already inside the
+  // primitive's grace area; sibling-trigger suppression is no longer needed.
+  if ((direction > 0 && distanceToBoundary <= 0) || (direction < 0 && distanceToBoundary >= 0)) {
+    return false
+  }
+
+  const projectedY = current.y + (distanceToBoundary / dx) * (current.y - previous.y)
+  const padding = 12
+
+  return projectedY >= submenu.top - padding && projectedY <= submenu.bottom + padding
 }
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
@@ -364,6 +418,38 @@ export function ModelCatalogMenu({
   const kbIndex = kbOverride !== null && kbOverride < kbRows.length ? kbOverride : autoIndex
   const kbActiveKey = kbIndex >= 0 ? kbRows[kbIndex].key : null
 
+  // Radix's DropdownMenu.Sub has pointer grace once the pointer leaves an
+  // active trigger, but each model row is its own Sub and can receive the
+  // sibling pointermove before the portaled content does. Keep only the last
+  // point: enough to recognize a diagonal intent without a global listener or
+  // unbounded pointer history.
+  const [openSubmenuKey, setOpenSubmenuKey] = useState<null | string>(null)
+  const lastPointerRef = useRef<null | PointerPoint>(null)
+
+  const rememberPointer = (event: ReactPointerEvent) => {
+    lastPointerRef.current = { x: event.clientX, y: event.clientY }
+  }
+
+  const shouldKeepOpenSubmenu = (event: ReactPointerEvent, rowKey: string): boolean => {
+    const previous = lastPointerRef.current
+    if (!previous || !openSubmenuKey || openSubmenuKey === rowKey) {
+      return false
+    }
+
+    const submenu = document.querySelector<HTMLElement>(
+      '[data-slot="dropdown-menu-sub-content"][data-state="open"]'
+    )
+    if (!submenu) {
+      return false
+    }
+
+    return isPointerMovingTowardSubmenu(
+      previous,
+      { x: event.clientX, y: event.clientY },
+      submenu.getBoundingClientRect()
+    )
+  }
+
   const stepKb = (delta: -1 | 1) => {
     if (kbRows.length === 0) {
       return
@@ -541,11 +627,29 @@ export function ModelCatalogMenu({
                       closeMenu()
                     }
 
+                    const rowKey = `${group.provider.slug}:${family.id}`
+
                     return (
-                      <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
+                      <DropdownMenuSub
+                        key={rowKey}
+                        onOpenChange={open => {
+                          setOpenSubmenuKey(previous => {
+                            if (open) {
+                              return rowKey
+                            }
+                            return previous === rowKey ? null : previous
+                          })
+                        }}
+                      >
                         <DropdownMenuSubTrigger
                           hideChevron
                           onClick={activate}
+                          onPointerMove={event => {
+                            if (shouldKeepOpenSubmenu(event, rowKey)) {
+                              event.preventDefault()
+                            }
+                            rememberPointer(event)
+                          }}
                           onKeyDown={event => {
                             if (event.key === 'Enter' || event.key === ' ') {
                               activate()

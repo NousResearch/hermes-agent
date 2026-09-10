@@ -80,6 +80,39 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
 
 
 # ---------------------------------------------------------------------------
+# Tasks created parked (initial_status="blocked") are sticky too
+# ---------------------------------------------------------------------------
+
+
+def test_created_parked_task_is_not_auto_promoted(kanban_home: Path) -> None:
+    """``create_task(initial_status="blocked")`` parks a card for human ops, so
+    it must be as sticky as a worker-initiated block.
+
+    Same failure shape as the worker-block bug, reached by a different door:
+    creation recorded the blocked *status* but emitted no ``blocked`` *event*,
+    and ``_has_sticky_block`` reads events — so the very next tick promoted the
+    card and spawned workers on work a human had explicitly deferred.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="parked for human ops", initial_status="blocked")
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        for _ in range(5):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0, "parked task must not auto-promote"
+            assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_created_parked_task_can_still_be_unblocked(kanban_home: Path) -> None:
+    """Parking stays reversible — an explicit unblock still releases the card,
+    so the stickiness fix cannot wedge a task permanently."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="parked then released", initial_status="blocked")
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status in ("ready", "todo")
+
+
+# ---------------------------------------------------------------------------
 # Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
 # ---------------------------------------------------------------------------
 

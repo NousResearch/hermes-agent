@@ -46,6 +46,7 @@ import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { PoolLimitsSetting } from './pool-limits-setting'
+import { PreviewUblockSetting } from './preview-ublock-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
@@ -407,6 +408,7 @@ function ConfigSettingsInner({
             onChange={setDisableF12}
           />
           <PoolLimitsSetting />
+          <PreviewUblockSetting />
           <QuickEntrySettings />
         </>
       )}

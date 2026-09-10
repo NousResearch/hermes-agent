@@ -68,6 +68,22 @@ class TestHelperFunctions(unittest.TestCase):
         result = _decode_header_value(encoded)
         self.assertEqual(result, "Merhaba")
 
+    def test_decode_header_malformed_does_not_raise(self):
+        """Email headers are attacker-controlled. A malformed RFC 2047
+        encoded-word (a 1-char base64 group, or an unknown charset) must not
+        raise - that would abort the whole inbound IMAP fetch and drop the
+        message, which was already marked Seen."""
+        from plugins.platforms.email.adapter import _decode_header_value
+        # 1-char base64 group: decode_header raises HeaderParseError.
+        self.assertEqual(_decode_header_value("=?utf-8?B?a?="), "=?utf-8?B?a?=")
+        # Same shape mid-header (e.g. a crafted From: display name).
+        self.assertEqual(
+            _decode_header_value("From =?utf-8?B?a?= <x@y.com>"),
+            "From =?utf-8?B?a?= <x@y.com>",
+        )
+        # Unknown charset label: bytes.decode raises LookupError; fall back.
+        self.assertEqual(_decode_header_value("=?bogus-charset?B?aGk=?="), "hi")
+
     def test_extract_email_address_with_name(self):
         from plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(
@@ -530,6 +546,61 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
+
+    def test_malformed_header_does_not_abort_the_batch(self):
+        """A poison header must cost at most its own message, never the batch.
+
+        ``_decode_header_value`` is called from ``_parse_fetched_message`` for
+        both From: and Subject:, inside the per-UID loop. When it raised, the
+        message was already marked Seen, so the raised UID was dropped
+        permanently - and every UID after it in the same batch was dropped with
+        it. This drives the real loop with a malformed encoded-word ahead of a
+        valid message and asserts both survive: the malformed one degrades to
+        its raw header rather than disappearing, and the following UID is
+        still delivered.
+        """
+        adapter = self._make_adapter()
+
+        # UID 1: a 1-char base64 group in both From: and Subject:. This is the
+        # shape that made ``email.header.decode_header`` raise HeaderParseError.
+        bad = MIMEText("poison", "plain", "utf-8")
+        bad["From"] = "=?utf-8?B?a?= <bad@test.com>"
+        bad["Subject"] = "=?utf-8?B?a?="
+        bad["Message-ID"] = "<bad@test.com>"
+
+        # UID 2: an ordinary message queued behind it.
+        good = MIMEText("Hello", "plain", "utf-8")
+        good["From"] = "user@test.com"
+        good["Subject"] = "Test"
+        good["Message-ID"] = "<good@test.com>"
+
+        payloads = {b"1": bad.as_bytes(), b"2": good.as_bytes()}
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2"])
+            if command == "fetch":
+                return ("OK", [(args[0], payloads[args[0]])])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        # The batch completed: neither message was lost.
+        self.assertEqual(len(results), 2)
+        self.assertEqual([r["uid"] for r in results], [b"1", b"2"])
+        # The malformed header degraded to its raw text instead of raising.
+        self.assertEqual(results[0]["subject"], "=?utf-8?B?a?=")
+        self.assertEqual(results[0]["sender_addr"], "bad@test.com")
+        # The message queued behind the poison one still arrived intact.
+        self.assertEqual(results[1]["subject"], "Test")
+        self.assertEqual(results[1]["sender_addr"], "user@test.com")
+        # And the fetch itself did not record a failure.
+        self.assertFalse(adapter._last_fetch_failed)
 
 
 class TestPollLoop(unittest.TestCase):

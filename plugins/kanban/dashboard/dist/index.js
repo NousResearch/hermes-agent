@@ -1020,13 +1020,10 @@
         loadBoardList();  // refresh counts in the switcher
         if (!taskId || !attachments || !attachments.length) return res;
         uploadTaskAttachments(taskId, board, attachments).catch(function (e) {
-          // The task already exists; resolve so the create dialog closes rather
-          // than letting a retry create a duplicate card.
+          // The task already exists; report the background failure without
+          // reopening the create flow where a retry could duplicate the card.
           setActionError(tx(t, "taskCreatedUploadFailed",
             "Task created, but attachment upload failed: ") + String(e.message || e));
-        }).then(function () {
-          loadBoard();
-          loadBoardList();  // pick up attachment state after the background upload
         });
         return res;
       });

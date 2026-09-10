@@ -137,15 +137,21 @@ describe("kanban dashboard clipboard uploads", () => {
     );
     expect(taskPosts).toHaveLength(1);
     expect(apiMocks.authedFetch).toHaveBeenCalledTimes(1);
+    const boardLoadsBeforeUploadSettlement = apiMocks.fetchJSON.mock.calls.filter(
+      ([url]) => String(url).includes("/board") && !String(url).includes("/boards"),
+    ).length;
 
     await act(async () => resolveUpload?.({
       ok: false,
       status: 413,
       text: async () => JSON.stringify({ detail: "image too large" }),
     }));
-    await waitFor(() => apiMocks.fetchJSON.mock.calls.filter(
+    await waitFor(() => container.textContent?.includes(
+      "Task created, but attachment upload failed: image too large",
+    ) === true);
+    expect(apiMocks.fetchJSON.mock.calls.filter(
       ([url]) => String(url).includes("/board") && !String(url).includes("/boards"),
-    ).length >= 3);
+    )).toHaveLength(boardLoadsBeforeUploadSettlement);
     expect(container.textContent).toContain(
       "Task created, but attachment upload failed: image too large",
     );

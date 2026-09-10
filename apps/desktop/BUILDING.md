@@ -102,6 +102,49 @@ The Electron build bakes these paths into its stamp. Desktop startup does not
 inspect, create, or repair a PM payload. Non-bundled builds carry no placeholder payload.
 See [shared bundle builds](../../docs/shared-bundle-builds.md) for Termux reuse.
 
+## Commit-only builds
+
+To preview a build for a pushed revision, run:
+
+```sh
+python scripts/release.py --build-commit REV --remote origin
+```
+
+The command fetches the remote and resolves `REV` to a full commit SHA.
+It prints the dispatch command without changing local branches, tags, or releases.
+Add `--publish` to dispatch that build. This flag does not publish a release
+in commit-build mode.
+
+The workflow must exist on the repository's default branch. Admission requires
+a default-branch `workflow_dispatch` and repository write, maintain, or admin
+permission for both the original actor and the actor who reruns it.
+It rejects mixed tag, release-phase, channel-publication, and upgrade inputs.
+
+Builder jobs check out the admitted SHA. Their artifacts and completion receipts
+go to `releases/commit/FULL_SHA/`, separate from tag archives and update channels.
+The run summary lists Windows packages and both universal bundles, macOS DMG/ZIP
+files, and the Termux package. Linux release legs remain disabled and are listed
+as not built. Only receipt-listed artifacts that exist in storage get download
+links. Missing receipts show the failed or incomplete leg.
+
+Commit builds require the signing credentials used by their release legs.
+Store bundle envelopes remain unsigned for Partner Center, but these builds
+never submit them. No GitHub release, updater feed, or APT channel is changed.
+An identical upload retry can succeed. Different bytes at an existing commit
+object key fail rather than replace that object.
+
+For a local native build, check out the exact SHA and run:
+
+```sh
+python scripts/bundles/desktop.py --commit=FULL_SHA --variant=bundled
+```
+
+The builder uses that commit's project version. Sideload MSIX versions append
+`.0`. Store package versions use the commit timestamp with the existing UTC
+calendar policy, even when the app version starts with zero.
+Commit-built stamps disable automatic release-channel updates. Local command and transport tests do not
+replace signed-package installation and update acceptance on each native host.
+
 ## Windows signing and App Installer
 
 The signing jobs provide `AZURE_SIGN_ENDPOINT`, `AZURE_SIGN_ACCOUNT`,

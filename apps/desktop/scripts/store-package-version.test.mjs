@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import { appIdentity, storeManifestTemplate, storePackageVersion, storePackageVersionAt } from '../../../scripts/msix-shared.mjs'
 import { stageStoreManifest } from './before-build.mjs'
 import { AppInfo } from '../../../node_modules/app-builder-lib/dist/appInfo.js'
@@ -66,4 +66,40 @@ test('Store calendar ordering survives minute, hour, day and year boundaries and
   expect(() => storeManifestTemplate('${version}', '0.27.1.0')).toThrow()
   expect(() => storePackageVersionAt(NaN)).toThrow()
   expect(() => storePackageVersion('v0.27.1-canary.20260231000000', '.')).toThrow('Invalid canary')
+})
+
+test('commit builds use the commit time for Store identity without changing the app version', () => {
+  const { root, app } = fixture()
+  const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+  const timestamp = Number(execFileSync('git', ['log', '-1', '--format=%ct', commit], { cwd: root, encoding: 'utf8' }).trim())
+  vi.stubEnv('HERMES_PAYLOAD_TAG', '')
+  vi.stubEnv('HERMES_BUILD_COMMIT', commit)
+  vi.stubEnv('HERMES_PAYLOAD_VERSION', '0.21.1')
+  vi.useFakeTimers()
+  try {
+    vi.setSystemTime(new Date('2030-01-01T00:00:00Z'))
+    const identity = appIdentity(app)
+    const xml = fs.readFileSync(stageStoreManifest(app, ''), 'utf8')
+    expect(identity.version).toBe(storePackageVersionAt(timestamp))
+    expect(/<Identity\b[^>]*Version="([^"]+)"/.exec(xml)[1]).toBe(identity.version)
+    expect(identity.fileVersion).toBe('0.21.1')
+    vi.setSystemTime(new Date('2031-01-01T00:00:00Z'))
+    expect(appIdentity(app).version).toBe(identity.version)
+    const prior = fs.readFileSync(path.join(app, 'build/store-msix-manifest.xml'))
+    for (const bad of ['short', 'a'.repeat(40)]) {
+      vi.stubEnv('HERMES_BUILD_COMMIT', bad)
+      expect(() => stageStoreManifest(app, '')).toThrow()
+      expect(fs.readFileSync(path.join(app, 'build/store-msix-manifest.xml'))).toEqual(prior)
+    }
+    vi.stubEnv('HERMES_BUILD_COMMIT', commit)
+    for (const version of ['01.2.3', '1.65536.0', '1.2.3-canary.123', '']) {
+      vi.stubEnv('HERMES_PAYLOAD_VERSION', version)
+      expect(() => appIdentity(app)).toThrow()
+    }
+    vi.stubEnv('HERMES_PAYLOAD_VERSION', '0.21.1')
+    expect(() => appIdentity(app, 'v0.21.1')).toThrow()
+  } finally {
+    vi.useRealTimers()
+    vi.unstubAllEnvs()
+  }
 })

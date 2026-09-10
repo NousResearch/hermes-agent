@@ -39,19 +39,21 @@ name: Desktop Bundled Release
 # green, so a failed leg can never publish a partial channel. Stable candidate
 # jobs only stage tag-scoped objects; stable-release.yml gates feed promotion
 # on package acceptance and artifact publication. No GitHub job artifacts
-# carry release files. Non-publishing builds leave output on the runner only.
+# carry release files. Non-publishing tag builds leave output on the runner.
+# Commit builds stage under releases/commit/<sha>/ and write a run summary.
+# They never publish a release, updater feed, Store submission, or APT channel.
 #
 # Payload staging is `hermes pm bundle` on the native runner. There is
 # no cross-target staging. The darwin legs sign (CSC_LINK) and notarize
 # (afterSign notarize.mjs) when the release-signing environment carries the
-# Apple credentials, and FAIL rather than publish unsigned — forks without
-# the credentials can only build (upload_release=false), never publish.
+# Apple credentials. Downloadable commit artifacts require the same signing
+# checks as release artifacts. Unsigned tag builds cannot publish.
 #
 # scripts/bundles/desktop.py is the one driver. Local and CI run
 # the same command. This workflow adds caching and upload only.
 #
-# Triggers: workflow_dispatch with an explicit tag. A tag push does not
-# start this workflow (a bot-pushed canary tag would never fire).
+# Manual dispatch selects a tag or a pushed full commit. Commit dispatches
+# use the default-branch workflow and require maintainer permission.
 #
 # R2 secrets (repo-level or the release-signing environment): the R2
 # account id + an R2 API token (S3-compatible) with read/write on the
@@ -95,8 +97,14 @@ on:
     inputs:
       tag:
         description: 'Release tag to bundle (vX.Y.Z or vX.Y.0-canary.YYYYMMDDHHMMSS). Must exist on the repo.'
-        required: true
+        required: false
         type: string
+        default: ''
+      build_commit:
+        description: 'Commit-only build: EXACT full 40-hex SHA already pushed to this repo (workflow_dispatch from the default branch only). Mutually exclusive with tag.'
+        required: false
+        type: string
+        default: ''
       termux_only:
         description: 'Build and publish only the Termux package'
         required: false
@@ -120,43 +128,71 @@ permissions:
   id-token: write
 
 concurrency:
-  group: desktop-bundled-release-${{ inputs.tag }}-${{ inputs.release-phase || 'canary' }}
+  group: desktop-bundled-release-${{ inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}
   cancel-in-progress: false
 
 jobs:
   validate:
-    name: Validate the tag
+    name: Validate the build source
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
-      # The tag's commit, resolved ONCE here and exported as a full SHA.
-      # Every privileged job checks out THIS — never the tag ref, which a
-      # force-push can move between the validate and build jobs.
+      # Resolve the build source once. Every privileged job uses this SHA,
+      # not a mutable tag or the dispatch branch.
       # The tag's channel (stable | canary). publish-darwin-updater scopes
       # its concurrency group on this so two dispatches for the SAME
       # channel can never race their feed writes (a stable and a canary
       # publish in parallel by design — different feed files).
       channel: ${{ steps.admission.outputs.channel }}
       sha: ${{ steps.admission.outputs.sha }}
+      payload-version: ${{ steps.admission.outputs.payload-version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.build_commit != '' && github.sha || inputs.tag }}
           # Full history: the admission gate below runs merge-base against
           # origin/main, which needs the shared ancestry, not a depth-1 tip.
           fetch-depth: 0
           fetch-tags: true
-          # but we only need one file :3
           filter: tree:0
-          sparse-checkout: pyproject.toml
+          sparse-checkout: |
+            pyproject.toml
+            scripts/releases
           sparse-checkout-cone-mode: false
 
       - name: Validate tag shape, pyproject lockstep, and ancestry on origin/main
         id: admission
         env:
           TAG: ${{ inputs.tag }}
+          BUILD_COMMIT: ${{ inputs.build_commit }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          UPLOAD_RELEASE: ${{ inputs.upload_release }}
+          TERMUX_UPGRADE_FROM_TAG: ${{ inputs.termux_upgrade_from_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if [ -n "$BUILD_COMMIT" ]; then
+            # Reject mixed inputs before loading code from the checkout.
+            if [ -n "$TAG" ] || [ -n "$RELEASE_PHASE" ] || [ -n "$TERMUX_UPGRADE_FROM_TAG" ] || [ "$UPLOAD_RELEASE" != false ]; then
+              echo '::error::commit builds cannot select release publication or upgrade inputs'
+              exit 1
+            fi
+            if ! [[ "$BUILD_COMMIT" =~ ^[a-f0-9]{40}$ ]]; then
+              echo '::error::commit builds require an exact full SHA'
+              exit 1
+            fi
+            if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ] || [ "$GITHUB_WORKFLOW_REF" != "$GITHUB_REPOSITORY/.github/workflows/desktop-bundled-release.yml@refs/heads/$DEFAULT_BRANCH" ]; then
+              echo '::error::commit builds require the default-branch dispatch workflow'
+              exit 1
+            fi
+            python -m scripts.releases.commit_build admit
+            exit 0
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::either tag or build_commit is required"; exit 1
+          fi
           case "$RELEASE_PHASE" in
             candidate|publish|promote)
               [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
@@ -204,8 +240,7 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
   # ── Windows builders (REAL) ───────────────────────────────────────────────
-  # The only active builder legs. Every win32 downstream job (updater feed +
-  # Store submission) is gated on THIS job, never on mac/linux.
+  # Windows assembly and publication depend on these native Windows legs.
   build-win32:
     name: bundled ${{ matrix.target.label }}
     if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
@@ -224,6 +259,8 @@ jobs:
     env:
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
+      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       electron_config_cache: ${{ github.workspace }}/.cache/electron
@@ -439,12 +476,15 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_TOKEN_CREDENTIALS: prod
         run: |
-          python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
-          # The Store-submission MSIX is the same bundled payload re-packed
-          # with the Partner Center packaging identity (publish-win32-store
-          # bundles these into the universal Store .msixbundle and submits it;
-          # they also land in the tag archive, never a feed dir).
-          python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            python scripts/bundles/desktop.py --commit="$HERMES_BUILD_COMMIT" --variant=bundled
+            python scripts/bundles/desktop.py --commit="$HERMES_BUILD_COMMIT" --variant=store
+          else
+            python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+            # Repack the payload with the Partner Center identity.
+            # Store packages enter the tag archive, never an updater feed.
+            python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
+          fi
 
       - name: Verify native signature cache contracts
         shell: bash
@@ -459,7 +499,7 @@ jobs:
             --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
 
       - name: Stage Windows packages to R2
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
           TARGET: ${{ matrix.target.label }}
@@ -475,8 +515,15 @@ jobs:
               --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')
           fi
-          python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
-            --name "$TARGET" --root apps/desktop/release "${args[@]}"
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            # Commit-only mode: schema-2 receipts under releases/commit/<sha>/.
+            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+              --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release "${args[@]}"
+          else
+            python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release "${args[@]}"
+          fi
 
   # ── macOS builders (REAL) ──────────────────────────────────────────────────
   # Native per-arch darwin builds via scripts/bundles/desktop.py (the
@@ -507,6 +554,8 @@ jobs:
     env:
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
+      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       electron_config_cache: ${{ github.workspace }}/.cache/electron
@@ -625,13 +674,10 @@ jobs:
           restore-keys: |
             node-pty-prebuilds-${{ matrix.target.label }}-
 
-      # Signing/notarization gate. A publishing run MUST have the Apple
-      # credentials; missing credentials fail the leg here (before any
-      # build work) instead of producing an unsigned artifact that a later
-      # job would publish. A non-publishing run (upload_release=false,
-      # e.g. forks) builds unsigned on purpose.
+      # Commit artifacts are downloadable too. Require signing for them,
+      # candidates, and published tags before building any payload.
       - name: Require signing credentials when publishing
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -649,7 +695,7 @@ jobs:
           [ -z "$CLOUDFLARE_R2_PUBLIC_URL" ] && missing+=(CLOUDFLARE_R2_PUBLIC_URL)
           [ -z "$CLOUDFLARE_R2_BUCKET" ] && missing+=(CLOUDFLARE_R2_BUCKET)
           if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::upload_release=true but required signing/notarization credentials are not set in the release-signing environment: ${missing[*]} — refusing to produce an unsigned publishable build"
+            echo "::error::required signing/notarization credentials are missing from release-signing: ${missing[*]}"
             exit 1
           fi
 
@@ -657,7 +703,7 @@ jobs:
         # notarytool takes a FILE PATH for --key; raw .p8 content in argv
         # dies with `Invalid option: ***`. The build step must NOT re-declare
         # APPLE_API_KEY in its env: step env shadows GITHUB_ENV.
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -696,7 +742,11 @@ jobs:
           # every Mach-O) — raise the fd limit and let DEBUG show progress.
           ulimit -n 16384 2>/dev/null || true
           echo "file descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
-          python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            python scripts/bundles/desktop.py --commit="$HERMES_BUILD_COMMIT" --variant=bundled
+          else
+            python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+          fi
 
       - name: Audit bundle architecture
         shell: bash
@@ -709,7 +759,7 @@ jobs:
         # The backstop against a silent unsigned publish: assess the packed
         # app against the real Gatekeeper policy (requires a Developer ID
         # signature AND a stapled notarization ticket to pass offline).
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         run: |
           shopt -s nullglob
@@ -744,7 +794,7 @@ jobs:
           mv "$f" "apps/desktop/release/${arch}-${channel}-mac.yml"
 
       - name: Stage macOS packages and feed inputs to R2
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
           TARGET: ${{ matrix.target.label }}
@@ -759,8 +809,16 @@ jobs:
               --out "apps/desktop/release/metadata-macos-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')
           fi
-          python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
-            --name "$TARGET" --root apps/desktop/release "${args[@]}"
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            # Commit-only mode: binaries only — no feed yml exists without a tag.
+            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+              --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release \
+              --include '*.dmg' --include '*.zip' --include '*.blockmap'
+          else
+            python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release "${args[@]}"
+          fi
 
   # ── Linux builders (DISABLED for now) ─────────────────────────────────────
   build-linux:
@@ -783,12 +841,14 @@ jobs:
   publish-win32-updater:
     name: Assemble Windows bundle and optionally publish canary feed
     needs: [validate, build-win32]
-    if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+    if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
     runs-on: windows-2025
     environment: release-signing
     timeout-minutes: 45
     env:
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
+      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
@@ -863,8 +923,14 @@ jobs:
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
         run: |
-          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
-            --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            python -m scripts.releases.handoff fetch --commit-build "$HERMES_BUILD_COMMIT" \
+              --commit "$RELEASE_COMMIT" \
+              --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
+          else
+            python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
+          fi
 
       - name: Azure login (OIDC)
         uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
@@ -896,6 +962,12 @@ jobs:
         run: |
           # Candidate mode builds the bundles without writing a feed.
           # Canary mode publishes the App Installer bundle and pointer.
+          # Commit mode assembles both products without publishing feeds.
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            node scripts/stage-msixbundle.mjs --commit "$HERMES_BUILD_COMMIT" --version "$HERMES_PAYLOAD_VERSION" --variant bundled --no-upload
+            node scripts/bundle-store-msixbundle.mjs --commit "$HERMES_BUILD_COMMIT" --version "$HERMES_PAYLOAD_VERSION"
+            exit 0
+          fi
           args=()
           if [ "$RELEASE_PHASE" = candidate ]; then args+=(--candidate); fi
           node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled "${args[@]}"
@@ -903,14 +975,20 @@ jobs:
             node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG"
           fi
 
-      - name: Stage stable universal bundles to R2
-        if: inputs.release-phase == 'candidate'
+      - name: Stage universal bundles to R2
+        if: inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
         run: |
-          python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
-            --name windows-universal --root apps/desktop/release --include '*.msixbundle'
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+              --commit "$RELEASE_COMMIT" \
+              --name windows-universal --root apps/desktop/release --include '*.msixbundle'
+          else
+            python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --name windows-universal --root apps/desktop/release --include '*.msixbundle'
+          fi
 
   # ── Windows Store submission (REAL — PARALLEL with publish-win32-updater) ─
   # Bundles the two Store-*.msix into one universal Store .msixbundle and
@@ -930,7 +1008,8 @@ jobs:
     name: Publish the Windows Store submission (production + canary flight)
     needs: [validate, build-win32]
     if: |
-      inputs.upload_release == true
+      inputs.build_commit == ''
+      && inputs.upload_release == true
       && vars.MS_STORE_PRODUCT_ID != ''
       && (contains(inputs.tag, '-canary.') == false || vars.MS_STORE_CANARY_FLIGHT_ID != '')
     runs-on: windows-2025
@@ -1085,7 +1164,7 @@ jobs:
   publish-darwin-updater:
     name: Publish the macOS updater feed
     needs: [validate, build-darwin]
-    if: inputs.upload_release == true && inputs.termux_only != true
+    if: inputs.build_commit == '' && inputs.upload_release == true && inputs.termux_only != true
     runs-on: ubuntu-24.04
     environment: release-signing
     timeout-minutes: 15
@@ -1147,12 +1226,13 @@ jobs:
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
     needs: [validate]
-    if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+    if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
     runs-on: ubuntu-24.04-arm
     environment: release-signing
     timeout-minutes: 90
     env:
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
       # termux_build.sh gates on `gh release view <tag>` (refuse to build
       # before the release exists); gh needs GH_TOKEN or it errors out and
       # the gate misreads that as "release not found".
@@ -1179,6 +1259,7 @@ jobs:
 
       - name: Derive the channel from the tag
         id: channel
+        if: inputs.build_commit == ''
         shell: bash
         # Single source of truth: deb_version.py --channel uses the same
         # _TAG_RE as the Debian version derivation, so the channel and the
@@ -1309,10 +1390,18 @@ jobs:
         # termux_build.sh lands wheelhouse/ + index.json + SHA256SUMS in the
         # payload root, where build_deb.sh's --no-index pip install finds it.
         run: |
-          bash scripts/termux/termux_build.sh \
-            --repo . \
-            --tag "$HERMES_PAYLOAD_TAG" \
-            --out termux-build/payload
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            # The checkout is the admitted commit. No release tag is required.
+            bash scripts/termux/termux_build.sh \
+              --repo . \
+              --commit "$HERMES_BUILD_COMMIT" \
+              --out termux-build/payload
+          else
+            bash scripts/termux/termux_build.sh \
+              --repo . \
+              --tag "$HERMES_PAYLOAD_TAG" \
+              --out termux-build/payload
+          fi
 
       - name: Save the wheelhouse
         # Only proven wheels enter the cache. Saving before deb assembly
@@ -1346,11 +1435,19 @@ jobs:
         # opt-out flag); the channel is derived from the tag inside the
         # script via deb_version.py.
         run: |
-          bash scripts/termux/build_deb.sh \
-            --repo . \
-            --tag "$HERMES_PAYLOAD_TAG" \
-            --payload termux-build/payload \
-            --out termux-build/deb
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            bash scripts/termux/build_deb.sh \
+              --repo . \
+              --commit "$HERMES_BUILD_COMMIT" \
+              --payload termux-build/payload \
+              --out termux-build/deb
+          else
+            bash scripts/termux/build_deb.sh \
+              --repo . \
+              --tag "$HERMES_PAYLOAD_TAG" \
+              --payload termux-build/payload \
+              --out termux-build/deb
+          fi
 
       - name: Retrieve the previous published Termux package from R2
         if: inputs.termux_upgrade_from_tag != ''
@@ -1375,7 +1472,15 @@ jobs:
           fetch(tag, commit, ['termux'], Path('termux-build/previous'), ['deb/*.deb'])
           PY
 
+      - name: Stage the commit-build deb to R2
+        if: inputs.build_commit != ''
+        shell: bash
+        run: |
+          python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+            --name termux --root termux-build --include 'deb/*.deb'
+
       - name: Write the APT signing key
+        if: inputs.build_commit == ''
         shell: bash
         env:
           TERMUX_APT_GPG_KEY: ${{ secrets.TERMUX_APT_GPG_KEY }}
@@ -1387,6 +1492,7 @@ jobs:
           printf '%s\n' "$TERMUX_APT_GPG_KEY" > "$RUNNER_TEMP/termux-apt-gpg.asc"
 
       - name: Stage the APT repo and publish to R2
+        if: inputs.build_commit == ''
         shell: bash
         env:
           CHANNEL: ${{ steps.channel.outputs.channel }}
@@ -1474,10 +1580,13 @@ jobs:
 
   builds-pending:
     name: Mark the builds table as in progress
-    if: inputs.upload_release == true && inputs.termux_only != true
+    needs: validate
+    if: inputs.build_commit == '' && inputs.upload_release == true && inputs.termux_only != true
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
       - name: Render the placeholder
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1495,7 +1604,7 @@ jobs:
   builds-table:
     name: Render the release builds table
     needs: [validate, build-win32, build-darwin, build-linux, publish-win32-updater, publish-darwin-updater, termux-deb]
-    if: inputs.upload_release == true && inputs.release-phase == ''
+    if: inputs.build_commit == '' && inputs.upload_release == true && inputs.release-phase == ''
     runs-on: ubuntu-24.04
     environment: release-signing
     steps:
@@ -1520,6 +1629,47 @@ jobs:
           fi
           python3 scripts/render-builds-table.py \
             --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY"
+
+  commit-builds-summary:
+    name: Commit build summary (every binary, built or not)
+    needs: [validate, build-win32, build-darwin, build-linux, publish-win32-updater, termux-deb]
+    if: |
+      always() && inputs.build_commit != ''
+      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Runs from the admitted commit so the renderer matches the built bytes.
+          ref: ${{ needs.validate.outputs.sha }}
+      - name: Render the full expected-binary matrix
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+        # Render failed admitted builds too. Only receipt-listed objects
+        # receive download links. Rendering does not alter job results.
+        run: |
+          set -e
+          failed=$(python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ["RELEASE_NEEDS"])
+          failed = [name for name, info in needs.items()
+                    if info.get("result") not in ("success", "skipped")]
+          print(",".join(sorted(failed)))
+          PY
+          )
+          python3 scripts/render-builds-table.py \
+            --summary-commit "$RELEASE_COMMIT" \
+            --summary-out "$GITHUB_STEP_SUMMARY" \
+            --summary-failed-legs "$failed"
 
   candidate-manifest:
     name: Stage verified stable candidate artifacts
@@ -1673,6 +1823,7 @@ jobs:
     needs: [build-win32, build-darwin, build-linux, builds-table, publish-win32-updater, publish-darwin-updater]
     if: |
       always()
+      && inputs.build_commit == ''
       && inputs.upload_release == true
       && contains(inputs.tag, '-canary.')
       && needs.build-win32.result == 'success'

@@ -146,17 +146,19 @@ fi
 # ===================== HOST HALF (glibc runner) ==========================
 REPO=""
 TAG=""
+COMMIT_MODE=""
 OUT=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --repo) REPO="${2:?}"; shift 2 ;;
         --tag) TAG="${2:?}"; shift 2 ;;
+        --commit) COMMIT_MODE="${2:?}"; shift 2 ;;
         --out) OUT="${2:?}"; shift 2 ;;
-        *) printf 'usage: termux_build.sh --repo <dir> --tag <tag> --out <dir>\n' >&2; exit 2 ;;
+        *) printf 'usage: termux_build.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --out <dir>\n' >&2; exit 2 ;;
     esac
 done
-[ -n "$REPO" ] && [ -n "$TAG" ] && [ -n "$OUT" ] || {
-    printf 'usage: termux_build.sh --repo <dir> --tag <tag> --out <dir>\n' >&2; exit 2; }
+[ -n "$REPO" ] && [ -n "$OUT" ] && { [ -n "$TAG" ] || [ -n "$COMMIT_MODE" ]; } && { [ -z "$TAG" ] || [ -z "$COMMIT_MODE" ]; } || {
+    printf 'usage: termux_build.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --out <dir>\n' >&2; exit 2; }
 
 for tool in uv git curl docker python3; do
     command -v "$tool" >/dev/null 2>&1 \
@@ -169,13 +171,21 @@ case "$ARCH" in
     *) fail "refusing to build on non-aarch64 host (uname -m: $ARCH)" ;;
 esac
 
-# [b] FIRST: refuse mutable releases.
-log "Verifying release tag $TAG exists on origin"
-git -C "$REPO" ls-remote --exit-code --tags origin "$TAG" >/dev/null \
-    || fail "tag $TAG not found on origin; refusing to build a mutable release"
-if command -v gh >/dev/null 2>&1; then
-    gh release view "$TAG" --repo "$(git -C "$REPO" remote get-url origin | sed -e 's#.*github.com[:/]##' -e 's#\.git$##')" >/dev/null 2>&1 \
-        || fail "release $TAG not found; refusing to build before the release exists"
+# Check source identity before writing build output.
+if [ -n "$COMMIT_MODE" ]; then
+    [[ "$COMMIT_MODE" =~ ^[a-f0-9]{40}$ ]] || fail "--commit requires an exact full 40-character SHA"
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$COMMIT_MODE" ] || fail "checkout does not match --commit"
+    log "Commit-only build of $COMMIT_MODE -- skipping the tag/release gates"
+    REF="$COMMIT_MODE"
+else
+    log "Verifying release tag $TAG exists on origin"
+    git -C "$REPO" ls-remote --exit-code --tags origin "$TAG" >/dev/null \
+        || fail "tag $TAG not found on origin; refusing to build a mutable release"
+    if command -v gh >/dev/null 2>&1; then
+        gh release view "$TAG" --repo "$(git -C "$REPO" remote get-url origin | sed -e 's#.*github.com[:/]##' -e 's#\.git$##')" >/dev/null 2>&1 \
+            || fail "release $TAG not found; refusing to build before the release exists"
+    fi
+    REF="$TAG"
 fi
 
 REPO_ABS="$(cd "$REPO" && pwd)"
@@ -188,8 +198,8 @@ rm -rf "$WORK/tree"
 mkdir -p "$WORK/tree" "$WHEELHOUSE"
 
 # [c] Stage the tag as a gitless tree.
-log "Archiving $TAG into $WORK/tree"
-python3 - "$REPO_ABS" "$TAG" "$WORK/tree" <<'PY'
+log "Archiving $REF into $WORK/tree"
+python3 - "$REPO_ABS" "$REF" "$WORK/tree" <<'PY'
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -220,7 +230,7 @@ rm -f "$OUT_ABS/index.json" "$OUT_ABS/SHA256SUMS" "$WORK/resolved.txt" "$WORK/bu
 log "Resolving dependency graph from the tag's uv.lock"
 ( cd "$WORK/tree" && uv export --frozen --no-emit-project --extra acp \
     --no-hashes --no-annotate --no-header -o "$WORK/req.txt" ) \
-    || fail "uv export failed (frozen lock at $TAG)"
+    || fail "uv export failed (frozen lock at $REF)"
 # Host parsing needs packaging too. Use the release lock, not runner packages.
 PACKAGING_SPEC="$(python3 - "$WORK/tree/uv.lock" <<'PY'
 import sys, tomllib
@@ -383,7 +393,9 @@ cp -a "$WORK/tree" "$OUT_ABS/app"
 
 # [h] Only a successful native build and both gates can publish cache proof.
 log "Emitting index.json and SHA256SUMS"
-python3 "$HERE/wheelhouse_cache.py" write "${CACHE_ARGS[@]}" --tag "$TAG" \
+provenance=(--tag "$TAG")
+if [ -n "$COMMIT_MODE" ]; then provenance=(--commit "$COMMIT_MODE"); fi
+python3 "$HERE/wheelhouse_cache.py" write "${CACHE_ARGS[@]}" "${provenance[@]}" \
     || fail "manifest emission failed"
 
 log "Wheelhouse complete: $WHEELHOUSE"

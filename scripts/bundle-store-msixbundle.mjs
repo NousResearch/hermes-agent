@@ -19,24 +19,28 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
 
 import { appIdentity } from './msix-shared.mjs'
 import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle-tools.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-// node strips the first '--' (and an immediately-following option) for its
-// own use; parse space-separated flag pairs, not --flag=value.
-const args = process.argv.slice(2)
-const flagValue = (name) => {
-  for (let i = 0; i < args.length - 1; i += 1) {
-    if (args[i] === name) return args[i + 1]
-  }
-  return undefined
+const { values } = parseArgs({ options: {
+  tag: { type: 'string' }, commit: { type: 'string' }, version: { type: 'string' },
+  'output-file': { type: 'string' },
+} })
+const tag = values.tag || process.env.HERMES_PAYLOAD_TAG
+const commitBuild = values.commit
+if (commitBuild) {
+  if (tag) throw new Error('Commit builds cannot select a release tag')
+  process.env.HERMES_BUILD_COMMIT = commitBuild
+  process.env.HERMES_PAYLOAD_VERSION = values.version || ''
+} else if (values.version !== undefined) {
+  throw new Error('--version requires --commit')
 }
-const tag = flagValue('--tag') || process.env.HERMES_PAYLOAD_TAG
-if (!tag) {
-  console.error('[bundle-store] --tag=<vX.Y.Z> is required')
+if (!tag && !commitBuild) {
+  console.error('[bundle-store] --tag or --commit is required')
   process.exit(1)
 }
 if (process.platform !== 'win32') {
@@ -82,6 +86,6 @@ execFileSync(makeappx, ['bundle', '/o', '/bv', version, '/d', staging, '/p', bun
 fs.rmSync(staging, { recursive: true, force: true })
 
 // Download logs can share stdout. The explicit output file is the machine contract.
-const outputFile = flagValue('--output-file')
+const outputFile = values['output-file']
 if (outputFile) fs.writeFileSync(outputFile, bundle, 'utf8')
 console.log(bundle)

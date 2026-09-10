@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 
@@ -82,13 +83,17 @@ def main() -> int:
     parser.add_argument("--builder", required=True)
     parser.add_argument("--platform-tag", required=True)
     parser.add_argument("--python-abi", required=True)
-    parser.add_argument("--tag", default="")
+    provenance = parser.add_mutually_exclusive_group()
+    provenance.add_argument("--tag", default="")
+    provenance.add_argument("--commit")
     args = parser.parse_args()
+    if args.commit is not None and not re.fullmatch(r"[a-f0-9]{40}", args.commit):
+        parser.error("--commit requires an exact full SHA")
     identity = build_identity(args.repo, args.builder, args.platform_tag, args.python_abi)
     if args.action == "check":
         return 0 if is_usable(args.payload, identity) else 1
     write_manifest(
-        args.payload, identity, tag=args.tag,
+        args.payload, identity, **({"commit": args.commit} if args.commit else {"tag": args.tag}),
         platformTag=args.platform_tag, pythonAbi=args.python_abi,
     )
     return 0

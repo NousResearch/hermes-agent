@@ -27,6 +27,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
 
 import { appIdentity, buildAppInstaller } from './msix-shared.mjs'
 import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle-tools.mjs'
@@ -34,17 +35,23 @@ import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-// node strips the first '--' (and an immediately-following option) for its
-// own use; parse space-separated flag pairs, not --flag=value.
-const args = process.argv.slice(2)
-const flagValue = (name) => {
-  for (let i = 0; i < args.length - 1; i += 1) {
-    if (args[i] === name) return args[i + 1]
-  }
-  return undefined
+const { values } = parseArgs({ options: {
+  tag: { type: 'string' }, commit: { type: 'string' }, version: { type: 'string' },
+  variant: { type: 'string' }, 'no-upload': { type: 'boolean' }, candidate: { type: 'boolean' },
+} })
+const tag = values.tag
+const commitBuild = values.commit || ''
+const commitVersion = values.version || ''
+const noUpload = values['no-upload'] === true
+const candidate = values.candidate === true
+const variant = values.variant || process.env.HERMES_DESKTOP_VARIANT || 'bundled'
+
+if (commitBuild && (tag || process.env.HERMES_PAYLOAD_TAG || candidate)) {
+  throw new Error('Commit builds cannot select a release tag or candidate mode')
 }
-const tag = flagValue('--tag')
-const variant = flagValue('--variant') || process.env.HERMES_DESKTOP_VARIANT || 'bundled'
+if (!commitBuild && (values.version !== undefined || noUpload)) {
+  throw new Error('--version and --no-upload require --commit')
+}
 
 // product-identity.cjs keys the app name off HERMES_DESKTOP_VARIANT — the
 // artifact filenames (HermesBundled-*-win-x64.msix) carry the bundled
@@ -52,7 +59,26 @@ const variant = flagValue('--variant') || process.env.HERMES_DESKTOP_VARIANT || 
 // fails. Set it before anything requires the identity.
 process.env.HERMES_DESKTOP_VARIANT = variant
 
-if (!tag) {
+if (commitBuild) {
+  if (!/^[a-f0-9]{40}$/.test(commitBuild)) {
+    console.error('[stage-msixbundle] --commit must be an exact full 40-hex SHA')
+    process.exit(1)
+  }
+  if (!/^\d+\.\d+\.\d+$/.test(commitVersion)) {
+    console.error('[stage-msixbundle] --version=X.Y.Z is required with --commit (the target pyproject version)')
+    process.exit(1)
+  }
+  if (!noUpload) {
+    console.error('[stage-msixbundle] commit mode must pass --no-upload (commit builds never write a feed)')
+    process.exit(1)
+  }
+  if (tag) {
+    console.error('[stage-msixbundle] --commit and --tag are mutually exclusive')
+    process.exit(1)
+  }
+  process.env.HERMES_BUILD_COMMIT = commitBuild
+  process.env.HERMES_PAYLOAD_VERSION = commitVersion
+} else if (!tag) {
   console.error('[stage-msixbundle] --tag=<vX.Y.Z> is required')
   process.exit(1)
 }
@@ -65,9 +91,8 @@ if (process.platform !== 'win32') {
   process.exit(1)
 }
 
-const candidate = args.includes('--candidate')
 const canary = /-canary\./.test(tag)
-if (!canary && !candidate) throw new Error('Stable bundles must use the staged stable-release workflow')
+if (!commitBuild && !canary && !candidate) throw new Error('Stable bundles must use the staged stable-release workflow')
 const channel = canary ? 'canary' : 'stable'
 const channelDir = `releases/win32/${variant === 'light' ? 'light/' : ''}${channel}`
 
@@ -157,6 +182,13 @@ if (signing) {
 if (candidate) {
   execFileSync(signtool, ['verify', '/pa', bundle], { stdio: 'inherit' })
   console.log(`[stage-msixbundle] candidate ready: ${bundle}`)
+  process.exit(0)
+}
+
+// Commit-only mode stops here: the workflow hands the bundle to R2 through
+// scripts.releases.handoff (schema-2 receipt) — never a feed dir.
+if (commitBuild) {
+  console.log(`[stage-msixbundle] commit bundle ready (no upload): ${bundle}`)
   process.exit(0)
 }
 

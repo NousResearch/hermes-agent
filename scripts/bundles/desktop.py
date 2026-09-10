@@ -54,14 +54,24 @@ def npm_command(node: str) -> list[str]:
     raise FileNotFoundError(f"npm CLI missing beside {npm}")
 
 
-def build(repo: Path, tag: str, variant: str, builder_args: list[str]) -> None:
+def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
+          commit_build: str | None = None) -> None:
     from pm.store import current_target
+    from scripts.releases.commit_build import require_commit, version_at
 
     repo = repo.resolve()
-    version = release_version(repo, tag)
-    commit = capture(["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], repo)
-    if capture(["git", "rev-parse", "HEAD"], repo) != commit:
-        raise ValueError("the build checkout must be at the release tag")
+    if commit_build:
+        commit = require_commit(commit_build)
+        if tag:
+            raise ValueError("Commit builds cannot also select a tag")
+        if capture(["git", "rev-parse", "HEAD"], repo) != commit:
+            raise ValueError("the build checkout must be at the commit being built")
+        version = version_at(repo, commit)
+    else:
+        version = release_version(repo, tag)
+        commit = capture(["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], repo)
+        if capture(["git", "rev-parse", "HEAD"], repo) != commit:
+            raise ValueError("the build checkout must be at the release tag")
     node = shutil.which("node")
     if not node or not shutil.which("uv"):
         raise FileNotFoundError("Node and uv are required")
@@ -70,7 +80,16 @@ def build(repo: Path, tag: str, variant: str, builder_args: list[str]) -> None:
         raise ValueError(f"uv must report its build triple (official uv 0.12+): {banner}")
     npm = npm_command(node)
     env = {**os.environ, "CI": "true", "PYTHONUTF8": "1", "GITHUB_SHA": commit,
-           "HERMES_DESKTOP_VARIANT": variant, "HERMES_PAYLOAD_TAG": tag}
+           "HERMES_DESKTOP_VARIANT": variant}
+    if commit_build:
+        env["HERMES_PAYLOAD_VERSION"] = version
+        env["HERMES_BUILD_COMMIT"] = commit
+        env.pop("HERMES_PAYLOAD_TAG", None)
+        env.pop("GITHUB_REF_NAME", None)
+        env.pop("GITHUB_HEAD_REF", None)
+    else:
+        env.pop("HERMES_BUILD_COMMIT", None)
+        env["HERMES_PAYLOAD_TAG"] = tag
     target = current_target()
     node_arch = capture([node, "-p", "process.arch"], repo)
     if node_arch != target.split("-")[1]:
@@ -91,7 +110,7 @@ def build(repo: Path, tag: str, variant: str, builder_args: list[str]) -> None:
     else:
         run([*npm, "run", "build", "--workspace", "ui-tui"], cwd=repo, env=env)
         run([*npm, "run", "build", "--workspace", "web"], cwd=repo, env=env)
-        run([sys.executable, "-m", "pm.cli", "bundle", "--out", str(payload), "--ref", tag], cwd=repo, env=env)
+        run([sys.executable, "-m", "pm.cli", "bundle", "--out", str(payload), "--ref", commit], cwd=repo, env=env)
         manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8-sig"))
         plant_surfaces(payload / manifest["repo"], repo)
         relativize_links(payload)
@@ -100,8 +119,12 @@ def build(repo: Path, tag: str, variant: str, builder_args: list[str]) -> None:
     # Windows file-version and MSIX build-number policy remains with its packager.
     version_args = []
     if sys.platform == "win32":
-        script = "const w=require('./apps/desktop/scripts/windows-file-version.mjs');const m=require('./scripts/msix-shared.mjs');console.log(JSON.stringify({file:w.windowsFileVersion(process.argv[1]),build:process.argv[2]!=='store'&&process.argv[1].includes('-canary.')?m.canaryBuildMinutes(process.argv[1],process.cwd()):null}))"
-        metadata = json.loads(capture([node, "-e", script, tag, variant], repo))
+        if commit_build:
+            # The plain version needs no canary build-number override.
+            metadata = {"file": None, "build": None}
+        else:
+            script = "const w=require('./apps/desktop/scripts/windows-file-version.mjs');const m=require('./scripts/msix-shared.mjs');console.log(JSON.stringify({file:w.windowsFileVersion(process.argv[1]),build:process.argv[2]!=='store'&&process.argv[1].includes('-canary.')?m.canaryBuildMinutes(process.argv[1],process.cwd()):null}))"
+            metadata = json.loads(capture([node, "-e", script, tag, variant], repo))
         env.pop("BUILD_NUMBER", None)
         if metadata["build"] is not None and variant != "store":
             env["BUILD_NUMBER"] = str(metadata["build"])
@@ -114,12 +137,19 @@ def build(repo: Path, tag: str, variant: str, builder_args: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", required=True)
+    parser.add_argument("--tag", required=False,
+                        help="Release tag (vX.Y.Z / canary). Required unless --commit is given")
+    parser.add_argument("--commit", dest="commit_build", default=None,
+                        help="Commit-only build: exact full 40-char SHA the checkout is at; "
+                             "version comes from the target pyproject, no tag is referenced")
     parser.add_argument("--variant", choices=["bundled", "store", "light"], default="bundled")
     parser.add_argument("--repo", type=Path, default=ROOT)
     parser.add_argument("builder_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    build(args.repo, args.tag, args.variant, [v for v in args.builder_args if v != "--"])
+    if bool(args.tag) == bool(args.commit_build):
+        parser.error("exactly one of --tag or --commit is required")
+    build(args.repo, args.tag, args.variant, [v for v in args.builder_args if v != "--"],
+          commit_build=args.commit_build)
 
 
 if __name__ == "__main__":

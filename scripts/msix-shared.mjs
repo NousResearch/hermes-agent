@@ -239,6 +239,21 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
   const identity = require(path.join(desktopDir, 'product-identity.cjs'))
   const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'))
   const repoRoot = path.resolve(desktopDir, '..', '..')
+  // Commit artifacts retain app semver but do not advance an update channel.
+  if (process.env.HERMES_BUILD_COMMIT) {
+    if (tag) throw new Error('Commit-only builds must not set HERMES_PAYLOAD_TAG')
+    const commit = process.env.HERMES_BUILD_COMMIT
+    if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Commit builds require an exact full SHA')
+    const version = String(process.env.HERMES_PAYLOAD_VERSION || '')
+    if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)
+        || version.split('.').some(part => Number(part) > 65535)) {
+      throw new Error('Commit builds require HERMES_PAYLOAD_VERSION=X.Y.Z with 16-bit fields')
+    }
+    const packageVersion = identity.store
+      ? storePackageVersionAt(gitTagCommitTime(repoRoot, commit))
+      : `${version}.0`
+    return { identity, version: packageVersion, fileVersion: version, name: identity.appNamePascal }
+  }
   if (identity.store) {
     return { identity, version: storePackageVersion(String(tag), repoRoot),
       fileVersion: String(tag).slice(1), name: identity.appNamePascal }

@@ -27,19 +27,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # The container digest is a pm pin (the termux-docker package); read it
 # from the single lock beside every other third-party artifact pin.
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
-DIGEST="$(cd "$REPO_ROOT" && python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
-[ -n "$DIGEST" ] || { printf 'termux-docker digest missing from pm/lock.json\n' >&2; exit 1; }
-# The derived builder image (toolchain pre-baked) when CI provides it;
-# the bare pinned base otherwise. Its tag IS this lock digest (short
-# form), so a lock bump rolls the builder image with the base.
-IMAGE="${TERMUX_BUILDER_IMAGE:-termux/termux-docker@$DIGEST}"
+
 
 REPO=""
 TAG=""
+COMMIT_MODE=""
 PAYLOAD=""
 OUT=""
 
-usage() { printf 'usage: build_deb.sh --repo <dir> --tag <tag> --payload <dir> --out <dir>\n' >&2; exit 2; }
+usage() { printf 'usage: build_deb.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --payload <dir> --out <dir>\n' >&2; exit 2; }
 log()  { printf '\n==> %s\n' "$*"; }
 fail() { printf 'build_deb: FAILED: %s\n' "$*" >&2; exit 1; }
 
@@ -47,26 +43,52 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --repo) REPO="${2:?}"; shift 2 ;;
         --tag) TAG="${2:?}"; shift 2 ;;
+        --commit) COMMIT_MODE="${2:?}"; shift 2 ;;
         --payload) PAYLOAD="${2:?}"; shift 2 ;;
         --out) OUT="${2:?}"; shift 2 ;;
         *) usage ;;
     esac
 done
-[ -n "$REPO" ] && [ -n "$TAG" ] && [ -n "$PAYLOAD" ] && [ -n "$OUT" ] || usage
+[ -n "$REPO" ] && [ -n "$PAYLOAD" ] && [ -n "$OUT" ] || usage
+{ [ -n "$TAG" ] || [ -n "$COMMIT_MODE" ]; } && { [ -z "$TAG" ] || [ -z "$COMMIT_MODE" ]; } || usage
 
-for tool in python3 docker dpkg-deb jq; do
+for tool in python3 git docker dpkg-deb jq; do
     command -v "$tool" >/dev/null || fail "missing tool: $tool"
 done
 
+DIGEST="$(cd "$REPO_ROOT" && python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')"
+[ -n "$DIGEST" ] || fail "termux-docker digest missing from pm/lock.json"
+IMAGE="${TERMUX_BUILDER_IMAGE:-termux/termux-docker@$DIGEST}"
+
 REPO_ABS="$(cd "$REPO" && pwd)"
 PAYLOAD_ABS="$(cd "$PAYLOAD" && pwd)"
-OUT_ABS="$(mkdir -p "$OUT" && cd "$OUT" && pwd)"
 
-# [0] Provenance: the tag must be real in the checkout; the payload must be
-# the built tree of that checkout, not some other directory. The commit is
-# captured ONCE here and reused for the install stamp below.
-COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
-    || fail "tag $TAG not found in $REPO_ABS"
+# Resolve source identity before writing output or changing payload files.
+# Commit mode requires the checkout HEAD and staged version to agree.
+if [ -n "$COMMIT_MODE" ]; then
+    [[ "$COMMIT_MODE" =~ ^[a-f0-9]{40}$ ]] || fail "--commit requires an exact full 40-character SHA"
+    COMMIT="$(git -C "$REPO_ABS" rev-parse HEAD)" || fail "not a git checkout: $REPO_ABS"
+    [ "$COMMIT" = "$COMMIT_MODE" ] || fail "checkout HEAD $(echo "$COMMIT" | cut -c1-12) is not the requested commit"
+    PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" "$PAYLOAD_ABS/app/pyproject.toml" <<'PY'
+import sys, tomllib
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from scripts.releases.commit_build import version_at
+version = version_at(Path(sys.argv[2]), sys.argv[3])
+staged = tomllib.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))["project"]["version"]
+if staged != version:
+    raise ValueError("payload version does not match the admitted commit")
+print(version)
+PY
+    )" || fail "commit version validation failed"
+    DEB_VERSION="${PY_VERSION}+commit${COMMIT_MODE:0:12}"
+    export HERMES_PAYLOAD_TAG=""
+    export HERMES_BUILD_COMMIT="$COMMIT_MODE"
+else
+    unset HERMES_BUILD_COMMIT
+    COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
+        || fail "tag $TAG not found in $REPO_ABS"
+fi
 for d in python node uv npm ffmpeg ripgrep runtime-libs app wheelhouse; do
     [ -d "$PAYLOAD_ABS/$d" ] || fail "payload missing $d/ -- run termux_build.sh + build_cpython.sh + build_node.sh first"
 done
@@ -77,10 +99,14 @@ NODEBIN_REL="data/data/com.termux/files/usr/bin/node"
 
 PKG="hermes-agent"
 
-# [1] Version derivation: pure function in deb_version.py, tested separately.
-log "Deriving Debian version from tag $TAG"
-DEB_VERSION="$(python3 "$HERE/deb_version.py" "$TAG")" || fail "version derivation failed for tag $TAG"
+# [1] Version derivation: tag mode uses the pure function in deb_version.py
+# (tested separately). Commit mode derives it from pyproject above.
+if [ -z "$COMMIT_MODE" ]; then
+    log "Deriving Debian version from tag $TAG"
+    DEB_VERSION="$(python3 "$HERE/deb_version.py" "$TAG")" || fail "version derivation failed for tag $TAG"
+fi
 log "Package version: $DEB_VERSION"
+OUT_ABS="$(mkdir -p "$OUT" && cd "$OUT" && pwd)"
 
 # [2] Assemble the venv offline, INSIDE the pinned container: the staged
 # interpreter is bionic/arm64 and cannot run on this host. Completeness is
@@ -159,10 +185,8 @@ printf 'apt\n' > "$PAYLOAD_ABS/app/.install_method"
 log "Writing trampolines"
 python3 "$HERE/launchers.py" --payload "$PAYLOAD_ABS"
 
-# [4] Install stamp: provenance for the steward contract (distribution
-# apt-termux -> update/uninstall refuse with pkg remediation). Written by the
-# canonical writer (same one docker/nix/desktop use) so the schema stays
-# identical across packagers; the tag rides in via HERMES_PAYLOAD_TAG.
+# The shared stamp writer records the apt-termux update owner.
+# Commit mode exports HERMES_BUILD_COMMIT and leaves the tag empty.
 log "Writing app/install-stamp.json"
 HERMES_PAYLOAD_TAG="$TAG" \
 HERMES_DESKTOP_VARIANT=bundled \

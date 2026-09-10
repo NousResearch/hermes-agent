@@ -48,16 +48,33 @@ def _get_context_file_read_timeout() -> float:
     return _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 
+# Upper bound on daemon reader threads that may be blocked in a permanently
+# stuck ``read_text()`` call at once (a network filesystem that never faults
+# a file back in). Python cannot cancel a blocked thread, so once this many
+# slots are occupied by stuck reads, further reads fail closed (return None)
+# instead of spawning another thread that would never be reclaimed.
+_MAX_CONCURRENT_CONTEXT_READS = 4
+_context_read_admission = threading.Semaphore(_MAX_CONCURRENT_CONTEXT_READS)
+
+
 def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
     """``path.read_text()`` on a daemon thread so a slow file can't stall startup.
 
     Returns the text, or ``None`` after *timeout* seconds (logged at WARNING;
-    the orphaned reader thread finishes on its own). Read errors propagate to
-    the caller exactly as a direct ``read_text`` would, so existing
-    ``try/except`` handling at each site is unchanged.
+    the orphaned reader thread finishes on its own) or if
+    ``_MAX_CONCURRENT_CONTEXT_READS`` reads are already in flight. Read errors
+    propagate to the caller exactly as a direct ``read_text`` would, so
+    existing ``try/except`` handling at each site is unchanged.
     """
     if timeout is None:
         timeout = _get_context_file_read_timeout()
+    if not _context_read_admission.acquire(blocking=False):
+        logger.warning(
+            "Context file %s read skipped: %d context-read threads already in flight",
+            path,
+            _MAX_CONCURRENT_CONTEXT_READS,
+        )
+        return None
     result: "queue.Queue[tuple[bool, object]]" = queue.Queue(maxsize=1)
 
     def _reader() -> None:
@@ -65,6 +82,8 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
             result.put((True, path.read_text(encoding="utf-8")))
         except Exception as exc:  # re-raised on the caller thread
             result.put((False, exc))
+        finally:
+            _context_read_admission.release()
 
     threading.Thread(target=_reader, daemon=True, name=f"context-read:{path.name}").start()
     try:

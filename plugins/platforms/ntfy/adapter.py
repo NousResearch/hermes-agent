@@ -15,7 +15,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import httpx
@@ -37,13 +37,18 @@ class _FatalStreamError(Exception):
 
 
 DEFAULT_SERVER = "https://ntfy.sh"
-MAX_MESSAGE_LENGTH = 4096  # ntfy message body limit
+MAX_MESSAGE_LENGTH = 4096  # ntfy message body limit in UTF-8 bytes
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 1000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 STREAM_TIMEOUT_SECONDS = 90  # ntfy keepalive default is 55s; give margin
 _ECHO_TAG = "hermes-agent"  # tag added to outgoing messages for echo-loop prevention
 _MARKDOWN_TRUTHY = ("1", "true", "yes")
+
+
+def utf8_len(message: str) -> int:
+    """UTF-8 bytes in an ntfy message body."""
+    return len(message.encode("utf-8"))
 
 
 def _build_auth_header(token: str) -> Dict[str, str]:
@@ -75,12 +80,15 @@ def _publish_headers(token: str, markdown: bool, *, auth_first: bool = True) -> 
 
 
 def _truncate_body(message: str, *, context: str) -> bytes:
-    """Apply the ntfy 4096-char limit, logging a warning (tagged ``context``) on truncation."""
-    if len(message) > MAX_MESSAGE_LENGTH:
-        logger.warning(
-            "%s: truncating message from %d to %d chars (ntfy limit)",
-            context, len(message), MAX_MESSAGE_LENGTH)
-    return message[:MAX_MESSAGE_LENGTH].encode("utf-8")
+    """Encode within ntfy's byte limit without splitting a UTF-8 sequence."""
+    encoded = message.encode("utf-8")
+    if len(encoded) <= MAX_MESSAGE_LENGTH:
+        return encoded
+    body = encoded[:MAX_MESSAGE_LENGTH].decode("utf-8", errors="ignore").encode("utf-8")
+    logger.warning(
+        "%s: truncating message from %d to %d bytes (ntfy limit)",
+        context, len(encoded), len(body))
+    return body
 
 
 def _response_message_id(resp) -> str:
@@ -119,6 +127,10 @@ class NtfyAdapter(BasePlatformAdapter):
     """ntfy adapter: HTTP-streaming subscription in, HTTP POST publish out."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+
+    @property
+    def message_len_fn(self) -> Callable[[str], int]:
+        return utf8_len
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config=config, platform=Platform("ntfy"))
@@ -289,11 +301,7 @@ class NtfyAdapter(BasePlatformAdapter):
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
         headers = _publish_headers(self._token, bool((self.config.extra or {}).get("markdown", False)))
-        if len(content) > self.MAX_MESSAGE_LENGTH:
-            logger.warning(
-                "[%s] Message truncated from %d to %d chars (ntfy limit)",
-                self.name, len(content), self.MAX_MESSAGE_LENGTH)
-        body = content[:self.MAX_MESSAGE_LENGTH].encode("utf-8")
+        body = _truncate_body(content, context=f"[{self.name}]")
         try:
             resp = await self._http_client.post(
                 f"{self._server}/{publish_topic}", content=body, headers=headers, timeout=15.0)
@@ -396,7 +404,7 @@ def register(ctx) -> None:
             "Use plain text by default — ntfy supports optional markdown "
             "(set markdown: true in config or NTFY_MARKDOWN=true). "
             "Keep responses concise; ntfy is a push notification service "
-            "with a 4096-character per-message limit."
+            "with a 4096-byte per-message limit."
         ))
 
 

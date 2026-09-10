@@ -141,7 +141,7 @@ If you only want Hermes to *push* notifications to ntfy (cron summaries, alerts)
 
 ## Limits
 
-- **Message size**: ntfy caps message bodies at 4096 chars. Hermes truncates with a warning when this is exceeded.
+- **Message size**: ntfy caps message bodies at 4096 UTF-8 bytes. Hermes truncates on a character boundary with a warning when this is exceeded.
 - **No typing indicators**: the protocol doesn't expose one; `send_typing` is a no-op.
 - **No threads or attachments**: ntfy is plain push notifications. Long replies stay in the message body, no thread fanout.
 - **No native user identity**: see the identity-model section above.

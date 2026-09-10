@@ -107,12 +107,12 @@ export class CanonicalDesktopProtocol {
       return { ...result, request_id: requestId, source: 'gui' }
     }
 
-    if (method === 'session.interrupt') {
+    if (method === 'session.interrupt' || method === 'session.redirect' || method === 'session.steer') {
       const generation = params.execution_generation ?? this.generations.get(String(params.session_id))
 
-      if (typeof generation !== 'number') { throw new Error('Session execution identity unavailable; reconnect before Stop') }
+      if (typeof generation !== 'number') { throw new Error('Session execution identity unavailable; reconnect before controlling this turn') }
 
-      return { session_id: params.session_id, execution_generation: generation }
+      return { ...params, session_id: params.session_id, execution_generation: generation }
     }
 
     if (method === 'prompt.resolve_unknown') {

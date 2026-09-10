@@ -437,18 +437,17 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
           return true
         }
-      } catch {
+      } catch (err) {
         discardOptimisticMessage()
-        // Swallow — the caller queues the text so nothing is lost.
-
-        return false
+        notifyError(err, copy.promptFailed)
+        throw err
       }
 
       discardOptimisticMessage()
 
       return false
     },
-    [bindRecoveredRuntime, requestSessionGateway]
+    [bindRecoveredRuntime, copy.promptFailed, requestSessionGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with

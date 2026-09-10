@@ -843,13 +843,12 @@ export function usePromptActions({
         })
 
         return result
-      } catch {
-        // Swallow — caller queues the text so nothing is lost.
+      } catch (err) {
+        notifyError(err, copy.promptFailed)
+        throw err
       }
-
-      return false
     },
-    [activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef, updateSessionState]
+    [activeSessionIdRef, appendSessionTextMessage, copy.promptFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState]
   )
 
   // After a durable rewind the surviving bubbles' cached rowIds are stale (the

@@ -2,6 +2,24 @@ import { expect, test } from 'vitest'
 
 import { CanonicalDesktopProtocol } from './canonical-protocol'
 
+test('corrections preserve intent and fence the observed session generation', () => {
+  const protocol = new CanonicalDesktopProtocol()
+
+  for (const method of ['session.redirect', 'session.steer']) {
+    expect(() => protocol.prepare(method, { session_id: 's', text: 'correction' })).toThrow('execution identity')
+  }
+
+  protocol.event({ type: 'message.start', session_id: 's', payload: { execution_generation: 4 } })
+  protocol.event({ type: 'message.start', session_id: 'other', payload: { execution_generation: 9 } })
+
+  for (const method of ['session.redirect', 'session.steer']) {
+    const params = protocol.prepare(method, { session_id: 's', text: 'correction' })
+    expect(params).toEqual({ session_id: 's', text: 'correction', execution_generation: 4 })
+    expect(protocol.wire(method, params)).toBe(method)
+    expect(protocol.prepare(method, { ...params, execution_generation: 2 }).execution_generation).toBe(2)
+  }
+})
+
 test('metadata writes retain the original CAS revision and request identity until acknowledgement', () => {
   const protocol = new CanonicalDesktopProtocol()
   protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 7 })

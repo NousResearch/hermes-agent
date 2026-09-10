@@ -2807,7 +2807,7 @@ describe('usePromptActions redirectPrompt', () => {
     expect(await handle!.redirectPrompt('too late')).toBe(false)
   })
 
-  it('reports rejection without throwing when the redirect RPC errors', async () => {
+  it('surfaces redirect RPC errors instead of converting rejection to queue admission', async () => {
     const requestGateway = vi.fn(async () => {
       throw new Error('agent does not support redirect')
     })
@@ -2817,7 +2817,8 @@ describe('usePromptActions redirectPrompt', () => {
       <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
-    expect(await handle!.redirectPrompt('boom')).toBe(false)
+    await expect(handle!.redirectPrompt('boom')).rejects.toThrow('agent does not support redirect')
+    expect($notifications.get().some(item => item.message?.includes('agent does not support redirect'))).toBe(true)
   })
 
   it('skips the RPC entirely for empty text', async () => {

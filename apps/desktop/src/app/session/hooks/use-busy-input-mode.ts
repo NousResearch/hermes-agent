@@ -8,6 +8,7 @@ import {
   busyInputOwnerKey,
   normalizeBusyInputMode
 } from '@/store/busy-input-mode'
+import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState, knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { requestForSessionProfile } from '@/store/session-request-router'
@@ -36,11 +37,12 @@ export function useBusyInputMode({
   const targetProfile = route && typeof route === 'object' ? route.targetProfile : undefined
   const owner = busyInputOwnerKey(connectionId, targetProfile || ownerProfile)
 
-  const [loaded, setLoaded] = useState<{ owner: string; connection: typeof connection; mode: BusyInputMode } | null>(
+  const [loaded, setLoaded] = useState<{ owner: string; connection: typeof connection; sessionId: string; mode: BusyInputMode } | null>(
     null
   )
 
-  const configured = config?.owner === owner && config.connection === connection ? config.mode : null
+  const canonical = serverOwnsComposerQueue(sessionId ?? storedSessionId)
+  const configured = !canonical && config?.owner === owner && config.connection === connection ? config.mode : null
 
   useEffect(() => {
     if (configured !== null || !sessionId || gatewayState !== 'open') {
@@ -55,7 +57,7 @@ export function useBusyInputMode({
     })
       .then(result => {
         if (!cancelled && result && Object.hasOwn(result, 'value')) {
-          setLoaded({ owner, connection, mode: normalizeBusyInputMode(result.value) })
+          setLoaded({ owner, connection, sessionId, mode: normalizeBusyInputMode(result.value) })
         }
       })
       .catch(() => undefined)
@@ -79,5 +81,5 @@ export function useBusyInputMode({
     return null
   }
 
-  return configured ?? (loaded?.owner === owner && loaded.connection === connection ? loaded.mode : null)
+  return configured ?? (loaded?.owner === owner && loaded.connection === connection && loaded.sessionId === sessionId ? loaded.mode : null)
 }

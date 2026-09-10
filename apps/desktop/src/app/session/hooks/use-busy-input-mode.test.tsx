@@ -23,6 +23,24 @@ afterEach(() => {
   $gatewayState.set('closed')
 })
 
+it('canonical busy policy is session scoped even with a cached global mode', async () => {
+  $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=fixture' } as never)
+  $gatewayState.set('open')
+  $busyInputConfig.set({ owner: JSON.stringify(['', 'default']), connection: $connection.get(), mode: 'queue' })
+  let resolveNext!: (result: { value: string }) => void
+  const request = vi.fn().mockResolvedValueOnce({ value: 'steer' }).mockImplementationOnce(() => new Promise(resolve => { resolveNext = resolve }))
+  const h = renderHook(({ sessionId }) => useBusyInputMode({ sessionId, storedSessionId: null, requestGateway: request }), { initialProps: { sessionId: 'first' } })
+
+  try {
+    await waitFor(() => expect(h.result.current).toBe('steer'))
+    h.rerender({ sessionId: 'second' })
+    expect(h.result.current).toBeNull()
+    await act(async () => resolveNext({ value: 'interrupt' }))
+    expect(h.result.current).toBe('interrupt')
+    expect(request).toHaveBeenLastCalledWith('config.get', { key: 'busy', session_id: 'second' })
+  } finally { h.unmount(); $connection.set(null) }
+})
+
 it('uses only the current owner config and ignores a late response from the previous profile', async () => {
   $gatewayState.set('open')
   let resolveOld!: (value: { value: string }) => void

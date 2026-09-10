@@ -2,8 +2,10 @@
 
 The cache exists to keep `hermes tools` → "All Platforms" fast: every
 `get_env_value()` lookup used to re-read and re-sanitise the entire
-.env file, racking up hundreds of ms across one menu render. The
-cache is keyed on (path, mtime, size); writers (save_env_value /
+.env file, racking up hundreds of ms across one menu render. .env
+holds API keys, so the cache is keyed on a content digest (not
+mtime/size, which a dotfile-sync or backup/restore tool can leave
+unchanged while rewriting the bytes); writers (save_env_value /
 remove_env_value / sanitise_env_file) call invalidate_env_cache().
 """
 
@@ -47,6 +49,42 @@ def test_load_env_caches_on_repeat_calls():
         invalidate_env_cache()
 
 
+
+
+def test_load_env_detects_content_change_with_preserved_mtime(tmp_path):
+    """A tool that rewrites .env's bytes but restores the original mtime (e.g. `cp -p`,
+    a dotfile-sync, or a backup/restore) must still be seen on the next load_env() call.
+
+    This is the discriminating case for content-digest vs. mtime/size keying: bumping
+    mtime while changing content (the OTHER natural test) passes under either scheme,
+    since mtime usually changes too. Only holding mtime fixed while changing content
+    tells them apart -- this fails under a (path, mtime, size) key and passes under a
+    (path, content-digest) key.
+    """
+    from hermes_cli.config import invalidate_env_cache, load_env
+
+    invalidate_env_cache()
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=sk-old\n", encoding="utf-8")
+    original_stat = env_path.stat()
+
+    try:
+        with patch("hermes_cli.config.get_env_path", return_value=env_path):
+            first = load_env()
+            assert first.get("OPENAI_API_KEY") == "sk-old"
+
+            # Same length new content (size unchanged too), mtime explicitly restored.
+            env_path.write_text("OPENAI_API_KEY=sk-new\n", encoding="utf-8")
+            os.utime(env_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            assert env_path.stat().st_mtime_ns == original_stat.st_mtime_ns
+            assert env_path.stat().st_size == original_stat.st_size
+
+            second = load_env()
+
+        assert second.get("OPENAI_API_KEY") == "sk-new"
+    finally:
+        invalidate_env_cache()
 
 
 def test_remove_env_value_invalidates_cache(tmp_path, monkeypatch):

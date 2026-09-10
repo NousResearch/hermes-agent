@@ -1821,3 +1821,189 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+class TestSendTelegramTimeoutChunkContinue:
+    """Timed-out text chunks must not abandon the rest of the sequence (#47229).
+
+    A timed-out chunk is ambiguous (it may already be delivered) so it is never
+    retried, but the chunks after it were never sent and carry no duplication
+    risk — they must still be delivered, with a partial-delivery warning."""
+
+    @staticmethod
+    def _three_chunk_message():
+        # >2x4096 UTF-16 units -> three text chunks.
+        return "x" * 9000
+
+    def test_timeout_mid_sequence_delivers_remaining_chunks(self):
+        """Chunk 2 of 3 times out: chunks 1 and 3 still deliver; result is a
+        partial success naming the skipped chunk."""
+        sent = []
+
+        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
+            sent.append(text)
+            if len(sent) == 2:
+                raise Exception("Timed out")
+            return SimpleNamespace(message_id=len(sent))
+
+        async def run_test():
+            with patch("tools.send_message_senders._send_telegram_message_with_retry", fake_retry):
+                return await _send_telegram("fake-token", "-100123", self._three_chunk_message())
+
+        result = asyncio.run(run_test())
+        assert result["success"] is True, result
+        assert len(sent) == 3, f"expected all 3 chunks attempted, got {len(sent)}"
+        assert result["message_id"] == "3"
+        partial_warnings = [w for w in result.get("warnings", []) if "delivery partial" in w.lower()]
+        assert partial_warnings, f"expected a partial-delivery warning, got {result.get('warnings')}"
+        assert "2/3" in partial_warnings[0]
+        assert "chunk(s) 2" in partial_warnings[0]
+
+    def test_non_timeout_error_still_fails_whole_send(self):
+        """Non-timeout errors keep the original fail-fast behaviour: no
+        per-chunk skip, nothing delivered after the failing chunk."""
+        sent = []
+
+        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
+            sent.append(text)
+            if len(sent) == 2:
+                raise Exception("Connection reset by peer")
+            return SimpleNamespace(message_id=len(sent))
+
+        async def run_test():
+            with patch("tools.send_message_senders._send_telegram_message_with_retry", fake_retry):
+                return await _send_telegram("fake-token", "-100123", self._three_chunk_message())
+
+        result = asyncio.run(run_test())
+        assert result.get("success") is not True, result
+        assert "error" in result
+        assert len(sent) == 2, f"send should stop at the failing chunk, got {len(sent)} attempts"
+
+    def test_all_chunks_timeout_reports_unknown_state(self):
+        """When every chunk times out the error must say delivery state is
+        unknown — not the misleading 'No deliverable text'."""
+        sent = []
+
+        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
+            sent.append(text)
+            raise Exception("Timed out")
+
+        async def run_test():
+            with patch("tools.send_message_senders._send_telegram_message_with_retry", fake_retry):
+                return await _send_telegram("fake-token", "-100123", self._three_chunk_message())
+
+        result = asyncio.run(run_test())
+        assert result.get("success") is not True, result
+        assert "error" in result
+        assert "timed out" in result["error"].lower()
+        assert "unknown" in result["error"].lower()
+        assert "no deliverable" not in result["error"].lower()
+        # All three chunks were still attempted (each one is ambiguous).
+        assert len(sent) == 3
+
+    def test_first_chunk_timeout_delivers_remaining(self):
+        """Chunk 1 of 3 times out: chunks 2 and 3 still deliver."""
+        sent = []
+
+        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
+            sent.append(text)
+            if len(sent) == 1:
+                raise Exception("Timed out")
+            return SimpleNamespace(message_id=len(sent))
+
+        async def run_test():
+            with patch("tools.send_message_senders._send_telegram_message_with_retry", fake_retry):
+                return await _send_telegram("fake-token", "-100123", self._three_chunk_message())
+
+        result = asyncio.run(run_test())
+        assert result["success"] is True, result
+        assert len(sent) == 3, f"expected all 3 chunks attempted, got {len(sent)}"
+        assert result["message_id"] == "3"
+        partial_warnings = [w for w in result.get("warnings", []) if "delivery partial" in w.lower()]
+        assert partial_warnings, f"expected a partial-delivery warning, got {result.get('warnings')}"
+        assert "chunk(s) 1" in partial_warnings[0]
+
+    def test_last_chunk_timeout_delivers_prior(self):
+        """Chunk 3 of 3 times out: chunks 1 and 2 still deliver."""
+        sent = []
+
+        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
+            sent.append(text)
+            if len(sent) == 3:
+                raise Exception("Timed out")
+            return SimpleNamespace(message_id=len(sent))
+
+        async def run_test():
+            with patch("tools.send_message_senders._send_telegram_message_with_retry", fake_retry):
+                return await _send_telegram("fake-token", "-100123", self._three_chunk_message())
+
+        result = asyncio.run(run_test())
+        assert result["success"] is True, result
+        assert len(sent) == 3, f"expected all 3 chunks attempted, got {len(sent)}"
+        assert result["message_id"] == "2"
+        partial_warnings = [w for w in result.get("warnings", []) if "delivery partial" in w.lower()]
+        assert partial_warnings, f"expected a partial-delivery warning, got {result.get('warnings')}"
+        assert "chunk(s) 3" in partial_warnings[0]
+
+    def test_single_chunk_timeout_reports_unknown(self):
+        """A single-chunk message that times out must report unknown state."""
+        sent = []
+
+        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
+            sent.append(text)
+            raise Exception("Timed out")
+
+        async def run_test():
+            with patch("tools.send_message_senders._send_telegram_message_with_retry", fake_retry):
+                return await _send_telegram("fake-token", "-100123", "hello")
+
+        result = asyncio.run(run_test())
+        assert result.get("success") is not True, result
+        assert "error" in result
+        assert "timed out" in result["error"].lower()
+        assert "unknown" in result["error"].lower()
+        assert "no deliverable" not in result["error"].lower()
+        assert len(sent) == 1
+
+    def test_multiple_non_consecutive_timeouts(self):
+        """Chunks 1 and 3 time out, chunk 2 delivers — partial success."""
+        sent = []
+
+        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
+            sent.append(text)
+            if len(sent) in (1, 3):
+                raise Exception("Timed out")
+            return SimpleNamespace(message_id=len(sent))
+
+        async def run_test():
+            with patch("tools.send_message_senders._send_telegram_message_with_retry", fake_retry):
+                return await _send_telegram("fake-token", "-100123", self._three_chunk_message())
+
+        result = asyncio.run(run_test())
+        assert result["success"] is True, result
+        assert len(sent) == 3, f"expected all 3 chunks attempted, got {len(sent)}"
+        assert result["message_id"] == "2"
+        partial_warnings = [w for w in result.get("warnings", []) if "delivery partial" in w.lower()]
+        assert partial_warnings, f"expected a partial-delivery warning, got {result.get('warnings')}"
+        assert "chunk(s) 1, 3" in partial_warnings[0]
+
+    def test_timeout_then_non_timeout_error_propagates(self):
+        """Chunk 1 times out, chunk 2 raises non-timeout → error propagates."""
+        sent = []
+
+        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
+            sent.append(text)
+            if len(sent) == 1:
+                raise Exception("Timed out")
+            if len(sent) == 2:
+                raise Exception("Connection reset by peer")
+            return SimpleNamespace(message_id=len(sent))
+
+        async def run_test():
+            with patch("tools.send_message_senders._send_telegram_message_with_retry", fake_retry):
+                return await _send_telegram("fake-token", "-100123", self._three_chunk_message())
+
+        result = asyncio.run(run_test())
+        assert result.get("success") is not True, result
+        assert "error" in result
+        assert len(sent) == 2, f"send should stop at the non-timeout error, got {len(sent)} attempts"

@@ -66,6 +66,14 @@ _TELEGRAM_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429",
                                "gateway timeout", "504")
 
 
+def _is_telegram_timeout(exc: Exception) -> bool:
+    """``True`` for transport timeouts (e.g. python-telegram-bot's ``TimedOut``). A timed-out
+    send is ambiguous — it may already have been delivered — so it is never retried;
+    chunked sequences skip that chunk instead of abandoning the chunks after it (#47229)."""
+    text = str(exc).lower()
+    return "timed out" in text or "timeout" in text
+
+
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     """Retry delay in seconds, or None when final: honours ``retry_after``; timeouts are
     never retried (the send may have gone through); 5xx/429 back off exponentially."""
@@ -76,7 +84,7 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
         except (TypeError, ValueError):
             return 1.0
     text = str(exc).lower()
-    if "timed out" in text or "timeout" in text:
+    if _is_telegram_timeout(exc):
         return None
     return float(2 ** attempt) if any(marker in text for marker in _TELEGRAM_TRANSIENT_MARKERS) else None
 
@@ -257,8 +265,24 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
-            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+        chunks = list(BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len)) if formatted.strip() else []
+        timed_out_chunks = []
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            try:
+                last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+            except Exception as exc:
+                # A timed-out chunk may already be delivered, so it is never retried — but the
+                # chunks after it were never sent and carry no duplication risk: skip only the
+                # ambiguous chunk and keep delivering the rest (#47229).
+                if not _is_telegram_timeout(exc):
+                    raise
+                timed_out_chunks.append(chunk_index)
+                logger.warning("Telegram chunk %d/%d timed out (may still have been delivered); delivering remaining chunks",
+                               chunk_index, len(chunks))
+        if timed_out_chunks:
+            warnings.append(f"Delivery partial: {len(chunks) - len(timed_out_chunks)}/{len(chunks)} text chunks "
+                            f"confirmed; chunk(s) {', '.join(str(i) for i in timed_out_chunks)} timed out and were "
+                            "skipped (they may still arrive out of order)")
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
@@ -281,6 +305,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
                 logger.error(warnings[-1])
         if last_msg is None:
+            if timed_out_chunks:
+                result = _error(f"Telegram send timed out on all {len(chunks)} text chunks "
+                                "(delivery state unknown; timed-out chunks are never retried)")
+                if warnings:
+                    result["warnings"] = warnings
+                return result
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
     except ImportError:

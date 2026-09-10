@@ -1032,6 +1032,7 @@ class WisdomService:
         owns consent to the canonical package, manifest and description.
         """
         from .agent_led.schemas import SharePackage
+        from .publisher_evidence import publication_description
         from .agent_led.share_flow import (
             package_hash,
             write_package_to_staging,
@@ -1056,6 +1057,14 @@ class WisdomService:
         local_id = (
             f"local:share:{skill_id}:{package_hash(package).removeprefix('sha256:')}"
         )
+        existing_draft = self.store.draft(local_id)
+        # Usage is part of the owner's reviewed copy, not live telemetry. Reuse
+        # the frozen description (including owner edits) on packaging retries.
+        description = (
+            str(existing_draft["description"])
+            if existing_draft is not None
+            else publication_description(self.store, skill_id, package.plain_description)
+        )
         staged = write_package_to_staging(package, staging_root)
         # A unique overlay namespace prevents prepare_package from replacing a
         # directory another review or process is using.
@@ -1064,7 +1073,7 @@ class WisdomService:
             prepared = prepare_package(
                 staged,
                 overlay_root=namespace,
-                author_description=package.plain_description,
+                author_description=description,
                 owner=str(self.client.identity.get("owner")),
                 installation_id=self.store.installation_identity(),
                 editorial_name=package.editorial_name,

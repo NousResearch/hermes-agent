@@ -61,6 +61,22 @@ available for later review without uploading or publishing it. Page navigation,
 including **Back to first page**, is read-only; publication still requires the
 separate **Approve exact package** control.
 
+New agent-prepared sharing packages can include **Publisher usage
+(client-reported)** in the editable author description. This is a snapshot of
+the local skill's recorded invocations and days used during the seven profile
+calendar dates ending on preparation day. It can span local revisions and does
+not verify successful outcomes. Without recorded usage, no summary is added.
+Only totals and the date range are included, not paths, conversation excerpts,
+per-day records, or private qualification rationale.
+
+The summary stays local with the prepared package until you approve its upload.
+Review it in the author description, and edit or remove it before sharing.
+Editing changes the approval hash and requires a fresh confirmation. Subsequent
+invocations and packaging retries do not update an existing review. If retained,
+the approved description accompanies that exact published version to teammates;
+it is not live usage telemetry or a Gateway certification. Manual private-draft
+creation does not automatically add usage evidence.
+
 Proactive Telegram and Slack advice includes **Notification settings**. Opening
 it reads the current state without muting anything; choose a duration separately.
 Use **Back** to return to the current inbox. Local notifications offer

@@ -608,6 +608,8 @@ def test_assessment_uses_session_runtime_and_no_tools(monkeypatch):
         assert "must not veto a supported longer-term benefit" in guidance
         assert "Novelty alone is insufficient" in guidance
         assert "Immediate need in the current conversation is not required" in guidance
+        assert "client-reported, not Gateway-verified" in guidance
+        assert "Missing usage evidence is unknown" in guidance
         payload = json.dumps({
             "advice": [
                 {

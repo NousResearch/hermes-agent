@@ -3193,6 +3193,17 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
         rest = ".".join(segments[1:])
         return False, f"{suggestion}.{rest}" if rest else suggestion
 
+    if top == "platform_hints":
+        # Platform names are dynamic; each override is a string or append/replace mapping.
+        if not all(segments) or len(segments) > 3:
+            return False, None
+        modes = {"append", "replace"}
+        if len(segments) <= 2 or segments[2] in modes:
+            return True, None
+        sibling = _suggest_closest_key(segments[2], modes)
+        prefix = ".".join(seg.replace(".", r"\.") for seg in segments[:2])
+        return False, f"{prefix}.{sibling}" if sibling is not None else None
+
     if top in _OPEN_SUBKEY_TOP_LEVEL_KEYS:
         return True, None
 

@@ -80,20 +80,34 @@ export interface GatewayEventSessionRoute {
   sessionId: null | string
 }
 
+/** Which session (if any) to re-pull `approval.pending` for after `eventType`.
+ *
+ *  `gateway.ready` and `session.info` are the two rehydration points. An
+ *  UNSCOPED `session.info` (the approvals-loop / broadcast fan-out, no
+ *  `session_id` on the frame) reaches here attributed to the active session by
+ *  the routing fallback; when `isGone(activeSessionId)` — the gateway already
+ *  answered 4001 for that runtime — replaying would only re-send the dead id
+ *  on every fan-out tick (#100639), so return null. A frame that names the
+ *  session explicitly is the runtime speaking for itself and is never gone. */
 export function approvalReplaySessionId(
   eventType: string | undefined,
   activeSessionId: null | string,
-  routedSessionId: null | string
+  routedSessionId: null | string,
+  options?: { explicit?: boolean; isGone?: (sessionId: string) => boolean }
 ): null | string {
+  let target: null | string = null
+
   if (eventType === 'gateway.ready') {
-    return activeSessionId
+    target = activeSessionId
+  } else if (eventType === 'session.info') {
+    target = routedSessionId
   }
 
-  if (eventType === 'session.info') {
-    return routedSessionId
+  if (target && !options?.explicit && options?.isGone?.(target)) {
+    return null
   }
 
-  return null
+  return target
 }
 
 /**

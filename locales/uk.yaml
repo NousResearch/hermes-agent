@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nПоточний режим: `{mode}`\\n\\nОберіть варіант:"
     choice_fast:           "fast — Priority Processing увімкнено"
     choice_normal:         "normal — стандартна обробка"
+    choice_auto:           "auto — швидко в перші секунди кожного ходу"
+    choice_cold:           "cold — швидко лише на першому ході сесії"
 
   footer:
     status:                "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"

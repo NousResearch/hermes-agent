@@ -88,6 +88,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/skins',
             'user-guide/features/plugins',
             'user-guide/features/built-in-plugins',
+            'user-guide/features/plugin-catalog',
           ],
         },
         {
@@ -538,6 +539,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
+                    'user-guide/skills/optional/productivity/productivity-property-listings',
                     'user-guide/skills/optional/productivity/productivity-shop',
                     'user-guide/skills/optional/productivity/productivity-shopify',
                     'user-guide/skills/optional/productivity/productivity-siyuan',
@@ -562,6 +564,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/research/research-pinecone-research',
                     'user-guide/skills/optional/research/research-qmd',
                     'user-guide/skills/optional/research/research-research-paper-writing',
+                    'user-guide/skills/optional/research/research-rss-feeds',
                     'user-guide/skills/optional/research/research-scrapling',
                     'user-guide/skills/optional/research/research-searxng-search',
                   ],
@@ -587,6 +590,15 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/smart-home/smart-home-openhue',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'social-media',
+                  key: 'skills-optional-social-media',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/social-media/social-media-reddit-reading',
                   ],
                 },
                 {
@@ -762,6 +774,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/prompt-assembly',
             'developer-guide/context-compression-and-caching',
             'developer-guide/gateway-internals',
+            'developer-guide/completion-backlog-delivery',
             'developer-guide/session-storage',
             'developer-guide/provider-runtime',
             'developer-guide/programmatic-integration',

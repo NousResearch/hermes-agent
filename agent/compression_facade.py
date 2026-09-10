@@ -240,15 +240,25 @@ class CompressionFacadeMixin:
             missing_fence = object()
             previous_fence = vars(self).get("_active_compression_commit_fence", missing_fence)
             self._active_compression_commit_fence = active_fence
+        # Frozen per-attempt runtime snapshot: in-turn callers already have the turn's scope
+        # ambient, but out-of-turn entry points (/compact, gateway /compress) run with none —
+        # and the summarizer must see the session's CURRENT effort/model even when a
+        # fallback or /model switch changed it after turn_context published its snapshot.
+        # Deep-copied (incl. reasoning_config) so a mid-attempt change cannot mutate it.
+        from agent.auxiliary_client import scoped_runtime_main
+        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+        compression_runtime = self._current_main_runtime()
+        compression_runtime["cache_scope"] = resolve_prompt_cache_scope_safe(self) or ""
         try:
 
             def _run(fence=None, target_messages=None):
-                return compress_context(
-                    self, target_messages if target_messages is not None else messages, system_message,
-                    approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
-                    bypass_cooldown=bypass_cooldown,
-                    defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
-                )
+                with scoped_runtime_main(compression_runtime):
+                    return compress_context(
+                        self, target_messages if target_messages is not None else messages, system_message,
+                        approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
+                        bypass_cooldown=bypass_cooldown,
+                        defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
+                    )
 
             # Callers that already own a progress-aware wait (gateway session
             # hygiene) pass commit_fence and must not be double-wrapped.

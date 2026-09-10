@@ -486,7 +486,7 @@ _CHAT_USAGE_SHAPE = (
     (("completion_tokens",), ("output_tokens",)),
     (("prompt_tokens_details", "cached_tokens"), ("cache_read_input_tokens",), ("prompt_cache_hit_tokens",), ("cached_tokens",)),
     (("prompt_tokens_details", "cache_write_tokens"), ("prompt_tokens_details", "cache_creation_input_tokens"),
-     ("cache_creation_input_tokens",), ("cache_write_tokens",)),
+     ("prompt_tokens_details", "cache_creation_tokens"), ("cache_creation_input_tokens",), ("cache_write_tokens",)),
 )
 
 

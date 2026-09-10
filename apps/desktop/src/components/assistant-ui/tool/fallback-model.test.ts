@@ -429,8 +429,8 @@ describe('clampForDisplay', () => {
 
     expect(clamped.length).toBeLessThan(oversized.length)
     expect(clamped.startsWith('x'.repeat(MAX_TOOL_RENDER_CHARS))).toBe(true)
-    expect(clamped).toContain('5,000 more characters truncated')
-    expect(clamped).toContain('Copy')
+    expect(clamped).toContain('5,000 more characters hidden in this preview')
+    expect(clamped).toContain('open tool details')
   })
 })
 
@@ -444,7 +444,7 @@ describe('prettyJson caps serialized result size', () => {
     const out = prettyJson({ content: huge })
 
     expect(out.length).toBeLessThanOrEqual(MAX_TOOL_RENDER_CHARS + 200)
-    expect(out).toContain('truncated')
+    expect(out).toContain('hidden in this preview')
   })
 })
 

@@ -108,6 +108,27 @@ class MemoryStore:
             "memory calls — leave memory unchanged for now and continue with your reply to the user. "
             "The fact can be saved in a later turn.")}
 
+    def _drift_failure(self, drift_response: Dict[str, Any]) -> Dict[str, Any]:
+        """Rate-limit the external-drift refusal exactly like a consolidation failure so an
+        identical retry can't loop the turn (#26045 refused unbounded; #107270).
+
+        A drift refusal is a hard blocker — the write cannot succeed until the on-disk file is
+        made round-trippable — so re-issuing the SAME memory call gets the SAME refusal forever.
+        Under the per-turn cap return the actionable drift error (it names the .bak and the
+        remediation); past the cap return a TERMINAL result so the model stops retrying and
+        surfaces the blocker to the user instead of burning the turn. Shares the per-turn counter
+        with consolidation failures — both mean 'a memory op keeps failing this turn, stop'.
+        """
+        self._consolidation_failures += 1
+        if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
+            return drift_response
+        return {"success": False, "done": True, "error": (
+            f"Memory write refused {self._consolidation_failures} times this turn: the file on disk shows "
+            "external drift that won't round-trip through the memory tool, and an identical retry can't "
+            "change that. Stop retrying. Surface this to the user — the .bak snapshot holds their content — "
+            "and ask whether to rewrite the file as a clean §-delimited list of entries or move the extra "
+            "content out; then continue with your reply for now (#107270).")}
+
     def load_from_disk(self):
         """Load MEMORY.md / USER.md and capture the frozen system-prompt snapshot.
         Threat hits are replaced by a ``[BLOCKED: …]`` placeholder in the SNAPSHOT only;
@@ -202,7 +223,7 @@ class MemoryStore:
             bak = None if skip_drift else self._detect_external_drift(target, raw)
             self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
             if bak:
-                return _drift_error(path, bak)
+                return self._drift_failure(_drift_error(path, bak))
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
                 return result
@@ -409,6 +430,15 @@ class MemoryStore:
                                and max(map(len, parsed), default=0) <= self._char_limit(target)):
             return None
         path = self._path_for(target)
+        # Reuse an existing snapshot with byte-identical content instead of writing a new one:
+        # an identical retry (same unresolved drift) must not spawn a fresh .bak every time and
+        # clutter the memory dir (#107270). Only distinct drift content earns a new snapshot.
+        for existing in sorted(path.parent.glob(path.name + ".bak.*")):
+            try:
+                if existing.read_text(encoding="utf-8") == raw:
+                    return str(existing)
+            except OSError:
+                continue
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
         try:
             bak_path.write_text(raw, encoding="utf-8")

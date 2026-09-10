@@ -499,6 +499,62 @@ class TestExternalDriftGuard:
         assert result["success"] is False
         assert path.stat().st_size == original_size
 
+    def test_repeated_drift_refusal_is_bounded(self, store):
+        """An identical retry against unresolved drift can't loop the turn.
+
+        A drift refusal is a hard blocker (the write can't succeed until the file is made
+        round-trippable), so re-issuing the SAME call got the SAME refusal forever (#107270).
+        Now the refusal is rate-limited like a consolidation failure (#42405): actionable up
+        to the per-turn cap, then a TERMINAL result so the model stops and surfaces the blocker.
+        """
+        store.add("memory", "User likes brevity.")
+        self._plant_drift(store)
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+
+        # Up to the cap: actionable drift refusals, each still naming the backup + remediation.
+        for _ in range(cap):
+            result = store.replace("memory", "User likes", "User prefers concise.")
+            assert result["success"] is False
+            assert result.get("done") is not True
+            assert "drift_backup" in result
+
+        # Past the cap: terminal — no more looping; tells the model to surface it to the user.
+        result = store.replace("memory", "User likes", "User prefers concise.")
+        assert result["success"] is False
+        assert result["done"] is True
+        assert "drift_backup" not in result
+        assert "107270" in result["error"]
+
+        # A fresh turn clears the per-turn counter; the actionable refusal is available again.
+        store.reset_consolidation_failures()
+        result = store.replace("memory", "User likes", "User prefers concise.")
+        assert result.get("done") is not True
+        assert "drift_backup" in result
+
+    def test_repeated_identical_drift_reuses_one_backup(self, store, monkeypatch):
+        """Identical unresolved drift must not spawn a fresh .bak on every refusal (#107270).
+
+        Timestamps are forced to differ so that, without reuse, each refusal would write a
+        distinct ``.bak.<ts>`` and clutter the memory dir.
+        """
+        import tools.memory_tool_store as mod
+        ticks = iter([1000, 2000, 3000, 4000])
+        monkeypatch.setattr(mod.time, "time", lambda: next(ticks))
+
+        store.add("memory", "User likes brevity.")
+        path = self._plant_drift(store)
+
+        def baks():
+            return sorted(path.parent.glob(path.name + ".bak.*"))
+
+        r1 = store.replace("memory", "User likes", "User prefers concise.")
+        r2 = store.replace("memory", "User likes", "User prefers concise.")
+
+        # Same snapshot reused, and exactly one backup on disk despite two refusals.
+        assert r1["drift_backup"] == r2["drift_backup"]
+        assert len(baks()) == 1
+        assert Path(r1["drift_backup"]).read_text() == path.read_text()
+
 
 class TestUnreadableFileDoesNotWipeMemory:
     """A file that exists but can't be read must NOT be treated as empty.

@@ -30,7 +30,7 @@ def _ns(**kw):
 
 class TestDashboardStatus:
     def test_status_no_processes(self, capsys):
-        with patch("hermes_cli.main._scan_dashboard_processes", return_value=[]), \
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
@@ -46,9 +46,9 @@ class TestDashboardStatus:
             (12346, "python -m hermes_cli.main dashboard --host 0.0.0.0 --port 9120"),
             (12347, "hermes serve --host 100.94.65.93 --port 9119"),
         ]
-        with patch("hermes_cli.main._scan_dashboard_processes", return_value=processes), \
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
              patch("gateway.status._pid_exists", return_value=True), \
-             patch("hermes_cli.main._dashboard_listening", return_value=True), \
+             patch("hermes_cli.main_dashboard._dashboard_listening", return_value=True), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         # Status is informational — always exits 0.
@@ -70,7 +70,7 @@ class TestDashboardStatus:
                 raise ImportError("fastapi missing")
             return orig_import(name, *a, **kw)
 
-        with patch("hermes_cli.main._scan_dashboard_processes", return_value=[]), \
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
              patch("builtins.__import__", side_effect=fake_import), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
@@ -85,7 +85,7 @@ class TestDashboardStop:
         scans = iter([[12345, 12346], []])
         with patch("hermes_cli.main._find_stale_dashboard_pids",
                    side_effect=lambda: next(scans)), \
-             patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill, \
+             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes") as mock_kill, \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(stop=True))
         mock_kill.assert_called_once()
@@ -103,7 +103,7 @@ class TestDashboardStop:
         scans = iter([[12345], [12345]])  # both scans find the same PID
         with patch("hermes_cli.main._find_stale_dashboard_pids",
                    side_effect=lambda: next(scans)), \
-             patch("hermes_cli.main._kill_stale_dashboard_processes"), \
+             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes"), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(stop=True))
         assert exc.value.code == 1
@@ -167,7 +167,7 @@ class TestArgparseWiring:
         # be too invasive.  Instead parse args as if via the CLI by
         # intercepting parse_args.  This is overkill for a smoke test —
         # we just want to know the flags don't KeyError.
-        with patch("hermes_cli.main._scan_dashboard_processes", return_value=[]), \
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
              pytest.raises(SystemExit) as exc:
             mod.cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0

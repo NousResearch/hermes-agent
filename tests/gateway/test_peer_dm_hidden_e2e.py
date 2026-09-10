@@ -141,3 +141,40 @@ def test_hidden_lookup_requires_title_filter_e2e(peer_gateway):
     ids = [s["id"] for s in listing["data"]]
     assert peer_gateway.hidden_id not in ids
     assert "ordinary_1" in ids
+
+
+@pytest.fixture()
+def peer_gateway_compressed_hidden(peer_gateway):
+    """Aged Bot Mode footprint: the hidden canonical Bot Chat has a live
+    compression tip (issue #106165). The tip is untitled and hidden via the
+    lineage; the title lives only on the ended root."""
+    db = peer_gateway.db
+    tip_id = db.create_session(
+        "botchat_tip_1", "gateway_botmode", parent_session_id=peer_gateway.hidden_id)
+    db.end_session(peer_gateway.hidden_id, "compression")
+    db.set_session_hidden(peer_gateway.hidden_id, True)  # lineage-hide root+tip
+    peer_gateway.tip_id = tip_id
+    return peer_gateway
+
+
+def test_peer_dm_reaches_compressed_hidden_bot_chat_e2e(
+        peer_gateway_compressed_hidden, monkeypatch, capsys):
+    """Hidden canonical Bot Chat under compression: the peer lookup must still
+    resolve (to the live tip) instead of missing it and colliding with
+    UNIQUE(title) on create (HTTP 400, issue #106165)."""
+    gw = peer_gateway_compressed_hidden
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": gw.url}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: API_KEY)
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="disk status?", json=True)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reply"] == "e2e reply to: disk status?"
+    assert payload["session_id"] == gw.tip_id
+
+    # No duplicate "Bot Chat" row was minted; the title still lives on the root.
+    assert gw.db.get_session_by_title("Bot Chat")["id"] == gw.hidden_id
+

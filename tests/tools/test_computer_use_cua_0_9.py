@@ -119,7 +119,7 @@ def test_normalized_fixture_is_sanitized_and_records_the_selected_contract():
 
 
 def test_foreground_support_is_discovered_from_tool_input_schema():
-    from tools.computer_use.cua_backend import _CuaDriverSession
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
 
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     listed = []

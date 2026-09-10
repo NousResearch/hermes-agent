@@ -5,7 +5,8 @@ import pytest
 
 import tools.file_operations as file_operations
 from tools.environments.local import LocalEnvironment
-from tools.file_operations import ExecuteResult, ShellFileOperations, _search_stdout_and_limit
+from tools.file_operations import ExecuteResult, ShellFileOperations
+from tools.file_operations_search import _search_stdout_and_limit
 
 
 TIMEOUT = "[Command timed out after 60s]"

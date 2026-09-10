@@ -1,9 +1,16 @@
 """Operator settings lock: named config paths no writer may change until it is unlocked.
 
-Every config write in the tree funnels through :func:`hermes_cli.config.save_config` — the CLI's
-``hermes config set``, the desktop's ``config.set`` RPC, and the web Config page all end up there.
-So the lock is enforced at that one chokepoint rather than in each writer, and a new writer added
-tomorrow is covered without knowing this module exists.
+The lock is enforced at the seam where a ``config.yaml`` document is realised on disk, not in each
+front door: the whole-document primitives — :func:`hermes_cli.config.atomic_config_write` and the
+two ruamel round-trip writers :func:`utils.atomic_roundtrip_yaml_save` /
+:func:`utils.atomic_roundtrip_yaml_update` — each call :func:`check_config_write` against the
+document they are about to replace. ``save_config``, ``hermes config set``/``unset``, the TUI's and
+the desktop's model switch, the desktop's ``config.set`` RPC, the web Config page, the gateway
+slash commands, the credential lifecycle, the ``hermes auth`` provider switch, ``hermes agent
+import`` and the post-update restore all end in one of those — and a writer added tomorrow is
+covered by using any of them. Writers with an EARLIER side effect (a ``.env`` rotation, an
+``auth.json`` switch) ask first so a refusal never leaves a half-applied change.
+
 
 The spec is read from the SHARED ROOT ``config.yaml`` only, never the active profile's: a
 per-profile copy must not be able to unlock its own profile, for the same reason
@@ -266,6 +273,18 @@ def check_write(before: Any, after: Any, home: Path | str | None = None) -> None
         + ". Run `hermes config unlock` to open a time-boxed window"
         + (" (a password is required)." if has_password(spec) else "."),
         offending)
+
+
+def check_config_write(config_path: Path | str, before: Any, after: Any) -> None:
+    """The seam every ``config.yaml`` writer passes through: :func:`check_write` for the document at
+    *config_path*, with the lock read from the root that owns it (``profiles/<name>`` → root).
+
+    Called by the whole-document primitives — ``hermes_cli.config.atomic_config_write``,
+    ``utils.atomic_roundtrip_yaml_save`` and ``utils.atomic_roundtrip_yaml_update`` — and by
+    writers that must refuse BEFORE an earlier side effect (a ``.env`` rotation whose config.yaml
+    mirror is locked, an ``auth.json`` provider switch).
+    """
+    check_write(before, after, Path(config_path).parent)
 
 
 def describe(home: Path | str | None = None) -> dict:

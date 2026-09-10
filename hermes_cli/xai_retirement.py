@@ -158,14 +158,16 @@ def apply_migration(
     if not resolved:
         return unchanged
 
+    from hermes_cli.config import require_readable_config_before_write
+    from hermes_cli.settings_lock import check_config_write
+    from utils import atomic_write_text
+    # Operator settings lock, before the backup copy so a refused migration leaves no trace.
+    check_config_write(config_path, require_readable_config_before_write(config_path), doc)
+
     backup_path: Optional[Path] = None
     if backup:
         from hermes_cli.config_backups import backup_config
         backup_path = backup_config(config_path, "pre-migrate-xai")
-
-    from hermes_cli.config import require_readable_config_before_write
-    from utils import atomic_write_text
-    require_readable_config_before_write(config_path)
     # Dump to a buffer, then atomic-write: ``open(path, "w")`` truncates before the dump runs, so a
     # crash mid-write would leave config.yaml empty (and with ``--no-backup`` that is the only
     # copy; the ``doc is None`` early return would then hide the damage). atomic_replace also keeps

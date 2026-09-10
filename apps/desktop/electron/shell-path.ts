@@ -71,6 +71,7 @@ function runProbe(shell, flags, execFileFn, timeoutMs): Promise<string | null> {
   return new Promise(resolve => {
     let settled = false
     let hardTimer: ReturnType<typeof setTimeout> | null = null
+    let capturedStdout = ''
 
     const finish = value => {
       if (!settled) {
@@ -99,6 +100,12 @@ function runProbe(shell, flags, execFileFn, timeoutMs): Promise<string | null> {
       // Interactive shells with a broken rc can block reading stdin.
       child?.stdin?.end?.()
 
+      // Mirror what the callback would have seen, so a sentinel that already
+      // printed before a descendant wedged the pipe isn't thrown away below.
+      child?.stdout?.on?.('data', chunk => {
+        capturedStdout += chunk
+      })
+
       // execFile's own `timeout` only SIGTERMs the direct child; a profile
       // that spawns a daemon (e.g. Powerlevel10k's gitstatusd) can leave a
       // grandchild holding the stdout pipe open, so the callback above never
@@ -120,7 +127,7 @@ function runProbe(shell, flags, execFileFn, timeoutMs): Promise<string | null> {
           }
         }
 
-        finish(null)
+        finish(extractSentinelPath(capturedStdout))
       }, timeoutMs + 1000)
     } catch {
       finish(null)

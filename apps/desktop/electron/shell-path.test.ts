@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 
 import { beforeEach, test } from 'vitest'
 
@@ -150,6 +151,23 @@ test('applyLoginShellPath force-settles when a hung grandchild keeps the execFil
   assert.equal(result.applied, false)
   assert.equal(result.reason, 'unresolved')
   assert.ok(elapsed < 4000, `expected the probe to force-settle well under the test timeout, took ${elapsed}ms`)
+})
+
+test('applyLoginShellPath keeps a sentinel already printed when the hard timer force-settles', async () => {
+  const env: any = { SHELL: '/bin/zsh', PATH: '/usr/bin' }
+  // Simulates a probe whose shell already wrote the sentinel before a
+  // daemon-holding descendant wedges the pipe: execFile's callback never
+  // fires, but the stdout stream itself did emit the data.
+  const stdout = new EventEmitter()
+  const execFileFn = () => ({ pid: 424243, stdin: { end() {} }, stdout })
+
+  const resultPromise = applyLoginShellPath({ env, platform: 'linux', execFileFn, timeoutMs: 20 })
+  stdout.emit('data', `${START}/opt/homebrew/bin:/usr/bin${END}`)
+
+  const result = await resultPromise
+
+  assert.equal(result.applied, true)
+  assert.equal(env.PATH, '/opt/homebrew/bin:/usr/bin')
 })
 
 test('ensureLoginShellPath never rejects', async () => {

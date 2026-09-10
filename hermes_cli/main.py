@@ -2388,7 +2388,7 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
 
 
 def _dashboard_validate_serve_args(args, headless_backend, token_file):
-    """Headless-serve argument checks -> ssh_owner_nonce (or None)."""
+    """Headless-serve argument checks -> (SSH owner nonce, spawn batch ID)."""
     # `hermes serve` is headless/non-interactive: fail closed on a corrupt
     # config.yaml instead of silently starting on defaults where provider
     # auto-detection can adopt unnamed .env credentials (issue #81952).
@@ -2407,11 +2407,16 @@ def _dashboard_validate_serve_args(args, headless_backend, token_file):
             print(f"Error: {exc}", file=sys.stderr)
             raise SystemExit(2) from exc
     ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
+    ssh_spawn_batch_id = getattr(args, "ssh_spawn_batch_id", None)
     if ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", ssh_owner_nonce):
         raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
+    if ssh_spawn_batch_id and not re.fullmatch(r"[0-9a-f]{32}", ssh_spawn_batch_id):
+        raise SystemExit("--ssh-spawn-batch-id must be 32 lowercase hex characters")
+    if ssh_spawn_batch_id and not (token_file and ssh_owner_nonce):
+        raise SystemExit("--ssh-spawn-batch-id requires --ssh-session-token-file and --ssh-owner-nonce")
     if token_file and not headless_backend:
         raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
-    return ssh_owner_nonce
+    return ssh_owner_nonce, ssh_spawn_batch_id
 
 
 def _dashboard_sanitize_desktop_env(headless_backend) -> None:
@@ -2530,10 +2535,14 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
-    _ssh_owner_nonce = _dashboard_validate_serve_args(args, _headless_backend, _token_file)
+    _ssh_owner_nonce, _ssh_spawn_batch_id = _dashboard_validate_serve_args(
+        args, _headless_backend, _token_file
+    )
     _dashboard_sanitize_desktop_env(_headless_backend)
 
-    _route_named_profile_dashboard(args, _headless_backend, _ssh_owner_nonce, _token_file)
+    _route_named_profile_dashboard(
+        args, _headless_backend, _ssh_owner_nonce, _ssh_spawn_batch_id, _token_file
+    )
 
     # Apply the final process/profile policy after dashboard routing, but before
     # importing the web server or opening dashboard state. Applying it before a
@@ -2567,6 +2576,7 @@ def cmd_dashboard(args):
         headless=_headless_backend,
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
+        ssh_spawn_batch_id=_ssh_spawn_batch_id,
         start_mcp_discovery_after_bind=_mcp_discovery_after_bind,
     )
 

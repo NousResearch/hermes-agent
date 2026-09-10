@@ -7,6 +7,16 @@ const PROTOCOL_VERSION = 1
 const READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/gm
 const READY_POLL_INTERVAL_MS = 750
 
+function validateSpawnBatchId(value) {
+  const batchId = String(value || '')
+
+  if (!/^[0-9a-f]{32}$/.test(batchId)) {
+    throw new Error('SSH spawn batch ID is invalid.')
+  }
+
+  return batchId
+}
+
 function psLiteral(value) {
   return `'${String(value).replace(/'/g, "''")}'`
 }
@@ -559,7 +569,8 @@ async function connectWindowsRemote(deps) {
     waitForHermes,
     probeReuseProof,
     rememberLog = () => {},
-    readyTimeoutMs = 45_000
+    readyTimeoutMs = 45_000,
+    sshSpawnBatchId = ''
   } = deps
 
   assertBootstrapNotSuperseded(signal)
@@ -567,7 +578,13 @@ async function connectWindowsRemote(deps) {
   await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
-  if (!inspection.supported) {
+  const requiresSpawnBatch = Boolean(sshSpawnBatchId)
+
+  if (requiresSpawnBatch) {
+    validateSpawnBatchId(sshSpawnBatchId)
+  }
+
+  if (!inspection.supported || (requiresSpawnBatch && !inspection.supportsSpawnBatch)) {
     const error: any = new Error('Update Hermes on the remote Windows host before connecting with Desktop SSH.')
     error.kind = 'update-required'
     throw error
@@ -654,7 +671,13 @@ async function connectWindowsRemote(deps) {
     spawned = await atomicWindowsSpawn(
       ssh,
       runtime,
-      JSON.stringify({ ownershipId, spawnNonce, profile, hermesPath: runtime.hermesPath }),
+      JSON.stringify({
+        ownershipId,
+        spawnNonce,
+        profile,
+        hermesPath: runtime.hermesPath,
+        ...(requiresSpawnBatch ? { spawnBatchId: sshSpawnBatchId } : {})
+      }),
       {
         ownershipId,
         spawnNonce,

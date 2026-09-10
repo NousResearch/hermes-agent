@@ -56,6 +56,9 @@ def _configure_serve_parser(parser, *, cmd_dashboard: Callable) -> None:
     parser.add_argument(
         "--ssh-owner-nonce", dest="ssh_owner_nonce", metavar="NONCE", default=None,
         help="Identify a Desktop-owned SSH backend process")
+    parser.add_argument(
+        "--ssh-spawn-batch-id", dest="ssh_spawn_batch_id", metavar="BATCH_ID", default=None,
+        help="Group Desktop SSH isolated backends spawned for one connection")
     parser.set_defaults(func=cmd_dashboard, no_open=True, headless_backend=True, command="serve")
 
 

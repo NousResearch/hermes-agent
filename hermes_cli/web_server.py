@@ -1192,6 +1192,8 @@ def _on_server_started(
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
+    ssh_owner_nonce: Optional[str] = None,
+    ssh_spawn_batch_id: Optional[str] = None,
 ) -> None:
     """Post-bind arming on the serving loop right after ``server.startup()``.
 
@@ -1229,7 +1231,17 @@ def _on_server_started(
             grace = float((load_config().get("dashboard") or {}).get("ssh_isolated_idle_grace_s", DEFAULT_IDLE_GRACE_S))
         except (TypeError, ValueError):
             grace = DEFAULT_IDLE_GRACE_S
-        start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
+        batch_lease = None
+        if ssh_spawn_batch_id:
+            from hermes_cli.web_server_ssh_batch import SshSpawnBatchLease
+
+            batch_lease = SshSpawnBatchLease(ssh_spawn_batch_id, ssh_owner_nonce or "")
+        start_idle_watchdog(
+            server,
+            app.state.ssh_isolated_clients,
+            grace_s=grace,
+            batch_lease=batch_lease,
+        )
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
@@ -1358,6 +1370,7 @@ def start_server(
     headless: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
+    ssh_spawn_batch_id: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
 ):
     """Start the web UI server.
@@ -1365,14 +1378,20 @@ def start_server(
     ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
     (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
     JSON-RPC/WS backend, no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
-    ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
-    bootstrap state, never persisted or exported to children.
+    ``ssh_session_token``/``ssh_owner_nonce``/``ssh_spawn_batch_id`` are
+    process-local Desktop SSH bootstrap state, never persisted or exported to
+    children.  The batch ID permits server-owned sibling liveness only when
+    accompanied by the credential-bound token and owner nonce.
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    if ssh_spawn_batch_id and not (ssh_session_token and ssh_owner_nonce):
+        raise ValueError(
+            "ssh_spawn_batch_id requires ssh_session_token and ssh_owner_nonce"
+        )
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
@@ -1434,6 +1453,8 @@ def start_server(
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,
+                ssh_owner_nonce=ssh_owner_nonce,
+                ssh_spawn_batch_id=ssh_spawn_batch_id,
             )
 
             await server.main_loop()

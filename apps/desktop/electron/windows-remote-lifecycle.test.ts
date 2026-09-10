@@ -20,6 +20,7 @@ import {
 } from './windows-remote-lifecycle'
 
 const ownershipId = '0123456789abcdef0123456789abcdef'
+const spawnBatchId = 'fedcba9876543210fedcba9876543210'
 
 test('Windows spawn holds the update mutex across marker check and helper spawn', () => {
   const command = atomicWindowsSpawnCommand({
@@ -64,6 +65,74 @@ test('Windows spawn publishes the initial ownership record before releasing the 
 function sshWith(exec) {
   return { exec }
 }
+
+test('Windows remote spawn carries the registry-owned batch ID to the server helper', async () => {
+  const spawnPayloads: string[] = []
+  const runtime = {
+    os: 'Windows',
+    arch: 'AMD64',
+    hermesHome: 'C:\\Users\\alice\\.hermes',
+    hermesPath: 'C:\\Hermes\\hermes.exe',
+    python: 'C:\\Hermes\\python.exe'
+  }
+  const ssh = sshWith(async (command, options: any = {}) => {
+    const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
+    if (script.includes('Get-Command hermes.exe')) {
+      return JSON.stringify(runtime)
+    }
+    if (script.includes("windows_ssh_runtime' 'spawn'")) {
+      spawnPayloads.push(options.stdinData)
+      return JSON.stringify({ pid: 41, creationTimeNs: '1784219690452757504' })
+    }
+    if (script.includes('.hermes-update-in-progress')) {
+      return 'CLEAR'
+    }
+    if (script.includes("'inspect'")) {
+      return JSON.stringify({
+        supported: true,
+        supportsSpawnBatch: true,
+        path: runtime.hermesPath,
+        version: 'Hermes Agent test'
+      })
+    }
+    if (script.includes("'upload-token'")) {
+      return JSON.stringify({ path: 'C:\\runtime\\token' })
+    }
+    if (script.includes("'remove-token'")) {
+      return JSON.stringify({ removed: true })
+    }
+    if (script.includes("'read-lock'")) {
+      return 'null'
+    }
+    if (script.includes("'write-lock'")) {
+      return JSON.stringify({ ok: true })
+    }
+    if (script.includes("'process-state'")) {
+      return JSON.stringify({ alive: true, owned: true, indeterminate: false })
+    }
+    if (script.includes("'read-log'")) {
+      return JSON.stringify({ content: 'HERMES_BACKEND_READY port=43000\n' })
+    }
+
+    throw new Error(`unexpected remote command: ${script}`)
+  })
+
+  const result = await connectWindowsRemote({
+    ssh,
+    ownershipId,
+    sshSpawnBatchId: spawnBatchId,
+    pickLocalPort: async () => 51000,
+    forward: async () => {},
+    cancelForward: async () => {},
+    waitForHermes: async () => {},
+    probeReuseProof: async () => 'authenticated-ok'
+  })
+
+  assert.equal(result.reused, false)
+  assert.equal(spawnPayloads.length, 1)
+  assert.equal(JSON.parse(spawnPayloads[0]).spawnBatchId, spawnBatchId)
+})
 
 test('PowerShell transport uses UTF-16LE encoded commands and literal escaping', () => {
   assert.equal(Buffer.from(encodedPowerShell("'ok'"), 'base64').toString('utf16le'), "'ok'")

@@ -48,6 +48,10 @@ def _nonce(value: str) -> str:
     return _check(_HEX16, value, "invalid spawn nonce")
 
 
+def _spawn_batch_id(value: str) -> str:
+    return _check(_HEX32, value, "invalid SSH spawn batch ID")
+
+
 def _root() -> Path:
     # The helper uploads the token before the child applies `--profile`; read_token() runs after
     # profile activation. Anchor both to the machine root so a named profile (or custom
@@ -374,6 +378,9 @@ def _resolve_direct_interpreter(python_entry: str) -> tuple[str, list[str]]:
 def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
     ownership_id = _ownership(str(payload["ownershipId"]))
     spawn_nonce = _nonce(str(payload["spawnNonce"]))
+    spawn_batch_id = str(payload.get("spawnBatchId") or "")
+    if spawn_batch_id:
+        spawn_batch_id = _spawn_batch_id(spawn_batch_id)
     configured_path = str(payload["hermesPath"])
     if not os.path.isabs(configured_path):
         raise ValueError("Hermes path must be absolute")
@@ -398,6 +405,8 @@ def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
         args.extend(["--profile", profile])
     args.extend(["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
                  "--ssh-session-token-file", token_path, "--ssh-owner-nonce", spawn_nonce])
+    if spawn_batch_id:
+        args.extend(["--ssh-spawn-batch-id", spawn_batch_id])
     env = dict(os.environ)
     env["VIRTUAL_ENV"] = os.path.dirname(venv_dir)
     env.pop("PYTHONPATH", None)
@@ -428,7 +437,8 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
     return {
         "path": path,
         "version": (version.stdout + version.stderr).splitlines()[0] if version.returncode == 0 else "",
-        "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text}
+        "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text,
+        "supportsSpawnBatch": "--ssh-spawn-batch-id" in help_text}
 
 
 def _probe(*_: str) -> dict[str, Any]:

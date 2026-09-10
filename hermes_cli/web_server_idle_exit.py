@@ -111,27 +111,83 @@ def turn_in_flight() -> Optional[bool]:
         return None
 
 
-def should_exit_idle(tracker: IdleClientTracker, grace_s: float,
-                     probe: Callable[[], Optional[bool]] = turn_in_flight) -> bool:
+def should_exit_idle(
+    tracker: IdleClientTracker,
+    grace_s: float,
+    probe: Callable[[], Optional[bool]] = turn_in_flight,
+    peer_probe: Callable[[], Optional[bool]] = lambda: False,
+) -> bool:
     """Exit only when no client has been connected for ``grace_s`` AND no turn is provably running.
-    A probe that cannot answer keeps the process (fail closed)."""
-    return tracker.idle_for() >= grace_s and probe() is False  # idle_for() is 0 while a client is connected
+    An indeterminate local or sibling probe keeps the process (fail closed)."""
+    return (
+        tracker.idle_for() >= grace_s  # idle_for() is 0 while a client is connected
+        and probe() is False
+        and peer_probe() is False
+    )
 
 
-def start_idle_watchdog(server, tracker: IdleClientTracker, *, grace_s: float = DEFAULT_IDLE_GRACE_S,
-                        poll_s: float = 15.0, probe: Callable[[], Optional[bool]] = turn_in_flight) -> threading.Thread:
+def _batch_peer_state(batch_lease, tracker: IdleClientTracker, turn_state: Optional[bool], ttl_s: float) -> Optional[bool]:
+    """Publish this backend's server-owned state and then read a sibling.
+
+    The protocol cannot prove peer liveness if its private runtime directory is
+    unavailable or malformed.  Return ``None`` in that case so the caller
+    defers idle exit instead of retiring a potentially live sibling.
+    """
+    try:
+        # A connected dashboard or an unknown/running turn means this backend
+        # is still useful to the Desktop connection even if it is otherwise
+        # past its own idle grace window.
+        active = tracker.live_count() > 0 or turn_state is not False
+        if not batch_lease.publish(active=active):
+            return None
+        return batch_lease.has_active_peer(ttl_s=ttl_s)
+    except Exception:
+        _log.warning("SSH spawn-batch liveness probe unavailable; idle exit will fail closed", exc_info=True)
+        return None
+
+
+def start_idle_watchdog(
+    server,
+    tracker: IdleClientTracker,
+    *,
+    grace_s: float = DEFAULT_IDLE_GRACE_S,
+    poll_s: float = 15.0,
+    probe: Callable[[], Optional[bool]] = turn_in_flight,
+    batch_lease=None,
+) -> threading.Thread:
     """Daemon thread that sets ``server.should_exit`` once :func:`should_exit_idle` holds."""
 
     poll_s = min(poll_s, max(0.5, grace_s / 4))
+    batch_ttl_s = max(5.0, poll_s * 3)
 
     def _loop() -> None:
-        while not getattr(server, "should_exit", False):
-            if should_exit_idle(tracker, grace_s, probe):
-                _log.warning("SSH-isolated backend idle for %.0fs with no client and no running turn; exiting.",
-                             tracker.idle_for())
-                server.should_exit = True
-                return
-            time.sleep(poll_s)
+        try:
+            while not getattr(server, "should_exit", False):
+                turn_state = probe()
+                peer_state = (
+                    _batch_peer_state(batch_lease, tracker, turn_state, batch_ttl_s)
+                    if batch_lease is not None
+                    else False
+                )
+                if should_exit_idle(
+                    tracker,
+                    grace_s,
+                    probe=lambda: turn_state,
+                    peer_probe=lambda: peer_state,
+                ):
+                    _log.warning(
+                        "SSH-isolated backend idle for %.0fs with no client, no running turn, and no active sibling; exiting.",
+                        tracker.idle_for(),
+                    )
+                    server.should_exit = True
+                    return
+                time.sleep(poll_s)
+        finally:
+            if batch_lease is not None:
+                try:
+                    batch_lease.close()
+                except Exception:
+                    _log.warning("SSH spawn-batch lease cleanup failed", exc_info=True)
 
     thread = threading.Thread(target=_loop, daemon=True, name="ssh-isolated-idle-watchdog")
     thread.start()

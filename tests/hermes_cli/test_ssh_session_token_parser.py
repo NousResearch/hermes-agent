@@ -4,7 +4,7 @@ import os
 import pytest
 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
-from hermes_cli.main import cmd_dashboard
+from hermes_cli.main import _dashboard_validate_serve_args, cmd_dashboard
 from hermes_cli.main_dashboard import _read_ssh_session_token_file
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
 
@@ -27,6 +27,25 @@ def test_serve_help_advertises_secure_ssh_bootstrap_flags(capsys):
     output = capsys.readouterr().out
     assert "--ssh-session-token-file PATH" in output
     assert "--ssh-owner-nonce NONCE" in output
+    assert "--ssh-spawn-batch-id BATCH_ID" in output
+
+
+def test_serve_parser_accepts_the_desktop_ssh_spawn_batch_identity():
+    args = dashboard_parser().parse_args([
+        "serve",
+        "--ssh-session-token-file", "/runtime/token",
+        "--ssh-owner-nonce", "a" * 16,
+        "--ssh-spawn-batch-id", "b" * 32,
+    ])
+
+    assert args.ssh_spawn_batch_id == "b" * 32
+
+
+def test_spawn_batch_identity_requires_the_credential_bound_ssh_flags():
+    args = dashboard_parser().parse_args(["serve", "--ssh-spawn-batch-id", "b" * 32])
+
+    with pytest.raises(SystemExit, match="requires --ssh-session-token-file and --ssh-owner-nonce"):
+        _dashboard_validate_serve_args(args, False, None)
 
 
 

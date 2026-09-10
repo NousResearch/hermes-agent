@@ -43,6 +43,7 @@ import {
 
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
+const SPAWN_BATCH_ID = 'fedcba9876543210fedcba9876543210'
 const exec = promisify(execCallback)
 
 test('SSH reuse proof rejects a backend whose runtime was replaced', () => {
@@ -908,6 +909,30 @@ test('spawnRemoteDashboard always spawns serve (legacy dashboard path removed)',
   const spawn = ssh.calls.find(c => /setsid|nohup/.test(c))
   assert.match(spawn, /serve --isolated/)
   assert.doesNotMatch(spawn, /\bdashboard\b/)
+})
+
+test('spawnRemoteDashboard carries one validated Desktop connection batch into the server command', async () => {
+  const ssh = fakeSsh([
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid|nohup/, '4242\n']
+  ])
+
+  await spawnRemoteDashboard(ssh, {
+    hermesPath: '/x/hermes',
+    profile: '',
+    token: 'tk',
+    ownershipId: OWNERSHIP_ID,
+    spawnBatchId: SPAWN_BATCH_ID
+  })
+
+  const spawn = ssh.calls.find(c => /setsid|nohup/.test(c)) || ''
+  assert.match(spawn, new RegExp(`--ssh-spawn-batch-id ${SPAWN_BATCH_ID}`))
+  assert.throws(
+    () => buildSpawnCommand('/x/hermes', '', { logPath: '/tmp/hermes.log', spawnBatchId: 'unsafe' }),
+    /SSH spawn batch ID is invalid/
+  )
 })
 
 test('READY_RE accepts both serve and dashboard sentinels', () => {
@@ -1805,6 +1830,9 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
   assert.equal(await remoteSupportsSshOwnership(supported, '/x/hermes'), true)
   assert.match(helpProbe, /ssh-session-token-file/)
   assert.match(helpProbe, /ssh-owner-nonce/)
+
+  assert.equal(await remoteSupportsSshOwnership(supported, '/x/hermes', true), true)
+  assert.match(helpProbe, /ssh-spawn-batch-id/)
 
   const unsupported = fakeSsh([[/serve --help/, 'NO\n']])
   assert.equal(await remoteSupportsSshOwnership(unsupported, '/x/hermes'), false)

@@ -633,7 +633,12 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
 
 
 def _route_named_profile_dashboard(
-    args, _headless_backend: bool, _ssh_owner_nonce: str, _token_file: str) -> None:
+    args,
+    _headless_backend: bool,
+    _ssh_owner_nonce: str,
+    _ssh_spawn_batch_id: str,
+    _token_file: str,
+) -> None:
     """Route a named-profile launch to the single MACHINE dashboard (per-request ``?profile=`` scoping
     makes one server per profile pure fragmentation).
 
@@ -681,6 +686,7 @@ def _route_named_profile_dashboard(
         "--open-profile", _launch_profile]
     for enabled, extra in (
         (_ssh_owner_nonce, ["--ssh-owner-nonce", _ssh_owner_nonce]),
+        (_ssh_spawn_batch_id, ["--ssh-spawn-batch-id", _ssh_spawn_batch_id]),
         (_token_file, ["--ssh-session-token-file", _token_file]),
         (args.no_open, ["--no-open"]),
         (getattr(args, "insecure", False), ["--insecure"]),

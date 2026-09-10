@@ -49,6 +49,12 @@ def test_exit_only_after_grace_with_no_client_and_no_running_turn():
     assert should_exit_idle(tracker, grace, probe=lambda: False) is True
     assert should_exit_idle(tracker, grace, probe=lambda: True) is False   # turn running
     assert should_exit_idle(tracker, grace, probe=lambda: None) is False   # indeterminate: fail closed
+    assert should_exit_idle(
+        tracker, grace, probe=lambda: False, peer_probe=lambda: True
+    ) is False  # an active sibling owns the same Desktop SSH spawn batch
+    assert should_exit_idle(
+        tracker, grace, probe=lambda: False, peer_probe=lambda: None
+    ) is False  # unreadable sibling state is indeterminate: fail closed
     tracker.on_open()
     clock["t"] = 5000.0
     assert should_exit_idle(tracker, grace, probe=lambda: False) is False  # a client is connected
@@ -56,6 +62,46 @@ def test_exit_only_after_grace_with_no_client_and_no_running_turn():
     assert should_exit_idle(tracker, grace, probe=lambda: False) is False  # grace restarts on close
     clock["t"] = 5000.0 + grace + 1
     assert should_exit_idle(tracker, grace, probe=lambda: False) is True
+
+
+def test_watchdog_publishes_server_liveness_and_closes_its_batch_lease():
+    class _Server:
+        should_exit = False
+
+    class _Lease:
+        def __init__(self):
+            self.published = []
+            self.closed = False
+
+        def publish(self, *, active):
+            self.published.append(active)
+            return True
+
+        def has_active_peer(self, *, ttl_s):
+            assert ttl_s > 0
+            return False
+
+        def close(self):
+            self.closed = True
+
+    clock = {"t": 0.0}
+    tracker = IdleClientTracker(now=lambda: clock["t"])
+    clock["t"] = 2.0
+    server = _Server()
+    lease = _Lease()
+
+    start_idle_watchdog(
+        server,
+        tracker,
+        grace_s=1.0,
+        poll_s=0.01,
+        probe=lambda: False,
+        batch_lease=lease,
+    ).join(timeout=5)
+
+    assert server.should_exit is True
+    assert lease.published == [False]
+    assert lease.closed is True
 
 
 def test_watchdog_sets_should_exit_and_only_arms_for_ssh_isolated_backends(monkeypatch):

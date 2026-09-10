@@ -90,6 +90,16 @@ function validateSpawnNonce(spawnNonce) {
   return value
 }
 
+function validateSpawnBatchId(spawnBatchId) {
+  const value = String(spawnBatchId || '')
+
+  if (!/^[0-9a-f]{32}$/.test(value)) {
+    throw new Error('SSH spawn batch ID is invalid.')
+  }
+
+  return value
+}
+
 function ownershipDirectory(ownershipId) {
   return `${REMOTE_LOCK_DIR}/${validateOwnershipId(ownershipId)}`
 }
@@ -1045,7 +1055,8 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const tokenFilePath = opts.tokenFilePath
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
   const ownerArg = opts.spawnNonce ? ` --ssh-owner-nonce ${validateSpawnNonce(opts.spawnNonce)}` : ''
-  const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
+  const batchArg = opts.spawnBatchId ? ` --ssh-spawn-batch-id ${validateSpawnBatchId(opts.spawnBatchId)}` : ''
+  const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}${batchArg}`
   const marker = expandRemotePath(`${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress`)
 
   const updateMutex = expandRemotePath(
@@ -1120,13 +1131,14 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   )
 }
 
-async function remoteSupportsSshOwnership(ssh, hermesPath) {
+async function remoteSupportsSshOwnership(ssh, hermesPath, needsSpawnBatch = false) {
   const hermes = expandRemotePath(hermesPath)
+  const batchCapability = needsSpawnBatch ? ` && printf '%s' "$help" | grep -q ssh-spawn-batch-id` : ''
 
   const out = await ssh.exec(
     `help="$(${hermes} serve --help 2>&1)"; ` +
       `printf '%s' "$help" | grep -q ssh-session-token-file && ` +
-      `printf '%s' "$help" | grep -q ssh-owner-nonce && echo YES || echo NO`
+      `printf '%s' "$help" | grep -q ssh-owner-nonce${batchCapability} && echo YES || echo NO`
   )
 
   return String(out || '')
@@ -1171,12 +1183,26 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT
 
 async function spawnRemoteDashboard(
   ssh,
-  { hermesPath, profile, token, ownershipId, hermesHome = '~/.hermes', assertInstallClear = async () => {} }
+  {
+    hermesPath,
+    profile,
+    token,
+    ownershipId,
+    spawnBatchId = '',
+    hermesHome = '~/.hermes',
+    assertInstallClear = async () => {}
+  }
 ) {
-  if (!(await remoteSupportsSshOwnership(ssh, hermesPath))) {
+  const requiresSpawnBatch = Boolean(spawnBatchId)
+
+  if (requiresSpawnBatch) {
+    validateSpawnBatchId(spawnBatchId)
+  }
+
+  if (!(await remoteSupportsSshOwnership(ssh, hermesPath, requiresSpawnBatch))) {
     const err: any = new Error(
-      'The remote Hermes install does not support --ssh-session-token-file and --ssh-owner-nonce. ' +
-        'Update Hermes on the remote host to continue using Desktop SSH mode.'
+      'The remote Hermes install does not support the required Desktop SSH ownership flags. ' +
+      'Update Hermes on the remote host to continue using Desktop SSH mode.'
     )
 
     err.kind = 'update-required'
@@ -1239,6 +1265,7 @@ async function spawnRemoteDashboard(
       buildSpawnCommand(hermesPath, profile, {
         spawnNonce,
         tokenFilePath,
+        spawnBatchId,
         logPath,
         hermesHome,
         ownershipId,
@@ -1390,6 +1417,7 @@ async function connect(deps) {
     adoptServedToken,
     rememberLog = () => {},
     readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
+    sshSpawnBatchId = '',
     signal
   } = deps
 
@@ -1542,6 +1570,7 @@ async function connect(deps) {
     profile,
     token: spawnToken,
     ownershipId,
+    spawnBatchId: sshSpawnBatchId,
     hermesHome,
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome)
   })

@@ -9,6 +9,8 @@
 
 import { atom } from '@hermes/plugin-sdk'
 
+export { isPrivateFlag } from './bot-flags'
+import { isPrivateFlag } from './bot-flags'
 import { $selectedBot } from './bot-state'
 import { $botMeta, $lastRoster, botSelectionKey, isDefaultBot } from './data'
 import type { BotMetaSnapshot } from './data'
@@ -28,6 +30,11 @@ export function isBotHidden(bot: RosterRow, metaByName: BotMetaSnapshot) {
 
 export function isBotPinned(bot: RosterRow, metaByName: BotMetaSnapshot) {
   return Boolean(botRosterMeta(bot, metaByName)?.pinned)
+}
+
+/** Unlike `hidden` (display-only), `private` reaches the gateway: see BotMeta.private. */
+export function isBotPrivate(bot: RosterRow, metaByName: BotMetaSnapshot) {
+  return isPrivateFlag(botRosterMeta(bot, metaByName)?.private)
 }
 
 /** Hiding the selected bot re-homes the selection to the next visible owner. */

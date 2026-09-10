@@ -1926,6 +1926,9 @@ class CLICommandsMixin:
             with suppress(Exception):
                 set_secret_capture_callback(self._secret_capture_callback)
             try:
+                from agent.isolation import resolve_agent_isolation
+
+                isolated = resolve_agent_isolation()
                 bg_agent = AIAgent(
                     model=turn_route["model"], acp_command=runtime.get("command"),
                     acp_args=runtime.get("args"), max_iterations=self.max_turns,
@@ -1935,6 +1938,8 @@ class CLICommandsMixin:
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
+                    skip_context_files=isolated,
+                    skip_memory=isolated,
                     **{kw: getattr(self, attr) for kw, attr in _BG_PROVIDER_KWARGS.items()})
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None

@@ -101,6 +101,7 @@ class GatewayAgentCacheMixin:
         model: str, runtime: dict, enabled_toolsets: list, ephemeral_prompt: str,
         cache_keys: dict | None = None, user_id: str | None = None, user_id_alt: str | None = None,
         skip_context_files: bool = False,
+        skip_memory: bool = False,
     ) -> str:
         """Stable key from agent config: change → cached AIAgent rebuilt; unchanged → reused (frozen
         prompt + schemas for cache hits). ``user_id`` / ``user_id_alt`` participate because Honcho
@@ -135,6 +136,8 @@ class GatewayAgentCacheMixin:
                 # skip_context_files changes the agent's frozen system prompt (context files in vs out):
                 # a toggled edit must rebuild the cached agent, not silently reuse it.
                 bool(skip_context_files),
+                # Memory-provider state is also frozen at construction.
+                bool(skip_memory),
             ],
             sort_keys=True, default=str,
         )

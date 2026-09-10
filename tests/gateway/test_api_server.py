@@ -178,7 +178,8 @@ class TestAdapterInit:
         assert adapter._cors_origins == ("http://localhost:3000",)
 
 
-    def test_create_agent_forwards_runtime_config(self, monkeypatch):
+    @staticmethod
+    def _stub_create_agent_deps(monkeypatch):
         captured = {}
 
         class FakeAgent:
@@ -213,6 +214,10 @@ class TestAdapterInit:
         )
         monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
         monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+        return captured, FakeAgent
+
+    def test_create_agent_forwards_runtime_config(self, monkeypatch):
+        captured, FakeAgent = self._stub_create_agent_deps(monkeypatch)
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
@@ -225,6 +230,20 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
+        assert captured["skip_context_files"] is False
+        assert captured["skip_memory"] is False
+
+    def test_create_agent_honors_isolation_env(self, monkeypatch):
+        captured, _ = self._stub_create_agent_deps(monkeypatch)
+        monkeypatch.setenv("HERMES_SAFE_MODE", "1")
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(session_id="api-session")
+
+        assert captured["skip_context_files"] is True
+        assert captured["skip_memory"] is True
 
 
 # ---------------------------------------------------------------------------

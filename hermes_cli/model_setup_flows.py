@@ -9,6 +9,7 @@ own ``model_setup_flows_*`` modules.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import argparse
 import os
 
@@ -575,6 +576,80 @@ def _model_flow_copilot(config, current_model=""):
             print("Reasoning disabled for this model.")
         elif selected_effort:
             print(f"Reasoning effort set to: {selected_effort}")
+
+
+def _external_process_model_choices(
+    provider_id: str, *, status: dict | None = None,
+) -> list[str]:
+    """Return a subprocess provider's live catalog, or its declared fallback."""
+    from hermes_cli.auth import get_external_process_provider_status
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider_id)
+    if profile is None or profile.auth_type != "external_process":
+        return []
+    status = status or get_external_process_provider_status(provider_id)
+    discovered = None
+    try:
+        fetch = profile.fetch_models
+        parameters = inspect.signature(fetch).parameters.values()
+        supports_context = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        ) or {"command", "args"}.issubset(
+            {parameter.name for parameter in parameters}
+        )
+        kwargs = {"api_key": "", "base_url": profile.base_url}
+        if supports_context:
+            kwargs.update(
+                command=status.get("resolved_command") or status.get("command"),
+                args=status.get("args") or (),
+            )
+        discovered = fetch(**kwargs)
+    except Exception:
+        pass
+    candidates = discovered or profile.fallback_models or ()
+    return list(dict.fromkeys(str(model).strip() for model in candidates if str(model).strip()))
+
+
+def _model_flow_external_process(config, provider_id: str, current_model=""):
+    """Generic picker for standalone subprocess-backed model providers."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, get_external_process_provider_status,
+        resolve_external_process_provider_credentials)
+    from providers import get_provider_profile
+
+    del config
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    profile = get_provider_profile(provider_id)
+    if pconfig is None or profile is None or profile.auth_type != "external_process":
+        print(f"No external-process provider named {provider_id!r} is registered.")
+        return
+
+    status = get_external_process_provider_status(provider_id)
+    command = status.get("resolved_command") or status.get("command") or profile.process_command
+    effective_base = status.get("base_url") or pconfig.inference_base_url or profile.base_url
+    _say(
+        f"  {profile.display_name or profile.name} runs through a local subprocess.",
+        f"  Command: {command or '(not configured)'}", "")
+    if status.get("auth_source") == "provider_probe" and not status.get("logged_in"):
+        evidence = str(status.get("auth_evidence") or "provider authentication failed")
+        print(f"  ⚠ Authentication unavailable: {evidence}")
+        return
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        return
+
+    models = _external_process_model_choices(provider_id, status=status)
+    selected = _pick_model_or_prompt(
+        models, "Model name: ", current_model=current_model,
+        confirm_provider=provider_id, confirm_base_url=effective_base,
+        confirm_api_key=creds.get("api_key", ""))
+    _finish_model(
+        selected, provider_id, f"Default model set to: {selected} (via {pconfig.name})",
+        base_url=effective_base, api_mode=profile.api_mode or "chat_completions")
 
 
 def _model_flow_copilot_acp(config, current_model=""):

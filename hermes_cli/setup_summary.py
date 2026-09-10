@@ -144,6 +144,11 @@ def _tts_row(config, feats):
     if feats.tts.managed_by_nous:
         return ("Text-to-Speech (OpenAI via Nous subscription)", True, None)
     provider = _setup.cfg_get(config, "tts", "provider", default="edge")
+    if provider == "openai-codex":
+        from hermes_cli.auth import has_codex_runtime_credentials
+        ready = has_codex_runtime_credentials()
+        return ("Text-to-Speech (OpenAI Codex OAuth)", ready,
+                None if ready else "hermes auth add openai-codex")
     return _voice_provider_status("Text-to-Speech", provider, _TTS_SUMMARY_ROWS, _TTS_SUMMARY_DEFAULT)
 
 
@@ -152,6 +157,11 @@ def _stt_row(config, feats):
     if stt_feature is not None and stt_feature.managed_by_nous:
         return ("Speech-to-Text (OpenAI via Nous subscription)", True, None)
     provider = _setup.cfg_get(config, "stt", "provider", default="local") or "local"
+    if provider == "openai-codex":
+        from hermes_cli.auth import has_codex_runtime_credentials
+        ready = has_codex_runtime_credentials()
+        return ("Speech-to-Text (OpenAI Codex OAuth)", ready,
+                None if ready else "hermes auth add openai-codex")
     return _voice_provider_status("Speech-to-Text", provider, _STT_SUMMARY_ROWS, _STT_SUMMARY_DEFAULT)
 
 

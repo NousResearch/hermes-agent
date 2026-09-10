@@ -1491,6 +1491,15 @@ platform_toolsets:
 #     optimize_streaming_latency: 0  # 0-2, trades quality for lower latency
 #     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
 #     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
+#
+# Codex subscription voice (authenticate this profile with: hermes auth add openai-codex):
+# tts:
+#   provider: "openai-codex"
+#   openai_codex:
+#     voice: "juniper"
+#     timeout: 120
+# Desktop live speech decodes subscription MP3 with ffmpeg on the gateway host.
+# Select openai-codex under stt.provider as well for subscription voice input.
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)
@@ -1501,6 +1510,10 @@ platform_toolsets:
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
+  # provider: "openai-codex"   # explicit opt-in; uses this profile's Codex OAuth login
+  # openai_codex:
+  #   language: ""             # automatic detection; set a language code to force
+  #   timeout: 120
   # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
   # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
   # silence inflates upload time, per-audio-minute billing, and hallucination risk.

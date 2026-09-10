@@ -994,7 +994,7 @@ DEFAULT_CONFIG = {
     # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,
     # NeuTTS/KittenTTS 2000).
     "tts": {
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "openai-codex" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
         "edge": {
@@ -1010,6 +1010,12 @@ DEFAULT_CONFIG = {
             # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova,
             # onyx, sage, shimmer, verse
             "voice": "alloy",
+        },
+        "openai_codex": {
+            # ChatGPT read-aloud voices: juniper, cove, ember, breeze, maple, vale, glimmer,
+            # orbit, fathom, ridge. OpenAI API voice aliases are accepted too.
+            "voice": "juniper",
+            "timeout": 120,
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
@@ -1064,7 +1070,8 @@ DEFAULT_CONFIG = {
         "echo_transcripts": True,
         # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
         # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
+        # "openai-codex" (ChatGPT subscription) | "deepinfra". Global language hint unless a
+        # per-provider language overrides it. "en"
         # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
         "language": "en",
         # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
@@ -1094,6 +1101,9 @@ DEFAULT_CONFIG = {
             # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
             "model": "whisper-1",
             "language": "",  # auto-detect; set "en", "es", ... to force
+        },
+        "openai_codex": {
+            "timeout": 120,
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602

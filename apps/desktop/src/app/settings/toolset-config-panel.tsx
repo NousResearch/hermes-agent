@@ -5,8 +5,11 @@ import { SETTINGS_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
+  cancelOAuthSession,
   deleteEnvVar,
   getActionStatus,
+  getApiRequestConnection,
+  getApiRequestProfile,
   getToolsetConfig,
   getToolsetModels,
   pollOAuthSession,
@@ -23,7 +26,7 @@ import { Check, Loader2, Save, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { confirm } from '@/store/confirm'
-import { notify, notifyError } from '@/store/notifications'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import type {
   ActionStatusResponse,
   ToolEnvVar,
@@ -513,7 +516,21 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend, profile }:
   )
 }
 
-export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: ToolsetConfigPanelProps) {
+function captureToolsetScope(profile?: ProfileScope): { connectionId: null | string; profile: null | string } {
+  return profile && typeof profile === 'object'
+    ? { connectionId: profile.connectionId ?? null, profile: profile.profile ?? null }
+    : { connectionId: getApiRequestConnection(), profile: profile === undefined ? getApiRequestProfile() : profile }
+}
+
+export function ToolsetConfigPanel(props: ToolsetConfigPanelProps) {
+  // A pending sign-in and provider selection belong to one gateway/profile.
+  // Replacing that owner must dispose its session and all of its local state.
+  const scopeKey = JSON.stringify([props.toolset, captureToolsetScope(props.profile)])
+
+  return <ScopedToolsetConfigPanel {...props} key={scopeKey} />
+}
+
+function ScopedToolsetConfigPanel({ toolset, onConfiguredChange, profile }: ToolsetConfigPanelProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [cfg, setCfg] = useState<ToolsetConfig | null>(null)
@@ -527,8 +544,18 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
   // Default-provider selection and a user click race just after config arrives:
   // a stale initialization effect must never replace an explicit choice.
   const providerChoiceClaimedRef = useRef(false)
-  // Guard the Nous Portal sign-in poll loop against unmount/state updates.
+  // Guard the tool-provider sign-in poll loop against unmount/state updates.
   const mountedRef = useRef(true)
+  const oauthOperationGenerationRef = useRef(0)
+
+  const activeOAuthSessionRef = useRef<{
+    generation: number
+    profile: ProfileScope
+    sessionId: string
+  } | null>(null)
+
+  const popupRecoveryNotificationRef = useRef<{ generation: number; id: string } | null>(null)
+  const authorizationCodeNotificationRef = useRef<{ generation: number; id: string } | null>(null)
 
   // eslint-disable-next-line no-restricted-syntax -- mount flag guarding an async poll loop, not an atom mirror
   useEffect(() => {
@@ -536,14 +563,39 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
 
     return () => {
       mountedRef.current = false
+      oauthOperationGenerationRef.current += 1
+      const session = activeOAuthSessionRef.current
+      const notifications = [popupRecoveryNotificationRef.current, authorizationCodeNotificationRef.current]
+
+      activeOAuthSessionRef.current = null
+      popupRecoveryNotificationRef.current = null
+      authorizationCodeNotificationRef.current = null
+
+      for (const notification of notifications) {
+        if (notification) {
+          dismissNotification(notification.id)
+        }
+      }
+
+      if (session) {
+        void cancelOAuthSession(session.sessionId, session.profile).catch(() => undefined)
+      }
     }
   }, [])
 
   const refresh = useCallback(async () => {
+    const scope = captureToolsetScope(profile)
+    const isCurrent = () => mountedRef.current && JSON.stringify(captureToolsetScope(profile)) === JSON.stringify(scope)
+
     setLoading(true)
 
     try {
-      const next = await getToolsetConfig(toolset, profile)
+      const next = await getToolsetConfig(toolset, scope)
+
+      if (!isCurrent()) {
+        return
+      }
+
       setCfg(next)
       const seeded: Record<string, boolean> = {}
 
@@ -555,9 +607,13 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
 
       setEnvState(seeded)
     } catch (err) {
-      notifyError(err, copy.failedLoad)
+      if (isCurrent()) {
+        notifyError(err, copy.failedLoad)
+      }
     } finally {
-      setLoading(false)
+      if (isCurrent()) {
+        setLoading(false)
+      }
     }
   }, [copy.failedLoad, toolset, profile])
 
@@ -599,9 +655,31 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
     providerChoiceClaimedRef.current = true
     setExpandedProvider(provider.name)
     setSelecting(provider.name)
+    const scope = captureToolsetScope(profile)
+    const isCurrent = () => mountedRef.current && JSON.stringify(captureToolsetScope(profile)) === JSON.stringify(scope)
 
     try {
-      const result = await selectToolsetProvider(toolset, provider.name, undefined, profile)
+      // Subscription-backed tool rows are deliberately authenticated before
+      // their provider config is written. A cancelled, expired, or stale OAuth
+      // flow must leave the prior STT/TTS provider untouched.
+      if (provider.auth_provider && providerStatus(provider, envState) === 'needs_auth') {
+        const authenticated = await signInToOAuthProvider(provider.auth_provider)
+
+        if (!authenticated) {
+          return
+        }
+      }
+
+      if (!isCurrent()) {
+        return
+      }
+
+      const result = await selectToolsetProvider(toolset, provider.name, undefined, scope)
+
+      if (!isCurrent()) {
+        return
+      }
+
       // Mirror the backend write locally so dependent UI (model catalog
       // enablement) tracks the new active backend without a refetch.
       setCfg(current =>
@@ -623,7 +701,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
           kind: 'warning',
           title: copy.nousAuthNeededTitle,
           message: copy.nousAuthNeededMessage(provider.name),
-          action: { label: copy.nousAuthSignIn, onClick: () => void signInToNousPortal() }
+          action: { label: copy.nousAuthSignIn, onClick: () => void signInToOAuthProvider('nous') }
         })
 
         return
@@ -632,66 +710,243 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
       notify({ kind: 'success', title: copy.selectedTitle, message: copy.selectedMessage(provider.name) })
       onConfiguredChange?.()
     } catch (err) {
-      notifyError(err, copy.failedSelect(provider.name))
+      if (isCurrent()) {
+        notifyError(err, copy.failedSelect(provider.name))
+      }
     } finally {
-      setSelecting(null)
+      if (isCurrent()) {
+        setSelecting(null)
+      }
     }
   }
 
-  // Drive the existing Nous Portal OAuth device-code flow (the same session
-  // machinery onboarding uses: start → open verification URL → poll), then
-  // refetch the toolset config so is_active / status flip once entitled.
-  async function signInToNousPortal() {
+  // Device-code OAuth used by managed Nous rows and subscription-backed tool
+  // rows (for example Codex STT/TTS): start → open verification URL → poll.
+  // The session is pinned to this panel's explicit capability scope when one
+  // was supplied; otherwise it is pinned to the active profile at start.
+  async function signInToOAuthProvider(providerId: string): Promise<boolean> {
+    const generation = ++oauthOperationGenerationRef.current
+
+    const operationProfile = captureToolsetScope(profile)
+    const operationScopeKey = JSON.stringify(operationProfile)
+    const previousSession = activeOAuthSessionRef.current
+
+    activeOAuthSessionRef.current = null
+
+    if (previousSession) {
+      void cancelOAuthSession(previousSession.sessionId, previousSession.profile).catch(() => undefined)
+    }
+
+    for (const ref of [popupRecoveryNotificationRef, authorizationCodeNotificationRef]) {
+      const notification = ref.current
+
+      ref.current = null
+
+      if (notification) {
+        dismissNotification(notification.id)
+      }
+    }
+
+    let sessionId: string | null = null
+
+    const operationIsCurrent = () =>
+      mountedRef.current &&
+      oauthOperationGenerationRef.current === generation &&
+      JSON.stringify(captureToolsetScope(profile)) === operationScopeKey
+
+    const sessionIsCurrent = () => {
+      const active = activeOAuthSessionRef.current
+
+      return (
+        operationIsCurrent() &&
+        active?.generation === generation &&
+        active.sessionId === sessionId &&
+        active.profile === operationProfile
+      )
+    }
+
+    const dismissOperationNotifications = () => {
+      for (const ref of [popupRecoveryNotificationRef, authorizationCodeNotificationRef]) {
+        const notification = ref.current
+
+        if (notification?.generation === generation) {
+          ref.current = null
+          dismissNotification(notification.id)
+        }
+      }
+    }
+
+    const releaseSession = () => {
+      const active = activeOAuthSessionRef.current
+
+      if (active?.generation === generation && active.sessionId === sessionId && active.profile === operationProfile) {
+        activeOAuthSessionRef.current = null
+      }
+
+      dismissOperationNotifications()
+    }
+
     try {
-      const start = await startOAuthLogin('nous', profile)
+      const start = await startOAuthLogin(providerId, operationProfile, false)
+
+      sessionId = start.session_id
+
+      if (!operationIsCurrent()) {
+        await cancelOAuthSession(start.session_id, operationProfile).catch(() => undefined)
+
+        return false
+      }
 
       if (start.flow !== 'device_code') {
-        notifyError(new Error(`unexpected flow: ${start.flow}`), copy.nousAuthFailed)
+        await cancelOAuthSession(start.session_id, operationProfile).catch(() => undefined)
+        notifyError(new Error(`unexpected flow: ${start.flow}`), copy.failedSelect(providerId))
 
-        return
+        return false
+      }
+
+      activeOAuthSessionRef.current = { generation, profile: operationProfile, sessionId: start.session_id }
+
+      if (providerId === 'openai-codex' && start.user_code) {
+        const authorizationCode = start.user_code
+        let notificationId = ''
+
+        notificationId = notify({
+          kind: 'warning',
+          title: 'OpenAI Codex authorization code',
+          message: authorizationCode,
+          action: {
+            label: 'Copy code',
+            onClick: () => {
+              if (sessionIsCurrent()) {
+                void navigator.clipboard?.writeText(authorizationCode)
+              }
+
+              if (authorizationCodeNotificationRef.current?.id === notificationId) {
+                authorizationCodeNotificationRef.current = null
+              }
+
+              dismissNotification(notificationId)
+            }
+          }
+        })
+        authorizationCodeNotificationRef.current = { generation, id: notificationId }
       }
 
       const url = start.verification_url
+      let opened = false
 
       if (window.hermesDesktop?.openExternal) {
         try {
           await window.hermesDesktop.openExternal(url)
+          opened = true
         } catch {
-          window.open(url, '_blank', 'noopener,noreferrer')
+          if (sessionIsCurrent()) {
+            opened = window.open(url, '_blank', 'noopener,noreferrer') !== null
+          }
         }
-      } else {
-        window.open(url, '_blank', 'noopener,noreferrer')
+      } else if (sessionIsCurrent()) {
+        opened = window.open(url, '_blank', 'noopener,noreferrer') !== null
       }
 
-      // Poll until the device-code session resolves (~5s cadence, bounded).
-      for (let attempt = 0; attempt < 120 && mountedRef.current; attempt += 1) {
-        await new Promise(resolve => window.setTimeout(resolve, 5000))
+      if (!sessionIsCurrent()) {
+        releaseSession()
+        await cancelOAuthSession(start.session_id, operationProfile).catch(() => undefined)
 
-        if (!mountedRef.current) {
-          return
+        return false
+      }
+
+      if (!opened) {
+        let notificationId = ''
+
+        notificationId = notify({
+          kind: 'warning',
+          title: 'Sign-in window was blocked',
+          message: 'Allow pop-ups, then open the authorization page to continue.',
+          action: {
+            label: 'Open sign-in page',
+            onClick: () => {
+              if (sessionIsCurrent()) {
+                window.open(url, '_blank', 'noopener,noreferrer')
+              }
+
+              if (popupRecoveryNotificationRef.current?.id === notificationId) {
+                popupRecoveryNotificationRef.current = null
+              }
+
+              dismissNotification(notificationId)
+            }
+          }
+        })
+        popupRecoveryNotificationRef.current = { generation, id: notificationId }
+      }
+
+      const pollIntervalMs = Math.max(1000, start.poll_interval * 1000)
+      const deadline = Date.now() + start.expires_in * 1000
+
+      while (sessionIsCurrent() && Date.now() < deadline) {
+        await new Promise(resolve => window.setTimeout(resolve, pollIntervalMs))
+
+        if (!sessionIsCurrent()) {
+          releaseSession()
+          await cancelOAuthSession(start.session_id, operationProfile).catch(() => undefined)
+
+          return false
         }
 
-        const polled = await pollOAuthSession('nous', start.session_id, profile)
+        const polled = await pollOAuthSession(providerId, start.session_id, operationProfile)
+
+        if (!sessionIsCurrent()) {
+          releaseSession()
+          await cancelOAuthSession(start.session_id, operationProfile).catch(() => undefined)
+
+          return false
+        }
 
         if (polled.status === 'approved') {
-          notify({ kind: 'success', title: copy.nousAuthDoneTitle, message: copy.nousAuthDoneMessage })
+          releaseSession()
+
+          if (providerId === 'nous') {
+            notify({ kind: 'success', title: copy.nousAuthDoneTitle, message: copy.nousAuthDoneMessage })
+          }
+
           await refresh()
+
+          if (!operationIsCurrent()) {
+            return false
+          }
+
           onConfiguredChange?.()
 
-          return
+          return true
         }
 
         if (polled.status !== 'pending') {
-          notifyError(new Error(polled.error_message || `Sign-in ${polled.status}`), copy.nousAuthFailed)
+          releaseSession()
+          notifyError(new Error(polled.error_message || `Sign-in ${polled.status}`), copy.failedSelect(providerId))
 
-          return
+          return false
         }
       }
     } catch (err) {
-      if (mountedRef.current) {
-        notifyError(err, copy.nousAuthFailed)
+      const shouldNotify = operationIsCurrent()
+
+      releaseSession()
+
+      if (sessionId) {
+        await cancelOAuthSession(sessionId, operationProfile).catch(() => undefined)
+      }
+
+      if (shouldNotify) {
+        notifyError(err, copy.failedSelect(providerId))
       }
     }
+
+    if (sessionIsCurrent()) {
+      releaseSession()
+      await cancelOAuthSession(sessionId!, operationProfile).catch(() => undefined)
+    }
+
+    return false
   }
 
   function patchEnv(key: string, isSet: boolean) {

@@ -229,6 +229,8 @@ TOOL_CATEGORIES = {
             _row("Microsoft Edge TTS", "★ recommended · free", "Good quality, no API key needed", tts_provider="edge"),
             _row("Nous Subscription", "subscription", "Managed OpenAI TTS billed to your subscription", tts_provider="openai",
                  **_NOUS, managed_nous_feature="tts", override_env_vars=["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"]),
+            _row("OpenAI Codex OAuth", "subscription", "ChatGPT read-aloud, no Platform API key",
+                 tts_provider="openai-codex", auth_provider="openai-codex"),
             _row("OpenAI TTS", "paid", "High quality voices", [_OPENAI_VOICE_KEY], tts_provider="openai"),
             _row("xAI TTS", tag="Grok voices — uses xAI Grok OAuth or XAI_API_KEY", tts_provider="xai", post_setup="xai_grok"),
             _row("ElevenLabs", "paid", "Most natural voices", [_ELEVENLABS_KEY], tts_provider="elevenlabs"),
@@ -250,6 +252,8 @@ TOOL_CATEGORIES = {
         "providers": [
             _row("Local Whisper", "★ recommended · free", "faster-whisper on-device, no API key", stt_provider="local",
                  post_setup="faster_whisper"),
+            _row("OpenAI Codex OAuth", "subscription", "ChatGPT OAuth transcription, no Platform API key",
+                 stt_provider="openai-codex", auth_provider="openai-codex"),
             _row("Nous Subscription", "subscription", "Managed OpenAI transcription billed to your subscription",
                  stt_provider="openai", **_NOUS, managed_nous_feature="stt",
                  override_env_vars=["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"]),

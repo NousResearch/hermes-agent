@@ -36,6 +36,9 @@ from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via 
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
     _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
     _transcribe_xai)
+from tools.transcription_codex import (
+    _has_codex_stt_backend, _mark_codex_stt_credentials_failed,
+    _resolve_codex_stt_credentials, _retry_codex_stt_credentials, _transcribe_openai_codex)
 from tools.transcription_command import (
     _apply_pre_transcription_hook, _dispatch_to_plugin_provider, _enforce_prompt_length_limit,
     _resolve_command_stt_provider_config, _transcribe_command_stt, _unregistered_stt_provider_error)
@@ -168,6 +171,13 @@ def _resolve_explicit_openai() -> str:
     return "none"
 
 
+def _resolve_explicit_codex() -> str:
+    if _has_codex_stt_backend():
+        return "openai-codex"
+    logger.warning("STT provider 'openai-codex' configured but no Codex OAuth login is available")
+    return "none"
+
+
 def _detect_local_backend() -> Optional[str]:
     """faster-whisper > local whisper CLI > lazy-installed faster-whisper; None when nothing local works."""
     if _HAS_FASTER_WHISPER:
@@ -212,6 +222,7 @@ _CLOUD_PROVIDER_SPECS = {
     "openai": (None, lambda: _HAS_OPENAI and _has_openai_audio_backend(),
                None,
                "No local STT available, using OpenAI Whisper API"),
+
     "mistral": (_has_mistral_key, _has_mistral_key,
                 "STT provider 'mistral' configured but mistralai package not installed or MISTRAL_API_KEY not set",
                 "No local STT available, using Mistral Voxtral Transcribe API"),
@@ -229,7 +240,8 @@ _CLOUD_PROVIDER_SPECS = {
 _EXPLICIT_RESOLVERS = {
     "local": _resolve_explicit_local,
     "local_command": _resolve_explicit_local_command,
-    "openai": _resolve_explicit_openai}
+    "openai": _resolve_explicit_openai,
+    "openai-codex": _resolve_explicit_codex}
 
 
 def _resolve_explicit_provider(provider: str) -> str:
@@ -445,6 +457,7 @@ _BUILTIN_MODEL_KEYS = {
     "local_command": ("local", "model", DEFAULT_LOCAL_MODEL, False),
     "groq": ("groq", "model", DEFAULT_GROQ_STT_MODEL, True),
     "openai": ("openai", "model", DEFAULT_STT_MODEL, False),
+    "openai-codex": ("openai_codex", "model", "", False),
     "mistral": ("mistral", "model", DEFAULT_MISTRAL_STT_MODEL, False),
     "elevenlabs": ("elevenlabs", "model_id", DEFAULT_ELEVENLABS_STT_MODEL, False),
     "deepinfra": ("deepinfra", "model", "", True)}
@@ -475,8 +488,17 @@ def _dispatch_stt_provider(
     )
     prompt = _enforce_prompt_length_limit(prompt, provider)
     if provider in BUILTIN_STT_PROVIDERS:
-        # Looked up in this module at call time so tests may patch ``_transcribe_*``.
-        handler = globals()[f"_transcribe_{provider}"]
+        # Provider ids may contain hyphens while Python function names use underscores.
+        handler = globals()[f"_transcribe_{provider.replace('-', '_')}"]
+        if provider == "openai-codex":
+            codex_cfg = _get_stt_section(stt_config, "openai_codex")
+            raw_language = (codex_cfg.get("language") if "language" in codex_cfg
+                            else (language or stt_config.get("language")))
+            try:
+                timeout = max(1, min(int(codex_cfg.get("timeout", 120)), 600))
+            except (TypeError, ValueError):
+                timeout = 120
+            return handler(file_path, language=str(raw_language or "").strip(), timeout=timeout)
         model_name = _builtin_model_name(provider, stt_config, model)
         if provider in ("local", "local_command"):
             model_name = _normalize_local_model(model_name)
@@ -509,6 +531,7 @@ def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, A
     return _error_result(
         "No STT provider available. Install faster-whisper for free local "
         f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+        "sign in to OpenAI Codex and set stt.provider to openai-codex, "
         "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
         "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
         "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "

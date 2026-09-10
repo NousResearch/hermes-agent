@@ -76,11 +76,14 @@ def _codex_device_code_start_error(resp: Any) -> str:
     return f"{message} (HTTP {status}: {detail})" if detail else f"{message} (HTTP {status})"
 
 
-def _new_oauth_session(provider_id: str, flow: str, profile: Optional[str] = None) -> tuple[str, Dict[str, Any]]:
+def _new_oauth_session(
+    provider_id: str, flow: str, profile: Optional[str] = None, *, activate_provider: bool = True,
+) -> tuple[str, Dict[str, Any]]:
     """Create + register a new OAuth session, return (session_id, session_dict)."""
     sid = secrets.token_urlsafe(16)
     sess = {
         "session_id": sid, "provider": provider_id, "flow": flow, "profile": _oauth_profile_name(profile),
+        "activate_provider": bool(activate_provider),
         "created_at": time.time(),
         "status": "pending",  # pending | approved | denied | expired | error
         "error_message": None,
@@ -239,7 +242,7 @@ def _codex_full_login_worker(session_id: str) -> None:
             if _codex_cancelled(sess, session_id, " before token save"):
                 return
             with _profile_scope(session_profile):
-                _save_codex_tokens(tokens)
+                _save_codex_tokens(tokens, set_active=bool(sess.get("activate_provider", True)))
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)
     except Exception as e:
@@ -344,11 +347,14 @@ async def _start_nous_device_code(profile: Optional[str]) -> Dict[str, Any]:
     )
 
 
-async def _start_codex_device_code(profile: Optional[str]) -> Dict[str, Any]:
+async def _start_codex_device_code(
+    profile: Optional[str], *, activate_provider: bool = True,
+) -> Dict[str, Any]:
     # The full Codex helper polls inline, so it runs in a worker thread and
     # proxies user_code + verification_url back via the session dict; block
     # briefly until the worker has populated the user_code, OR errored.
-    sid, _ = _new_oauth_session("openai-codex", "device_code", profile=profile)
+    sid, _ = _new_oauth_session(
+        "openai-codex", "device_code", profile=profile, activate_provider=activate_provider)
     _start_poller(_codex_full_login_worker, sid, prefix="oauth-codex")
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -604,8 +610,18 @@ async def start_oauth_login(provider_id: str, request: Request, profile: Optiona
         raise HTTPException(status_code=400, detail=f"Unknown provider {provider_id}")
     if catalog_entry["flow"] == "external":
         raise HTTPException(400, f"{provider_id} uses an external CLI; run `{catalog_entry['cli_command']}` manually")
+    activate_provider = True
+    try:
+        payload = await request.json()
+        if isinstance(payload, dict) and payload.get("activate_provider") is False:
+            activate_provider = False
+    except Exception:
+        pass
     try:
         if catalog_entry["flow"] == "device_code":
+            if provider_id == "openai-codex":
+                return await _start_codex_device_code(
+                    profile, activate_provider=activate_provider)
             return await _start_device_code_flow(provider_id, profile=profile)
     except HTTPException:
         raise

@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { ConfigSettings } from './config-settings'
 
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
@@ -47,8 +49,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderConfigSettings() {
-  const { ConfigSettings } = await import('./config-settings')
+function renderConfigSettings() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
@@ -67,25 +68,28 @@ describe('ConfigSettings autosave', () => {
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 
-    vi.useFakeTimers({ shouldAdvanceTime: true })
+    renderConfigSettings()
+
+    const toggle = await screen.findByRole('switch')
+
+    // Only fake the debounce window. Rendering and role discovery stay on
+    // real timers so Testing Library never has to poll through Vitest's
+    // shouldAdvanceTime bridge under a loaded CI worker.
+    vi.useFakeTimers()
 
     try {
-      await renderConfigSettings()
-
-      const toggle = await screen.findByRole('switch')
-
       // Edit: flip checkpoints.enabled on, let the debounced autosave fire.
-      toggle.click()
-      await vi.advanceTimersByTimeAsync(700)
+      act(() => toggle.click())
+      await act(async () => vi.advanceTimersByTimeAsync(700))
 
-      await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
+      expect(saveHermesConfig).toHaveBeenCalledTimes(1)
       expect(saveHermesConfig.mock.calls[0][0]).toEqual({ checkpoints: { enabled: true } })
 
       // Revert: flip it back to its original value and let autosave fire again.
-      toggle.click()
-      await vi.advanceTimersByTimeAsync(700)
+      act(() => toggle.click())
+      await act(async () => vi.advanceTimersByTimeAsync(700))
 
-      await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
+      expect(saveHermesConfig).toHaveBeenCalledTimes(2)
       // Must still explicitly send the reverted value — diffing against the
       // never-advanced page-load baseline would produce an empty patch here
       // (the field is back to its original value) and leave disk stuck at

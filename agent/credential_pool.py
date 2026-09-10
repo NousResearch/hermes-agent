@@ -1791,6 +1791,36 @@ class CredentialPool(CredentialPoolAdminMixin):
             self._unmatched_rotation_streak = 0
         return entry
 
+    def select_excluding(
+        self,
+        *,
+        credential_id: Optional[str] = None,
+        api_key_hint: Optional[str] = None,
+    ) -> Optional[PooledCredential]:
+        """Select an available alternative without exhausting or reprioritizing entries."""
+        with self._lock:
+            available, pending_refresh = self._available_entries(clear_expired=True, refresh=True)
+            alternatives = [
+                entry for entry in available
+                if (not credential_id or entry.id != credential_id)
+                and (not api_key_hint or entry.runtime_api_key != api_key_hint)
+            ]
+            entry = alternatives[0] if alternatives else None
+        if pending_refresh:
+            self._refresh_pending_entries(pending_refresh)
+        if entry is not None:
+            return entry
+        if pending_refresh:
+            with self._lock:
+                available, _ = self._available_entries(clear_expired=True, refresh=False)
+                alternatives = [
+                    candidate for candidate in available
+                    if (not credential_id or candidate.id != credential_id)
+                    and (not api_key_hint or candidate.runtime_api_key != api_key_hint)
+                ]
+                return alternatives[0] if alternatives else None
+        return None
+
     def _select_under_lock(self) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         with self._lock:
             return self._select_unlocked()

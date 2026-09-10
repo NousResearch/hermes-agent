@@ -7,6 +7,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 import base64
 import binascii
 import contextlib
+import concurrent.futures
 import logging
 import queue
 import tempfile
@@ -20,7 +21,6 @@ from fastapi import APIRouter
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
-from hermes_cli.web_server_gateway import _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest
 from typing import Any, Dict, Optional
@@ -353,6 +353,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                binary PCM frames, then ``{"type": "end"}``
       server → ``{"type": "fallback"}`` when the configured provider has no
                chunked API — the client uses the POST endpoint instead.
+      server → ``{"type": "error", "message": "..."}`` on synthesis failure;
+               already-played audio must not be replayed through fallback.
     """
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
@@ -376,7 +378,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
+            provider = getattr(streamer, "provider_name", "") or _get_provider(cfg)
+            cap = _resolve_max_text_length(provider, cfg) if streamer else 0
         return streamer, cap
 
     try:
@@ -396,13 +399,28 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     stop = threading.Event()
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
-    chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
+    chunks: asyncio.Queue = asyncio.Queue(maxsize=64)  # bounded PCM out; None = synthesis done
 
     def _produce():
         from tools.tts_streaming import SentenceChunker
+        from tools.tts_tool_delivery import _split_text_for_tts
         from tools.tts_text_normalize import _strip_markdown_for_tts
 
         chunker = SentenceChunker()
+
+        def _emit(value) -> bool:
+            """Publish with backpressure; abandon a blocked put after barge-in."""
+            if stop.is_set():
+                return False
+            future = asyncio.run_coroutine_threadsafe(chunks.put(value), loop)
+            while not stop.is_set():
+                try:
+                    future.result(timeout=0.5)
+                    return True
+                except concurrent.futures.TimeoutError:
+                    continue
+            future.cancel()
+            return False
 
         # The session stays open for a whole agent turn and no text arrives
         # during tool execution, so without an idle flush a narration line with
@@ -437,15 +455,26 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 cleaned = _strip_markdown_for_tts(sentence)
                 if not cleaned:
                     continue
-                for piece in _split_text_for_speak_stream(cleaned, cap):
+                for piece in _split_text_for_tts(cleaned, cap):
+                    if stop.is_set():
+                        return
+                    produced_audio = False
                     for chunk in streamer.stream(piece):
                         if stop.is_set():
                             return
-                        loop.call_soon_threadsafe(chunks.put_nowait, chunk)
+                        if not chunk:
+                            continue
+                        produced_audio = True
+                        if not _emit(chunk):
+                            return
+                    if not produced_audio and not stop.is_set():
+                        raise RuntimeError("Voice provider returned no audio")
         except Exception as exc:
-            _log.warning("speak-stream synthesis failed: %s", exc)
+            if not stop.is_set():
+                _log.warning("speak-stream synthesis failed: %s", exc)
+                _emit({"type": "error", "message": "Speech synthesis failed. Check your voice provider settings."})
         finally:
-            loop.call_soon_threadsafe(chunks.put_nowait, None)
+            _emit(None)
 
     threading.Thread(target=_produce, daemon=True).start()
 
@@ -467,19 +496,43 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         text_q.put(None)  # unblock the producer
 
     pump = asyncio.ensure_future(_pump_client())
+    next_chunk = None
+    sending = None
     try:
         while True:
-            chunk = await chunks.get()
-            if chunk is None:
+            # A provider may still be blocked in network I/O after barge-in.
+            # Socket teardown must never wait for its terminal queue marker.
+            next_chunk = asyncio.create_task(chunks.get())
+            ready, _ = await asyncio.wait((pump, next_chunk), return_when=asyncio.FIRST_COMPLETED)
+            if pump in ready:
                 break
-            await ws.send_bytes(chunk)
-        if not stop.is_set():
-            await ws.send_json({"type": "end"})
+            chunk = next_chunk.result()
+            if chunk is None:
+                send = ws.send_json({"type": "end"})
+            elif isinstance(chunk, dict):
+                send = ws.send_json(chunk)
+            else:
+                send = ws.send_bytes(chunk)
+            # A slow socket can block send_bytes just as an upstream can block
+            # synthesis. Barge-in owns both waits, including transport backpressure.
+            sending = asyncio.create_task(send)
+            ready, _ = await asyncio.wait((pump, sending), return_when=asyncio.FIRST_COMPLETED)
+            if pump in ready:
+                break
+            sending.result()
+            if chunk is None or isinstance(chunk, dict):
+                break
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
         stop.set()
         text_q.put(None)
-        pump.cancel()
+        cancel = getattr(streamer, "cancel", None)
+        if cancel is not None:
+            cancel()
+        tasks = [task for task in (pump, next_chunk, sending) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         with contextlib.suppress(Exception):
             await ws.close()

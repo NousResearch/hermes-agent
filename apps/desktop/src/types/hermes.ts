@@ -1123,6 +1123,8 @@ export interface ToolProvider {
   tag: string
   env_vars: ToolEnvVar[]
   post_setup: string | null
+  /** OAuth provider to authenticate before this backend can be selected. */
+  auth_provider?: string | null
   requires_nous_auth: boolean
   /** True when this is the provider currently written to config (mirrors the
    *  CLI `hermes tools` active-provider detection). */

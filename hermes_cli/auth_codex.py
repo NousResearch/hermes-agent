@@ -142,7 +142,9 @@ def _sync_codex_pool_entries(
         _clear_pool_entry_status(entry)
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
+def _save_codex_tokens(
+    tokens: Dict[str, str], last_refresh: str = None, label: str = None, *, set_active: bool = True,
+) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     from hermes_cli.auth import (
         _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
@@ -159,7 +161,8 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode="chatgpt")
         if label and str(label).strip():
             state["label"] = str(label).strip()
-        _save_provider_state(auth_store, "openai-codex", state)
+        from hermes_cli.auth import _store_provider_state
+        _store_provider_state(auth_store, "openai-codex", state, set_active=set_active)
         _sync_codex_pool_entries(
             auth_store, tokens, last_refresh, previous_singleton_tokens=previous_singleton_tokens)
         _save_auth_store(auth_store)
@@ -660,12 +663,63 @@ def _pool_codex_access_token() -> str:
     return ""
 
 
-def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool = False) -> None:
+def codex_account_id_from_access_token(access_token: str) -> Optional[str]:
+    """Read the ChatGPT account id from a Codex OAuth JWT without validating it."""
+    from hermes_cli.auth_constants import _decode_jwt_claims
+
+    claims = _decode_jwt_claims(access_token)
+    account = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
+    value = account.get("chatgpt_account_id") if isinstance(account, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def has_codex_runtime_credentials() -> bool:
+    """Read-only availability probe for the profile-scoped Codex credential pool."""
+    try:
+        from agent.credential_pool import load_pool
+        return load_pool("openai-codex").has_available()
+    except Exception:
+        return False
+
+
+def _save_codex_device_login_tokens(
+    tokens: Dict[str, str], last_refresh: Optional[str] = None, *, set_active: bool = True,
+) -> Optional[str]:
+    """Persist a fresh device login, optionally leaving the inference provider unchanged."""
+    from hermes_cli.auth import _update_config_for_provider, unsuppress_credential_source
+
+    _save_codex_tokens(tokens, last_refresh, set_active=set_active)
+    unsuppress_credential_source("openai-codex", "device_code")
+    return _update_config_for_provider("openai-codex", _codex_base_url()) if set_active else None
+
+
+def login_openai_codex_credentials_only() -> bool:
+    """Ensure Codex OAuth exists for tools without changing the active inference provider."""
+    from hermes_cli.auth import (
+        _codex_device_code_login as device_login,
+        _save_codex_device_login_tokens as save_tokens,
+        has_codex_runtime_credentials as has_credentials,
+    )
+
+    if has_credentials():
+        return True
+    try:
+        creds = device_login()
+        save_tokens(creds["tokens"], creds.get("last_refresh"), set_active=False)
+        return has_credentials()
+    except Exception:
+        return False
+
+
+def _login_openai_codex(
+    args, pconfig: ProviderConfig, *, force_new_login: bool = False, set_active: bool = True,
+) -> None:
     """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
     from hermes_cli.auth import (
         _codex_access_token_is_expiring, _codex_device_code_login, _import_codex_cli_tokens,
-        _offer_existing_oauth_credentials, _print_login_success, _prompt_yes_no, _save_codex_tokens,
-        _update_config_for_provider, resolve_codex_runtime_credentials)
+        _offer_existing_oauth_credentials, _print_login_success, _prompt_yes_no,
+        _save_codex_device_login_tokens,
+        resolve_codex_runtime_credentials)
     del args, pconfig  # kept for parity with other provider login helpers
     if not force_new_login:
         if _offer_existing_oauth_credentials(
@@ -680,12 +734,14 @@ def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool 
             print("Hermes will create its own session to avoid conflicts with Codex CLI / VS Code.")
             if _prompt_yes_no(
                 "Import these credentials? (a separate login is recommended) [y/N]: ", default="n"):
-                _save_codex_tokens(cli_tokens)
-                config_path = _update_config_for_provider("openai-codex", _codex_base_url())
+                config_path = _save_codex_device_login_tokens(cli_tokens, set_active=set_active)
                 print()
                 print("Credentials imported. Note: if Codex CLI refreshes its token,")
                 print("Hermes will keep working independently with its own session.")
-                print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                if config_path is not None:
+                    print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                else:
+                    print("  Credentials saved for tools; active model unchanged.")
                 return
 
     # Run a fresh device code flow — Hermes gets its own OAuth session
@@ -694,10 +750,12 @@ def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool 
     print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
     print()
     creds = _codex_device_code_login()
-    _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
-    config_path = _update_config_for_provider(
-        "openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
-    _print_login_success("openai-codex", config_path, show_auth_state=True)
+    config_path = _save_codex_device_login_tokens(
+        creds["tokens"], creds.get("last_refresh"), set_active=set_active)
+    if set_active:
+        _print_login_success("openai-codex", config_path, show_auth_state=True)
+    else:
+        print("OpenAI Codex credentials saved for tools; active model unchanged.")
 
 
 def _codex_login_rate_limited_error(response: "httpx.Response", *, during: str = "") -> AuthError:

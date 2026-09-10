@@ -95,6 +95,7 @@ Add to `~/.hermes/.env`:
 ```bash
 # Speech-to-Text — local provider needs NO key at all
 # pip install faster-whisper          # Free, runs locally, recommended
+# OpenAI Codex OAuth needs no API key for STT or TTS; it uses an existing Hermes Codex login
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
 
@@ -106,6 +107,89 @@ ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
 :::tip
 If `faster-whisper` is installed, voice mode works with **zero API keys** for STT. The model (~150 MB for `base`) downloads automatically on first use.
 :::
+
+To use transcription and read-aloud included with a ChatGPT/Codex subscription,
+select **OpenAI Codex OAuth** under both Speech-to-Text and Text-to-Speech in
+`hermes tools`. The picker runs a
+credential-only login and does not change the model provider used for chat. You
+can also authenticate separately before opening the picker:
+
+```bash
+hermes auth add openai-codex
+```
+
+For manual configuration, use:
+
+```yaml
+stt:
+  enabled: true
+  provider: openai-codex
+  openai_codex:
+    language: "" # automatic detection; use "tr", "en", etc. to force
+    timeout: 120
+
+tts:
+  provider: openai-codex
+  openai_codex:
+    voice: juniper # also: cove, ember, breeze, maple, vale, glimmer, orbit, fathom, ridge
+    timeout: 120
+```
+
+This uses ChatGPT's subscription-backed dictation and read-aloud endpoints rather
+than the separately billed OpenAI Platform audio API. For TTS, Hermes creates a
+history-disabled temporary turn, verifies that its assistant text exactly matches
+the requested speech, then synthesizes that stored message. The web endpoints are
+private and may change upstream; Hermes identifies the request as Hermes, refuses
+redirects or mismatched text, bounds response sizes, and returns a clear error if
+ChatGPT blocks or removes a route.
+
+### Codex subscription live voice in Desktop
+
+1. Open the profile you want to speak with in Hermes Desktop. In Settings,
+   select **OpenAI Codex OAuth** for both Speech-to-Text and Text-to-Speech,
+   completing the Codex login when prompted. Audio-provider login leaves the
+   chat model selection unchanged; select a Codex model separately if you also
+   want the conversation's model to use that subscription.
+2. Install `ffmpeg` on the Hermes gateway host for sentence-by-sentence playback.
+   Desktop receives 24 kHz mono PCM decoded there from the subscription's
+   read-aloud audio. Without FFmpeg, Desktop can still play a completed reply
+   through the existing MP3 playback path.
+3. Start a voice conversation from the composer, or enable the wake-word
+   listener and say **“Hey Hermes”**, then speak after the wake chime.
+4. Hermes transcribes your utterance, runs the normal agent turn, and speaks
+   completed reply sentences while the rest of the reply is generated. You can
+   speak over a reply to interrupt it, or say **“stop”** to end the conversation.
+   An enabled wake listener rearms after voice ends.
+
+The default wake detector uses the bundled `hey_hermes` model. It is independent
+of the STT provider: selecting Codex does not replace the wake phrase. For the
+default Desktop setup:
+
+```yaml
+wake_word:
+  enabled: true
+  provider: openwakeword
+  phrase: hey hermes
+  surface: gui
+  capture: client
+```
+
+`capture: client` uses the Desktop microphone even when the gateway is remote.
+Profile-specific phrases use the existing wake engine's enrollment settings;
+Desktop waits for the detected profile to activate before starting voice.
+Changing the display phrase alone does not retrain the bundled model.
+
+Codex audio stays on the selected gateway and profile, including OAuth login,
+account/workspace headers, and credential refresh. Stopping voice cancels pending
+microphone acquisition and transcription delivery as well as playback; late
+results cannot restart a stopped conversation. The wake listener releases the
+microphone before voice capture starts.
+
+This is sentence-based live voice, with utterance-based STT
+and read-aloud synthesis, rather than an OpenAI Realtime API session. First-audio
+latency depends on ChatGPT's private read-aloud flow and network conditions.
+Provider failures surface in Desktop and stop that speech attempt without
+replaying an already spoken response.
 
 ---
 
@@ -171,7 +255,7 @@ When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it g
 
 1. Buffers text deltas into complete sentences (min 20 chars)
 2. Strips markdown formatting, emoji, and `<think>` blocks
-3. Plays audio per sentence in real-time — providers with a chunked PCM API (ElevenLabs, OpenAI) stream raw audio for the lowest time-to-first-word; every other provider (including the default Edge) synthesizes and plays each sentence as it completes
+3. Plays audio per sentence in real-time — providers with a chunked PCM API (ElevenLabs, OpenAI) stream raw audio for the lowest time-to-first-word; Codex OAuth uses verified ChatGPT read-aloud per completed sentence; every other provider (including the default Edge) synthesizes and plays each sentence as it completes
 
 The same pipeline runs in the classic CLI, the TUI, and the desktop app. In a desktop voice conversation the reply text is fed **live** into a per-reply speech WebSocket as the model generates it, so speech overlaps generation — one socket and one audio clock per reply, no per-sentence connection gaps.
 

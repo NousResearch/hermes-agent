@@ -36,9 +36,13 @@ export const $wakeWord = atom<WakeWordState>(INITIAL_WAKE_WORD_STATE)
 
 /** Active client mic stream for remote wake (capture: client). */
 let clientCapture: ClientWakeCaptureHandle | null = null
+let clientCaptureGeneration = 0
 
 /** Stop client-side PCM capture (also called on wake.detected before voice). */
 export function stopClientCapture(): void {
+  // Permission and AudioContext startup may still be pending when voice takes
+  // the microphone. Revoke that acquisition as well as an installed handle.
+  clientCaptureGeneration += 1
   clientCapture?.stop()
   clientCapture = null
 }
@@ -56,12 +60,26 @@ async function maybeStartClientCapture(result: WakeStartResponse | null | undefi
     return
   }
 
+  const generation = clientCaptureGeneration
+
   try {
-    clientCapture = await startClientWakeCapture({
+    const capture = await startClientWakeCapture({
       frameLength: result.frame_length,
       request: gatewayRequester
     })
+
+    if (generation !== clientCaptureGeneration) {
+      capture.stop()
+
+      return
+    }
+
+    clientCapture = capture
   } catch (error) {
+    if (generation !== clientCaptureGeneration) {
+      return
+    }
+
     const current = $wakeWord.get()
     $wakeWord.set({
       ...current,

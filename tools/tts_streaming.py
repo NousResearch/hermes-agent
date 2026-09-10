@@ -10,8 +10,14 @@ a subclass; the dispatcher, config gate (``tts.<name>.streaming``) and resolver 
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+import threading
 import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
@@ -101,6 +107,7 @@ class StreamingTTSProvider(ABC):
     sample_rate: int = 24000
     channels: int = 1
     sample_width: int = 2  # bytes/sample (int16)
+    provider_name: str = ""
 
     def __init__(self, tts_config: Dict, section: Dict):
         self.tts_config = tts_config
@@ -114,6 +121,9 @@ class StreamingTTSProvider(ABC):
     @abstractmethod
     def stream(self, text: str) -> Iterator[bytes]:
         """Yield PCM chunks for ``text``. Raise on failure (caller logs)."""
+
+    def cancel(self) -> None:
+        """Stop this speech session when supported; must not block the caller."""
 
 
 _REGISTRY: Dict[str, type[StreamingTTSProvider]] = {}
@@ -132,7 +142,9 @@ def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvid
     if cls is None or not cls.available():
         return None
     try:
-        return cls(tts_config, tts_config.get(name) or {})
+        provider = cls(tts_config, tts_config.get(name) or {})
+        provider.provider_name = name
+        return provider
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("streaming provider %s init failed: %s", name, exc)
         return None
@@ -167,6 +179,98 @@ def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:
             logger.warning("%s exceeded %d bytes for one sentence; truncating", label, _STREAM_SENTENCE_BYTE_CAP)
             return
         yield chunk
+
+
+@register("openai-codex")
+class OpenAICodexStreamer(StreamingTTSProvider):
+    """Verified ChatGPT read-aloud MP3 decoded to bounded 24 kHz PCM per sentence."""
+
+    @staticmethod
+    def available() -> bool:
+        from tools.tts_tool_codex import _has_codex_tts_backend
+        # Without PCM decoding the Desktop's existing MP3 relay still works.
+        return bool(shutil.which("ffmpeg")) and _has_codex_tts_backend()
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        from tools.tts_tool_codex import _codex_tts_credentials
+        self.section = tts_config.get("openai_codex") or section
+        # Capture the requesting profile's pool while the Desktop router's profile scope is active.
+        self.pool, self.credentials = _codex_tts_credentials()
+        self._cancel_event = threading.Event()
+        self._decoder_lock = threading.Lock()
+        self._decoder: Optional[subprocess.Popen] = None
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+        # stdout.read() cannot poll the event. Killing this disposable decoder
+        # releases that read without waiting on the WebSocket's event loop.
+        with self._decoder_lock:
+            decoder = self._decoder
+        if decoder is not None:
+            with contextlib.suppress(ProcessLookupError):
+                decoder.kill()
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        from tools.tts_tool_codex import synthesize_codex_speech_with_credentials
+        voice = str(self.section.get("voice") or "juniper")
+        timeout = max(10.0, min(float(self.section.get("timeout") or 120), 180.0))
+        if self._cancel_event.is_set():
+            return
+        speech = synthesize_codex_speech_with_credentials(
+            text, self.pool, self.credentials, voice=voice, timeout=timeout,
+            cancel_event=self._cancel_event,
+        )
+        if self._cancel_event.is_set():
+            return
+        fd, path = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+        try:
+            with open(path, "wb") as handle:
+                handle.write(speech.audio)
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                raise FileNotFoundError("ffmpeg is required for Codex live voice")
+            from hermes_cli._subprocess_compat import windows_hide_flags
+            proc = subprocess.Popen(
+                [ffmpeg, "-hide_banner", "-loglevel", "error", "-i", path, "-f", "s16le",
+                 "-acodec", "pcm_s16le", "-ar", str(self.sample_rate), "-ac", str(self.channels), "pipe:1"],
+                # A second unread pipe can fill and deadlock PCM decoding.
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags())
+            with self._decoder_lock:
+                self._decoder = proc
+            total = 0
+            assert proc.stdout is not None
+            try:
+                if self._cancel_event.is_set():
+                    return
+                while chunk := proc.stdout.read(64 * 1024):
+                    if self._cancel_event.is_set():
+                        return
+                    total += len(chunk)
+                    if total > _STREAM_SENTENCE_BYTE_CAP:
+                        raise ValueError("Codex live-voice PCM exceeded the per-sentence byte cap")
+                    yield chunk
+                if self._cancel_event.is_set():
+                    return
+                exit_code = proc.wait(timeout=10)
+                if exit_code:
+                    raise RuntimeError(f"ffmpeg failed to decode Codex speech (exit {exit_code})")
+                if not total:
+                    raise RuntimeError("ffmpeg produced no audio for Codex speech")
+            finally:
+                with self._decoder_lock:
+                    self._decoder = None
+                try:
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.wait(timeout=5)
+                finally:
+                    proc.stdout.close()
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
 
 
 @register("elevenlabs")

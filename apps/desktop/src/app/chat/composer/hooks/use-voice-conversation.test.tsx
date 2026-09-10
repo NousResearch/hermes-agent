@@ -41,7 +41,7 @@ vi.mock('@/lib/thinking-sound', () => ({
 
 const micHandle = {
   cancel: vi.fn(),
-  start: vi.fn(async () => undefined),
+  start: vi.fn<() => Promise<void>>(async () => undefined),
   stop: vi.fn<() => Promise<MicRecording | null>>(async () => null)
 }
 
@@ -73,9 +73,12 @@ vi.mock('@/store/notifications', () => ({
 
 interface HookProps {
   busy: boolean
+  enabled?: boolean
 }
 
-function renderConversation(overrides: { onInterrupt?: () => void; transcript?: string } = {}) {
+function renderConversation(
+  overrides: { onInterrupt?: () => void; transcript?: string; transcribe?: (audio: Blob) => Promise<string> } = {}
+) {
   const onInterrupt = overrides.onInterrupt ?? vi.fn()
 
   // Mirrors the real app: submitting a turn makes the agent busy.
@@ -91,23 +94,24 @@ function renderConversation(overrides: { onInterrupt?: () => void; transcript?: 
   // ones are barge captures (the overridable transcript).
   let transcriptions = 0
 
-  const onTranscribeAudio = vi.fn(async () =>
-    transcriptions++ === 0 ? 'kick off the task' : (overrides.transcript ?? 'and another thing')
+  const onTranscribeAudio = vi.fn(
+    overrides.transcribe ??
+      (async () => (transcriptions++ === 0 ? 'kick off the task' : (overrides.transcript ?? 'and another thing')))
   )
 
   const hook = renderHook(
-    ({ busy }: HookProps) =>
+    ({ busy, enabled = true }: HookProps) =>
       useVoiceConversation({
         busy,
         consumePendingResponse: vi.fn(),
-        enabled: true,
+        enabled,
         onInterrupt,
         onStopWord,
         onSubmit,
         onTranscribeAudio,
         pendingResponse: () => null
       }),
-    { initialProps: { busy: false } }
+    { initialProps: { busy: false } as HookProps }
   )
 
   onBusyChange.current = busy => hook.rerender({ busy })
@@ -210,9 +214,11 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
 
     // Turn finished; playback phase.
-    hook.rerender({ busy: false })
+    await act(async () => {
+      hook.rerender({ busy: false })
+    })
 
-    act(() => {
+    await act(async () => {
       monitorCalls.at(-1)?.onSpeech()
     })
 
@@ -262,5 +268,125 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     hook.rerender({ busy: true })
 
     expect(monitorCalls.length).toBe(armed)
+  })
+})
+
+describe('useVoiceConversation lifecycle ownership', () => {
+  beforeEach(() => {
+    monitorCalls.length = 0
+    vi.clearAllMocks()
+    micHandle.start.mockResolvedValue(undefined)
+    micHandle.stop.mockResolvedValue(null)
+  })
+
+  afterEach(cleanup)
+
+  it.each(['end', 'disable', 'unmount', 'mute'] as const)(
+    'drops pending transcription after %s without submitting or handling a stop command',
+    async cancellation => {
+      let resolveTranscript!: (text: string) => void
+
+      const { hook, onSubmit, onStopWord, onTranscribeAudio } = renderConversation({
+        transcribe: () =>
+          new Promise(resolve => {
+            resolveTranscript = resolve
+          })
+      })
+
+      await act(async () => {
+        await hook.result.current.start()
+      })
+      micHandle.stop.mockResolvedValueOnce({
+        audio: new Blob(['q'], { type: 'audio/webm' }),
+        durationMs: 900,
+        heardSpeech: true
+      })
+      await act(async () => {
+        hook.result.current.stopTurn()
+      })
+      expect(onTranscribeAudio).toHaveBeenCalledOnce()
+
+      await act(async () => {
+        if (cancellation === 'end') {
+          await hook.result.current.end()
+        }
+
+        if (cancellation === 'disable') {
+          hook.rerender({ busy: false, enabled: false })
+        }
+
+        if (cancellation === 'unmount') {
+          hook.unmount()
+        }
+
+        if (cancellation === 'mute') {
+          hook.result.current.toggleMute()
+        }
+      })
+      await act(async () => {
+        resolveTranscript('do not send this after cancellation')
+      })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(onStopWord).not.toHaveBeenCalled()
+      expect(micHandle.start).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it.each(['end', 'unmount', 'mute'] as const)(
+    'releases the generation microphone on %s and ignores a queued barge callback',
+    async cancellation => {
+      const { hook, onInterrupt, onSubmit, onTranscribeAudio } = renderConversation()
+      await enterThinking(hook)
+      expect(monitorCalls).toHaveLength(1)
+      const monitor = monitorCalls[0]
+      const stoppedBefore = stopMonitor.mock.calls.length
+      await act(async () => {
+        if (cancellation === 'end') {
+          await hook.result.current.end()
+        }
+
+        if (cancellation === 'unmount') {
+          hook.unmount()
+        }
+
+        if (cancellation === 'mute') {
+          hook.result.current.toggleMute()
+        }
+      })
+
+      expect(stopMonitor.mock.calls.length).toBeGreaterThan(stoppedBefore)
+      await act(async () => {
+        monitor.onSpeech()
+        monitor.onUtterance?.(new Blob(['late'], { type: 'audio/webm' }))
+      })
+      expect(onInterrupt).not.toHaveBeenCalled()
+      expect(onTranscribeAudio).toHaveBeenCalledTimes(1)
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('does not resurrect listening after a pending microphone start is cancelled', async () => {
+    let resolveStart!: () => void
+    micHandle.start.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveStart = resolve
+        })
+    )
+    const { hook } = renderConversation()
+    let start!: Promise<void>
+    act(() => {
+      start = hook.result.current.start()
+    })
+    await waitFor(() => expect(micHandle.start).toHaveBeenCalledOnce())
+    await act(async () => {
+      await hook.result.current.end()
+    })
+    await act(async () => {
+      resolveStart()
+      await start
+    })
+    expect(hook.result.current.status).toBe('idle')
   })
 })

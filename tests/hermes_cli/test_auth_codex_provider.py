@@ -580,6 +580,43 @@ def test_is_rate_limited_auth_error_distinguishes_credential_errors():
     assert is_rate_limited_auth_error(ValueError("nope")) is False
 
 
+def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypatch):
+    called = {"device_login": 0}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda: {"base_url": DEFAULT_CODEX_BASE_URL},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": "cli-at", "refresh_token": "cli-rt"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {"access_token": "fresh-at", "refresh_token": "fresh-rt"},
+            "last_refresh": "2026-04-01T00:00:00Z",
+            "base_url": DEFAULT_CODEX_BASE_URL,
+        },
+    )
+
+    def _fake_save(tokens, last_refresh=None, *, set_active=True):
+        called["device_login"] += 1
+        called["tokens"] = dict(tokens)
+        called["last_refresh"] = last_refresh
+        called["set_active"] = set_active
+
+    monkeypatch.setattr("hermes_cli.auth._save_codex_device_login_tokens", _fake_save)
+    monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda *args, **kwargs: "/tmp/config.yaml")
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": (_ for _ in ()).throw(AssertionError("force_new_login should not prompt for reuse/import")),
+    )
+
+    _login_openai_codex(SimpleNamespace(), PROVIDER_REGISTRY["openai-codex"], force_new_login=True)
+
+    assert called["device_login"] == 1
+    assert called["tokens"]["access_token"] == "fresh-at"
 
 
 class _FakeResp:

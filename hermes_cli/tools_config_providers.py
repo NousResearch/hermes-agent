@@ -187,6 +187,14 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
                 return "needs_auth"
         # Signed in and entitled — fall through: a managed row may still carry a local install hook.
 
+    auth_provider = provider.get("auth_provider")
+    if auth_provider == "openai-codex":
+        try:
+            from hermes_cli.auth import has_codex_runtime_credentials
+            return "ready" if has_codex_runtime_credentials() else "needs_auth"
+        except Exception:
+            return "needs_auth"
+
     post_setup = provider.get("post_setup")
     if post_setup:
         if post_setup == "xai_grok":
@@ -889,6 +897,14 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
 
     if not _nous_provider_gate(provider, config, managed_feature, force_fresh=force_fresh):
         return
+
+    if provider.get("auth_provider") == "openai-codex":
+        from hermes_cli.auth import has_codex_runtime_credentials
+        if not has_codex_runtime_credentials():
+            _run_post_setup("openai_codex")
+        if not has_codex_runtime_credentials():
+            _print_warning("  Not enabled — OpenAI Codex OAuth login is required.")
+            return
 
     _print_provider_selection(provider, managed_feature, reconfigure=reconfigure)
     # Shared with the GUI provider-select endpoint (apply_provider_selection): one source of truth for config writes.

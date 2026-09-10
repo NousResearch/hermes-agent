@@ -364,6 +364,7 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                         "tag": prov.get("tag", ""),
                         "env_vars": env_vars,
                         "post_setup": prov.get("post_setup"),
+                        "auth_provider": prov.get("auth_provider"),
                         "requires_nous_auth": bool(prov.get("requires_nous_auth")),
                         "is_active": is_active,
                         # Server-side readiness: zero-env-var rows are NOT
@@ -521,6 +522,13 @@ async def select_toolset_provider(
                         raise _bad_request(f"{body.provider} does not support {body.capability}")
                     _dict_section(config, "web")[f"{body.capability}_backend"] = backend
                 else:
+                    prov = _provider_row(config)
+                    if (prov or {}).get("auth_provider") == "openai-codex":
+                        from hermes_cli.auth import has_codex_runtime_credentials
+                        if not has_codex_runtime_credentials():
+                            raise HTTPException(
+                                status_code=409,
+                                detail={"needs_oauth": True, "provider": "openai-codex"})
                     try:
                         apply_provider_selection(name, body.provider, config)
                     except KeyError as exc:

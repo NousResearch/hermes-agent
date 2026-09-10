@@ -867,7 +867,7 @@ async function isLocalDesktopProfile(target: string): Promise<boolean> {
 // profile-only path so the main process can resolve a per-profile remote
 // override before falling back to a local backend. Default on `local` stays
 // on that source — see profilePickConnectionId.
-function activateOnCurrentSource(target: string): Promise<void> {
+export function activateOnCurrentSource(target: string): Promise<void> {
   const connectionId = profilePickConnectionId(target)
 
   return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)

@@ -143,6 +143,26 @@ export function useComposerVoice({
   // fail and the conversation never starts listening.
   const wakePauseBarrierRef = useRef<Promise<void> | null>(null)
 
+  const pauseWakeForVoice = useCallback(() => {
+    if (wakePauseBarrierRef.current) {
+      return wakePauseBarrierRef.current
+    }
+
+    wakePausedRef.current = true
+
+    const barrier = (async () => {
+      try {
+        await $gateway.get()?.request('wake.pause', {})
+      } catch {
+        // No wake listener / older backend — nothing held the mic.
+      }
+    })()
+
+    wakePauseBarrierRef.current = barrier
+
+    return barrier
+  }, [])
+
   const conversation = useVoiceConversation({
     busy,
     consumePendingResponse,
@@ -160,9 +180,9 @@ export function useComposerVoice({
     onSubmit: submitVoiceTurn,
     onTranscribeAudio,
     pendingResponse: pendingTurnResponse,
-    // Before the conversation opens the mic, wait for any in-flight wake.pause
-    // to finish releasing the capture device (see wakePauseBarrierRef).
-    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined
+    // The conversation's enable effect runs before our wake effect below.
+    // Acquire the pause here too so mic ownership never depends on effect order.
+    beforeMicOpen: pauseWakeForVoice
   })
 
   // eslint-disable-next-line no-restricted-syntax -- ownership token used only by unmount cleanup
@@ -223,24 +243,6 @@ export function useComposerVoice({
     // ending a voice chat must re-arm the listener whenever config says
     // enabled — including when the raw resume loses the mic-release race.
     void resumeWakeAfterVoice()
-  }, [])
-
-  // The ref is a request token (did WE issue wake.pause?), not an atom mirror —
-  // it guards resumeWakeIfPaused from resuming a detector another surface owns.
-  const pauseWakeForVoice = useCallback(() => {
-    wakePausedRef.current = true
-
-    const barrier = (async () => {
-      try {
-        await $gateway.get()?.request('wake.pause', {})
-      } catch {
-        // No wake listener / older backend — nothing held the mic.
-      }
-    })()
-
-    wakePauseBarrierRef.current = barrier
-
-    return barrier
   }, [])
 
   useEffect(() => {

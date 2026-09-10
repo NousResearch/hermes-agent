@@ -1,6 +1,7 @@
 import { resolveGatewayWsUrl } from '@hermes/shared'
 
 import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
+import { translateNow } from '@/i18n'
 import {
   cutSentences,
   directTtsConfig,
@@ -8,6 +9,7 @@ import {
   synthesizeSpeechClientDirect
 } from '@/lib/voice-client-direct'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { notifyError } from '@/store/notifications'
 import {
   $voicePlayback,
   setVoicePlaybackState,
@@ -22,6 +24,9 @@ import { sanitizeTextForSpeech } from './speech-text'
 // fails to start or stalls mid-stream for this long (rearmed on each progress
 // tick, so legitimately long speech is never cut off).
 const PLAYBACK_STALL_MS = 15_000
+// The Codex provider allows up to 180 seconds for synthesis. Do not launch
+// fallback while a supported provider request can still legitimately finish.
+const STREAM_RESPONSE_TIMEOUT_MS = 180_000
 
 let currentAudio: HTMLAudioElement | null = null
 let currentStop: (() => void) | null = null
@@ -357,6 +362,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   let started = false
   let settled = false
   let finished = false
+  let deadline: number | null = null
   const pendingSends: string[] = []
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
@@ -369,6 +375,11 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
       settled = true
       currentStop = null
+
+      if (deadline !== null) {
+        window.clearTimeout(deadline)
+        deadline = null
+      }
 
       try {
         ws.close()
@@ -396,9 +407,28 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   // aborts synthesis on disconnect) and the audio context (cuts sound now).
   currentStop = () => settle('done')
 
+  const waitFor = (delayMs: number, outcome: 'done' | 'fallback') => {
+    if (deadline !== null) {
+      window.clearTimeout(deadline)
+    }
+
+    deadline = window.setTimeout(() => settle(outcome), delayMs)
+  }
+
+  const remainingPlaybackMs = () => (context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0)
+
+  const awaitResponse = () => {
+    // Generation can pause between sentences. Only expect terminal provider
+    // progress once the reply is complete; queued speech gets its full duration.
+    if (finished && !settled) {
+      waitFor(remainingPlaybackMs() + STREAM_RESPONSE_TIMEOUT_MS, started ? 'done' : 'fallback')
+    }
+  }
+
+  waitFor(RECONNECT_ATTEMPT_TIMEOUT_MS, 'fallback')
+
   const finishWhenDrained = () => {
-    const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
-    window.setTimeout(() => settle('done'), remainingMs + 100)
+    waitFor(remainingPlaybackMs() + 100, 'done')
   }
 
   const schedule = (data: ArrayBuffer) => {
@@ -447,20 +477,36 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       started = true
       setVoicePlaybackState(currentState('speaking', options))
     }
+
+    awaitResponse()
   }
 
   ws.onopen = () => {
+    if (settled) {
+      return
+    }
+
+    if (deadline !== null) {
+      window.clearTimeout(deadline)
+      deadline = null
+    }
+
     pendingSends.splice(0).forEach(data => ws.send(data))
+    awaitResponse()
   }
 
   ws.onmessage = event => {
+    if (settled) {
+      return
+    }
+
     if (typeof event.data !== 'string') {
       schedule(event.data as ArrayBuffer)
 
       return
     }
 
-    let frame: { channels?: number; sample_rate?: number; type?: string }
+    let frame: { channels?: number; sample_rate?: number; type?: string; message?: string }
 
     try {
       frame = JSON.parse(event.data) as typeof frame
@@ -486,6 +532,14 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       finishWhenDrained()
     } else if (frame.type === 'fallback') {
       settle(started ? 'done' : 'fallback')
+    } else if (frame.type === 'error') {
+      notifyError(
+        new Error(frame.message || translateNow('notifications.voice.playbackFailed')),
+        translateNow('notifications.voice.playbackFailed')
+      )
+      // Provider rejection is terminal, including before the first PCM frame.
+      // Replaying through POST would retry the same failure (or repeat speech).
+      settle('done')
     }
   }
 
@@ -493,7 +547,16 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   // auth, network) → fall back. After audio started, replaying the whole
   // message via POST would stutter — treat what played as the playback.
   ws.onerror = () => settle(started ? 'done' : 'fallback')
-  ws.onclose = () => (started ? finishWhenDrained() : settle('fallback'))
+
+  ws.onclose = () => {
+    if (!settled) {
+      if (started) {
+        finishWhenDrained()
+      } else {
+        settle('fallback')
+      }
+    }
+  }
 
   return {
     // Raw deltas — the server strips markdown/emoji per *sentence*, which is
@@ -507,6 +570,10 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       if (!finished && !settled) {
         finished = true
         send({ done: true })
+
+        if (ws.readyState === WebSocket.OPEN) {
+          awaitResponse()
+        }
       }
     },
     done
@@ -522,36 +589,29 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
  * `playSpeechText`).
  */
 export async function startSpeechStream(options: VoicePlaybackOptions): Promise<null | SpeechStreamSession> {
+  // Reserve playback before discovery: Stop or a newer reply invalidates all
+  // outstanding credential/URL lookups, including lookups that finish later.
+  stopVoicePlayback()
+  const ownSequence = sequence
+  const isCurrent = () => ownSequence === sequence
   const direct = await directTtsConfig().catch(() => null)
 
-  if (direct) {
-    stopVoicePlayback()
-    setVoicePlaybackState(currentState('preparing', options))
-
-    const session = openClientDirectSpeechSession(direct, options)
-
-    void session.done.then(outcome => {
-      if (outcome === 'done') {
-        setVoicePlaybackState(currentState('idle'))
-      }
-    })
-
-    return session
-  }
-
-  const wsUrl = await resolveSpeakStreamUrl()
-
-  if (!wsUrl) {
+  if (!isCurrent()) {
     return null
   }
 
-  stopVoicePlayback()
+  const wsUrl = direct ? null : await resolveSpeakStreamUrl()
+
+  if (!isCurrent() || (!direct && !wsUrl)) {
+    return null
+  }
+
   setVoicePlaybackState(currentState('preparing', options))
 
-  const session = openSpeechStream(wsUrl, options)
+  const session = direct ? openClientDirectSpeechSession(direct, options) : openSpeechStream(wsUrl!, options)
 
   void session.done.then(outcome => {
-    if (outcome === 'done') {
+    if (outcome === 'done' && isCurrent()) {
       setVoicePlaybackState(currentState('idle'))
     }
   })

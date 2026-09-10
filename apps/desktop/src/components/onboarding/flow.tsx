@@ -40,7 +40,16 @@ export function FlowPanel({
   const title = 'provider' in flow && flow.provider ? providerTitle(flow.provider) : ''
 
   if (flow.status === 'starting') {
-    return <Status>{t.onboarding.startingSignIn(title)}</Status>
+    return (
+      <div className="grid gap-3">
+        <Status>{t.onboarding.startingSignIn(title)}</Status>
+        <div className="flex justify-end">
+          <Button onClick={cancelOnboardingFlow} variant="outline">
+            {t.onboarding.pickDifferentProvider}
+          </Button>
+        </div>
+      </div>
+    )
   }
 
   if (flow.status === 'submitting') {

@@ -339,6 +339,26 @@ def _post_setup_xai_grok() -> None:
         _print_info("    xAI will remain inactive until credentials are configured.")
 
 
+def _post_setup_openai_codex() -> bool:
+    """Credential-only Codex OAuth login for subscription-backed audio tools."""
+    import argparse
+    from hermes_cli.auth import PROVIDER_REGISTRY, get_codex_auth_status
+    from hermes_cli.auth_codex import _login_openai_codex
+
+    if get_codex_auth_status().get("logged_in"):
+        _print_success("    OpenAI Codex OAuth is already configured")
+        return True
+    try:
+        _login_openai_codex(
+            argparse.Namespace(), PROVIDER_REGISTRY["openai-codex"],
+            force_new_login=True, set_active=False)
+    except (Exception, SystemExit) as exc:
+        logger.debug("OpenAI Codex credential-only login failed: %s", exc)
+        _print_warning("    OpenAI Codex login did not complete. Run later: hermes auth add openai-codex")
+        return False
+    return bool(get_codex_auth_status().get("logged_in"))
+
+
 # post_setup key -> hook. Unknown keys are a silent no-op (callers validate against valid_post_setup_keys()).
 _POST_SETUP_HOOKS: dict = {
     "lightpanda": _post_setup_lightpanda,
@@ -350,13 +370,14 @@ _POST_SETUP_HOOKS: dict = {
     "spotify": _post_setup_spotify,
     "langfuse": _post_setup_langfuse,
     "xai_grok": _post_setup_xai_grok,
+    "openai_codex": _post_setup_openai_codex,
     **{key: (lambda spec=spec: _post_setup_pip(spec)) for key, spec in _PIP_POST_SETUP_HOOKS.items()},
 }
 
 
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
-    _POST_SETUP_HOOKS.get(post_setup_key, lambda: None)()
+    return _POST_SETUP_HOOKS.get(post_setup_key, lambda: None)()
 
 
 def valid_post_setup_keys() -> Set[str]:

@@ -1449,6 +1449,7 @@ _NATIVE_STT_LABELS = {
     "local_command": "local command",
     "groq": "Groq",
     "openai": "OpenAI",
+    "openai-codex": "OpenAI Codex subscription",
     "mistral": "Mistral Voxtral",
     "xai": "xAI Grok STT",
     "elevenlabs": "ElevenLabs Scribe",

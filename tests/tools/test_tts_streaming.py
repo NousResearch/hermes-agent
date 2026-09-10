@@ -770,7 +770,7 @@ def test_hybrid_prefetch_fires_http_immediately(monkeypatch):
             return True
 
         def stream(self, text):
-            stream_start_times.append(time.monotonic())
+            stream_start_times.append(time.perf_counter())
             # First sentence: block until the test signals playback to proceed.
             # This simulates a long audio segment still playing.
             if len(stream_start_times) == 1:

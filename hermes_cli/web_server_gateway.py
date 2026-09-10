@@ -375,29 +375,6 @@ def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> 
     return {"restart_started": True, "restart_action": "gateway-restart", "restart_pid": proc.pid}
 
 
-def _split_text_for_speak_stream(text: str, cap: int) -> list:
-    """Split *text* into provider-cap-sized pieces on sentence boundaries.
-
-    Deliberately NOT unified with gateway.platforms.helpers' split_text_fence_aware: this
-    reflows whitespace (sentences re-joined with single spaces) and has no fence semantics.
-    """
-    from tools.tts_streaming import SENTENCE_BOUNDARY_RE as _SENTENCE_BOUNDARY_RE
-    cap = cap if cap and cap > 0 else 4000
-    pieces, buf = [], ""
-    for sentence in filter(str.strip, _SENTENCE_BOUNDARY_RE.split(text)):
-        while len(sentence) > cap:
-            pieces.append(sentence[:cap])
-            sentence = sentence[cap:]
-        if buf and len(buf) + len(sentence) + 1 > cap:
-            pieces.append(buf)
-            buf = sentence
-        else:
-            buf = f"{buf} {sentence}" if buf else sentence
-    if buf:
-        pieces.append(buf)
-    return pieces
-
-
 # Per-row fields no session LIST consumer reads but that dominate the payload (``system_prompt``
 # is the fully rendered prompt, tens of KB per row — 96% of a 528KB /api/sessions response).
 # Detail reads stay complete; list callers that need full rows pass ``?full=1``.

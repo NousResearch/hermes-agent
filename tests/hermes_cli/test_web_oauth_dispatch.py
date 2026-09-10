@@ -319,7 +319,7 @@ def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch
     saved = []
     _make_profile_home(tmp_path, monkeypatch, profile="coder")
     monkeypatch.setattr(httpx, "Client", _Client)
-    monkeypatch.setattr(auth_mod, "_save_codex_tokens", lambda tokens: saved.append(tokens))
+    monkeypatch.setattr(auth_mod, "_save_codex_tokens", lambda tokens, **kwargs: saved.append(tokens))
 
     sid, _ = _rt_oauth._new_oauth_session("openai-codex", "device_code", profile="coder")
 
@@ -403,7 +403,7 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
     delete_started = threading.Event()
     delete_finished = threading.Event()
 
-    def fake_save(tokens):
+    def fake_save(tokens, **kwargs):
         # We are inside the worker's critical section right now (holding
         # _oauth_sessions_lock). Fire a real DELETE from another thread and
         # prove it cannot complete until this section releases the lock.
@@ -446,6 +446,35 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
     # so this is the legitimate too-late-to-cancel outcome: token saved,
     # session subsequently removed by the now-unblocked DELETE.
     assert sid not in _web_server_oauth._oauth_sessions
+
+
+def test_codex_tool_login_preserves_active_inference_provider(monkeypatch):
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(
+        _rt_oauth, "_codex_request_user_code",
+        lambda _httpx: {"device_auth_id": "device", "interval": 0, "user_code": "CODE"})
+    monkeypatch.setattr(
+        _rt_oauth, "_codex_poll_authorization",
+        lambda _httpx, _sess, _sid: {"authorization_code": "code", "code_verifier": "verifier"})
+    monkeypatch.setattr(
+        _rt_oauth, "_codex_exchange_tokens",
+        lambda _httpx, _code: {"access_token": "at", "refresh_token": "rt"})
+    saved = []
+    monkeypatch.setattr(
+        auth_mod, "_save_codex_tokens",
+        lambda tokens, **kwargs: saved.append((tokens, kwargs)))
+
+    sid, _ = _rt_oauth._new_oauth_session(
+        "openai-codex", "device_code", activate_provider=False)
+    try:
+        _rt_oauth._codex_full_login_worker(sid)
+        assert saved == [(
+            {"access_token": "at", "refresh_token": "rt"},
+            {"set_active": False},
+        )]
+    finally:
+        _rt_oauth._oauth_sessions.pop(sid, None)
 
 
 def test_cancel_oauth_session_marks_dict_cancelled_before_popping(tmp_path, monkeypatch):

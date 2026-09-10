@@ -216,12 +216,16 @@ export function disconnectOAuthProvider(
   })
 }
 
-export function startOAuthLogin(providerId: string, profile?: ProfileScope): Promise<OAuthStartResponse> {
+export function startOAuthLogin(
+  providerId: string,
+  profile?: ProfileScope,
+  activateProvider = true
+): Promise<OAuthStartResponse> {
   return window.hermesDesktop.api<OAuthStartResponse>({
     ...capabilityScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
     method: 'POST',
-    body: {}
+    body: { activate_provider: activateProvider }
   })
 }
 
@@ -250,9 +254,9 @@ export function pollOAuthSession(
   })
 }
 
-export function cancelOAuthSession(sessionId: string, profile?: null | string): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+export function cancelOAuthSession(sessionId: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
     path: `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
     method: 'DELETE'
   })

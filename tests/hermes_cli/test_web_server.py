@@ -2881,6 +2881,38 @@ class TestNewEndpoints:
 
 
 
+    def test_codex_stt_row_exposes_oauth_metadata(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.auth.has_codex_runtime_credentials", lambda: False
+        )
+
+        resp = self.client.get("/api/tools/toolsets/stt/config")
+
+        assert resp.status_code == 200
+        by_name = {p["name"]: p for p in resp.json()["providers"]}
+        codex = by_name["OpenAI Codex OAuth"]
+        assert codex["auth_provider"] == "openai-codex"
+        assert codex["post_setup"] is None
+        assert codex["status"] == "needs_auth"
+
+    def test_codex_stt_selection_requires_oauth_before_config_write(
+        self, monkeypatch
+    ):
+        from hermes_cli.config import load_config
+
+        monkeypatch.setattr(
+            "hermes_cli.auth.has_codex_runtime_credentials", lambda: False
+        )
+        before = load_config()["stt"].get("provider")
+
+        resp = self.client.put(
+            "/api/tools/toolsets/stt/provider",
+            json={"provider": "OpenAI Codex OAuth"},
+        )
+
+        assert resp.status_code == 409
+        assert load_config()["stt"].get("provider") == before
+
     def test_select_managed_nous_provider_reports_needs_nous_auth(self, monkeypatch):
         """Selecting a managed Nous row while logged out flags needs_nous_auth.
 

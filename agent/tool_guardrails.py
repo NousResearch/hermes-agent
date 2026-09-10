@@ -546,7 +546,7 @@ def _int_at_least(value: Any, default: int, minimum: int) -> int:
 
 def _subagent_spawn_count(args: Mapping[str, Any]) -> int:
     """Subagents one delegate_task call spawns: ``len(tasks)`` for a non-empty batch, else 1; control actions 0."""
-    if str(args.get("action") or "").strip().lower() in ("list", "steer", "stop"):
+    if str(args.get("action") or "").strip().lower() in ("list", "inspect", "steer", "stop"):
         return 0
     tasks = args.get("tasks")
     return len(tasks) if isinstance(tasks, list) and tasks else 1

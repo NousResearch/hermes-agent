@@ -295,8 +295,9 @@ def _register_child(
         "delegation_id": _str_or_none(getattr(child, "_delegation_id", None)),
         "model": _str_or_none(getattr(child, "model", None)),
         "started_at": time.time(), "status": "running", "tool_count": 0, "agent": child,
+        "_inspect_events": [], "_inspect_capture_errors": 0,
         # Owning conversation's durable session id (same lineage completion delivery routes by), sourced from the
-        # child's stamp so it survives a parent_agent rebuild between dispatch and run; used for list/steer/stop
+        # child's stamp so it survives a parent_agent rebuild between dispatch and run; used for list/inspect/steer/stop
         # ownership when the weakref chain breaks.
         "owner_agent_session_id": (
             str(getattr(child, "_parent_session_id", "") or "") or str(getattr(parent_agent, "session_id", "") or "") or None

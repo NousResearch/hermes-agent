@@ -176,6 +176,28 @@ describe('ClarifyTool live card stays mounted across settle', () => {
 })
 
 describe('ClarifyTool choice selection', () => {
+  it('labels single-select vs multi-select before the user clicks', () => {
+    const { rerender } = renderLiveClarify()
+
+    expect(document.querySelector('[data-clarify-select-mode="single"]')?.textContent).toMatch(/pick one/i)
+    expect(document.querySelector('[data-clarify-select-mode="multi"]')).toBeNull()
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    act(() => {
+      setClarifyRequest({
+        choices: ['staging', 'production'],
+        multiSelect: true,
+        question: 'Which deployment target?',
+        requestId: 'request-1',
+        sessionId: 'session-1'
+      })
+    })
+    rerender(clarifyTree(<ClarifyTool {...liveClarifyProps()} />))
+
+    expect(document.querySelector('[data-clarify-select-mode="multi"]')?.textContent).toMatch(/select all that apply/i)
+  })
+
   it('selects independently, deselects and submits multi-select choices as a JSON array', async () => {
     const { request } = renderLiveClarify({ multiSelect: true })
     const staging = screen.getByRole('button', { name: /staging/ })

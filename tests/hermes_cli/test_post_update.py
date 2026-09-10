@@ -5,7 +5,6 @@ match what boot_bootstrap gates them with, a failing step must not stop the
 rest, and step_migrate_config must restore its backups when a migration
 fails or does not advance the version.
 """
-import json
 from pathlib import Path
 
 import pytest
@@ -238,175 +237,19 @@ def test_main_scope_selects_registries(monkeypatch):
     assert ran == ["h", "m"]
 
 
-# ── --update-phase runner mode ───────────────────────────────────────
-
-
-def test_update_phase_runs_shared_registry_and_writes_boot_records(
-    tmp_path, monkeypatch
-):
-    """`hermes update` and boot bootstrap share ONE registry: the update
-    phase runs HOME_STEPS + MACHINE_STEPS and records the new identity so
-    the next boot's bootstrap skips."""
-    from hermes_cli import boot_bootstrap
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-
-    root = tmp_path / "payload"
-    root.mkdir()
-    (root / "install-stamp.json").write_text(
-        json.dumps({"commit": "cafe1234", "payload": "full", "updateMechanism": "electron-updater"})
-    )
-    monkeypatch.setattr(boot_bootstrap, "default_project_root", lambda: root)
-
+def test_scope_cli_rejects_unrelated_flags_without_running_steps(monkeypatch):
     ran = []
-    monkeypatch.setattr(
-        post_update, "HOME_STEPS", (("h", lambda: ran.append("h") or {"ok": True}),)
-    )
-    monkeypatch.setattr(
-        post_update, "MACHINE_STEPS", (("m", lambda: ran.append("m") or {"ok": True}),)
-    )
-
-    rc = post_update.main(["--update-phase", "--resumed-after-sync"])
-
-    assert rc == 0
-    assert ran == ["h", "m"]  # machine steps inline in an update, not deferred
-    for scope in ("home", "machine"):
-        record = boot_bootstrap.read_last_known(
-            boot_bootstrap.record_path(root, scope)
-        )
-        assert record.get("identity") == "cafe1234"
-        assert boot_bootstrap.needs_bootstrap(root, scope) is None
-
-
-def test_update_phase_propagates_step_failure(tmp_path, monkeypatch):
-    from hermes_cli import boot_bootstrap
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    root = tmp_path / "payload"
-    root.mkdir()
-    (root / "install-stamp.json").write_text(
-        json.dumps({"commit": "cafe1234", "payload": "full", "updateMechanism": "electron-updater"})
-    )
-    monkeypatch.setattr(boot_bootstrap, "default_project_root", lambda: root)
-    monkeypatch.setattr(
-        post_update, "HOME_STEPS",
-        (("bad", lambda: (_ for _ in ()).throw(RuntimeError("x"))),),
-    )
-    monkeypatch.setattr(post_update, "MACHINE_STEPS", ())
-
-    assert post_update.main(["--update-phase", "--resumed-after-sync"]) == 1
-    # The record is still written: a broken step must not retrigger the
-    # slow path every boot (the steps re-gate themselves).
-    assert boot_bootstrap.needs_bootstrap(root, "home") is None
-
-
-# ── the re-exec-after-sync handoff ───────────────────────────────────
-
-
-class _Args:
-    """The argparse surface resync_and_reexec consumes."""
-
-    def __init__(self, resumed=False, gateway=False, yes=False, snap=None):
-        self.resumed_after_sync = resumed
-        self.gateway_mode = gateway
-        self.assume_yes = yes
-        self.pre_update_snapshot_id = snap
-
-
-class TestResyncAndReexec:
-    def test_the_resumed_flag_is_absolute(self, monkeypatch):
-        """Loop-proofing: the post-sync process must never sync again,
-        even when the stamp looks stale (another writer could move it
-        between exec and check — argv cannot race)."""
-
-        def no_sync(*a, **k):
-            raise AssertionError("--resumed-after-sync must not sync")
-
-        from hermes_cli import venv_sync
-
-        monkeypatch.setattr(venv_sync, "sync", no_sync)
-
-        assert post_update.resync_and_reexec(_Args(resumed=True)) is None
-
-    def test_current_and_sealed_run_phase2_in_place(self, monkeypatch):
-        """No world change, no exec: the running interpreter is as good
-        as a fresh one and the exec would only cost startup."""
-        from hermes_cli import venv_sync
-
-        for state in ("current", "sealed"):
-            monkeypatch.setattr(
-                venv_sync, "sync", lambda *a, s=state, **k: {"state": s, "ok": True}
-            )
-            monkeypatch.setattr(
-                post_update.os, "execv",
-                lambda *a: (_ for _ in ()).throw(AssertionError("must not exec")),
-                raising=False,
-            )
-            assert post_update.resync_and_reexec(_Args()) is None
-
-    def test_a_failed_sync_stops_the_phase(self, monkeypatch):
-        from hermes_cli import venv_sync
-
-        monkeypatch.setattr(
-            venv_sync,
-            "sync",
-            lambda *a, **k: {"state": "failed", "ok": False, "detail": "uv exited 3"},
-        )
-
-        assert post_update.resync_and_reexec(_Args()) == 1
-
-    def test_a_synced_world_reexecs_with_carried_args(self, monkeypatch):
-        """POSIX: os.execv, same pid, update-lock owner stays correct.
-        Every serialized arg must survive the handoff, plus the resumed
-        marker."""
-        from hermes_cli import venv_sync
-
-        monkeypatch.setattr(
-            venv_sync, "sync", lambda *a, **k: {"state": "synced", "ok": True}
-        )
-        seen = {}
-
-        def fake_execv(exe, argv):
-            seen["exe"] = exe
-            seen["argv"] = argv
-            raise SystemExit(0)  # execv never returns; simulate the replacement
-
-        monkeypatch.setattr(post_update.os, "execv", fake_execv, raising=False)
-        monkeypatch.setattr(post_update.os, "name", "posix")
-
-        with pytest.raises(SystemExit):
-            post_update.resync_and_reexec(
-                _Args(gateway=True, yes=True, snap="snap-7")
-            )
-
-        argv = seen["argv"]
-        assert seen["exe"] == post_update.sys.executable
-        assert argv[1:4] == ["-m", "hermes_cli.post_update", "--update-phase"]
-        assert "--resumed-after-sync" in argv
-        assert "--gateway-mode" in argv and "--assume-yes" in argv
-        assert argv[argv.index("--pre-update-snapshot-id") + 1] == "snap-7"
-
-    def test_windows_spawns_and_propagates(self, monkeypatch):
-        """No exec on Windows: spawn + wait + propagate the child's code;
-        the child passes any update lock by ancestry."""
-        from hermes_cli import venv_sync
-
-        monkeypatch.setattr(
-            venv_sync, "sync", lambda *a, **k: {"state": "synced", "ok": True}
-        )
-        monkeypatch.setattr(post_update.os, "name", "nt")
-        seen = {}
-
-        class _Done:
-            returncode = 7
-
-        def fake_run(argv, **kwargs):
-            seen["argv"] = argv
-            return _Done()
-
-        monkeypatch.setattr(post_update.subprocess, "run", fake_run)
-
-        assert post_update.resync_and_reexec(_Args()) == 7
-        assert "--resumed-after-sync" in seen["argv"]
+    monkeypatch.setattr(post_update, "HOME_STEPS", (("home", lambda: ran.append("home") or {"ok": True}),))
+    monkeypatch.setattr(post_update, "MACHINE_STEPS", (("machine", lambda: ran.append("machine") or {"ok": True}),))
+    for flags in (
+        ["--gateway-mode"],
+        ["--assume-yes"],
+        ["--pre-update-snapshot-id", "fixture"],
+        ["--pre-update-version", "fixture"],
+        ["--resumed-after-sync"],
+        ["--update-phase", "--resumed-after-sync"],
+    ):
+        with pytest.raises(SystemExit) as exc:
+            post_update.main(flags)
+        assert exc.value.code == 2
+        assert ran == []

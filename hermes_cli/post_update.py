@@ -13,18 +13,12 @@ Steps declare a scope:
 
 The scopes must match the record that gates them in ``boot_bootstrap``
 (home record vs machine record).
-
-Ported from the restack branch's post_update module, rewritten onto this
-branch's vocabulary: install identity via ``hermes_cli.steward`` (stamp +
-.git), managed tools via ``pm`` (facts.json ledger) instead of the retired
-``installation`` package.
 """
 from __future__ import annotations
 
 import logging
 import os
 import shutil
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -304,8 +298,8 @@ def step_report_runtime_drift() -> dict:
     ledger — no network, no installs. Drift is reported loudly (the same
     verdict the CLI startup block prints) so the user knows to run
     ``hermes pm install``; boot itself never installs anything. The
-    installing pass is MACHINE_STEPS below, owned by the explicit update
-    flow — automatic boot must not run network installers.
+    installing pass is MACHINE_STEPS below, selected by the scope CLI.
+    Automatic boot must not run network installers.
     """
     import pm
 
@@ -509,23 +503,14 @@ HOME_STEPS: tuple = (
     ("expose_cli", step_expose_cli),
 )
 
-# What AUTOMATIC boot runs for the home scope: HOME_STEPS minus the
-# bundled-skills sync — startup skill syncing already has exactly one
-# owner per entrypoint (main.py's _sync_bundled_skills_for_startup for
-# the CLI, gateway/run.py's configure-logging sync for the gateway), and
-# `hermes update`'s explicit pass keeps the full HOME_STEPS. Adding the
-# sync here made boot a third writer racing those two.
+# Startup skill syncing belongs to each entry point. Boot bootstrap must
+# not repeat it. The explicit scope CLI includes the skills step.
 BOOT_HOME_STEPS: tuple = tuple(
     step for step in HOME_STEPS if step[0] != "sync_skills"
 )
 
-# Machine steps may be slow (network installers); they run ONLY in the
-# explicit update phase (``python -m hermes_cli.post_update --update-phase``,
-# i.e. `hermes update`'s fresh-interpreter step pass) — never on automatic
-# boot.
-#
-# There is no separate cua-driver refresh step: pinned managed tools ride
-# provision_runtimes' pm sweep — one authority on every tool's version.
+# Only the explicit scope CLI selects installing machine steps. Automatic
+# boot uses the check-only registry below.
 MACHINE_STEPS: tuple = (
     ("provision_runtimes", step_provision_runtimes),
 )
@@ -556,121 +541,15 @@ def run_steps(steps: Iterable) -> dict:
     return results
 
 
-def resync_and_reexec(args) -> int | None:
-    """Sync dependencies before a fresh-process handoff.
-
-    ``venv_sync`` uses PM's recorded inputs and selected environment for
-    this checkout. The resumed flag prevents a second sync after handoff.
-    Return None to continue in this process, or an exit code to propagate.
-    POSIX replaces the process. Windows waits for a child and returns its code.
-    """
-    if args.resumed_after_sync:
-        return None
-
-    from hermes_cli import venv_sync
-
-    result = venv_sync.sync()
-    state = result.get("state")
-    if state == "failed":
-        print(f"  ✗ venv sync failed: {result.get('detail')}")
-        return 1
-    if state in ("sealed", "current"):
-        # Nothing changed under us — this interpreter is as good as a
-        # fresh one, and an exec would only cost startup time.
-        return None
-
-    print("  ✓ venv synced — handing off to a fresh interpreter")
-    argv = [sys.executable, "-m", "hermes_cli.post_update", "--update-phase",
-            "--resumed-after-sync"]
-    if args.gateway_mode:
-        argv.append("--gateway-mode")
-    if args.assume_yes:
-        argv.append("--assume-yes")
-    if args.pre_update_snapshot_id:
-        argv.extend(["--pre-update-snapshot-id", str(args.pre_update_snapshot_id)])
-
-    if os.name == "posix":
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os.execv(sys.executable, argv)
-        # unreachable: execv only returns by raising
-
-    completed = subprocess.run(argv)
-    return completed.returncode
-
-
-def _run_update_phase(args) -> int:
-    """Phase 2: the full post-update step list in a fresh interpreter,
-    then record the new identity so the next boot's bootstrap skips.
-
-    ``hermes update`` and boot bootstrap share ONE registry: this runner
-    executes exactly HOME_STEPS + MACHINE_STEPS (machine steps inline —
-    an update invocation is interactive, deferring would hide failures),
-    and writes both boot records via ``boot_bootstrap.write_record``.
-
-    TODO(update-collapse): route hermes_cli.update_cmd's inline
-    post-update phase through ``python -m hermes_cli.post_update
-    --update-phase`` (spawn with inherited stdio) so the updater stops
-    reloading modules by hand. The restack branch delegated to
-    ``update_cmd._run_update_phase_inline`` here; that helper does not
-    exist on this branch yet, so the shared-registry runner IS the
-    update phase for now.
-    """
-    from hermes_cli import boot_bootstrap
-
-    steps = (*HOME_STEPS, *MACHINE_STEPS)
-    results = run_steps(steps)
-    failed = [name for name, res in results.items() if not res.get("ok")]
-    for name, res in results.items():
-        state = "ok" if res.get("ok") else f"FAILED ({res.get('error')})"
-        skipped = res.get("skipped")
-        print(f"  post-update {name}: {f'skipped ({skipped})' if skipped else state}")
-
-    root = boot_bootstrap.default_project_root()
-    identity = boot_bootstrap.current_install_identity(root)
-    if identity:
-        try:
-            boot_bootstrap.write_record(root, "home", identity, results)
-            boot_bootstrap.write_record(root, "machine", identity, results)
-        except OSError as exc:
-            logger.warning("could not record post-update identity: %s", exc)
-    return 1 if failed else 0
-
-
 def main(argv: list | None = None) -> int:
-    """``python -m hermes_cli.post_update`` — run in a FRESH interpreter
-    so every step imports post-pull code (no reload lists).
-
-    Two modes:
-
-    * default / ``--scope``: the boot-bootstrap step registries.
-    * ``--update-phase``: phase 1 (``resync_and_reexec``) syncs the venv
-      and re-execs, so phase 2 (the full step list + boot-record write)
-      always runs on the synced world.
-    """
+    """Run the selected maintenance registry and report its failures."""
     import argparse
 
     parser = argparse.ArgumentParser(prog="hermes_cli.post_update")
     parser.add_argument("--scope", choices=("home", "machine", "all"), default="all")
-    parser.add_argument("--update-phase", action="store_true")
-    parser.add_argument("--gateway-mode", action="store_true")
-    parser.add_argument("--assume-yes", action="store_true")
-    parser.add_argument("--pre-update-snapshot-id", default=None)
-    parser.add_argument("--pre-update-version", default=None)
-    parser.add_argument(
-        "--resumed-after-sync",
-        action="store_true",
-        help="internal: this process IS the post-sync interpreter; never sync again",
-    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-    if args.update_phase:
-        handoff = resync_and_reexec(args)
-        if handoff is not None:
-            return handoff
-        return _run_update_phase(args)
 
     selected: list = []
     if args.scope in ("home", "all"):

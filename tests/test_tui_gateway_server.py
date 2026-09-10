@@ -14837,7 +14837,8 @@ def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_db_error", "utf-8 decode failure")
 
-    server._sessions["lost-sid"] = _session()
+    session = _session()
+    server._sessions["lost-sid"] = session
     try:
         resp = server.handle_request(
             {
@@ -14846,11 +14847,36 @@ def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
                 "params": {"session_id": "lost-sid", "text": "will vanish"},
             }
         )
+        assert resp["error"]["code"] == 5072
+        assert "session storage unavailable" in resp["error"]["message"]
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+        assert session.get("_run_thread") is None
+        assert server._session_live_status("lost-sid", session) == "idle"
+
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+
+        class _DormantThread:
+            def __init__(self, target=None, **_kwargs):
+                self.target = target
+
+            def start(self):
+                return None
+
+        monkeypatch.setattr(server.threading, "Thread", _DormantThread)
+        retry = server.handle_request(
+            {
+                "id": "retry",
+                "method": "prompt.submit",
+                "params": {"session_id": "lost-sid", "text": "saved now"},
+            }
+        )
+        assert retry["result"] == {"status": "streaming"}
+        assert session["running"] is True
     finally:
         server._sessions.pop("lost-sid", None)
-
-    assert resp["error"]["code"] == 5072
-    assert "session storage unavailable" in resp["error"]["message"]
 
 
 @pytest.mark.real_agent_prewarm

@@ -732,6 +732,8 @@ class HostedRoomAttachmentStore:
                     raise AttachmentConflictError(
                         "attachment manifest metadata does not match the uploaded bytes"
                     )
+                if row["expires_at"] is not None and float(row["expires_at"]) <= now:
+                    raise AttachmentNotFoundError("attachment has expired")
                 state = str(row["state"])
                 if state == "disbanded":
                     raise AttachmentNotFoundError("attachment belongs to a disbanded room")
@@ -1196,27 +1198,6 @@ class HostedRoomAttachmentStore:
         return row
 
 
-    def list_published(
-        self,
-        *,
-        room_id: Any,
-        authority_gateway_id: Any,
-        authority_epoch: Any,
-        cursor: Any = None,
-        limit: Any = None,
-        query: Any = None,
-        producer_member_id: Any = None,
-        recipient_member_id: Any = None,
-    ) -> dict[str, Any]:
-        """Read the bounded catalog without duplicating the byte store."""
-        from gateway.hosted_room_attachment_catalog import list_published
-
-        return list_published(
-            self, room_id=room_id, authority_gateway_id=authority_gateway_id,
-            authority_epoch=authority_epoch, cursor=cursor, limit=limit,
-            query=query, producer_member_id=producer_member_id,
-            recipient_member_id=recipient_member_id,
-        )
 
 
 __all__ = [

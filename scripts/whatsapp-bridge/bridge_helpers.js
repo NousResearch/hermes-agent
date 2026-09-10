@@ -641,3 +641,19 @@ export function createVersionResolver(fetchVersionFn, {
     return cachedVersion;
   };
 }
+
+/**
+ * Prefix a human-facing bridge log line with an ISO-8601 UTC timestamp.
+ *
+ * Startup/connection-lifecycle console.log/console.warn lines carried no
+ * timestamp, and the platform adapter pipes the bridge's stdout/stderr
+ * verbatim into bridge.log (no timestamps are added downstream either) --
+ * only structured JSON events (pair events, allowlist rejections, #92683)
+ * were timestamped. During incident forensics this made bridge.log
+ * impossible to sequence on its own (issue #97021). Kept distinct from the
+ * JSON `ts: Date.now()` convention those structured events use since these
+ * are plain human-readable lines, not JSON payloads.
+ */
+export function timestampedLine(message) {
+  return `[${new Date().toISOString()}] ${message}`;
+}

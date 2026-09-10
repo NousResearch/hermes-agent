@@ -36,7 +36,9 @@ import { parseMarkdownIntoBlocks } from '@assistant-ui/react-streamdown'
  */
 
 const EXACT_CACHE_MAX = 256
+const EXACT_CACHE_MAX_CHARACTERS = 1_000_000
 const exactCache = new Map<string, string[]>()
+let exactCacheCharacters = 0
 
 // Streaming messages grow monotonically, and only a handful stream at once
 // (main reply + reasoning part, maybe a tile). A tiny ring is enough; each
@@ -129,9 +131,20 @@ export function parseMarkdownIntoBlocksCached(markdown: string): string[] {
 
   rememberAppend(markdown, blocks)
   exactCache.set(markdown, blocks)
+  exactCacheCharacters += markdown.length
 
-  if (exactCache.size > EXACT_CACHE_MAX) {
-    exactCache.delete(exactCache.keys().next().value as string)
+  // Entry count protects the short-message case; retained source characters
+  // protect long streaming prefixes, where 256 distinct keys can otherwise
+  // pin tens of megabytes. Keep the newest result even when one message alone
+  // exceeds the budget so unchanged-text identity remains stable.
+  while (
+    exactCache.size > 1 &&
+    (exactCache.size > EXACT_CACHE_MAX || exactCacheCharacters > EXACT_CACHE_MAX_CHARACTERS)
+  ) {
+    const oldest = exactCache.keys().next().value as string
+
+    exactCache.delete(oldest)
+    exactCacheCharacters -= oldest.length
   }
 
   return blocks

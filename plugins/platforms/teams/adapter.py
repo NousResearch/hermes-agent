@@ -59,6 +59,8 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret
+from plugins.platforms.teams.reply_context import TeamsReplyContextMixin, _record_outbound_reply_context
+from plugins.platforms.teams.summary_writer import _parse_bool
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +232,10 @@ async def _standalone_send(
                     body = await send_resp.text()
                     return {"error": f"Teams standalone send: activity post failed ({send_resp.status}): {body[:300]}"}
                 send_payload = await send_resp.json()
-        return {"success": True, "message_id": send_payload.get("id")}
+        message_id = send_payload.get("id")
+        if message_id:
+            _record_outbound_reply_context(chat_id, str(message_id), message)
+        return {"success": True, "message_id": message_id}
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -330,7 +335,7 @@ def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     return body
 
 
-class TeamsAdapter(BasePlatformAdapter):
+class TeamsAdapter(TeamsReplyContextMixin, BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
@@ -339,6 +344,8 @@ class TeamsAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
         extra = config.extra or {}
+        self._fetch_reply_context = _parse_bool(extra.get("fetch_reply_context"), default=False)
+        self._reply_context_graph_client: Any = None
         self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
         self._client_secret = extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET", "")
         self._tenant_id = extra.get("tenant_id") or os.getenv("TEAMS_TENANT_ID", "")
@@ -477,18 +484,26 @@ class TeamsAdapter(BasePlatformAdapter):
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
+        chat_type = _CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm")
+        thread_id = self._teams_thread_id(activity) or self._thread_id_from_conversation_id(conv.id)
+        context = self._cron_reply_context(conv.id, thread_id) if thread_id else None
+        reply_to_text = context.get("content") if context else None
+        if not context and thread_id and chat_type == "channel" and self._fetch_reply_context:
+            reply_to_text = await self._fetch_parent_message_text(activity, thread_id)
         source = self.build_source(
             chat_id=conv.id,
             chat_name=getattr(conv, "name", None) or "",
             chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
             user_id=str(user_id),
             user_name=getattr(from_account, "name", None) or "",
-            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id)
+            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            thread_id=thread_id, message_id=msg_id)
         media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
         await self.handle_message(MessageEvent(
             text=text, source=source, message_type=msg_type, message_id=msg_id,
+            reply_to_message_id=thread_id, reply_to_text=reply_to_text,
             media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
 
     async def _cache_attachment(self, att: Any) -> Optional[tuple]:
@@ -661,6 +676,8 @@ class TeamsAdapter(BasePlatformAdapter):
                 else:
                     result = await self._app.send(chat_id, chunk)
                 last_message_id = getattr(result, "id", None)
+                if last_message_id:
+                    _record_outbound_reply_context(chat_id, str(last_message_id), chunk)
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)

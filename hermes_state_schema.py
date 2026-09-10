@@ -625,8 +625,29 @@ class SessionSchemaMixin:
             # drop-and-recreate rebuild against a clean catalog.
             try:
                 self._conn.execute("PRAGMA writable_schema=ON")
+                # Only purge the two indexes owned by this recovery path.
+                # Do not remove the separate optional messages_fts_cjk family.
+                managed_names = [
+                    "messages_fts",
+                    *(
+                        f"messages_fts_{suffix}"
+                        for suffix in ("data", "idx", "docsize", "config", "content")
+                    ),
+                ]
+                if include_trigram:
+                    managed_names.extend(
+                        [
+                            "messages_fts_trigram",
+                            *(
+                                f"messages_fts_trigram_{suffix}"
+                                for suffix in ("data", "idx", "docsize", "config", "content")
+                            ),
+                        ]
+                    )
+                placeholders = ", ".join("?" for _ in managed_names)
                 self._conn.execute(
-                    "DELETE FROM sqlite_master WHERE name LIKE 'messages_fts%'"
+                    f"DELETE FROM sqlite_master WHERE name IN ({placeholders})",
+                    managed_names,
                 )
                 current_schema_version = self._conn.execute(
                     "PRAGMA schema_version"

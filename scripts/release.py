@@ -2184,8 +2184,15 @@ def bump_version(current: str, part: str) -> str:
     return f"{major}.{minor}.{patch}"
 
 
-def update_version_files(semver: str, calver_date: str):
-    """Update version strings in source files."""
+def update_version_files(semver: str, calver_date: str) -> list[Path]:
+    """Update version strings in source files.
+
+    Returns the exact set of files that were written so the caller can stage
+    precisely what changed. A newly-bumped file that is written but not
+    returned here would be silently dropped from the release commit (#68783).
+    """
+    modified: list[Path] = []
+
     # Update __init__.py
     content = VERSION_FILE.read_text(encoding="utf-8")
     content = re.sub(
@@ -2199,6 +2206,7 @@ def update_version_files(semver: str, calver_date: str):
         content,
     )
     VERSION_FILE.write_text(content, encoding="utf-8")
+    modified.append(VERSION_FILE)
 
     # Update pyproject.toml
     pyproject = PYPROJECT_FILE.read_text(encoding="utf-8")
@@ -2214,6 +2222,7 @@ def update_version_files(semver: str, calver_date: str):
         flags=re.MULTILINE,
     )
     PYPROJECT_FILE.write_text(pyproject, encoding="utf-8")
+    modified.append(PYPROJECT_FILE)
 
     # Keep the desktop Electron app's package.json version in lockstep with the
     # Python package version. The desktop About panel reads the live Hermes
@@ -2229,6 +2238,9 @@ def update_version_files(semver: str, calver_date: str):
             count=1,
         )
         desktop_pkg.write_text(pkg_text, encoding="utf-8")
+        modified.append(desktop_pkg)
+
+    return modified
 
 
 def resolve_author(name: str, email: str) -> str:
@@ -2564,11 +2576,13 @@ def main():
 
         # Update version files
         if args.bump:
-            update_version_files(new_version, calver_date)
+            written = update_version_files(new_version, calver_date)
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
-            # Commit version bump
-            add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
+            # Commit version bump. Stage exactly the files update_version_files
+            # wrote, so a newly-bumped file (e.g. the desktop package.json) can't
+            # drift out of the release commit (#68783).
+            add_files = [str(p) for p in written]
             add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")

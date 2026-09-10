@@ -32,6 +32,34 @@ describe('settings helpers', () => {
     expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
   })
 
+  it('keeps Memory and Context sections separate with correct key ownership', () => {
+    const memory = SECTIONS.find(section => section.id === 'memory')
+    const context = SECTIONS.find(section => section.id === 'context')
+
+    expect(memory).toBeDefined()
+    expect(context).toBeDefined()
+    expect(memory?.label).toBe('Memory')
+    expect(context?.label).toBe('Context')
+
+    // Memory section keys are all memory.*
+    expect(memory?.keys).toBeTruthy()
+    for (const key of memory!.keys!) {
+      expect(key.startsWith('memory.')).toBe(true)
+    }
+
+    // Context section keys are all context.* or compression.*
+    expect(context?.keys).toBeTruthy()
+    for (const key of context!.keys!) {
+      expect(key.startsWith('context.') || key.startsWith('compression.')).toBe(true)
+    }
+
+    // No key should appear in both sections
+    const memoryKeySet = new Set(memory?.keys ?? [])
+    const contextKeySet = new Set(context?.keys ?? [])
+    const overlap = [...memoryKeySet].filter(k => contextKeySet.has(k))
+    expect(overlap).toHaveLength(0)
+  })
+
   it('does not shadow the backend schema options for memory.provider', () => {
     // memory.provider options are discovery-driven and served by the backend
     // config schema (merged per-request); enumOptionsFor must return undefined

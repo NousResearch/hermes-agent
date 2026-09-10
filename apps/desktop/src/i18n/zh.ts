@@ -544,7 +544,8 @@ export const zh: Translations = {
       appearance: '外观',
       workspace: '工作区',
       safety: '安全',
-      memory: '记忆与上下文',
+      memory: '记忆',
+      context: '上下文',
       voice: '语音',
       advanced: '高级'
     },
@@ -824,10 +825,10 @@ export const zh: Translations = {
         }
       },
       memory: {
-        memoryEnabled: '持久记忆',
-        userProfileEnabled: '用户画像',
-        memoryCharLimit: '记忆预算',
-        userCharLimit: '画像预算',
+        memoryEnabled: '智能体记忆',
+        memoryCharLimit: '智能体记忆预算',
+        userProfileEnabled: '用户画像记忆',
+        userCharLimit: '用户画像记忆预算',
         provider: '记忆提供方'
       },
       context: {
@@ -890,7 +891,9 @@ export const zh: Translations = {
       },
       memory: {
         memoryEnabled: '保存有助于未来会话的持久记忆。',
-        userProfileEnabled: '维护一份精简的用户偏好画像。'
+        memoryCharLimit: '每个会话的智能体记忆最大字符数。',
+        userProfileEnabled: '维护一份精简的用户偏好画像。',
+        userCharLimit: '用户画像记忆的最大字符数。'
       },
       context: {
         engine: '在接近上下文上限时管理长对话的策略。'

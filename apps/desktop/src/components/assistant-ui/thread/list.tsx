@@ -1007,6 +1007,62 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // renderBudget covers DOM pages; groups.length covers store-window expands.
   }, [scrollRef, renderBudget, groups.length])
 
+  // Timeline jump to a not-yet-rendered early message (see timeline.tsx):
+  // raise the render budget just enough to mount the group containing the
+  // target — weights summed newest-first through the target group, matching
+  // firstVisibleGroupIndex's walk, plus one so the group lands strictly
+  // inside the window. Anchored like "Show earlier" so the on-screen
+  // position holds while the older turns prepend; the timeline polls for
+  // the node and performs the actual scroll. Ids the timeline can produce
+  // are always inside the store window (its entries come from the same
+  // thread state), so only the DOM-budget layer needs widening here.
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    const onReveal = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id
+
+      if (!id) {
+        return
+      }
+
+      let groupIndex = weightedGroups.findIndex(group => group.id === id)
+
+      if (groupIndex < 0) {
+        const messageIndex = structuralSignature.split('\n').findIndex(line => line.split(':')[1] === id)
+
+        if (messageIndex < 0) {
+          return
+        }
+
+        groupIndex = weightedGroups.findIndex(group =>
+          group.kind === 'turn' ? group.indices.includes(messageIndex) : group.index === messageIndex
+        )
+      }
+
+      if (groupIndex < 0) {
+        return
+      }
+
+      let needed = 1
+
+      for (let i = weightedGroups.length - 1; i >= groupIndex; i--) {
+        needed += weightedGroups[i]?.weight ?? 1
+      }
+
+      anchorBeforePrepend()
+      setRenderBudget(budget => Math.max(budget, needed))
+    }
+
+    el.addEventListener('hermes:reveal-message', onReveal)
+
+    return () => el.removeEventListener('hermes:reveal-message', onReveal)
+  }, [anchorBeforePrepend, scrollRef, structuralSignature, weightedGroups])
+
   // The row array is memoized on the inputs the rows actually read. This
   // component re-renders on every isAtBottom flip — and use-stick-to-bottom
   // flips it from a ResizeObserver, so a sidebar DRAG re-renders this list per

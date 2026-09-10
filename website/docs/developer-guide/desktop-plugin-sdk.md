@@ -173,8 +173,9 @@ interface PluginContext {
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live WebSocket to this plugin's own namespace. Returns a disposer. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
-  /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
+  /** The curated OS door: native notification, filesystem, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
+
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
   storage: PluginStorage
 }
@@ -497,6 +498,8 @@ ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? }
                                            // native OS notification (attributed to your plugin)
 ctx.os.openExternal(url)                   // OS default handler (browser, mail, spotify:) → Promise<boolean>
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
+ctx.os.workstationFolders(action, payload?)
+                                           // guarded local Desktop/Documents/Downloads access
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
 host.navigate('/route')                    // hash-route navigation
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
@@ -628,6 +631,40 @@ happens on user click — never from a background event alone.
 The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
+
+`ctx.os.workstationFolders` is the guarded local filesystem door for plugin
+workflows that need more than a file picker. It accepts these actions:
+`roots`, `stat`, `list`, `read`, `mkdir`, `create`, `write`, `chmod`, `utimes`,
+`rename`, and `trash`. Paths must be inside the current machine's
+**Desktop**, **Documents**, or **Downloads** folder. The door rejects traversal,
+symbolic links and canonical paths that resolve outside those roots, refuses to
+mutate a root itself, caps file contents at 10 MiB, and paginates listings at
+200 entries (scanning stops after 10,000 names).
+
+```ts
+const roots = await ctx.os.workstationFolders('roots')
+const files = await ctx.os.workstationFolders('list', {
+  path: roots.roots?.downloads ?? ''
+})
+const source = await ctx.os.workstationFolders('read', { path: files.entries?.[0]?.path ?? '' })
+if (source.ok && source.source) {
+  await ctx.os.workstationFolders('write', {
+    source: source.source,
+    contentBase64: nextContent
+  })
+}
+```
+
+Reads return base64 content plus a source receipt containing identity, mode,
+timestamps, size, and a SHA-256. `write` requires that full receipt; `rename`,
+`chmod`, and `utimes` use the metadata portion returned by `stat` and reject
+identity/mode/timestamp/size conflicts. A metadata receipt does not attest file
+bytes. A stale receipt returns `source-conflict` and leaves the existing file
+unchanged. `create` reserves its destination with exclusive creation and
+removes partial files on failure. `write` publishes through an atomic rename.
+`trash` uses the native OS trash only — there is no permanent-delete fallback.
+Known folders that are unavailable are omitted from `roots`; on an older shell
+or a plain browser, the door resolves `{ ok: false, error: 'unavailable' }`.
 
 ## Data layer — React Query + nanostores
 
@@ -866,6 +903,13 @@ match a hash; it does **not** sandbox. A future remote-source door will need a
 real boundary (iframe/worker + CSP + capability gating) before it can land; do
 not treat this pipeline as a trust boundary.
 
+`ctx.os.workstationFolders` is a narrower capability inside that model. Electron
+accepts it only from a managed app renderer, serializes requests, and
+revalidates approved paths immediately before use. This prevents an untrusted
+plugin from using this door to escape the three granted roots; it is not a
+defense against a hostile same-user native process, which already has the
+workstation-folder access of that user.
+
 ## Pitfalls
 
 - **JSX won't parse in a disk plugin.** The file loads uncompiled — use `jsx()` /
@@ -894,7 +938,7 @@ not treat this pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginFileDialogOptions`, `PluginWorkstationFoldersAction`, `PluginWorkstationFoldersPayload`, `PluginWorkstationFoldersResult`, `PluginWorkstationRoot`, `PluginWorkstationMetadata`, `PluginWorkstationSource`, `PluginWorkstationEntry`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |

@@ -10,6 +10,7 @@ import { ipcMain, shell } from 'electron'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
+import { registerWorkstationFoldersIpc } from './workstation-folders'
 
 export interface FsIpcDeps {
   hermesHome: string
@@ -28,6 +29,7 @@ export function registerFsIpc({
   directoryExists,
   resolveGitBinary
 }: FsIpcDeps) {
+  registerWorkstationFoldersIpc()
   ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
   ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))

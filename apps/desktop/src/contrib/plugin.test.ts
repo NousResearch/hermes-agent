@@ -41,6 +41,8 @@ describe('createPluginContext.os', () => {
     // The pickers answer with a path, so their "unavailable" is null.
     await expect(ctx.os.pickSavePath()).resolves.toBeNull()
     await expect(ctx.os.pickOpenPath()).resolves.toBeNull()
+    await expect(ctx.os.workstationFolders('roots')).resolves.toEqual({ ok: false, error: 'unavailable' })
+
   })
 
   it('file pickers return the chosen path, and null on cancel', async () => {
@@ -77,6 +79,37 @@ describe('createPluginContext.os', () => {
       const ctx = createPluginContext('demo')
       await expect(ctx.os.pickSavePath()).resolves.toBeNull()
       await expect(ctx.os.pickOpenPath()).resolves.toBeNull()
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('routes guarded workstation folder requests and normalizes bridge failures', async () => {
+    const result = {
+      ok: true,
+      roots: {
+        desktop: '/Users/demo/Desktop',
+        documents: '/Users/demo/Documents',
+        downloads: '/Users/demo/Downloads'
+      }
+    }
+    const bridge = {
+      workstationFolders: vi.fn().mockResolvedValue(result)
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.workstationFolders('roots')).resolves.toEqual(result)
+      expect(bridge.workstationFolders).toHaveBeenCalledWith('roots', undefined)
+
+      bridge.workstationFolders.mockRejectedValue(new Error('old shell'))
+      await expect(ctx.os.workstationFolders('read', { path: '/tmp/file.txt' })).resolves.toEqual({
+        ok: false,
+        error: 'unavailable'
+      })
     } finally {
       delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
     }

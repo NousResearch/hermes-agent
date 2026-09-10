@@ -246,8 +246,13 @@ class WebhookAdapter(BasePlatformAdapter):
         if is_autonomous_silence_response(content):
             logger.info("[webhook] Response for %s is a silence marker — not delivering", chat_id)
             return SendResult(success=True)
-        delivery = self._delivery_info.get(chat_id, {})
-        deliver_type = delivery.get("deliver", "log")
+        from gateway.platforms.webhook_delivery import retained_destination
+        try:
+            delivery = retained_destination(self, chat_id)
+        except Exception:
+            logger.warning("[webhook] Destination unavailable for %s", chat_id, exc_info=True)
+            return SendResult(success=False, error="Webhook destination unavailable or unauthorized")
+        deliver_type = delivery["deliver"]
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)

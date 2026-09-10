@@ -250,13 +250,11 @@ class TestCrossPlatformDelivery:
                 headers={"X-GitHub-Delivery": "alert-001"},
             )
             assert resp.status == 202
-
-        # The adapter should have stored delivery info
-        chat_id = "webhook:alerts:alert-001"
-        assert chat_id in adapter._delivery_info
-
-        # Now call send() as if the agent has finished
-        result = await adapter.send(chat_id, "I've acknowledged the alert.")
+            runner = adapter._message_handler.__self__
+            runner.adapters[Platform.TELEGRAM] = mock_tg_adapter
+            adapter.gateway_runner = runner
+            chat_id = "webhook:alerts:alert-001"
+            result = await adapter.send(chat_id, "I've acknowledged the alert.")
 
         assert result.success is True
         mock_tg_adapter.send.assert_awaited_once_with(

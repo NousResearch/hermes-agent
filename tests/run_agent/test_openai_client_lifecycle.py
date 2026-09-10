@@ -55,6 +55,13 @@ def _build_agent(shared_client=None):
     agent.provider = "openai-codex"
     agent.base_url = "https://chatgpt.com/backend-api/codex"
     agent.model = "gpt-5-codex"
+    # openai-codex is a protected-egress provider: every physical request goes through the
+    # egress firewall, which requires a request identity.
+    agent.session_id = "session-1"
+    agent._current_turn_id = "turn-1"
+    agent._current_api_request_id = "turn-1:api:1"
+    from hashlib import sha256
+    agent._llm_egress_policy_digest = sha256(b"policy").hexdigest()
     agent.log_prefix = ""
     agent.quiet_mode = True
     agent._interrupt_requested = False

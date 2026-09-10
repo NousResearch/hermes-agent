@@ -1015,7 +1015,7 @@ class GatewayBusySessionMixin:
         restart; otherwise the marker must be < 5 minutes old. Telegram only (numeric ordering).
         """
         from gateway.run import _hermes_home
-        if event is None or event.source is None or event.platform_update_id is None:
+        if event is None or event.source is None:
             return False
         try:
             if event.source.platform.value != "telegram":
@@ -1044,12 +1044,35 @@ class GatewayBusySessionMixin:
         except Exception:
             return False
 
-        recorded_uid = data.get("update_id")
-        if (
-            data.get("platform") != "telegram"
-            or not isinstance(recorded_uid, int)
-            or event.platform_update_id > recorded_uid
-        ):
+        origin = data.get("origin", "slash_command")
+        if origin == "slash_command":
+            recorded_uid = data.get("update_id")
+            if (
+                data.get("platform") != "telegram"
+                or not isinstance(recorded_uid, int)
+                or event.platform_update_id is None
+                or event.platform_update_id > recorded_uid
+            ):
+                return False
+        elif origin == "agent_tool":
+            recorded_chat_id = data.get("chat_id")
+            recorded_thread_id = data.get("thread_id")
+            recorded_msg_id = data.get("message_id")
+
+            evt_chat_id = event.source.chat_id
+            evt_thread_id = event.source.thread_id or None
+            evt_msg_id = str(event.message_id) if event.message_id is not None else None
+
+            if (
+                evt_chat_id == recorded_chat_id
+                and evt_thread_id == (recorded_thread_id or None)
+                and evt_msg_id is not None
+                and recorded_msg_id is not None
+                and evt_msg_id == str(recorded_msg_id)
+            ):
+                if getattr(self, "_booted_from_restart", False):
+                    self._booted_from_restart = False
+                return True
             return False
 
         # A service-managed restart can outlast the 5-minute trust window; consume the boot
@@ -1204,29 +1227,6 @@ class GatewayBusySessionMixin:
                 )
                 if button_result and getattr(button_result, "success", False):
                     return None  # buttons rendered — no redundant text ack
-                # P5(b): distinguish a connector egress DECLINE from a lane
-                # failure. On a decline the connector refused this destination,
-                # so returning `message` as the direct reply would deliver the
-                # very content it refused, as text, to the same chat. Suppress
-                # the fallback and tear down the registration — no card
-                # rendered, so a later reply must not be captured as an answer
-                # to an invisible prompt.
-                #
-                # Classify the STRUCTURED response (see _approval_send_outcome):
-                # a code-only decline has no marker colon in its rendered text,
-                # and an ambiguous result must not be treated as a definite
-                # refusal.
-                from gateway.relay.egress import declined_send
-
-                _confirm_err = getattr(button_result, "error", None)
-                if declined_send(button_result):
-                    logger.warning(
-                        "slash-confirm DECLINED by the connector's egress "
-                        "guard for %s on %s — suppressing the text fallback: %s",
-                        command, source.platform, _confirm_err,
-                    )
-                    _slash_confirm_mod.clear(session_key)
-                    return None
             except Exception as exc:
                 logger.debug("send_slash_confirm failed for %s on %s: %s", command, source.platform, exc)
         # Text fallback — the prompt message itself is the direct reply.

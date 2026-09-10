@@ -1246,6 +1246,200 @@ class GatewayShutdownMixin:
             pass
 
     # Restart orchestration
+
+    def _rollback_restart_state(self, backup: Optional[Any] = None) -> None:
+        """Roll back restart flags and restore notification files if handoff fails."""
+        if backup is not None:
+            backup.rollback(self)
+            return
+
+        self._restart_requested = False
+        self._restart_task_started = False
+        self._detached_restart_helper_started = False
+        self._draining = False
+        try:
+            from gateway.run import _hermes_home
+            (Path(_hermes_home) / ".restart_notify.json").unlink(missing_ok=True)
+            (Path(_hermes_home) / ".restart_last_processed.json").unlink(missing_ok=True)
+        except Exception as exc:
+            logger.debug("Failed to clean up restart files during rollback: %s", exc)
+
+    _RESTART_OUTCOME_NOTIFY_TIMEOUT_S = 8.0
+
+    def _capture_restart_notify_target(self, transaction: Any) -> Optional[dict]:
+        """Build an immutable notification-target snapshot for `transaction`."""
+        try:
+            from gateway.run import _hermes_home
+
+            notify_path = Path(_hermes_home) / ".restart_notify.json"
+            if not notify_path.exists():
+                return None
+            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            if data.get("request_id") != getattr(transaction, "request_id", None):
+                return None
+            return {
+                "request_id": data.get("request_id"),
+                "platform": data.get("platform"),
+                "chat_id": data.get("chat_id"),
+                "chat_type": data.get("chat_type"),
+                "thread_id": data.get("thread_id"),
+                "message_id": data.get("message_id"),
+                "user_id": data.get("user_id"),
+                "scope_id": data.get("scope_id"),
+                "delivered_via_upstream_relay": data.get("delivered_via_upstream_relay") is True,
+            }
+        except Exception as exc:
+            logger.warning("Failed to capture restart notify target: %s", exc)
+            return None
+
+    async def _finalize_claimed_pre_launch(
+        self,
+        transaction: Any,
+        *,
+        notify_msg: str,
+    ) -> None:
+        target = (
+            self._capture_restart_notify_target(transaction)
+            if transaction is not None
+            else None
+        )
+
+        if transaction is not None:
+            try:
+                await transaction.complete_not_started()
+            except Exception as exc:
+                logger.warning("Restart pre-launch finalize failed: %s", exc)
+
+            if transaction.backup is not None:
+                try:
+                    transaction.backup.rollback(self)
+                except Exception as exc:
+                    logger.warning("Restart pre-launch finalize marker rollback failed: %s", exc)
+
+            self._restart_requested = False
+            self._restart_task_started = False
+            self._detached_restart_helper_started = False
+            self._draining = False
+            if transaction.backup is not None:
+                self._restart_command_source = transaction.backup.original_source
+
+            if self._restart_transaction is transaction:
+                self._restart_transaction = None
+
+            await self._send_restart_outcome_notification(target, notify_msg)
+
+    async def _finalize_claimed_launch_unknown(
+        self,
+        transaction: Any,
+        *,
+        notify_msg: str,
+    ) -> None:
+        target = (
+            self._capture_restart_notify_target(transaction)
+            if transaction is not None
+            else None
+        )
+
+        if transaction is not None:
+            try:
+                await transaction.complete_unknown()
+            except Exception as exc:
+                logger.warning("Restart launch-unknown finalize failed: %s", exc)
+
+            self._restart_requested = False
+            self._restart_task_started = False
+            self._detached_restart_helper_started = False
+            self._draining = False
+            if transaction.backup is not None:
+                self._restart_command_source = transaction.backup.original_source
+
+            try:
+                self._restart_retry_blocked_until = (
+                    asyncio.get_running_loop().time() + 30.0
+                )
+            except Exception:
+                self._restart_retry_blocked_until = 0.0
+
+            self._mark_restart_notify_unknown(transaction)
+
+            if self._restart_transaction is transaction:
+                self._restart_transaction = None
+
+            await self._send_restart_outcome_notification(target, notify_msg)
+
+    def _mark_restart_notify_unknown(self, transaction: Any) -> None:
+        try:
+            from gateway.run import _hermes_home
+
+            notify_path = Path(_hermes_home) / ".restart_notify.json"
+            if not notify_path.exists():
+                return
+            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            if data.get("request_id") != getattr(transaction, "request_id", None):
+                return
+            data["outcome"] = "unknown"
+            data["outcome_message"] = (
+                "restart result could not be confirmed; gateway may still be online"
+            )
+            notify_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to mark restart notify outcome=unknown: %s", exc)
+
+    async def _send_restart_outcome_notification(
+        self,
+        target: Optional[dict],
+        message: str,
+    ) -> None:
+        if target is None:
+            return
+        try:
+            from gateway.config import Platform
+            from gateway.run import resolve_delivery_transport, _non_conversational_metadata
+            platform_str = target.get("platform")
+            chat_id = target.get("chat_id")
+            chat_type = target.get("chat_type")
+            thread_id = target.get("thread_id")
+            message_id = target.get("message_id")
+
+            if not platform_str or not chat_id:
+                return
+
+            platform = Platform(platform_str)
+            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            if transport is None:
+                return
+
+            platform_cfg = self.config.platforms.get(platform)
+            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                return
+
+            metadata = self._thread_metadata_for_target(
+                platform,
+                chat_id,
+                thread_id,
+                chat_type=chat_type,
+                reply_to_message_id=message_id,
+                adapter=transport.adapter,
+            )
+            if target.get("delivered_via_upstream_relay"):
+                metadata = dict(metadata or {})
+                if target.get("user_id"):
+                    metadata["user_id"] = str(target["user_id"])
+                if target.get("scope_id"):
+                    metadata["scope_id"] = str(target["scope_id"])
+
+            result = await asyncio.wait_for(
+                transport.send(
+                    platform,
+                    str(chat_id),
+                    message,
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                ),
+                timeout=self._RESTART_OUTCOME_NOTIFY_TIMEOUT_S,
+            )
+        except Exception as exc:
+            logger.warning("Restart outcome notification failed: %s", exc)
+
     @staticmethod
     def _restart_watcher_env() -> dict:
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down)."""
@@ -1255,7 +1449,7 @@ class GatewayShutdownMixin:
         return watcher_env
 
     @staticmethod
-    def _spawn_windows_restart_watcher(hermes_cmd: list, current_pid: int, restart_after_s: float) -> None:
+    def _spawn_windows_restart_watcher(hermes_cmd: list, current_pid: int, restart_after_s: float) -> bool:
         """Spawn the detached Windows watcher (``python -c``), retrying once without job breakaway."""
         import subprocess
         from hermes_cli._subprocess_compat import (
@@ -1286,11 +1480,13 @@ class GatewayShutdownMixin:
         # BREAKAWAY_OK rejects CREATE_BREAKAWAY_FROM_JOB (OSError) — retry once without the bit.
         try:
             subprocess.Popen(watcher_argv, **popen_kwargs, **windows_detach_popen_kwargs())
+            return True
         except OSError:
             try:
                 subprocess.Popen(
                     watcher_argv, **popen_kwargs, creationflags=windows_detach_flags_without_breakaway(),
                 )
+                return True
             except OSError as exc:
                 # Both spawns failed. Log only the interpreter basename and numeric errno — never
                 # argv, env, watcher source, or str(exc) (may carry a full path) — and return.
@@ -1302,23 +1498,23 @@ class GatewayShutdownMixin:
                     "winerror" if winerror is not None else "errno",
                     winerror if winerror is not None else exc.errno,
                 )
+                return False
 
-    async def _launch_detached_restart_command(self) -> None:
+    async def _launch_detached_restart_command(self) -> bool:
         from gateway.run import _resolve_hermes_bin
         import shutil
         import subprocess
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             logger.error("Could not locate hermes binary for detached /restart")
-            return
+            return False
         if self._detached_restart_helper_started:
-            return
+            return True
         self._detached_restart_helper_started = True
         current_pid = os.getpid()
         restart_after_s = max(float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0, 5.0)
         if sys.platform == "win32":
-            GatewayShutdownMixin._spawn_windows_restart_watcher(hermes_cmd, current_pid, restart_after_s)
-            return
+            return bool(GatewayShutdownMixin._spawn_windows_restart_watcher(hermes_cmd, current_pid, restart_after_s))
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
         shell_cmd = (
             f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
@@ -1327,10 +1523,14 @@ class GatewayShutdownMixin:
         )
         setsid_bin = shutil.which("setsid")
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
-        subprocess.Popen(
-            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,
-        )
+        try:
+            subprocess.Popen(
+                argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,
+            )
+            return True
+        except Exception:
+            return False
 
     def _wedged_agent_count(self) -> int:
         """Running chat agents with no activity for ``agent.gateway_timeout`` (0 when disabled).
@@ -1423,7 +1623,16 @@ class GatewayShutdownMixin:
         logger.info("Restart deferred wait complete — active work drained; proceeding to stop()")
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(
+        self,
+        *,
+        detached: bool = False,
+        via_service: bool = False,
+        transaction: Optional[Any] = None,
+        **kwargs,
+    ) -> bool:
+        if transaction is not None:
+            self._restart_transaction = transaction
         if self._restart_task_started:
             return False
         self._restart_requested = True
@@ -1434,11 +1643,119 @@ class GatewayShutdownMixin:
         self._draining = True
 
         async def _run_restart() -> None:
-            await self._await_active_work_before_restart()
-            # Detached helper only AFTER the after-turn wait, or its drain_timeout+5 deadline fires mid-turn.
-            if detached:
-                with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart helper: %s"):
-                    await self._launch_detached_restart_command()
+            if transaction is not None:
+                from gateway.slash_commands import _RestartAckOutcome, _LauncherResult, _TransitionResult
+                try:
+                    handoff_won = await transaction.claim_handoff()
+                except asyncio.CancelledError:
+                    raise
+                if not handoff_won:
+                    logger.warning(
+                        "Restart helper refused: caller owns abort gate (request_id=%s).",
+                        transaction.request_id,
+                    )
+                    return
+                transaction.try_write_ack(_RestartAckOutcome.ACCEPTED)
+
+            try:
+                await self._await_active_work_before_restart()
+            except asyncio.CancelledError:
+                if transaction is not None:
+                    await self._finalize_claimed_pre_launch(
+                        transaction,
+                        notify_msg=(
+                            "Restart did not begin: the gateway was cancelled "
+                            "while waiting for active work to finish. "
+                            "Gateway remains active."
+                        ),
+                    )
+                raise
+            except BaseException:
+                if transaction is not None:
+                    await self._finalize_claimed_pre_launch(
+                        transaction,
+                        notify_msg=(
+                            "Restart did not begin: an error occurred while "
+                            "waiting for active work to finish. "
+                            "Gateway remains active."
+                        ),
+                    )
+                raise
+
+            if transaction is not None:
+                launcher_result = _LauncherResult.UNKNOWN
+                launched = False
+                if detached:
+                    try:
+                        launched = await self._launch_detached_restart_command()
+                        launcher_result = (
+                            _LauncherResult.STARTED if launched
+                            else _LauncherResult.NOT_STARTED
+                        )
+                    except asyncio.CancelledError:
+                        await self._finalize_claimed_launch_unknown(
+                            transaction,
+                            notify_msg=(
+                                "Restart result could not be confirmed: the "
+                                "launch was cancelled mid-flight. Gateway "
+                                "remains online; please check and retry shortly."
+                            ),
+                        )
+                        raise
+                    except (KeyboardInterrupt, SystemExit):
+                        await self._finalize_claimed_launch_unknown(
+                            transaction,
+                            notify_msg=(
+                                "Restart result could not be confirmed: the "
+                                "launch was interrupted. Gateway remains "
+                                "online; please check and retry shortly."
+                            ),
+                        )
+                        raise
+                    except Exception:
+                        launcher_result = _LauncherResult.UNKNOWN
+                        launched = False
+                else:
+                    launcher_result = _LauncherResult.STARTED
+                    launched = True
+
+                if launcher_result is _LauncherResult.STARTED:
+                    tr = await transaction.complete_started()
+                    if tr is _TransitionResult.LOST_RACE:
+                        return
+                elif launcher_result is _LauncherResult.NOT_STARTED:
+                    target = self._capture_restart_notify_target(transaction)
+                    if transaction.backup is not None:
+                        try:
+                            transaction.backup.rollback(self)
+                        except Exception:
+                            pass
+                    tr = await transaction.complete_not_started()
+                    if tr is _TransitionResult.LOST_RACE:
+                        return
+                    if self._restart_transaction is transaction:
+                        self._restart_transaction = None
+                    await self._send_restart_outcome_notification(
+                        target,
+                        "Restart did not begin: the detached restart helper "
+                        "could not be started. Gateway remains active.",
+                    )
+                    return
+                else:  # UNKNOWN
+                    await self._finalize_claimed_launch_unknown(
+                        transaction,
+                        notify_msg=(
+                            "Restart result could not be confirmed: the restart "
+                            "helper encountered an error during launch. Gateway "
+                            "remains active."
+                        ),
+                    )
+                    return
+            else:
+                if detached:
+                    with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart helper: %s"):
+                        await self._launch_detached_restart_command()
+
             await asyncio.sleep(0.05)
             await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
@@ -1450,7 +1767,10 @@ class GatewayShutdownMixin:
         # self._restart_task: a bare asyncio.create_task() keeps only a weak reference, so the event loop
         # may garbage-collect a still-pending task mid-flight. The cancel loop in _stop_impl explicitly
         # skips _restart_task for the same reason it skips _stop_task.
-        self._restart_task = asyncio.create_task(_run_restart())
+        task = asyncio.create_task(_run_restart())
+        self._restart_task = task
+        if transaction is not None:
+            transaction.restart_task = task
         return True
 
     def _start_systemd_watchdog(self) -> bool:

@@ -444,6 +444,22 @@ def _run_batch(batch: _Batch, background: bool) -> str:
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)
 
+def _split_child_budget(effective_max_iter: int, task_count: int) -> int:
+    """Split a delegation iteration budget across batch children.
+
+    Single-child batches are unchanged. Multi-child batches divide the
+    budget so one fan-out cannot multiply total iterations N-fold.
+    Floor of 1: a zero budget means no child work, never silent starvation.
+    """
+    try:
+        _n = max(1, int(task_count))
+        _cap = max(1, int(effective_max_iter))
+    except (TypeError, ValueError):
+        return effective_max_iter
+    return max(1, _cap // _n)
+
+
+
 def _check_delegation_cycle(parent_agent, profile_name: str | None) -> None:
     """Reject a spawn that would recurse into its own ancestor profile.
 

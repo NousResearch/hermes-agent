@@ -133,9 +133,35 @@ def build_write_approval_paths(home: str) -> set[str]:
 _HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing")
 
 
+def get_write_denied_roots() -> set[str]:
+    """KENSEI CUSTOM (ported): resolved agent write-deny roots from ``HERMES_WRITE_DENY_ROOT``.
+
+    Defence-in-depth guard for file-mutating tools; separate from
+    ``HERMES_WRITE_SAFE_ROOT`` — deny roots block a sensitive subtree while
+    leaving normal project writes available.
+    """
+    env = os.getenv("HERMES_WRITE_DENY_ROOT", "")
+    if not env:
+        return set()
+    roots: set[str] = set()
+    for path in env.split(os.pathsep):
+        if path:
+            try:
+                roots.add(os.path.realpath(os.path.expanduser(path)))
+            except (OSError, ValueError):
+                continue
+    return roots
+
+
 def _classify_write_denial(path: str) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
     home, resolved = _home_and_resolved(path)
+
+    # ── KENSEI CUSTOM — configured deny roots (ported) ──
+    for denied_root in get_write_denied_roots():
+        if _is_under(resolved, denied_root):
+            return "credential"
+    # ── END KENSEI CUSTOM ──
 
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.

@@ -3827,7 +3827,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _send_file_attachment(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
-        file_name: Optional[str] = None,
+        file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment (forum channels get a new thread). Path-based
         ``discord.File`` only: the open-handle form can race the multipart encoder after an image
@@ -3839,7 +3839,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         if not os.path.isfile(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
-        channel = await self._resolve_channel(chat_id)
+        channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
         filename = file_name or os.path.basename(file_path)
@@ -3889,7 +3889,7 @@ class DiscordAdapter(BasePlatformAdapter):
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
         try:
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
                 return
@@ -3985,7 +3985,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send audio as a Discord file attachment."""
         try:
             import io
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
             if not os.path.exists(audio_path):
@@ -4047,9 +4047,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     else:
                         raise
                 return SendResult(success=True, message_id=str(msg.id))
-        except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
+        except Exception as e:  # native upload failure must remain a failure
+            logger.error("[%s] Failed to send audio: %s", self.name, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
 
     # --- Voice channel methods (join / leave / play) ---
 
@@ -5324,15 +5324,25 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("[Discord] Admin notify via %s failed: %s", target, e)
 
-    async def _send_local_file(self, chat_id, path, caption, *, file_name=None, not_found: str, kind: str, fallback):
-        """Native attachment upload for a local file; missing file -> error, other failure -> base adapter."""
+    async def _send_local_file(self, chat_id, path, caption, *, file_name=None, not_found: str, kind: str,
+                               fallback, metadata=None):
+        """Native attachment upload for a local file; missing file -> error, other failure -> base adapter.
+
+        KENSEI COMBINE (upstream #66797 media-target): the attachment posts into
+        ``metadata["thread_id"]`` when present, else ``chat_id`` — without losing the
+        direct-channel fallback for the non-media callers."""
         try:
-            return await self._send_file_attachment(chat_id, path, caption, file_name=file_name)
+            return await self._send_file_attachment(chat_id, path, caption, file_name=file_name, metadata=metadata)
         except FileNotFoundError:
             return SendResult(success=False, error=f"{not_found}: {path}")
-        except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send %s, falling back to base adapter: %s", self.name, kind, e, exc_info=True)
-            return await fallback()
+        except Exception as e:  # native upload failure must remain a failure
+            logger.error("[%s] Failed to send %s: %s", self.name, kind, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"{not_found}: {path}")
+        except Exception as e:  # native upload failure must remain a failure
+            logger.error("[%s] Failed to send %s: %s", self.name, kind, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None,
@@ -5341,6 +5351,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send a local image file natively as a Discord file attachment."""
         return await self._send_local_file(
             chat_id, image_path, caption, not_found="Image file not found", kind="local image",
+            metadata=metadata,
             fallback=lambda: super(DiscordAdapter, self).send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata),
         )
 
@@ -5357,7 +5368,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return await fallback(metadata)
         try:
             import aiohttp
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
@@ -5411,6 +5422,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send a local video file natively as a Discord attachment."""
         return await self._send_local_file(
             chat_id, video_path, caption, not_found="Video file not found", kind="local video",
+            metadata=metadata,
             fallback=lambda: super(DiscordAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
         )
 
@@ -5422,6 +5434,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send an arbitrary file natively as a Discord attachment."""
         return await self._send_local_file(
             chat_id, file_path, caption, file_name=file_name, not_found="File not found", kind="document",
+            metadata=metadata,
             fallback=lambda: super(DiscordAdapter, self).send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata),
         )
 
@@ -5555,7 +5568,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return {"name": "Unknown", "type": "dm"}
         try:
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 return {"name": str(chat_id), "type": "dm"}
             if isinstance(channel, discord.DMChannel):

@@ -599,6 +599,9 @@ class SessionDB(
         try:
             conn.row_factory = sqlite3.Row
             self._wal_active = apply_wal_with_fallback(conn, db_label="state.db") == "wal"
+            # KENSEI CUSTOM: retain the small-WAL default; explicit database.wal_autocheckpoint
+            # config is applied immediately after this and therefore remains authoritative.
+            conn.execute("PRAGMA wal_autocheckpoint=100")
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)

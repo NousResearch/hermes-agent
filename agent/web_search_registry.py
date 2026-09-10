@@ -139,6 +139,25 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     return None
 
 
+def get_fallback_search_provider(exclude: str = "") -> Optional[WebSearchProvider]:
+    """Resolve a fallback search provider, optionally excluding *exclude*.
+
+    Walks ``_LEGACY_PREFERENCE`` order looking for a provider that supports
+    search, is available, and (when *exclude* is set) whose name doesn't
+    match *exclude*. Returns the first match, or None.
+    """
+    with _lock:
+        snapshot = dict(_providers)
+    excluded = exclude.strip().lower() if isinstance(exclude, str) else ""
+    for name in _LEGACY_PREFERENCE:
+        if excluded and name == excluded:
+            continue
+        p = snapshot.get(name)
+        if p is not None and bool(p.supports_search()) and bool(p.is_available()):
+            return p
+    return None
+
+
 def _keyless_tier_enabled() -> bool:
     """Read ``web.keyless_fallback`` from config.yaml (default: enabled)."""
     try:
@@ -199,6 +218,38 @@ def get_active_search_provider() -> Optional[WebSearchProvider]:
 def get_active_extract_provider() -> Optional[WebSearchProvider]:
     """Resolve the currently-active web extract provider."""
     return _resolve(_configured_backend("extract"), capability="extract")
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import Dict  # noqa: F401,E402
+from typing import List  # noqa: F401,E402
+import threading  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'hermes_home_key': ('hermes_constants', 'hermes_home_key'),
+}
+
+def get_fallback_extract_provider(exclude: str = "") -> Optional[WebSearchProvider]:
+    """KENSEI CUSTOM (ported): resolve a fallback extract provider, optionally excluding *exclude*.
+
+    Walks ``_LEGACY_PREFERENCE`` order looking for a provider that supports
+    extract, is available, and (when *exclude* is set) whose name doesn't
+    match *exclude*. Returns the first match, or None.
+    """
+    with _lock:
+        snapshot = dict(_providers)
+    excluded = exclude.strip().lower() if isinstance(exclude, str) else ""
+    for name in _LEGACY_PREFERENCE:
+        if excluded and name == excluded:
+            continue
+        p = snapshot.get(name)
+        if p is not None and bool(p.supports_extract()) and bool(p.is_available()):
+            return p
+    return None
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

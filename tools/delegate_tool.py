@@ -667,6 +667,16 @@ def delegate_task(
     if err:
         return tool_error(err)
 
+    # ── KENSEI CUSTOM — child budget split (ported) ──
+    # _split_child_budget divides effective_max_iter across the batch
+    # (configurable via delegation.max_iterations, default 50). Single-child
+    # batches keep the full cap; multi-child batches split it so total
+    # iterations across parent + subagents stay bounded by design, with a
+    # floor of 1 per child.
+    from tools.delegate_tool_dispatch import _split_child_budget
+    default_max_iter = _split_child_budget(default_max_iter, len(task_list))
+    # ── END KENSEI CUSTOM ──
+
     # ── KENSEI CUSTOM — profile validation (ported) ──
     # Profile validation must precede transcript creation and ancestry validation.
     # Explicit profile_content is already pre-resolved and bypasses filesystem validation.

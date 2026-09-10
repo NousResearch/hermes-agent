@@ -40,6 +40,22 @@ def _none_profile(value: str) -> Optional[str]:
     """``none`` / ``-`` / ``null`` mean "unassign"."""
     return None if value.lower() in {"none", "-", "null"} else value
 
+def _none_profile(value: str) -> Optional[str]:
+    """``none`` / ``-`` / ``null`` mean "unassign"."""
+    return None if value.lower() in {"none", "-", "null"} else value
+
+
+def _parse_metadata_flag(raw: Optional[str]) -> tuple[Optional[dict], int]:
+    """Parse ``--metadata`` JSON; returns ``(dict|None, rc)`` with rc=2 on error."""
+    if not raw:
+        return None, 0
+    try:
+        metadata = json.loads(raw)
+        if not isinstance(metadata, dict):
+            raise ValueError("must be a JSON object")
+    except (ValueError, json.JSONDecodeError) as exc:
+        return None, _err(f"kanban: --metadata: {exc}", 2)
+    return metadata, 0
 
 def _parse_metadata_flag(raw: Optional[str]) -> tuple[Optional[dict], int]:
     """Parse ``--metadata`` JSON; returns ``(dict|None, rc)`` with rc=2 on error."""
@@ -195,81 +211,9 @@ def kanban_command(args: argparse.Namespace) -> int:
             return _err(f"kanban: {exc}")
 
 
-# --- Handlers ---
-
-def _profile_author() -> str:
-    """Best-effort author name for an interactive CLI call."""
-    for env in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
-        v = os.environ.get(env)
-        if v:
-            return v
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "user"
-    except Exception:
-        return "user"
 
 
-_DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
-    "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
-    "request-review", "request-changes", "reopen-review",
-    "gc",
-})
-
-_DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
-    "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
-    "set-default-workdir", "import",
-})
-
-
-def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
-    action = getattr(args, "kanban_action", None)
-    if action == "boards":
-        if (getattr(args, "boards_action", None) or "list") not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
             return False
-    elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
-        return False
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
-
-        return is_delegated_child_process_context()
-    except Exception:
-        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
-
-
-def _joined_words(words) -> Optional[str]:
-    """Free-text positional ``nargs="*"`` words -> stripped string, or None when absent."""
-    return " ".join(words).strip() if words else None
-
-
-def _stripped_or_none(value: Optional[str]) -> Optional[str]:
-    """``None`` stays ``None``; otherwise strip, and treat the empty string as ``None``."""
-    return None if value is None else (value.strip() or None)
-
-
-def _ok_or_err(ok, fail: str, done: str) -> int:
-    """Single-mutation handlers: print ``done`` (rc 0) or ``fail`` to stderr (rc 1)."""
-    if not ok:
-        return _err(fail)
-    print(done)
-    return 0
-
-
-def _bulk_ids(args: argparse.Namespace) -> list[str]:
-    """Positional ``task_id`` plus ``--ids`` extras (bulk verbs)."""
-    return [args.task_id] + list(getattr(args, "ids", None) or [])
-
-
-def _require_ids(args: argparse.Namespace) -> tuple[list[str], int]:
-    """``args.task_ids`` -> ``(ids, 0)`` or ``([], 1)`` after printing the standard error."""
-    ids = list(args.task_ids or [])
-    if not ids:
-        return ids, _err("at least one task_id is required")
-    return ids, 0
-
 
 def _parse_duration(val) -> Optional[int]:
     """``30s`` / ``5m`` / ``2h`` / ``1d`` or a raw integer → seconds; None for empty input;
@@ -1220,6 +1164,144 @@ def _decompose_ok_line(o) -> str:
     return f"Specified {o.task_id} → todo (no fanout){_retitled_suffix(o)}"
 
 
+
+# ── KENSEI CUSTOM — governance CLI commands (ported) ──
+
+def _cmd_escalate(args: argparse.Namespace) -> int:
+
+
+    clearing = bool(getattr(args, "clear", False))
+    target = None if clearing else (str(getattr(args, "target", "sahil") or "sahil").strip() or "sahil")
+    reason = getattr(args, "reason", None)
+    if reason is not None:
+        reason = reason.strip() or None
+    author = _profile_author()
+    failed: list[str] = []
+    for tid in ids:
+        with kb.connect_for_task(tid) as (conn, task):
+            try:
+                if reason and not clearing:
+                    kb.add_comment(conn, tid, author, f"ESCALATE: {reason}")
+                kb.set_escalation_target(conn, tid, target=target, author=author)
+            except ValueError as e:
+                failed.append(tid)
+                print(f"cannot escalate {tid}: {e}", file=sys.stderr)
+                continue
+        if clearing:
+            print(f"Cleared escalation on {tid}")
+        else:
+            print(f"Escalated {tid} -> {target}" + (f": {reason}" if reason else ""))
+
+
+    reason = getattr(args, "reason", None)
+    if reason is not None:
+        reason = str(kb.redact_review_value(reason.strip())).strip() or None
+    author = _profile_author() if reason else None
+    failed: list[str] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            if not kb.reopen_review_task(conn, tid):
+                failed.append(tid)
+                print(f"cannot reopen {tid} (not in review?)", file=sys.stderr)
+            else:
+                if reason:
+                    kb.add_comment(
+                        conn,
+                        tid,
+                        author or "operator",
+                        f"CHANGES REQUESTED: {reason}",
+                    )
+                print(f"Reopened {tid}" + (f": {reason}" if reason else ""))
+    return 0 if not failed else 1
+
+
+def _cmd_profile_gate(args: argparse.Namespace) -> int:
+    """Manual PROFILE-GATE path: list / approve / reject lifecycle approvals.
+
+    Discord buttons are the primary surface; this CLI is the fallback so the
+    flow is reachable without Discord (and is the audited operator path).
+    Runs in a human context, so executing an approved op is allowed.
+    """
+    from hermes_cli import profile_lifecycle_gate as gate
+
+    act = args.pg_action
+    with kb.connect() as conn:
+        if act == "list":
+            rows = kb.list_pending_profile_lifecycle_approvals(conn)
+            if not rows:
+                print("No pending profile-gate approvals.")
+                return 0
+            for r in rows:
+                print(
+                    f"{r['id']}  {r['op']:6}  {r['profile']:24}  "
+                    f"by {r.get('requested_by') or '?'}  | {r.get('blast_summary') or ''}"
+                )
+            return 0
+
+        if not args.approval_id:
+            print(
+                f"kanban: profile-gate {act} requires an approval id "
+                f"(see `hermes kanban profile-gate list`)",
+                file=sys.stderr,
+            )
+            return 2
+        resolved_by = (
+            os.environ.get("HERMES_PROFILE") or os.environ.get("USER") or "cli"
+        )
+        try:
+            if act == "approve":
+                res = gate.approve(conn, args.approval_id, resolved_by=resolved_by)
+                if res["ok"]:
+                    print(f"Approved + executed: {res['op']} {res['profile']}")
+                    return 0
+                print(f"Approved but op FAILED: {res['error']}", file=sys.stderr)
+                return 1
+            gate.reject(conn, args.approval_id, resolved_by=resolved_by)
+            print(f"Rejected {args.approval_id}")
+            return 0
+        except ValueError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 1
+        except Exception as exc:
+            print(f"kanban: profile-gate {act} failed: {exc}", file=sys.stderr)
+            return 1
+
+
+def _cmd_promote_backlog(args: argparse.Namespace) -> int:
+    tid = args.task_id
+    with kb.connect_closing() as conn:
+        if not kb.promote_from_backlog(conn, tid):
+            print(
+                f"cannot promote-backlog {tid} (not in backlog or unknown)",
+                file=sys.stderr,
+            )
+            return 1
+        task = kb.get_task(conn, tid)
+    if task is None:
+        print(
+            f"promote-backlog {tid}: status flipped but row vanished before read",
+            file=sys.stderr,
+        )
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+    else:
+        print(f"Promoted {tid} -> triage")
+    return 0
+
+def _decompose_ok_line(o) -> str:
+    if o.fanout and o.child_ids:
+        return (f"Decomposed {o.task_id} → {len(o.child_ids)} "
+                f"children ({', '.join(o.child_ids)}); root promoted to todo")
+    return f"Specified {o.task_id} → todo (no fanout){_retitled_suffix(o)}"
+
+def _cmd_epics(args: argparse.Namespace) -> int:
+    """Manage epics: list, show, create."""
+    import sqlite3 as _sqlite3
+    import time as _time
+    import glob as _glob
+    import os as _os
+
 def _cmd_decompose(args: argparse.Namespace) -> int:
     """Fan a triage task (or all) out into child tasks via the auxiliary LLM."""
     from hermes_cli import kanban_decompose as decomp
@@ -1240,6 +1322,40 @@ _HANDLERS = {
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
+    "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
+    "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
+    "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
+    "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
+    "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
+    "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
+    "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
+    "gc": _cmd_gc,
+}
+
+
+def _cmd_decompose(args: argparse.Namespace) -> int:
+    """Fan a triage task (or all) out into child tasks via the auxiliary LLM."""
+    from hermes_cli import kanban_decompose as decomp
+
+    return _run_triage_sweep(args, "decompose", decomp, decomp.decompose_task, "decomposed",
+                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
+
+
+_HANDLERS = {
+    "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
+    "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
+    "assign": _cmd_assign, "set-model": _cmd_set_model,
+    "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
+    "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
+    "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
+    "comment": _cmd_comment, "attach": _cmd_attach,
+    "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
+    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
+    "schedule": _cmd_schedule, "unblock": _cmd_unblock,
+    "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
+        # ── KENSEI CUSTOM — governance commands ──
+        "escalate": _cmd_escalate, "profile-gate": _cmd_profile_gate,
+        "promote-backlog": _cmd_promote_backlog, "epics": _cmd_epics,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,

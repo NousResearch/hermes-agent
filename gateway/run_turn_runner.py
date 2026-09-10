@@ -35,16 +35,6 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
-class _ExecApprovalDeclined(RuntimeError):
-    """The connector refused the approval card's destination.
-
-    Raised (not returned) so it propagates out of `_approval_notify_sync` to
-    `_await_gateway_decision`, whose notify-failure path drops the central
-    approval queue entry and unblocks the waiting tool. A plain return
-    suppressed the text fallback but left that entry pending.
-    """
-
-
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -298,11 +288,6 @@ class TurnRunner:
         task_order: List[str] = dataclasses.field(default_factory=list)
         fallback_msg_id: Optional[str] = None
         native_failed: bool = False
-        # TERMINAL authorization refusal, distinct from native_failed: the
-        # connector refused this destination, so no later publication in this
-        # turn may re-deliver the task text through the text fallback. Declared
-        # rather than set dynamically so the state is visible where it lives.
-        egress_declined: bool = False
         anonymous_seq: int = 0
 
         @staticmethod
@@ -346,27 +331,11 @@ class TurnRunner:
     async def _task_card_send_or_edit_fallback(self, st) -> None:
         ctx = self._ctx
         text = st.fallback_text()
-        from gateway.relay.egress import declined_send
-
-        if getattr(st, "egress_declined", False):
-            return
         if st.fallback_msg_id:
             result = await st.adapter.edit_message(
                 chat_id=ctx.source.chat_id, message_id=st.fallback_msg_id, content=text, metadata=ctx._progress_metadata,
             )
             if getattr(result, "success", False):
-                return
-            # P5(b): R5-4 made a declined native CARD terminal but left this
-            # editable-text fallback: a declined edit fell through to
-            # _send_progress_text and re-sent the same task text to the refused
-            # chat. The decline must set the terminal state here too.
-            if declined_send(result):
-                logger.warning(
-                    "Task-card fallback edit DECLINED by the connector's egress "
-                    "guard; suppressing progress delivery for the rest of this "
-                    "turn (the destination is not approved)"
-                )
-                st.egress_declined = True
                 return
         result = await self._send_progress_text(st, text)
         if getattr(result, "success", False) and getattr(result, "message_id", None):
@@ -376,36 +345,12 @@ class TurnRunner:
         ctx = self._ctx
         if not st.tasks:
             return
-        if getattr(st, "egress_declined", False):
-            # The connector refused this destination earlier in the turn; every
-            # later publication would re-deliver the same task text there.
-            return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):
-                return
-            # P5(b): an AUTHORIZATION decline is not a broken card lane. The
-            # fallback below sends the same task text to the same chat, which
-            # turns a refused card into delivered plain text. Stop the lane
-            # without re-delivering; the refusal is already logged.
-            from gateway.relay.egress import declined_send
-
-            if declined_send(result):
-                # TERMINAL, and stored SEPARATELY from native_failed. Reusing
-                # native_failed suppressed exactly ONE update: the next progress
-                # event skipped this branch (the lane is already "failed") and
-                # went straight to the text fallback. A refusal does not expire
-                # after one tick.
-                st.egress_declined = True
-                st.native_failed = True
-                logger.warning(
-                    "Slack native task-card progress DECLINED by the connector's "
-                    "egress guard — suppressing the text fallback for the rest "
-                    "of this turn (the destination is not approved)"
-                )
                 return
             st.native_failed = True
             logger.warning(
@@ -1008,6 +953,12 @@ class TurnRunner:
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
+        # KENSEI CUSTOM — addressable-session boundary before first model turn
+        try:
+            from hermes_cli.plugins import notify_session_open
+            notify_session_open(ctx.session_key, src)
+        except Exception:
+            pass
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
@@ -1176,9 +1127,7 @@ class TurnRunner:
                 if pdc is not None:
                     pdc[ctx.session_key] = bg_release
         # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose.
-        # `display:` present-but-null yields None, not the {} default (same `or {}` guard as
-        # display_config.py / runtime_footer.py).
-        mem_notif = (ctx.user_config.get("display") or {}).get("memory_notifications")
+        mem_notif = ctx.user_config.get("display", {}).get("memory_notifications")
         if isinstance(mem_notif, bool):
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
@@ -1327,37 +1276,7 @@ class TurnRunner:
                         "stays armed for a late tap)"
                     )
                     return
-                if outcome == "declined":
-                    # P5(b): the connector AUTHORIZED this destination and
-                    # refused it. The text fallback below re-sends the same
-                    # content to the same chat, which would turn a refused
-                    # button card into a delivered plain-text one — the exact
-                    # leak the egress guard exists to stop. A decline is
-                    # definitive, so unlike `ambiguous` the registration is
-                    # torn down; unlike `failed`, nothing is re-sent.
-                    logger.warning(
-                        "Button-based approval DECLINED by the connector's "
-                        "egress guard — not falling back to text (the "
-                        "destination is not approved for this connection)"
-                    )
-                    # RAISE, do not return. This function is the notify_cb for
-                    # `_await_gateway_decision`, which already has a correct
-                    # undeliverable path: a raising notify drops the queue entry
-                    # and returns `notify_failed`, unblocking the tool. Returning
-                    # quietly suppressed the text fallback (right) but left the
-                    # CENTRAL approval entry pending (wrong) — the dangerous
-                    # command then blocked until the approval timeout. My earlier
-                    # comment claimed the registration was torn down; only the
-                    # adapter's private prompt map was.
-                    raise _ExecApprovalDeclined(
-                        "exec approval undeliverable: connector egress declined "
-                        "this destination"
-                    )
                 logger.warning("Button-based approval failed (send returned error), falling back to text")
-            except _ExecApprovalDeclined:
-                # Must escape this handler: the fallback below is a text send to
-                # the destination the connector just refused.
-                raise
             except Exception as e:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
@@ -1517,8 +1436,6 @@ class TurnRunner:
                 # Internal self-injected turn: type the persisted user row so UIs render it as a
                 # timeline notice, not a user bubble (stripped from provider payloads downstream).
                 kwargs["persist_user_display_kind"] = ctx.persist_user_display_kind
-            if ctx.persist_user_display_metadata:
-                kwargs["persist_user_display_metadata"] = ctx.persist_user_display_metadata
             if ctx.moa_config is not None:
                 kwargs["moa_config"] = ctx.moa_config
             if persist_user_timestamp_override is not None:
@@ -1647,15 +1564,34 @@ class TurnRunner:
         ephemeral) + the gateway ephemeral prompt."""
         ctx = self._ctx
         combined = ctx.context_prompt or ""
-        for extra in (
-            (ctx.channel_prompt or "").strip(),
-            self._runner._get_system_prompt_for_channel(
-                ctx.source.platform, ctx.source.chat_id or "", thread_id=getattr(ctx.source, "thread_id", None),
-                parent_id=getattr(ctx.source, "parent_chat_id", None),
-            ),
-        ):
-            if extra:
-                combined = (combined + "\n\n" + extra).strip()
+        cfg_channel_prompt = self._runner._get_system_prompt_for_channel(
+            ctx.source.platform, ctx.source.chat_id or "", thread_id=getattr(ctx.source, "thread_id", None),
+            parent_id=getattr(ctx.source, "parent_chat_id", None),
+        )
+        combined_channel_prompt = "\n\n".join(x for x in ((ctx.channel_prompt or "").strip(), cfg_channel_prompt) if x)
+        combined = (combined + "\n\n" + combined_channel_prompt).strip() if combined_channel_prompt else combined
+
+        # ── KENSEI CUSTOM: compose the session-scoped agent mode prompt ──
+        # (plan/gods_plan/recon) into the ephemeral prompt. Signature-safe:
+        # combined_ephemeral participates in _agent_config_signature, so a
+        # mode change busts the cache and rebuilds the agent. auto returns
+        # None (no overlay) so combined_ephemeral is unchanged. See skill
+        # `agent-modes`. Must survive upstream merges.
+        _session_store = getattr(self._runner, "session_store", None)
+        _get_agent_mode = getattr(_session_store, "get_agent_mode", None)
+        _session_agent_mode = (
+            _get_agent_mode(ctx.session_key)
+            if callable(_get_agent_mode)
+            else "auto"
+        )
+        if _session_agent_mode and _session_agent_mode != "auto":
+            from hermes_cli.mode_prompts import get_mode_prompt as _gmp
+            _mode_prompt = _gmp(_session_agent_mode)
+            if _mode_prompt:
+                combined = (
+                    combined + "\n\n" + _mode_prompt
+                ).strip()
+        # ── END KENSEI CUSTOM ──
         return combined
 
     def _append_auto_media_tags(self, final_response: str, result, agent_history, history_media_paths) -> str:

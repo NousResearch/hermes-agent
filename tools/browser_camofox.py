@@ -100,8 +100,18 @@ def is_camofox_mode() -> bool:
     return bool(get_camofox_url())
 
 
+def _is_camofox_health_shape(data) -> bool:
+    """KENSEI CUSTOM: True when *data* looks like a Camofox /health response.
+
+    A bare HTTP 200 is not enough: the same port may serve an unrelated HTML
+    endpoint (e.g. Netdata). Camofox /health returns a JSON object; anything
+    else is rejected so a lookalike page cannot masquerade as a live server.
+    """
+    return isinstance(data, dict)
+
+
 def check_camofox_available() -> bool:
-    """Verify the Camofox server is reachable (and cache its VNC URL once)."""
+    """Verify the Camofox server is reachable and is actually Camofox."""
     global _vnc_url, _vnc_url_checked
     url = get_camofox_url()
     if not url:
@@ -110,6 +120,13 @@ def check_camofox_available() -> bool:
         resp = requests.get(f"{url}/health", timeout=5)
     except Exception:
         return False
+    if resp.status_code == 200:
+        try:
+            data = resp.json()
+        except ValueError:
+            return False  # non-JSON body: not Camofox (Netdata, etc.)
+        if not _is_camofox_health_shape(data):
+            return False
     if resp.status_code == 200 and not _vnc_url_checked:
         try:
             vnc_port = resp.json().get("vncPort")
@@ -398,6 +415,8 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             f"Cannot connect to Camofox at {get_camofox_url()}. "
             "Is the server running? Start with: npm start (in camofox-browser dir) "
             "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")})
+    except ValueError:
+        return tool_error("Camofox returned a non-JSON response; this is not a valid Camofox endpoint.", success=False)
     except Exception as e:
         return tool_error(str(e), success=False)
 

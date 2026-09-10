@@ -888,6 +888,12 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         if discovered is not None:
             models_list = discovered
 
+        # KENSEI CUSTOM (ported from Sahil 5a3466e349): xkiro-free serves cached non-free
+        # models; restrict the row to free-tier SKUs so the picker matches the plan's access.
+        ep_name_lower = str(ep_name).strip().lower()
+        if ep_name_lower in ("xkiro-free", "xkiro_free") and models_list:
+            models_list = [m for m in models_list if str(m).endswith((":free", "-free"))]
+
         b.add_endpoint_row(ep_name, display_name, api_url, models_list, is_current, native_catalog_empty)
         b.seen_slugs.update(ep_aliases)
         # Record every raw member name so section 4 can match per-model custom_providers rows

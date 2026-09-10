@@ -3860,26 +3860,3 @@ def cron_model_drift_guard_enabled(config: Optional[Dict[str, Any]] = None) -> b
 _CRON_MODEL_IMPACT_JOB_LIMIT = 50
 _CRON_MODEL_IMPACT_ID_LIMIT = 256
 _CRON_MODEL_IMPACT_NAME_LIMIT = 120
-
-def cron_model_drift_axes(
-    job: Any, *, current_provider: Any = "", current_model: Any = "", config: Any = None
-) -> List[str]:
-    """Return the unpinned axes that the fail-closed cron guard would block."""
-    if not isinstance(job, dict) or not cron_model_drift_guard_enabled(config):
-        return []
-
-    current = {
-        "provider": _model_assignment_text(current_provider).lower(),
-        "model": _model_assignment_text(current_model).lower()}
-    # A cron.model / cron.model_provider fleet default covers its axis: that axis no longer follows
-    # the global assignment at fire time, so the guard never engages and a warning would be false.
-    fleet = _cron_section(config) or {}
-    drifted: List[str] = []
-    for axis, fleet_key in (("provider", "model_provider"), ("model", "model")):
-        if _model_assignment_text(fleet.get(fleet_key)) or _model_assignment_text(job.get(axis)):
-            continue
-        snapshot = _model_assignment_text(job.get(f"{axis}_snapshot")).lower()
-        if snapshot and current[axis] and snapshot != current[axis]:
-            drifted.append(axis)
-    return drifted
-

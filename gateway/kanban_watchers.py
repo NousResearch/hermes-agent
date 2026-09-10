@@ -104,6 +104,14 @@ class GatewayKanbanWatchersMixin:
                     await _KanbanNotification(
                         self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
                     ).deliver()
+                    # KENSEI CUSTOM: event-driven lead shared-memory injection
+                    # (locked decision 2 / R5). Best-effort — the helper never
+                    # raises into this tick; see _kanban_shared_injection.
+                    if getattr(d.get("task"), "status", "") == "archived":
+                        await asyncio.to_thread(
+                            self._kanban_shared_injection,
+                            d["sub"], d["task"], d.get("board"),
+                        )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             await self._sleep_between_ticks(interval)
@@ -130,6 +138,54 @@ class GatewayKanbanWatchersMixin:
     def _kanban_rewind(self, sub: dict, claimed_cursor: int, old_cursor: int, board: Optional[str] = None) -> None:
         """Undo a claimed notification cursor after send failure."""
         self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
+    # KENSEI CUSTOM: event-driven lead shared-memory injection (locked
+    # decision 2 / R5). Distils the team's shared surface into the lead's
+    # scope on terminal task transition. Best-effort and scope-safe: only a
+    # REGISTERED team (task tenant key present in the TEAMS registry) with
+    # SEVERIAN_STORAGE set triggers anything; all failures are logged,
+    # never raised — the notifier tick must not wedge.
+    def _kanban_shared_injection(
+        self,
+        sub: dict,
+        task: Optional[Any],
+        board_slug: Optional[str],
+    ) -> None:
+        """Event-driven lead shared-memory injection (locked decision 2 / R5)."""
+        from gateway.shared_injection import (
+            TEAMS as _SI_TEAMS,
+            inject_on_task_completion,
+        )
+        from severian.composition import build_bundle as _si_bundle
+        from severian.infrastructure.embedding_resolver import (
+            embedding_from_env as _si_embedding_from_env,
+        )
+
+        _team_key = getattr(task, "tenant", None) or ""
+        _team_key = _team_key if _team_key in _SI_TEAMS else ""
+        _store = os.environ.get("SEVERIAN_STORAGE", "").strip()
+        if not (_store and _team_key):
+            return
+        # embedding_from_env is the resolver's single SEVERIAN_EMBEDDING
+        # entry point (F-03 contract): the seam honours the exact same
+        # embedding space as gateways and cron scripts.
+        _bundle = _si_bundle(
+            backend="sqlite",
+            database=Path(_store) / "severian.db",
+            fts=Path(_store) / "severian.fts",
+            vectors=Path(_store) / "severian.vec",
+            embedding=_si_embedding_from_env(),
+        )
+        try:
+            inject_on_task_completion(
+                bundle=_bundle,
+                task_id=sub["task_id"],
+                title=(task.title if task else "")[:120],
+                board=board_slug or "",
+                team=_team_key,
+            )
+        finally:
+            _bundle.close()
+
 
     async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task) -> None:
         """Upload artifact files referenced by a completed kanban task.

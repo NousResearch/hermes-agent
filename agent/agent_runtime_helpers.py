@@ -650,6 +650,34 @@ def sync_credential_pool_entry_id(agent) -> None:
         agent._credential_pool_entry_id = None
 
 
+def active_credential_label(agent) -> str:
+    """Safe display label of the pooled credential the agent is dispatching with, or ``""``.
+
+    Shared by the classic CLI status bar and the TUI gateway usage payload (the opt-in
+    ``account`` field) so the two surfaces can never disagree about which account a session
+    is burning. Resolution mirrors ``_failed_credential_identity``: the entry id bound at
+    dispatch time wins, then the pool cursor. Only ``PooledCredential.label`` is ever
+    returned — the same email/label ``hermes auth list`` prints — never token material.
+    Empty when no pool is bound (single env-var key, keyless custom provider).
+    """
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None:
+        return ""
+    try:
+        entry_id = getattr(agent, "_credential_pool_entry_id", None)
+        if not (isinstance(entry_id, str) and entry_id):
+            entry_id = pool.entry_id_for_api_key(getattr(agent, "api_key", None))
+        entry = None
+        if entry_id:
+            entry = next((e for e in pool.entries() if getattr(e, "id", None) == entry_id), None)
+        if entry is None:
+            entry = pool.current()
+        label = getattr(entry, "label", "") if entry is not None else ""
+        return label.strip() if isinstance(label, str) else ""
+    except Exception:
+        return ""
+
+
 _STATUS_TO_FAILOVER_REASON = {
     402: FailoverReason.billing, 429: FailoverReason.rate_limit, 401: FailoverReason.auth,
     403: FailoverReason.auth,

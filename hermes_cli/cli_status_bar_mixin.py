@@ -208,6 +208,7 @@ class CLIStatusBarMixin:
             "battery_label": "",
             "battery_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
+            "account_label": "",  # opt-in ``account`` field: active pooled-credential label
             "goal_active": False,
             "goal_turns_used": 0,
             "goal_max_turns": 0}
@@ -264,6 +265,17 @@ class CLIStatusBarMixin:
 
         if not agent:
             return snapshot
+
+        # Opt-in ``account`` field: which pooled credential this session dispatches with.
+        # Only rendered when the user lists it in display.status_bar.fields, so the label
+        # lookup is skipped entirely for everyone else.
+        field_set = self._get_status_bar_field_set()
+        if field_set is not None and "account" in field_set:
+            try:
+                from agent.agent_runtime_helpers import active_credential_label
+                snapshot["account_label"] = active_credential_label(agent)
+            except Exception:
+                pass
 
         for key in _AGENT_COUNTERS:
             snapshot[key] = getattr(agent, key, 0) or 0
@@ -954,10 +966,10 @@ class CLIStatusBarMixin:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
-        Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since,
-        focus, yolo, stash, battery, title, total_tokens (opt-in only). Order is fixed; the
-        config controls visibility only.
+        Fields: model, account (opt-in only), context_detail, context_pct, cache_hit, latency,
+        tps, compressions, bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed,
+        idle_since, focus, yolo, stash, battery, title, total_tokens (opt-in only). Order is
+        fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1004,6 +1016,14 @@ class CLIStatusBarMixin:
                 segs.append([(_SB, " ⚕ "), (_STRONG, model_short)])
             else:
                 segs.append([("", f"⚕ {model_short}")])
+        # Opt-in only (explicit fields list): the pooled-credential label the session is
+        # dispatching with. Sits right after the model — the two together answer
+        # "what is running and on whose account". Empty label = no segment.
+        account_label = snapshot.get("account_label") or ""
+        if account_label and field_set is not None and "account" in field_set:
+            if len(account_label) > 32:
+                account_label = f"{account_label[:29]}..."
+            segs.append([(_DIM, f"@ {account_label}")])
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.

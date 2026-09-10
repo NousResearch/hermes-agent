@@ -604,6 +604,17 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
+  // Opt-in only (explicit display.status_bar.fields list, like total_tokens): the pooled
+  // credential label the session dispatches with. The server omits the key when no pool
+  // is bound, so it self-hides for single-key users. Evaluated first so it takes tail
+  // budget ahead of the bar — it's the whole point of enabling it — but still budgeted so
+  // model │ ctx never clip.
+  const rawAccount = typeof usage.account_label === 'string' ? usage.account_label.trim() : ''
+  const accountText = rawAccount ? `@ ${rawAccount.length > 32 ? `${rawAccount.slice(0, 29)}...` : rawAccount}` : ''
+
+  const showAccount =
+    statusBarFields !== null && statusBarFields.has('account') && !!accountText && fits(SEP + stringWidth(accountText))
+
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${contextMark}${pct}%` : ''}`))
   const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
@@ -722,6 +733,12 @@ export function StatusRule({
             </Text>
           ) : null}
         </Box>
+        {showAccount ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {accountText}
+          </Text>
+        ) : null}
         {showFocus ? (
           <Box flexDirection="row" flexShrink={0}>
             <Text color={t.color.muted}>{' │ '}</Text>

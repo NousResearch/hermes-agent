@@ -567,3 +567,47 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     expect(textContent(element)).not.toContain('weekly-digest')
   })
 })
+
+describe('StatusRule account segment', () => {
+  const pooledUsage = { ...baseProps.usage, account_label: 'alice@example.com' }
+  const withAccount = new Set(['model', 'context_pct', 'account'])
+
+  it('renders the active credential label when opted in', () => {
+    const rendered = textContent(
+      StatusRule({ ...baseProps, cols: 160, statusBarFields: withAccount, usage: pooledUsage })
+    )
+
+    expect(rendered).toContain('@ alice@example.com')
+    // Reads "what, on whose account": model first, then the label.
+    expect(rendered.indexOf('opus 4.8')).toBeLessThan(rendered.indexOf('@ alice@example.com'))
+  })
+
+  it('is opt-in only — a bound pool never widens the default bar', () => {
+    const rendered = textContent(StatusRule({ ...baseProps, cols: 160, usage: pooledUsage }))
+
+    expect(rendered).not.toContain('alice@example.com')
+  })
+
+  it('self-hides when the server omits the key (no pool bound)', () => {
+    const rendered = textContent(StatusRule({ ...baseProps, cols: 160, statusBarFields: withAccount }))
+
+    expect(rendered).not.toContain('@ ')
+  })
+
+  it('truncates long labels instead of crushing the pinned essentials', () => {
+    const usage = { ...baseProps.usage, account_label: 'a-very-long-service-account-name@corp.example.com' }
+    const rendered = textContent(StatusRule({ ...baseProps, cols: 160, statusBarFields: withAccount, usage }))
+
+    expect(rendered).toContain('@ a-very-long-service-account-n...')
+    expect(rendered).not.toContain('corp.example.com')
+  })
+
+  it('drops whole on a narrow terminal rather than clipping model │ ctx', () => {
+    const rendered = textContent(
+      StatusRule({ ...baseProps, cols: 40, statusBarFields: withAccount, usage: pooledUsage })
+    )
+
+    expect(rendered).toContain('opus 4.8')
+    expect(rendered).not.toContain('alice@example.com')
+  })
+})

@@ -2533,6 +2533,32 @@ _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
 
+# HERMES_HOME markers that tell a *planned update* restart apart from a crash.
+# ``fleet_restart_pending`` is dropped by ``hermes update`` after the pull and
+# cleared once the fleet is back (hermes_cli.update_cmd_fleet); the in-chat
+# ``/update`` flow owns ``.update_pending.json``.  Either one means the restart
+# the user is about to see was asked for, so the lifecycle notifications should
+# read as an update instead of the generic "your task was interrupted" warning.
+# Names are pinned against their writers by test_update_restart_notification.py.
+_UPDATE_MARKER_FLEET_RESTART = "fleet_restart_pending"
+_UPDATE_MARKER_CHAT_PENDING = ".update_pending.json"
+# An abandoned marker (update killed before it could clear it) must not
+# mislabel a genuine crash restart hours later.
+_UPDATE_MARKER_MAX_AGE_SECONDS = 3600.0
+
+
+def _planned_update_marker() -> Optional[Path]:
+    """Return the fresh update marker driving this restart, if any."""
+    for name in (_UPDATE_MARKER_FLEET_RESTART, _UPDATE_MARKER_CHAT_PENDING):
+        path = _hermes_home / name
+        try:
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            continue
+        if age <= _UPDATE_MARKER_MAX_AGE_SECONDS:
+            return path
+    return None
+
 
 def _reap_gateway_turn_processes(
     task_id: str, process_baseline, *, source: str,

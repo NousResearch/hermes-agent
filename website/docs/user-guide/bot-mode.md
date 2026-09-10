@@ -174,6 +174,11 @@ Once a peer is registered, the messaging protocol taught to every Bot Chat (`age
 
 Requirements: the peer machine runs the `api_server` gateway platform with a strong `API_SERVER_KEY`; reachability is your network's business (LAN, Tailscale, VPN). The key is a credential and lives in `~/.hermes/.env` as `HERMES_PEER_<NAME>_KEY`; peer names/URLs live in `config.yaml` under `bot_peers`.
 
+On a hosted instance that exposes only its dashboard hostname, set
+`gateway.platforms.api_server.extra.public_route: true` and register
+`https://<dashboard-host>/hermes-api` as the peer URL. The hosted route forwards the API bearer
+credential to the loopback listener without exposing or depending on the browser's OAuth cookie.
+
 :::note One-way reachability (NAT)
 Cross-gateway links are direct gateway-to-gateway connections — Desktop is a
 viewer, not a relay. A gateway behind home NAT can dial out to a public peer

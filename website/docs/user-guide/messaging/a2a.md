@@ -106,7 +106,42 @@ Secure by default; every widening step is explicit:
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push-notification signing |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict which skills appear on the Agent Card |
 
-Behind a reverse proxy or Kubernetes Service, set `A2A_PUBLIC_URL` (or rely on `X-Forwarded-Host`/`X-Forwarded-Proto`) so the Agent Card advertises a URL peers can actually call back.
+Behind a reverse proxy or Kubernetes Service, set `A2A_PUBLIC_URL` to the complete externally
+routable A2A URL (including any path prefix), or leave it unset and rely on forwarded host,
+scheme, and prefix headers so the Agent Card advertises a URL peers can actually call back.
+
+## Hosted dashboard route
+
+When a hosted deployment exposes only the authenticated dashboard hostname, opt the A2A
+platform into the dashboard's loopback bridge:
+
+```yaml
+gateway:
+  platforms:
+    a2a:
+      enabled: true
+      extra:
+        port: 9900
+        public_route: true
+```
+
+Configure `A2A_PEER_TOKENS` with a distinct credential for each caller. The public endpoint is:
+
+```text
+https://<dashboard-host>/a2a/.well-known/agent-card.json
+https://<dashboard-host>/a2a/                         # SendMessage POST
+```
+
+The Agent Card GET remains public, as required by A2A discovery. Every task POST is authenticated
+by the A2A listener's per-peer bearer token; the browser dashboard OAuth session is neither required
+nor forwarded. The bridge targets only `127.0.0.1` and is disabled unless both `public_route: true`
+and `A2A_PEER_TOKENS` are configured, so `A2A_HOST` may remain at its safe loopback default. Leave
+`A2A_PUBLIC_URL` unset to have forwarded host, scheme, and path-prefix metadata make the card
+advertise the `/a2a/` HTTPS URL automatically. An explicit `A2A_PUBLIC_URL` takes precedence and
+must include the mounted route, for example `https://<dashboard-host>/a2a`.
+
+For bidirectional delivery, enable the route on both instances and add each `/a2a` URL plus that
+instance's peer token to the other instance's `a2a_agents` map.
 
 ## Quick test
 
@@ -124,7 +159,7 @@ curl -X POST http://your-host:9900/ \
 
 ## Troubleshooting
 
-- **Peers can't reach the card URL** — the card was advertising your bind address; set `A2A_PUBLIC_URL` to the externally routable URL.
+- **Peers can't reach the card URL** — set `A2A_PUBLIC_URL` to the complete externally routable URL. For a hosted dashboard route it must include `/a2a`; alternatively, leave it unset so forwarded host, scheme, and prefix headers determine the advertised URL.
 - **`401 Unauthorized`** — token mismatch; check `A2A_PEER_TOKENS`/`A2A_BEARER_TOKEN` on the server and the peer's `auth:` block.
 - **Server won't bind non-localhost** — by design: set a bearer token first, then `A2A_HOST=0.0.0.0`.
 - **Replies time out on long tasks** — raise `A2A_REPLY_TIMEOUT`, or have the caller register a push-notification config and poll `GetTask`.

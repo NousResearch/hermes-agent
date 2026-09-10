@@ -933,6 +933,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     tools as _tools_routes,
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
+    service_proxy as _service_proxy_routes,
     dashboard_ui as _dashboard_ui_routes,
 )
 
@@ -963,6 +964,7 @@ app.include_router(_skills_routes.router)
 app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
+app.include_router(_service_proxy_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)

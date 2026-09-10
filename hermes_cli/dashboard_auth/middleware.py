@@ -38,14 +38,18 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
+    # Machine-to-machine proxy routes delegate authentication to the loopback
+    # A2A/API listener. They must never enter the browser OAuth redirect flow.
+    "/a2a/", "/hermes-api/",
     "/assets/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
+_MACHINE_ROUTE_ROOTS = frozenset({"/a2a", "/hermes-api"})
 
 
 def _path_is_public(path: str) -> bool:
     """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) matched exactly so
-    ``/api/status`` never exposes ``/api/status/extension``; :data:`_GATE_PUBLIC_PREFIXES`
-    prefix-matched."""
-    return path in PUBLIC_API_PATHS or any(
+    ``/api/status`` never exposes ``/api/status/extension``; machine route roots matched
+    exactly; :data:`_GATE_PUBLIC_PREFIXES` prefix-matched."""
+    return path in PUBLIC_API_PATHS or path in _MACHINE_ROUTE_ROOTS or any(
         path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES)
 
 

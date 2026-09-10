@@ -45,4 +45,10 @@ describe('voiceFieldVisible', () => {
     expect(voiceFieldVisible('tts.openai.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(true)
     expect(voiceFieldVisible('tts.edge.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(false)
   })
+
+  it('resolves user-defined command-provider sub-fields via the nested path', () => {
+    const config = cfg({ tts: { provider: 'breeze', providers: { breeze: { voice: 'jo' } } } })
+    expect(voiceFieldVisible('tts.providers.breeze.voice', config)).toBe(true)
+    expect(voiceFieldVisible('tts.providers.other.voice', config)).toBe(false)
+  })
 })

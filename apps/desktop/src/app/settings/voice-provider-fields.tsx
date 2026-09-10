@@ -18,9 +18,14 @@ import { enumOptionsFor, getNested, inferFieldSchema, setNested } from './helper
 const VOICE_KEYS = SECTIONS.find(s => s.id === 'voice')?.keys ?? []
 
 export function voiceProviderKeys(section: 'tts' | 'stt', providerKey: string): string[] {
-  const prefix = `${section}.${providerKey}.`
+  // Built-in TTS/STT providers live at the flat ``tts.<provider>.*`` path.
+  // User-defined command providers (``tts.providers.<name>.*``) are resolved via
+  // their canonical nested path too, so a custom provider's ``voice``/``model``
+  // fields surface in Settings → Voice and the Capabilities TTS panel.
+  const flatPrefix = `${section}.${providerKey}.`
+  const canonicalPrefix = `${section}.providers.${providerKey}.`
 
-  return VOICE_KEYS.filter(key => key.startsWith(prefix))
+  return VOICE_KEYS.filter(key => key.startsWith(flatPrefix) || key.startsWith(canonicalPrefix))
 }
 
 /**

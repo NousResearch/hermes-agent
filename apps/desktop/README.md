@@ -50,7 +50,13 @@ hermes update
 
 ## Requirements
 
-The installer handles everything for you (Python 3.11+, a portable Git, ripgrep).
+The desktop app runs on:
+
+- **macOS** 12 (Monterey) or later
+- **Windows** 10 or later
+- **Linux** — any modern distribution with a graphical session (X11 or Wayland)
+
+The installer handles everything else for you (Python 3.11+, a portable Git, ripgrep).
 
 ---
 
@@ -214,6 +220,9 @@ rm "$HOME/.hermes/hermes-agent/.hermes-bootstrap-complete"
 rm -rf "$HOME/.hermes/hermes-agent/venv"
 # Reset a stuck macOS microphone prompt (macOS only)
 tccutil reset Microphone com.nousresearch.hermes
+# macOS only — after a drag-and-drop install, Gatekeeper may block launch with
+# "can't be opened" / "is damaged"; clear the quarantine flag:
+xattr -cr "/Applications/Hermes.app"
 ```
 
 **Windows (PowerShell):**

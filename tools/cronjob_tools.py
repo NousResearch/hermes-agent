@@ -538,8 +538,8 @@ def _action_create(a: Dict[str, Any]) -> str:
                 "non-empty stdout is delivered verbatim, empty stdout "
                 "sends nothing (watchdog pattern), and a non-zero exit or timeout sends an error alert.",
                 success=False)
-    elif not prompt and not canonical_skills:
-        return tool_error("create requires either prompt or at least one skill", success=False)
+    elif not prompt and not canonical_skills and not a["prompt_file"]:
+        return tool_error("create requires either prompt, prompt_file, or at least one skill", success=False)
     error = (
         (prompt and _scan_cron_prompt(prompt))
         or (script and _validate_cron_script_path(script))
@@ -575,6 +575,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            prompt_file=a["prompt_file"], no_cron_hint=a["no_cron_hint"],
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -877,6 +878,8 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    prompt_file: Optional[str] = None,
+    no_cron_hint: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,

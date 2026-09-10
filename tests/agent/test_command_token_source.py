@@ -77,6 +77,18 @@ class TestMinting:
         assert "dbx" in message          # names the provider to fix
         assert "exited" in message       # states what happened
 
+    def test_undecodable_output_does_not_raise(self):
+        """One non-UTF-8 byte from the helper must not crash token minting.
+
+        A strict decode raised UnicodeDecodeError inside subprocess.run — a ValueError,
+        so neither the TimeoutExpired nor the OSError handler above caught it: provider
+        auth died with a traceback instead of the documented CommandTokenError path.
+        """
+        token, ttl = _mint("printf 'tok\\377'", "dbx")
+
+        assert ttl is None
+        assert token.startswith("tok")
+
 
 class TestNoCredentialLeak:
     def test_failure_message_excludes_command_output(self):

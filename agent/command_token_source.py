@@ -47,7 +47,8 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
     """Run *command*, returning ``(token, ttl_seconds_or_None)``."""
     try:
         completed = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=_MINT_TIMEOUT_SECONDS,
+            command, shell=True, capture_output=True, text=True, errors="replace",
+            timeout=_MINT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
         raise CommandTokenError(

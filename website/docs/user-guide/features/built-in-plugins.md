@@ -202,32 +202,11 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 
 **Disabling:** `hermes plugins disable observability/langfuse`. The plugin module is still discovered, but no module code runs until you re-enable.
 
-### NeMo Relay native integration (migration note)
+### NeMo Relay
 
-NeMo Relay is no longer a bundled Hermes plugin. Do not run `hermes plugins enable observability/nemo_relay`; Hermes core now owns the Relay session, turn, LLM, and tool lifecycles.
+NeMo Relay no longer uses a bundled Hermes plugin. Hermes supports it directly, so do not run `hermes plugins enable observability/nemo_relay`.
 
-To opt into Relay middleware or exporters, create a standard Relay `plugins.toml`, then set `HERMES_NEMO_RELAY_PLUGINS_TOML` to that file before starting Hermes. The policy is process-wide for every profile hosted by that Hermes process. See the [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about) for ATOF, ATIF, and OpenTelemetry options.
-
-The old `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` settings no longer activate exporters. `hermes doctor` reports these stale settings when no replacement `plugins.toml` is selected.
-
-#### Session-span segmentation (continuous sessions)
-
-Relay exports a span when its scope closes. A continuous gateway session can keep its session span open for days even though each turn span exports normally. Optional segmentation rotates only the session scope at a turn boundary:
-
-```yaml
-gateway:
-  telemetry:
-    session_segments:
-      on_compaction: false  # rotate after context compaction
-      max_turns: 0          # 0 = unlimited; N = turns per segment
-```
-
-| Key | Default | Behavior |
-|---|---:|---|
-| `on_compaction` | `false` | Rotate after compaction completes, at the next turn boundary. |
-| `max_turns` | `0` | Rotate after every N completed turns; `0` disables the cap. |
-
-Both defaults preserve one session scope for the full session. Rotated spans retain the same `session_id` and add `hermes.session.segment` plus `hermes.session.segment_reason` (`compaction` or `max_turns`).
+See [NeMo Relay](/integrations/nemo-relay) for setup, Relay plugin configuration, exporters, migration, and continuous-session behavior.
 
 ### google_meet
 

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $displayTimestamps } from '@/store/display-timestamps'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
+import { recordToolDiff } from '@/store/tool-diffs'
 import { clearDismissedToolRows } from '@/store/tool-dismiss'
 import { $toolDisclosureStates } from '@/store/tool-view'
 
@@ -265,6 +266,31 @@ function editBetweenRunsMessage(): ThreadMessage {
   } as unknown as ThreadMessage
 }
 
+function streamingFileEditMessage(): ThreadMessage {
+  return {
+    id: 'assistant-streaming-file-edit',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'patch-streaming',
+        toolName: 'patch',
+        args: { path: '/repo/src/live.ts' },
+        argsText: JSON.stringify({ path: '/repo/src/live.ts' })
+      }
+    ],
+    status: { type: 'running' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as unknown as ThreadMessage
+}
+
 // A finished turn that left a call without a result — interrupted, or the
 // result landed elsewhere. The run is history and has to behave like it.
 function abandonedRunMessage(): ThreadMessage {
@@ -443,12 +469,44 @@ describe('a file edit among ordinary activity', () => {
     expect(shape).toEqual(['summary', 'row', 'summary'])
   })
 
-  it('keeps the diff itself on screen rather than behind the summary', async () => {
+  it('keeps the edit row visible, starts it collapsed, and expands its diff on click', async () => {
     const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
 
-    await waitFor(() => {
-      expect(container.querySelector('[data-tool-row][data-file-edit]')).not.toBeNull()
+    const row = await waitFor(() => {
+      const candidate = container.querySelector('[data-tool-row]')
+      expect(candidate).not.toBeNull()
+
+      return candidate as HTMLElement
     })
+
+    const trigger = row.querySelector('button[aria-expanded]') as HTMLButtonElement
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(row.hasAttribute('data-file-edit')).toBe(false)
+    expect(row.hasAttribute('data-tool-open')).toBe(false)
+
+    fireEvent.click(trigger)
+
+    expect(row.hasAttribute('data-file-edit')).toBe(true)
+    expect(row.hasAttribute('data-tool-open')).toBe(true)
+  })
+
+  it('keeps an in-flight file edit open while its diff is streaming', async () => {
+    recordToolDiff('patch-streaming', '--- a\n+++ b\n+streamed line')
+    const { container } = render(<GroupHarness message={streamingFileEditMessage()} />)
+
+    const row = await waitFor(() => {
+      const candidate = container.querySelector('[data-tool-row]')
+      expect(candidate).not.toBeNull()
+
+      return candidate as HTMLElement
+    })
+
+    const trigger = row.querySelector('button[aria-expanded]') as HTMLButtonElement
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(row.hasAttribute('data-file-edit')).toBe(true)
+    expect(row.hasAttribute('data-tool-open')).toBe(true)
   })
 })
 

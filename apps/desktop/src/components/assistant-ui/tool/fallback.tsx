@@ -374,7 +374,10 @@ function ToolEntry({ part }: ToolEntryProps) {
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
   const isFileEdit = isFileEditTool(toolName)
-  const defaultOpen = Boolean(inlineDiff)
+  // Completed edits stay compact in the transcript; an in-flight edit with a
+  // streamed diff remains open so progress is not hidden. Other tools keep
+  // their existing reviewable-output default.
+  const defaultOpen = Boolean(inlineDiff) && (!isFileEdit || isPending)
   const open = useDisclosureOpen(disclosureId, defaultOpen)
   const canDismiss = !isPending && !embedded
   // Only animate entries that mount while their message is actively

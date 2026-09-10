@@ -162,6 +162,41 @@ afterEach(() => {
 })
 
 describe('materializing the draft profile', () => {
+  it.each([
+    ['小助手', 'u5c0f-u52a9-u624b'],
+    ['test机器人', 'test-u673a-u5668-u4eba']
+  ])('creates %s with an ASCII profile id and retains the display name', async (enteredName, profileName) => {
+    await renderDialog(true)
+
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), {
+      target: { value: enteredName }
+    })
+
+    const create = screen.getByRole('button', { name: 'Create Bot' })
+
+    expect((create as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(create)
+
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    expect(createCalls()[0][1]).toMatchObject({
+      description: enteredName,
+      name: profileName
+    })
+    expect(mocks.saveBotMeta).toHaveBeenCalledWith(profileName, expect.objectContaining({ title: enteredName }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith(profileName, { kickoff: true }))
+  })
+
+  it('keeps Create Bot disabled for a symbols-only name', async () => {
+    await renderDialog(true)
+
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), {
+      target: { value: '🤖' }
+    })
+
+    expect((screen.getByRole('button', { name: 'Create Bot' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(createCalls()).toHaveLength(0)
+  })
+
   it('creates it once when the Capabilities tab opens, pinned to the new slug', async () => {
     await renderDialog(true)
 

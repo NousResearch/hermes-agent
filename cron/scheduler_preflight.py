@@ -14,6 +14,9 @@ import logging
 import os
 from typing import Optional
 
+DRIFT_SKIP_MARKER = "[drift_skip]"
+DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
 

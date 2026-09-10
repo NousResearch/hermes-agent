@@ -914,7 +914,22 @@ def _send_media_via_adapter(
             errors.append(f"attachment dropped by media path policy: {raw_path}")
 
     route_platform = platform if platform is not None else getattr(adapter, "platform", None)
+    # KENSEI CUSTOM — partition documents from native media. Documents batch
+    # into a single send_multiple_documents call (the Base contract every
+    # adapter owns; Discord overrides it to chunk multi-attachment messages,
+    # Telegram inherits the per-document fallback). Prevents multi-file
+    # reports arriving as N separate messages or silently dropping files.
+    doc_files: list = []
+    native_files: list = []
     for media_path, _is_voice in media_files:
+        ext = _sched.Path(media_path).suffix.lower()
+        if (should_send_media_as_audio(route_platform, ext, is_voice=_is_voice)
+                or ext in _VIDEO_EXTS or ext in _IMAGE_EXTS):
+            native_files.append((media_path, _is_voice))
+        else:
+            doc_files.append((media_path, _is_voice))
+
+    for media_path, _is_voice in native_files:
         try:
             ext = _sched.Path(media_path).suffix.lower()
             if should_send_media_as_audio(route_platform, ext, is_voice=_is_voice):
@@ -948,6 +963,33 @@ def _send_media_via_adapter(
             # TimeoutError etc. have an empty str(); fall back to the class name.
             _note_target_error(
                 job_ref, f"failed to send media {media_path}: {str(e) or type(e).__name__}", errors)
+
+    # KENSEI CUSTOM — document batch: one call, per-batch error surfaced.
+    if doc_files:
+        try:
+            coro = adapter.send_multiple_documents(
+                chat_id=chat_id, documents=doc_files, metadata=metadata,
+            )
+            future = safe_schedule_threadsafe(coro, loop)
+            if future is None:
+                _note_target_error(
+                    job_ref,
+                    f"cannot send {len(doc_files)} document(s): gateway loop unavailable",
+                    errors)
+                return errors
+            try:
+                result = future.result(timeout=_script._get_media_send_timeout())
+            except TimeoutError:
+                future.cancel()
+                raise
+            if result and not getattr(result, "success", True):
+                _note_target_error(
+                    job_ref,
+                    f"document batch send failed: {getattr(result, 'error', 'unknown')}",
+                    errors)
+        except Exception as e:
+            _note_target_error(
+                job_ref, f"failed to send document batch: {str(e) or type(e).__name__}", errors)
     return errors
 
 
@@ -1712,6 +1754,20 @@ def _deliver_result(
     from gateway.media_policy import apply_media_policy_env
     apply_media_policy_env(user_cfg)
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    # ── KENSEI CUSTOM (restored): coerce bare file paths into attachments ──
+    # Cron LLMs often emit the deliverable path as prose instead of a MEDIA:
+    # tag; without this the user gets a dead path link instead of a native
+    # file. Mirrors the defence-in-depth pattern used for memory leaks.
+    try:
+        from gateway.platforms.base import BasePlatformAdapter as _BPA
+        _local_files, cleaned_delivery_content = _BPA.extract_local_files(
+            cleaned_delivery_content)
+        for _lf in _local_files:
+            if (_lf, False) not in media_files:
+                media_files.append((_lf, False))
+    except Exception as e:
+        logger.debug("local-file coercion skipped: %s", e)
+    # ── END KENSEI CUSTOM ──
     requested_media = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.

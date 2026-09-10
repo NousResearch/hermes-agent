@@ -64,14 +64,17 @@ def test_commentary_renders_as_assistant_independently_of_reasoning_and_streamin
     assert output.count("The file is correct.") == 1
 
 
-@pytest.mark.parametrize("mode,display", [
-    ("off", {}),
-    ("all", {"interim_assistant_messages": False}),
-])
-def test_quiet_and_explicit_interim_opt_out_do_not_install_consumer(cli_shell, mode, display):
+def test_tool_progress_off_keeps_interim_consumer(cli_shell):
+    shell, printed, _ = cli_shell
+    shell.tool_progress_mode = "off"
+
+    assert callable(shell._current_interim_assistant_callback())
+    assert printed == []
+
+
+def test_explicit_interim_opt_out_does_not_install_consumer(cli_shell):
     shell, printed, cli_mod = cli_shell
-    shell.tool_progress_mode = mode
-    cli_mod.CLI_CONFIG["display"] = display
+    cli_mod.CLI_CONFIG["display"] = {"interim_assistant_messages": False}
 
     assert shell._current_interim_assistant_callback() is None
     assert printed == []

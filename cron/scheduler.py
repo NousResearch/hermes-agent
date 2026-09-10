@@ -1355,7 +1355,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     """Load config.yaml and resolve the run's model: per-job override > cron.model (fleet default) >
     creation snapshot > HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so
     ``hermes cron edit --model`` applies next tick."""
-    model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+    model = _expand_env_vars(job.get("model")) or os.getenv("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
     _model_cfg: Any = {}
@@ -1494,7 +1494,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     from hermes_cli.auth import AuthError
 
     model = jc.model
-    requested = job.get("provider") or jc.cron_default_provider or None
+    requested = _expand_env_vars(job.get("provider")) or jc.cron_default_provider or None
     if not requested:
         global_provider = (
             str(jc.model_cfg.get("provider") or "").strip() if isinstance(jc.model_cfg, dict) else "")

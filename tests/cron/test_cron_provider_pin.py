@@ -220,3 +220,31 @@ class TestRuntimeResolutionTargetModel:
         assert success is True, error
         assert resolve_kwargs["target_model"] == "my-pinned-model"
         assert resolve_kwargs["requested"] == "openrouter"
+
+
+class TestJobEnvVarExpansion:
+    """Per-job model/provider support ``${VAR}`` expansion like config.yaml (#107157): a job saved
+    with ``"model": "${SOME_VAR}"`` must resolve to the env value at fire time, not pass the
+    literal placeholder to the provider."""
+
+    def test_model_and_provider_env_refs_expand_before_firing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TEST_CRON_MODEL_VAR", "expanded-model")
+        monkeypatch.setenv("TEST_CRON_PROVIDER_VAR", "expanded-provider")
+        job = _base_job(model="${TEST_CRON_MODEL_VAR}", provider="${TEST_CRON_PROVIDER_VAR}")
+        success, error, agent_kwargs, resolve_kwargs = _run(
+            job, tmp_path, current_provider="openrouter", current_model="other-model")
+
+        assert success is True, error
+        assert agent_kwargs["model"] == "expanded-model"
+        assert resolve_kwargs["requested"] == "expanded-provider"
+
+    def test_unresolved_env_ref_kept_verbatim(self, tmp_path, monkeypatch):
+        """Same policy as config.yaml: an unset var keeps the literal placeholder (not silently
+        dropped or crashed on) so the resulting provider error stays diagnosable."""
+        monkeypatch.delenv("TEST_CRON_MODEL_VAR_UNSET", raising=False)
+        job = _base_job(model="${TEST_CRON_MODEL_VAR_UNSET}", provider="openrouter")
+        success, error, agent_kwargs, _resolve_kwargs = _run(
+            job, tmp_path, current_provider="openrouter", current_model="other-model")
+
+        assert success is True, error
+        assert agent_kwargs["model"] == "${TEST_CRON_MODEL_VAR_UNSET}"

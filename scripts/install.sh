@@ -3595,15 +3595,38 @@ install_desktop() {
             app="$desktop_dir/release/linux-unpacked/hermes"
         fi
     else
-        local cand
-        for cand in \
-            "$desktop_dir/release/mac-arm64/Hermes.app" \
-            "$desktop_dir/release/mac/Hermes.app"; do
-            if [ -d "$cand" ]; then
-                app="$cand"
-                break
+        # One canonical answer to "which bundle?": hermes_cli.desktop_app_path, the same resolver
+        # `hermes desktop`, `hermes doctor` and the updater use. It refuses a bundle this Mac cannot
+        # run -- an arm64 Electron packed against darwin-x64 node-pty prebuilds launches and dies on
+        # "Failed to load native module: pty.node" -- so the installer can never bless a broken pack.
+        # This replaced a hardcoded `mac-arm64` then `mac` list, one of four copies that disagreed.
+        local resolver_python="$INSTALL_DIR/venv/bin/python"
+        if [ -x "$resolver_python" ]; then
+            local resolver_out resolver_rc
+            resolver_out="$(cd "$INSTALL_DIR" && "$resolver_python" -m hermes_cli.desktop_app_path "$INSTALL_DIR" 2>&1)"
+            resolver_rc=$?
+            if [ "$resolver_rc" -eq 0 ]; then
+                app="$resolver_out"
+            elif [ "$resolver_rc" -eq 2 ]; then
+                # Present but unusable. Falling back to the historical list would re-select the very
+                # bundle that was just refused, so fail loudly and keep whatever already works.
+                log_error "The desktop app that was built cannot run on this Mac: $resolver_out"
+                log_error "Rebuild it with: cd $desktop_dir && npm run pack"
+                return 1
             fi
-        done
+        fi
+        if [ -z "$app" ]; then
+            # Resolver unavailable (no venv yet on a first install): historical candidate order.
+            local cand
+            for cand in \
+                "$desktop_dir/release/mac-arm64/Hermes.app" \
+                "$desktop_dir/release/mac/Hermes.app"; do
+                if [ -d "$cand" ]; then
+                    app="$cand"
+                    break
+                fi
+            done
+        fi
     fi
     if [ -z "$app" ]; then
         log_error "Desktop build completed but no app was found under $desktop_dir/release/"

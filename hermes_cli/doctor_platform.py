@@ -278,14 +278,19 @@ def check_macos_tcc_grants() -> None:
 
 
 def _desktop_app_bundle() -> Path | None:
-    """Locate the locally-built desktop bundle (``apps/desktop/release/mac-<arch>/Hermes.app``), newest first.
+    """Locate the locally-built desktop bundle (``apps/desktop/release/mac-<arch>/Hermes.app``).
 
     The only layout whose ad-hoc re-signed bundle can invalidate TCC grants. ``/Applications/Hermes.app`` is
     deliberately not probed: it is the separately-signed, certificate-anchored Hermes-Setup launcher.
+
+    Delegates to ``hermes_cli.desktop_app_path`` so doctor reports on the SAME bundle the launcher would
+    start. This used to be a second ``mac*`` glob broken by newest-mtime, which on a checkout holding both
+    ``release/mac`` and ``release/mac-arm64`` could describe a bundle nobody runs. Unvalidated on purpose:
+    an install that IS broken is exactly what doctor exists to describe.
     """
-    release_dir = Path(__file__).resolve().parents[1] / "apps" / "desktop" / "release"
-    candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
-    return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
+    from hermes_cli.desktop_app_path import app_bundle
+
+    return app_bundle(Path(__file__).resolve().parents[1])
 
 
 def _macos_desktop_dr(app: Path) -> str | None:

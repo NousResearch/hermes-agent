@@ -348,13 +348,19 @@ linux_gate() {
 # interpreter is reachable: the Python gate has already run inside `hermes update` (a rejected bundle makes
 # FINAL_CODE nonzero, which blocks the swap below), so this is defense in depth, not the only guard.
 BUNDLE_ERROR=""
+bundle_gate_python() { # -> prints an interpreter that can import hermes_cli, or fails
+  local py
+  py="${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}"
+  [ -x "${py:-/nonexistent}" ] || py="$(command -v python3 2>/dev/null)"
+  [ -n "$py" ] || return 1
+  printf '%s\n' "$py"
+}
+
 bundle_unloadable() { # $1 = path to Hermes.app -> 0 when the bundle must be refused
   BUNDLE_ERROR=""
   [ "$(uname)" = "Darwin" ] || return 1
   local py
-  py="${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}"
-  [ -x "${py:-/nonexistent}" ] || py="$(command -v python3 2>/dev/null)"
-  [ -n "$py" ] || { log "bundle gate skipped: no python3 available"; return 1; }
+  py="$(bundle_gate_python)" || { log "bundle gate skipped: no python3 available"; return 1; }
   BUNDLE_ERROR="$(HERMES_BUNDLE="$1" "$py" -c '
 import os, sys
 sys.path.insert(0, sys.argv[1])
@@ -366,20 +372,34 @@ sys.stdout.write(_desktop_exe_integrity_error(app / "Contents" / "MacOS" / "Herm
   [ -n "$BUNDLE_ERROR" ]
 }
 
+# Which freshly-rebuilt bundle to install, per hermes_cli.desktop_app_path -- the SAME resolver
+# `hermes desktop`, `hermes doctor` and the installer use. This used to be a hardcoded
+# `mac-arm64` then `mac` list, one of four copies that disagreed about which bundle wins.
+# Exit 2 means "present but this Mac cannot run it": refuse, never fall back to guessing.
+resolve_rebuilt_bundle() { # -> prints path, or empty with BUNDLE_ERROR set when the user must be told
+  local py out rc
+  BUNDLE_ERROR=""
+  if ! py="$(bundle_gate_python)"; then
+    # `hermes update` itself is Python, so reaching a zero FINAL_CODE without an interpreter is
+    # pathological. Say so rather than silently skipping the swap: an unvalidated hardcoded
+    # candidate list is what shipped the broken app three times, and is not a safe fallback.
+    BUNDLE_ERROR="no python3 was available to identify the rebuilt app"
+    return 1
+  fi
+  out="$(cd "$INSTALL_ROOT" && "$py" -m hermes_cli.desktop_app_path "$INSTALL_ROOT" 2>&1)"; rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$out"; return 0 ;;
+    2) BUNDLE_ERROR="$out"; return 1 ;;  # present but unusable -> refuse, never guess instead
+    *) return 1 ;;                       # nothing was built; the swap simply has no input
+  esac
+}
+
 mac_swap() {
-  local rebuilt="" c
-  for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
-           "$INSTALL_ROOT/apps/desktop/release/mac/Hermes.app"; do
-    [ -d "$c" ] || continue
-    if bundle_unloadable "$c"; then
-      log "refusing rebuilt bundle $c: $BUNDLE_ERROR"
-      continue
-    fi
-    rebuilt="$c"; break
-  done
-  if [ "$FINAL_CODE" -eq 0 ] && [ -z "$rebuilt" ] && [ -d "$INSTALL_ROOT/apps/desktop/release" ]; then
+  local rebuilt=""
+  rebuilt="$(resolve_rebuilt_bundle)" || rebuilt=""
+  if [ "$FINAL_CODE" -eq 0 ] && [ -z "$rebuilt" ] && [ -n "$BUNDLE_ERROR" ]; then
     DONE_NOTE="Update complete, but the rebuilt app could not run on this Mac and was not installed; the previous version was kept. Run \`hermes desktop --force-build\` to rebuild it."
-    log "WARNING: no loadable rebuilt bundle; keeping existing app"
+    log "WARNING: refusing the rebuilt bundle: $BUNDLE_ERROR"
   fi
 
   # Transactional swap: stage a full copy, move the old bundle aside, move

@@ -477,6 +477,35 @@ describe('renderMediaTags', () => {
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
   })
+
+  it('keeps path spaces on a directive that owns its line', () => {
+    expect(renderMediaTags('MEDIA:/Volumes/2TB/Toronto Startup Ecosystem/PLAN-v2-2026-09-10.md')).toBe(
+      '[File: PLAN-v2-2026-09-10.md](#media:%2FVolumes%2F2TB%2FToronto%20Startup%20Ecosystem%2FPLAN-v2-2026-09-10.md)'
+    )
+  })
+
+  it('still stops at the path when prose follows it', () => {
+    expect(renderMediaTags('MEDIA:/tmp/report.md trailing words')).toBe(
+      '[File: report.md](#media:%2Ftmp%2Freport.md) trailing words'
+    )
+  })
+
+  it('drops the emphasis an agent bolds a MEDIA line with', () => {
+    expect(renderMediaTags('**MEDIA:/tmp/report.md**')).toBe('[File: report.md](#media:%2Ftmp%2Freport.md)')
+    expect(renderMediaTags('- **MEDIA:/tmp/report.md**')).toBe('- [File: report.md](#media:%2Ftmp%2Freport.md)')
+    expect(renderMediaTags('__MEDIA:/tmp/report.md__')).toBe('[File: report.md](#media:%2Ftmp%2Freport.md)')
+    expect(renderMediaTags('*MEDIA:/tmp/report.md*')).toBe('[File: report.md](#media:%2Ftmp%2Freport.md)')
+  })
+
+  it('leaves no stray emphasis markers behind the wrapper it strips', () => {
+    expect(renderMediaTags('Two files.\n\n**MEDIA:/tmp/a b/report.md**\n\n## Next')).toBe(
+      'Two files.\n\n[File: report.md](#media:%2Ftmp%2Fa%20b%2Freport.md)\n\n## Next'
+    )
+  })
+
+  it('keeps a quoted path with spaces intact', () => {
+    expect(renderMediaTags('MEDIA:"/tmp/a b/report.md"')).toBe('[File: report.md](#media:%2Ftmp%2Fa%20b%2Freport.md)')
+  })
 })
 
 describe('interleaved reasoning/text boundaries', () => {

@@ -145,3 +145,53 @@ test('ensureLoginShellPath never rejects', async () => {
   const result = await ensureLoginShellPath({ env: { SHELL: '/bin/zsh' }, platform: 'darwin', execFileFn })
   assert.equal(result.applied, false)
 })
+
+test('runProbe/applyLoginShellPath settles when execFile callback never fires (grandchild holds stdio)', async () => {
+  // gitstatusd-style grandchild keeps stdout open after execFile's timeout
+  // SIGTERM of the direct child — Node never invokes the callback.
+  const env: any = { SHELL: '/bin/zsh', PATH: '/usr/bin' }
+  const hungExecFile = (_file, _args, _options, _callback) => ({
+    pid: 999999999,
+    stdin: { end() {} }
+  })
+
+  const t0 = Date.now()
+  const result = await applyLoginShellPath({
+    env,
+    platform: 'linux',
+    execFileFn: hungExecFile,
+    timeoutMs: 50
+  })
+  const elapsed = Date.now() - t0
+
+  assert.equal(result.applied, false)
+  assert.equal(result.reason, 'unresolved')
+  assert.equal(env.PATH, '/usr/bin')
+  assert.ok(elapsed < 50 + 1500, `probe hung for ${elapsed}ms`)
+})
+
+test('applyLoginShellPath trusts a stdout sentinel even when the execFile callback never fires', async () => {
+  const env: any = { SHELL: '/bin/zsh', PATH: '/usr/bin' }
+  const execFileFn = (_file, _args, _options, _callback) => ({
+    pid: 999999999,
+    stdin: { end() {} },
+    stdout: {
+      on(event, listener) {
+        if (event === 'data') {
+          queueMicrotask(() => listener(`${START}/opt/homebrew/bin:/usr/bin${END}`))
+        }
+        return this
+      }
+    }
+  })
+
+  const result = await applyLoginShellPath({
+    env,
+    platform: 'linux',
+    execFileFn,
+    timeoutMs: 50
+  })
+
+  assert.equal(result.applied, true)
+  assert.equal(env.PATH, '/opt/homebrew/bin:/usr/bin')
+})

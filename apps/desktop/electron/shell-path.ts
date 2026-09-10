@@ -28,6 +28,29 @@ const PATH_START = '__HERMES_LOGIN_PATH_START__'
 const PATH_END = '__HERMES_LOGIN_PATH_END__'
 const PROBE_COMMAND = "printf '%s' \"" + PATH_START + '${PATH}' + PATH_END + '"'
 const ATTEMPT_TIMEOUT_MS = 5000
+// execFile's timeout only SIGTERMs the direct child. A grandchild that keeps
+// stdout/stderr open (Powerlevel10k gitstatusd, etc.) means the callback
+// never fires. This grace is a wall-clock backstop so boot cannot hang.
+const HARD_SETTLE_GRACE_MS = 500
+
+function killProcessTree(child) {
+  const pid = child?.pid
+
+  try {
+    if (process.platform !== 'win32' && typeof pid === 'number') {
+      process.kill(-pid, 'SIGKILL')
+      return
+    }
+  } catch {
+    // ESRCH / EPERM / unsupported: fall through to a direct kill.
+  }
+
+  try {
+    child?.kill?.('SIGKILL')
+  } catch {
+    // Best-effort — hard-settle must not depend on kill succeeding.
+  }
+}
 
 function loginShellExecutable(env: any = process.env, platform = process.platform) {
   const shell = typeof env?.SHELL === 'string' ? env.SHELL.trim() : ''
@@ -70,28 +93,56 @@ function mergeLoginShellPath(loginPath, currentPath, { delimiter = ':' }: any = 
 function runProbe(shell, flags, execFileFn, timeoutMs): Promise<string | null> {
   return new Promise(resolve => {
     let settled = false
+    let hardTimer = null
+    let partialStdout = ''
 
     const finish = value => {
-      if (!settled) {
-        settled = true
-        resolve(value)
+      if (settled) {
+        return
       }
+
+      settled = true
+
+      if (hardTimer) {
+        clearTimeout(hardTimer)
+        hardTimer = null
+      }
+
+      resolve(value)
     }
 
     try {
       const child = execFileFn(
         shell,
         [...flags, PROBE_COMMAND],
-        { encoding: 'utf8', timeout: timeoutMs, windowsHide: true },
+        {
+          encoding: 'utf8',
+          timeout: timeoutMs,
+          windowsHide: true,
+          // New process group so timeout can SIGKILL the whole tree
+          // (gitstatusd and friends), not just the shell we spawned.
+          detached: process.platform !== 'win32'
+        },
         (_error, stdout) => {
           // A profile script may exit nonzero after the sentinel already
           // printed — trust the sentinel, not the exit code.
-          finish(extractSentinelPath(stdout))
+          finish(extractSentinelPath(stdout ?? partialStdout))
         }
       )
 
       // Interactive shells with a broken rc can block reading stdin.
       child?.stdin?.end?.()
+
+      // If the callback never fires, this is the only view of a printed
+      // sentinel that arrived before a grandchild wedged the pipe.
+      child?.stdout?.on?.('data', chunk => {
+        partialStdout += typeof chunk === 'string' ? chunk : String(chunk)
+      })
+
+      hardTimer = setTimeout(() => {
+        killProcessTree(child)
+        finish(extractSentinelPath(partialStdout))
+      }, timeoutMs + HARD_SETTLE_GRACE_MS)
     } catch {
       finish(null)
     }

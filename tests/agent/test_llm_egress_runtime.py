@@ -3,12 +3,14 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 
 import pytest
 
 from agent.llm_egress_firewall import EgressBlocked, SanitizedTextRejected
 from agent.llm_egress_runtime import (
+    _restore_source_provenance_sidecar,
     _typed_payload_violation_locations,
     authorize_agent_sdk_kwargs,
     dispatch_authorized_agent_request,
@@ -139,7 +141,9 @@ def test_runtime_scans_extra_headers_and_query_as_request_content(tmp_path):
             {
                 "model": "test-model",
                 "messages": [{"role": "user", "content": "Fix CI now."}],
-                "extra_headers": {"Authorization": "token=secret-value"},
+                "extra_headers": {
+                    "Authorization": "Bearer sk-test-credential-1234567890"
+                },
                 "extra_query": {"trace": "safe"},
             },
             lambda request: calls.append(request),
@@ -179,7 +183,7 @@ def test_runtime_verifies_authorized_payload_at_provider_boundary(
 @pytest.mark.parametrize(
     "text",
     [
-        "token=super-secret-value",
+        "SECRET_TOKEN=super-secret-value",
         "Read /Users/private/repository/file.py",
         "ZW5jb2RlZCBwcml2YXRlIGRldGFpbA==",
     ],
@@ -341,7 +345,9 @@ def test_codex_generated_context_still_hard_blocks_secrets(tmp_path):
             agent,
             {
                 "model": "gpt-5.6-terra",
-                "input": [{"role": "system", "content": "token=super-secret-value"}],
+                "input": [
+                    {"role": "system", "content": "SECRET_TOKEN=super-secret-value"}
+                ],
             },
         )
 
@@ -951,7 +957,7 @@ def test_protected_nous_keeps_generated_cloud_secrets_blocked(tmp_path):
             {
                 "model": "poolside/laguna-xs-2.1:free",
                 "messages": [
-                    {"role": "system", "content": "token=super-secret-value"}
+                    {"role": "system", "content": "SECRET_TOKEN=super-secret-value"}
                 ],
             },
         )
@@ -1834,7 +1840,7 @@ def test_protected_codex_projects_structured_github_pr_identity_fields(
         "API_TOKEN=not-a-real-secret-token-123456789",
     ),
 )
-def test_protected_codex_elides_structured_terminal_output(
+def test_structured_terminal_replay_remains_outcome_only(
     tmp_path, monkeypatch, payload
 ):
     """Responses API output arrays receive the same terminal replay policy."""
@@ -2708,7 +2714,7 @@ def test_protected_kanban_admits_exact_pr_receipt_decomposer_structure(
     ("unsafe_text", "reason"),
     [
         ("c2VjcmV0LXBheWxvYWQ=", "base64_payload"),
-        ("token=super-secret-value", "secret_detected"),
+        ("SECRET_TOKEN=super-secret-value", "secret_detected"),
         ("AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPP", "base64_payload"),
         (
             "raw review source: def _approved_sanitized_segments(value): "
@@ -3579,7 +3585,10 @@ def test_tool_syntax_without_recognized_terminal_call_remains_blocked(
                     {
                         "role": "tool",
                         "tool_call_id": "call_unbound123",
-                        "content": "https://github.com/acme/widget.git run_id=1129",
+                        "content": (
+                            "https://github.com/acme/widget.git "
+                            "token=opaqueValue123456789"
+                        ),
                     }
                 ],
             },
@@ -3684,6 +3693,734 @@ def test_protected_kanban_admits_bounded_codex_function_output(
     assert receipt.allowed
     assert authorized["input"][1]["output"] == kwargs["input"][1]["output"]
     assert receipt.decision.source_segment_count == 0
+
+
+def test_codex_responses_restores_source_metadata_by_call_id_and_hash():
+    """Responses results get only their exact sidecar provenance copy."""
+
+    call_id = "call_read_file_123"
+    result = '{"path":"source.py","content":"1|safe = True"}'
+    sidecar = [
+        {
+            "message_index": 0,
+            "tool_call_id": call_id,
+            "content_sha256": sha256(result.encode("utf-8")).hexdigest(),
+            "request_id": "turn-1:api:1",
+            "source_grant_digests": ["grant-digest"],
+            "presentation_kind": "read_file_json_v1",
+        }
+    ]
+    output = {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": result,
+    }
+    body = {"input": [{"type": "function_call", "call_id": call_id}, output]}
+    original_input = body["input"]
+    sidecar_before = [dict(entry) for entry in sidecar]
+
+    restored = _restore_source_provenance_sidecar(body, sidecar)
+
+    assert restored["input"] is not original_input
+    assert restored["input"][1] is not output
+    assert restored["input"][1]["_source_provenance"] == {
+        "content_sha256": sha256(result.encode("utf-8")).hexdigest(),
+        "request_id": "turn-1:api:1",
+        "source_grant_digests": ["grant-digest"],
+        "presentation_kind": "read_file_json_v1",
+    }
+    assert "_source_provenance" not in output
+    assert body["input"] is original_input
+    assert sidecar == sidecar_before
+
+
+@pytest.mark.parametrize("mutation", ("wrong_call", "wrong_hash"))
+def test_codex_responses_does_not_restore_ambiguous_or_mismatched_metadata(mutation):
+    """A mismatched sidecar never grants a Responses result provenance."""
+
+    result = '{"path":"source.py","content":"1|safe = True"}'
+    call_id = "call_read_file_123"
+    sidecar = [
+        {
+            "message_index": 0,
+            "tool_call_id": "call_other" if mutation == "wrong_call" else call_id,
+            "content_sha256": (
+                "0" * 64
+                if mutation == "wrong_hash"
+                else sha256(result.encode("utf-8")).hexdigest()
+            ),
+            "request_id": "turn-1:api:1",
+            "source_grant_digests": ["grant-digest"],
+            "presentation_kind": "read_file_json_v1",
+        }
+    ]
+    body = {
+        "input": [
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": result,
+            }
+        ]
+    }
+
+    restored = _restore_source_provenance_sidecar(body, sidecar)
+
+    assert "_source_provenance" not in restored["input"][0]
+
+
+def test_codex_responses_does_not_restore_ambiguous_duplicate_result():
+    """One sidecar entry cannot bind more than one identical Responses result."""
+
+    call_id = "call_read_file_123"
+    result = '{"path":"source.py","content":"1|safe = True"}'
+    sidecar = [
+        {
+            "message_index": 0,
+            "tool_call_id": call_id,
+            "content_sha256": sha256(result.encode("utf-8")).hexdigest(),
+            "request_id": "turn-1:api:1",
+            "source_grant_digests": ["grant-digest"],
+            "presentation_kind": "read_file_json_v1",
+        }
+    ]
+    body = {
+        "input": [
+            {"type": "function_call_output", "call_id": call_id, "output": result},
+            {"type": "function_call_output", "call_id": call_id, "output": result},
+        ]
+    }
+
+    restored = _restore_source_provenance_sidecar(body, sidecar)
+
+    assert all("_source_provenance" not in item for item in restored["input"])
+
+
+def test_codex_responses_restores_source_metadata_from_one_input_text_result():
+    """The canonical one-item Responses text array binds to its sidecar."""
+
+    call_id = "call_read_file_123"
+    result = '{"path":"source.py","content":"1|safe = True"}'
+    body = {
+        "input": [
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": [{"type": "input_text", "text": result}],
+            }
+        ]
+    }
+    sidecar = [
+        {
+            "message_index": 0,
+            "tool_call_id": call_id,
+            "content_sha256": sha256(result.encode("utf-8")).hexdigest(),
+            "request_id": "turn-1:api:1",
+            "source_grant_digests": ["grant-digest"],
+            "presentation_kind": "read_file_json_v1",
+        }
+    ]
+
+    restored = _restore_source_provenance_sidecar(body, sidecar)
+
+    assert restored["input"][0]["_source_provenance"]["content_sha256"] == sidecar[0][
+        "content_sha256"
+    ]
+
+
+def test_codex_responses_consumes_sidecar_once_across_input_carriers():
+    """One source record cannot authorize both normalized input carriers."""
+
+    call_id = "call_read_file_123"
+    result = '{"path":"source.py","content":"1|safe = True"}'
+    output = {"type": "function_call_output", "call_id": call_id, "output": result}
+    sidecar = [
+        {
+            "message_index": 0,
+            "tool_call_id": call_id,
+            "content_sha256": sha256(result.encode("utf-8")).hexdigest(),
+            "request_id": "turn-1:api:1",
+            "source_grant_digests": ["grant-digest"],
+            "presentation_kind": "read_file_json_v1",
+        }
+    ]
+    body = {"input": [dict(output)], "extra_body": {"input": [dict(output)]}}
+
+    restored = _restore_source_provenance_sidecar(body, sidecar)
+
+    assert "_source_provenance" in restored["input"][0]
+    assert "_source_provenance" not in restored["extra_body"]["input"][0]
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        [],
+        [
+            {"type": "input_text", "text": '{"content":"safe"}'},
+            {"type": "input_text", "text": '{"content":"also safe"}'},
+        ],
+        [{"type": "input_image", "image_url": "https://example.test/image"}],
+        {"type": "input_text", "text": '{"content":"safe"}'},
+        [{"type": "input_text"}],
+        [{"type": "input_text", "text": 1}],
+        [{"type": "output_text", "text": '{"content":"safe"}'}],
+    ),
+)
+def test_codex_responses_does_not_restore_ambiguous_or_malformed_output(output):
+    """Only one exact input_text item is eligible for structured restoration."""
+
+    call_id = "call_read_file_123"
+    result = '{"content":"safe"}'
+    sidecar = [
+        {
+            "message_index": 0,
+            "tool_call_id": call_id,
+            "content_sha256": sha256(result.encode("utf-8")).hexdigest(),
+            "request_id": "turn-1:api:1",
+            "source_grant_digests": ["grant-digest"],
+            "presentation_kind": "read_file_json_v1",
+        }
+    ]
+    body = {
+        "input": [
+            {"type": "function_call_output", "call_id": call_id, "output": output}
+        ]
+    }
+
+    restored = _restore_source_provenance_sidecar(body, sidecar)
+
+    assert "_source_provenance" not in restored["input"][0]
+
+
+def test_source_provenance_sidecar_keeps_chat_restoration_compatible():
+    """Existing Chat results retain their exact content-bound restoration."""
+
+    content = '{"path":"source.py","content":"1|safe = True"}'
+    body = {
+        "messages": [
+            {"role": "tool", "tool_call_id": "call_read_file_123", "content": content}
+        ]
+    }
+    sidecar = [
+        {
+            "message_index": 0,
+            "tool_call_id": "call_read_file_123",
+            "content_sha256": sha256(content.encode("utf-8")).hexdigest(),
+            "request_id": "turn-1:api:1",
+            "source_grant_digests": ["grant-digest"],
+            "presentation_kind": "read_file_json_v1",
+        }
+    ]
+
+    restored = _restore_source_provenance_sidecar(body, sidecar)
+
+    assert restored["messages"][0]["_source_provenance"]["content_sha256"] == sidecar[0][
+        "content_sha256"
+    ]
+    assert "_source_provenance" not in body["messages"][0]
+
+
+@pytest.fixture
+def non_scratch_source_root():
+    """Provide a real source root that never matches the scratch-read policy."""
+
+    checkout_root = Path.cwd().resolve()
+    with tempfile.TemporaryDirectory(
+        prefix="hermes-codex-responses-", dir=checkout_root
+    ) as root:
+        source_root = Path(root)
+        assert source_root.is_relative_to(checkout_root)
+        yield source_root
+
+
+@pytest.fixture
+def scratch_source_root():
+    """Provide a real source root that the scratch-read policy must elide."""
+
+    for parent in (Path("/private/tmp"), Path("/tmp")):
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="hermes-codex-responses-", dir=parent
+            ) as root:
+                root_path = Path(root)
+                if str(root_path).startswith(("/tmp/", "/private/tmp/")):
+                    yield root_path
+                    return
+        except OSError:
+            continue
+    raise RuntimeError("no writable scratch temporary root")
+
+
+def _real_codex_read_file_replay(
+    tmp_path,
+    monkeypatch,
+    *,
+    source_root: Path,
+    call_id: str,
+    structured_output: bool = False,
+):
+    """Build one live-provenance read replay through the real converter."""
+
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from agent.source_provenance_tools import (
+        attach_trusted_source_provenance_metadata,
+        build_source_provenance_sidecar,
+        source_provenance_activation,
+    )
+    from agent.tool_dispatch_helpers import make_tool_result_message
+    from tools.file_tools import read_file_tool
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    source = source_root / "source.py"
+    source.write_text("safe = True\n", encoding="utf-8")
+    try:
+        source_argument = str(source.relative_to(Path.cwd()))
+    except ValueError:
+        source_argument = str(source)
+    if source_root.is_relative_to(Path.cwd()):
+        assert not source_argument.startswith(("/tmp/", "/private/tmp/"))
+    agent = _agent(tmp_path / "egress")
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    agent._current_api_request_id = "turn-1:api:1"
+    with source_provenance_activation(agent, "read_file"):
+        result = read_file_tool(source_argument, task_id="codex-responses-read")
+    metadata = attach_trusted_source_provenance_metadata(
+        agent, "read_file", content=result
+    )
+    tool_result = make_tool_result_message(
+        "read_file", result, call_id, source_provenance=metadata
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "function": {
+                        "name": "read_file",
+                        "arguments": json.dumps({"path": source_argument}),
+                    },
+                }
+            ],
+        },
+        tool_result,
+    ]
+    sidecar = build_source_provenance_sidecar(messages)
+    assert sidecar, result
+    if structured_output:
+        messages = [
+            messages[0],
+            {
+                **tool_result,
+                "content": [{"type": "input_text", "text": result}],
+            },
+        ]
+    input_items = _chat_messages_to_responses_input(messages)
+    agent._current_api_request_id = "turn-1:api:2"
+    return agent, result, input_items, sidecar
+
+
+@pytest.mark.parametrize("mutation", ("stale_request", "forged_grant"))
+def test_protected_codex_responses_rejects_stale_sidecar_before_source_replay(
+    tmp_path, monkeypatch, non_scratch_source_root, mutation
+):
+    """A matching hash cannot bypass source validation with a stale envelope."""
+
+    agent, _result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id="call_read_file_123",
+    )
+    if mutation == "stale_request":
+        sidecar = [{**sidecar[0], "request_id": "stale-request"}]
+    else:
+        sidecar = [{**sidecar[0], "source_grant_digests": ["forged-grant"]}]
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": agent.model,
+                "input": input_items,
+                "_hermes_source_provenance": sidecar,
+            },
+        )
+
+    assert "untrusted_provenance" in exc_info.value.decision.reason_codes
+
+
+def test_real_read_file_responses_replays_one_input_text_with_source_segment(
+    tmp_path, monkeypatch, non_scratch_source_root
+):
+    """One canonical input_text item retains shape after validated replay."""
+
+    agent, result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id="call_read_file_123",
+        structured_output=True,
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert authorized["input"][1]["output"] == [
+        {"type": "input_text", "text": result}
+    ]
+    assert "_source_provenance" not in json.dumps(authorized)
+    assert "_hermes_source_provenance" not in authorized
+    assert receipt.decision.source_grant_count == 1
+    assert receipt.decision.source_segment_count == 1
+
+
+@pytest.mark.parametrize(
+    "call_id",
+    (
+        "codex_mcp__hermes-tools__read_file_exec-" + "0" * 64,
+        "call_read_file_123|fc_responses_item_123",
+    ),
+)
+def test_real_read_file_responses_replays_real_converted_effective_call_id(
+    tmp_path, monkeypatch, non_scratch_source_root, call_id
+):
+    """Sidecar identity follows the actual clamped/split Responses call ID."""
+
+    agent, result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id=call_id,
+    )
+
+    assert input_items[0]["call_id"] == input_items[1]["call_id"]
+    assert input_items[1]["call_id"] != call_id
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert authorized["input"][1]["output"] == result
+    assert "_source_provenance" not in json.dumps(authorized)
+    assert receipt.decision.source_grant_count == 1
+    assert receipt.decision.source_segment_count == 1
+
+
+def test_protected_codex_responses_elides_duplicate_sidecar_records(
+    tmp_path, monkeypatch, non_scratch_source_root
+):
+    """Ambiguous sidecar records are ignored and leave the read outcome-only."""
+
+    agent, result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id="call_read_file_123",
+    )
+    sidecar = [sidecar[0], {**sidecar[0], "request_id": "stale-request"}]
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["input"][1]["output"] == (
+        "read_file completed locally, but its raw content cannot be replayed on "
+        "this protected route. Request only the needed narrow range again."
+    )
+    assert result not in json.dumps(authorized)
+    assert receipt.decision.source_segment_count == 0
+
+
+def test_responses_read_file_fails_closed_on_policy_mismatch(
+    tmp_path, monkeypatch, non_scratch_source_root
+):
+    """An exact prior-policy read cannot cross a later egress policy boundary."""
+
+    agent, _result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id="call_read_file_123",
+    )
+    agent._llm_egress_policy_digest = sha256(b"policy-2").hexdigest()
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": agent.model,
+                "input": input_items,
+                "_hermes_source_provenance": sidecar,
+            },
+        )
+
+    assert "grant_binding_mismatch" in exc_info.value.decision.reason_codes
+    assert "untrusted_provenance" in exc_info.value.decision.reason_codes
+
+
+def test_real_scratch_read_file_responses_is_elided(
+    tmp_path, monkeypatch, scratch_source_root
+):
+    """A genuine scratch read stays elided after real provenance/conversion flow."""
+
+    agent, result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=scratch_source_root,
+        call_id="call_read_file_123",
+    )
+    assert str(scratch_source_root).startswith(("/tmp/", "/private/tmp/"))
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["input"][1]["output"] == (
+        "read_file completed locally, but its raw content cannot be replayed on "
+        "this protected route. Request only the needed narrow range again."
+    )
+    assert result not in json.dumps(authorized)
+    assert receipt.decision.source_segment_count == 0
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_sidecar",
+        "wrong_call",
+        "wrong_hash",
+        "duplicate_result",
+    ),
+)
+def test_responses_read_file_elides_when_sidecar_is_unattached(
+    tmp_path, monkeypatch, non_scratch_source_root, mutation
+):
+    """Ignored Responses sidecars cannot turn an otherwise elidable read into a block."""
+
+    agent, result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id="call_read_file_123",
+    )
+    if mutation == "missing_sidecar":
+        sidecar = []
+    elif mutation == "wrong_call":
+        sidecar = [{**sidecar[0], "tool_call_id": "call_other"}]
+    elif mutation == "wrong_hash":
+        sidecar = [{**sidecar[0], "content_sha256": "0" * 64}]
+    else:
+        input_items.append(dict(input_items[1]))
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert receipt.allowed
+    assert all(
+        item.get("output")
+        == "read_file completed locally, but its raw content cannot be replayed on "
+        "this protected route. Request only the needed narrow range again."
+        for item in authorized["input"]
+        if item.get("type") == "function_call_output"
+    )
+    assert result not in json.dumps(authorized)
+    assert receipt.decision.source_segment_count == 0
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "changed_content",
+        "changed_line_numbering",
+        "truncated_json",
+    ),
+)
+def test_responses_read_file_fails_closed_for_unbound_or_changed_presentations(
+    tmp_path, monkeypatch, non_scratch_source_root, mutation
+):
+    """Attached provenance still blocks changed Responses presentations."""
+
+    agent, result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id="call_read_file_123",
+    )
+    changed = json.loads(result)
+    if mutation == "changed_content":
+        changed["content"] = "1|changed = True\n2|"
+        output = json.dumps(changed)
+    elif mutation == "changed_line_numbering":
+        changed["content"] = "2|safe = True\n3|"
+        output = json.dumps(changed)
+    else:
+        output = result[:-1]
+    input_items[1] = {**input_items[1], "output": output}
+    sidecar = [
+        {
+            **sidecar[0],
+            "content_sha256": sha256(output.encode("utf-8")).hexdigest(),
+        }
+    ]
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": agent.model,
+                "input": input_items,
+                "_hermes_source_provenance": sidecar,
+            },
+        )
+
+    assert "untrusted_provenance" in exc_info.value.decision.reason_codes
+
+
+def test_responses_read_file_elides_after_sidecar_is_consumed(
+    tmp_path, monkeypatch, non_scratch_source_root
+):
+    """A consumed sidecar leaves the second Responses result outcome-only."""
+
+    agent, result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id="call_read_file_123",
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "messages": [
+                {"role": "assistant", "content": ""},
+                {
+                    "role": "tool",
+                    "tool_call_id": sidecar[0]["tool_call_id"],
+                    "content": result,
+                }
+            ],
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["input"][1]["output"] == (
+        "read_file completed locally, but its raw content cannot be replayed on "
+        "this protected route. Request only the needed narrow range again."
+    )
+    assert result not in json.dumps(authorized)
+    assert receipt.decision.source_segment_count == 0
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        lambda result: [
+            {"type": "input_text", "text": result},
+            {"type": "input_text", "text": "second item"},
+        ],
+        lambda result: [
+            {"type": "input_text", "text": result},
+            {"type": "input_image", "image_url": "https://example.test/image"},
+        ],
+        lambda _result: [{"type": "input_text"}],
+    ),
+)
+def test_responses_read_file_fails_closed_for_malformed_or_media_output(
+    tmp_path, monkeypatch, non_scratch_source_root, output
+):
+    """Composite, media-bearing, and malformed Responses output stays elided."""
+
+    agent, result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id="call_read_file_123",
+    )
+    input_items[1] = {**input_items[1], "output": output(result)}
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["input"][1]["output"] == (
+        "read_file completed locally, but its raw content cannot be replayed on "
+        "this protected route. Request only the needed narrow range again."
+    )
+    assert result not in json.dumps(authorized)
+    assert receipt.decision.source_segment_count == 0
+
+
+def test_responses_source_metadata_is_internal_and_audit_is_content_free(
+    tmp_path, monkeypatch, non_scratch_source_root
+):
+    """Exact source reaches only the provider payload, never private metadata or audit."""
+
+    agent, result, input_items, sidecar = _real_codex_read_file_replay(
+        tmp_path,
+        monkeypatch,
+        source_root=non_scratch_source_root,
+        call_id="call_read_file_123",
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert authorized["input"][1]["output"] == result
+    assert "_source_provenance" not in json.dumps(authorized)
+    assert "_hermes_source_provenance" not in authorized
+    audit = (agent._llm_egress_state_dir / "llm-egress-receipts.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert result not in audit
+    assert "safe = True" not in audit
 
 
 def test_real_read_file_wire_result_keeps_exact_source_provenance(

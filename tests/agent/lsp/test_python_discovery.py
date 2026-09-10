@@ -1,14 +1,8 @@
-"""LSP python discovery must resolve the pm store interpreter, not sniff
-VIRTUAL_ENV.
-
-Under no-boot-through-venv the process is the store python
-(``sys.prefix == sys.base_prefix``) and ``VIRTUAL_ENV`` is unset in bundled
-installs, so the old ambient-env probe silently degraded to project-dir
-probing. pm's ``python`` fact (facts.json + store layout) is the authority.
-"""
+"""Pyright uses the project environment before the Hermes runtime fallback."""
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -81,3 +75,37 @@ def test_missing_store_entry_is_not_an_answer(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
 
     assert _pm_store_python() is None
+
+
+def test_pyright_uses_the_project_interpreter_before_hermes(tmp_path, monkeypatch):
+    from agent.lsp import servers
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(servers, "_pm_store_python", lambda: sys.executable)
+    context = servers.ServerContext(
+        workspace_root=str(project), install_strategy="off",
+        binary_overrides={"pyright": [sys.executable]},
+    )
+    server = servers.find_server_for_file(str(project / "app.py"))
+    assert server is not None
+    spec = server.build_spawn(str(project), context)
+    assert spec.initialization_options["python"]["pythonPath"] == sys.executable
+
+    for environment in (project / ".venv", tmp_path / "explicit-environment"):
+        subprocess.run(
+            [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if environment.name == "explicit-environment":
+            monkeypatch.setenv("VIRTUAL_ENV", str(environment))
+        spec = server.build_spawn(str(project), context)
+        selected = spec.initialization_options["python"]["pythonPath"]
+        assert Path(selected) == python
+        child = subprocess.run(
+            [selected, "-I", "-c", "import sys; print(sys.prefix)"],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        assert Path(child.stdout.strip()) == environment

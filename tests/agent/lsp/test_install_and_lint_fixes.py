@@ -81,15 +81,15 @@ def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
 
     from agent.lsp import install as install_mod
 
-    def fake_run(cmd, **kwargs):
+    def fake_pip_install(args, **kwargs):
         scripts_dir = install_mod.hermes_lsp_bin_dir().parent / "python-packages" / "Scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         launcher = scripts_dir / "fake-language-server.exe"
-        launcher.write_text("launcher\n")
+        launcher.write_text("launcher\n", encoding="utf-8")
         launcher.chmod(0o755)
         return MagicMock(returncode=0, stderr="")
 
-    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr("hermes_cli.tools_config._pip_install", fake_pip_install)
 
     resolved = install_mod._install_pip("fake-lsp", "fake-language-server")
 

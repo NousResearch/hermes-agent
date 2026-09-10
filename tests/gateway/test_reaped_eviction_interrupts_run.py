@@ -97,3 +97,22 @@ def test_eviction_cleanup_survives_empty_pending_or_failed_interrupt(agent) -> N
 
     assert state.turn.agent is None
     assert KEY not in gateway._agent_cache
+
+
+def test_stale_finalizer_cannot_release_replacement_generation() -> None:
+    events: list[tuple] = []
+    old_agent = _RecordingAgent(events, lambda: None)
+    gateway, state = _build_gateway(old_agent, events)
+    state.persistent.run_generation = 2
+
+    # Eviction releases generation 2 before the cold path claims the replacement.
+    gateway._invalidate_session_run_generation(KEY, reason="reaped_session_eviction")
+    gateway._release_running_agent_state(KEY)
+    replacement = object()
+    replacement_state = gateway._session_state(KEY)
+    replacement_state.turn.agent = replacement
+    replacement_state.persistent.run_generation = 4
+
+    # Generation 2 is unwinding after generation 4 claimed the key.
+    assert gateway._release_running_agent_state(KEY, run_generation=2) is False
+    assert gateway._peek_session_state(KEY).turn.agent is replacement

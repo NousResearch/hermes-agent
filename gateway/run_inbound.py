@@ -1304,18 +1304,13 @@ class GatewayInboundMixin:
             # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
             # recovery pass.
             await self._clear_durable_active_turn(event)
-            # Unconditional, idempotent release without a run_generation guard: evicts the zombie
-            # left when session_reset bumps the generation mid-flight (gen-N's guarded release in
-            # _run_agent returns False; a sentinel-only check would lock forever).
-            self._release_running_agent_state(_quick_key)
+            # Release only this turn's generation. Eviction may immediately admit a replacement
+            # through the cold path; an unconditional release here would then clear the replacement
+            # sentinel/agent and lease. Reset/stop release their stale slot before installing a
+            # successor, preserving reset-zombie cleanup without granting gen-N successor authority.
+            self._release_running_agent_state(_quick_key, run_generation=_run_generation)
             # Turn lease is keyed by (routing key, run generation) so this unwind can only free
             # the lease its own turn acquired, never a newer turn's.
-            # Unconditional release covers every exit path. _release_running_agent_state is idempotent
-            # (pop-on-absent is harmless) and, called without a run_generation guard, always clears the slot
-            # regardless of which generation it holds. This evicts the zombie left when session_reset bumps
-            # the generation (N -> N+1) mid-flight: gen-N's guarded release inside _run_agent returns False,
-            # and the old sentinel-only check here missed the leftover real agent — locking the session out
-            # forever (#28686).
             self._release_turn_lease(_quick_key, _run_generation)
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:

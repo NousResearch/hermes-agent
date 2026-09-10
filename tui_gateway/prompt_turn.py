@@ -481,7 +481,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
             base_url=getattr(agent, "base_url", "") or "",
             api_key=getattr(agent, "api_key", "") or "",
             provider=getattr(agent, "provider", "") or "",
-            config_context_length=getattr(agent, "_config_context_length", None))
+            config_context_length=getattr(agent, "_config_context_length", None),
+            custom_providers=getattr(agent, "_custom_providers", None))
         ctx = preprocess_context_references(
             prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len)
         if ctx.blocked:

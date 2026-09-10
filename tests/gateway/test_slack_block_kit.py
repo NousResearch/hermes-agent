@@ -39,6 +39,25 @@ class TestNestedLists:
 
 
 class TestInlineFormatting:
+    def test_emphasis_wraps_code_and_links_in_list(self):
+        blocks = render_blocks("1. **`check-types` passes [#515](https://example.com/a_b)**")
+        elements = blocks[0]["elements"][0]["elements"][0]["elements"]
+        assert elements == [
+            {"type": "text", "text": "check-types", "style": {"bold": True, "code": True}},
+            {"type": "text", "text": " passes ", "style": {"bold": True}},
+            {"type": "link", "text": "#515", "url": "https://example.com/a_b", "style": {"bold": True}},
+        ]
+
+    def test_code_remains_opaque_inside_emphasis_in_quote(self):
+        blocks = render_blocks("> ~~**`**literal**` and [link](https://example.com/**path**) remain**~~")
+        elements = blocks[0]["elements"][0]["elements"]
+        assert elements == [
+            {"type": "text", "text": "**literal**", "style": {"bold": True, "strike": True, "code": True}},
+            {"type": "text", "text": " and ", "style": {"bold": True, "strike": True}},
+            {"type": "link", "text": "link", "url": "https://example.com/**path**", "style": {"bold": True, "strike": True}},
+            {"type": "text", "text": " remain", "style": {"bold": True, "strike": True}},
+        ]
+
     def test_link_becomes_link_element(self):
         blocks = render_blocks("see [docs](https://example.com/x) now")
         # link lives in a section (paragraph) — but a bulleted link is a
@@ -232,5 +251,4 @@ class TestSplitTextFenceBalanced:
             assert chunk.count("```") % 2 == 0, (
                 f"chunk {i} has unbalanced fences: {chunk[:60]!r}"
             )
-
 

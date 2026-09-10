@@ -84,7 +84,8 @@ def test_triage_is_truthful_repeatable_and_zero_mutation(kanban_home, monkeypatc
     assert first["task_status"] == "triage"
     assert first["recovery_state"] == "waiting"
     assert first["eligible"] is False
-    assert first["action"] == "wait"
+    assert first["action"] == "none"
+    assert first["action"] in {"normalized", "none", "requeued", "reported"}
     assert first["mutation_performed"] is False
     assert first["dispatch_status"] == "not_eligible"
     assert first["run_id"] is None

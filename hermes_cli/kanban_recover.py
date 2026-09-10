@@ -151,7 +151,7 @@ def run_recover_slash(text: str) -> dict[str, Any]:
             return _result(**base, recovery_state="terminal", action="terminal", dispatch_status="not_eligible",
                            message=f"task is {task.status}; it will not be changed")
         if task.status == "triage":
-            return _result(**base, recovery_state="waiting", action="wait", dispatch_status="not_eligible",
+            return _result(**base, recovery_state="waiting", action="none", dispatch_status="not_eligible",
                            message="task is in triage; /recover does not act on triage tasks")
         if kbd.dispatch_paused():
             return _result(**base, recovery_state="paused", action="wait", dispatch_status="paused",

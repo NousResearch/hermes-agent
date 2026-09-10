@@ -1842,3 +1842,93 @@ def _handle_request_subprofile(args: dict, **kw) -> str:
         return tool_error(f"request_subprofile failed: {exc}")
 
 
+# ── KENSEI CUSTOM — pipeline / review / profile-edit tool registrations (restored) ──
+registry.register(
+    name="kanban_complete_pipeline",
+    toolset="kanban",
+    schema=KANBAN_COMPLETE_PIPELINE_SCHEMA,
+    handler=_handle_complete_pipeline,
+    check_fn=_check_kanban_mode,
+    emoji="🔁",
+)
+
+registry.register(
+    name="kanban_approve",
+    toolset="kanban",
+    schema=KANBAN_APPROVE_SCHEMA,
+    handler=_handle_approve,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✅",
+)
+
+registry.register(
+    name="kanban_reject",
+    toolset="kanban",
+    schema=KANBAN_REJECT_SCHEMA,
+    handler=_handle_reject,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🚫",
+)
+
+registry.register(
+    name="kanban_reassign",
+    toolset="kanban",
+    schema=KANBAN_REASSIGN_SCHEMA,
+    handler=_handle_reassign,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="↔️",
+)
+
+registry.register(
+    name="kanban_edit",
+    toolset="kanban",
+    schema=KANBAN_EDIT_SCHEMA,
+    handler=_handle_edit,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✏️",
+)
+
+registry.register(
+    name="kanban_collate_children",
+    toolset="kanban",
+    schema=KANBAN_COLLATE_CHILDREN_SCHEMA,
+    handler=_handle_collate_children,
+    check_fn=_check_kanban_mode,
+    emoji="📊",
+)
+
+registry.register(
+    name="kanban_request_human_approval",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_HUMAN_APPROVAL_SCHEMA,
+    handler=_handle_request_human_approval,
+    check_fn=_check_kanban_mode,
+    emoji="🛑",
+)
+
+registry.register(
+    name="kanban_profile_edit",
+    toolset="kanban",
+    schema=KANBAN_PROFILE_EDIT_SCHEMA,
+    handler=_handle_profile_edit,
+    check_fn=_check_kanban_mode,
+    emoji="✏️",
+)
+
+registry.register(
+    name="kanban_profile_rollback",
+    toolset="kanban",
+    schema=KANBAN_PROFILE_ROLLBACK_SCHEMA,
+    handler=_handle_profile_rollback,
+    check_fn=_check_kanban_mode,
+    emoji="↩️",
+)
+
+registry.register(
+    name="kanban_request_subprofile",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_SUBPROFILE_SCHEMA,
+    handler=_handle_request_subprofile,
+    check_fn=_check_kanban_mode,
+    emoji="🐣",
+)

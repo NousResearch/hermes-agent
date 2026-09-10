@@ -427,14 +427,11 @@ class TestStubSchemaDrift(unittest.TestCase):
 
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
-    # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns"}
-
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
         corresponding _TOOL_STUBS entry."""
         import re
-        from tools.code_execution_tool import _TOOL_STUBS
+        from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS, _TOOL_STUBS
 
         # Import the registry and trigger tool registration
         from tools.registry import registry
@@ -451,7 +448,7 @@ class TestStubSchemaDrift(unittest.TestCase):
             schema_props = entry.schema.get("parameters", {}).get("properties", {})
             schema_params = set(schema_props.keys()) - self._INTERNAL_PARAMS
             if tool_name == "terminal":
-                schema_params -= self._BLOCKED_TERMINAL_PARAMS
+                schema_params -= _TERMINAL_BLOCKED_PARAMS
 
             # Extract parameter names from the stub signature string
             # Match word before colon: "pattern: str, target: str = ..."

@@ -773,6 +773,59 @@ def _run_quick_snapshots() -> Optional[str]:
     return snapshot_id
 
 
+# Path of the pre-update full backup the parent update process wrote, published
+# into the environment so a Windows exe hand-off child (which re-execs the venv
+# Python and re-runs ``hermes update``) can reuse it instead of writing a second,
+# near-identical zip (#107543). The hand-off copies ``{**os.environ}``, so the
+# child inherits this automatically.
+_PRE_UPDATE_BACKUP_ENV = "HERMES_PRE_UPDATE_BACKUP_PATH"
+
+
+def _reuse_handoff_pre_update_backup() -> Optional[Path]:
+    """Return the parent's pre-update full backup to reuse, or ``None`` to write a fresh one.
+
+    On Windows the ``hermes.exe`` shim cannot replace itself, so mid-update it hands off to the
+    venv interpreter, which re-enters the update flow and calls ``_run_pre_update_backup`` a second
+    time. Both legs are one user-visible update, so the child should not take a second full backup
+    (~172 MB / ~20 s each on a real install, #107543). The parent's zip is taken BEFORE the code
+    swap — the more valuable rollback point — so the child reuses it: only when we are the hand-off
+    child AND the parent left a backup whose path (inherited via the environment) still exists.
+    ``backup.py`` writes via an atomic rename, so existence implies a complete zip. Any miss (parent
+    backup failed, path gone) falls through to a fresh full backup — never fewer backups than today.
+    """
+    try:
+        from hermes_cli.main_install_repair import _UPDATE_REEXEC_ENV
+    except Exception:
+        _UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
+    if os.environ.get(_UPDATE_REEXEC_ENV) != "1":
+        return None
+    path_str = os.environ.get(_PRE_UPDATE_BACKUP_ENV)
+    if not path_str:
+        return None
+    try:
+        path = Path(path_str)
+        if not path.is_file():
+            return None
+    except Exception:
+        return None
+
+    from hermes_cli.sizefmt import format_bytes
+    try:
+        size = format_bytes(path.stat().st_size)
+    except OSError:
+        size = "unknown size"
+    try:
+        from hermes_constants import display_hermes_home, get_hermes_home
+        display_path = f"{display_hermes_home()}/{path.relative_to(get_hermes_home())}"
+    except Exception:
+        display_path = str(path)
+    print("◆ Pre-update backup: reusing the one taken before the Windows hand-off")
+    print(f"  Kept:     {display_path} ({size})")
+    print(f"  Restore:  hermes import {path}")
+    print()
+    return path
+
+
 def _run_full_backup() -> None:
     """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises."""
     try:
@@ -821,6 +874,12 @@ def _run_full_backup() -> None:
     print("  Disable:  set updates.pre_update_backup: quick (or off) in config.yaml")
     print()
 
+    # Publish for a Windows exe hand-off child so it reuses this zip instead of
+    # writing a second, near-identical one (#107543); harmless when no hand-off
+    # follows (nothing else re-runs the pre-update backup in this process tree).
+    with suppress(Exception):
+        os.environ[_PRE_UPDATE_BACKUP_ENV] = str(out_path)
+
 
 def _run_pre_update_backup(args) -> Optional[str]:
     """Run the pre-update backup; return the quick-snapshot id (None when off/failed). Never raises.
@@ -849,7 +908,10 @@ def _run_pre_update_backup(args) -> Optional[str]:
             print()
         return snapshot_id
 
-    _run_full_backup()
+    # A Windows exe hand-off child reuses the parent's pre-update zip rather than
+    # writing a second, near-identical one for the same update (#107543).
+    if _reuse_handoff_pre_update_backup() is None:
+        _run_full_backup()
     return snapshot_id
 
 

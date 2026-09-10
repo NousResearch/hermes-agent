@@ -115,25 +115,38 @@ class TurnFacadeMixin:
                 getattr(self, "_session_db", None), getattr(self, "session_id", None)
             )
 
-            # Keep the ContextVar scope local (agent tokens may be observed from another thread).
-            # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
-                try:
-                    if lease is not None:
-                        lease.start()
-                    result = run_conversation(
-                        self, user_message, system_message, conversation_history, effective_task_id,
-                        stream_callback, persist_user_message,
-                        persist_user_timestamp=persist_user_timestamp,
-                        persist_user_display_kind=persist_user_display_kind,
-                        persist_user_display_metadata=persist_user_display_metadata,
-                        persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
-                    )
-                finally:
-                    # Post-loop relay/task finalization must not receive a late refresh interrupt;
-                    # the interrupt clear itself waits for the thread join in the outer finally.
-                    if lease is not None:
-                        lease.stop_refresher()
+            stream_suppressed_before = getattr(self, "_public_stream_suppressed", False)
+            self._public_stream_suppressed = True
+            try:
+                # Keep the ContextVar scope local (agent tokens may be observed from another thread).
+                # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
+                with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
+                    try:
+                        if lease is not None:
+                            lease.start()
+                        result = run_conversation(
+                            self, user_message, system_message, conversation_history, effective_task_id,
+                            stream_callback, persist_user_message,
+                            persist_user_timestamp=persist_user_timestamp,
+                            persist_user_display_kind=persist_user_display_kind,
+                            persist_user_display_metadata=persist_user_display_metadata,
+                            persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
+                        )
+                    finally:
+                        # Post-loop relay/task finalization must not receive a late refresh interrupt;
+                        # the interrupt clear itself waits for the thread join in the outer finally.
+                        if lease is not None:
+                            lease.stop_refresher()
+            finally:
+                self._public_stream_suppressed = stream_suppressed_before
+            # Mandatory owner-facing stop boundary: no public turn may escape without
+            # exactly one canonical terminal outcome. Internal child/tool turns remain
+            # structured data and are excluded by the adapter.
+            from agent.terminal_boundary import enforce_public_terminal_response
+            result = enforce_public_terminal_response(
+                result if isinstance(result, dict) else {},
+                platform=task_context["platform"],
+            )
             terminal = result if isinstance(result, dict) else {}
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True
@@ -159,6 +172,17 @@ class TurnFacadeMixin:
             if task_started and not task_finished:
                 task_finished = True
                 finish_task_run(**task_context, error=exc)
+            if (
+                task_context["platform"] not in {"subagent", "internal", "tool"}
+                and not isinstance(exc, (KeyboardInterrupt, InterruptedError, SystemExit))
+                and type(exc).__name__ != "CancelledError"
+            ):
+                # An owner-facing runtime failure must not escape as ordinary prose.
+                from agent.terminal_boundary import enforce_public_terminal_response
+                return enforce_public_terminal_response(
+                    {"failed": True, "completed": False, "error": str(exc)},
+                    platform=task_context["platform"],
+                )
             raise
         finally:
             try:

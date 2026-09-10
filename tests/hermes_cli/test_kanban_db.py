@@ -435,6 +435,37 @@ def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
         assert kb.get_task(conn, t2).status == "blocked"
 
 
+def test_recompute_ready_holds_initial_blocked_card_when_parents_finish(kanban_home):
+    """A card parked via ``initial_status="blocked"`` is a human gate: parent
+    completion must not promote it to ``ready`` — only ``unblock_task`` may
+    exit the gate (#107398)."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        sibling = kb.create_task(conn, title="sibling", assignee="a", parents=[parent])
+        gated = kb.create_task(
+            conn, title="gated", assignee="a", parents=[parent], initial_status="blocked",
+        )
+        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
+        conn.commit()
+        assert kb.get_task(conn, gated).status == "blocked"
+
+        # Only the plain todo sibling promotes; the gated card stays parked
+        # with no fabricated ``promoted`` event.
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, sibling).status == "ready"
+        assert kb.get_task(conn, gated).status == "blocked"
+        kinds = [r["kind"] for r in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ?", (gated,)
+        )]
+        assert "promoted" not in kinds
+        assert "blocked" in kinds
+
+        # The human gate closes explicitly: parents are done, so the card
+        # lands in ready.
+        assert kb.unblock_task(conn, gated) is True
+        assert kb.get_task(conn, gated).status == "ready"
+
+
 
 
 # ---------------------------------------------------------------------------

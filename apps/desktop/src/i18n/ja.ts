@@ -236,7 +236,7 @@ export const ja = defineLocale({
 
   remoteDisplayBanner: {
     message: reason =>
-      `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
+      `ソフトウェアレンダリングが有効です — GPU 加速は無効化されています (${reason})。`
   },
 
   billingBlock: {

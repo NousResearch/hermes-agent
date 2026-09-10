@@ -514,6 +514,13 @@ if (REMOTE_DISPLAY_REASON) {
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
   // with only --disable-gpu: force compositing onto the CPU too.
   app.commandLine.appendSwitch('disable-gpu-compositing')
+  // Chromium still launches the GPU process with only the two switches above.
+  // On broken-GPU / low-RAM / certain-driver Linux hosts that process starts,
+  // fails to init, and crashes the app with error_code=1002. The only switch
+  // that fully suppresses the GPU process is --disable-gpu. This is the same
+  // fix that lived (unmerged) on branch fix/electron-41-major (commit
+  // 6a2909fe5a / PR #37932); re-submit here so it reaches main.
+  app.commandLine.appendSwitch('disable-gpu')
   console.log(
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )

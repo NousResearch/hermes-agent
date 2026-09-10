@@ -235,7 +235,7 @@ export const en: Translations = {
 
   remoteDisplayBanner: {
     message: reason =>
-      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
+      `Software rendering active — GPU acceleration disabled (${reason}).`
   },
 
   billingBlock: {

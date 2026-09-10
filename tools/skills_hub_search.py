@@ -102,9 +102,15 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     ]
 
 
-def _search_one_source(src: SkillSource, query: str, limit: int) -> Tuple[str, List[SkillMeta]]:
+def _search_one_source(
+    src: SkillSource, query: str, limit: int, provider_filter: str = "",
+) -> Tuple[str, List[SkillMeta]]:
     """Search a single source.  Runs in a thread for parallelism."""
     try:
+        # These sources mix providers in one catalog. Narrow before their top-N
+        # cut so another provider cannot crowd every requested match out.
+        if provider_filter and isinstance(src, (HermesIndexSource, GitHubSource)):
+            return src.source_id(), src.search(query, limit=limit, provider_filter=provider_filter)
         return src.source_id(), src.search(query, limit=limit)
     except Exception as e:
         logger.debug("Search failed for %s: %s", src.source_id(), e)
@@ -116,8 +122,9 @@ def _select_active_sources(sources: List[SkillSource], source_filter: str) -> Li
 
     A provider filter (nvidia/openai/...) is not a source id — the data lives
     in the index/github source under ``extra.provider`` — so it selects like
-    "all"; the narrowing happens later on the merged results. "official" is
-    always included alongside an explicit source filter.
+    "all". Mixed-provider sources filter before limiting; the merged results
+    are filtered again. "official" is always queried alongside an explicit
+    source filter.
     """
     effective = "all" if source_filter.strip().lower() in _PROVIDER_FILTER_VALUES else source_filter
     index_available = effective == "all" and any(
@@ -147,6 +154,9 @@ def parallel_search_sources(
 
     per_source_limits = per_source_limits or {}
     active = _select_active_sources(sources, source_filter)
+    provider_filter = source_filter.strip().lower()
+    if provider_filter not in _PROVIDER_FILTER_VALUES:
+        provider_filter = ""
     all_results: List[SkillMeta] = []
     source_counts: Dict[str, int] = {}
     timed_out_ids: List[str] = []
@@ -159,7 +169,9 @@ def parallel_search_sources(
     from tools.daemon_pool import DaemonThreadPoolExecutor
     pool = DaemonThreadPoolExecutor(max_workers=min(len(active), 8))
     futures = {
-        pool.submit(_search_one_source, src, query, per_source_limits.get(src.source_id(), 50)): src.source_id()
+        pool.submit(
+            _search_one_source, src, query, per_source_limits.get(src.source_id(), 50), provider_filter,
+        ): src.source_id()
         for src in active
     }
     try:

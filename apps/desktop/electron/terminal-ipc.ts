@@ -156,7 +156,10 @@ export function registerTerminalIpc({
     delete env.COLORFGBG
 
     env.COLORTERM = 'truecolor'
-    env.LC_CTYPE = env.LC_CTYPE || 'UTF-8'
+    // macOS accepts the bare charset name "UTF-8"; glibc does not, and bash
+    // warns: setlocale: LC_CTYPE: cannot change locale (UTF-8). Prefer LANG or C.UTF-8 on Linux.
+    env.LC_CTYPE =
+      env.LC_CTYPE || (process.platform === 'darwin' ? 'UTF-8' : env.LANG || 'C.UTF-8')
     env.TERM = 'xterm-256color'
     env.TERM_PROGRAM = 'Hermes'
     env.TERM_PROGRAM_VERSION = app.getVersion()

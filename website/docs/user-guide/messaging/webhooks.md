@@ -89,6 +89,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
+| `mirror_to_session` | No | Default `true`. After a successful delivery to a chat platform, the delivered message is also written into that chat's session transcript (as a labelled user turn, the same way cron briefs are), so when you reply in that chat the agent knows what it just sent you. Set `false` to keep the target chat's history untouched. |
 
 ### Full example
 
@@ -320,6 +321,8 @@ The `deliver` field controls where the agent's response goes after processing th
 | `bluebubbles` | Routes the response to BlueBubbles (iMessage). Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 
 For cross-platform delivery, the target platform must also be enabled and connected in the gateway. If no `chat_id` is provided in `deliver_extra`, the response is sent to that platform's configured home channel.
+
+A delivered response is mirrored into the target chat's session transcript as `[Webhook delivery: <route>]` followed by the message, so a follow-up reply in that chat ("so he's out?") has the context of what the webhook run said. The mirror is best-effort: it never fails the delivery, and it is skipped when the chat has no gateway session yet (nobody has talked to the agent there). Set `mirror_to_session: false` on the route to disable it.
 
 ---
 

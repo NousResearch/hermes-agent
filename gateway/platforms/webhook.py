@@ -2,7 +2,8 @@
 Svix, Linear, generic), renders payloads into agent prompts, and routes responses back (github_comment
 or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
 secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
-deliver/deliver_extra, deliver_only (rendered prompt IS the message). Per-route rate limiting,
+deliver/deliver_extra, deliver_only (rendered prompt IS the message), mirror_to_session (default on: a
+delivered response is also written into the target chat's transcript so follow-ups there have context). Per-route rate limiting,
 idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds a timestamp for
 replay protection; body-only V1 is deprecated but accepted with a warning."""
 
@@ -452,7 +453,9 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload,
-                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+                    "route": route_name,
+                    "mirror": route_config.get("mirror_to_session", True) is not False}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
         failed = {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id}
@@ -567,7 +570,9 @@ class WebhookAdapter(BasePlatformAdapter):
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"),
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+            "route": route_name,
+            "mirror": route_config.get("mirror_to_session", True) is not False}
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
@@ -775,4 +780,30 @@ class WebhookAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
             chat_id = home.chat_id
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
-        return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+        result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+        if result.success:
+            self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)
+        return result
+
+    def _mirror_delivery(self, platform_name: str, chat_id: str, content: str, delivery: dict,
+                         thread_id: Optional[str]) -> None:
+        """Best-effort mirror of a delivered response into the TARGET chat's session transcript, so a
+        follow-up there ("so he's out?") sees what the webhook run just told the user. Without this the
+        text only lives in the ephemeral ``webhook:<route>:<delivery_id>`` session and the target chat's
+        agent has no idea it sent anything. Same path and USER-role convention as cron briefs
+        (``cron.scheduler_delivery._maybe_mirror_cron_delivery``, #2221): the text is not the target
+        session's agent speaking, and a labelled user turn merges safely on strict-alternation providers.
+        Route opt-out: ``mirror_to_session: false``. Never raises — a delivered message must not be
+        reported failed because the mirror broke."""
+        if not delivery.get("mirror", True):
+            return
+        route = delivery.get("route") or "webhook"
+        try:
+            from gateway.mirror import mirror_to_session
+            ok = mirror_to_session(platform_name, chat_id, f"[Webhook delivery: {route}]\n{content}",
+                                   source_label="webhook", thread_id=thread_id, role="user")
+            logger.log(logging.INFO if ok else logging.DEBUG,
+                       "[webhook] Route '%s' delivery %smirrored into %s:%s session", route, "" if ok else "not ",
+                       platform_name, chat_id)
+        except Exception as e:
+            logger.debug("[webhook] Route '%s' delivery mirror into %s:%s failed: %s", route, platform_name, chat_id, e)

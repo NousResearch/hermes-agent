@@ -862,6 +862,85 @@ class TestDeliverCrossPlatformThreadId:
         )
 
 
+class TestCrossPlatformDeliveryMirror:
+    """A delivered response is mirrored into the TARGET chat's session so a follow-up reply there has
+    context (the text otherwise only lives in the ephemeral webhook:<route>:<id> session)."""
+
+    def _setup(self, send_result=None):
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=send_result or SendResult(success=True))
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner.config.get_home_channel.return_value = None
+        adapter.gateway_runner = mock_runner
+        return adapter, mock_target
+
+    @pytest.mark.asyncio
+    async def test_successful_delivery_is_mirrored_as_labelled_user_turn(self):
+        adapter, _ = self._setup()
+        delivery = {"route": "ambush-nfl", "deliver_extra": {"chat_id": "5135545282", "thread_id": "7"}}
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror:
+            result = await adapter._deliver_cross_platform("telegram", "Henderson OUT Wednesday", delivery)
+        assert result.success is True
+        mirror.assert_called_once_with(
+            "telegram", "5135545282", "[Webhook delivery: ambush-nfl]\nHenderson OUT Wednesday",
+            source_label="webhook", thread_id="7", role="user")
+
+    @pytest.mark.asyncio
+    async def test_home_channel_fallback_is_mirrored_to_that_chat(self):
+        adapter, _ = self._setup()
+        adapter.gateway_runner.config.get_home_channel.return_value = MagicMock(chat_id="home-1")
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror:
+            await adapter._deliver_cross_platform("telegram", "hi", {"route": "r", "deliver_extra": {}})
+        assert mirror.call_args.args[:2] == ("telegram", "home-1")
+
+    @pytest.mark.asyncio
+    async def test_failed_delivery_is_not_mirrored(self):
+        adapter, _ = self._setup(SendResult(success=False, error="boom"))
+        with patch("gateway.mirror.mirror_to_session") as mirror:
+            result = await adapter._deliver_cross_platform(
+                "telegram", "hi", {"route": "r", "deliver_extra": {"chat_id": "1"}})
+        assert result.success is False
+        mirror.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_can_opt_out(self):
+        adapter, _ = self._setup()
+        with patch("gateway.mirror.mirror_to_session") as mirror:
+            await adapter._deliver_cross_platform(
+                "telegram", "hi", {"route": "r", "mirror": False, "deliver_extra": {"chat_id": "1"}})
+        mirror.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mirror_failure_never_fails_the_delivery(self):
+        adapter, mock_target = self._setup()
+        with patch("gateway.mirror.mirror_to_session", side_effect=RuntimeError("db locked")):
+            result = await adapter._deliver_cross_platform(
+                "telegram", "hi", {"route": "r", "deliver_extra": {"chat_id": "1"}})
+        assert result.success is True
+        mock_target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_delivery_info_records_route_and_mirror_flag(self):
+        """The route name and opt-out reach send() through delivery_info for both agent-run and
+        deliver_only routes."""
+        routes = {
+            "agent": {"secret": _INSECURE_NO_AUTH, "prompt": "p"},
+            "quiet": {"secret": _INSECURE_NO_AUTH, "prompt": "p", "mirror_to_session": False},
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            r1 = await cli.post("/webhooks/agent", json={"a": 1}, headers={"X-Request-ID": "d1"})
+            r2 = await cli.post("/webhooks/quiet", json={"a": 1}, headers={"X-Request-ID": "d2"})
+        assert r1.status == 202 and r2.status == 202
+        assert adapter._delivery_info["webhook:agent:d1"]["route"] == "agent"
+        assert adapter._delivery_info["webhook:agent:d1"]["mirror"] is True
+        assert adapter._delivery_info["webhook:quiet:d2"]["mirror"] is False
+
+
 class TestInsecureNoAuthSafetyRail:
     """connect() refuses to start when INSECURE_NO_AUTH is combined with a
     non-loopback bind. Guards against accidentally exposing an unauthenticated

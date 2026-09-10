@@ -60,6 +60,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
 | `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
+| `hermes runtime` | Register named local/docker/ssh execution targets and assign one per bot/profile. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
@@ -785,6 +786,25 @@ Projects are human-named workspaces that can span multiple folders / repos. They
 | `archive` | Archive a project (recoverable). |
 | `restore` | Restore an archived project. |
 | `bind-board` | Bind a kanban board to this project. |
+
+## `hermes runtime`
+
+```bash
+hermes runtime <add|list|remove|assign|unassign|test|status|stop>
+```
+
+Register named execution targets and assign one to the current profile. Does not provision cloud resources or store secrets in `config.yaml`.
+
+| Subcommand | Description |
+|------------|-------------|
+| `add` | Register a local, docker, or ssh target (`--kind`, optional `--workspace` / `--image` / `--ssh-host`). |
+| `list` / `ls` | Show the catalog and which runtime is assigned. |
+| `remove` / `rm` | Unregister a target. Does not stop other bots. |
+| `assign` | Apply the target onto this profile's `terminal.*` keys. |
+| `unassign` | Clear `terminal.runtime`. Leaves `terminal.backend` in place. |
+| `test` | Probe connectivity without starting a bot. |
+| `status` | Assigned name, probe, limits, and this profile's containers. |
+| `stop` | Stop/remove this profile's Hermes-labeled containers. Requires `--yes`. |
 
 ## `hermes webhook`
 

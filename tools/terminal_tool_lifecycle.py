@@ -213,6 +213,15 @@ def ensure_task_env(task_id: Optional[str] = None):
             _last_activity[effective_task_id] = time.time()
         return existing
 
+    try:
+        from hermes_cli.runtime import assigned_runtime_block
+        block = assigned_runtime_block()
+    except Exception:
+        block = None
+    if block:
+        from tools.environments.base import EnvironmentConnectionError
+        raise EnvironmentConnectionError(block["reason"], retry_hint=block["retry_hint"])
+
     image = _select_image(env_type, resolve_task_overrides(task_id), config)
 
     _start_cleanup_thread()

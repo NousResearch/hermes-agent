@@ -300,6 +300,9 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
     "webhook": (
         _sub("webhook", "build_webhook_parser", "cmd_webhook"),
         "list, *subscribe, *remove, test"),
+    "runtime": (
+        _sub("runtime", "build_runtime_parser", "cmd_runtime"),
+        "list, *add, *remove, *assign, *unassign, test, status, *stop"),
     "hooks": (_sub("hooks", "build_hooks_parser", "cmd_hooks"), "list, *test, *doctor, *revoke"),
     "slack": (_sub("slack", "build_slack_parser", "cmd_slack"), "manifest"),
     "profile": (

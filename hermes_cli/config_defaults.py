@@ -344,6 +344,9 @@ DEFAULT_CONFIG = {
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
         # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
         "persistent_shell": True,
+        # Named execution targets (local / docker / ssh). Secrets stay in .env, never here.
+        "runtime": "",
+        "runtimes": {},
     },
 
     "web": {

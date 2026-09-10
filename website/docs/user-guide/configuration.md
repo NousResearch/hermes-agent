@@ -234,6 +234,22 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
+### Named bot runtimes
+
+Profiles already isolate Hermes state. Named runtimes let you register a local, Docker, or SSH execution target and assign it to one bot/profile without starting the bot first:
+
+```bash
+hermes runtime add grok-box --kind docker --workspace /path/to/project
+hermes runtime test grok-box          # connectivity only — no bot, no cloud provision
+hermes -p grok runtime assign grok-box
+hermes runtime status
+hermes runtime stop --yes             # this profile's containers only
+```
+
+Catalog entries live in `terminal.runtimes` (config.yaml). The assigned name is `terminal.runtime`. Assign copies kind/workspace/image/limits onto the existing `terminal.*` keys so Docker/SSH backends keep working. SSH keys and other secrets stay in `.env` — they are stripped on write and on profile export. `hermes runtime` does **not** create AWS/ECS/Modal/Daytona resources; a user-managed cloud VM is `kind=ssh` to a host you already run.
+
+`hermes status` shows the assigned runtime name. Starting a bot on an unready assigned runtime fails with an actionable error instead of falling back to the Desktop host.
+
 ### Local Backend
 
 The default. Commands run directly on your machine with no isolation. No special setup required.

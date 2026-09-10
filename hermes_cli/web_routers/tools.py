@@ -17,7 +17,8 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import _plugin_terminal_backend_rows
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
-    TerminalBackendSelect, ToolsetEnvUpdate, ToolsetModelSelect, ToolsetPostSetup,
+    TerminalBackendSelect, TerminalRuntimeAssign, TerminalRuntimeStop,
+    ToolsetEnvUpdate, ToolsetModelSelect, ToolsetPostSetup,
     ToolsetProviderSelect, ToolsetToggle)
 from hermes_cli.web_routers._common import (
     _CONFIG_MUTATION_LOCK, _profile_cli_args, _profile_scope, _spawn_hermes_action,
@@ -661,6 +662,51 @@ async def select_terminal_backend(
 
     await asyncio.to_thread(_run)
     return {"ok": True, "backend": backend}
+
+
+@router.get("/api/tools/terminal/runtime")
+async def get_terminal_runtime(profile: Optional[str] = None):
+    """Assigned runtime, probe, and this profile's containers. Never raises on probe failure."""
+    from hermes_cli.runtime import runtime_status_payload
+
+    return await scoped_to_thread(profile, runtime_status_payload)
+
+
+@router.put("/api/tools/terminal/runtime")
+async def assign_terminal_runtime(
+    body: TerminalRuntimeAssign, profile: Optional[str] = None):
+    """Assign a registered named runtime to the profile and apply ``terminal.*``."""
+    from hermes_cli.runtime import RuntimeError_, assign_runtime
+
+    def _run():
+        with config_write_scope(body.profile or profile):
+            try:
+                spec = assign_runtime(body.name)
+            except RuntimeError_ as exc:
+                raise _bad_request(str(exc)) from exc
+            return spec
+
+    spec = await asyncio.to_thread(_run)
+    return {"ok": True, "assigned": body.name, "kind": spec.get("kind")}
+
+
+@router.post("/api/tools/terminal/runtime/stop")
+async def stop_terminal_runtime(
+    body: TerminalRuntimeStop, profile: Optional[str] = None):
+    """Stop this profile's containers only. Requires ``confirm: true``."""
+    from hermes_cli.runtime import stop_profile_runtime
+
+    if not body.confirm:
+        raise _bad_request(
+            "Stopping a runtime deletes this profile's Hermes-labeled containers. "
+            "Resend with confirm=true. Other bots are not affected."
+        )
+
+    def _run():
+        with _profile_scope(body.profile or profile):
+            return stop_profile_runtime(force_remove=True)
+
+    return await asyncio.to_thread(_run)
 
 
 @router.get("/api/tools/computer-use/status")

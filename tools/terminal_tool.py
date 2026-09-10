@@ -1024,6 +1024,13 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
 
         if env_type == "singularity":
             _check_disk_usage_warning()
+        try:
+            from hermes_cli.runtime import assigned_runtime_block
+            block = assigned_runtime_block()
+        except Exception:
+            block = None
+        if block:
+            raise EnvironmentConnectionError(block["reason"], retry_hint=block["retry_hint"])
         logger.info("Creating new %s environment for task %s...", env_type, eff[:8])
         try:
             new_env = _create_configured_env(

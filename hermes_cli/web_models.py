@@ -482,6 +482,14 @@ class TerminalBackendSelect(BaseModel):
     backend: str
     profile: Optional[str] = None
 
+class TerminalRuntimeAssign(BaseModel):
+    name: str
+    profile: Optional[str] = None
+
+class TerminalRuntimeStop(BaseModel):
+    confirm: bool = False
+    profile: Optional[str] = None
+
 class RawConfigUpdate(BaseModel):
     yaml_text: str
     profile: Optional[str] = None

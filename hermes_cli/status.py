@@ -161,6 +161,9 @@ def _render_terminal(ctx):
     _section("Terminal Backend")
     terminal_cfg = ctx.config.get("terminal", {}) if isinstance(ctx.config.get("terminal"), dict) else {}
     terminal_env = os.getenv("TERMINAL_ENV", "") or terminal_cfg.get("backend", "local")
+    assigned_runtime = str(terminal_cfg.get("runtime") or "").strip()
+    if assigned_runtime:
+        _kv("Runtime:", assigned_runtime)
     _kv("Backend:", terminal_env)
     if terminal_env in _TERMINAL_ENV_ROWS:
         for label, var, default, empty_is_unset in _TERMINAL_ENV_ROWS[terminal_env]:

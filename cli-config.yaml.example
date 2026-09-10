@@ -374,6 +374,25 @@ terminal:
   lifetime_seconds: 300
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
+  #
+  # Named execution targets (hermes runtime). Assign one per profile; assign
+  # copies kind/workspace/image onto the live terminal.* keys above. Secrets
+  # (ssh_key, passwords) stay in .env and are stripped from this catalog.
+  # First-milestone kinds: local, docker, ssh. User-managed cloud VMs are
+  # kind=ssh. This catalog does not provision Modal/Daytona/AWS.
+  runtime: ""
+  runtimes: {}
+  # runtimes:
+  #   grok-box:
+  #     kind: docker
+  #     workspace: /path/to/project
+  #     image: nikolaik/python-nodejs:python3.11-nodejs20
+  #   lab:
+  #     kind: ssh
+  #     workspace: /home/myuser/project
+  #     ssh_host: my-server.example.com
+  #     ssh_user: myuser
+  #     ssh_port: 22
 
 # -----------------------------------------------------------------------------
 # OPTION 2: SSH remote execution

@@ -35,6 +35,7 @@ from hermes_cli.subcommands.slack import build_slack_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.update import build_update_parser
+from hermes_cli.subcommands.runtime import build_runtime_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
 
@@ -58,6 +59,7 @@ SINGLE_HANDLER_CASES = [
     ("auth", build_auth_parser, "cmd_auth", ["auth"]),
     ("status", build_status_parser, "cmd_status", ["status"]),
     ("webhook", build_webhook_parser, "cmd_webhook", ["webhook"]),
+    ("runtime", build_runtime_parser, "cmd_runtime", ["runtime"]),
     ("hooks", build_hooks_parser, "cmd_hooks", ["hooks"]),
     ("doctor", build_doctor_parser, "cmd_doctor", ["doctor"]),
     ("security", build_security_parser, "cmd_security", ["security"]),

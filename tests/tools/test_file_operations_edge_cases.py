@@ -278,7 +278,9 @@ class TestSearchContextParsing:
             )
 
         cmd_arg = mock_exec.call_args[0][0]
-        assert cmd_arg.startswith("set -o pipefail; grep -rnHE ")
+        assert cmd_arg.startswith("set -o pipefail; { grep -rnHE ")
+        assert " -f - " in cmd_arg
+        assert mock_exec.call_args.kwargs["stdin_data"] == "foo|bar"
         assert result.error is None
         assert result.total_count == 2
         assert [match.content for match in result.matches] == ["foo", "bar"]

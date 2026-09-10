@@ -22,12 +22,11 @@ def _parent():
 def test_routed_runtime_normalizes_only_native_mode_preserving_fields(mode, pool):
     runtime = dict(provider="openai-codex", model="review", api_key="key", base_url="url",
                    api_mode=mode, credential_pool=pool, command="cmd", args=["arg"],
-                   request_overrides={"extra": True}, max_output_tokens=456)
+                   request_overrides={"extra": True})
     with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime):
         resolved = _resolve_review_runtime(_parent(), {"provider": "openai-codex", "model": "review"})
     expected = {**runtime, "api_mode": "codex_responses" if mode == "codex_app_server" else mode,
-                "max_tokens": 456, "routed": True}
-    del expected["max_output_tokens"]
+                "routed": True}
     assert resolved == expected
     assert runtime["api_mode"] == mode
 

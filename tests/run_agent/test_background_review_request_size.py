@@ -138,8 +138,7 @@ def test_later_detached_compaction_rebuild_is_checked(rebuilt_pressure):
         return list(messages), system
 
     with _pressure(100, 1500, rebuilt_pressure), \
-         patch.object(agent, "_compress_context", side_effect=compress) as compression, \
-         patch("agent.turn_preflight.automatic_local_compression_allowed", return_value=True):
+         patch.object(agent, "_compress_context", side_effect=compress) as compression:
         result = _run_with_responses(agent, [_tool_response(100), _final_response()])
     compression.assert_called_once()
     assert agent.client.chat.completions.create.call_count == (2 if rebuilt_pressure < 1000 else 1)

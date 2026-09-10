@@ -11,7 +11,8 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
+from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Sequence, Tuple, List
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -47,6 +48,11 @@ try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+
+try:  # sibling module; support both package and flat plugin-dir import
+    from .api_transport import keyless_api_base_url, has_keyless_credentials, keyless_file_url, KeylessFileError
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from api_transport import keyless_api_base_url, has_keyless_credentials, keyless_file_url, KeylessFileError  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -698,11 +704,225 @@ async def _cancel_socket_tasks(tasks: Any) -> None:
             _SOCKET_TASK_CANCEL_TIMEOUT_S)
 
 
-_SLACK_PROXY_HOSTS = ("slack.com", "files.slack.com", "wss-primary.slack.com")
+# Default Slack Web API base URL used by ``slack_sdk`` (AsyncWebClient.BASE_URL).
+_DEFAULT_SLACK_BASE_URL = "https://slack.com/api/"
 
 
-def _resolve_slack_proxy_url() -> Optional[str]:
-    """Resolve a proxy URL that Slack SDK clients can safely use."""
+def _normalize_slack_base_url(raw: Optional[str]) -> Optional[str]:
+    """Normalize a custom Slack Web API base URL.
+
+    Returns ``None`` when unset/blank so callers fall back to the slack_sdk
+    default (``https://slack.com/api/``). A trailing slash is enforced because
+    ``slack_sdk`` joins ``base_url`` with the API method via ``urljoin`` — a
+    missing slash would drop the final path segment (``.../api`` +
+    ``chat.postMessage`` -> ``.../chat.postMessage``).
+    """
+    if not raw:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+    if not value.endswith("/"):
+        value += "/"
+    return value
+
+
+def _slack_base_url_host(base_url: Optional[str]) -> Optional[str]:
+    """Extract the lowercase hostname from a Slack base URL for NO_PROXY checks."""
+    if not base_url:
+        return None
+    try:
+        host = urlsplit(str(base_url)).hostname
+    except Exception:
+        return None
+    if not host:
+        return None
+    return host.strip().lower() or None
+
+
+def _apply_slack_base_url(client: Any, base_url: Optional[str]) -> None:
+    """Point a Slack SDK client at a custom Web API base URL when configured.
+
+    Set post-construction (like ``_apply_slack_proxy``) because ``slack_sdk``
+    reads ``client.base_url`` at call time in ``api_call()`` — so overriding it
+    after the client is built is respected on every request. A ``None``/blank
+    ``base_url`` leaves the slack_sdk default untouched.
+    """
+    if base_url and hasattr(client, "base_url"):
+        client.base_url = base_url
+
+
+def _slack_url_origin(url: Optional[str]) -> Optional[Tuple[str, str, int]]:
+    """Return the ``(scheme, host, port)`` origin of *url*, or ``None``.
+
+    ``None`` for anything unusable (blank, non-HTTP scheme, no host, invalid
+    port) so callers never treat a malformed URL as a match. The port is
+    defaulted per scheme, making ``https://host/`` and ``https://host:443/``
+    the same origin.
+    """
+    if not url:
+        return None
+    try:
+        parts = urlsplit(str(url).strip())
+    except Exception:
+        return None
+    scheme = (parts.scheme or "").strip().lower()
+    if scheme not in {"http", "https"}:
+        return None
+    host = (parts.hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return (scheme, host, port)
+
+
+def _slack_trusted_origin_label(base_url: Optional[str]) -> Optional[str]:
+    """Render the origin of *base_url* as ``scheme://host[:port]``.
+
+    Used in refusal messages so an operator can see which endpoint is
+    trusted; without it, a URL that simply sits outside the configured
+    endpoint is indistinguishable from a genuine SSRF block. ``None`` when no
+    usable custom base URL is configured.
+    """
+    origin = _slack_url_origin(base_url)
+    if origin is None:
+        return None
+    scheme, host, port = origin
+    if port == (443 if scheme == "https" else 80):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
+def _slack_trust_hint(base_url: Optional[str]) -> str:
+    """Trailing clause naming the trusted endpoint for a refusal message."""
+    trusted = _slack_trusted_origin_label(base_url)
+    if not trusted:
+        return ""
+    return (
+        f" (trusted: the Slack CDN, plus {trusted} and hosts below it from "
+        "slack.base_url — scheme and port must match too)"
+    )
+
+
+def _is_slack_base_url_trusted(url: str, base_url: Optional[str]) -> bool:
+    """Return True when *url* lives on the configured custom Slack endpoint.
+
+    ``url_private`` / ``url_private_download`` values are minted by whatever
+    Slack endpoint the workspace actually talks to. With a custom
+    ``slack.base_url`` (self-hosted relay, Enterprise proxy, mock Slack) those
+    links point at that endpoint instead of the Slack CDN, so the inbound file
+    download guards have to trust it — the same trust ``_apply_slack_base_url``
+    already grants it for every Web API call.
+
+    Trust covers the configured host *and hosts below it*, on the same scheme
+    and port. Slack itself splits the Web API (``slack.com``) from file
+    content (``files.slack.com``), so a Slack-compatible deployment mirrors
+    that split under its own host and hands out file links on a subdomain of
+    ``base_url``; this is the same shape as the Slack-CDN allowlist
+    (``slack.com`` plus ``*.slack.com``). It cannot be steered by a forged
+    file object, because the host everything is anchored to comes from local
+    config. With no ``base_url`` configured this always returns False, leaving
+    the Slack-CDN allowlist as the only trust source.
+
+    Trusting a subtree means trusting the whole DNS zone below the configured
+    host: any name someone can publish under it — ``evil.slack.internal.corp``
+    for a ``base_url`` of ``https://slack.internal.corp/api/`` — is treated as
+    the endpoint and receives the bot token. That is the same premise the
+    Slack-CDN allowlist makes about ``*.slack.com``, so point ``base_url`` at a
+    host whose zone the operator controls; if it does not, serve file content
+    from the ``base_url`` host itself, which needs no subtree trust.
+
+    Callers check the CDN allowlist first: a ``base_url`` on Slack itself
+    must not turn CDN links into "configured" ones, which would cost them
+    ``is_safe_url`` and the DNS-pinned client.
+    """
+    origin = _slack_url_origin(base_url)
+    target = _slack_url_origin(url)
+    if origin is None or target is None:
+        return False
+    scheme, host, port = origin
+    if (target[0], target[2]) != (scheme, port):
+        return False
+    return target[1] == host or target[1].endswith("." + host)
+
+
+def _slack_base_url_redirect_guard(base_url: Optional[str]) -> Any:
+    """Build a redirect guard that pins every hop to the custom Slack endpoint.
+
+    A custom endpoint may legitimately 3xx within itself (auth handoff, path
+    rewrite, API host to file host), so those hops pass. Anything that leaves
+    it is refused outright rather than deferred to the generic private-IP
+    guard: this client is a plain ``httpx.AsyncClient`` (the DNS-pinned one
+    cannot dial a relay on a private address), so such a hop would be
+    validated by hostname only and reopen the DNS-rebinding window between the
+    check and the TCP connect — with the bot token attached.
+    """
+    from gateway.platforms.base import safe_url_for_log
+
+    async def guard(response: Any) -> None:
+        from tools.url_safety import redirect_target_from_response
+
+        target = redirect_target_from_response(response)
+        if target and not _is_slack_base_url_trusted(target, base_url):
+            raise ValueError(
+                "Blocked Slack file redirect off the configured base_url "
+                f"endpoint {_slack_trusted_origin_label(base_url)}: "
+                f"{safe_url_for_log(target)}"
+            )
+
+    return guard
+
+
+_SLACK_PROXY_HOSTS = (
+    "slack.com",
+    "files.slack.com",
+    "wss-primary.slack.com",
+)
+
+
+def _slack_proxy_bypass_hosts(base_url: Optional[str] = None) -> Tuple[str, ...]:
+    """Return the hosts checked against NO_PROXY for Slack.
+
+    Always includes the built-in Slack hosts; when a custom ``base_url`` is
+    configured its host is appended so ``NO_PROXY=<custom-host>`` disables the
+    proxy for a self-hosted / mock Slack endpoint too (the built-in list alone
+    only covers the real ``slack.com`` hosts).
+    """
+    custom_host = _slack_base_url_host(base_url)
+    if custom_host and custom_host not in _SLACK_PROXY_HOSTS:
+        return _SLACK_PROXY_HOSTS + (custom_host,)
+    return _SLACK_PROXY_HOSTS
+
+
+def _slack_endpoint_bypass_hosts(base_url: Optional[str] = None) -> Tuple[str, ...]:
+    """Return the NO_PROXY hosts for a caller scoped to the Web API endpoint.
+
+    ``resolve_proxy_url`` bypasses the proxy as soon as *any* host it is given
+    matches NO_PROXY, so a caller whose traffic is anchored to the Web API
+    endpoint passes that host alone — otherwise ``NO_PROXY=files.slack.com``
+    would send a call to a custom endpoint direct. A default deployment is
+    unaffected: the endpoint host is ``slack.com``, and NO_PROXY entries match
+    subdomains. Clients that also open the Socket Mode connection use
+    ``_slack_proxy_bypass_hosts`` instead.
+    """
+    host = _slack_base_url_host(base_url) or _slack_base_url_host(
+        _DEFAULT_SLACK_BASE_URL
+    )
+    return (host,) if host else ()
+
+
+def _resolve_slack_proxy_url(bypass_hosts: Sequence[str]) -> Optional[str]:
+    """Resolve a proxy URL that Slack SDK clients can safely use.
+
+    ``bypass_hosts`` are the hosts checked against NO_PROXY: a client that
+    also opens Socket Mode passes ``_slack_proxy_bypass_hosts``, one anchored
+    to the Web API endpoint passes ``_slack_endpoint_bypass_hosts``.
+    """
     proxy_url = resolve_proxy_url()
     if not proxy_url:
         return None
@@ -712,7 +932,7 @@ def _resolve_slack_proxy_url() -> Optional[str]:
             "[Slack] Ignoring unsupported proxy scheme for Slack transport: %s",
             safe_url_for_log(proxy_url))
         return None
-    if any(is_host_excluded_by_no_proxy(host) for host in _SLACK_PROXY_HOSTS):
+    if any(is_host_excluded_by_no_proxy(host) for host in bypass_hosts):
         logger.info("[Slack] NO_PROXY bypasses Slack proxy configuration")
         return None
     return proxy_url
@@ -972,6 +1192,7 @@ class SlackAdapter(BasePlatformAdapter):
         # start time is the grace window for the first ping/pong.
         self._app_token: Optional[str] = None
         self._proxy_url: Optional[str] = None
+        self._base_url: Optional[str] = None
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
@@ -1275,6 +1496,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, exc: Exception, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Translate Slack download exceptions into user-facing attachment diagnostics."""
         file_label = _attachment_label(file_obj)
+        if isinstance(exc, KeylessFileError):
+            return f"Slack attachment unavailable for {file_label}: {exc}"
         response = getattr(exc, "response", None)
         api_detail = self._describe_slack_api_error(response, file_obj=file_obj)
         if api_detail:
@@ -1450,6 +1673,18 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:  # pragma: no cover - diagnostics must never break connect
             pass
 
+    def _resolve_slack_base_url(self) -> Optional[str]:
+        """Return the custom Slack Web API base URL, or ``None`` for the default.
+
+        Read from ``PlatformConfig.extra['base_url']`` (populated from
+        ``config.yaml``). ``None`` keeps the slack_sdk default
+        (``https://slack.com/api/``).
+        """
+        raw = None
+        if self.config.extra:
+            raw = self.config.extra.get("base_url")
+        return _normalize_slack_base_url(raw)
+
     def _register_bolt_handlers(self) -> None:
         """Wire every Bolt listener onto ``self._app``; must run before Socket Mode starts."""
         # Bolt injects listener args by NAME (None for unknown), so every handler takes
@@ -1574,9 +1809,10 @@ class SlackAdapter(BasePlatformAdapter):
         if _plugin_handlers:
             logger.info("[Slack] Wired %d plugin action handler(s)", len(_plugin_handlers))
 
-    @staticmethod
-    def _new_web_client(token: str, proxy_url: Optional[str]) -> Any:
+    def _new_web_client(self, token: str, proxy_url: Optional[str]) -> Any:
+        """Build the shared Web client; a configured base_url re-points it."""
         client = AsyncWebClient(token=token, user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX)
+        _apply_slack_base_url(client, self._base_url)
         _apply_slack_proxy(client, proxy_url)
         return client
 
@@ -1612,25 +1848,56 @@ class SlackAdapter(BasePlatformAdapter):
         # Scoped secret is authoritative; only an UNSCOPED read falls back to
         # process env, else a secondary profile inherits the default's app.
         try:
+            # A keyless edge endpoint IS a custom base_url (a Slack-compatible
+            # API that injects credentials server-side); with it set,
+            # SDK-compatible non-secret placeholders satisfy the checks below.
+            api_base_url = keyless_api_base_url(self.config.extra)
+        except ValueError as exc:
+            self._set_fatal_error("invalid_api_base_url", str(exc), retryable=False)
+            logger.error("[Slack] %s", exc)
+            return False
+        raw_token = "xoxb-keyless" if api_base_url else raw_token
+        try:
             # Multiplex: profile secrets live in the secret scope, not process os.environ. When a scope is
             # installed (secondary-profile connect), it is AUTHORITATIVE — do not fall through to os.getenv,
             # or a secondary profile missing SLACK_APP_TOKEN silently inherits the default profile's Socket
             # Mode app (#59739). Only an UNSCOPED read under multiplex (default-profile startup loop,
             # background reconnect rebuild) falls back to process env, which is that profile's own.
-            app_token = get_secret("SLACK_APP_TOKEN")
+            app_token = "xapp-keyless" if api_base_url else get_secret("SLACK_APP_TOKEN")
         except UnscopedSecretError:
             app_token = os.getenv("SLACK_APP_TOKEN")
         for env_name, value in (("SLACK_BOT_TOKEN", raw_token), ("SLACK_APP_TOKEN", app_token)):
             if not value:
                 self._fatal_missing_env(env_name)
                 return False
-        proxy_url = _resolve_slack_proxy_url()
+
+        # The keyless edge wins as the Web API endpoint when configured. The
+        # Socket Mode lane stays anchored to slack.com: its ticket WSS is a
+        # slack.com host, unrelated to the edge, so its NO_PROXY bypass list
+        # must not include the edge host.
+        wss_base_url = self._resolve_slack_base_url()
+        base_url = api_base_url or wss_base_url
+        if base_url:
+            logger.info(
+                "[Slack] Using custom Slack API base URL: %s",
+                safe_url_for_log(base_url),
+            )
+
+        proxy_url = _resolve_slack_proxy_url(_slack_proxy_bypass_hosts(wss_base_url))
         if proxy_url:
             logger.info("[Slack] Using proxy for Slack transport: %s", safe_url_for_log(proxy_url))
-        bot_tokens = _load_slack_bot_tokens(raw_token, quiet=False)
+        # An edge endpoint owns one identity; never forward local OAuth tokens there.
+        bot_tokens = [raw_token] if api_base_url else _load_slack_bot_tokens(raw_token, quiet=False)
+        # Web API calls scope NO_PROXY to the endpoint they actually target —
+        # an edge replaces slack.com and must not be relayed through the proxy
+        # it replaces. The WSS ticket leg keeps the Socket Mode decision.
+        api_proxy_url = _resolve_slack_proxy_url(_slack_endpoint_bypass_hosts(base_url))
         lock_acquired = False
         try:
-            if not self._acquire_platform_lock("slack-app-token", app_token, "Slack app token"):
+            lock_scope = "slack-keyless-endpoint" if api_base_url else "slack-app-token"
+            resource_desc = "Slack keyless endpoint" if api_base_url else "Slack app token"
+            if not self._acquire_platform_lock(
+                    lock_scope, api_base_url or app_token, resource_desc):
                 return False
             lock_acquired = True
             self._running = False
@@ -1648,18 +1915,22 @@ class SlackAdapter(BasePlatformAdapter):
             self._app = None
             self._app_token = app_token
             self._proxy_url = proxy_url
+            self._base_url = base_url
+
             # Reset so a reconnect with dropped/rotated tokens carries no stale identities.
             self._bot_user_id = self._bot_display_name = None
             self._team_clients, self._team_bot_user_ids, self._team_bot_names = {}, {}, {}
             self._app = AsyncApp(
-                token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], proxy_url),
-                before_authorize=_slack_per_request_proxy_middleware(proxy_url))
-            _apply_slack_proxy(self._app.client, proxy_url)
+                token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], api_proxy_url),
+                before_authorize=_slack_per_request_proxy_middleware(api_proxy_url))
+            _apply_slack_proxy(self._app.client, api_proxy_url)
+            _apply_slack_base_url(self._app.client, base_url)
             for token in bot_tokens:
-                await self._authenticate_workspace(token, proxy_url)
+                await self._authenticate_workspace(token, api_proxy_url)
             self._register_bolt_handlers()
             # _running=True only once the handler is alive (watchdog needs the live
             # task); on failure keep it False so ``finally`` releases the lock.
+
             try:
                 self._start_socket_mode_handler()
                 self._running = True
@@ -5856,6 +6127,79 @@ class SlackAdapter(BasePlatformAdapter):
         return bool(host) and parsed.scheme == "https" and (
             host in cls._SLACK_CDN_EXACT_HOSTS or host.endswith(cls._SLACK_CDN_HOST_SUFFIXES))
 
+    def _open_slack_file_client(self, url: str) -> Any:
+        """Validate an inbound file URL and open the client to download it with.
+
+        Raises ``ValueError`` when the URL must not receive the bot token. The
+        returned object is an ``httpx.AsyncClient`` async context manager.
+
+        Two trust paths:
+
+        * Slack CDN — checked first, so a ``base_url`` on Slack itself never
+          weakens it: pre-flight ``is_safe_url`` + CDN allowlist + a
+          DNS-pinned client.
+        * A custom (non-Slack) ``slack.base_url`` endpoint — its host and
+          hosts below it: the private-IP checks are skipped there only,
+          because a self-hosted relay legitimately lives on localhost / an
+          internal address. In exchange the client is pinned to that endpoint
+          — every redirect that leaves it is refused, so the token never
+          follows a hop we cannot vet.
+        """
+        import httpx
+        from gateway.platforms.base import _ssrf_redirect_guard, safe_url_for_log
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+
+        base_url = self._resolve_slack_base_url()
+        # CDN first: a base_url on Slack itself (``https://slack.com/api/``,
+        # or an Enterprise ``*.slack.com`` endpoint) would otherwise make
+        # every real CDN link "configured", dropping is_safe_url and the
+        # DNS-pinned client for downloads that never needed either.
+        if not self._is_slack_cdn_url(url) and _is_slack_base_url_trusted(
+            url, base_url
+        ):
+            logger.debug(
+                "[Slack] Trusting file URL on the configured base_url endpoint: %s",
+                safe_url_for_log(url),
+            )
+            return httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"response": [_slack_base_url_redirect_guard(base_url)]},
+            )
+
+        # SSRF guard: the download attaches the bot token, so a URL that
+        # resolves to (or 3xx-redirects into) a private/internal address would
+        # both leak the token and let the server reach internal services
+        # (CWE-918). The outbound send_image() path is already guarded; this
+        # is the inbound sibling that was missing the same protection.
+        if not is_safe_url(url):
+            raise ValueError(
+                "Blocked unsafe Slack file URL (SSRF protection): "
+                f"{safe_url_for_log(url)}{_slack_trust_hint(base_url)}"
+            )
+
+        # Tighter than the generic SSRF check: these URLs come from Slack file
+        # objects (``url_private`` / ``url_private_download``) and legitimately
+        # only ever point at the Slack CDN — or at the configured custom
+        # endpoint, handled above. Refusing everything else stops a forged file
+        # object from steering the Bearer-token download at an arbitrary public
+        # host (token exfiltration), which the private-IP check alone cannot
+        # prevent.
+        if not self._is_slack_cdn_url(url):
+            raise ValueError(
+                "Blocked non-Slack-CDN file URL (token-exfiltration protection): "
+                f"{safe_url_for_log(url)}{_slack_trust_hint(base_url)}"
+            )
+
+        # DNS-pinned client: resolve + validate once, dial the vetted IP
+        # (closes the DNS-rebinding TOCTOU window between is_safe_url and
+        # TCP connect — the redirect hook still re-validates every hop).
+        return create_ssrf_safe_async_client(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        )
+
     def _resolve_download_token(self, url: str, team_id: str = "") -> str:
         """Download token: explicit team_id, else the team parsed from ``files-pri/<TEAM>-<FILE>/``
         (events may lack team info; the wrong token yields an HTML login page), else primary."""
@@ -5871,22 +6215,22 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _download_slack_file_bytes(
         self, url: str, team_id: str = "", *, html_label: str = "file bytes") -> bytes:
-        """Download a Slack file with the bot token (3 attempts on 429/5xx/timeout). URL must pass
-        ``is_safe_url`` AND the Slack-CDN allowlist (token exfiltration); redirects are
-        re-validated; an HTML body (sign-in page) is rejected so bogus bytes are never cached."""
+        """Download a Slack file with the bot token (3 attempts on 429/5xx/timeout). URL trust
+        (SSRF pre-flight, CDN / custom-base_url allowlist, per-redirect guard) and client
+        construction live in ``_open_slack_file_client`` so every download path stays in sync;
+        an HTML body (sign-in page) is rejected so bogus bytes are never cached."""
         import httpx
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-        if not is_safe_url(url):
-            raise ValueError(
-                f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}")
-        if not self._is_slack_cdn_url(url):
-            raise ValueError(
-                "Blocked non-Slack-CDN file URL (token-exfiltration protection): "
-                f"{safe_url_for_log(url)}")
-        bot_token = self._resolve_download_token(url, team_id)
-        async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}
-        ) as client:
+
+        if keyless_api_base_url(self.config.extra):
+            url = keyless_file_url(self.config.extra, url)
+            # The file edge must return bytes itself; never follow a redirect into
+            # another API method, the CDN, or a different credential boundary.
+            client_cm = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+            bot_token = "xoxb-keyless"
+        else:
+            client_cm = self._open_slack_file_client(url)
+            bot_token = self._resolve_download_token(url, team_id)
+        async with client_cm as client:
             for attempt in range(3):
                 try:
                     response = await client.get(
@@ -6094,24 +6438,41 @@ def _load_slack_bot_tokens(raw_token: str, *, quiet: bool) -> List[str]:
     return tokens
 
 
-def _standalone_proxy_kwargs() -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """``(session_kwargs, request_kwargs)`` for aiohttp honoring the configured proxy."""
+def _standalone_proxy_kwargs(
+    target_hosts: Optional[Sequence[str]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """``(session_kwargs, request_kwargs)`` for aiohttp honoring the configured proxy.
+
+    ``target_hosts`` feeds NO_PROXY bypass scoping for the endpoint a call
+    actually targets (aiohttp supports SOCKS, so this is
+    ``resolve_proxy_url`` rather than the Slack-SDK-only resolver).
+    """
     from gateway.platforms.base import proxy_kwargs_for_aiohttp
-    return proxy_kwargs_for_aiohttp(resolve_proxy_url())
+    return proxy_kwargs_for_aiohttp(resolve_proxy_url(target_hosts=target_hosts))
 
 
-async def _slack_json_post(session, token: str, method: str, payload: dict, req_kw: dict) -> dict:
-    """POST ``payload`` to ``https://slack.com/api/<method>`` with a bearer token; JSON body."""
+async def _slack_json_post(
+    session, token: str, method: str, payload: dict, req_kw: dict,
+    base_url: Optional[str] = None) -> dict:
+    """POST ``payload`` to the configured Slack API endpoint (default slack.com) with a bearer token."""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     async with session.post(
-        f"https://slack.com/api/{method}", headers=headers, json=payload, **req_kw) as resp:
+        f"{base_url or _DEFAULT_SLACK_BASE_URL}{method}", headers=headers,
+        json=payload, **req_kw) as resp:
         return await resp.json()
 
 
-async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
+async def _resolve_slack_user_dm(
+    token: str, user_id: str, base_url: Optional[str] = None
+) -> Optional[str]:
     """Resolve a user ID (U.../W...) to a DM conversation ID (D...) via ``conversations.open``;
-    cached per (token, user). None on failure (e.g. missing ``im:write``)."""
-    cache_key = f"{token}:{user_id}"
+    cached per (base_url, token, user). None on failure (e.g. missing ``im:write``).
+
+    The endpoint is part of the cache key because a custom Slack-compatible
+    backend (``base_url``) hands out its own conversation IDs.
+    """
+    base_url = _normalize_slack_base_url(base_url)
+    cache_key = f"{base_url or _DEFAULT_SLACK_BASE_URL}|{token}:{user_id}"
     if cache_key in _slack_dm_cache:
         return _slack_dm_cache[cache_key]
     try:
@@ -6119,11 +6480,17 @@ async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
     except ImportError:
         return None
     try:
-        _sess_kw, _req_kw = _standalone_proxy_kwargs()
+        # NO_PROXY-aware for the endpoint this call targets, same as the DM
+        # leg in tools/send_message_senders.py. Not _resolve_slack_proxy_url:
+        # that one drops non-http(s) proxies for the Slack SDK, while aiohttp
+        # supports SOCKS.
+        _sess_kw, _req_kw = _standalone_proxy_kwargs(
+            _slack_endpoint_bypass_hosts(base_url))
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=15), **_sess_kw) as session:
             data = await _slack_json_post(
-                session, token, "conversations.open", {"users": user_id}, _req_kw)
+                session, token, "conversations.open", {"users": user_id}, _req_kw,
+                base_url=base_url or _DEFAULT_SLACK_BASE_URL)
             if data.get("ok") and data.get("channel", {}).get("id"):
                 channel_id = data["channel"]["id"]
                 _slack_dm_cache[cache_key] = channel_id
@@ -6188,7 +6555,8 @@ async def _standalone_upload_file(
 
 async def _standalone_send_media(
     token: str, chat_id: str, media_files: list, thread_id: Optional[str], formatted: Optional[str],
-    formatted_caption: Optional[str], unfurl_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    formatted_caption: Optional[str], unfurl_kwargs: Dict[str, Any], *,
+    base_url: Optional[str] = None) -> Dict[str, Any]:
     """Media branch of ``_standalone_send``: ``files_upload_v2`` per file (+ optional text post).
     ``caption`` rides as ``initial_comment`` on the first successful upload unless
     link-preview controls are explicit (the upload API cannot carry them)."""
@@ -6201,7 +6569,12 @@ async def _standalone_send_media(
             'error': "slack_sdk not installed. Run: pip install 'slack-sdk' (required for Slack MEDIA delivery via send_message)",
         }
     client = _AsyncWebClient(token=token)
-    _apply_slack_proxy(client, resolve_proxy_url())
+    _apply_slack_base_url(client, base_url)
+    # One proxy decision per client, taken against the endpoint host — same
+    # rule as the text-only leg in _standalone_send. files_upload_v2 then
+    # posts the bytes to whatever upload URL the endpoint hands out.
+    _apply_slack_proxy(
+        client, _resolve_slack_proxy_url(_slack_endpoint_bypass_hosts(base_url)))
     last_message_id = None
     # The upload API cannot carry unfurl controls; explicit ones need a separate caption post.
     caption_as_upload_comment = bool(formatted_caption) and not unfurl_kwargs
@@ -6277,22 +6650,34 @@ async def _standalone_send(
     with the gateway: text via ``chat.postMessage`` (aiohttp), media via ``files_upload_v2``."""
     del force_document  # signature parity with other standalone senders
     media_files = media_files or []
+    warnings: List[str] = []
     # Under multiplex os.environ may hold ANOTHER profile's token: read via the secret scope.
-    raw_token = getattr(pconfig, "token", None) or get_secret("SLACK_BOT_TOKEN", "")
+    try:
+        api_base_url = keyless_api_base_url(pconfig.extra or {})
+    except ValueError as exc:
+        return {"error": str(exc)}
+    raw_token = "xoxb-keyless" if api_base_url else (
+        getattr(pconfig, "token", None) or get_secret("SLACK_BOT_TOKEN", ""))
+    # An edge owns one identity: single placeholder token, no local OAuth lists.
     # Comma-separated multi-workspace list plus slack_tokens.json; no team map, so try each.
-    tokens = _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
+    tokens = [raw_token] if api_base_url else _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
     if not tokens:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
     token = tokens[0]
-    # Slack rejects bare user IDs (U.../W...) with channel_not_found; open the DM first.
-    # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare user IDs (U.../W...) — resolve
-    # to a DM conversation ID (D...) first via conversations.open so `deliver=slack:U…` cron jobs reach the
-    # user's DM instead of failing with channel_not_found (#17444).
+    # One effective endpoint for every leg below: a keyless edge wins, else
+    # PlatformConfig.extra base_url (config.yaml), else the slack_sdk default.
+    _base_url = api_base_url or _normalize_slack_base_url(
+        (getattr(pconfig, "extra", None) or {}).get("base_url"))
+
+    # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare
+    # user IDs (U.../W...) — resolve to a DM conversation ID (D...) first via
+    # conversations.open so `deliver=slack:U…` cron jobs reach the user's DM
+    # instead of failing with channel_not_found (#17444).
     chat_id = str(chat_id or "")
     if chat_id[:1] in ("U", "W"):
         resolved = None
         for _tok in tokens:
-            resolved = await _resolve_slack_user_dm(_tok, chat_id)
+            resolved = await _resolve_slack_user_dm(_tok, chat_id, _base_url)
             if resolved is not None:
                 token = _tok
                 break
@@ -6307,7 +6692,9 @@ async def _standalone_send(
     unfurl_kwargs = _slack_unfurl_kwargs(getattr(pconfig, "extra", None))
     if media_files:
         return await _standalone_send_media(
-            token, chat_id, media_files, thread_id, formatted, formatted_caption, unfurl_kwargs)
+            token, chat_id, media_files, thread_id, formatted, formatted_caption, unfurl_kwargs,
+            base_url=_base_url)
+
     # --- Text-only path (existing aiohttp chat.postMessage) ---
     if not formatted or not formatted.strip():
         logger.debug("[Slack] _standalone_send: skipping empty/whitespace message")
@@ -6317,13 +6704,18 @@ async def _standalone_send(
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        _sess_kw, _req_kw = _standalone_proxy_kwargs()
+        # NO_PROXY-aware for the endpoint this call targets.
+        _sess_kw, _req_kw = _standalone_proxy_kwargs(
+            _slack_endpoint_bypass_hosts(_base_url))
+        url = (_base_url or _DEFAULT_SLACK_BASE_URL) + "chat.postMessage"
         last_error = "unknown"
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = _standalone_post_kwargs(chat_id, formatted, unfurl_kwargs, thread_id)
             for tok in tokens:
-                data = await _slack_json_post(session, tok, "chat.postMessage", payload, _req_kw)
+                data = await _slack_json_post(
+                    session, tok, "chat.postMessage", payload, _req_kw,
+                    base_url=_base_url or _DEFAULT_SLACK_BASE_URL)
                 if data.get("ok"):
                     return {
                         "success": True, "platform": "slack", "chat_id": chat_id,
@@ -6451,7 +6843,9 @@ _YAML_LIST_KEYS = (
 
 def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` hook: ``slack:`` YAML keys → ``SLACK_*`` env vars (the adapter reads
-    ``os.getenv()``; explicit env wins). Returns None: nothing is seeded into ``extra``.
+    ``os.getenv()``; explicit env wins). ``base_url`` is the exception: instead of an env var it is
+    returned in the extras dict, which the loader merges into ``PlatformConfig.extra`` for the
+    adapter to read.
 
     Implements the ``apply_yaml_config_fn`` contract (#24849). Mirrors the legacy ``slack_cfg`` block that
     used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
@@ -6465,14 +6859,25 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
             if list_types and isinstance(val, list_types):
                 val = ",".join(str(v) for v in val)
             os.environ[env] = str(val)
-    return None
+    # base_url (custom / self-hosted Slack endpoint) is behavioral config, so it
+    # lives in config.yaml, not .env. Return it in extras (merged into
+    # PlatformConfig.extra) — the adapter reads it from there, not an env var.
+    extras: dict = {}
+    bu = slack_cfg.get("base_url")
+    if bu is not None:
+        bu = str(bu).strip()
+        if bu:
+            extras["base_url"] = bu
+    return extras or None
 
 
 def _is_connected(config) -> bool:
-    """Connected when SLACK_BOT_TOKEN is set. Resolved through ``gateway_mod`` at call
-    time (not a bound import) so tests patching ``get_env_value`` take effect."""
+    """Connected with a keyless endpoint or SLACK_BOT_TOKEN. Token lookup stays resolved
+    through ``gateway_mod`` at call time (not a bound import) so tests patching
+    ``get_env_value`` take effect."""
     import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("SLACK_BOT_TOKEN") or "").strip())
+    return has_keyless_credentials(config) or bool(
+        (gateway_mod.get_env_value("SLACK_BOT_TOKEN") or "").strip())
 
 
 def _build_adapter(config):
@@ -6489,14 +6894,19 @@ def register(ctx) -> None:
         check_fn=slack_deps_present,
         ensure_deps_fn=check_slack_requirements,
         is_connected=_is_connected,
+        # Keyless edge: credentials live in the edge, not locally — this pure
+        # config probe admits a keyless profile to startup/reconnect retries.
+        has_credentials=has_keyless_credentials,
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
         install_hint="Run `hermes setup` to install Slack support.",
         setup_fn=interactive_setup,
-        # YAML→env bridge: config.yaml slack: keys → SLACK_* env vars read via os.getenv().
-        # YAML→env config bridge — owns the translation of config.yaml slack: keys (require_mention,
-        # strict_mention, ignore_other_user_mentions, thread_require_mention, allow_bots,
-        # free_response_channels, reactions, disable_dms, allowed_channels, ignored_channels) into SLACK_*
-        # env vars that the adapter reads via os.getenv(). Replaces the hardcoded block in
+        # YAML→env config bridge — owns the translation of config.yaml slack:
+        # keys (require_mention, strict_mention, ignore_other_user_mentions,
+        # thread_require_mention, allow_bots, free_response_channels,
+        # reactions, disable_dms, allowed_channels, ignored_channels) into
+        # SLACK_* env vars that the adapter reads via os.getenv(). The one
+        # non-env key, base_url, is returned in extras and merged into
+        # PlatformConfig.extra. Replaces the hardcoded block in
         # gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="SLACK_ALLOWED_USERS",

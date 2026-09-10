@@ -97,6 +97,9 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+    # Optional alternate credential probe for startup/reconnect. Must read ONLY
+    # PlatformConfig (never process env, which may belong to another profile).
+    has_credentials: Optional[Callable[[Any], bool]] = None
 
 
 class PlatformRegistry:

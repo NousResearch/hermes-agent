@@ -2799,6 +2799,8 @@ export const ar = defineLocale({
         actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `${action} “${value}”`,
         actionTarget: (action, target) => `${action} ${target}`,
+        additionalFiles: count =>
+          count === 1 ? '+ملف واحد' : count === 2 ? '+ملفان' : `+${count} ملفات`,
         prefixedDone: (prefix, action) => `${prefix} ${action}`,
         runningPrefixedTool: (prefix, action) => `جار تشغيل ${prefix.toLowerCase()} ${action.toLowerCase()}`,
         runningTool: action => `جار تشغيل ${action.toLowerCase()}`

@@ -3845,6 +3845,7 @@ export const zh: Translations = {
         actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `${action}“${value}”`,
         actionTarget: (action, target) => `${action} ${target}`,
+        additionalFiles: count => `+${count} 个文件`,
         prefixedDone: (prefix, action) => `${prefix}${action}`,
         runningPrefixedTool: (prefix, action) => `正在运行${prefix}${action}`,
         runningTool: action => `正在运行 ${action}`

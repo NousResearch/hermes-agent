@@ -3707,6 +3707,7 @@ export const en: Translations = {
         actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `${action} “${value}”`,
         actionTarget: (action, target) => `${action} ${target}`,
+        additionalFiles: count => `+${count} ${count === 1 ? 'file' : 'files'}`,
         prefixedDone: (prefix, action) => `${prefix} ${action}`,
         runningPrefixedTool: (prefix, action) => `Running ${prefix.toLowerCase()} ${action.toLowerCase()}`,
         runningTool: action => `Running ${action.toLowerCase()}`

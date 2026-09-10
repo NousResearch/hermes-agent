@@ -3254,6 +3254,7 @@ export const ja = defineLocale({
         actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `「${value}」を${action}`,
         actionTarget: (action, target) => `${target} を${action}`,
+        additionalFiles: count => `+${count} ファイル`,
         prefixedDone: (prefix, action) => `${prefix} ${action}`,
         runningPrefixedTool: (prefix, action) => `${prefix} ${action}を実行中`,
         runningTool: action => `${action}を実行中`

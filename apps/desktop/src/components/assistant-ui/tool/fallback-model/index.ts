@@ -58,18 +58,104 @@ export function countDiffLineStats(diff: string): DiffLineStats {
   return { added, removed }
 }
 
-export function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
-  return (
-    firstStringField(args, ['path', 'file', 'filepath']) ||
-    firstStringField(result, ['path', 'file', 'filepath', 'resolved_path']) ||
-    htmlPathFromInlineDiff(firstStringField(result, ['inline_diff', 'diff']))
+function uniqueFilePaths(paths: string[]): string[] {
+  return Array.from(new Set(paths.map(path => path.trim()).filter(Boolean)))
+}
+
+function v4aFilePaths(patch: string): string[] {
+  if (!patch) {
+    return []
+  }
+
+  const paths: string[] = []
+  const lines = patch.split('\n')
+  const marker = String.fromCharCode(42).repeat(3)
+
+  const isBoundary = (line: string, label: 'Begin' | 'End') =>
+    line.replace(/\r$/, '') === `${marker} ${label} Patch`
+
+  const startIndex = lines.findIndex(line => isBoundary(line, 'Begin'))
+
+  if (startIndex < 0) {
+    return []
+  }
+
+  const relativeEndIndex = lines
+    .slice(startIndex + 1)
+    .findIndex(line => isBoundary(line, 'End'))
+
+  const endIndex = relativeEndIndex < 0 ? lines.length : startIndex + 1 + relativeEndIndex
+
+  for (const line of lines.slice(startIndex + 1, endIndex)) {
+    const file = /^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+?)\s*$/.exec(line)
+
+    if (file?.[1]) {
+      paths.push(file[1])
+
+      continue
+    }
+
+    const move = /^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+?)\s*$/.exec(line)
+
+    if (move?.[1] && move[2]) {
+      paths.push(move[1], move[2])
+    }
+  }
+
+  return uniqueFilePaths(paths)
+}
+
+function fileEditPaths(args: Record<string, unknown>, result: Record<string, unknown>): string[] {
+  const requestedPath = firstStringField(args, ['path', 'file', 'filepath'])
+
+  if (requestedPath) {
+    return [requestedPath]
+  }
+
+  const modifiedPaths = ['files_modified', 'files_created', 'files_deleted'].flatMap(key =>
+    Array.isArray(result[key]) ? result[key].filter((value): value is string => typeof value === 'string') : []
   )
+
+  if (modifiedPaths.length) {
+    return uniqueFilePaths(modifiedPaths)
+  }
+
+  const resolvedPath = firstStringField(result, ['path', 'file', 'filepath', 'resolved_path'])
+
+  if (resolvedPath) {
+    return [resolvedPath]
+  }
+
+  const patchPaths = v4aFilePaths(firstStringField(args, ['patch']))
+
+  if (patchPaths.length) {
+    return patchPaths
+  }
+
+  const diffPath = htmlPathFromInlineDiff(firstStringField(result, ['inline_diff', 'diff']))
+
+  return diffPath ? [diffPath] : []
+}
+
+export function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  return fileEditPaths(args, result)[0] || ''
 }
 
 export function fileEditBasename(path: string): string {
   const normalized = path.replace(/\\/g, '/').trim()
 
   return normalized.split('/').filter(Boolean).pop() || normalized
+}
+
+function fileEditTitle(paths: string[]): string {
+  const first = paths[0] ? fileEditBasename(paths[0]) : ''
+  const additional = paths.length - 1
+
+  if (!first || additional <= 0) {
+    return first
+  }
+
+  return `${first} ${translateNow('assistant.tool.titleTemplates.additionalFiles', additional)}`
 }
 
 function numericField(record: Record<string, unknown>, key: string): number | undefined {
@@ -1399,10 +1485,10 @@ function dynamicTitle(
   }
 
   if (isFileEditTool(part.toolName)) {
-    const path = fileEditPath(args, result)
+    const paths = fileEditPaths(args, result)
 
-    if (path) {
-      return { title: fileEditBasename(path) }
+    if (paths.length) {
+      return { title: fileEditTitle(paths) }
     }
   }
 

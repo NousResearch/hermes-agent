@@ -351,14 +351,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         agree on the path form. No-op off Windows and for plain POSIX paths.
 
         ``translate_path=False`` skips that translation for non-path values
-        (regex patterns) whose backslashes are meaningful. Bash single
-        quotes preserve those bytes; only path arguments are translated.
+        such as regex patterns. Backslash compensation applies only to the
+        local Windows argv transport. Serialized shell text stays literal.
         """
         from tools.environments.local import _IS_WINDOWS, _bash_safe_path
 
         if translate_path:
             arg = _bash_safe_path(arg)
-        elif _IS_WINDOWS:
+        elif _IS_WINDOWS and getattr(self.env, "is_local", False):
             arg = arg.replace("\\", "\\\\")
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"

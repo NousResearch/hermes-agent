@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
+from hermes_cli.update_cmd_branch import resolve_update_branch
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # rich and prompt_toolkit are imported lazily: this module sits on the TUI gateway's critical
@@ -250,21 +251,23 @@ def _tips_behind(head_rev: Optional[str], target_rev: Optional[str], repo_dir: O
     return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
 
-def _upstream_main_sha() -> Optional[str]:
-    """Tip SHA of upstream main via HTTPS ls-remote (no auth, no prompts)."""
-    result = _git_run(["ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"], timeout=10, network=True)
+def _upstream_branch_sha(branch: str) -> Optional[str]:
+    """Tip SHA of an upstream branch via HTTPS ls-remote (no auth, no prompts)."""
+    result = _git_run(
+        ["ls-remote", _UPSTREAM_REPO_URL, f"refs/heads/{branch}"], timeout=10, network=True)
     if result is None or result.returncode != 0 or not result.stdout:
         return None
     return result.stdout.split()[0] or None
 
 
-def _check_via_rev(local_rev: str) -> Optional[int]:
-    """Compare an embedded git revision to upstream main via ls-remote (see ``_tips_behind``)."""
-    return _tips_behind(local_rev, _upstream_main_sha())
+def _check_via_rev(local_rev: str, branch: str = "main") -> Optional[int]:
+    """Compare an embedded git revision to an upstream branch (see ``_tips_behind``)."""
+    return _tips_behind(local_rev, _upstream_branch_sha(branch))
 
 
-def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+def _check_via_local_git(repo_dir: Path, branch: str = "main") -> Optional[int]:
+    """Count commits behind the configured origin branch in a local checkout."""
+    target_ref = f"origin/{branch}"
     # Probe the origin URL under the same config-isolated env as the fetch below. A plain
     # get-url applies a global url.<https>.insteadOf rewrite, so an SSH origin masquerades as
     # HTTPS, the SSH-avoiding fast path is skipped — and the fetch, whose env drops global
@@ -280,10 +283,10 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # ahead checkout nudges the user into `hermes update`, which can wipe carried work — hence
         # the ancestor check, against the FRESH upstream SHA (a stale tracking ref can't fake an
         # up-to-date report).
-        return _tips_behind(head_rev, _upstream_main_sha(), repo_dir)
+        return _tips_behind(head_rev, _upstream_branch_sha(branch), repo_dir)
 
     # Installer checkouts are shallow (`git clone --depth 1`): a plain `git fetch` would unshallow
-    # the repo and `rev-list --count HEAD..origin/main` would report a bogus "12492 commits
+    # the repo and a rev-list against the configured branch would report a bogus "12492 commits
     # behind". Fetch with --depth 1 to preserve the boundary and compare tip SHAs instead. Full
     # clones keep the exact count path. Mirrors apps/desktop/electron/main.cjs.
     is_shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir) == "true"
@@ -299,27 +302,27 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
         # Scope the fetch to the one branch compared against: an unscoped ``git fetch origin``
         # transfers ~1,400 remote heads (3.0 s vs 0.55 s measured) and can burn the full timeout.
-        # A scoped fetch still updates ``origin/main`` and FETCH_HEAD; ``--depth 1`` preserves
+        # A scoped fetch still updates the remote-tracking ref and FETCH_HEAD; ``--depth 1`` preserves
         # the shallow boundary.
-        fetch_args = ["fetch", "origin", "main", *(["--depth", "1"] if is_shallow else []), "--quiet"]
+        fetch_args = ["fetch", "origin", branch, *(["--depth", "1"] if is_shallow else []), "--quiet"]
         return _git_ok(fetch_args, cwd=repo_dir, timeout=10, network=True)
 
     fetch_ok = _quiet(_fetch, False)  # Offline or timeout — don't use stale refs
-    # When the fetch fails the local origin/main ref is stale: it cannot prove *currentness*, but
+    # When the fetch fails the local target ref is stale: it cannot prove *currentness*, but
     # if it already shows HEAD behind, that is sound evidence an update exists. Return the positive
     # stale count; None (inconclusive) otherwise so the caller doesn't cache a false "up to date".
     if is_shallow:
         # (#82166, review #92578)
         if not fetch_ok:
             return None
-        # No history across the shallow boundary. `origin/main` may not be a tracking ref in a
-        # `clone --depth 1`, so prefer FETCH_HEAD (just updated) and fall back to origin/main.
+        # No history across the shallow boundary. The target may not be a tracking ref in a
+        # single-branch shallow clone, so prefer FETCH_HEAD and fall back to the tracking ref.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         target_rev = (
             _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir))
+            or _git_stdout(["rev-parse", target_ref], cwd=repo_dir))
         return _tips_behind(head_rev, target_rev)
-    behind = _git_count(["rev-list", "--count", "HEAD..origin/main"], cwd=repo_dir)
+    behind = _git_count(["rev-list", "--count", f"HEAD..{target_ref}"], cwd=repo_dir)
     return behind if fetch_ok or (behind is not None and behind > 0) else None
 
 
@@ -332,8 +335,8 @@ def _read_json(path: Path) -> Optional[dict]:
 def check_for_updates(*, passive: bool = False) -> Optional[int]:
     """Check whether a Hermes update is available.
 
-    If ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream main via
-    ``git ls-remote``; otherwise count commits behind ``origin/main`` in the local checkout.
+    If ``HERMES_REVISION`` is set (nix builds embed it), compare it to the configured upstream
+    branch via ``git ls-remote``; otherwise count commits behind that branch locally.
     """
     def _read_config_opt_out():
         from hermes_cli.config import load_config
@@ -341,6 +344,8 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
 
     if passive and _quiet(_read_config_opt_out) is True:
         return None
+
+    branch = _quiet(resolve_update_branch, "main")
 
     cache_file = get_hermes_home() / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
@@ -357,19 +362,23 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     now = time.time()
     cached = _read_json(cache_file)
     if (cached is not None and now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION):
+            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION
+            and cached.get("branch", "main") == branch):
         return cached.get("behind")
     if embedded_rev:
-        behind = _check_via_rev(embedded_rev)
+        behind = _check_via_rev(embedded_rev, branch)
     else:
         # No checkout and no embedded revision — status can't be determined.
         repo_dir = _resolve_repo_dir()
-        behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
+        behind = _check_via_local_git(repo_dir, branch) if repo_dir is not None else None
     # Don't cache inconclusive results: None means the check could not run (typically a failed
     # fetch), and caching it would suppress retries for the full 6-hour window (#82166).
     if behind is not None:
         _quiet(lambda: cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}), encoding="utf-8"))
+            json.dumps({
+                "ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION,
+                "branch": branch,
+            }), encoding="utf-8"))
     return behind
 
 

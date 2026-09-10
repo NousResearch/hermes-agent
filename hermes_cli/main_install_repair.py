@@ -16,6 +16,7 @@ import time as _time
 
 from pathlib import Path
 from hermes_cli import _early_recovery as _early_recovery_mod
+from hermes_cli.update_cmd_branch import resolve_update_branch
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -1187,5 +1188,5 @@ def _resolve_node_runtime_npm() -> str | None:
 
 
 def _resolve_update_branch(args) -> str:
-    """Normalize ``args.branch`` to a non-empty name (default ``main``; blank/whitespace = default)."""
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    """Resolve the update branch from argparse-shaped options."""
+    return resolve_update_branch(getattr(args, "branch", None))

@@ -1277,7 +1277,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
-                from plugins.memory import load_memory_provider as _load_mem
+                from plugins.memory import load_memory_provider as _load_mem, discover_memory_providers
                 agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
@@ -1292,7 +1292,18 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                     agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                    # Warn at WARNING (not DEBUG) so operators see misconfig.
+                    # List known providers to help the user self-diagnose.
+                    # See: https://github.com/NousResearch/hermes-agent/issues/47650
+                    try:
+                        _known = [n for n, _d, _a in discover_memory_providers()]
+                    except Exception:
+                        _known = []
+                    _hint = f" Known providers: {', '.join(_known)}" if _known else ""
+                    _ra().logger.warning(
+                        "Memory provider '%s' not found or not available.%s",
+                        _mem_provider_name, _hint,
+                    )
                     agent._memory_manager = None
         except Exception as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)

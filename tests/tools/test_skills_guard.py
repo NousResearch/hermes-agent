@@ -381,6 +381,28 @@ class TestFalsePositiveReductions:
             fi.pattern_id == "read_secrets_file" for fi in scan_file(bad, "bad.sh")
         )
 
+    def test_cat_suffix_of_another_command_is_not_a_secrets_read(self, tmp_path):
+        # `logcat`/`concat` end in "cat"; prose that mentions credentials later on
+        # the same line must not make them read a secrets file. Real-world hit:
+        # revenuecat's own docs say "adb logcat | grep Purchases ... An
+        # InvalidCredentialsError means the API key does not match."
+        ok = tmp_path / "android.md"
+        ok.write_text(
+            "`adb logcat | grep Purchases` shows the lifecycle. An "
+            "`InvalidCredentialsError` means the API key does not match.\n"
+            "concat the parts, then check credentials in the dashboard.\n"
+        )
+        assert not any(
+            fi.pattern_id == "read_secrets_file" for fi in scan_file(ok, "android.md")
+        )
+
+        # The real read is still caught on its own line.
+        bad = tmp_path / "bad.sh"
+        bad.write_text("cat ~/.aws/credentials\n")
+        assert any(
+            fi.pattern_id == "read_secrets_file" for fi in scan_file(bad, "bad.sh")
+        )
+
     def test_allowed_tools_frontmatter_is_low_severity_only(self, tmp_path):
         # Required SKILL.md frontmatter per the agent-skill spec.
         skill_dir = tmp_path / "ok-skill"

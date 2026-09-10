@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox", "ssh"})
 # Backend name inferred from the live environment's class name (first match wins).
 _ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "singularity", "modal", "daytona")
 
@@ -64,6 +64,12 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
 
 def _uses_container_paths(task_id: str = "default") -> bool:
     env_type = _terminal_env_type_for_task(task_id)
+    if env_type == "ssh":
+        # The remote SSH peer is a separate path namespace, exactly like a
+        # container sandbox: a remote-absolute path must never be rewritten by
+        # host-side resolve() (e.g. the macOS /home firmlink deref) before the
+        # backend builds its remote command (#79663).
+        return True
     try:
         from tools.terminal_tool import _is_container_backend
 

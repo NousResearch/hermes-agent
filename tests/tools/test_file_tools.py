@@ -362,6 +362,70 @@ class TestWindowsMsysPathResolution:
 
 
 # ---------------------------------------------------------------------------
+# SSH backend path resolution (#79663)
+# ---------------------------------------------------------------------------
+
+class TestSSHRemotePathResolution:
+    """The ssh backend is a separate path namespace: file-tool paths must not
+    be dereferenced against the LOCAL host filesystem (on macOS the ``/home``
+    firmlink rewrites ``/home/...`` into ``/System/Volumes/Data/home/...``,
+    which is meaningless on the remote peer)."""
+
+    def test_ssh_backend_uses_separate_namespace_paths(self, monkeypatch):
+        import tools.file_tools_paths as file_tools
+
+        monkeypatch.setattr(file_tools, "_terminal_env_type_for_task", lambda task_id="default": "ssh")
+
+        assert file_tools._uses_container_paths() is True
+        # The import-failure fallback set must agree with the primary branch.
+        assert "ssh" in file_tools._CONTAINER_PATH_BACKENDS_FALLBACK
+
+    def test_ssh_backend_absolute_path_not_dereferenced_locally(self, monkeypatch, tmp_path):
+        """A remote-absolute path must survive resolution untouched even when
+        the same-looking path dereferences elsewhere on the local host (here:
+        a symlink that host resolve() would follow)."""
+        import tools.file_tools_paths as file_tools
+
+        monkeypatch.setattr(file_tools, "_terminal_env_type_for_task", lambda task_id="default": "ssh")
+        monkeypatch.setattr(
+            file_tools,
+            "_authoritative_workspace_root",
+            lambda task_id="default": str(tmp_path),
+        )
+
+        real = tmp_path / "real" / "draft.txt"
+        real.parent.mkdir()
+        real.write_text("remote-target")
+        link = tmp_path / "home-link"
+        link.symlink_to(real.parent)
+
+        resolved = file_tools._resolve_path_for_task(str(link / "draft.txt"))
+        assert str(resolved) == str(link / "draft.txt")
+
+    def test_local_backend_still_dereferences_locally(self, monkeypatch, tmp_path):
+        """Control: the local backend keeps host resolve() semantics and DOES
+        follow the symlink the ssh case must leave alone."""
+        import tools.file_tools_paths as file_tools
+
+        monkeypatch.setattr(file_tools, "_terminal_env_type_for_task", lambda task_id="default": "local")
+        monkeypatch.setattr(
+            file_tools,
+            "_authoritative_workspace_root",
+            lambda task_id="default": str(tmp_path),
+        )
+
+        real = tmp_path / "real" / "draft.txt"
+        real.parent.mkdir()
+        real.write_text("local")
+        link = tmp_path / "home-link"
+        link.symlink_to(real.parent)
+
+        assert file_tools._uses_container_paths() is False
+        resolved = file_tools._resolve_path_for_task(str(link / "draft.txt"))
+        assert str(resolved) == str(real.resolve())
+
+
+# ---------------------------------------------------------------------------
 # Tool result hint tests (#722)
 # ---------------------------------------------------------------------------
 

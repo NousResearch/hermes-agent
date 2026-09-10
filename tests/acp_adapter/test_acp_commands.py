@@ -142,6 +142,23 @@ async def test_acp_steer_slash_command_injects_into_running_agent():
 
 
 @pytest.mark.asyncio
+async def test_acp_interrupted_turn_accepts_null_final_response():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.run_conversation = lambda **_kwargs: {
+        "final_response": None,
+        "messages": [],
+        "interrupted": True,
+    }
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="original request")],
+    )
+
+    assert response.stop_reason == "end_turn"
+
+
+@pytest.mark.asyncio
 async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
     acp_agent, state, fake, _conn = make_agent_and_state()
     state.is_running = True

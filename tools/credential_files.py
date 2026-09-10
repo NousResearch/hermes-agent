@@ -246,6 +246,19 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
     ("cache/spillover", "cache/spillover"),  # oversized tool results; host side is canonical
+    # Terminal / execute_code spill files. The truncation footers tell the agent to
+    # page them with read_file/search_files, which run INSIDE the active backend —
+    # without a mount/sync the handle dangles on every remote backend (#72389 class).
+    # Legacy aliases mirror get_hermes_dir's old_name (terminal-output never had one;
+    # cache/exec's legacy dir is exec_spill) so the mount resolves to the same path
+    # the spill writers use.
+    ("cache/terminal-output", "cache/terminal-output"),
+    ("cache/exec", "exec_spill"),
+    # Parser-limit-blocked inline payloads: the block message tells the agent to
+    # run `bash <path>` via the terminal tool — inside the backend (#72389 class).
+    ("cache/blocked-scripts", "cache/blocked-scripts"),
+    # Hook output spill previews point the agent at the saved full content.
+    ("hook_outputs", "hook_outputs"),
     # Flat top-level desktop staging dirs (tui_gateway attach RPCs; no legacy alias),
     # mounted so vision/file tools in sandboxes reach uploads and dropped files.
     # Mount it so vision can reach uploads inside sandbox containers (#69575). No legacy alias exists, so

@@ -998,6 +998,15 @@ def main() -> int:
         else:
             roots = [repo_root / p for p in _split_pathspec(args.paths)]
 
+    # Validate the whole requested selection before discovery, CI matrix
+    # generation, or execution. Silently dropping one mistyped path can make
+    # a partial verification run look complete when the remaining tests pass.
+    requested = files if args.files else roots
+    missing = [str(path) for path in requested if not path.exists()]
+    if missing:
+        parser.error("requested test path does not exist: " + ", ".join(missing))
+
+    if not args.files:
         if args.include_integration:
             # Caller takes responsibility — typically used via explicit -k filter.
             global _SKIP_PARTS  # noqa: PLW0603 — config knob

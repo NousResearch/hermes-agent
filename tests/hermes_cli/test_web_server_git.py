@@ -118,7 +118,13 @@ def repo_with_remote(tmp_path):
     branch that has NO local head (the teammate-branch case)."""
     origin = tmp_path / "origin.git"
     origin.mkdir()
-    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True, capture_output=True)
+    # -b main: a bare init's HEAD symref otherwise follows the runner's ambient
+    # init.defaultBranch (unset on some CI images -> legacy "master"), which
+    # dangles here since only main/feature are ever pushed and breaks
+    # `git remote show origin`'s "HEAD branch:" resolution.
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True,
+    )
 
     root = tmp_path / "clone"
     root.mkdir()

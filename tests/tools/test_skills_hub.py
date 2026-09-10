@@ -1,6 +1,7 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+import logging
 import time
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
@@ -149,6 +150,48 @@ class TestGitHubSourceFileFetch:
             "https://api.github.com/repos/owner/repo/contents/"
             "skill/references/foo%23bar.md"
         )
+
+
+class TestCollectTreeFiles:
+    """A SKILL.md-referenced plain subdirectory (git tree entry, mode 040000) must install
+    with its nested blobs instead of tripping the symlink-escape rejection, while a
+    referenced symlink (mode 120000) still rejects the whole bundle (#107256)."""
+
+    def _source(self):
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        src._add_support_file = MagicMock(
+            side_effect=lambda repo, item_path, rel_path, files, shown, **kw:
+                files.__setitem__(rel_path, b"fetched")
+        )
+        return src
+
+    def test_referenced_subdirectory_installs_with_nested_blobs(self, caplog):
+        src = self._source()
+        entries = [
+            {"path": "skills/demo/SKILL.md", "mode": "100644", "type": "blob"},
+            {"path": "skills/demo/assets/starter", "mode": "040000", "type": "tree"},
+            {"path": "skills/demo/assets/starter/main.ts", "mode": "100644", "type": "blob"},
+        ]
+        files = {"SKILL.md": "body"}
+        with caplog.at_level(logging.WARNING, logger="tools.skills_hub"):
+            ok = src._collect_tree_files(
+                "owner/repo", "skills/demo", entries, None, {"assets/starter"}, files)
+        assert ok is True
+        assert files["assets/starter/main.ts"] == b"fetched"
+        assert "Rejected" not in caplog.text
+        assert "missing" not in caplog.text
+
+    def test_referenced_symlink_entry_still_rejects_bundle(self, caplog):
+        src = self._source()
+        entries = [
+            {"path": "skills/demo/SKILL.md", "mode": "100644", "type": "blob"},
+            {"path": "skills/demo/references", "mode": "120000", "type": "blob"},
+        ]
+        with caplog.at_level(logging.WARNING, logger="tools.skills_hub"):
+            ok = src._collect_tree_files(
+                "owner/repo", "skills/demo", entries, None, {"references"}, {"SKILL.md": "body"})
+        assert ok is False
+        assert "Rejected non-regular referenced file" in caplog.text
 
 
 # ---------------------------------------------------------------------------

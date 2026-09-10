@@ -158,8 +158,12 @@ def _skip_bundle_file(rel_path: str) -> bool:
 def _tree_members(entries: List[dict], prefix: str):
     """``(rel_path, item_path, is_regular_blob)`` for every git-tree entry under ``prefix``. Symlinks
     (mode 120000) and non-blobs report ``is_regular_blob=False`` so callers can reject a SKILL.md-linked
-    symlink instead of silently following it."""
+    symlink instead of silently following it. Directory entries (mode 040000) carry no bytes of their
+    own — nested blobs arrive as separate entries — so they are skipped rather than reported as
+    non-regular."""
     for item in entries:
+        if item.get("type") == "tree":
+            continue
         item_path = item.get("path", "")
         if item_path.startswith(prefix):
             yield item_path[len(prefix):], item_path, item.get("type") == "blob" and item.get("mode") != "120000"
@@ -287,11 +291,11 @@ class GitHubSource(SkillSource):
             # rather than aborting the whole install (#66760/#90081): the skill body still works, and the
             # gap is visible in the log. A referenced path that IS in the tree but as a symlink (or any
             # non-regular entry) stays a hard rejection — that shape is an escape attempt, not a forgotten
-            # file.
+            # file. A referenced directory counts as present once any fetched file lives under it.
             if rel_path in symlinked:
                 logger.warning("Rejected non-regular referenced file in skill bundle: %s%s", prefix, rel_path)
                 return False
-            if rel_path not in files:
+            if not any(f == rel_path or f.startswith(rel_path + "/") for f in files):
                 logger.warning(
                     "Referenced skill support file is missing; continuing without it: %s%s", prefix, rel_path)
         return True

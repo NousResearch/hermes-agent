@@ -221,6 +221,46 @@ class TestCommandCwdReadsTheRecord:
         )
         assert resolved == "/config/default"
 
+
+class TestStaleLocalRecordSelfHeals:
+    """#107156 — on the local backend a recorded cwd that is gone/unenterable
+    must not be baked into ``cd <dead> || exit 126``; fall back to default_cwd so
+    the chat keeps working and the next command re-records a real dir."""
+
+    def test_missing_local_record_falls_back_to_default(self, tmp_path):
+        good = str(tmp_path)  # exists + enterable
+        tt.record_session_cwd("sess-a", str(tmp_path / "gone"))
+        resolved = tt._resolve_command_cwd(
+            workdir=None, default_cwd=good, session_key="sess-a", env_type="local",
+        )
+        assert resolved == good
+
+    def test_usable_local_record_is_kept(self, tmp_path):
+        live = tmp_path / "live"
+        live.mkdir()
+        tt.record_session_cwd("sess-a", str(live))
+        resolved = tt._resolve_command_cwd(
+            workdir=None, default_cwd=str(tmp_path), session_key="sess-a", env_type="local",
+        )
+        assert resolved == str(live)
+
+    def test_explicit_workdir_still_wins_over_the_check(self, tmp_path):
+        tt.record_session_cwd("sess-a", str(tmp_path / "gone"))
+        resolved = tt._resolve_command_cwd(
+            workdir="/explicit", default_cwd=str(tmp_path), session_key="sess-a", env_type="local",
+        )
+        assert resolved == "/explicit"
+
+    def test_missing_record_kept_verbatim_for_remote_backend(self, tmp_path):
+        """A local stat proves nothing about an ssh path — remote backends keep
+        their record and rely on their own existence checks."""
+        remote_path = str(tmp_path / "gone")
+        tt.record_session_cwd("sess-a", remote_path)
+        resolved = tt._resolve_command_cwd(
+            workdir=None, default_cwd=str(tmp_path), session_key="sess-a", env_type="ssh",
+        )
+        assert resolved == remote_path
+
     def test_cd_then_next_command_runs_in_the_new_dir(self, monkeypatch):
         """E2E through terminal_tool: the record round-trips cd state."""
         import json

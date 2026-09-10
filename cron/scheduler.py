@@ -1786,7 +1786,7 @@ def _preflight_or_block(job: dict, job_id: str, job_name: str, cfg: dict) -> Opt
     return False, blocked_doc, "", f"{marker} {_pf_reason}"
 
 
-def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
+def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str, Optional[str]]:
     """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
     ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
     a paid primary model). Provider precedence: per-job pin > cron.model_provider > creation
@@ -1796,6 +1796,8 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     from hermes_cli.auth import AuthError
 
     model = jc.model
+    configured_provider_for_drift = str(jc.model_cfg.get("provider") or "").strip().lower() if isinstance(jc.model_cfg, dict) else ""
+    primary_provider_for_drift = str(job.get("provider") or "").strip().lower() or configured_provider_for_drift or None
     requested = job.get("provider") or jc.cron_default_provider or None
     if not requested:
         global_provider = (
@@ -1813,7 +1815,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         }
         if job.get("base_url"):
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
-        return resolve_runtime_provider(**runtime_kwargs), model
+        runtime = resolve_runtime_provider(**runtime_kwargs)
+        primary_provider_for_drift = str(runtime.get("provider") or "").strip().lower() or primary_provider_for_drift
+        return runtime, model, primary_provider_for_drift
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
         # OAuth refresh); anything else re-raises.
@@ -1845,7 +1849,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                 logger.info(
                     "Job '%s': fallback resolved to %s model %s",
                     job_id, runtime.get("provider"), fb_model)
-                return runtime, fb_model
+                return runtime, fb_model, primary_provider_for_drift
             except Exception as fb_exc:
                 logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
         raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
@@ -2508,17 +2512,15 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     if setup.blocked is not None:
         return setup
 
-    setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
+    primary_model_for_drift = setup.model
+    setup.runtime, setup.model, primary_provider_for_drift = _resolve_job_runtime(job, job_id, jc)
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
     # KENSEI CUSTOM — drift guard (fail-closed provider/model drift vs creation snapshots).
     # Upstream removed the guard in favour of snapshot-pinned resolution; the Kensei fleet
     # keeps the alert-once skip + drift markers (scheduler_preflight DRIFT_SKIP_*).
-    _check_model_drift(
-        job, job_id, _cfg, setup.runtime,
-        str(jc.model_cfg.get("provider") or "").strip().lower() if isinstance(jc.model_cfg, dict) else "",
-        setup.model)
+    _check_model_drift(job, job_id, _cfg, setup.runtime, primary_provider_for_drift, primary_model_for_drift)
     setup.fallback_model = get_fallback_chain(_cfg) or None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
@@ -4233,13 +4235,14 @@ from cron.scheduler_delivery import (  # noqa: E402
     _resolve_delivery_targets, _send_media_via_adapter,
 )
 from cron.scheduler_script import (  # noqa: E402
-    _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
+    _get_session_db_timeout, _run_job_script, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )
 from cron.scheduler_prompt import (  # noqa: E402
     _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil, _parse_wake_gate,
 )
 from cron.scheduler_preflight import (  # noqa: E402
-    BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
+    BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, DRIFT_SKIP_MARKER,
+    DRIFT_SKIP_SILENT_MARKER, _cron_preflight_enabled,
     _is_transient_provider_resolve_error, _preflight_job_config,
 )
 

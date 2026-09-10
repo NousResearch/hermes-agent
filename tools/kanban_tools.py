@@ -19,6 +19,7 @@ from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
+from tools.kanban_tools_schemas import _DESC_TASK_ID_DEFAULT, _board_schema_prop
 from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
@@ -323,7 +324,7 @@ _CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
 
 def _fields(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
     """``{name: getattr(obj, name)}``; every value None when ``obj`` is None."""
-    return {n: getattr(obj, n) if obj is not None else None for n in names}
+    return {n: getattr(obj, n, None) if obj is not None else None for n in names}
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -494,6 +495,9 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 def _handle_show(args: dict, **kw) -> str:
     """Full task state: row, parents, children, comments, runs, last 50 events."""
     tid = _require_task_id(args)
+    # Read access follows the worker's assigned-task scope; only mutation handlers
+    # may use the broader orchestrator surface.
+    _enforce_worker_task_ownership(tid)
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
         return json.dumps({

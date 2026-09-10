@@ -4,6 +4,7 @@
 import contextlib
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -61,6 +62,15 @@ from tools.cronjob_job_args import (
     _validate_cron_base_url,
     _validate_cron_script_path)
 from tools.registry import registry, tool_error
+
+
+def check_cronjob_requirements() -> bool:
+    """Cron jobs are available from interactive and gateway sessions."""
+    return bool(
+        os.getenv("HERMES_INTERACTIVE")
+        or os.getenv("HERMES_GATEWAY_SESSION")
+        or os.getenv("HERMES_EXEC_ASK")
+    )
 
 
 def _dumps(payload: Dict[str, Any]) -> str:
@@ -1096,3 +1106,138 @@ def cronjob(
         return handler(job, a)
     except Exception as e:
         return tool_error(str(e), success=False)
+
+CRONJOB_SCHEMA = {
+    "name": "cronjob_manage",
+    "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
+
+Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "paused": {"type": "boolean", "description": "Create only: persist disabled atomically. Resume to schedule; explicit run remains available. Default false."},
+            "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
+            "action": {
+                "type": "string",
+                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+            },
+            "job_id": {
+                "type": "string",
+                "description": "Required for update/pause/resume/remove/run"
+            },
+            "prompt": {
+                "type": "string",
+                "description": "For create: the full self-contained prompt (paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
+            },
+            "schedule": {
+                "type": "string",
+                "type": "string",
+                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
+            },
+            "name": {
+                "type": "string",
+                "description": "Optional human-friendly name"
+            },
+            "repeat": {
+                "type": "integer",
+                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+            },
+            "deliver": {
+                "type": "string",
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
+            },
+            "failure_deliver": {
+                "type": "string",
+                "description": "Optional override target for FAILURE notices only (same grammar as deliver). When set, engine failure/interruption notices go here instead of the deliver target; 'local' suppresses them entirely (state still recorded in cron list/run history). Use for jobs delivering into shared channels where failure noise is unwanted. Omit = failures follow deliver (default). On update, '' clears."
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional ordered skill names loaded before the cron prompt. On update, [] clears."
+            },
+            "script": {
+                "type": "string",
+                "description": f"Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True the script IS the job). Relative paths resolve under {display_hermes_home()}/scripts/; .sh/.bash via bash, else Python. On update, '' clears."
+            },
+            "monitor": {
+                "type": "string",
+                "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
+            },
+            "no_agent": {
+                "type": "boolean",
+                "default": False,
+                "description": "True = no LLM: the scheduler runs `script` (required) on schedule and delivers its stdout verbatim; empty stdout sends nothing (watchdog pattern). Use for script-only pings with fixed output; keep False for anything needing reasoning."
+            },
+            "context_from": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional job ID(s) whose most recent completed output is injected as context each run — chains jobs (A collects, B processes). For a job's OWN previous output prefer `continuity`. On update, [] clears."
+            },
+            "continuity": {
+                "type": "boolean",
+                "description": "True = each run sees the job's own previous output, so it can dedupe and continue where it left off (scouts, monitors, incremental digests). Default false. On update, false turns it off."
+            },
+            "enabled_toolsets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\"]) — cuts token overhead. Infer from the prompt. Omit for all default tools. On update, [] clears."
+            },
+            "workdir": {
+                "type": "string",
+                "description": "Optional absolute existing path to run the job from: injects that directory's AGENTS.md/context files and anchors terminal/file tools there. On update, '' clears."
+            },
+            "attach_to_session": {
+                "type": "boolean",
+                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
+            },
+        },
+        "required": ["action"]
+    }
+}
+
+
+def check_cronjob_requirements() -> bool:
+    """Available in interactive CLI mode and gateway/messaging platforms (the scheduler is
+    internal; no crontab needed). Flags must be explicitly truthy via ``env_var_enabled``."""
+    from utils import env_var_enabled
+    return (
+        env_var_enabled("HERMES_INTERACTIVE")
+        or env_var_enabled("HERMES_GATEWAY_SESSION")
+        or env_var_enabled("HERMES_EXEC_ASK")
+    )
+
+
+# Agent-facing arguments forwarded verbatim to cronjob(). model / provider / base_url are
+# intentionally NOT here: per-job inference pins are user-owned (dashboard, `hermes cron
+# create/edit --model`, hand-edited jobs) — the agent must not point unattended spend at a
+# different model. Programmatic callers of cronjob() itself retain the parameters.
+_HANDLER_FORWARDED_ARGS = (
+    "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
+    "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
+    "paused_reason")
+
+
+def _cronjob_handler(args, **kw):
+    """Model-tool dispatch: resolves the one model-facing ``monitor`` field into the stored
+    ``monitor_script``/``monitor_url`` pair (legacy field names still accepted)."""
+    _mon_script, _mon_url = _split_monitor_arg(args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"))
+    return cronjob(
+        action=args.get("action", ""),
+        include_disabled=args.get("include_disabled", True),
+        monitor_script=_mon_script,
+        monitor_url=_mon_url,
+        task_id=kw.get("task_id"),
+        session_id=kw.get("session_id"),
+        paused=args.get("paused", False),
+        **{key: args.get(key) for key in _HANDLER_FORWARDED_ARGS},
+    )
+
+
+registry.register(
+    name="cronjob_manage",
+    toolset="cronjob",
+    schema=CRONJOB_SCHEMA,
+    handler=_cronjob_handler,
+    check_fn=check_cronjob_requirements,
+    emoji="⏰",
+)

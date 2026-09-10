@@ -11,6 +11,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 
 from __future__ import annotations
 
+from hermes_cli.profile_activity_ledger import record_event_if_enabled
 import contextlib
 import json
 import os
@@ -29,6 +30,14 @@ from typing import Any, Iterable, Optional
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
+
+
+def _attach_loop_diagnosis(*args, **kwargs):
+    """Delegate diagnostics to the split dispatch module at call time."""
+    from hermes_cli.kanban_db_dispatch import _attach_loop_diagnosis as attach
+    return attach(*args, **kwargs)
+
+
 from typing import Mapping  # noqa: F401,E402
 from dataclasses import field  # noqa: F401,E402
 import hashlib  # noqa: F401,E402
@@ -7661,6 +7670,8 @@ from hermes_cli.kanban_db_workspace import (  # noqa: E402
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+    # KENSEI CUSTOM (fork re-anchor): re-export so dispatch's _kb.* refs resolve.
+    _maybe_emit_scratch_tip,
 )
 from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,

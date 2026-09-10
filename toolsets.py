@@ -277,7 +277,14 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
         return toolset if toolset else None
 
     if toolset:
-        merged_tools = sorted(set(toolset.get("tools", [])) | set(registry.get_tool_names_for_toolset(name)))
+        # A registry alias may deliberately collide with a static toolset name
+        # (for example MCP server ``homeassistant``).  Resolve both registry
+        # namespaces instead of letting the static definition shadow the alias.
+        registry_tools = set(registry.get_tool_names_for_toolset(name))
+        alias_target = registry.get_toolset_alias_target(name)
+        if alias_target and alias_target != name:
+            registry_tools.update(registry.get_tool_names_for_toolset(alias_target))
+        merged_tools = sorted(set(toolset.get("tools", [])) | registry_tools)
         return {**toolset, "tools": merged_tools}
 
     if name in _get_plugin_toolset_names():

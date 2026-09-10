@@ -148,6 +148,23 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
             "the gateway comes up.")
 
 
+_DELEGATED_CHILD_DENIED_ACTIONS = frozenset({"complete", "comment", "attach", "block", "unblock", "assign", "create", "edit", "link", "unlink", "claim", "reclaim", "dispatch", "daemon", "gc", "repair", "decompose", "specify", "schedule", "archive", "init", "swarm", "heartbeat", "notify-subscribe", "notify-unsubscribe"})
+_DELEGATED_CHILD_DENIED_BOARD_ACTIONS = frozenset({"create", "new", "rm", "remove", "delete", "switch", "use", "rename", "set-default-workdir"})
+
+def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
+    action = getattr(args, "kanban_action", None)
+    if action == "boards":
+        if (getattr(args, "boards_action", None) or "list") not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
+            return False
+    elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
+        return False
+    try:
+        from agent.delegation_context import is_delegated_child_process_context
+        return is_delegated_child_process_context()
+    except Exception:
+        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+
+
 # --- Command dispatch ---
 
 def kanban_command(args: argparse.Namespace) -> int:
@@ -233,6 +250,14 @@ def _parse_duration(val) -> Optional[int]:
     except ValueError as exc:
         raise ValueError(f"malformed duration {val!r}") from exc
     return int(n * units[s[-1]])
+
+
+def _require_ids(args: argparse.Namespace) -> tuple[list[str], int]:
+    """Resolve bulk task ids and emit the canonical missing-id error."""
+    ids = list(args.task_ids or [])
+    if not ids:
+        return ids, _err("at least one task_id is required")
+    return ids, 0
 
 
 def _cmd_init(args: argparse.Namespace) -> int:

@@ -3048,6 +3048,12 @@ def resolve_cron_model_drift_defaults(
     return provider, configured_model or _model_assignment_text(env.get("HERMES_MODEL", ""))
 
 
+def cron_model_drift_guard_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Keep the spend-safety guard enabled unless explicitly disabled."""
+    cron_config = _cron_section(config)
+    return cron_config is None or cron_config.get("model_drift_guard", True) is not False
+
+
 def cron_model_drift_axes(
     job: Any, *, current_provider: Any = "", current_model: Any = "", config: Any = None
 ) -> List[str]:

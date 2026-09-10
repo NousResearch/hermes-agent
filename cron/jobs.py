@@ -1914,6 +1914,7 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    enabled: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1925,6 +1926,10 @@ def create_job(
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
+    if enabled is not None:  # KENSEI CUSTOM — legacy enabled= maps onto paused=
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean.")
+        paused = not enabled
     if paused_reason is not None and not isinstance(paused_reason, str):
         raise ValueError("paused_reason must be a string.")
     if paused_reason is not None and not paused:

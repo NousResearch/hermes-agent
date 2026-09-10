@@ -438,6 +438,10 @@ def _catalog_registry(cat: _Catalog) -> None:
             cat.add(name, desc, category)
 
 
+def clip(value: object, limit: int = 240) -> str:
+    return str(value)[:limit]
+
+
 def _catalog_quick_commands(cat: _Catalog) -> None:
     qcmds = _load_cfg().get("quick_commands", {}) or {}
     if not (isinstance(qcmds, dict) and qcmds):
@@ -449,7 +453,7 @@ def _catalog_quick_commands(cat: _Catalog) -> None:
         qtype = qc.get("type", "")
         default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}"}
         desc = str(qc.get("description") or default_desc.get(qtype, qtype or "quick command"))
-        cat.add(f"/{qname}", _clip(desc), "User commands")
+        cat.add(f"/{qname}", clip(desc), "User commands")
 
 
 def _catalog_plugin_commands(cat: _Catalog) -> None:
@@ -460,7 +464,7 @@ def _catalog_plugin_commands(cat: _Catalog) -> None:
         key = f"/{pname}"
         if not isinstance(info, dict) or key.lower() in cat.canon:
             continue
-        cat.add(key, _clip(str(info.get("description") or "Plugin command")), "Plugin commands")
+        cat.add(key, clip(str(info.get("description") or "Plugin command")), "Plugin commands")
         mode = info.get("argument_mode")
         if mode not in {"options", "text", "mixed"}:
             mode = "text" if str(info.get("args_hint") or "").strip() else None
@@ -471,7 +475,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
     """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
     usage, origin_of = _skill_usage_lookup()
     for k, info in sorted(_tools_mod("agent.skill_commands").scan_skill_commands().items()):
-        cat.pairs.append([k, _clip(str(info.get("description", "Skill")))])
+        cat.pairs.append([k, clip(str(info.get("description", "Skill")))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
 
@@ -674,6 +678,210 @@ def _prompt_builtin(module: str, fn: str, kw: str = ""):
 _cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt")
 _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
 _cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cwd", kw="extra")
+
+def _cmd_moa(rid, params, session, name, arg):
+    # One prompt through the default MoA preset, then restore the prior model (whole-session
+    # switching goes through the model picker).
+    try:
+        moa = _tools_mod("hermes_cli.moa_config")
+        if not arg:
+            return _err(rid, 4004, moa.moa_usage())
+        if not session:
+            return _err(rid, 4001, "no active session")
+        preset = moa.normalize_moa_config(_load_cfg().get("moa") or {})["default_preset"]
+        # Record the live identity for post-turn restore, then swap the agent's client in
+        # place: session["model_override"] alone never switches an already-built agent.
+        agent = session.get("agent")
+        # See #53444.
+        session["moa_one_shot_restore"] = {
+            "override": session.get("model_override"), "model": getattr(agent, "model", None),
+            "provider": getattr(agent, "provider", None)}
+        if agent is not None:
+            try:  # persist_override=False: turn-scoped, never persist the MoA provider to config.yaml
+                _apply_model_switch(
+                    params.get("session_id", ""), session, f"{preset} --provider moa",
+                    confirm_expensive_model=False, pin_session_override=True, persist_override=False)
+            except Exception:
+                session.pop("moa_one_shot_restore", None)
+                raise
+        else:  # lazy/fresh session: the override is consumed by the first build
+            session["model_override"] = {
+                "provider": "moa", "model": preset, "base_url": "moa://local",
+                "api_key": "moa-virtual-provider", "api_mode": "chat_completions"}
+        notice = f"MoA one-shot queued with preset {preset}; previous model will be restored after this turn."
+        return _ok(rid, {"type": "send", "notice": notice, "message": arg})
+    except Exception as exc:
+        return _err(rid, 5030, f"moa unavailable: {exc}")
+
+
+def _cmd_focus(rid, params, session, name, arg):
+    # Display-only; routed through the config.set branch Ink uses so both surfaces share one state machine.
+    fv = _tools_mod("hermes_cli.focus_view")
+    display = _load_cfg().get("display")
+    display = display if isinstance(display, dict) else {}
+    action, target = fv.resolve_focus_arg(arg, cur := bool(display.get("focus_view", False)))
+    if action == "usage":
+        return _err(rid, 4004, "usage: /focus [on|off|status]")
+    if action == "status":
+        saved = display.get("focus_saved_tool_progress") or _load_tool_progress_mode()
+        return _exec_out(rid, fv.format_focus_status(cur, saved))
+    res = _methods["config.set"](
+        rid, {"key": "focus", "value": "on" if target else "off", "session_id": params.get("session_id", "")})
+    if "error" in res:
+        return res
+    tool_progress = (res.get("result") or {}).get("tool_progress") or "all"
+    return _exec_out(rid, fv.format_focus_toggle_message(bool(target), tool_progress))
+
+
+def _cmd_retry(rid, params, session, name, arg):
+    if not session:
+        return _err(rid, 4001, "no active session to retry")
+    if busy := _busy_error(rid, session, "retry"):
+        return busy
+    cc = _tools_mod("agent.context_compressor")
+    with session["history_lock"]:
+        if busy := _busy_error(rid, session, "retry"):
+            return busy
+        if session.get("attached_images"):
+            return _err(rid, 4018, "retry cannot safely reconstruct or combine attached media")
+        history, user_indices, err = _rewind_prelude(rid, session, "retry", "no previous user message to retry")
+        if err:
+            return err
+        _prefix, live_view = cc.history_before_user_originated_turn(history, user_indices[-1])
+        try:
+            content = cc.retryable_user_text(live_view.get("content"))
+        except ValueError as exc:
+            return _err(rid, 4018, str(exc))
+        rewound, err = _rewind_or_err(
+            rid, session, len(user_indices) - 1, (4018, ""), "retry: failed to persist history: ", require_retryable=True)
+        if err:
+            return err
+        content = cc.retryable_user_text(rewound[1].get("content"))
+    return _ok(rid, {"type": "send", "message": content})
+
+
+def _cmd_steer(rid, params, session, name, arg):
+    if not arg:
+        return _err(rid, 4004, "usage: /steer <prompt>")
+    agent = session.get("agent") if session else None
+    if agent and hasattr(agent, "steer"):
+        with contextlib.suppress(Exception):
+            if agent.steer(arg):
+                shown = f"{arg[:80]}{'...' if len(arg) > 80 else ''}"
+                return _exec_out(rid, f"⏩ Steer queued — arrives after the next tool call: {shown}")
+    return _ok(rid, {"type": "send", "message": arg})  # no active run: next-turn message
+
+
+def _cmd_goal(rid, params, session, name, arg):
+    sid_key, goals, err = _session_key_or_err(rid, session, "hermes_cli.goals", "goals")
+    if err:
+        return err
+    try:
+        max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
+    except Exception:
+        max_turns = 20
+    mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns)
+    lower = arg.strip().lower()
+    if not lower or lower == "status":
+        return _exec_out(rid, mgr.status_line())
+    if lower == "pause":
+        state = mgr.pause(reason="user-paused")
+        return _exec_out(rid, "No goal set." if state is None else f"⏸ Goal paused: {state.goal}")
+    if lower == "resume":
+        state = mgr.resume()
+        if state is None:
+            return _exec_out(rid, "No goal to resume.")
+        # Resume must restart work: `exec` is display-only, so return a `send`; `display`
+        # keeps model-facing scaffolding out of the transcript.
+        if not (prompt := mgr.next_continuation_prompt()):
+            return _exec_out(rid, f"▶ Goal resumed: {state.goal}")
+        notice = f"▶ Goal resumed: {state.goal}\nContinuing now — taking the next step."
+        return _ok(rid, {"type": "send", "notice": notice, "message": prompt, "display": "/goal resume"})
+    if lower in {"clear", "stop", "done"}:
+        had = mgr.has_goal()
+        mgr.clear()
+        return _exec_out(rid, "✓ Goal cleared." if had else "No active goal.")
+    # Remaining text = new goal. Client renders `notice`, submits `message`; the post-turn judge takes over.
+    try:
+        state = mgr.set(arg)
+    except ValueError as exc:
+        return _err(rid, 4004, f"invalid goal: {exc}")
+    notice = (
+        f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
+        "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
+        "Controls: /goal status · /goal pause · /goal resume · /goal clear")
+    return _ok(rid, {"type": "send", "notice": notice, "message": state.goal})
+
+
+def _cmd_loop(rid, params, session, name, arg):
+    sid_key, loops, err = _session_key_or_err(rid, session, "hermes_cli.loops", "loops")
+    if err:
+        return err
+    result = loops.dispatch_loop_command(loops.LoopManager(session_id=sid_key), arg)
+    output = result.get("output") or ""
+    if result.get("created"):
+        with contextlib.suppress(Exception):
+            if loops.goal_blocks_loop_tick(sid_key):
+                output += ("\nNote: an active /goal is driving this session — loop "
+                           "wakeups defer until the goal finishes, pauses, or parks.")
+    return _exec_out(rid, output)
+
+
+def _cmd_undo(rid, params, session, name, arg):
+    if not session:
+        # /undo [N]: back up N user turns (default 1), soft-delete the truncated rows on disk, and prefill
+        # the composer with the text of the user message we backed up to so it can be edited and
+        # resubmitted. N=1 is the Claude-Code-style single-step undo; /undo 3 backs up three user turns at
+        # once. See issue #21910.
+        return _err(rid, 4001, "no active session to undo")
+    if busy := _busy_error(rid, session, "undo"):
+        return busy
+    if not (session_key := session.get("session_key", "")):
+        return _err(rid, 4001, "no session key for undo")
+    arg_str = (arg or "").strip()
+    try:
+        n = max(int(arg_str.split()[0]), 1) if arg_str else 1
+    except (ValueError, IndexError):
+        return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
+    with session["history_lock"]:
+        _history, user_indices, err = _rewind_prelude(rid, session, "undo", "no user messages to undo")
+        if err:
+            return err
+        turns_undone = min(n, len(user_indices))
+        rewound, err = _rewind_or_err(rid, session, len(user_indices) - turns_undone, (4004, "undo: "), "undo: ")
+        if err:
+            return err
+        active, live_view, rewound_count = rewound
+        target_text = _tools_mod("agent.message_content").flatten_message_text(live_view.get("content"))
+    # Notify memory providers (same hook /branch fires) with rewound=True so cached per-turn state invalidates.
+    agent = session.get("agent")
+    if agent is not None:
+        # See #6672 + #21910.
+        mm = getattr(agent, "_memory_manager", None)
+        for step in (
+            lambda: mm is not None and mm.on_session_switch(
+                session_key, parent_session_id="", reset=False, rewound=True),
+            lambda: hasattr(agent, "_invalidate_system_prompt") and agent._invalidate_system_prompt(),
+            lambda: hasattr(agent, "_last_flushed_db_idx") and setattr(agent, "_last_flushed_db_idx", len(active)),
+        ):
+            with contextlib.suppress(Exception):
+                step()
+    turn_word = "turn" if turns_undone == 1 else "turns"
+    notice = f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). Edit and resubmit, or send a new message."
+    return _ok(rid, {"type": "prefill", "message": target_text, "notice": notice})
+
+
+def _is_snapshot_restore(arg: str) -> bool:
+    return (arg.split(maxsplit=1)[0].lower() if arg else "") in {"restore", "rewind"}
+
+
+def _cmd_snapshot(rid, params, session, name, arg):
+    if not _is_snapshot_restore(arg):
+        return None
+    return _exec_out(
+        rid, "/snapshot restore is blocked in the TUI because it changes config/state on disk "
+        "while the live agent has cached settings. Run it in the classic CLI, then restart the TUI.")
+
 
 def _cmd_compress(rid, params, session, name, arg):
     if not session:

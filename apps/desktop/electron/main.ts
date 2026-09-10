@@ -8338,7 +8338,11 @@ async function freshGatewayWsUrl(profile) {
   // silently lands back on the primary (default) backend and writes sessions to
   // the wrong profile's DB. A null/empty profile resolves to the primary, so
   // legacy callers and single-profile users are unchanged.
-  const connection = await ensureBackend(profile)
+  //
+  // Claim-guarded (#90812): called immediately before every gateway.connect(),
+  // so it can race another dial for the same profile (e.g. a second window
+  // reconnecting) into bootstrapping a duplicate backend/SSH tunnel.
+  const connection = await backendDialClaims.run(backendScopeKey(null, profile), () => ensureBackend(profile))
 
   if (connection.authMode === 'oauth') {
     const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
@@ -11058,8 +11062,11 @@ async function fetchJsonForProfile(profile, path) {
 }
 
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
+// Claim-guarded (#90812): the session-messages REST dispatch below can race a
+// renderer's own WS reconnect dial for the same profile scope; coalescing
+// avoids bootstrapping a second backend/SSH tunnel.
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
-  const conn = await ensureBackend(profile)
+  const conn = await backendDialClaims.run(backendScopeKey(null, profile), () => ensureBackend(profile))
   const url = `${conn.baseUrl}${path}`
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
 
@@ -15831,8 +15838,15 @@ ipcMain.handle('hermes:agents:roster', async () => {
 
 // Registry-scoped fresh WS URL: the (connectionId, profile) analogue of
 // hermes:gateway:ws-url. Same single-use-ticket discipline for OAuth sources.
+//
+// Claim-guarded (#90812): called immediately before every gateway.connect(),
+// so it can race another dial for the same (connectionId, profile) scope
+// into bootstrapping a duplicate backend/SSH tunnel.
 const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
-  ensureBackend: ensureRegistryBackend,
+  ensureBackend: (connectionId, profile) =>
+    backendDialClaims.run(backendScopeKey(connectionId as any, profile as any), () =>
+      ensureRegistryBackend(connectionId, profile)
+    ),
   mintTicket: mintGatewayWsTicket,
   buildTicketUrl: buildGatewayWsUrlWithTicket,
   rememberHeaders: rememberRemoteWsHeaders

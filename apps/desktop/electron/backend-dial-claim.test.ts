@@ -200,4 +200,41 @@ describe('main.ts wiring for #90812', () => {
     expect(body).toContain('backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile)')
     expect(body).toContain('ensureRegistryBackend(registryConnectionId, routeProfile)')
   })
+
+  // Three more surfaces bypassed backendDialClaims entirely, missed by the
+  // #90812 pass above: freshGatewayWsUrl/requestJsonForProfile/the registry
+  // ws-url handler all called ensureBackend()/ensureRegistryBackend() raw.
+  // freshGatewayWsUrl and the registry handler are hotter than most of the
+  // sites above — the renderer calls them immediately before every
+  // gateway.connect() — so an unguarded race there bootstraps a duplicate
+  // backend/SSH tunnel on every reconnect race, not just an occasional probe.
+
+  it('routes the fresh-ws-url mint (called before every gateway.connect()) through the single-owner claim', () => {
+    const handlerStart = mainSource.indexOf('async function freshGatewayWsUrl(profile) {')
+    expect(handlerStart).toBeGreaterThan(-1)
+    const body = mainSource.slice(handlerStart, handlerStart + 1_100)
+
+    expect(body).toContain('backendDialClaims.run(backendScopeKey(null, profile)')
+    expect(body).toContain('ensureBackend(profile)')
+  })
+
+  it('routes the profile-scoped REST dispatch (fetchJsonForProfile/requestJsonForProfile) through the single-owner claim', () => {
+    const handlerStart = mainSource.indexOf('async function requestJsonForProfile(')
+    expect(handlerStart).toBeGreaterThan(-1)
+    const body = mainSource.slice(handlerStart, handlerStart + 400)
+
+    expect(body).toContain('backendDialClaims.run(backendScopeKey(null, profile)')
+    expect(body).toContain('ensureBackend(profile)')
+  })
+
+  it('routes the registry-scoped fresh-ws-url mint through the single-owner claim', () => {
+    const handlerStart = mainSource.indexOf(
+      'const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({'
+    )
+    expect(handlerStart).toBeGreaterThan(-1)
+    const body = mainSource.slice(handlerStart, handlerStart + 400)
+
+    expect(body).toContain('backendDialClaims.run(backendScopeKey(connectionId')
+    expect(body).toContain('ensureRegistryBackend(connectionId, profile)')
+  })
 })

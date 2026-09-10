@@ -18,6 +18,9 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
     def _op_props(self):
         return SKILL_MANAGE_SCHEMA["parameters"]["properties"]["operations"]["items"]["properties"]
 
+    def _action_props(self, action):
+        return self._op_props()[action]["properties"]
+
     def test_single_call_shape(self):
         """Maintainer-directed: operations[] IS the interface — each op
         names its skill; a single edit is a list of one. Flat fields are
@@ -26,11 +29,22 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
         self.assertEqual(sorted(props), ["operations"])
         self.assertEqual(SKILL_MANAGE_SCHEMA["parameters"]["required"], ["operations"])
         items = SKILL_MANAGE_SCHEMA["parameters"]["properties"]["operations"]["items"]
-        self.assertEqual(items["required"], ["name", "action"])
-        self.assertIn("delete", self._op_props()["action"]["enum"])
+        self.assertEqual(items["required"], ["name"])
+        self.assertIn("delete", self._op_props())
+
+    def test_each_action_scopes_its_own_fields(self):
+        props = self._op_props()
+        for flat_field in ("action", "content", "file_content", "old_string", "new_string"):
+            self.assertNotIn(flat_field, props)
+        self.assertEqual(set(self._action_props("create")), {"content", "category"})
+        self.assertEqual(
+            set(self._action_props("patch")),
+            {"old_string", "new_string", "replace_all", "file_path"},
+        )
+        self.assertEqual(set(self._action_props("write_file")), {"file_path", "content"})
 
     def test_patch_args_defer_to_patch_tool(self):
-        props = self._op_props()
+        props = self._action_props("patch")
         self.assertIn("patch tool", props["old_string"]["description"])
         # The uniqueness/context curriculum lives in the patch tool's schema,
         # not here.
@@ -38,7 +52,7 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
         self.assertNotIn("surrounding context", props["old_string"]["description"])
 
     def test_file_path_states_relative_shape(self):
-        desc = self._op_props()["file_path"]["description"]
+        desc = self._action_props("patch")["file_path"]["description"]
         self.assertIn("RELATIVE", desc)
         self.assertIn("references/api.md", desc)
         self.assertIn("never absolute", desc)

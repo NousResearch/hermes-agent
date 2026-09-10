@@ -787,13 +787,16 @@ SKILL_MANAGE_SCHEMA = {
     "description": (
         "Create, update, or delete skills — your procedural memory for "
         "recurring task types. The call is an operations array (a single "
-        "edit is a list of one); it applies atomically — any failure rolls "
-        "every touched skill back. Ops: create (full SKILL.md; lands in "
+        "change is a list of one); each item has a skill name and exactly one "
+        "action object. It applies atomically — any failure rolls every "
+        "touched skill back. Actions: create (full SKILL.md; lands in "
         f"{_display_create_dir()}; must precede that skill's other "
-        "ops), patch (targeted old_string/new_string fix — preferred; "
-        "content alone REPLACES the whole file, read it via skill_view() "
+        "ops), patch (targeted old_string/new_string fix — preferred), "
+        "rewrite (REPLACES the whole SKILL.md; read it via skill_view() "
         "first), write_file/remove_file (supporting files), delete (sole "
-        "op only). Existing skills are modified wherever they live. Keep "
+        "op only). Put action arguments inside that action's object; do not "
+        "mix fields between actions. Existing skills are modified wherever "
+        "they live. Keep "
         "the description's first 57 chars a self-contained trigger: 'Use "
         "when <trigger>. <one-line behavior>.' Write lessons, not logs: "
         "imperative rule + why, no PR numbers/dates/incident narration, one "
@@ -808,6 +811,7 @@ SKILL_MANAGE_SCHEMA = {
                 "description": "Ordered ops; each names its target skill.",
                 "items": {
                     "type": "object",
+                    "description": "A skill name plus exactly one action object.",
                     "properties": {
                         "name": {
                             "type": "string",
@@ -817,53 +821,64 @@ SKILL_MANAGE_SCHEMA = {
                                 "unless creating."
                             )
                         },
-                        "action": {
-                            "type": "string",
-                            "enum": ["create", "patch", "delete", "write_file", "remove_file"]
+                        "create": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string", "description": "Full SKILL.md text."},
+                                "category": {"type": "string", "description": "Optional category subdir."},
+                            },
+                            "required": ["content"],
+                            "additionalProperties": False,
                         },
-                        "content": {
-                            "type": "string",
-                            "description": (
-                                "Full SKILL.md text (YAML frontmatter + "
-                                "markdown body) for create, or a full "
-                                "rewrite on patch."
-                            )
+                        "patch": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": {"type": "string", "description":
+                                               "Text to find (same matching semantics as the patch tool)."},
+                                "new_string": {"type": "string", "description":
+                                               "Replacement; empty string deletes the match."},
+                                "replace_all": {"type": "boolean", "description":
+                                                "Replace all occurrences (default false)."},
+                                "file_path": {"type": "string", "description":
+                                              "Optional path RELATIVE to the skill's own directory, e.g. "
+                                              "'references/api.md' — no leading slash, never absolute; first "
+                                              "segment references/, templates/, scripts/, or assets/. "
+                                              "Defaults to SKILL.md."},
+                            },
+                            "required": ["old_string", "new_string"],
+                            "additionalProperties": False,
                         },
-                        "category": {
-                            "type": "string",
-                            "description": "Optional category subdir for create (e.g. 'devops')."
+                        "rewrite": {
+                            "type": "object",
+                            "properties": {"content": {"type": "string", "description":
+                                                        "Complete replacement SKILL.md text."}},
+                            "required": ["content"],
+                            "additionalProperties": False,
                         },
-                        # patch args: same fuzzy-matching semantics as the
-                        # `patch` tool — teach only skill-specific facts here.
-                        "old_string": {
-                            "type": "string",
-                            "description": "Text to find (patch; same matching semantics as the patch tool)."
+                        "write_file": {
+                            "type": "object",
+                            "properties": {
+                                "file_path": {"type": "string", "description":
+                                              "Required path relative to the skill directory."},
+                                "content": {"type": "string", "description": "Complete file content."},
+                            },
+                            "required": ["file_path", "content"],
+                            "additionalProperties": False,
                         },
-                        "new_string": {
-                            "type": "string",
-                            "description": "Replacement (patch); empty string deletes the match."
+                        "remove_file": {
+                            "type": "object",
+                            "properties": {"file_path": {"type": "string", "description":
+                                                          "Required path relative to the skill directory."}},
+                            "required": ["file_path"],
+                            "additionalProperties": False,
                         },
-                        "replace_all": {
-                            "type": "boolean",
-                            "description": "patch: replace all occurrences (default false)."
+                        "delete": {
+                            "type": "object", "properties": {}, "additionalProperties": False,
+                            "description": "Delete the skill; this must be the sole operation.",
                         },
-                        "file_path": {
-                            "type": "string",
-                            "description": (
-                                "Path RELATIVE to the skill's own directory, "
-                                "e.g. 'references/api.md' — no leading slash, "
-                                "never absolute. write_file/remove_file: "
-                                "required; first segment references/, "
-                                "templates/, scripts/, or assets/. patch: "
-                                "optional (default SKILL.md)."
-                            )
-                        },
-                        "file_content": {
-                            "type": "string",
-                            "description": "Content for write_file."
-                        }
                     },
-                    "required": ["name", "action"]
+                    "required": ["name"],
+                    "additionalProperties": False,
                 }
             },
             # Also accepted, never advertised: the legacy flat single-op fields, and

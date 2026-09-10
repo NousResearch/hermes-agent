@@ -1896,3 +1896,38 @@ class TestFinalPayloadHasNoBlankTextBlocks:
         )
         image_blocks = [b for b in tool_result_block["content"] if b.get("type") == "image"]
         assert len(image_blocks) == 1
+
+
+class TestOAuthSystemPromptDocsPreservation:
+    def test_oauth_preserves_canonical_docs_url(self):
+        """The OAuth system prompt sanitizer rewrites product names ('Hermes Agent', 'hermes-agent')
+        to avoid Anthropic content filters, but must preserve the canonical documentation host
+        https://hermes-agent.nousresearch.com/docs intact so docs links remain valid (Fixes #48860)."""
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Hermes Agent by Nous Research. For help with tools and capabilities, "
+                    "see the documentation at https://hermes-agent.nousresearch.com/docs."
+                ),
+            },
+            {"role": "user", "content": "hello"},
+        ]
+        kwargs = build_anthropic_kwargs(
+            "claude-sonnet-4-6",
+            messages,
+            tools=None,
+            max_tokens=1000,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        system_blocks = kwargs.get("system", [])
+        assert len(system_blocks) >= 2
+        # First block is the Claude Code prefix
+        # Second block is the sanitized user system prompt
+        text = system_blocks[1]["text"]
+        assert "Claude Code" in text
+        assert "Anthropic" in text
+        assert "https://hermes-agent.nousresearch.com/docs" in text
+        assert "claude-code.nousresearch.com" not in text
+

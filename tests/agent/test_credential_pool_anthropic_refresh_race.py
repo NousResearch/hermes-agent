@@ -30,6 +30,8 @@ Claude Code witness lives in ``test_anthropic_oauth_stress.py``.
 
 from __future__ import annotations
 
+from typing import Dict
+
 import threading
 import time
 from dataclasses import replace as dc_replace

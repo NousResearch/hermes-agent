@@ -198,25 +198,29 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
                 return text
     return None
 
-_BATCH_ORDINALS: Dict[str, int] = {}
+_BATCH_ORDINALS: Dict[str, Dict[str, int]] = {}
 _BATCH_ORDINALS_LOCK = threading.Lock()
 
-def format_batch_tag(delegation_id: Optional[str]) -> str:
-    """Short human tag for a delegation batch: ``deleg_6a664903`` → ``set 1`` (first batch seen in this process), the
-    next distinct id → ``set 2``. Several batches (a parent's fan-out plus a child's nested fan-out, or two
+def format_batch_tag(delegation_id: Optional[str], parent_agent: Any = None) -> str:
+    """Short human tag for a delegation batch: the parent's first fan-out is ``set 1``, its next distinct
+    delegation id ``set 2``. Several batches (a parent's fan-out plus a child's nested fan-out, or two
     concurrent tools) print interleaved ``[n/N]`` lines to one console; without a tag ``✓ [3/3]`` and ``✓ [3/9]``
-    are indistinguishable, and a raw hex slice is unreadable. Empty string when no id is known so callers can
-    concatenate unconditionally."""
+    are indistinguishable, and a raw hex slice is unreadable. Ordinals are scoped per parent conversation
+    (``parent_agent.session_id``): one process hosts many conversations and every child's own fan-out, so a
+    process-wide counter showed a user's second wave as ``set 20``. Empty string when no id is known so callers
+    can concatenate unconditionally."""
     if not isinstance(delegation_id, str) or not delegation_id:
         return ""
+    scope = str(getattr(parent_agent, "session_id", None) or "")
     with _BATCH_ORDINALS_LOCK:
-        n = _BATCH_ORDINALS.setdefault(delegation_id, len(_BATCH_ORDINALS) + 1)
+        ordinals = _BATCH_ORDINALS.setdefault(scope, {})
+        n = ordinals.setdefault(delegation_id, len(ordinals) + 1)
     return f"set {n}"
 
-def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int) -> str:
+def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int, parent_agent: Any = None) -> str:
     """``[set 2 · 3/9] `` for batch children, ``[set 2] `` for a lone child,
     ``[3/9] `` / ``""`` when the batch id is unknown."""
-    tag = format_batch_tag(delegation_id)
+    tag = format_batch_tag(delegation_id, parent_agent)
     if task_count > 1:
         inner = f"{tag} · {task_index + 1}/{task_count}" if tag else f"{task_index + 1}/{task_count}"
         return f"[{inner}] "
@@ -268,8 +272,12 @@ class _ChildProgressRelay:
 
     def _prefix(self) -> str:
         # The batch tag is resolved lazily from session_ref: the relay is built
-        # before delegate_task stamps ``_delegation_id`` on the child.
-        return _batch_prefix(self.session_ref.get("delegation_id"), self.task_index, self.task_count)
+        # before delegate_task stamps ``_delegation_id`` on the child. The parent
+        # scope rides in the same ref so ordinals match the parent's own lines.
+        return _batch_prefix(
+            self.session_ref.get("delegation_id"), self.task_index, self.task_count,
+            parent_agent=self.session_ref.get("_parent_scope"),
+        )
 
     def _identity_kwargs(self) -> Dict[str, Any]:
         kw: Dict[str, Any] = {"task_index": self.task_index, "task_count": self.task_count, "goal": self.goal_label}
@@ -375,6 +383,9 @@ def _build_child_progress_callback(
     parent_cb = getattr(parent_agent, "tool_progress_callback", None)
     if not spinner and not parent_cb:
         return None
+    if session_ref is not None:
+        # Not an identity kwarg (underscore-prefixed, never relayed); only scopes the batch ordinal.
+        session_ref["_parent_scope"] = parent_agent
     return _ChildProgressRelay(
         task_index, goal, spinner, parent_cb, task_count, subagent_id, parent_id, depth, model, toolsets, session_ref,
     )

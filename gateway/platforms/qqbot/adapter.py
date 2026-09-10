@@ -39,8 +39,10 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-    _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async)
+    gateway_trust_env, BasePlatformAdapter, SendResult,
+    _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
+)
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
 from gateway.platforms.media_cache import ext_for_mime
 
@@ -666,7 +668,8 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        # Approval keys come from build_source (chat_type="dm"); update-prompt keys from event.scene ("c2c").
+        if chat_type in {"c2c", "dm"}:
             return bool(chat_id) and operator == chat_id
         if chat_type in {"group", "guild"}:
             event_chat = str(event.group_openid or event.guild_id or "").strip()

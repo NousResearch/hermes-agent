@@ -103,6 +103,9 @@ class CLITerminalMixin:
         """
         if getattr(self, "_terminal_io_broken", False):
             return
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is not None:
+            monitor.invalidate()
         app = getattr(self, "_app", None)
         if app is not None:
             self._app_invalidate(app, "paint_now", swallow=True)
@@ -216,6 +219,10 @@ class CLITerminalMixin:
         handled by ``_hermes_call_output_screen_diff`` (#83874). Suppression is cleared by
         a debounced timer so the bar returns during idle; next-submit stays a fast path.
         """
+        # A debounced composer resize can arrive after the alternate screen opens.
+        # Its erase/replay belongs to the suspended composer, not the monitor.
+        if getattr(getattr(self, '_subagent_monitor', None), 'opening', False):
+            return
         from cli import _replay_output_history
         self._status_bar_suppressed_after_resize = True
         try:

@@ -10,6 +10,8 @@ import {
   parseMaybeObject
 } from '@/components/assistant-ui/tool/fallback-model'
 
+import { toolResultRecord, type ToolResultMetadata } from '@/lib/tool-result-metadata'
+
 export interface ChangedFile {
   added: number
   /** Basename, for the row label. */
@@ -20,6 +22,7 @@ export interface ChangedFile {
 }
 
 interface ChangedFilePart {
+  toolResultMetadata?: ToolResultMetadata
   args?: unknown
   result?: unknown
   toolName?: unknown
@@ -41,7 +44,7 @@ export function deriveChangedFiles(parts: readonly unknown[]): ChangedFile[] {
       continue
     }
 
-    const result = parseMaybeObject(part.result)
+    const result = toolResultRecord(part)
     const diff = inlineDiffFromResult(result)
 
     if (!diff) {

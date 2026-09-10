@@ -592,13 +592,13 @@ export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
     let partChanged = false
 
     const parts = message.parts.map(part => {
-      if (part.type !== 'tool-call' || Object.hasOwn(part, 'result')) {
+      if (part.type !== 'tool-call' || part.completedAt !== undefined || Object.hasOwn(part, 'result')) {
         return part
       }
 
       partChanged = true
 
-      return { ...part, result: {} }
+      return { ...part, completedAt: part.timestamp ?? 0 }
     })
 
     if (!partChanged) {

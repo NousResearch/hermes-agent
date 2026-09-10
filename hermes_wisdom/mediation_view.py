@@ -9,6 +9,19 @@ from .review_presentation import review_card_text
 _SETUP_COMMAND_LABEL = "Proposed command (local terminal)"
 
 
+def _update_policy_line(interaction: dict) -> str:
+    facts = interaction["facts"]
+    if interaction["operation"] != "install" or "update_mode" not in facts:
+        return ""
+    mode = {
+        None: "Organization default",
+        "MANUAL": "Manual",
+        "AUTO_WITH_NOTICE": "Automatic with notice",
+        "REQUIRED": "Required",
+    }.get(facts["update_mode"], "Unavailable")
+    return f"\nFuture updates: {mode}"
+
+
 def _checks_action(identity: str, expanded: bool) -> WisdomAction:
     return WisdomAction(
         label="Hide checks" if expanded else "Show checks",
@@ -115,6 +128,7 @@ def advice_view(
             )
             if facts.get("version"):
                 detail += f" · v{facts['version']}"
+            detail += _update_policy_line(interaction)
             compatibility = facts.get("compatibility") or {}
             if compatibility:
                 detail += "\nCompatibility: " + str(
@@ -444,6 +458,7 @@ def interaction_view(
     detail = str(facts.get("editorial_description") or "")
     if facts.get("version"):
         detail += f"\nVersion: v{facts['version']}"
+    detail += _update_policy_line(result)
     compatibility = facts.get("compatibility") or {}
     if compatibility:
         detail += "\nCompatibility: " + str(

@@ -46,6 +46,7 @@ def public_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "version",
         "local_version",
         "from_version",
+        "update_mode",
         "compatibility",
         "allowed",
         "sensitive_expansion",
@@ -140,16 +141,23 @@ class WisdomConsent:
                 value = _decode(existing)
                 if value["plan"].get("origin_address") and value["plan"]["origin_address"] != actor.address:
                     raise WisdomNotFound("Wisdom interaction not found")
+                policy_changed = (
+                    value["operation"] == "install"
+                    and "update_mode" in reference
+                    and reference["update_mode"] != value["plan"].get("update_mode")
+                )
+                if policy_changed and value["delivery_state"] in {"delivering", "delivery_uncertain"}:
+                    raise WisdomConflict("Resolve the current review delivery before changing its update policy")
                 if (
                     value["state"] in {"applying", "completed"}
                     or value["delivery_state"] in {"delivering", "delivery_uncertain"}
                     or (value["state"] == "pending" and value["expires_at"] > now
-                        and value["deferred_at"] is None)
+                        and value["deferred_at"] is None and not policy_changed)
                 ):
                     return self.project(value)
                 # Keep the original receipt and suppression history. A successor
                 # key makes concurrent requests and interrupted plan rebuilds idempotent.
-                request_key = f"request:consent:{value['id']}"
+                request_key = f"request:consent:{value['id']}:{request_key.removeprefix('request:')}"
                 if value["state"] == "pending":
                     db.execute(
                         "UPDATE wisdom_consent SET state=?,updated_at=? WHERE id=?",
@@ -276,7 +284,9 @@ class WisdomConsent:
             plan = self.service.update_plan(skill_id)
             operation = "update"
         else:
-            plan = self.service.install_plan(f"{skill_id}@v{version}")
+            plan = self.service.install_plan(
+                f"{skill_id}@v{version}", update_mode=reference.get("update_mode")
+            )
             operation = "install"
         if plan.get("version") != version:
             raise WisdomConflict("the available version changed; inspect it again")
@@ -828,6 +838,7 @@ class WisdomConsent:
                     "kind": "skill",
                     "skill_id": plan["skill_id"],
                     "version": plan["version"],
+                    "update_mode": plan.get("update_mode"),
                 }
                 operation, refreshed = self._plan(ref)
                 if operation != value["operation"] or _signature(

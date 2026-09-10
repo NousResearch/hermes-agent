@@ -1798,8 +1798,11 @@ class GatewayTurnMixin:
             else:
                 status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
         elif status_code in {400, 500}:
-            # 400/500 on a large session: context overflow / payload too large.
-            if len(prepared.history) > 50:
+            # Same verdict is_context_overflow_failure_result reaches for a failed agent_result (the
+            # #1630 transcript skip / user-facing rewrite): an exception-raised failure must reach the
+            # same conclusion, or a billing/auth/content-policy/500 error on a long session gets the
+            # misleading "Session too large" reply instead of its own explanation.
+            if is_context_overflow_failure_result({"failed": True, "error": str(e)}, len(prepared.history)):
                 return (
                     "⚠️ Session too large for the model's context window.\nUse /compact to "
                     "compress the conversation, or /reset to start fresh."

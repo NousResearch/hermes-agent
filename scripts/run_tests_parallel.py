@@ -773,6 +773,15 @@ def _make_stdio_glyph_safe() -> None:
 
 def main() -> int:
     _make_stdio_glyph_safe()
+    # Mark every per-file pytest subprocess as "launched by the canonical
+    # runner". tests/conftest.py refuses to collect without this, so a bare
+    # `pytest tests/` cannot silently run against the real working tree
+    # (an unguarded run wiped uncommitted changes mid-suite).
+    #
+    # Set here rather than on run_tests.sh's `env -i` line so that invoking
+    # this driver directly is equally covered, and because the children
+    # inherit it via `env=os.environ` in _run_one_file.
+    os.environ["HERMES_TEST_RUNNER"] = "1"
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,

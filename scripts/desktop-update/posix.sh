@@ -665,7 +665,21 @@ if [ "$HANDOFF_DAEMONIZED" -ne 1 ]; then
   # as a flag. Appending here previously left HANDOFF_DAEMONIZED unset on
   # every re-exec, causing this block to re-fire forever (self-exec loop,
   # unbounded argv growth) whenever relaunch args were present.
-  /usr/bin/nohup /usr/bin/python3 -c '
+  # Resolve the interpreter rather than hardcoding /usr/bin/python3: on macOS
+  # without Xcode Command Line Tools installed that path is a stub shim which
+  # pops a blocking "The python3 command requires the command line developer
+  # tools" GUI dialog instead of executing, so the hand-off never happens and
+  # the Desktop update button dead-ends. PATH cannot redirect an absolute path,
+  # so the install's own venv interpreter is preferred (same resolution order
+  # as start_ui above), with /usr/bin/python3 kept as the final fallback.
+  HANDOFF_PY=""
+  for _cand in "${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}" \
+               "/opt/homebrew/bin/python3" "/usr/local/bin/python3" \
+               "$(command -v python3 2>/dev/null)" "/usr/bin/python3"; do
+    if [ -n "$_cand" ] && [ -x "$_cand" ]; then HANDOFF_PY="$_cand"; break; fi
+  done
+  log "hand-off interpreter: ${HANDOFF_PY:-<none found>}"
+  /usr/bin/nohup "$HANDOFF_PY" -c '
 import os, sys
 env = os.environ.copy()
 os.setsid()

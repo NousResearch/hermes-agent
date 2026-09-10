@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -22,10 +23,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SHIM_DIR = REPO_ROOT / "scripts" / "desktop-update"
 
 # posix.sh re-execs itself through these to detach from Electron's process
-# group; without them the hand-off never reaches its own main flow.
+# group; without them the hand-off never reaches its own main flow. The
+# interpreter is resolved, not hardcoded, so any python3 on PATH satisfies it.
 requires_posix_handoff = pytest.mark.skipif(
-    not (os.path.exists("/bin/bash") and os.path.exists("/usr/bin/python3")),
-    reason="posix.sh detaches through /bin/bash and /usr/bin/python3",
+    not (
+        os.path.exists("/bin/bash")
+        and (shutil.which("python3") or os.path.exists("/usr/bin/python3"))
+    ),
+    reason="posix.sh detaches through /bin/bash and a python3 interpreter",
 )
 
 

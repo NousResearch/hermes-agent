@@ -120,6 +120,9 @@ def test_uv_refuses_discovery_when_pm_python_is_missing(installed_uv, monkeypatc
     entry.mkdir()
     facts.record("python", "test", entry.name, {}, entry.parent,
                  target=target, artifacts=[digest])
+    recorded = facts.path.read_bytes()
     assert ensure.uv(realize=False)[0] is None
-    with pytest.raises(InstallError, match="binary is missing"):
+    with pytest.raises(InstallError, match="lazy installs are disabled: python"):
         ensure.uv()
+    assert facts.path.read_bytes() == recorded
+    assert not list(entry.iterdir())

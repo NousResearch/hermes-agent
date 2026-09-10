@@ -556,6 +556,18 @@ class TermuxDocker(Package):
         return ""
 
 
+def npm_env(cache_dir: Path, base_env: Optional[dict] = None) -> dict[str, str]:
+    """Keep ambient Node and npm options out of PM's child process."""
+    env = {
+        key: value
+        for key, value in (os.environ if base_env is None else base_env).items()
+        if not key.lower().startswith("npm_config_")
+        and key.upper() not in ("NODE_OPTIONS", "NODE_PATH", "NODE_ENV")
+    }
+    env["npm_config_cache"] = str(cache_dir)
+    return env
+
+
 @register
 class Npm(BinaryPackage):
     name = "npm"
@@ -616,13 +628,7 @@ class Npm(BinaryPackage):
         if not bundled_cli.is_file():
             raise InstallError(self.name, "node's entry is missing its bundled npm-cli.js")
 
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.lower().startswith("npm_config_")
-            and key not in ("NODE_OPTIONS", "NODE_PATH", "NODE_ENV")
-        }
-        env["npm_config_cache"] = str(archive.parent / ".npm-cache")
+        env = npm_env(archive.parent / ".npm-cache")
 
         staged.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(

@@ -14,6 +14,7 @@ from pathlib import Path
 from pm.ensure import _facts, _lockfile, _store, ensure, stage_only
 from pm.ensure import uv as pm_uv
 from pm.package import InstallError
+from pm.paths import repo_root
 from pm.registry import get_package
 from pm.store import ALL_TARGETS, current_target, hash_url
 from pm.update import Resolved, resolve_package
@@ -325,7 +326,7 @@ def cmd_update(args) -> int:
         return 1
     if args.check:
         if args.uv:
-            print("uv deps: would run `uv update` + venv sync")
+            print("uv deps: would run `uv lock --upgrade` + venv sync")
         if args.npm:
             print("npm deps: would run `npm update`")
         return 1 if changed else 0
@@ -352,13 +353,13 @@ def cmd_update(args) -> int:
         print("pm update: nothing to update")
 
     if args.uv:
-        uv_bin, env = pm_uv()
+        uv_bin, env = pm_uv(realize=False)
         if uv_bin is None:
             print("✗ uv: not installed")
             return 1
-        code, tail = _run_live([uv_bin, "update"], cwd=".", env=env)
+        code, tail = _run_live([uv_bin, "lock", "--upgrade"], cwd=str(repo_root()), env=env)
         if code != 0:
-            print(f"✗ uv update failed:\n{tail}")
+            print(f"✗ uv lock --upgrade failed:\n{tail}")
             return 1
         print("✓ uv.lock refreshed")
         try:
@@ -369,7 +370,17 @@ def cmd_update(args) -> int:
             print(f"✗ {e}")
             return 1
     if args.npm:
-        code, tail = _run_live(["npm", "update"], cwd=".", env=dict(os.environ))
+        from pm.ensure import env_for, installed_package
+        from pm.packages import npm_env
+        from pm.paths import writable_store_root
+
+        npm = installed_package("npm")
+        node = installed_package("node")
+        if npm is None or npm.binary is None or node is None or node.binary is None:
+            print("✗ npm or Node: not installed; run `hermes pm install`")
+            return 1
+        env = npm_env(writable_store_root() / ".npm-cache", env_for("npm"))
+        code, tail = _run_live([str(npm.binary), "update"], cwd=str(repo_root()), env=env)
         if code != 0:
             print(f"✗ npm update failed:\n{tail}")
             return 1

@@ -40,17 +40,12 @@ const pick = (colors: SkinColors, keys: string[], backdrop: string): string | nu
 const titleCase = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1)
 
 /**
- * Convert a resolved skin into a `DesktopTheme`, or null when it carries no
- * usable colors (so a broken/empty skin never registers junk).
+ * Build one `DesktopThemeColors` palette from a skin color block.
+ *
+ * Extracted from the old single-palette body so a dual-mode skin can derive
+ * its light and dark palettes independently (each with its own polarity).
  */
-export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
-  const name = (skin.name ?? '').trim()
-  const colors = skin.colors
-
-  if (!name || !colors || typeof colors !== 'object') {
-    return null
-  }
-
+function buildPalette(colors: SkinColors): DesktopThemeColors {
   // Background is the backdrop every other token flattens alpha over. Skins are
   // terminal-first so most only tint chrome — `status_bar_bg` is the closest
   // thing to an app surface; `background` is the explicit opt-in for GUI authors.
@@ -76,7 +71,7 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
 
   const destructive = pick(colors, ['ui_error'], background) ?? '#e25563'
 
-  const palette: DesktopThemeColors = {
+  return {
     background,
     foreground,
     card: mix(background, foreground, dark ? 0.04 : 0.025),
@@ -104,14 +99,71 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     userBubble: mix(background, accent, dark ? 0.18 : 0.12),
     userBubbleBorder: border
   }
+}
+
+/** True when a paired palette block carries at least one real token. */
+const hasTokens = (block: SkinColors | undefined): boolean => !!block && Object.keys(block).length > 0
+
+/**
+ * Convert a resolved skin into a `DesktopTheme`, or null when it carries no
+ * usable colors (so a broken/empty skin never registers junk).
+ *
+ * A skin may ship a base `colors` block plus hand-tuned `light_colors` /
+ * `dark_colors` overlays (the TUI's paired-palette contract). When paired
+ * blocks exist, the base palette's polarity decides which overlay belongs to
+ * which mode, and the desktop produces genuinely distinct `colors` (light)
+ * and `darkColors` (dark) — so the light/dark toggle works. Without paired
+ * blocks the skin is single-mode: both slots get the same palette, exactly
+ * as before.
+ */
+export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
+  const name = (skin.name ?? '').trim()
+  const colors = skin.colors
+
+  if (!name || !colors || typeof colors !== 'object') {
+    return null
+  }
+
+  const hasLight = hasTokens(skin.light_colors)
+  const hasDark = hasTokens(skin.dark_colors)
+
+  // Single-mode skin (no paired palettes): identical palette in both slots —
+  // the light/dark toggle must not invert it. Kept as one shared object so
+  // callers comparing by reference see the same palette as before.
+  if (!hasLight && !hasDark) {
+    const palette = buildPalette(colors)
+
+    return {
+      name,
+      label: titleCase(name),
+      description: 'Hermes skin',
+      colors: palette,
+      darkColors: palette
+    }
+  }
+
+  // Dual-mode: the base palette's authored background decides polarity (mirror
+  // of the TUI's `skinIsLight`). The opposite mode is the base merged with the
+  // matching hand-tuned overlay; the authored mode is the base itself.
+  //
+  // A chrome-only base (no `background`/`status_bar_bg`) must fall back to the
+  // SAME foreground-luminance bucket `buildPalette` uses, or the polarity seed
+  // disagrees with the palette it derives: light text ⇒ dark canvas ⇒ the
+  // light_colors overlay belongs in the light slot.
+  const seededBg = pick(colors, ['background', 'status_bar_bg'], '#000000')
+  const foregroundSeed = pick(colors, ['ui_text', 'banner_text', 'status_bar_text'], seededBg ?? '#000000')
+  const baseDark = seededBg
+    ? luminance(seededBg) < 0.4
+    : (foregroundSeed ? luminance(foregroundSeed) > 0.5 : false)
+
+  const lightSource = baseDark ? { ...colors, ...(skin.light_colors ?? {}) } : colors
+  const darkSource = baseDark ? colors : { ...colors, ...(skin.dark_colors ?? {}) }
 
   return {
     name,
     label: titleCase(name),
     description: 'Hermes skin',
-    // Single palette in both slots: a skin is one-mode, so the light/dark toggle
-    // shouldn't invert it. renderedModeFor still paints `.dark` from luminance.
-    colors: palette,
-    darkColors: palette
+    colors: buildPalette(lightSource),
+    darkColors: buildPalette(darkSource)
   }
 }

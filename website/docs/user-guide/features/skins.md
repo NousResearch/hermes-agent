@@ -212,6 +212,36 @@ branding:
 tool_prefix: "▏"
 ```
 
+### Dual light/dark palettes
+
+A skin can ship **paired palettes** so the light/dark toggle works on every surface — the Hermes desktop app included. Author the base `colors:` block for one polarity, then add an overlay block for the other:
+
+```yaml
+name: teal-ocean
+description: Teal canvas with a warm coral accent — dual-mode
+
+colors:
+  background: "#02181A"        # dark base (Abyss)
+  ui_accent: "#F6A278"         # coral on dark
+  banner_text: "#C8F5F2"
+
+# Light overlay: same keys as `colors`, hand-tuned for light surfaces.
+# The base palette's background decides polarity — dark base + light_colors,
+# or light base + dark_colors.
+light_colors:
+  background: "#F2FAF8"        # light canvas (Shallows)
+  ui_accent: "#B22E12"         # deeper coral on light
+  banner_text: "#051C1C"
+```
+
+Semantics:
+
+- The base `colors:` block is authored for one polarity; its `background` (when set) decides which.
+- `light_colors:` / `dark_colors:` are **overlays** merged over the base — partial blocks work (e.g. flip only the fills), full blocks override every key they list.
+- Without any paired block, a skin is single-mode and renders the same palette in both light and dark — exactly as before.
+- The **desktop app** maps the pair onto its `colors`/`darkColors` slots, so a dual-mode skin appears in Settings → Appearance with a working Light/Dark/System toggle. The TUI picks the block matching the terminal's detected polarity.
+- These keys were already supported by the skin engine, TUI, and the `skin` RPC payload; this also documents the desktop's support.
+
 ## Hermes Mod — Visual Skin Editor
 
 [Hermes Mod](https://github.com/cocktailpeanut/hermes-mod) is a community-built web UI for creating and managing skins visually. Instead of writing YAML by hand, you get a point-and-click editor with live preview.

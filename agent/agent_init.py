@@ -595,8 +595,8 @@ _SESSION_STATE: Dict[str, Any] = {
     # False on helper agents (compression / hygiene / review forks) that hand the session to
     # a continuation row that must stay open.
     "_end_session_on_close": True,
-    # True on the background review fork: never persist, so its harness turn can't hijack
-    # the live session.
+    # True on the background review fork: never persist or publish session lifecycle hooks,
+    # so its harness turn can't hijack or appear under the live session.
     "_persist_disabled": False,
 }
 

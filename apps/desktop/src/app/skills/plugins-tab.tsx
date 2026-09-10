@@ -114,6 +114,13 @@ function AgentPluginListRow({
               </span>
             </Tip>
           )}
+          {row.pinned_sha && (
+            <Tip label={t.skills.plugins.pinnedProvenance(row.pinned_sha.slice(0, 8))}>
+              <span className="rounded border border-(--ui-stroke-tertiary) px-1 font-mono text-[0.65rem] text-(--ui-text-tertiary)">
+                {t.skills.plugins.pinnedBadge(row.pinned_sha.slice(0, 8))}
+              </span>
+            </Tip>
+          )}
           {row.update_available && onUpdate && (
             <Button
               className="h-5 px-1.5 text-[0.65rem]"

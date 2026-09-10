@@ -100,3 +100,23 @@ agents and completed its stop cleanly, so this was not established as its cause.
 No normal Desktop update run was performed during this follow-up. The draft's
 two isolated end-to-end runs and planned MCP-gate PR separation remain open.
 The running managed installation was left unchanged during the branch review.
+
+## September 9: correction to the holder-discovery assessment
+
+A normal Desktop update at installed fork d45744d reproduced self-blocking:
+all five Electron processes were reported as CLI holders because the scanner
+recognized `Hermes.exe` by basename and accepted a cwd under the install. This
+identity collision was present in the newer scanner retained by the September 7
+restore. The earlier CLI recovery had stopped Desktop before scanning and
+therefore did not exercise this path.
+
+A read-only comparison against the same live Desktop showed zero GUI blockers
+with the known-good 762862b168 carrier and five with the installed carrier.
+The corrected scanner removed exactly those five false positives and retained
+the ten Python holders. Both scanner copies now require the existing target-venv
+path proof for a console shim; the cwd rule remains available to Python module
+launches. The regression failed in both copies before the fix and passes after
+it. The upstream carrier is regenerated from the corrected source.
+
+This supersedes any earlier inference that holder discovery was fully covered
+by the September 7 trace. It does not claim a successful new Desktop update.

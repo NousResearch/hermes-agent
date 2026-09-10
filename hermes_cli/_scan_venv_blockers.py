@@ -1221,7 +1221,13 @@ def _detect_target_venv_holders(
             argv0 = argv[0].strip('"') if argv else ""
             if argv0 and Path(argv0).is_absolute() and _within(argv0, venv_dir):
                 is_holder = True
-            elif cwd_low.startswith(root_prefix) and _hermes_cli_tail(argv) is not None:
+            elif (
+                cwd_low.startswith(root_prefix)
+                and _hermes_cli_tail(argv) is not None
+                # A console shim needs the venv-path proof above. Its basename
+                # alone also matches the Electron GUI, whose cwd is in the install.
+                and _process_basename(argv[0]).casefold() not in _HERMES_SHIM_BASENAMES
+            ):
                 is_holder = True
             elif cwd_low.startswith(root_prefix) and is_exact_mcp_module_argv(argv):
                 is_holder = True

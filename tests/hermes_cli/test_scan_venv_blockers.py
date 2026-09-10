@@ -3377,3 +3377,38 @@ def test_scan_emits_resource_only_for_a_holder_inside_the_mutation_set(
         # Only the shared runtime is mapped: there is nothing in the mutation
         # set to claim, and a runtime path is never a valid claim.
         assert "resource" not in record
+
+
+@pytest.mark.parametrize("scanner_copy", ["module", "carrier"])
+def test_detector_distinguishes_desktop_image_from_target_cli_shim(
+    monkeypatch, tmp_path: Path, scanner_copy: str
+) -> None:
+    import runpy
+
+    detect = scanner._detect_target_venv_holders
+    if scanner_copy == "carrier":
+        carrier = Path(__file__).resolve().parents[2] / "apps/desktop/resources/update-scanner/scan-venv-blockers.py"
+        detect = runpy.run_path(str(carrier))["_detect_target_venv_holders"]
+
+    desktop = tmp_path / "apps/desktop/release/win-unpacked/Hermes.exe"
+    shim = tmp_path / "venv/Scripts/hermes.exe"
+    python = tmp_path / "venv/Scripts/python.exe"
+    base_python = tmp_path.parent / "shared-runtime/python.exe"
+    other_shim = tmp_path.parent / "other-install/venv/Scripts/hermes.exe"
+    table = [
+        _detector_proc(601, str(desktop), "Hermes.exe", [str(desktop)], cwd=str(desktop.parent)),
+        _detector_proc(602, str(desktop), "Hermes.exe", [str(desktop), "--type=gpu-process"], cwd=str(desktop.parent)),
+        _detector_proc(603, str(desktop), "Hermes.exe", [str(desktop), "--type=utility"], cwd=str(desktop.parent)),
+        # A console shim from another installation is not ours merely because
+        # its working directory is in this checkout.
+        _detector_proc(604, str(other_shim), "hermes.exe", [str(other_shim), "status"], cwd=str(tmp_path)),
+        # Real target-venv executables remain holders, regardless of cwd.
+        _detector_proc(701, str(shim), "hermes.exe", [str(shim), "status"]),
+        _detector_proc(702, str(python), "python.exe", [str(python), "-c", "pass"]),
+        # A Python module launch from the checkout still carries target identity.
+        _detector_proc(703, str(base_python), "python.exe", [str(base_python), "-m", "hermes_cli.main", "serve"], cwd=str(tmp_path)),
+    ]
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(process_iter=lambda _attrs: iter(table)))
+
+    matched = {pid for pid, _name, _argv in detect(tmp_path, strict=True)}
+    assert matched == {701, 702, 703}

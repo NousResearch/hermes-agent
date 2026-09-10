@@ -394,8 +394,9 @@ class MCPServerTransportMixin:
         _core._ensure_mcp_sdk()
         if not _core._MCP_HTTP_AVAILABLE:
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
-                              "mcp.client.streamable_http is not available. "
-                              "Upgrade the mcp package to get HTTP support.")
+                              "the installed MCP SDK/code contract is incompatible: "
+                              "mcp.client.streamable_http provides no supported client symbol. "
+                              "Run `hermes update` so the Hermes source and dependency environment are upgraded together.")
         url = config["url"]
         headers = dict(config.get("headers") or {})
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin

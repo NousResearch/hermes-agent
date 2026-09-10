@@ -4890,6 +4890,12 @@ def _runtime_health_lines() -> list[str]:
         for platform, pdata in (state.get("platforms", {}) or {}).items()
         if pdata.get("state") == "fatal"
     ]
+    mcp = state.get("mcp")
+    if isinstance(mcp, dict) and mcp.get("status") == "degraded":
+        failures = mcp.get("failures") if isinstance(mcp.get("failures"), list) else []
+        names = [str(item.get("name")) for item in failures if isinstance(item, dict) and item.get("name")]
+        detail = f": {', '.join(names)}" if names else ""
+        lines.append(f"⚠ MCP degraded ({int(mcp.get('failed_servers') or 0)} server(s) failed){detail}")
 
     # A live-claiming snapshot can outlive an ungracefully killed gateway (taskkill /F, OOM). Past
     # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state.

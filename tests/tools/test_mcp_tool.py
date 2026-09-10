@@ -1469,8 +1469,9 @@ class TestHTTPConfig:
 
         async def _test():
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
-                with pytest.raises(ImportError, match="HTTP transport"):
+                with pytest.raises(ImportError, match="SDK/code contract is incompatible") as exc_info:
                     await server._run_http(config)
+                assert "Upgrade the mcp package" not in str(exc_info.value)
 
         asyncio.run(_test())
 

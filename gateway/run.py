@@ -1799,17 +1799,29 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
     carry the scope into the executor thread with ``copy_context()`` (the same shape as
     ``_run_in_executor_with_context``). See #95518.
     """
-    from tools.mcp_tool_discovery import discover_mcp_tools
+    from gateway.mcp_health import summarize_mcp_health
+    from tools.mcp_tool_discovery import discover_mcp_tools, get_mcp_status
     loop = asyncio.get_running_loop()
+    statuses = []
     if not getattr(config, "multiplex_profiles", False):
-        await loop.run_in_executor(None, discover_mcp_tools)
+        try:
+            await loop.run_in_executor(None, discover_mcp_tools)
+            statuses.extend(get_mcp_status())
+        except Exception as exc:
+            logger.warning("MCP tool discovery failed", exc_info=True)
+            statuses.append({"name": "gateway", "status": "failed", "error": str(exc)})
+        _write_runtime_status_quiet(mcp=summarize_mcp_health(statuses))
         return
     for profile_name, profile_home in _multiplex_profile_homes(config):
         try:
             with _profile_runtime_scope(Path(profile_home)):
                 await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
-        except Exception:
+                statuses.extend({**entry, "name": f"{profile_name}:{entry.get('name', 'unknown')}"}
+                                for entry in get_mcp_status())
+        except Exception as exc:
             logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
+            statuses.append({"name": profile_name, "status": "failed", "error": str(exc)})
+    _write_runtime_status_quiet(mcp=summarize_mcp_health(statuses))
 
 
 def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:

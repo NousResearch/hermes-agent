@@ -93,19 +93,26 @@ _DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
     "deepseek-chat", "deepseek-reasoner"})
 
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-v4-pro", "deepseek-v4-flash"})
+    "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash"})
 
 # First-class V-series IDs incl. future ``deepseek-v5-*`` and dated variants
 # (``deepseek-v4-flash-20260423``): verified real model ids, NOT aliases of ``deepseek-chat``.
 _DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
 
+# Version-less tier IDs. With V4.1 DeepSeek dropped the ``v<N>`` infix from the official model id:
+# ``GET /models`` serves ``deepseek-flash`` and the pricing page says to use that name (the legacy
+# ``deepseek-v4-flash`` is only temporarily routed to it). Without this the id was silently rewritten
+# back to the legacy name. ``deepseek-pro`` is accepted on the same basis for the announced V4.1 Pro.
+_DEEPSEEK_TIER_RE = re.compile(r"^deepseek-(flash|pro)$")
+
 
 def _normalize_for_deepseek(model_name: str) -> str:
-    """Map a model input to a DeepSeek-accepted id: canonicals and ``deepseek-v<digit>…`` pass
-    through (future V-series work without a release); retired aliases and everything else become
-    ``deepseek-v4-flash``."""
+    """Map a model input to a DeepSeek-accepted id: canonicals, ``deepseek-v<digit>…`` and the
+    version-less ``deepseek-flash`` / ``deepseek-pro`` tier ids pass through (future releases work
+    without a code change); retired aliases and everything else become ``deepseek-v4-flash``."""
     bare = _strip_vendor_prefix(model_name).lower()
-    if bare in _DEEPSEEK_CANONICAL_MODELS or _DEEPSEEK_V_SERIES_RE.match(bare):
+    if (bare in _DEEPSEEK_CANONICAL_MODELS or _DEEPSEEK_V_SERIES_RE.match(bare)
+            or _DEEPSEEK_TIER_RE.match(bare)):
         return bare
     return "deepseek-v4-flash"
 

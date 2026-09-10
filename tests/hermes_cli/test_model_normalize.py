@@ -138,6 +138,42 @@ class TestDeepseekCanonicalAndReasonerMapping:
         assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
 
 
+# ── DeepSeek version-less tier ids (V4.1: ``deepseek-flash``) ──────────
+
+class TestDeepseekVersionlessTierIds:
+    """With V4.1 DeepSeek dropped the ``v<N>`` infix from the official id:
+    ``GET /models`` serves ``deepseek-flash`` and the pricing page says to
+    use that name (``deepseek-v4-flash`` is only a temporary route).
+    ``deepseek-flash`` matched neither the canonical set nor the
+    ``deepseek-v<digit>`` regex, so a user who configured it was silently
+    sent on the wire as the legacy id.
+    """
+
+    @pytest.mark.parametrize("model", [
+        "deepseek-flash",
+        "deepseek-pro",
+        "DeepSeek-Flash",
+        "deepseek/deepseek-flash",
+    ])
+    def test_tier_id_passes_through(self, model):
+        assert _normalize_for_deepseek(model) == model.split("/")[-1].lower()
+
+    def test_provider_path_preserves_flash(self):
+        """End-to-end via normalize_model_for_provider — the id the user
+        put in config.yaml is the id that reaches api.deepseek.com."""
+        assert normalize_model_for_provider("deepseek-flash", "deepseek") == "deepseek-flash"
+
+    @pytest.mark.parametrize("model", [
+        "deepseek-foo",
+        "deepseek-flash-lite",
+        "deepseek-pro-max",
+        "deepseek-r1",
+    ])
+    def test_other_names_still_fold_to_v4_flash(self, model):
+        """The tier match is exact — anything else keeps the existing fallback."""
+        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
+
+
 # ── Regression: issue #78796 ───────────────────────────────────────────
 
 class TestIssue78796NvidiaPrefixRepair:

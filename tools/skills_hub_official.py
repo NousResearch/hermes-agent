@@ -311,12 +311,19 @@ class HermesIndexSource(SkillSource):
         entry = next((s for s in self._skills() if s.get("identifier") == identifier), None)
         return entry.get("trust_level", "community") if entry else "community"
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10, *, provider_filter: str = "") -> List[SkillMeta]:
         """Search the cached index (zero API calls). Matches name, description, tags, identifier and
         ``extra.provider`` (so ``nvidia`` finds ``NVIDIA/skills/...`` entries stored as source
         "github"). Ranked exact name > name prefix > provider > whole-word > name substring > other,
-        index order as tiebreaker — a raw break-at-limit slice buried the most relevant skills."""
+        index order as tiebreaker — a raw break-at-limit slice buried the most relevant skills.
+        Provider filters narrow the catalog before ranking and limiting."""
         skills = self._skills()
+        if provider_filter:
+            want = provider_filter.strip().lower()
+            skills = [
+                s for s in skills
+                if str((s.get("extra") or {}).get("provider", "")).lower() == want
+            ]
         if not skills:
             return []
         if not query.strip():

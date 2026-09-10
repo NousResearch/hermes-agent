@@ -224,8 +224,8 @@ class GitHubSource(SkillSource):
         parts = identifier.split("/", 2)
         return "trusted" if len(parts) >= 2 and f"{parts[0]}/{parts[1]}" in TRUSTED_REPOS else "community"
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        """Substring-match all taps; dedupe by identifier preferring higher trust."""
+    def search(self, query: str, limit: int = 10, *, provider_filter: str = "") -> List[SkillMeta]:
+        """Substring-match taps, filter by provider, then dedupe and limit results."""
         results: List[SkillMeta] = []
         query_lower = query.lower()
         for tap in self.taps:
@@ -235,6 +235,8 @@ class GitHubSource(SkillSource):
                         results.append(skill)
             except Exception as e:
                 logger.debug("Failed to search %s: %s", tap['repo'], e)
+        if provider_filter:
+            results = _filter_results_by_provider(results, provider_filter)
         return _dedupe_by_trust(results)[:limit]
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:

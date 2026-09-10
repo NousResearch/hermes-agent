@@ -88,7 +88,7 @@ _BILLING_PATTERNS = (
     "insufficient credits", "insufficient_quota", "insufficient balance", "credit balance",
     "credits exhausted", "credits have been exhausted", "requires available credits",
     "account balance is too low", "no usable credits", "top up your credits", "payment required",
-    "billing hard limit", "exceeded your current quota", "account is deactivated", "plan does not include",
+    "billing hard limit", "budget limit", "exceeded your current quota", "account is deactivated", "plan does not include",
     "out of extra usage", "out of funds", "run out of funds", "balance_depleted",
     "model_not_supported_on_free_tier", "not available on the free tier",
 )

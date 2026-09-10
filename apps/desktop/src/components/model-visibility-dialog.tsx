@@ -13,7 +13,7 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelDisplayParts, modelSlugSuffix } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import {
   $visibleModels,
@@ -145,6 +145,7 @@ export function ModelVisibilityDialog({
                   {!collapsed &&
                     models.map(family => {
                       const { name, tag } = modelDisplayParts(family.id)
+                      const slugSuffix = modelSlugSuffix(family.id)
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (
@@ -152,10 +153,18 @@ export function ModelVisibilityDialog({
                           className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs hover:bg-(--ui-control-active-background)"
                           key={key}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
-                          </span>
+                          <div className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              <HighlightMatches foldSeparators query={search} text={name} />
+                              {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
+                            </span>
+                            <span
+                              className="block truncate text-[0.625rem] text-(--ui-text-quaternary)"
+                              title={family.id}
+                            >
+                              {slugSuffix}
+                            </span>
+                          </div>
                           <Switch
                             checked={visible.has(key)}
                             onCheckedChange={() => toggle(provider, family.id)}

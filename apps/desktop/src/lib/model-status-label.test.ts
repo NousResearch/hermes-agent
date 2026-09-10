@@ -4,7 +4,8 @@ import {
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
-  modelDisplayParts
+  modelDisplayParts,
+  modelSlugSuffix
 } from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
@@ -31,6 +32,16 @@ describe('model-status-label', () => {
     expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6' })
     // Cloud ids keep their existing behavior.
     expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
+  })
+
+  it('returns the full provider-qualified slug for disambiguation', () => {
+    expect(modelSlugSuffix('gc/grok-4.6')).toBe('gc/grok-4.6')
+    expect(modelSlugSuffix('kilo/deepseek-v4-flash-0731')).toBe('kilo/deepseek-v4-flash-0731')
+    expect(modelSlugSuffix('openrouter/anthropic/claude-opus-4.8')).toBe('openrouter/anthropic/claude-opus-4.8')
+    expect(modelSlugSuffix('  kilo/deepseek-v4-flash-0731  ')).toBe('kilo/deepseek-v4-flash-0731')
+    expect(modelSlugSuffix('gpt-5.5')).toBe('')
+    expect(modelSlugSuffix('')).toBe('')
+    expect(modelSlugSuffix('  ')).toBe('')
   })
 
   it('maps reasoning effort to compact labels', () => {

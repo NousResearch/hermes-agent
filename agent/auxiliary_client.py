@@ -114,7 +114,7 @@ from agent.model_metadata import (
 from hermes_cli.config import get_hermes_home
 from agent.auxiliary_health import _custom_health_base_url, _unhealthy_cache_key
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -3300,11 +3300,17 @@ def _recoverable_pool_provider(
     base = str(getattr(client, "base_url", "") or "")
     runtime = _normalize_main_runtime(main_runtime)
     rt_base = str(runtime.get("base_url") or "")
+    rt_key = runtime.get("api_key")
+    client_key = getattr(client, "api_key", None)
+    # Only the SESSION's own key is shielded, and only when it was sent somewhere other than the
+    # session's origin (scheme+host+port — a port or HTTPS→HTTP change is a different trust boundary).
+    # An independently owned auxiliary pool keeps rotating at its own origin.
     if (base and rt_base and normalized == runtime.get("provider")
-            and not base_url_host_matches(base, base_url_hostname(rt_base))):
-        logger.info("Auxiliary: %s rejected at %s, but the session's %s endpoint is %s — "
+            and isinstance(rt_key, str) and rt_key and client_key == rt_key
+            and base_url_origin(base) != base_url_origin(rt_base)):
+        logger.info("Auxiliary: %s rejected the session key at %s, but the session's endpoint is %s — "
                     "endpoint mismatch, not a dead key; skipping credential rotation",
-                    normalized, base_url_hostname(base), normalized, base_url_hostname(rt_base))
+                    normalized, base_url_hostname(base), base_url_hostname(rt_base))
         return None
     if normalized not in {"", "auto", "custom"}:
         return normalized
@@ -4642,8 +4648,11 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         custom_entry = _get_named_custom_provider(provider)
     if not custom_entry:
         return None
-    custom_base = (custom_entry.get("base_url") or "").strip()
-    custom_key = _named_custom_api_key(custom_entry, provider, custom_base)
+    # A per-task/explicit base_url or api_key composes OVER the named entry's defaults: the entry supplies
+    # whatever the caller left blank, never replaces what the caller set (compression prompts carry
+    # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
+    custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
+    custom_key = (req.explicit_api_key or "").strip() or _named_custom_api_key(custom_entry, provider, custom_base)
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
@@ -6543,9 +6552,13 @@ async def _acreate_with_progress(
         if not _async_client_streams_internally(client):
             _notify_aux_provider_response()
         return response
+    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
     try:
-        return await _acreate_with_stream(client, kwargs, task)
+        chunks = await client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
+        # Only a rejected stream NEGOTIATION falls back to a plain call (mirrors the sync wrapper); a
+        # failure mid-consumption below reaches the classified recovery ladder instead of silently
+        # re-sending the whole prompt non-streaming.
         if (force_stream or _is_transient_transport_error(exc) or _is_auth_error(exc)
                 or _is_payment_error(exc) or _is_rate_limit_error(exc)):
             raise
@@ -6555,6 +6568,10 @@ async def _acreate_with_progress(
         response = await client.chat.completions.create(**kwargs)
         _notify_aux_provider_response()
         return response
+    if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
+        _notify_aux_provider_response()
+        return chunks
+    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
 
 
 # Shared request head + recovery ladder for call_llm / async_call_llm: the entry points differ

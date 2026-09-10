@@ -25,6 +25,9 @@ import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 
 import { PanelEmpty } from '../overlays/panel'
+import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
+
+import { DesktopPluginsSection, pluginElementId, PluginListRow } from './desktop-plugins-section'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
 // the same pattern as the Skills tab's EmbeddedHubPicker. `?embed=picker`
@@ -60,7 +63,7 @@ function profileParam(scope: ProfileScope): null | string {
   return typeof scope === 'string' ? scope : (scope.profile ?? null)
 }
 
-function PluginRow({
+function AgentPluginListRow({
   row,
   busy,
   onToggle,
@@ -77,10 +80,26 @@ function PluginRow({
   const enabled = row.status === 'enabled'
 
   return (
-    <div className="flex items-start gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2 last:border-b-0">
-      <Package aria-hidden className="mt-0.5 size-4 shrink-0 text-(--ui-text-tertiary)" />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+    <PluginListRow
+      controls={
+        <>
+          {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
+          {canToggle ? (
+            <Switch aria-label={row.name} checked={enabled} disabled={busy} onCheckedChange={onToggle} />
+          ) : (
+            <Tip label={t.skills.plugins.legacyBackend}>
+              <span>
+                <Switch aria-label={row.name} checked={enabled} disabled />
+              </span>
+            </Tip>
+          )}
+        </>
+      }
+      description={row.description || undefined}
+      icon={<Package aria-hidden className="mt-0.5 size-4 shrink-0 text-(--ui-text-tertiary)" />}
+      id={pluginElementId(row.key ?? row.name)}
+      title={
+        <>
           {row.name}
           {row.version && <span className="text-(--ui-text-quaternary)">v{row.version}</span>}
           {row.portable && (
@@ -95,6 +114,13 @@ function PluginRow({
               </span>
             </Tip>
           )}
+          {row.pinned_sha && (
+            <Tip label={t.skills.plugins.pinnedProvenance(row.pinned_sha.slice(0, 8))}>
+              <span className="rounded border border-(--ui-stroke-tertiary) px-1 font-mono text-[0.65rem] text-(--ui-text-tertiary)">
+                {t.skills.plugins.pinnedBadge(row.pinned_sha.slice(0, 8))}
+              </span>
+            </Tip>
+          )}
           {row.update_available && onUpdate && (
             <Button
               className="h-5 px-1.5 text-[0.65rem]"
@@ -106,32 +132,18 @@ function PluginRow({
               {t.skills.plugins.updateToPin(row.catalog_sha?.slice(0, 8) ?? '')}
             </Button>
           )}
-        </div>
-        {row.description && (
-          <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] break-words text-(--ui-text-tertiary)">
-            {row.description}
-          </div>
-        )}
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
-        {canToggle ? (
-          <Switch aria-label={row.name} checked={enabled} disabled={busy} onCheckedChange={onToggle} />
-        ) : (
-          <Tip label={t.skills.plugins.legacyBackend}>
-            <span>
-              <Switch aria-label={row.name} checked={enabled} disabled />
-            </span>
-          </Tip>
-        )}
-      </div>
-    </div>
+        </>
+      }
+    />
   )
 }
 
-/** Agent plugins for the Capabilities page: the scoped profile's installed
- *  plugins on top (toggleable), the live catalog picker underneath — same
- *  management-plus-discovery shape as the Skills tab. */
+/** THE plugins surface. One page answers "what extends my Hermes?" for both
+ *  halves: agent plugins (backend, per profile — the scope selector above
+ *  picks which) and desktop plugins (this app, every profile). Discovery
+ *  sits with management: the live catalog picker underneath, plus a manual
+ *  "Install from Git" for anything not in the catalog. Settings no longer
+ *  carries a second, partial copy of this. */
 export const PluginsTab = memo(function PluginsTab({ profile }: { profile: ProfileScope }) {
   const { t } = useI18n()
   const p = t.skills.plugins
@@ -149,6 +161,15 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
   }, [requestGateway, scope])
 
   const visible = useMemo(() => rows.filter(isDesktopRelevantPlugin), [rows])
+
+  // Deep-link from settings search / command palette (?plugin=<id or key>):
+  // rows render as soon as their store hydrates, so "ready" is simply
+  // target-present; the hook's polling rides out the async list loads.
+  useDeepLinkHighlight({
+    param: 'plugin',
+    ready: () => true,
+    elementId: pluginElementId
+  })
 
   // Catalog picker viewport (persisted height, collapse toggle) — same pane
   // store contract as EmbeddedHubPicker.
@@ -207,55 +228,85 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-32 flex-1 overflow-y-auto">
-        {status === 'error' ? (
-          <PanelEmpty
-            action={
-              <Button onClick={() => void loadAgentPlugins(requestGateway, scope)} size="sm">
-                {t.skills.refresh}
-              </Button>
-            }
-            description={error ?? undefined}
-            icon="error"
-            title={p.loadFailed}
-          />
-        ) : visible.length === 0 && status === 'ready' ? (
-          <PanelEmpty description={p.emptyHint} icon="package" title={p.empty} />
-        ) : (
-          <div className="flex flex-col">
-            {visible.map(row => (
-              <PluginRow
-                busy={busyKey === (row.key ?? row.name) || busyKey === row.name}
-                key={row.key ?? row.name}
-                onToggle={enable => {
-                  if (!row.key) {
-                    return
-                  }
-
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-                }}
-                onUpdate={
-                  row.update_available
-                    ? () => {
-                        void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
-                          applied => {
-                            if (applied) {
-                              notify({ kind: 'success', message: p.updated(row.name) })
-                            }
-                          }
-                        )
-                      }
-                    : undefined
-                }
-                row={row}
-              />
-            ))}
+        <section>
+          <div className="flex items-center justify-between gap-3 px-3 pt-3 pb-1">
+            <div className="min-w-0">
+              <div className="text-[0.62rem] font-medium tracking-wide uppercase text-(--ui-text-quaternary)">
+                {p.agentTitle}
+              </div>
+              <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                {p.agentBlurb}
+              </p>
+            </div>
+            <Button
+              className="shrink-0"
+              onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
+              size="sm"
+              type="button"
+              variant="secondary"
+            >
+              {t.settings.plugins.installModal.installFromGit}
+            </Button>
           </div>
-        )}
+
+          {status === 'error' ? (
+            <PanelEmpty
+              action={
+                <Button onClick={() => void loadAgentPlugins(requestGateway, scope)} size="sm">
+                  {t.skills.refresh}
+                </Button>
+              }
+              description={error ?? undefined}
+              icon="error"
+              title={p.loadFailed}
+            />
+          ) : visible.length === 0 && status === 'ready' ? (
+            <p className="px-3 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {p.empty} {p.emptyHint}
+            </p>
+          ) : (
+            <div className="flex flex-col">
+              {visible.map(row => (
+                <AgentPluginListRow
+                  busy={busyKey === (row.key ?? row.name) || busyKey === row.name}
+                  key={row.key ?? row.name}
+                  onToggle={enable => {
+                    if (!row.key) {
+                      return
+                    }
+
+                    void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+                  }}
+                  onUpdate={
+                    row.update_available
+                      ? () => {
+                          void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
+                            applied => {
+                              if (applied) {
+                                notify({ kind: 'success', message: p.updated(row.name) })
+                              }
+                            }
+                          )
+                        }
+                      : undefined
+                  }
+                  row={row}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        <div className="mt-2 mb-3 border-t border-(--ui-stroke-tertiary)">
+          <DesktopPluginsSection profile={scope} />
+        </div>
       </div>
 
       <section className={cn('relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)')}>
         <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
-          <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{p.catalogTitle}</span>
+          <span className="text-[0.62rem] font-medium tracking-wide uppercase text-(--ui-text-quaternary)">
+            {p.catalogTitle}
+          </span>
           <Button onClick={() => setPaneHeightOverride(CATALOG_PANE_ID, open ? 0 : undefined)} size="xs" variant="text">
             {open ? p.catalogHide : p.catalogBrowse}
           </Button>

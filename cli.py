@@ -296,6 +296,7 @@ _TERMINAL_ENV_MAPPINGS = {
         "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
         "docker_snap_compat",
         "docker_persist_across_processes", "docker_shared_container_key", "docker_orphan_reaper",
+        "docker_container_scope", "docker_session_container_retention", "docker_session_container_ttl_seconds",
         "sandbox_dir", "persistent_shell",
     )
 }
@@ -389,6 +390,9 @@ def _cli_config_defaults():
             "modal_image": img, "daytona_image": img, "docker_volumes": [],
             "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
             "docker_shared_container_key": "",
+            "docker_container_scope": "shared",
+            "docker_session_container_retention": "stop_on_session_end",
+            "docker_session_container_ttl_seconds": 3600,
         },
         "browser": {
             "inactivity_timeout": 120, "record_sessions": False, "engine": "auto",  # auto (Chrome) | lightpanda | chrome

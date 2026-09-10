@@ -150,7 +150,25 @@ def reap_orphan_containers(
         if finished_at is None:  # unknown age — be conservative
             continue
         age = (now - finished_at).total_seconds()
-        if age < max_age_seconds:
+        retention = _container_session_retention(docker, cid)
+        if retention == "stop_on_session_end":
+            if age < _STOP_RETENTION_REAP_CEILING_SECONDS:
+                # Session-scoped container stopped at session close (#46041): its session may
+                # resume and reattach — the next use restarts it. Removal happens when the
+                # session itself removes it, the retention TTL expires it, or the ceiling here
+                # declares the session abandoned.
+                logger.debug("Skipping stopped session container %s (stop_on_session_end retention)", cid[:12])
+                continue
+            logger.info("Reaping stopped session container %s (no resume for %.1f days)", cid[:12], age / 86400)
+        elif retention == "idle_ttl":
+            ttl = _container_session_ttl(docker, cid)
+            # The session's own TTL governs an idle_ttl container's lifetime — the generic
+            # 2×lifetime sweep threshold must not reap it early (#46041). No TTL label
+            # (pre-label container) falls back to the generic threshold.
+            if age < (ttl if ttl > 0 else max_age_seconds):
+                logger.debug("Skipping idle_ttl session container %s (stopped %.0fs < ttl %ds)", cid[:12], age, ttl)
+                continue
+        elif age < max_age_seconds:
             continue
         result = _docker_query(
             [docker, "rm", "-f", cid], timeout=30, fail="orphan reaper docker rm %s failed: %s", fail_args=(cid[:12],))
@@ -162,6 +180,40 @@ def reap_orphan_containers(
         else:
             logger.debug("docker rm -f %s failed: %s", cid[:12], result.stderr.strip())
     return removed
+
+
+def _container_session_retention(docker_exe: str, container_id: str) -> str:
+    """Value of the ``hermes-session-retention`` label, or ``""`` when absent/unreadable
+    (pre-feature containers and non-session containers reap exactly as before)."""
+    result = _docker_query(
+        [docker_exe, "inspect", "--format",
+         '{{index .Config.Labels "hermes-session-retention"}}', container_id],
+        timeout=10,
+        fail="orphan reaper label inspect %s failed: %s", fail_args=(container_id[:12],))
+    if result is None or result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _container_session_ttl(docker_exe: str, container_id: str) -> int:
+    """``hermes-session-ttl`` label as int seconds, or 0 when absent/unparseable."""
+    result = _docker_query(
+        [docker_exe, "inspect", "--format",
+         '{{index .Config.Labels "hermes-session-ttl"}}', container_id],
+        timeout=10,
+        fail="orphan reaper ttl inspect %s failed: %s", fail_args=(container_id[:12],))
+    if result is None or result.returncode != 0:
+        return 0
+    try:
+        return int(result.stdout.strip() or 0)
+    except ValueError:
+        return 0
+
+
+# stop_on_session_end containers awaiting a resume are spared by the orphan reaper, but not
+# forever: once a stopped one ages past this ceiling it is reclaimed (abandoned session).
+# Generous by design — 7 days of no resume is a fair proxy for "session abandoned".
+_STOP_RETENTION_REAP_CEILING_SECONDS = 7 * 24 * 3600
 
 
 def _container_finished_at(docker_exe: str, container_id: str):
@@ -513,15 +565,20 @@ class DockerEnvironment(BaseEnvironment):
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",
-        snap_compat: bool = False):
+        snap_compat: bool = False,
+        scope: str = "shared",
+        session_retention: str = "stop_on_session_end",
+        session_ttl_seconds: int = 3600):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
-        # Set by terminal_tool._create_environment for session-scoped containers
-        # (docker + container_persistent: false): removed at session close/idle timeout.
+        # Session-scoped containers (#46041) mark themselves here; _build_docker_env also
+        # sets it after construction for test doubles that reject ctor kwarg writes.
         self._session_scoped = False
+        if scope == "session":
+            self._session_scoped = True
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
@@ -562,6 +619,10 @@ class DockerEnvironment(BaseEnvironment):
         security_args = _build_security_args(
             run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
         self._snap_compat = snap_compat
+        # Config surface for #46041 session-scoped containers.
+        self._scope = scope
+        self._session_retention = session_retention
+        self._session_ttl_seconds = session_ttl_seconds
         if snap_compat:
             logger.warning(
                 "docker_snap_compat: running without --init and no-new-privileges (snap Docker under AppArmor)")
@@ -585,6 +646,14 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label}
+        if scope == "session":
+            # Baked at creation (immutable like the rest) so the orphan reaper can apply the
+            # session's retention policy to a STOPPED container it finds (#46041): stop_on_session_end
+            # containers are spared while a resume is plausible; idle_ttl containers are removed
+            # once stopped longer than their TTL; remove_on_session_end containers never linger.
+            self._labels["hermes-session-retention"] = _sanitize_label_value(session_retention)
+            if session_retention == "idle_ttl" and session_ttl_seconds > 0:
+                self._labels["hermes-session-ttl"] = str(int(session_ttl_seconds))
         # Saved for container recreation on "No such container" recovery.
         self._image = image
         self._image_uses_s6_init = image_uses_s6_init
@@ -1004,13 +1073,13 @@ class DockerEnvironment(BaseEnvironment):
         """Tear down per persist mode. Persist mode (default) leaves the container RUNNING —
         stopping it on every exit would kill background processes and add a ``docker start``
         delay per session; reclamation is ``reap_orphan_containers()`` at next startup.
-        ``persist_across_processes=False`` or ``force_remove=True`` (explicit-teardown hook,
-        unused so far) does ``docker stop`` + ``docker rm -f`` on a daemon thread that the
-        atexit hook joins via ``wait_for_cleanup`` so the work completes before exit.
-
-        Cleanup runs on a daemon thread with bounded ``subprocess.run`` calls (not the racy ``Popen(... &)``
-        pattern from before PR #33645). The atexit hook in ``tools/terminal_tool.py`` waits up to 15s for
-        the thread to finish before the interpreter exits, so ``docker stop`` / ``docker rm`` actually
+        ``persist_across_processes=False`` or ``force_remove=True`` (explicit-teardown hook)
+        does ``docker stop`` + ``docker rm -f``; a session-scoped container with
+        ``stop_on_session_end`` retention does ``docker stop`` ONLY, so a later process can
+        reattach via the label probe and restart it (#46041). Teardown runs on a daemon thread
+        with bounded ``subprocess.run`` calls (not the racy ``Popen(... &)`` pattern from before
+        PR #33645). The atexit hook in ``tools/terminal_tool.py`` waits up to 15s for the thread
+        to finish before the interpreter exits, so ``docker stop`` / ``docker rm`` actually
         completes when we do trigger it.
         """
         container_id = self._container_id
@@ -1020,19 +1089,46 @@ class DockerEnvironment(BaseEnvironment):
                 self._remove_bind_dirs()
             return
 
+        if (not force_remove and self._scope == "session"
+                and self._session_retention in ("stop_on_session_end", "idle_ttl")):
+            # Session scope, stop-family retention (#46041): stop WITHOUT rm — the session's next
+            # use reattaches via labels and restarts the container (stop_on_session_end), or the
+            # orphan reaper reclaims it once its FinishedAt ages past the sweep threshold
+            # (idle_ttl — after the env registry entry is gone at session close, the TTL clock is
+            # the reaper's age check). Filesystem state survives; in-container processes do not.
+            # Ephemeral per-session isolation (_scope left at "shared") keeps the stop+rm contract
+            # below.
+            self._spawn_teardown(
+                container_id,
+                ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),))
+            return
+
         if not force_remove and self._persist_across_processes:
             # Drop the in-process handle so a fresh __init__ re-probes via
             # labels instead of reusing a stale Python reference.
             self._container_id = None
             return
 
+        self._spawn_teardown(
+            container_id,
+            ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
+             (["rm", "-f"], "docker rm -f %s failed: %s")))
+
+        # Bind-mount dirs are the container's filesystem state; only drop them
+        # once the container itself is removed.
+        if not self._persistent:
+            self._remove_bind_dirs()
+
+    def _spawn_teardown(self, container_id: str, steps) -> None:
+        """Run *steps* (argv/fail_msg pairs; the container id is appended to each argv) on a
+        daemon thread tracked for ``wait_for_all_teardowns``, then drop the in-process handle
+        so a fresh ``__init__`` re-probes via labels instead of a stale Python reference."""
         # Capture what the worker needs — the thread can outlive ``self``.
         docker_exe = self._docker_exe
         log_id = container_id[:12]
 
         def _do_cleanup() -> None:
-            for argv, fail_msg in ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
-                                   (["rm", "-f"], "docker rm -f %s failed: %s")):
+            for argv, fail_msg in steps:
                 try:
                     subprocess.run(
                         [docker_exe, *argv, container_id],
@@ -1046,11 +1142,6 @@ class DockerEnvironment(BaseEnvironment):
         t.start()
         self._cleanup_thread = t
         self._container_id = None
-
-        # Bind-mount dirs are the container's filesystem state; only drop them
-        # once the container itself is removed.
-        if not self._persistent:
-            self._remove_bind_dirs()
 
     @staticmethod
     def wait_for_all_teardowns(timeout: float = 15.0) -> bool:

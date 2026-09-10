@@ -1924,6 +1924,9 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "docker_snap_compat": "TERMINAL_DOCKER_SNAP_COMPAT",
         "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
         "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
+        "docker_container_scope": "TERMINAL_DOCKER_CONTAINER_SCOPE",
+        "docker_session_container_retention": "TERMINAL_DOCKER_SESSION_CONTAINER_RETENTION",
+        "docker_session_container_ttl_seconds": "TERMINAL_DOCKER_SESSION_CONTAINER_TTL_SECONDS",
         "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL"}

@@ -303,6 +303,8 @@ Runs commands inside a Docker container with security hardening (all capabilitie
 
 **Per-session isolation mode (`container_persistent: false`).** Setting `container_persistent: false` on the Docker backend switches to one container **per session**: every chat (desktop app session, gateway conversation, TUI session) gets its own fresh sandbox, created on its first terminal/file call and removed when the session closes or goes idle past `lifetime_seconds`. Nothing carries over between sessions — no filesystem state, no mounts, no background processes. With `docker_mount_cwd_to_workspace: true`, only the workspace **attached to that session** is mounted at `/workspace`; a fresh session with no attached directory gets an empty workspace instead of inheriting the previous session's mount. `delegate_task` subagents still share their parent session's container. Use this mode when the sandbox is a security boundary between conversations; keep the default `true` when you want the long-lived shared container described above.
 
+**Session-scoped containers (`docker_container_scope: session`).** Keeps the `container_persistent: true` persistence contract — filesystem state, `/root`, and installed packages survive across turns — but gives every chat session its **own** long-lived container instead of one shared per profile. Session A and Session B get separate `/workspace` trees, separate `/root`, separate caches, and separate background-process/port spaces, so two sessions can run dev servers on the same port or install conflicting packages without interfering. Resuming a session reattaches to its container (a stopped one is `docker start`ed first); containers are keyed internally by session ID + profile, never by raw user-provided strings. What happens to a session's container after the session closes is governed by `docker_session_container_retention`: `stop_on_session_end` (default) stops it — it restarts on the session's next use; `keep_running` leaves it running; `remove_on_session_end` removes it (the next use starts fresh); `idle_ttl` removes it after `docker_session_container_ttl_seconds` idle seconds (`0` falls back to `lifetime_seconds`). `container_persistent: false` still wins and gives the fully ephemeral per-session mode above. `delegate_task` subagents continue to share their parent session's container.
+
 ```yaml
 terminal:
   backend: docker
@@ -327,13 +329,16 @@ terminal:
   container_cpu: 1                 # CPU cores (0 = unlimited)
   container_memory: 5120           # MB (0 = unlimited)
   container_disk: 51200            # MB (requires overlay2 on XFS+pquota)
-  container_persistent: true       # true = persist /workspace + /root, shared container; false = fresh container per session (see below)
+  container_persistent: true       # true = persist /workspace + /root (shared container by default; per-session with docker_container_scope: session); false = fresh container per session
 
   # Cross-process container reuse (defaults match the "one long-lived
   # container shared across sessions" contract — see Container lifecycle).
   docker_persist_across_processes: true   # Reuse container across Hermes restarts
   docker_shared_container_key: ""         # Opt in trusted profiles to one identity
   docker_orphan_reaper: true              # Sweep abandoned Exited containers at startup
+  docker_container_scope: shared          # shared = one container across sessions (default); session = one container per chat session
+  docker_session_container_retention: stop_on_session_end  # session scope: stop_on_session_end | keep_running | remove_on_session_end | idle_ttl
+  docker_session_container_ttl_seconds: 3600  # session scope + idle_ttl: removed after this many idle seconds (0 = use lifetime_seconds)
 
   # Cross-backend lifecycle settings (apply to docker as well)
   timeout: 180                     # Per-command timeout in seconds

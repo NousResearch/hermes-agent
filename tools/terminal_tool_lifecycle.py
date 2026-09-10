@@ -127,16 +127,19 @@ def _unregister_env(task_id: str):
     """Pop *task_id* from the env cache, activity map and creation locks; return
     the env (or None). Callers run the (slow) teardown OUTSIDE the lock —
     Modal/Docker teardown can block 10-15s and would stall every concurrent
-    terminal/file tool call."""
+    terminal/file tool call. Also drops the session-close registry entry so the
+    map cannot grow unboundedly (#46041)."""
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _last_activity,
+        _last_activity, _session_close_keys, _session_close_keys_lock,
     )
     with _env_lock:
         env = _active_environments.pop(task_id, None)
         _last_activity.pop(task_id, None)
     with _creation_locks_lock:
         _creation_locks.pop(task_id, None)
+    with _session_close_keys_lock:
+        _session_close_keys.pop(task_id, None)
     return env
 
 
@@ -144,7 +147,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _last_activity,
+        _last_activity, _session_close_keys, _session_close_keys_lock,
     )
     current_time = time.time()
 
@@ -158,19 +161,57 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         pass
 
     # Phase 1: unregister stale entries atomically under the lock; phase 2:
-    # stop them outside it (see _unregister_env for why).
+    # stop them outside it (see _unregister_env for why). TRUE session-scope
+    # envs (#46041, env._scope == "session") get retention-aware treatment:
+    # idle_ttl ones expire on their own TTL and are force-removed (stop+rm);
+    # stop/keep-retention ones tear down WITHOUT force after lifetime_seconds —
+    # cleanup() then applies the retention (stop-only, or persist no-op), the
+    # container stays resumable via labels, and the registry cannot grow
+    # unboundedly in a long-lived gateway process (sessions with active
+    # background processes never reach staleness — has_active_processes above).
+    # Ephemeral per-session isolation (container_persistent: false) keeps the
+    # legacy idle contract — reaped after lifetime_seconds like any sandbox.
     with _env_lock:
-        stale = [t for t, last in list(_last_activity.items()) if current_time - last > lifetime_seconds]
+        stale = []
+        for t, last in list(_last_activity.items()):
+            age = current_time - last
+            env = _active_environments.get(t)
+            if env is not None and getattr(env, "_scope", "") == "session":
+                retention = getattr(env, "_session_retention", "") or "stop_on_session_end"
+                window = lifetime_seconds
+                if retention == "idle_ttl":
+                    ttl = getattr(env, "_session_ttl_seconds", 0) or 0
+                    if ttl > 0:
+                        window = ttl  # the session's own TTL replaces the generic idle window
+                if age <= window:
+                    continue
+            elif age <= lifetime_seconds:
+                continue
+            stale.append(t)
         envs_to_stop = [(t, _active_environments.pop(t, None)) for t in stale]
         for t in stale:
             _last_activity.pop(t, None)
         with _creation_locks_lock:
             for t in stale:
                 _creation_locks.pop(t, None)
+        # Also drop the session-close registry entry the reaper would otherwise
+        # leave behind (bounded, but a slow leak across many sessions in a
+        # long-lived gateway process) — #46041.
+        with _session_close_keys_lock:
+            for t in stale:
+                _session_close_keys.pop(t, None)
     for task_id, env in envs_to_stop:
         if env is not None:
             _clear_file_ops_cache(task_id)
-            _teardown_env(env, task_id)
+            if getattr(env, "_scope", "") == "session" \
+                    and (getattr(env, "_session_retention", "") or "stop_on_session_end") == "idle_ttl":
+                # idle_ttl expiry means removal (stop+rm), bypassing the retention no-op.
+                _teardown_env(env, task_id, force_remove=True)
+            else:
+                # stop_on_session_end -> cleanup() stop-only (resumable);
+                # keep_running -> persist no-op (container untouched); other
+                # backends/sandboxes -> their normal teardown.
+                _teardown_env(env, task_id)
 
 
 def get_active_env(task_id: str):
@@ -296,13 +337,29 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     only for user-initiated teardown. The idle reaper calls ``env.cleanup()``
     directly, so persist-mode idle envs are likewise no-op'd; only the orphan
     reaper at next startup reclaims them.
+
+    Close paths may hold a different durable id than the cache key (session
+    scope #46041: AIAgent.close() passes the conversation session_id while the
+    env lives under "session:<session_key>"), so the lookup consults the
+    close-key registry recorded at env creation. Delegate children's close()
+    is unaffected: their ids resolve via the alias registry to the parent's
+    env or miss, as before.
     """
-    env = _unregister_env(task_id)
-    _clear_file_ops_cache(task_id)
+    from tools.terminal_tool import _close_lookup_keys
+    keys = _close_lookup_keys(task_id)
+    env = None
+    matched_key = task_id
+    for key in keys:
+        env = _unregister_env(key)
+        if env is not None:
+            matched_key = key
+            break
+    for key in keys:
+        _clear_file_ops_cache(key)
     if env is None:
         return
     _teardown_env(
-        env, task_id, force_remove=force_remove,
+        env, matched_key, force_remove=force_remove,
         done_msg="Manually cleaned up environment for task: %s",
     )
 

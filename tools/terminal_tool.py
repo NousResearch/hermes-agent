@@ -246,6 +246,42 @@ _session_cwd_lock = threading.Lock()
 _container_aliases: Dict[str, str] = {}
 _container_alias_lock = threading.Lock()
 
+# Session-close lookup: envs cached under a resolved id ("session:<key>") must be
+# reachable by close paths holding a DIFFERENT durable id — AIAgent.close() passes
+# self.session_id (the conversation id, rotates on /new) while the cache key uses
+# the session_key (stable platform-scoped chat identity). Written at env creation
+# (resolved key -> {session_id, session_key}); cleanup_vm consults it on raw-pop
+# miss. delegate_task child ids are never registered: their close() resolves via
+# the alias registry to the parent's env or falls to "default"/no-op, exactly as
+# before (#46041).
+_session_close_keys: Dict[str, Dict[str, str]] = {}
+_session_close_keys_lock = threading.Lock()
+
+
+def _record_session_close_key(cache_key: str) -> None:
+    """Remember which durable ids map to *cache_key* so session-close can find it."""
+    if not cache_key or not cache_key.startswith("session:"):
+        return
+    from gateway.session_context import get_session_env
+    entry = {
+        "session_key": _current_session_key(),
+        "session_id": get_session_env("HERMES_SESSION_ID", ""),
+    }
+    with _session_close_keys_lock:
+        _session_close_keys[cache_key] = {k: v for k, v in entry.items() if v}
+
+
+def _close_lookup_keys(task_id: str) -> list:
+    """Cache-key candidates for a close-path lookup of *task_id*: the raw id plus
+    any session-scope cache key recorded for this id at env-creation time."""
+    keys = [task_id] if task_id else []
+    with _session_close_keys_lock:
+        for cache_key, ids in _session_close_keys.items():
+            if task_id and task_id in (ids.get("session_key"), ids.get("session_id")):
+                if cache_key not in keys:
+                    keys.append(cache_key)
+    return keys
+
 
 def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     """Record *cwd* as *session_key*'s working directory (after a completed
@@ -352,18 +388,25 @@ class _SessionScope:
       across sessions, so one shared sandbox contradicts it. Docker, plus plugin
       backends declaring ``session_isolated_when_nonpersistent`` (sandboxes resumed
       by name, where a shared deterministic name would let two ephemeral runs
-      attach one VM and delete it under each other).
+      attach one VM and delete it under each other). Docker also isolates when
+      ``docker_container_scope: session`` asks for persistent per-session
+      containers (#46041).
     * ``docker_session_isolated`` — docker-only view: the workspace mount and
       session-scoped teardown paths must not fire for other backends.
-    * ``docker_profile_scoped`` — docker + ``container_persistent: true``: ONE
-      long-lived container per profile shared by every session (CLI, gateway,
-      WebUI). The session-key fallback in :func:`_resolve_container_task_id` stops
-      cross-profile SSH reuse; ungated it fragmented persistent Docker into one
-      container per gateway session, so this restores profile scoping for exactly
-      this backend/mode.
+    * ``docker_session_scope`` — docker + ``docker_container_scope: session`` +
+      ``container_persistent: true``: ONE long-lived container per chat session,
+      reattached on resume (the persistent analogue of the ephemeral isolation
+      above).
+    * ``docker_profile_scoped`` — docker + ``container_persistent: true`` without
+      session scope: ONE long-lived container per profile shared by every session
+      (CLI, gateway, WebUI). The session-key fallback in
+      :func:`_resolve_container_task_id` stops cross-profile SSH reuse; ungated it
+      fragmented persistent Docker into one container per gateway session, so this
+      restores profile scoping for exactly this backend/mode.
     """
     env_type: str
     persistent: bool
+    docker_scope: str = "shared"
 
     @property
     def session_isolated(self) -> bool:
@@ -375,11 +418,16 @@ class _SessionScope:
 
     @property
     def docker_session_isolated(self) -> bool:
-        return self.env_type == "docker" and self.session_isolated
+        return self.env_type == "docker" and (
+            not self.persistent or self.docker_scope == "session")
+
+    @property
+    def docker_session_scope(self) -> bool:
+        return self.env_type == "docker" and self.docker_scope == "session" and self.persistent
 
     @property
     def docker_profile_scoped(self) -> bool:
-        return self.env_type == "docker" and self.persistent
+        return self.env_type == "docker" and self.persistent and self.docker_scope != "session"
 
 
 def _session_scope() -> _SessionScope:
@@ -388,6 +436,7 @@ def _session_scope() -> _SessionScope:
     return _SessionScope(
         env_type=_tenv("TERMINAL_ENV", "local"),
         persistent=_tenv_bool("TERMINAL_CONTAINER_PERSISTENT", "true"),
+        docker_scope=_tenv("TERMINAL_DOCKER_CONTAINER_SCOPE", "shared").strip() or "shared",
     )
 
 
@@ -424,19 +473,28 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     # the gateway per-message via contextvars), scope the container to it so switching profiles can't reuse
     # a previous profile's SSHEnvironment and silently run commands on the wrong remote host. Subagents
     # inherit the same session key, so they still collapse onto the parent's container (the #16177
-    # shared-container intent). CLI mode has no session key and falls through to "default", behaviour
-    # unchanged. See commit e00f940a9. This runs *after* the isolation-override and
-    # docker/container_persistent branches above: those paths already key containers per task_id, so they
-    # stay authoritative where they apply and this only covers the cases that would otherwise collapse to
-    # the shared "default" key (notably SSH).
+    # shared-container intent). With docker_container_scope: session, persistent Docker keys the same way
+    # (#46041) — one long-lived container per session, reattached on resume. CLI mode has no session key
+    # and falls through to "default", behaviour unchanged. See commit e00f940a9. This runs *after* the
+    # isolation-override and docker/container_persistent branches above: those paths already key containers
+    # per task_id, so they stay authoritative where they apply and this only covers the cases that would
+    # otherwise collapse to the shared "default" key (notably SSH).
     session_key = _current_session_key()
-    shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip() if scope.docker_profile_scoped else ""
+    # Explicit opt-in: trusted profiles configuring the same terminal.docker_shared_container_key share
+    # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671). Wins over session
+    # scope too: a configured shared identity is the more explicit statement (#46041). Docker-only key —
+    # SSH reuse must stay session/profile-keyed so a key never points at the wrong remote host.
+    shared = (_tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+              if scope.env_type == "docker" and scope.persistent else "")
     if shared:
-        # Explicit opt-in: trusted profiles configuring the same terminal.docker_shared_container_key share
-        # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671).
         return f"shared:{shared}"
     if not session_key:
         return "default"
+    if scope.docker_session_scope:
+        # docker_container_scope: session + container_persistent: true — ONE long-lived container per
+        # chat session (#46041); resumed sessions reattach via labels. Subagents inherit the session
+        # key and collapse onto the parent's container, as in the non-persistent branch above.
+        return f"session:{session_key}"
     if not scope.docker_profile_scoped:
         return f"session:{session_key}"
     profile = _current_session_profile() or "default"
@@ -663,6 +721,10 @@ def _get_env_config() -> Dict[str, Any]:
         # instead of starting fresh; false = per-process isolation.
         "docker_persist_across_processes": _tenv_bool("TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"),
         "docker_shared_container_key": _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip(),
+        # Session-scoped containers (#46041): routing + retention surface.
+        "docker_container_scope": _tenv("TERMINAL_DOCKER_CONTAINER_SCOPE", "shared").strip() or "shared",
+        "docker_session_container_retention": _tenv("TERMINAL_DOCKER_SESSION_CONTAINER_RETENTION", "stop_on_session_end").strip() or "stop_on_session_end",
+        "docker_session_container_ttl_seconds": _parse_env_var("TERMINAL_DOCKER_SESSION_CONTAINER_TTL_SECONDS", "3600"),
         "docker_orphan_reaper": _tenv_bool("TERMINAL_DOCKER_ORPHAN_REAPER", "true"),
     }
 
@@ -1010,8 +1072,9 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
 
     with _env_lock:
         env: Any = _lookup_active_env(eff, task_id)
-    if env is not None:
-        return env
+        if env is not None:
+            _record_session_close_key(eff)  # session_id may have rotated (/new); refresh
+            return env
 
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(eff, threading.Lock())
@@ -1019,8 +1082,9 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     with task_lock:
         with _env_lock:
             env = _lookup_active_env(eff, task_id)
-        if env is not None:
-            return env
+            if env is not None:
+                _record_session_close_key(eff)  # session_id may have rotated (/new); refresh
+                return env
 
         if env_type == "singularity":
             _check_disk_usage_warning()
@@ -1043,6 +1107,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
         with _env_lock:
             _active_environments[eff] = new_env
             _last_activity[eff] = time.time()
+        _record_session_close_key(eff)
         logger.info("%s environment ready for task %s", env_type, eff[:8])
         return new_env
 

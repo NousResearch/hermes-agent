@@ -1,0 +1,30 @@
+name: researchcraft
+repo: https://github.com/raktim-mondol/hermes-plugin-researchcraft
+sha: 4bc855e8489cd8abecd8e455470fc3d1ad139f09
+description: >-
+  ResearchCraft scientific research plugin — literature search
+  (Consensus/Parallel/Scite), paper download (Unpaywall), LaTeX compile,
+  lab notebook, scientific file inspection, PDF-to-Markdown, image
+  generation, structured results, workflow templates, scientific figure
+  making (publication-quality matplotlib), and diagram design (39 editorial
+  diagram types). Uses the Hermes main model.
+maintainer: ResearchCraft
+tier: community
+docs_url: https://github.com/raktim-mondol/hermes-plugin-researchcraft
+platforms: []
+capabilities:
+  provides_tools:
+    - consensus_search
+    - parallel_search
+    - scite_search
+    - paper_download
+    - latex_compile
+    - notebook
+    - scientific_result
+    - sci_inspect
+    - pdf_to_markdown
+    - image_generate
+    - workflow
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

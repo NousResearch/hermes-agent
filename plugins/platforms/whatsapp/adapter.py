@@ -2,12 +2,14 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import os
 import platform
 import re
 import signal
 import subprocess
+import time
 from contextlib import suppress
 from functools import wraps
 from pathlib import Path
@@ -144,6 +146,75 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
         (session_path / "bridge.pid").write_text(str(pid) if start is None else f"{pid}\n{start}", encoding="utf-8")
 
 
+_BRIDGE_CRASHES_FILE = "bridge.crashes.json"
+# Crash-loop guard (#43847, follow-up 6): a bridge that starts "successfully" and dies seconds
+# later re-enters the gateway's reconnect queue with attempts=0/delay=0 every time, so the
+# watcher's 30s→300s backoff never accumulates and the restart loop is tight. A short on-disk
+# crash streak makes the *next* connect() fail fast with a retryable error instead of respawning,
+# handing pacing back to that existing backoff.
+_BRIDGE_CRASH_STREAK_LIMIT = 2        # fast crashes (within the window) before connect() refuses
+_BRIDGE_CRASH_WINDOW_SECS = 15 * 60   # crashes older than this stop counting
+_BRIDGE_STABLE_UPTIME_SECS = 5 * 60   # a bridge that lived this long before dying resets the streak
+
+
+def _bridge_log_tail(log_path: Optional[Path], max_lines: int = 3, max_chars: int = 200) -> str:
+    """Last non-empty lines of the bridge log — the closest thing to a real error cause."""
+    if not log_path:
+        return ""
+    try:
+        lines = [ln.strip() for ln in Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+    except OSError:
+        return ""
+    return " | ".join(lines[-max_lines:])[:max_chars]
+
+
+def _read_bridge_crash_streak(session_path: Path) -> dict:
+    """Best-effort read of the crash-streak record; unreadable/corrupt → empty (fail open)."""
+    try:
+        data = json.loads((session_path / _BRIDGE_CRASHES_FILE).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _record_bridge_crash(session_path: Path, returncode, log_path: Optional[Path], *, stable: bool) -> None:
+    """Update the on-disk crash streak; a death after a stable uptime resets it (one-off flukes don't count)."""
+    prev = _read_bridge_crash_streak(session_path)
+    count = 0 if stable else int(prev.get("count", 0) or 0) + 1
+    with suppress(OSError):
+        (session_path / _BRIDGE_CRASHES_FILE).write_text(json.dumps({
+            "count": count, "last_exit": returncode, "last_crash": time.time(),
+            "last_error": _bridge_log_tail(log_path),
+        }), encoding="utf-8")
+
+
+def _clear_bridge_crash_streak(session_path: Path) -> None:
+    """Forget the crash streak (a healthy bridge was adopted or the window expired)."""
+    with suppress(OSError):
+        (session_path / _BRIDGE_CRASHES_FILE).unlink()
+
+
+def _bridge_crash_cooldown_reason(session_path: Path) -> str:
+    """Return a fatal message when the bridge is in a crash loop, else "" (expiring a stale record)."""
+    record = _read_bridge_crash_streak(session_path)
+    try:
+        count = int(record.get("count", 0) or 0)
+        last_crash = float(record.get("last_crash", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return ""
+    if not count or time.time() - last_crash > _BRIDGE_CRASH_WINDOW_SECS:
+        _clear_bridge_crash_streak(session_path)
+        return ""
+    if count < _BRIDGE_CRASH_STREAK_LIMIT:
+        return ""
+    last_error = f" Last bridge log: {record['last_error']}." if record.get("last_error") else ""
+    return (
+        f"WhatsApp bridge crashed {count} times within the last {_BRIDGE_CRASH_WINDOW_SECS // 60} minutes "
+        f"(last exit code {record.get('last_exit', 'unknown')}); skipping an immediate restart so the "
+        f"reconnect backoff can pace retries. Check the bridge log for the underlying error.{last_error}"
+    )
+
+
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
     """Terminate the bridge process using process-tree semantics where possible."""
     action = "kill" if force else "terminate"
@@ -272,6 +343,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = self._bridge_log = self._poll_task = self._http_session = None
+        # Spawn time of the managed bridge, for crash-streak stability accounting.
+        self._bridge_started_monotonic: Optional[float] = None
         # Set by disconnect() before SIGTERMing so _check_managed_bridge_exit() can tell an intentional exit (-15/-2/0) from a crash.
         self._shutting_down = False
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
@@ -465,7 +538,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
             if await self._reuse_running_bridge(bridge_path):
+                _clear_bridge_crash_streak(self._session_path)  # adopted a healthy bridge — fresh slate
                 return True
+            cooldown_reason = _bridge_crash_cooldown_reason(self._session_path)
+            if cooldown_reason:
+                # Crash loop: fail fast (retryable) so the reconnect watcher's backoff paces restarts.
+                logger.error("[%s] %s", self.name, cooldown_reason)
+                self._set_fatal_error("whatsapp_bridge_crash_loop", cooldown_reason, retryable=True)
+                return False
             _kill_stale_bridge_by_pidfile(self._session_path)
             _kill_port_process(self._bridge_port)
             await asyncio.sleep(1)
@@ -476,6 +556,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 [find_node_executable("node") or "node", str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
                  "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
+            self._bridge_started_monotonic = time.monotonic()
             if not await self._wait_for_bridge():
                 return False
             self._attach_to_bridge(self._bridge_process)
@@ -512,7 +593,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
             self._close_bridge_log()
             await self._notify_fatal_error()
+            self._record_bridge_crash_streak(returncode)
         return self.fatal_error_message or message
+
+    def _record_bridge_crash_streak(self, returncode) -> None:
+        """Persist a managed-bridge exit into the crash-streak record (see ``_BRIDGE_CRASHES_FILE``)."""
+        # getattr-with-default: tests build the adapter via ``__new__`` without __init__.
+        started = getattr(self, "_bridge_started_monotonic", None)
+        stable = started is not None and time.monotonic() - started >= _BRIDGE_STABLE_UPTIME_SECS
+        _record_bridge_crash(self._session_path, returncode, self._bridge_log, stable=stable)
 
     def _terminate_bridge(self, *, force: bool) -> None:
         try:

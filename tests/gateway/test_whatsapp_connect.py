@@ -536,3 +536,137 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+# ---------------------------------------------------------------------------
+# Crash-loop streak guard (#43847, follow-up 6)
+# ---------------------------------------------------------------------------
+
+class TestBridgeCrashStreak:
+    """A bridge that starts and immediately dies must not be respawned in a tight loop.
+
+    The gateway reconnect watcher re-queues a retryable fatal with attempts=0/delay=0, and a
+    "successful" connect() resets the backoff — so a fast-crashing bridge restarts every few
+    seconds forever. The on-disk streak makes the next connect() fail fast (retryable) so the
+    watcher's existing backoff paces restarts instead.
+    """
+
+    def _adapter(self, tmp_path):
+        adapter = _make_adapter()
+        session = tmp_path / "session"
+        session.mkdir()
+        adapter._session_path = session
+        return adapter
+
+    def _write_streak(self, session, *, count, age_secs=30.0, last_error="Expired session", last_exit=1):
+        import json as _json
+        import time as _time
+        (session / "bridge.crashes.json").write_text(_json.dumps({
+            "count": count, "last_exit": last_exit,
+            "last_crash": _time.time() - age_secs, "last_error": last_error,
+        }), encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_crash_streak_blocks_reconnect_with_retryable_fatal(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        self._write_streak(adapter._session_path, count=2)
+        adapter._preflight = MagicMock(return_value=True)
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._ensure_bridge_deps = MagicMock(return_value=True)
+        adapter._reuse_running_bridge = AsyncMock(return_value=False)
+
+        result = await adapter.connect()
+
+        assert result is False
+        assert adapter._fatal_error_code == "whatsapp_bridge_crash_loop"
+        assert adapter._fatal_error_retryable is True
+        assert "Expired session" in adapter._fatal_error_message
+
+    @pytest.mark.asyncio
+    async def test_single_crash_still_allows_restart(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        self._write_streak(adapter._session_path, count=1)
+        adapter._preflight = MagicMock(return_value=True)
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._ensure_bridge_deps = MagicMock(return_value=True)
+        adapter._reuse_running_bridge = AsyncMock(return_value=False)
+
+        from plugins.platforms.whatsapp import adapter as wa_adapter
+        with patch.object(wa_adapter, "_kill_stale_bridge_by_pidfile") as mock_kill, \
+             patch.object(wa_adapter, "_kill_port_process", side_effect=RuntimeError("stop here")):
+            result = await adapter.connect()
+
+        assert result is False  # stopped later in the restart path, not by the guard
+        assert mock_kill.called
+        assert adapter._fatal_error_code != "whatsapp_bridge_crash_loop"
+
+    @pytest.mark.asyncio
+    async def test_stale_streak_expires_and_allows_restart(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        self._write_streak(adapter._session_path, count=3, age_secs=16 * 60)
+        adapter._preflight = MagicMock(return_value=True)
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._ensure_bridge_deps = MagicMock(return_value=True)
+        adapter._reuse_running_bridge = AsyncMock(return_value=False)
+
+        from plugins.platforms.whatsapp import adapter as wa_adapter
+        with patch.object(wa_adapter, "_kill_stale_bridge_by_pidfile") as mock_kill, \
+             patch.object(wa_adapter, "_kill_port_process", side_effect=RuntimeError("stop here")):
+            result = await adapter.connect()
+
+        assert mock_kill.called
+        assert adapter._fatal_error_code != "whatsapp_bridge_crash_loop"
+        assert not (adapter._session_path / "bridge.crashes.json").exists()  # expired record removed
+
+    @pytest.mark.asyncio
+    async def test_adopting_healthy_bridge_clears_streak(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        self._write_streak(adapter._session_path, count=2)
+        adapter._preflight = MagicMock(return_value=True)
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._ensure_bridge_deps = MagicMock(return_value=True)
+        adapter._reuse_running_bridge = AsyncMock(return_value=True)
+
+        result = await adapter.connect()
+
+        assert result is True
+        assert not (adapter._session_path / "bridge.crashes.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_managed_exit_records_streak_with_log_tail(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        adapter.set_fatal_error_handler(AsyncMock())
+        adapter._running = True
+        adapter._bridge_log = adapter._session_path / "bridge.log"
+        adapter._bridge_log.write_text("starting up\n\nConnection Closed (401)\n", encoding="utf-8")
+        adapter._bridge_started_monotonic = None  # unknown uptime counts as fast
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        adapter._bridge_process = mock_proc
+
+        await adapter._check_managed_bridge_exit()
+
+        import json as _json
+        record = _json.loads((adapter._session_path / "bridge.crashes.json").read_text(encoding="utf-8"))
+        assert record["count"] == 1
+        assert record["last_exit"] == 1
+        assert "Connection Closed (401)" in record["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_stable_bridge_death_resets_streak(self, tmp_path):
+        import time as _time
+        adapter = self._adapter(tmp_path)
+        adapter.set_fatal_error_handler(AsyncMock())
+        adapter._running = True
+        adapter._bridge_log = None
+        self._write_streak(adapter._session_path, count=2)  # previous fast crashes
+        adapter._bridge_started_monotonic = _time.monotonic() - 400  # lived ≥ 5 minutes
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        adapter._bridge_process = mock_proc
+
+        await adapter._check_managed_bridge_exit()
+
+        import json as _json
+        record = _json.loads((adapter._session_path / "bridge.crashes.json").read_text(encoding="utf-8"))
+        assert record["count"] == 0  # one-off fluke after stable uptime — fresh slate

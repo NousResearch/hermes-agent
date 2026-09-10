@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import {
   $composerSuggestionsBySession,
+  $composerSuggestionsEnabled,
   type ComposerSuggestion,
   markSuggestionInvoked,
   offerSuggestions,
+  setComposerSuggestionsEnabled,
   suggestionKey
 } from './composer-suggestions'
 
@@ -23,6 +25,19 @@ const suggestion = (id: string, provider = 'test'): ComposerSuggestion => ({
 const pillsFor = (sessionId: string) => ($composerSuggestionsBySession.get()[sessionId] ?? []).map(s => s.id)
 
 describe('composer suggestion bus', () => {
+  it('is enabled by default and hides all offerings when disabled', () => {
+    expect($composerSuggestionsEnabled.get()).toBe(true)
+
+    offerSuggestions('opt-out', 'test', [suggestion('hidden')])
+    setComposerSuggestionsEnabled(false)
+
+    expect(pillsFor('opt-out')).toEqual([])
+
+    setComposerSuggestionsEnabled(true)
+    expect(pillsFor('opt-out')).toEqual(['hidden'])
+    offerSuggestions('opt-out', 'test', [])
+  })
+
   it('publishes event offerings per session and withdraws on empty offer', () => {
     offerSuggestions('s1', 'test', [suggestion('a')])
 

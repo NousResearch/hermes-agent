@@ -16,6 +16,7 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { $composerSuggestionsEnabled, setComposerSuggestionsEnabled } from '@/store/composer-suggestions'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
@@ -401,6 +402,7 @@ export function AppearanceSettings() {
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
+  const composerSuggestionsEnabled = useStore($composerSuggestionsEnabled)
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
@@ -806,6 +808,14 @@ export function AppearanceSettings() {
             description={a.composerPopoutDesc}
             label={a.composerPopoutTitle}
             onChange={setComposerPopoutGesturesEnabled}
+          />
+
+          <ToggleRow
+            checked={composerSuggestionsEnabled}
+            description={a.composerSuggestionsDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.composerSuggestions)}
+            label={a.composerSuggestionsTitle}
+            onChange={setComposerSuggestionsEnabled}
           />
 
           <ResumeLastSessionSetting />

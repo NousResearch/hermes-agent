@@ -169,4 +169,59 @@ describe('list session-scroll restore', () => {
     // resulting reader position. Here the abandoned target must not return.
     expect(vp.scrollTop).not.toBe(2000 - CLIENT_H - 800)
   })
+
+  it('spends pages to regrow toward a saved offset the mounted window cannot cover', async () => {
+    // Heavy turns so the transcript is windowed by the render budget; a saved
+    // offset far below the mounted window must auto-spend pages (the same
+    // Show-earlier path) instead of stranding at the clamped top.
+    const heavy = 'x'.repeat(5000)
+    const messages = Array.from({ length: 60 }, (_, i) => [
+      {
+        id: `u-${i}`,
+        role: 'user',
+        content: [{ type: 'text', text: heavy }],
+        attachments: [],
+        createdAt,
+        metadata: { custom: {} }
+      } as ThreadMessage,
+      {
+        id: `a-${i}`,
+        role: 'assistant',
+        content: [{ type: 'text', text: heavy }],
+        status: { type: 'complete', reason: 'stop' },
+        createdAt,
+        metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
+      } as ThreadMessage
+    ]).flat()
+
+    // Control: no saved offset — the default window stays capped.
+    const ctl = render(<ScrollHarness messages={messages} sessionKey="ctl" />)
+    const stableGroups = async (container: HTMLElement) => {
+      let count = container.querySelectorAll('[data-slot="aui_message-group"]').length
+
+      for (let round = 0; round < 25; round += 1) {
+        await settleScroll(10)
+        const next = container.querySelectorAll('[data-slot="aui_message-group"]').length
+
+        if (next === count) {
+          return count
+        }
+
+        count = next
+      }
+
+      return count
+    }
+
+    const ctlGroups = await stableGroups(ctl.container)
+    ctl.unmount()
+
+    // Deep saved offset — the regrow effect spends pages toward it.
+    saveThreadScrollPosition('regrow', { fromBottom: 999999, kind: 'offset' })
+    const deep = render(<ScrollHarness messages={messages} sessionKey="regrow" />)
+    const deepGroups = await stableGroups(deep.container)
+
+    expect(ctlGroups).toBeGreaterThan(0)
+    expect(deepGroups).toBeGreaterThan(ctlGroups)
+  })
 })

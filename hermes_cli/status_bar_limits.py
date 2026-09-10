@@ -1,9 +1,10 @@
 """Subscription usage read-out for the status bar (``limits`` in ``display.status_bar.fields``).
 
-Polls ``agent.account_usage`` for the Codex and Claude Code subscriptions on a daemon thread and
-keeps the 5-hour session window per provider - the one that moves while you work; the weekly
-windows stay in ``/usage``. The render path only reads the cached snapshot, so a slow or failed
-fetch never stalls a repaint.
+Polls ``agent.account_usage`` for the Codex and Claude Code subscriptions on a daemon thread. Per
+provider it keeps the shortest window the plan reports (the 5-hour session window; weekly only on
+plans without one) plus any per-model weekly cap (``fable 57%``), since a model can be out for the
+week while the session window is free. The render path only reads the cached list, so a slow or
+failed fetch never stalls a repaint.
 """
 
 from __future__ import annotations
@@ -20,18 +21,33 @@ PROVIDERS: tuple[tuple[str, str], ...] = (("openai-codex", "cx"), ("anthropic", 
 DEFAULT_INTERVAL_S = 60.0
 
 
-def session_window_percent(snapshot) -> Optional[float]:
-    """``used_percent`` of the 5-hour window; None when the snapshot has none.
+def _clamp(value) -> float:
+    return max(0.0, min(100.0, float(value)))
 
-    Both providers label that window "Session" / "Current session" (``agent.account_usage``),
-    while the weekly and per-model windows never carry the word.
+
+def bar_readings(snapshot, label: str) -> list[tuple[str, float]]:
+    """``[(label, used_percent), ...]`` for one provider, or ``[]`` when nothing is reported.
+
+    First the shortest window the plan reports: the one labelled "Session" / "Current session"
+    (``agent.account_usage`` names both providers' 5-hour windows that way), else the first
+    account-wide weekly window (plans that only meter weekly). Then one reading per per-model
+    weekly cap (labels ending in " week" other than the account-wide one), keyed by the model name
+    in lower case - a model can be out for the week while the session window is free.
     """
     if snapshot is None:
-        return None
-    for window in getattr(snapshot, "windows", ()):
-        if "session" in window.label.lower() and window.used_percent is not None:
-            return max(0.0, min(100.0, float(window.used_percent)))
-    return None
+        return []
+    windows = [w for w in getattr(snapshot, "windows", ()) if w.used_percent is not None]
+    session = next((w for w in windows if "session" in w.label.lower()), None)
+    account_week = next((w for w in windows if w.label.lower() in ("weekly", "current week")), None)
+    readings: list[tuple[str, float]] = []
+    shortest = session or account_week
+    if shortest is not None:
+        readings.append((label, _clamp(shortest.used_percent)))
+    for w in windows:
+        name = w.label.lower()
+        if name.endswith(" week") and w is not account_week and name != "current week":
+            readings.append((name[: -len(" week")], _clamp(w.used_percent)))
+    return readings
 
 
 def format_limit(label: str, used_percent: float) -> str:
@@ -40,14 +56,14 @@ def format_limit(label: str, used_percent: float) -> str:
 
 
 class AccountLimitsPoller:
-    """Background refresh of per-provider session-window usage. ``read()`` is lock-free and cheap."""
+    """Background refresh of per-provider bar readings. ``read()`` is lock-free and cheap."""
 
     def __init__(self, fetch: Optional[Callable] = None, interval_s: float = DEFAULT_INTERVAL_S,
                  on_change: Optional[Callable[[], None]] = None):
         self._fetch = fetch
         self._interval_s = max(5.0, float(interval_s))
         self._on_change = on_change
-        self._limits: dict[str, float] = {}
+        self._limits: dict[str, tuple[tuple[str, float], ...]] = {}
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -65,7 +81,7 @@ class AccountLimitsPoller:
     def read(self) -> list[tuple[str, float]]:
         """``[(label, used_percent), ...]`` in bar order; providers without data are omitted."""
         limits = self._limits
-        return [(label, limits[provider]) for provider, label in PROVIDERS if provider in limits]
+        return [reading for provider, _label in PROVIDERS for reading in limits.get(provider, ())]
 
     def refresh_once(self) -> None:
         fetch = self._fetch
@@ -73,16 +89,16 @@ class AccountLimitsPoller:
             from agent.account_usage import fetch_account_usage
             fetch = fetch_account_usage
         fresh = dict(self._limits)
-        for provider, _label in PROVIDERS:
+        for provider, label in PROVIDERS:
             try:
-                used = session_window_percent(fetch(provider))
+                readings = bar_readings(fetch(provider), label)
             except Exception:
                 logger.debug("status bar limits: %s fetch failed", provider, exc_info=True)
                 continue  # keep the last good reading rather than blanking the segment
-            if used is None:
-                fresh.pop(provider, None)
+            if readings:
+                fresh[provider] = tuple(readings)
             else:
-                fresh[provider] = used
+                fresh.pop(provider, None)
         changed = fresh != self._limits
         self._limits = fresh  # single reference swap: readers never see a half-built dict
         if changed and self._on_change is not None:

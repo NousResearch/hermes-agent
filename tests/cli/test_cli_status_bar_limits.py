@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import cli as cli_mod
 from cli import HermesCLI
-from hermes_cli.status_bar_limits import AccountLimitsPoller, format_limit, session_window_percent
+from hermes_cli.status_bar_limits import AccountLimitsPoller, bar_readings, format_limit
 
 
 def _window(label, used):
@@ -17,9 +17,9 @@ def _codex(session=None, weekly=None):
     return SimpleNamespace(windows=(_window("Session", session), _window("Weekly", weekly)))
 
 
-def _claude(session=None, week=None, opus=None):
+def _claude(session=None, week=None, opus=None, fable=None):
     return SimpleNamespace(windows=(_window("Current session", session), _window("Current week", week),
-                                    _window("Opus week", opus)))
+                                    _window("Opus week", opus), _window("Fable week", fable)))
 
 
 def _cli_with_poller(poller):
@@ -32,12 +32,22 @@ def _cli_with_poller(poller):
     return cli_obj
 
 
-def test_session_window_is_shown_not_the_weekly_one():
-    assert session_window_percent(_codex(session=22, weekly=100)) == 22
-    assert session_window_percent(_claude(session=27, week=90, opus=95)) == 27
-    assert session_window_percent(_codex(session=None, weekly=27)) is None
-    assert session_window_percent(_claude()) is None
-    assert session_window_percent(None) is None
+def test_shortest_window_is_shown_and_account_week_is_not():
+    assert bar_readings(_codex(session=22, weekly=100), "cx") == [("cx", 22.0)]
+    assert bar_readings(_claude(session=27, week=90), "cc") == [("cc", 27.0)]
+    assert bar_readings(_claude(), "cc") == []
+    assert bar_readings(None, "cc") == []
+
+
+def test_weekly_only_plan_falls_back_to_the_weekly_window():
+    # Codex Pro reports no 5-hour window: the weekly cap is then the one that blocks you.
+    assert bar_readings(_codex(session=None, weekly=27), "cx") == [("cx", 27.0)]
+
+
+def test_per_model_weekly_caps_get_their_own_reading():
+    assert bar_readings(_claude(session=36, week=30, fable=57), "cc") == [("cc", 36.0), ("fable", 57.0)]
+    assert bar_readings(_claude(session=36, week=30, opus=12, fable=57), "cc") == [
+        ("cc", 36.0), ("opus", 12.0), ("fable", 57.0)]
 
 
 def test_format_is_fixed_width_across_magnitudes():
@@ -63,8 +73,8 @@ def test_poller_keeps_last_good_reading_when_a_fetch_fails():
     assert poller.read() == [("cx", 22.0), ("cc", 27.0)]
 
 
-def test_poller_drops_provider_that_reports_no_session_window():
-    poller = AccountLimitsPoller(fetch=lambda p: _claude(session=40) if p == "anthropic" else _codex(weekly=80))
+def test_poller_drops_provider_that_reports_no_windows():
+    poller = AccountLimitsPoller(fetch=lambda p: _claude(session=40) if p == "anthropic" else _codex())
     poller.refresh_once()
     assert poller.read() == [("cc", 40.0)]
 
@@ -79,14 +89,14 @@ def test_poller_requests_repaint_only_when_a_reading_changes():
 
 def test_limits_segment_renders_after_context_and_respects_field_gate():
     poller = AccountLimitsPoller(
-        fetch=lambda p: _codex(session=100, weekly=22) if p == "openai-codex" else _claude(session=27, week=90))
+        fetch=lambda p: _codex(session=100, weekly=22) if p == "openai-codex" else _claude(session=27, week=90, fable=57))
     poller.refresh_once()
     cli_obj = _cli_with_poller(poller)
 
     cli_obj._status_bar_field_set_cache = frozenset({"model", "context_pct", "limits"})
     text = cli_obj._build_status_bar_text(width=120)
-    assert "cx 100%" in text and "cc  27%" in text
-    assert text.index("--") < text.index("cx 100%") < text.index("cc  27%")  # after the context read-out
+    assert "cx 100%" in text and "cc  27%" in text and "fable  57%" in text
+    assert text.index("--") < text.index("cx 100%") < text.index("cc  27%") < text.index("fable  57%")
 
     cli_obj._status_bar_field_set_cache = frozenset({"model", "context_pct"})
     text = cli_obj._build_status_bar_text(width=120)

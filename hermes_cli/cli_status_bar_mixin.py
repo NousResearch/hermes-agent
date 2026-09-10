@@ -1040,7 +1040,7 @@ class CLIStatusBarMixin:
                     ])
                 else:
                     segs.append([(bar_style, percent_label)])
-            # Subscription rate limits (5-hour window per provider) - opt-in only via an
+            # Subscription rate limits (shortest window per provider, per-model weeks) - opt-in via an
             # explicit fields list, like total_tokens. Same color ladder as the context bar:
             # the number closest to blocking you is the reddest.
             if field_set is not None and "limits" in field_set:

@@ -693,7 +693,21 @@ export function useRoster() {
             fetchedAt: issuedAt
           }
         } catch {
-          /* older build or roster failure — single-source list stands */
+          /* Aggregate-roster failure, not a registry change: keep the
+           * previously painted remote rows on the roster as unreachable
+           * instead of repainting Bot Mode local-only (#98844). `sources`
+           * stays absent so the pane falls back to its remembered source
+           * snapshot rather than clearing it. */
+          const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
+          const merged = mergeMultiSourceRoster(local, null, activeConnectionId, previous)
+
+          return {
+            ...merged,
+            profiles: (merged?.profiles || []).map(row =>
+              row?.remoteSource ? { ...row, sourceReachable: false } : row
+            ),
+            fetchedAt: issuedAt
+          }
         }
       }
 

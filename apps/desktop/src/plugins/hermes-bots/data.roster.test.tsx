@@ -574,6 +574,42 @@ describe('connect-on-demand sources', () => {
   })
 })
 
+describe('an aggregate roster failure keeps the last-known remote rows', () => {
+  // Same shape the pane paints: one rich local row + one remote row already
+  // carried into $lastRoster by a previous successful refresh.
+  const previouslyPainted = (connectionId: string) =>
+    [
+      { last_session: { id: 'this-chat', last_active: 1 }, name: 'default' },
+      {
+        connectionId,
+        connectionKind: 'ssh',
+        connectionLabel: 'Spark',
+        handle: 'bob',
+        name: 'bob',
+        remoteSource: true,
+        sourceScoped: true
+      }
+    ] as RosterRow[]
+
+  it('retains previously painted remote rows as unreachable when host.agents() rejects', async () => {
+    // mergedRoster(local, null) rejects host.agents(): the union probe fails
+    // (e.g. a registered WSL backend's localhost forwarding went down) while
+    // the active source's profiles.list still answers (#98844).
+    $lastRoster.set(previouslyPainted('spark'))
+
+    const rows = await mergedRoster(
+      { profiles: [{ last_session: { id: 'this-chat', last_active: 1 }, name: 'default' }] },
+      null
+    )
+
+    expect(rows.find(row => row.name === 'bob' && row.connectionId === 'spark')).toMatchObject({
+      remoteSource: true,
+      sourceReachable: false
+    })
+    expect(rows.filter(row => row.name === 'default')).toHaveLength(1)
+  })
+})
+
 describe('a stalled profiles.list cannot pin the spinner forever', () => {
   it('gives up after bounded retries and surfaces the error', async () => {
     // `retry: true` keeps React Query in isLoading until the first success, so

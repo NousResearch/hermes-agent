@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process'
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -35,7 +35,7 @@ import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } fro
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
 import { runAppInstallerChecker } from './appinstaller-checker'
-import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
+import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate, waitForBackendExit as waitForBackendExitImpl } from './backend-child'
 import {
   type BackendOutputTail,
   claimDecision,
@@ -3157,15 +3157,8 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
       appVersion: app.getVersion(),
       log: rememberLog,
       emitProgress: emitUpdateProgress,
-      beforeInstall: async () => {
-        isQuittingForHandoff = true
-        await Promise.all([teardownPrimaryBackendAndWait(), stopAllPoolBackends()])
-      },
-      onInstallFailure: async () => {
-        isQuittingForHandoff = false
-        updateInFlight = false
-        await startHermes()
-      }
+      beforeInstall: teardownBundledBackend,
+      onInstallFailure: restoreBundledBackend
     })
 
     return packagedUpdateStrategy
@@ -3191,6 +3184,7 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
         open: file => shell.openPath(file)
       },
       teardownBundledBackend,
+      restoreBundledBackend,
       emitUpdateProgress,
       appVersion: app.getVersion(),
       quit: () => app.quit(),
@@ -3312,21 +3306,30 @@ function isLightVariant(): boolean {
   return INSTALL_STAMP?.payload === 'light'
 }
 
-/**
- * Graceful teardown before the OS App Installer swaps the package: stop the
- * primary backend + all pool backends (tree-kill their children) so no
- * process keeps files in the install dir locked while Windows replaces it.
- * Same primitive the update hand-off uses (stopBackendTreesForUpdate).
- */
+/** Invalidate connections and wait for every owned backend before the swap. */
 async function teardownBundledBackend(): Promise<void> {
-  const hermesProcess = backendConnectionState.getProcess()
+  isQuittingForHandoff = true
+  const results = await Promise.allSettled([teardownPrimaryBackendAndWait(), stopAllPoolBackends()])
+  const errors = results.filter(result => result.status === 'rejected').map(result => result.reason)
 
-  if (hermesProcess || backendPool.size > 0) {
-    stopBackendTreesForUpdate(hermesProcess, {
-      forceKillProcessTree,
-      stopAllPoolBackends
-    })
+  if (errors.length) {
+    // An incomplete shutdown blocks replacement until a retry proves exit.
+    backendStartFailure = new AggregateError(errors, 'Backend shutdown failed')
+    throw backendStartFailure
   }
+}
+
+async function restoreBundledBackend(): Promise<void> {
+  try {
+    // A failed stop retains its process handle. Retry before enabling a new start.
+    await teardownBundledBackend()
+  } finally {
+    isQuittingForHandoff = false
+    updateInFlight = false
+  }
+
+  backendStartFailure = null
+  await startHermes()
 }
 
 // Set to true when the desktop is about to quit so a detached swap/install/
@@ -10891,10 +10894,11 @@ function resetHermesConnection({ soft = false } = {}) {
 // dashboard process to actually exit (SIGKILL after 5s) so the next
 // startHermes() spawns fresh instead of racing the dying one. Shared by the
 // connection-config and profile switch flows.
-async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
-  // Capture the reference before resetHermesConnection() invalidates it.
-  const hermesProcess = backendConnectionState.getProcess()
-  const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
+async function teardownPrimaryBackendAndWait({ soft = false }: { soft?: boolean } = {}): Promise<void> {
+  const stopping = backendConnectionState.stopProcess(async child => {
+    stopBackendChild(child)
+    await waitForBackendExit(child)
+  })
 
   if (soft) {
     softRehomeInProgress = true
@@ -10902,7 +10906,7 @@ async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
 
   try {
     resetHermesConnection({ soft })
-    await waitForBackendExit(dying)
+    await stopping
   } finally {
     if (soft) {
       softRehomeInProgress = false
@@ -10939,53 +10943,20 @@ function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'r
   }
 }
 
-async function waitForBackendExit(child, timeoutMs = 5000) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) {
-    return
-  }
-
-  const exited = () => child.exitCode !== null || child.signalCode !== null
-
-  const wait = delay =>
-    new Promise<void>(resolve => {
-      if (exited()) {
-        resolve()
-
-        return
-      }
-
-      const timer = setTimeout(resolve, delay)
-      child.once('exit', () => {
-        clearTimeout(timer)
-        resolve()
-      })
-    })
-
-  await wait(timeoutMs)
-
-  if (exited()) {
-    return
-  }
-
-  try {
-    if (IS_WINDOWS && Number.isInteger(child.pid)) {
-      forceKillProcessTree(child.pid)
-    } else if (Number.isInteger(child.pid)) {
+async function waitForBackendExit(child: ChildProcess | null | undefined, timeoutMs = 5000): Promise<void> {
+  await waitForBackendExitImpl(child, processToStop => {
+    if (IS_WINDOWS && Number.isInteger(processToStop.pid)) {
+      forceKillProcessTree(processToStop.pid)
+    } else if (Number.isInteger(processToStop.pid)) {
       try {
-        process.kill(-child.pid, 'SIGKILL')
+        process.kill(-processToStop.pid!, 'SIGKILL')
       } catch {
-        child.kill('SIGKILL')
+        processToStop.kill('SIGKILL')
       }
     } else {
-      child.kill('SIGKILL')
+      processToStop.kill('SIGKILL')
     }
-  } catch {
-    return
-  }
-
-  // Await the escalation as well; do not let shutdown or failed adoption race
-  // a still-running backend.
-  await wait(1000)
+  }, timeoutMs)
 }
 
 // The profile the primary (window) backend runs as. readActiveDesktopProfile()
@@ -12325,7 +12296,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 // SIGTERM -> SIGKILL escalation in waitForBackendExit() resolves. Previously
 // SIGTERM + immediate entry delete dropped the handle and a slow child
 // survived detached under PID 1.
-const poolStopper = createPoolStopper({
+const poolStopper = createPoolStopper<ChildProcess>({
   pool: backendPool,
   stopChild: child => stopBackendChild(child),
   waitForExit: child => waitForBackendExit(child)
@@ -12383,9 +12354,8 @@ function reapInstallRootedStragglers(excludePids: number[]): void {
 }
 
 const backendShutdown = createBackendShutdownCoordinator(async () => {
-  const primary = backendConnectionState.invalidate()
-
-  stopBackendChild(primary)
+  const primary = backendConnectionState.getProcess()
+  const primaryStop = teardownPrimaryBackendAndWait()
   const pooledStops = stopAllPoolBackends()
 
   if (poolIdleReaper) {
@@ -12393,7 +12363,7 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
     poolIdleReaper = null
   }
 
-  await Promise.all([waitForBackendExit(primary), pooledStops])
+  await Promise.all([primaryStop, pooledStops])
 
   reapInstallRootedStragglers(Number.isInteger(primary?.pid) ? [primary.pid] : [])
 })
@@ -12636,6 +12606,10 @@ async function startHermes() {
     const backendNonce = crypto.randomBytes(16).toString('hex')
     const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
 
+    if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
+      throw new Error('Hermes backend start was superseded by a newer connection attempt.')
+    }
+
     const hermesProcess = spawn(
       backend.command,
       backend.args,
@@ -12694,14 +12668,14 @@ async function startHermes() {
     // Mark handled so an early rejection (child dies during the claim) can't
     // surface as an unhandled rejection before the Promise.race below attaches.
     portAnnouncement.catch(() => {})
-    await claimBackendChild(
-      hermesProcess,
+
+    const processOwner = await backendConnectionState.claimProcess(connectionAttempt, hermesProcess, child => claimBackendChild(
+      child,
       `${backend.command} ${backend.args.join(' ')}`,
       profile,
       backendNonce,
       primaryOutputTail
-    )
-    const processOwner = backendConnectionState.attachProcess(connectionAttempt, hermesProcess)
+    ))
 
     if (!processOwner) {
       stopBackendChild(hermesProcess)
@@ -12841,9 +12815,10 @@ async function startHermes() {
       throw error
     }
 
-    const failedProcess = backendConnectionState.invalidate()
-    stopBackendChild(failedProcess)
-    await waitForBackendExit(failedProcess)
+    await backendConnectionState.stopProcess(async failedProcess => {
+      stopBackendChild(failedProcess)
+      await waitForBackendExit(failedProcess)
+    })
 
     if (error instanceof FirstRunSetupResetError) {
       throw error

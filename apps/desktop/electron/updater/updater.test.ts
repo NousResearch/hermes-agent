@@ -167,40 +167,29 @@ describe('registerUpdateRelaunch — the mechanism, not just the marker', () => 
     const ok = await registerUpdateRelaunch(
       '/home',
       '0.18.2',
-      { relaunch: () => { started += 1 } },
+      { relaunch: () => { started += 1;
+
+ return { cancel: async () => {} } } },
       (f, c) => { files[f] = c as string }
     )
 
-    expect(ok).toBe(true)
+    expect(ok.automatic).toBe(true)
     expect(started).toBe(1)
     expect(Object.keys(files)).toHaveLength(1)
   })
 
-  it('awaits the mechanism outcome: a waiter that reports false leaves the marker as the only trace', async () => {
+  it('retains the marker when a safely failed waiter requires manual relaunch', async () => {
     const files: Record<string, string> = {}
 
     const ok = await registerUpdateRelaunch(
       '/home',
       '0.18.2',
-      { relaunch: async () => false },
+      { relaunch: async () => undefined },
       (f, c) => { files[f] = c as string }
     )
 
-    expect(ok).toBe(false)
+    expect(ok.automatic).toBe(false)
     expect(Object.keys(files)).toHaveLength(1)
   })
 
-  it('a mechanism throw never blocks the update (marker-only manual relaunch)', async () => {
-    const files: Record<string, string> = {}
-
-    const ok = await registerUpdateRelaunch(
-      '/home',
-      '0.18.2',
-      { relaunch: () => { throw new Error('spawn failed') } },
-      (f, c) => { files[f] = c as string }
-    )
-
-    expect(ok).toBe(false)
-    expect(Object.keys(files)).toHaveLength(1)
-  })
 })

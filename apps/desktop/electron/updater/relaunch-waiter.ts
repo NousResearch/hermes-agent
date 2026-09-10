@@ -44,6 +44,7 @@ export interface RelaunchWaiterDeps {
   handshakeTimeoutMs?: number
   /** Poll interval for the ready file (tests shrink this). */
   pollMs?: number
+  cancelTimeoutMs?: number
 }
 
 /** Pure: the exact argv the waiter is spawned with. */
@@ -68,38 +69,50 @@ export function buildRelaunchWaiterArgs(options: RelaunchWaiterOptions, readyFil
   ]
 }
 
-/** Stage script + handshake file into a fresh temp dir outside the package. */
-export async function stageRelaunchWaiter(options: RelaunchWaiterOptions): Promise<WaiterStaging> {
-  const stageDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hermes-relaunch-'))
+/** Stage outside the package so its replacement does not invalidate the waiter. */
+async function stageRelaunchWaiter(options: RelaunchWaiterOptions): Promise<WaiterStaging | undefined> {
+  let stageDir: string
+
+  try {
+    stageDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hermes-relaunch-'))
+  } catch {
+    return undefined
+  }
+
   const scriptPath = path.join(stageDir, RELAUNCH_WAITER_SCRIPT)
   const readyFile = path.join(stageDir, RELAUNCH_WAITER_READY_FILENAME)
 
   try {
     await fs.promises.copyFile(options.scriptPath, scriptPath)
   } catch (error) {
-    await fs.promises.rm(stageDir, { recursive: true, force: true })
-    throw error
+    try {
+      await fs.promises.rm(stageDir, { recursive: true, force: true })
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Relaunch waiter staging cleanup failed')
+    }
+
+    return undefined
   }
 
   return { stageDir, scriptPath, readyFile }
 }
 
-/** Return true only after the waiter confirms its package snapshot. */
+export interface RelaunchWaiterHandle {
+  cancel: () => Promise<void>
+}
+
+/** Return ownership after readiness, or no handle after a safely stopped failure. */
 export async function startRelaunchWaiter(
   options: RelaunchWaiterOptions,
   deps: RelaunchWaiterDeps = {}
-): Promise<boolean> {
+): Promise<RelaunchWaiterHandle | undefined> {
   const spawn = deps.spawn ?? (nodeSpawn as unknown as SpawnWaiter)
   const handshakeTimeoutMs = deps.handshakeTimeoutMs ?? DEFAULT_RELAUNCH_WAITER_HANDSHAKE_MS
   const pollMs = deps.pollMs ?? 250
+  const cancelTimeoutMs = deps.cancelTimeoutMs ?? 10_000
+  const staging = await stageRelaunchWaiter(options)
 
-  let staging: WaiterStaging
-
-  try {
-    staging = await stageRelaunchWaiter(options)
-  } catch {
-    return false
-  }
+  if (!staging) { return undefined }
 
   const cleanup = () => fs.promises.rm(staging.stageDir, { recursive: true, force: true })
   let child: ChildProcess
@@ -108,13 +121,50 @@ export async function startRelaunchWaiter(
     child = spawn(POWERSHELL_PATH,
       buildRelaunchWaiterArgs({ ...options, scriptPath: staging.scriptPath }, staging.readyFile),
       { detached: true, stdio: 'ignore', windowsHide: true, cwd: staging.stageDir })
-  } catch {
-    await cleanup()
+  } catch (error) {
+    try {
+      await cleanup()
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Relaunch waiter spawn cleanup failed')
+    }
 
-    return false
+    return undefined
   }
 
-  return new Promise<boolean>(resolve => {
+  let closed = false
+
+  const closedPromise = new Promise<void>(resolve => {
+    child.once('close', () => { closed = true; resolve() })
+  })
+
+  let cancellation: Promise<void> | undefined
+
+  const cancel = (): Promise<void> => {
+    cancellation ??= (async () => {
+      if (!closed) {
+        if (child.pid !== undefined) { child.kill() }
+
+        let timeout: ReturnType<typeof setTimeout> | undefined
+
+        try {
+          await Promise.race([
+            closedPromise,
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(() => reject(new Error('Relaunch waiter did not exit after cancellation')), cancelTimeoutMs)
+            })
+          ])
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
+
+      await cleanup()
+    })()
+
+    return cancellation
+  }
+
+  const ready = await new Promise<boolean>(resolve => {
     let settled = false
     let timer: ReturnType<typeof setTimeout>
     const deadline = Date.now() + handshakeTimeoutMs
@@ -123,18 +173,11 @@ export async function startRelaunchWaiter(
       if (settled) { return }
       settled = true
       clearTimeout(timer)
-
-      if (ready) {
-        child.unref()
-        resolve(true)
-      } else {
-        child.kill()
-        void cleanup().catch(() => {}).finally(() => resolve(false))
-      }
+      resolve(ready)
     }
 
     child.once('error', () => finish(false))
-    child.once('exit', () => finish(false))
+    child.once('close', () => finish(false))
 
     const check = () => {
       if (settled) { return }
@@ -150,4 +193,14 @@ export async function startRelaunchWaiter(
 
     check()
   })
+
+  if (!ready) {
+    await cancel()
+
+    return undefined
+  }
+
+  child.unref()
+
+  return { cancel }
 }

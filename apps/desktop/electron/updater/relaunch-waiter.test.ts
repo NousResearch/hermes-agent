@@ -45,9 +45,15 @@ function fakeSpawn(handshake: 'ready' | 'error' | 'exit-nonzero' | 'none'): { sp
 
     const child: any = new EventEmitter()
 
+    child.pid = handshake === 'error' ? undefined : 123
+
     child.unref = () => {}
 
-    child.kill = () => { seen.killed = true; child.emit('exit', null) }
+    child.kill = () => {
+      seen.killed = true
+      child.emit('exit', null)
+      child.emit('close', null)
+    }
 
     const readyFile = args[args.indexOf('-ReadyFile') + 1]
 
@@ -57,8 +63,10 @@ function fakeSpawn(handshake: 'ready' | 'error' | 'exit-nonzero' | 'none'): { sp
         fs.writeFileSync(readyFile, '0.18.1|Family|App')
       } else if (handshake === 'error') {
         child.emit('error', new Error('spawn ENOENT'))
+        child.emit('close', -1)
       } else if (handshake === 'exit-nonzero') {
         child.emit('exit', 3)
+        child.emit('close', 3)
       }
     })
 
@@ -109,7 +117,7 @@ describe('startRelaunchWaiter', () => {
 
     const result = await startRelaunchWaiter({ ...OPTIONS, scriptPath }, { spawn, pollMs: 10 })
 
-    expect(result).toBe(true)
+    expect(result).toHaveProperty('cancel')
     expect(seen.command).toBe(POWERSHELL_PATH)
     expect(seen.opts.detached).toBe(true)
     expect(seen.opts.stdio).toBe('ignore')
@@ -123,34 +131,35 @@ describe('startRelaunchWaiter', () => {
     expect(fs.existsSync(stagedScript)).toBe(true)
   })
 
-  it('resolves true on the ready-file handshake (the waiter snapshotted the OLD package)', async () => {
+  it('retains cancellation after the ready-file handshake', async () => {
     const scriptPath = await stageScript()
     const { spawn } = fakeSpawn('ready')
 
     const result = await startRelaunchWaiter({ ...OPTIONS, scriptPath }, { spawn, pollMs: 10 })
 
-    expect(result).toBe(true)
+    expect(result).toHaveProperty('cancel')
+    await result!.cancel()
   })
 
-  it('resolves false when the child errors before the handshake', async () => {
+  it('returns no handle after a failed spawn closes', async () => {
     const scriptPath = await stageScript()
     const { spawn } = fakeSpawn('error')
 
     const result = await startRelaunchWaiter({ ...OPTIONS, scriptPath }, { spawn, pollMs: 10 })
 
-    expect(result).toBe(false)
+    expect(result).toBeUndefined()
   })
 
-  it('resolves false on a non-zero early exit (waiter never signalled ready)', async () => {
+  it('returns no handle on an early exit without readiness', async () => {
     const scriptPath = await stageScript()
     const { spawn } = fakeSpawn('exit-nonzero')
 
     const result = await startRelaunchWaiter({ ...OPTIONS, scriptPath }, { spawn, pollMs: 10 })
 
-    expect(result).toBe(false)
+    expect(result).toBeUndefined()
   })
 
-  it('resolves false when the handshake never arrives within the deadline', async () => {
+  it('stops the child before returning when readiness times out', async () => {
     const scriptPath = await stageScript()
     const { spawn, seen } = fakeSpawn('none')
 
@@ -159,12 +168,12 @@ describe('startRelaunchWaiter', () => {
       { spawn, handshakeTimeoutMs: 80, pollMs: 20 }
     )
 
-    expect(result).toBe(false)
+    expect(result).toBeUndefined()
     expect(seen.killed).toBe(true)
     expect(fs.existsSync(seen.opts.cwd)).toBe(false)
   }, 5_000)
 
-  it('resolves false when staging fails (missing script), never throwing', async () => {
+  it('returns no handle when a missing script leaves no staging', async () => {
     const spawn = (() => {
       throw new Error('should not be reached')
     }) as unknown as SpawnWaiter
@@ -174,7 +183,7 @@ describe('startRelaunchWaiter', () => {
       { spawn }
     )
 
-    expect(result).toBe(false)
+    expect(result).toBeUndefined()
   })
 
   it('the staged handshake file uses the reserved ready filename', async () => {

@@ -19,6 +19,8 @@ import {
   win32AppInstallerFeedPath
 } from '../app-updater'
 
+import type { RelaunchRegistration } from './relaunch'
+
 import type { UpdaterApplyResultWire, UpdaterStatusWire } from './index'
 
 export interface AppInstallerStrategyDeps {
@@ -35,20 +37,15 @@ export interface AppInstallerStrategyDeps {
   installer: { prepare: (url: string) => Promise<string>; open: (file: string) => Promise<string> }
   /** Graceful backend teardown before the package swap. */
   teardownBundledBackend: () => void | Promise<void>
+  restoreBundledBackend: () => Promise<void>
   /** Progress emitter for the updates overlay. */
   emitUpdateProgress: (payload: { stage: string; message: string; percent: number | null }) => void
   /** App version label for the status wire. */
   appVersion: string
   /** Quit the app (after handing the swap to the OS). */
   quit: () => void
-  /**
-   * Register a one-shot post-update relaunch before quitting, so Hermes
-   * reopens on the new version with no user action. Resolves true only once
-   * the relaunch mechanism has acknowledged (the waiter handshake) — the
-   * caller must await this BEFORE quitting. Resolves false when the
-   * mechanism could not be started (relaunch stays manual).
-   */
-  registerPendingRelaunch: (targetVersion: string) => Promise<boolean>
+  /** Retain marker and waiter ownership until the OS accepts the handoff. */
+  registerPendingRelaunch: (fromVersion: string) => Promise<RelaunchRegistration>
 }
 
 export interface CheckOutcome {
@@ -109,29 +106,57 @@ export class AppInstallerStrategy {
       percent: 100
     })
 
-    await triggerAppInstallerUpdate(
-      feedBaseUrl,
-      this.deps.channel,
-      this.deps.light,
-      this.deps.installer,
-      async () => {
-        const registered = await this.deps.registerPendingRelaunch(this.deps.appVersion)
+    let registration: RelaunchRegistration | undefined
+    let teardownStarted = false
 
-        if (!registered) {
-          this.deps.emitUpdateProgress({
-            stage: 'restart', percent: 100,
-            message: 'Automatic relaunch could not be registered. Reopen Hermes after App Installer finishes.'
-          })
+    try {
+      await triggerAppInstallerUpdate(
+        feedBaseUrl,
+        this.deps.channel,
+        this.deps.light,
+        this.deps.installer,
+        async () => {
+          registration = await this.deps.registerPendingRelaunch(this.deps.appVersion)
+
+          if (!registration.automatic) {
+            this.deps.emitUpdateProgress({
+              stage: 'restart', percent: 100,
+              message: 'Automatic relaunch could not be registered. Reopen Hermes after App Installer finishes.'
+            })
+          }
+
+          teardownStarted = true
+          await this.deps.teardownBundledBackend()
+        },
+        sourceUri
+      )
+
+      this.deps.quit()
+    } catch (error) {
+      const errors: unknown[] = [error]
+
+      try {
+        await registration?.cancel()
+      } catch (cancelError) {
+        errors.push(cancelError)
+      }
+
+      if (teardownStarted) {
+        try {
+          await this.deps.restoreBundledBackend()
+        } catch (restoreError) {
+          errors.push(restoreError)
         }
+      }
 
-        await this.deps.teardownBundledBackend()
-      },
-      sourceUri
-    )
+      const message = errors.map(item => item instanceof Error ? item.message : String(item)).join('; ')
+      this.deps.emitUpdateProgress({ stage: 'error', message, percent: null })
 
-    this.deps.quit()
+      if (errors.length > 1) { throw new AggregateError(errors, message, { cause: error }) }
+      throw error
+    }
 
-    return { ok: true, manual: false, bundled: true, mechanism: this.mechanism }
+    return { ok: true, manual: false, bundled: true, handedOff: true, mechanism: this.mechanism }
   }
 }
 

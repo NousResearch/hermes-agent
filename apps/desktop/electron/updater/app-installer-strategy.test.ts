@@ -1,6 +1,6 @@
 // updater/app-installer-strategy.test.ts — the apply-flow contract: the
 // relaunch registration (marker + detached waiter) completes BEFORE the OS
-// hand-off, teardown runs before the trigger, and quit is unconditional.
+// hand-off. Teardown finishes before the descriptor opens.
 
 import { describe, expect, it } from 'vitest'
 
@@ -26,12 +26,13 @@ function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}) {
  return '' }
     },
     teardownBundledBackend: async () => { calls.push('teardown') },
+    restoreBundledBackend: async () => { calls.push('restore') },
     emitUpdateProgress: () => {},
     appVersion: '0.18.2',
     quit: () => { calls.push('quit') },
     registerPendingRelaunch: async () => { calls.push('relaunch-marker');
 
- return true },
+ return { automatic: true, cancel: async () => {} } },
     ...over
   }
 
@@ -44,7 +45,7 @@ describe('AppInstallerStrategy.apply', () => {
     const strategy = new AppInstallerStrategy(deps)
     const result = await strategy.apply({})
 
-    expect(result).toEqual({ ok: true, manual: false, bundled: true, mechanism: 'app-installer' })
+    expect(result).toEqual({ ok: true, manual: false, bundled: true, handedOff: true, mechanism: 'app-installer' })
     expect(calls).toEqual(['prepare', 'relaunch-marker', 'teardown', 'open', 'quit'])
   })
 
@@ -52,7 +53,7 @@ describe('AppInstallerStrategy.apply', () => {
     const progress: string[] = []
 
     const { deps, calls } = makeDeps({
-      registerPendingRelaunch: async () => false,
+      registerPendingRelaunch: async () => ({ automatic: false, cancel: async () => {} }),
       emitUpdateProgress: event => { progress.push(event.message) }
     })
 

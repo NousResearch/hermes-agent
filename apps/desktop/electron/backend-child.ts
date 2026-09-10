@@ -20,6 +20,8 @@
  * the function body.
  */
 
+import type { ChildProcess } from 'node:child_process'
+
 export interface StopBackendChildDeps {
   /** Defaults to the real platform check; injectable for tests. */
   isWindows?: boolean
@@ -100,4 +102,40 @@ export function stopBackendTreesForUpdate(
   }
 
   deps.stopAllPoolBackends()
+}
+
+export async function waitForBackendExit(
+  child: ChildProcess | null | undefined,
+  escalate: (child: ChildProcess) => void,
+  timeoutMs = 5000
+): Promise<void> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) { return }
+
+  const exited = (): boolean => child.exitCode !== null || child.signalCode !== null
+
+  const wait = (delay: number): Promise<void> => new Promise(resolve => {
+    if (exited()) {
+      resolve()
+
+      return
+    }
+
+    const finish = (): void => {
+      clearTimeout(timer)
+      child.removeListener('exit', finish)
+      resolve()
+    }
+
+    const timer = setTimeout(finish, delay)
+    child.once('exit', finish)
+  })
+
+  await wait(timeoutMs)
+
+  if (exited()) { return }
+
+  escalate(child)
+  await wait(1000)
+
+  if (!exited()) { throw new Error(`Backend PID ${child.pid} did not exit after escalation`) }
 }

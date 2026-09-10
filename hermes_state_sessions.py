@@ -10,9 +10,27 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from agent.session_activity import (
-    ActivityProvenance, bound_activity_description, normalize_activity_provenance,
-)
+try:
+    from agent.session_activity import (
+        ActivityProvenance, bound_activity_description, normalize_activity_provenance,
+    )
+except ModuleNotFoundError:  # pragma: no cover — defensive: kanban must load even if agent/ is absent
+    import enum as _enum
+
+    class ActivityProvenance(str, _enum.Enum):  # type: ignore[no-redef]
+        UNKNOWN = "unknown"
+
+    def bound_activity_description(description=None):  # type: ignore[no-redef]
+        text = (description or "").strip()
+        return text if len(text) <= 120 else text[:119] + "…"
+
+    def normalize_activity_provenance(provenance=None):  # type: ignore[no-redef]
+        if isinstance(provenance, ActivityProvenance):
+            return provenance
+        try:
+            return ActivityProvenance((provenance or "").strip())
+        except ValueError:
+            return ActivityProvenance.UNKNOWN
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,

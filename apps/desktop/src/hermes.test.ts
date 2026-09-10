@@ -27,6 +27,7 @@ import {
   listSidebarSessions,
   pluginSocket,
   resetSidebarBatchCapability,
+  searchSessions,
   setApiRequestConnection,
   setApiRequestProfile,
   speakText,
@@ -71,6 +72,20 @@ describe('Hermes REST helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('routes session search through the active registry connection and profile', async () => {
+    api.mockResolvedValue({ results: [], total: 0 })
+    setApiRequestConnection('registry-remote')
+    setApiRequestProfile('research')
+
+    await searchSessions('archived project')
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'registry-remote',
+      path: '/api/sessions/search?q=archived%20project',
+      profile: 'research'
+    })
   })
 
   it('uses a longer timeout for the all-profile session list', async () => {

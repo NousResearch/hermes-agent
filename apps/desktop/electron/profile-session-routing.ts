@@ -20,11 +20,36 @@ function rowsOf(data: unknown): unknown[] {
   return Array.isArray(data.sessions) ? data.sessions : []
 }
 
+function searchResultsOf(data: unknown): unknown[] {
+  if (!data || typeof data !== 'object' || !('results' in data)) {
+    return []
+  }
+
+  return Array.isArray(data.results) ? data.results : []
+}
+
 function tagRowsWithConnection(rows: unknown[], connectionId: string): void {
   for (const row of rows) {
     if (row && typeof row === 'object') {
       const session = row as Record<string, unknown>
       session.connection_id = connectionId
+    }
+  }
+}
+
+function tagRowsWithOwner(rows: unknown[], connectionId: string, profile?: string): void {
+  tagRowsWithConnection(rows, connectionId)
+
+  const concreteProfile = profile?.trim()
+
+  if (!concreteProfile || concreteProfile === 'all') {
+    return
+  }
+
+  for (const row of rows) {
+    if (row && typeof row === 'object') {
+      const session = row as Record<string, unknown>
+      session.profile ||= concreteProfile
     }
   }
 }
@@ -35,7 +60,12 @@ function tagRowsWithConnection(rows: unknown[], connectionId: string): void {
  * own session rows naturally omit Desktop's synthetic `connection_id`. Without
  * restoring that provenance, a `profile: "default"` row later resumes through
  * the legacy local primary instead of the active registry gateway. */
-export function tagRegistrySessionResponse(path: string, data: unknown, connectionId: string): unknown {
+export function tagRegistrySessionResponse(
+  path: string,
+  data: unknown,
+  connectionId: string,
+  profile?: string
+): unknown {
   if (!data || typeof data !== 'object') {
     return data
   }
@@ -54,6 +84,12 @@ export function tagRegistrySessionResponse(path: string, data: unknown, connecti
     for (const key of ['recents', 'cron', 'messaging']) {
       tagRowsWithConnection(rowsOf(response[key]), connectionId)
     }
+
+    return data
+  }
+
+  if (pathname === '/api/sessions/search') {
+    tagRowsWithOwner(searchResultsOf(data), connectionId, profile)
 
     return data
   }

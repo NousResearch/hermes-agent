@@ -2189,7 +2189,11 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
         logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
     or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY")
     if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
+        # An absent credential is not a depleted provider: nothing was attempted and no RTT was
+        # spent, so this endpoint is not unhealthy. Entering the unhealthy cache here made every
+        # auxiliary call in a profile without OpenRouter configured log a WARNING naming a payment
+        # error it never observed — the cache exists to skip a provider proven dead.
+        logger.debug("Auxiliary client: OpenRouter skipped (no OPENROUTER_API_KEY configured)")
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return _create_openai_client(
@@ -2224,13 +2228,13 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         _remaining = nous_rate_limit_remaining()
         if _remaining is not None and _remaining > 0:
             logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", _remaining)
-            _mark_provider_unhealthy("nous", ttl=_remaining)
+            _mark_provider_unhealthy("nous", ttl=_remaining, reason="rate limited")
             return None, None
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
         logger.warning("Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).")
-        _mark_provider_unhealthy("nous", ttl=60)
+        _mark_provider_unhealthy("nous", ttl=60, reason="no credential configured")
         return None, None
     if runtime is None and nous:
         logger.debug("Auxiliary Nous: runtime JWT refresh failed; checking stored auth.json token.")
@@ -2265,7 +2269,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "Auxiliary Nous client unavailable: no usable inference JWT found "
                 "(run: hermes auth add nous)."
             )
-            _mark_provider_unhealthy("nous", ttl=60)
+            _mark_provider_unhealthy("nous", ttl=60, reason="no usable inference credential")
             return None, None
         base_url = str(
             (nous or {}).get("inference_base_url") or os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
@@ -2935,8 +2939,13 @@ def _normalize_chain_label(provider: str) -> str:
 
 def _mark_provider_unhealthy(
     provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
+    reason: str = "payment / credit error",
 ) -> None:
-    """Hide one provider endpoint until the TTL expires after a confirmed payment error."""
+    """Hide one provider endpoint until the TTL expires after a confirmed unavailability.
+
+    ``reason`` is rendered verbatim. Callers that did not observe a billing failure must pass
+    their own cause, so the log stops asserting a payment error that never happened.
+    """
     label = _normalize_chain_label(provider)
     if not label:
         return
@@ -2945,9 +2954,9 @@ def _mark_provider_unhealthy(
     expires_at = time.time() + ttl
     _aux_unhealthy_until[key] = expires_at
     logger.warning(
-        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
+        "Auxiliary: marking %s unhealthy for %ds (%s). "
         "Subsequent auxiliary calls will skip it until %s.",
-        label, int(ttl), time.strftime("%H:%M:%S", time.localtime(expires_at)),
+        label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
     )
 
 
@@ -3713,7 +3722,10 @@ def _quarantine_fallback_candidate(
     base_url: str = "", tag: str = "",
 ) -> None:
     """Refresh unavailable or still 401s: token is dead. Quarantine the candidate so the caller moves on."""
-    _mark_provider_unhealthy(fb_provider or fb_label, base_url=base_url)
+    _mark_provider_unhealthy(
+        fb_provider or fb_label, base_url=base_url,
+        reason="auth error (stale or unrefreshable credential)",
+    )
     logger.warning("Auxiliary %s%s: fallback candidate %s has a stale/unrefreshable "
                    "credential (%s) — skipping to next fallback", task or "call", tag, fb_label, fb_err)
 

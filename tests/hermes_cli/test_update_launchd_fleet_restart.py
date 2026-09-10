@@ -213,13 +213,17 @@ class TestGetServicePidsScoping:
         monkeypatch.setattr(
             gw, "_locate_launchd_gateway_service", lambda label: located[label]
         )
+        def prefix_scan(command, **kwargs):
+            assert command == ["launchctl", "list"]
+            return subprocess.CompletedProcess(command, 0, "300\t0\tai.hermes.gateway-other-install\n", "")
+        monkeypatch.setattr(gw.subprocess, "run", prefix_scan)
 
     def test_all_profiles_returns_every_gateway_service_pid(self, monkeypatch):
         """The update sweep's exclude-set must protect ALL freshly-restarted
         services, not only the invoking profile's (else the sweep SIGTERMs
         gateways launchd just respawned)."""
         self._wire(monkeypatch)
-        assert gw._get_service_pids(all_profiles=True) == {100, 200}
+        assert gw._get_service_pids(all_profiles=True) == {100, 200, 300}
 
     def test_default_stays_scoped_to_current_profile(self, monkeypatch):
         """Regression guard: default-scope callers (gateway status, cron,
@@ -642,12 +646,15 @@ class TestWaitForLaunchdServicePid:
 
 
 class TestIncompleteWarningMentionsLaunchctl:
+    @pytest.mark.macos_only
     def test_launchd_labels_get_launchctl_hint(self, capsys):
         _warn_incomplete_gateway_fleet_restart(["ai.hermes.gateway-merit-ops"])
         out = capsys.readouterr().out
         assert "Update incomplete" in out
-        assert "launchctl kickstart -k" in out
+        assert "launchctl bootstrap" in out
+        assert "launchctl kickstart -k" not in out
 
+    @pytest.mark.linux_only
     def test_systemd_units_keep_systemctl_hint(self, capsys):
         _warn_incomplete_gateway_fleet_restart(["hermes-gateway-coder"])
         out = capsys.readouterr().out

@@ -117,6 +117,12 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     # this machine's real gateways: discovery returns nothing, systemd is
     # unsupported, so the phase is a clean no-op for both snapshots.
     import hermes_cli.gateway as hermes_gateway
+    import hermes_cli.update_inventory as inventory
+    import hermes_cli.update_receipt as receipt
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda *a, **k: None)
+    monkeypatch.setattr(inventory, "collect_runtime_inventory", lambda: inventory.UpdatePlan(install_method="git"))
+    monkeypatch.setattr(receipt, "collect_fleet_versions", lambda *a, **k: [])
+    monkeypatch.setattr(hermes_gateway, "launchd_gateway_labels_for_install", lambda: [])
 
     monkeypatch.setattr(
         hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []

@@ -37,7 +37,8 @@ except ImportError:
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult, merge_pending_message_event
+from gateway.platforms.base import BasePlatformAdapter, SendResult, merge_pending_message_event
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import build_session_key
 from gateway.platforms._shared import coerce_port, profile_scoped as _profile_scoped
 
@@ -484,6 +485,10 @@ class RaftAdapter(BasePlatformAdapter):
 
     async def handle_message(self, event: MessageEvent) -> None:
         """Accept Raft wake hints without interrupting an active Hermes turn."""
+        if event.internal:
+            # Durable gateway wakes need the base session fence and admission receipt.
+            await super().handle_message(event)
+            return
         if not self._message_handler:
             return
         session_key = build_session_key(

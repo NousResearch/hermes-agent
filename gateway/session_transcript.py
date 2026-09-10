@@ -453,6 +453,29 @@ class SessionTranscriptMixin:
             self._clear_dirty_transcript(session_id)
             return True
 
+    def has_input_owner(self, session_id: str, owner: str) -> bool:
+        """Find this accepted input on the canonical live continuation and its ancestors.
+
+        Content and unrelated writers cannot establish ownership. Query only existence;
+        compaction archives can contain many megabytes that replay never needs to load.
+        """
+        try:
+            current = self._follow_reroutes(session_id)
+            db = self._db_for_session_id(current)
+            current = db.get_compression_tip(current) or current
+            seen = set()
+            while current and current not in seen:
+                seen.add(current)
+                if db.has_gateway_input_owner(current, owner):
+                    return True
+                row = db.get_session(current)
+                if not row or not db._is_compression_child_row(row):
+                    break
+                current = row["parent_session_id"]
+            return False
+        except Exception as e:
+            raise TranscriptReadError(session_id) from e
+
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript (state.db is canonical). Reads follow the
         same routing writes use — the in-memory reroute map, then the durable compression tip —

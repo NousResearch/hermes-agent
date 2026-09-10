@@ -881,6 +881,10 @@ hermes skills update react --force   # Overwrite a skill you've edited locally
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
 
+Checks skip network requests for missing or non-directory installs (`orphaned`) and unsafe or unresolvable recorded paths (`invalid_install`). Missing-directory entries can be removed with `hermes skills uninstall <name>`; invalid paths require inspecting and repairing the active profile's `skills/.hub/lock.json` before retrying. No entries are removed automatically.
+
+Valid installs continue to use their source adapter’s existing synchronous fetch and transport timeouts. There is no strict total deadline for an update check: an unreachable or slow source for an existing install can still delay later entries.
+
 Skills you have edited locally (the on-disk content no longer matches the hash recorded at install time) are **skipped** by `hermes skills update` so your changes are never silently overwritten. Pass `--force` to replace them with the upstream version anyway.
 
 :::tip GitHub rate limits
@@ -1008,6 +1012,8 @@ On each sync, Hermes recomputes the hash of your local copy and compares it to t
 
 - **Unchanged** → safe to pull upstream changes, copy the new bundled version in, record the new origin hash.
 - **Changed** → treated as **user-modified** and skipped forever, so your edits never get stomped.
+
+Generated runtime caches inside a skill (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, and a `.pyc` sitting next to its `.py`) are not part of the hash, so running a skill's helper script never marks it user-modified or hides it from `hermes skills list-modified` / `diff`.
 
 The protection is good, but it has one sharp edge. If you edit a bundled skill and then later want to abandon your changes and go back to the bundled version by just copy-pasting from `~/.hermes/hermes-agent/skills/`, the manifest still holds the *old* origin hash from whenever the last successful sync ran. Your fresh copy-paste contents (current bundled hash) won't match that stale origin hash, so sync keeps flagging it as user-modified.
 

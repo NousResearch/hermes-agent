@@ -269,6 +269,8 @@ export function useStatusbarItems({
       contextBreakdown
         ? {
             ...currentUsage,
+            context_estimated: contextBreakdown.context_estimated,
+            context_source: contextBreakdown.context_source,
             context_max: contextBreakdown.context_max,
             context_percent: contextBreakdown.context_percent,
             context_used: contextBreakdown.context_used

@@ -236,13 +236,16 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
 
 def parse_systemd_duration_to_us(raw: str) -> Optional[int]:
     """Parse 'TimeoutStopUSec=1min 30s' / '90s' style values to microseconds. Covers us, ms, s, min,
-    h; a bare number is seconds. None on anything unexpected; never raises. Public: also consumed by
+    h, d, w, month, y; a bare number is seconds. None on anything unexpected; never raises. Public: also consumed by
     hermes_cli.gateway's restart-wait sizing.
     """
     if not raw:
         return None
     units = {"us": 1, "ms": 1_000, "s": 1_000_000, "sec": 1_000_000,
-             "min": 60_000_000, "h": 3_600_000_000, "hr": 3_600_000_000}
+             "min": 60_000_000, "h": 3_600_000_000, "hr": 3_600_000_000,
+             # Fixed systemd time-util.h constants, not variable calendar months/years.
+             "d": 86_400_000_000, "w": 604_800_000_000,
+             "month": 2_629_800_000_000, "y": 31_557_600_000_000}
     total_us, token, digits = 0, "", ""
 
     def _flush() -> bool:  # fold the pending digits/token pair into total_us
@@ -252,7 +255,7 @@ def parse_systemd_duration_to_us(raw: str) -> Optional[int]:
             return False
         try:
             total_us += int(float(digits) * multiplier)
-        except ValueError:
+        except (ValueError, OverflowError):
             return False
         digits = token = ""
         return True

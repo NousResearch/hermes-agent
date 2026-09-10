@@ -327,6 +327,34 @@ def test_compressed_summary_marker_survives_restart_via_resume_history(tmp_path)
     assert all("_compressed_summary" not in m for m in plain)
 
 
+def test_live_replay_preserves_summary_boundary_without_changing_display(tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path)
+    db.create_session("summary-replay", source="telegram")
+    db.append_message("summary-replay", "user", "Derivative context", _compressed_summary=True)
+    db.append_message("summary-replay", "user", "Original request")
+    db.append_message("summary-replay", "assistant", "Original answer")
+    db.create_session("plain-replay", source="telegram")
+    db.append_message("plain-replay", "user", "First request")
+    db.append_message("plain-replay", "user", "Second request")
+
+    reopened = SessionDB(db_path)
+    display_before = reopened.get_messages_as_conversation("summary-replay")
+    replay = reopened.get_messages_as_conversation("summary-replay", repair_alternation=True)
+    assert [m["content"] for m in replay] == [
+        "Derivative context", "Original request", "Original answer"
+    ]
+    assert replay[0].get("_compressed_summary") is True
+    assert all("_compressed_summary" not in m for m in replay[1:])
+    assert reopened.get_messages_as_conversation("summary-replay") == display_before
+    assert all("_compressed_summary" not in m for m in display_before)
+    plain = reopened.get_messages_as_conversation("plain-replay", repair_alternation=True)
+    assert [m["content"] for m in plain] == ["First request\n\nSecond request"]
+    assert all("_compressed_summary" not in m for m in plain)
+
+
 def test_compressed_summary_column_is_added_to_legacy_databases(tmp_path):
     """Pre-upgrade databases gain the marker column via declarative reconcile.
 

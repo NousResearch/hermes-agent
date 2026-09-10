@@ -9,7 +9,6 @@ import pytest
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
-    MessageEvent,
     SendResult,
     cache_audio_from_bytes,
     cache_image_from_bytes,
@@ -21,6 +20,7 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
+from gateway.platforms.event import MessageEvent
 
 
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
@@ -1250,8 +1250,15 @@ class TestMediaDeliveryDiagnosability:
             with caplog.at_level("WARNING"):
                 out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
         assert out == []
-        # The dropped path must be in the log so operators can diagnose it.
-        assert str(outside) in caplog.text
+        # The dropped path must be in the log so operators can diagnose it, with the REASON: a policy
+        # rejection reads differently from a path that simply does not exist (#100074).
+        assert str(outside) in caplog.text and "denied by the delivery policy" in caplog.text
+
+    def test_missing_file_is_logged_as_not_found_not_unsafe(self, tmp_path, caplog):
+        ghost = tmp_path / "never-written.pdf"
+        with caplog.at_level("WARNING"):
+            assert BasePlatformAdapter.filter_media_delivery_paths([(str(ghost), False)]) == []
+        assert "not found on this host" in caplog.text and "unsafe" not in caplog.text
 
     def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
         """One crafted ~\\x00 path must not drop every other attachment."""

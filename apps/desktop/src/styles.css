@@ -32,9 +32,9 @@
   }
 }
 
-/* Continuous decorative animations otherwise keep Chromium's renderer awake
-   behind another app. main.tsx owns this attribute only for the primary
-   window; wake/pet overlays retain their purpose-built visibility behavior. */
+/* Pause continuous animations only when the window is hidden/minimized, not
+   merely unfocused. main.tsx owns this attribute for the primary window;
+   wake/pet overlays retain their purpose-built visibility behavior. */
 :root[data-renderer-animations-paused]
   :is(
     .shimmer,
@@ -1560,7 +1560,20 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 [data-slot='aui_user-message-root'] {
-  top: var(--sticky-human-top);
+  --sticky-human-offset: calc(var(--sticky-human-top) + 1px);
+  top: var(--sticky-human-offset);
+}
+
+/* Cover the gap above the floating bubble with the thread's solid surface. */
+[data-slot='aui_user-message-root']::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset-inline: 0;
+  top: calc(-1 * var(--sticky-human-offset));
+  height: calc(var(--sticky-human-offset) + 1rem);
+  pointer-events: none;
+  background: var(--ui-chat-surface-background);
 }
 
 [data-slot='aui_user-message-root'],

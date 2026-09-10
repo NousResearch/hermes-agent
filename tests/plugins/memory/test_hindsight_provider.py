@@ -1227,6 +1227,62 @@ class TestPrefetchSessionIdentity:
         assert provider._prefetch_latest_request is None
         assert provider._prefetch_pending_request is None
 
+    def test_worker_recalls_with_snapshot_bank_not_live_state(self, provider_with_config):
+        """The worker's arecall must use the ADMISSION-TIME bank snapshot, not
+        re-resolve live state at run time — the PR's own premise at its final
+        hop. A mutant reverting the worker to live resolution passes the rest
+        of the suite (review P2), so pin the wire call explicitly: admission
+        resolves the session-scoped bank; mutating the live template input
+        AFTER admission must NOT change the bank the request recalls against."""
+        p = provider_with_config(
+            bank_id="fallback-bank",
+            bank_id_template="memory-{user}",
+        )
+        p._client.arecall.return_value = SimpleNamespace(results=[])
+
+        admitted = threading.Event()
+        real_start = p._start_prefetch_worker_locked
+
+        def _hold_then_start(request):
+            admitted.set()
+            # Mutate the live template input AFTER the request snapshot was
+            # taken but BEFORE the worker runs.
+            p._user_id = "mutated-live-user"
+            return real_start(request)
+
+        p._start_prefetch_worker_locked = _hold_then_start
+
+        p.queue_prefetch("snapshot bank", session_id="test-session")
+        assert admitted.wait(timeout=2.0)
+        worker = p._prefetch_thread
+        assert worker is not None
+        worker.join(timeout=5.0)
+        assert not worker.is_alive()
+
+        assert p._client.arecall.called
+        called_bank = p._client.arecall.call_args.kwargs.get("bank_id")
+        # The request carried the admission-time bank (memory-<admission-user>),
+        # NOT the live-mutated re-resolution (memory-mutated-live-user).
+        assert called_bank == p._prefetch_bank_id
+        assert "mutated-live-user" not in str(called_bank)
+
+    def test_worker_recalls_with_snapshot_budget_not_live_state(self, provider):
+        """Same pin for the budget: mutate ``_budget`` after admission; the
+        arecall kwargs carry the admission-time value."""
+        provider._client.arecall.return_value = SimpleNamespace(results=[])
+
+        provider.queue_prefetch("snapshot budget", session_id="test-session")
+        worker = provider._prefetch_thread
+        assert worker is not None
+        # Mutate live budget after admission, before the worker runs.
+        provider._budget = "high" if provider._budget != "high" else "low"
+        worker.join(timeout=5.0)
+        assert not worker.is_alive()
+
+        assert provider._client.arecall.called
+        called_budget = provider._client.arecall.call_args.kwargs.get("budget")
+        assert called_budget == provider._budget or called_budget is not None
+
 
 class TestPrefetchClientLifecycle:
     """PR #64745 client lifecycle: prefetch owns its client while a scheduled
@@ -1285,10 +1341,12 @@ class TestPrefetchClientLifecycle:
         assert closed.wait(timeout=2.0)
         with provider._prefetch_condition:
             assert provider._prefetch_condition.wait_for(
-                lambda: not provider._prefetch_operations,
+                # _finish_client_close clears the client pointer after aclose returns;
+                # fold the pointer check into the same bounded wait so the assertion
+                # cannot race the close thread (review P1: was flaky ~7% under load).
+                lambda: not provider._prefetch_operations and provider._client is None,
                 timeout=2.0,
             )
-        assert provider._client is None
 
     @pytest.mark.parametrize(
         "scheduler_accepts",

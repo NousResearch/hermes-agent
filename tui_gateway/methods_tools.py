@@ -1344,7 +1344,11 @@ def _plugin_rows() -> list[dict]:
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
             "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
             **cat.catalog_row_fields(_dir, pins),
-            **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
+            **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {}),
+            # Kill-list recall notice — same field/lookup the CLI (`plugins_cmd.cmd_list`) and
+            # web dashboard (`web_server_dashboard.py`) already surface for a still-installed
+            # plugin pulled from the catalog; the desktop had no equivalent (#removed-warning).
+            **({"removed_reason": reason} if (reason := cat.removed_annotation(name, _dir)) else {})})
     return out
 
 

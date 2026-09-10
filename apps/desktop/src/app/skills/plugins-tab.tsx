@@ -121,6 +121,13 @@ function AgentPluginListRow({
               </span>
             </Tip>
           )}
+          {row.removed_reason && (
+            <Tip label={t.skills.plugins.removedProvenance(row.removed_reason)}>
+              <span className="rounded border border-destructive/40 px-1 text-[0.65rem] text-destructive">
+                {t.skills.plugins.removedBadge}
+              </span>
+            </Tip>
+          )}
           {row.update_available && onUpdate && (
             <Button
               className="h-5 px-1.5 text-[0.65rem]"

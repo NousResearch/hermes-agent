@@ -36,6 +36,9 @@ export interface AgentPluginRow {
   update_available?: boolean
   /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
   pinned_sha?: string
+  /** Set when this still-installed plugin was pulled from the catalog (security/policy);
+   *  the CLI and web dashboard already surface this recall notice. */
+  removed_reason?: string
 }
 
 /** A `--ref` pin is a full 40-hex commit SHA; branches and tags are refused server-side. */

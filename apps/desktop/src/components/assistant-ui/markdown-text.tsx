@@ -493,7 +493,7 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
       <ExpandableBlock className="p-2">
         {chunks.map((chunk, index) => (
           <div
-            className="[content-visibility:auto]"
+            className="whitespace-pre-wrap wrap-anywhere [content-visibility:auto]"
             key={index}
             style={{ containIntrinsicSize: `auto ${chunk.lines * 16}px` }}
           >
@@ -626,7 +626,7 @@ function MarkdownTextSurface({
         ),
         th: ResizableMarkdownTh,
         td: ({ className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
+          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug wrap-anywhere', className)} {...props} />
         ),
         img: previewOnly ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span> : MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; substantial

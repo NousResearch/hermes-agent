@@ -33,9 +33,11 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
     <div className="relative">
       <div
         className={cn(
+          // Vertical scroll only. Horizontal pan on output is unreadable
+          // (#101311); long tokens wrap inside the card instead.
           // `scrollbar-overlay` opts out of the app-wide classic thin gutters so
           // this scroller keeps platform overlay bars (no always-on track).
-          'scrollbar-overlay overflow-y-auto overflow-x-auto',
+          'scrollbar-overlay overflow-y-auto overflow-x-hidden',
           expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]',
           className
         )}
@@ -45,11 +47,10 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
       </div>
       {overflowing && (
         // The fade is a pure overflow cue and must not intercept pointer events:
-        // it spans the full bottom edge (over the horizontal scrollbar of a wide
-        // code block AND the block's last line), so making it clickable killed
-        // both sideways scrolling and text selection. Keep the fade
-        // `pointer-events-none` and pin the only clickable target — a compact
-        // toggle — to the right edge, clear of the draggable scrollbar track.
+        // it spans the full bottom edge over the block's last line, so making it
+        // clickable killed text selection. Keep the fade `pointer-events-none`
+        // and pin the only clickable target — a compact toggle — to the right
+        // edge, clear of the vertical overlay scrollbar track.
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-7 justify-end bg-linear-to-t from-[var(--expandable-fade-from,var(--ui-chat-surface-background))] to-transparent">
           <button
             aria-expanded={expanded}

@@ -16,6 +16,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
 
 
@@ -225,3 +226,117 @@ def test_severity_at_or_above_uses_threshold_semantics():
     assert kd.severity_at_or_above("error", "critical") is False
     assert kd.severity_at_or_above("mystery", "warning") is False
     assert kd.severity_at_or_above("warning", None) is True
+
+
+# ---------------------------------------------------------------------------
+# worktree_without_checkout_root
+#
+# Mirrors the raise in kanban_db_workspace._resolve_worktree_workspace: a
+# worktree task resolves against its own workspace_path or the board's
+# default_workdir, and with neither the dispatcher refuses to guess.
+# ---------------------------------------------------------------------------
+
+
+# Explicit "this board has no fallback root", so the rule never reads real
+# board metadata off disk during the unit tests.
+_NO_BOARD_WORKDIR = {"board_default_workdir": ""}
+
+
+def _worktree_task(**overrides):
+    base = dict(workspace_kind="worktree", workspace_path=None, project_id=None,
+                created_at=1_000, created_by="orchestrator")
+    base.update(overrides)
+    return _task(**base)
+
+
+def _wt_diags(task, config=None):
+    diags = kd.compute_task_diagnostics(
+        task, [], [], now=2_000,
+        config=_NO_BOARD_WORKDIR if config is None else config)
+    return [d for d in diags if d.kind == "worktree_without_checkout_root"]
+
+
+def test_worktree_without_checkout_root_fires_on_a_board_with_no_default():
+    diags = _wt_diags(_worktree_task())
+    assert len(diags) == 1
+    assert diags[0].severity == "error"
+    assert diags[0].data["project_id"] is None
+    assert "--project" in diags[0].actions[0].payload["command"]
+
+
+def test_worktree_without_checkout_root_escalates_once_it_is_failing():
+    """0 failures = mis-created; >0 = actively burning dispatch attempts."""
+    diags = _wt_diags(_worktree_task(consecutive_failures=3))
+    assert len(diags) == 1
+    assert diags[0].severity == "critical"
+    assert diags[0].data["consecutive_failures"] == 3
+
+
+def test_worktree_without_checkout_root_silent_when_board_has_a_default():
+    """A single-repo board sets default_workdir, so the task resolves."""
+    assert _wt_diags(_worktree_task(),
+                     config={"board_default_workdir": "/srv/repo"}) == []
+
+
+def test_worktree_without_checkout_root_silent_when_task_has_its_own_path():
+    assert _wt_diags(_worktree_task(workspace_path="/srv/repo")) == []
+
+
+@pytest.mark.parametrize("kind", ["scratch", "dir"])
+def test_worktree_without_checkout_root_ignores_other_workspace_kinds(kind):
+    """scratch resolves under the board root; dir has its own guard."""
+    assert _wt_diags(_worktree_task(workspace_kind=kind)) == []
+
+
+@pytest.mark.parametrize("status", ["done", "archived"])
+def test_worktree_without_checkout_root_ignores_terminal_tasks(status):
+    """Never dispatched again, so a missing root is history, not a fault."""
+    assert _wt_diags(_worktree_task(status=status)) == []
+
+
+def test_worktree_without_checkout_root_fires_when_a_project_gave_no_path():
+    """project_id is not what the resolver reads.
+
+    create_task derives <repo>/.worktrees/<id> from a project, but only at
+    creation and only when the project has a primary repo. A row that got a
+    project without a path is still undispatchable, so the rule follows the
+    resolver rather than trusting the link.
+    """
+    diags = _wt_diags(_worktree_task(project_id="p_abc123"))
+    assert len(diags) == 1
+    assert diags[0].data["project_id"] == "p_abc123"
+    # Different cause, different remedy: the project exists, its repo doesn't.
+    assert diags[0].actions[0].payload["command"] == "hermes project list"
+
+
+def test_read_board_default_workdir_normalizes_unset():
+    class _Stub:
+        def __init__(self, meta):
+            self.meta = meta
+
+        def read_board_metadata(self, board=None):
+            return self.meta
+
+    assert kd.read_board_default_workdir(_Stub({"default_workdir": None})) == ""
+    assert kd.read_board_default_workdir(_Stub({})) == ""
+    assert kd.read_board_default_workdir(_Stub({"default_workdir": "/srv/r"})) == "/srv/r"
+
+
+def test_worktree_without_checkout_root_matches_the_resolver(kanban_home):
+    """Pin the rule to the code it predicts.
+
+    The rule is only useful if it fires exactly when resolve_workspace
+    refuses to dispatch, so assert both against one real task instead of
+    trusting a hand-built fixture.
+    """
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(
+            conn, title="fix something", assignee="demo", workspace_kind="worktree")
+        task = kb.get_task(conn, task_id)
+        with pytest.raises(ValueError, match="default_workdir"):
+            kbw.resolve_workspace(task)
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        assert _wt_diags(row)
+    finally:
+        conn.close()

@@ -678,6 +678,128 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+# Sentinel: tells "the caller did not supply board_default_workdir" apart
+# from "the caller supplied it and the board genuinely has none". Only the
+# former falls back to reading board metadata.
+_BOARD_WORKDIR_UNSET = object()
+
+# A worktree task in one of these is never dispatched again, so a missing
+# checkout root is history rather than a live fault. Note there is no
+# "cancelled" in VALID_STATUSES.
+_WORKTREE_TERMINAL_STATUSES = ("done", "archived")
+
+
+def read_board_default_workdir(kanban_db_mod, board=None) -> str:
+    """The board's ``default_workdir``, or ``""`` when unset.
+
+    Split out so a multi-board process can thread the *requested* board's
+    value into ``config`` (the dashboard serves several boards from one
+    process), and so tests can pass a stub instead of writing board metadata.
+    """
+    meta = kanban_db_mod.read_board_metadata(board) or {}
+    return str(meta.get("default_workdir") or "")
+
+
+def _rule_worktree_without_checkout_root(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Worktree task with no repo to check out in.
+
+    ``_resolve_worktree_workspace`` anchors a worktree on the task's own
+    ``workspace_path`` and falls back to the board's ``default_workdir``,
+    raising when it has neither because it "fail[s] loudly rather than
+    guess". That raise lands at dispatch: the task burns its retries and the
+    circuit breaker parks it as ``blocked`` behind a message that reads like
+    an infrastructure fault rather than "this task was created with nowhere
+    to run". This rule reports the same condition while it is still queued.
+
+    ``project_id`` is deliberately not part of the test. A project is what
+    usually supplies the path -- ``create_task`` turns a project link into
+    ``<repo>/.worktrees/<id>`` -- but it does so at CREATE time, and
+    resolution never consults it again. A task that has a project and no
+    path (a project with no primary repo, or a row updated directly) is
+    equally undispatchable, so the rule follows the resolver and uses
+    ``project_id`` only to pick the remedy.
+
+    The rule does not guess the repo. Inheriting the parent task's project
+    looks obvious and is wrong often enough to matter: on a 24-task sample of
+    exactly this failure it would have misdirected 4 (17%), every one of them
+    from a *direct* parent, because cross-repo hand-offs (a spec task in one
+    repo spawning the follow-up that edits another) are normal rather than
+    exceptional. A silent checkout into the wrong repo is worse than a loud
+    stall, which is the reasoning the resolver already applies. Choosing the
+    repo stays with the operator.
+
+    Config: ``board_default_workdir`` -- the default workdir of the board
+    this task lives on. Callers that do not supply it get the current
+    board, which is right for the CLI and wrong for a multi-board process.
+    """
+    if _task_field(task, "workspace_kind") != "worktree":
+        return []
+    if str(_task_field(task, "workspace_path") or "").strip():
+        return []
+    status = str(_task_field(task, "status") or "")
+    if status in _WORKTREE_TERMINAL_STATUSES:
+        return []
+
+    default_workdir = cfg.get("board_default_workdir", _BOARD_WORKDIR_UNSET)
+    if default_workdir is _BOARD_WORKDIR_UNSET:
+        try:
+            from hermes_cli import kanban_db as _kb
+            default_workdir = read_board_default_workdir(_kb)
+        except Exception:
+            default_workdir = ""
+    if str(default_workdir or "").strip():
+        return []
+
+    project_id = str(_task_field(task, "project_id") or "").strip()
+    failures = _positive_int(_task_field(task, "consecutive_failures"), 0)
+    # 0 = mis-created but not yet dispatched; anything else = already
+    # burning attempts against a fault that retrying cannot clear.
+    severity = "critical" if failures else "error"
+
+    if project_id:
+        detail = (
+            f"This worktree task is linked to project {project_id!r} but has no "
+            "workspace_path, and its board has no default_workdir, so there is no "
+            "repo to check it out in. A project only supplies a path when the task "
+            "is created, and only if the project has a primary repo; it is not "
+            "consulted again at dispatch. Give the project a primary repo, or set "
+            "an explicit worktree path on the task."
+        )
+        actions = [
+            _cli_hint("Check the project's primary repo", "hermes project list",
+                      suggested=True),
+        ]
+    else:
+        detail = (
+            "This worktree task has no workspace_path and no project, and its board "
+            "has no default_workdir, so there is no repo to check it out in. It "
+            "cannot be dispatched and will fail at spawn. Create worktree tasks "
+            "with an explicit project, naming the repo the work actually touches -- "
+            "do not copy the parent task's project without reading the task, "
+            "because cross-repo hand-offs are common and the parent is a misleading "
+            "default."
+        )
+        actions = [
+            _cli_hint("Create worktree tasks with an explicit project",
+                      'hermes kanban create "<title>" --workspace worktree '
+                      '--project <slug>', suggested=True),
+            _cli_hint("List the projects to pick from", "hermes project list"),
+        ]
+
+    # int, never None: compute_task_diagnostics sorts on last_seen_at.
+    created_at = _positive_int(_task_field(task, "created_at"), 0)
+    return [Diagnostic(
+        kind="worktree_without_checkout_root", severity=severity,
+        title="Worktree task has no repo to check out in",
+        detail=detail, actions=actions,
+        first_seen_at=created_at, last_seen_at=created_at,
+        data={"status": status, "consecutive_failures": failures,
+              "project_id": project_id or None,
+              "assignee": _task_field(task, "assignee"),
+              "created_by": _task_field(task, "created_by")},
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
@@ -689,6 +811,7 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_worktree_without_checkout_root,
 ]
 
 

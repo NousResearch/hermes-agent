@@ -28,6 +28,11 @@ def _base(monkeypatch):
     monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
     monkeypatch.setattr("hermes_constants.is_container", lambda: False)
     monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
+    # The WSL2 PowerShell TTS fallback makes the no-forwarding path host-
+    # dependent (powershell.exe + ffmpeg on PATH). Pin it so these tests are
+    # deterministic on any machine: the fallback is only exercised by the
+    # dedicated test that mocks it to True.
+    monkeypatch.setattr("tools.voice_mode._wsl_powershell_tts_available", lambda: False)
     sd = MagicMock(); sd.query_devices.return_value = [{"name": "dev"}]
     monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
 
@@ -56,3 +61,9 @@ def test_wsl_without_forwarding_still_blocks(monkeypatch):
     res = detect_audio_environment()
     assert res["available"] is False
     assert any("WSL" in w for w in res["warnings"])
+
+
+# Note: the positive PowerShell-fallback path (probe True, voice available,
+# recording guidance surfaced) is covered by
+# TestWSLAudioEnvironmentGate::test_wsl_no_pulse_but_powershell_available_not_hard_blocked
+# in tests/tools/test_voice_mode.py — do not re-add it here.

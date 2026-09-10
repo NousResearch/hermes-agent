@@ -2894,10 +2894,21 @@ def show_config():
     print(f"  Install:      {get_project_root()}")
 
     _section("API Keys")
+    from hermes_cli.auth import PROVIDER_REGISTRY, get_anthropic_key, pool_credential_labels
+    # A credential added via `hermes auth add` lives in the auth.json pool, not .env — without this
+    # fallback an authed provider prints "(not set)". Only the label is read, never the secret.
+    pool_labels = pool_credential_labels()
+
+    def _api_key_display(value: str, env_keys) -> str:
+        if value:
+            return redact_key(value)
+        label = next((pool_labels[k] for k in env_keys if k in pool_labels), "")
+        return f"credential pool ({label})" if label else redact_key("")
+
     for env_key, name in _SHOW_CONFIG_API_KEYS:
-        print(f"  {name:<14} {redact_key(get_env_value(env_key))}")
-    from hermes_cli.auth import get_anthropic_key
-    print(f"  {'Anthropic':<14} {redact_key(get_anthropic_key())}")
+        print(f"  {name:<14} {_api_key_display(get_env_value(env_key), (env_key,))}")
+    anthropic_env = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
+    print(f"  {'Anthropic':<14} {_api_key_display(get_anthropic_key(), anthropic_env)}")
 
     _show_model_section(config)
     _show_display_section(config)

@@ -4,7 +4,7 @@ module object so tests that monkeypatch that module keep working."""
 
 from datetime import datetime, timezone
 
-from hermes_cli.auth import AuthError
+from hermes_cli.auth import AuthError, pool_credential_labels
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message, get_nous_portal_account_info)
 from hermes_cli.nous_subscription import get_nous_subscription_features
@@ -56,35 +56,6 @@ _API_KEYS: dict[str, str | tuple[str, ...]] = {
     "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
     "FAL": "FAL_KEY", "ElevenLabs": "ELEVENLABS_API_KEY", "GitHub": "GITHUB_TOKEN"}
 
-def _pool_credential_labels() -> dict[str, str]:
-    """Map env var name -> credential-pool label for providers holding an explicit pool entry.
-
-    ``hermes auth add`` persists to the pool in ``auth.json`` and never writes ``.env``, so a row
-    resolved purely from env vars renders "(not set)" for a provider that is in fact authed and
-    serving traffic. Keyed by env var so a row matches without a hand-maintained display-name ->
-    provider-id table. Ambient borrowed sources (gh_cli / claude_code / qwen-cli) are excluded by
-    ``_pool_entry_is_explicit``, and the pooled secret itself is never read — only its label.
-    """
-    labels: dict[str, str] = {}
-    try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, _pool_entry_is_explicit, read_credential_pool
-        pool = read_credential_pool()
-        for provider_id, entries in (pool.items() if isinstance(pool, dict) else ()):
-            explicit = [e for e in entries if _pool_entry_is_explicit(e)] if isinstance(entries, list) else []
-            if not explicit:
-                continue
-            pconfig = PROVIDER_REGISTRY.get(provider_id)
-            if pconfig is None:
-                from hermes_cli.providers import get_provider
-                pconfig = get_provider(provider_id)
-            label = str(explicit[0].get("label") or provider_id).strip() or provider_id
-            for env_var in getattr(pconfig, "api_key_env_vars", ()) or ():
-                labels.setdefault(env_var, label)
-    except Exception:
-        pass  # a read-only status display must never fail on an unreadable auth store
-    return labels
-
-
 def _row_env_vars(name: str, env_ref) -> tuple[str, ...]:
     """Env vars behind one API-key row. Anthropic resolves through ``get_anthropic_key``, so its
     vars come from the registry the same way that helper reads them."""
@@ -133,7 +104,7 @@ _FEATURE_STATES = (
 def _render_api_keys(ctx):
     _status._section("API Keys")
     from hermes_cli.auth import get_anthropic_key
-    pool_labels = _pool_credential_labels()
+    pool_labels = pool_credential_labels()
     # Anthropic uses the dedicated lookup (it also resolves OAuth tokens).
     for name, env_ref in (*_API_KEYS.items(), ("Anthropic", get_anthropic_key)):
         value = env_ref() if callable(env_ref) else _status._first_env_value(env_ref)

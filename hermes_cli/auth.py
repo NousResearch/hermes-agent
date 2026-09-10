@@ -1160,6 +1160,38 @@ def _pool_entry_is_explicit(entry: Any) -> bool:
     return bool(source) and (source in _EXPLICIT_POOL_SOURCES or source.startswith("manual:"))
 
 
+def pool_credential_labels() -> Dict[str, str]:
+    """Map env var name -> credential-pool label for providers holding an explicit pool entry.
+
+    ``hermes auth add`` persists to the pool in ``auth.json`` and never writes ``.env``, so any
+    display that resolves a provider from env vars alone reports "(not set)" for a provider that is
+    in fact authed and serving traffic. Keyed by env var so a display row matches without a
+    hand-maintained display-name -> provider-id table. Ambient borrowed sources (gh_cli /
+    claude_code / qwen-cli) are excluded by ``_pool_entry_is_explicit``, and the pooled secret is
+    never read — only its label — so no key material can reach a caller.
+
+    Consumed by ``hermes status`` (``status_auth._render_api_keys``) and ``hermes config show``
+    (``config.show_config``). Never raises: an unreadable store yields what was collected so far.
+    """
+    labels: Dict[str, str] = {}
+    try:
+        pool = read_credential_pool()
+        for provider_id, entries in (pool.items() if isinstance(pool, dict) else ()):
+            explicit = [e for e in entries if _pool_entry_is_explicit(e)] if isinstance(entries, list) else []
+            if not explicit:
+                continue
+            pconfig = PROVIDER_REGISTRY.get(provider_id)
+            if pconfig is None:
+                from hermes_cli.providers import get_provider
+                pconfig = get_provider(provider_id)
+            label = str(explicit[0].get("label") or provider_id).strip() or provider_id
+            for env_var in getattr(pconfig, "api_key_env_vars", ()) or ():
+                labels.setdefault(env_var, label)
+    except Exception as e:
+        logger.debug("Could not read credential pool labels: %s", e)
+    return labels
+
+
 def _keyless_provider_has_explicit_config(normalized: str) -> bool:
     """Vertex / Bedrock count as explicit when Hermes-scoped routing config is present.
 

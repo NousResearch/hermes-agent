@@ -74,7 +74,9 @@ it('captures durable navigation identity while keeping the runtime id for approv
 
   try {
     dispatchNativeNotification({ kind: 'approval', sessionId: runtimeId, title: 'Approval' })
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ sessionId: runtimeId, focusSessionId: 'durable-chat' }))
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: runtimeId, focusSessionId: 'durable-chat' })
+    )
   } finally {
     dropSessionState(runtimeId)
   }

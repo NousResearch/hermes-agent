@@ -16,4 +16,3 @@ export interface HermesNotification {
   notifyId?: string
   actions?: { id: string; text: string; activate?: string }[]
 }
-

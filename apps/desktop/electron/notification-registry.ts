@@ -14,6 +14,7 @@ export function createNotificationRegistry({ ttlMs = NOTIFICATION_RETENTION_TTL_
 
   function retain(notification: RetainedNotification): void {
     live.add(notification)
+
     const release = () => {
       clearTimeout(timer)
       live.delete(notification)
@@ -32,6 +33,7 @@ export function createNotificationRegistry({ ttlMs = NOTIFICATION_RETENTION_TTL_
       notification.close()
       release()
     }, ttlMs)
+
     timer.unref()
   }
 

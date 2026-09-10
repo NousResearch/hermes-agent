@@ -216,13 +216,19 @@ export function useDesktopIntegrations({
         const storedId = viaLocalMap !== sessionId ? viaLocalMap : (storedSessionIdForRuntimeId(sessionId) ?? sessionId)
 
         // A notification reveals a tab; it must not reclassify a Bot chat.
-        const scope = $sessionTiles.get().find(tile => tile.storedSessionId === storedId) ?? $botChatScopes.get()[storedId]
+        const scope =
+          $sessionTiles.get().find(tile => tile.storedSessionId === storedId) ?? $botChatScopes.get()[storedId]
 
         if (isOverlayView(appViewForPath(locationPathname))) {
           navigate(sessionRoute($selectedStoredSessionId.get() ?? ''), { replace: true })
         }
 
-        openSession(storedId, navigate, 'stack', scope && { ...scope, workspaceMode: scope.workspaceMode ?? 'sessions' })
+        openSession(
+          storedId,
+          navigate,
+          'stack',
+          scope && { ...scope, workspaceMode: scope.workspaceMode ?? 'sessions' }
+        )
       }
     })
 

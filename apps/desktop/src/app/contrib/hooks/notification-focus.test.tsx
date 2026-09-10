@@ -7,7 +7,13 @@ import { group } from '@/components/pane-shell/tree/model'
 import * as tree from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { $selectedStoredSessionId } from '@/store/session'
-import { $sessionTiles, closeSessionTile, discardSessionTile, openSessionTile, patchSessionTile } from '@/store/session-states'
+import {
+  $sessionTiles,
+  closeSessionTile,
+  discardSessionTile,
+  openSessionTile,
+  patchSessionTile
+} from '@/store/session-states'
 
 import { useDesktopIntegrations } from './use-desktop-integrations'
 
@@ -21,6 +27,7 @@ beforeAll(() => {
     render: () => null,
     title: 'Chat'
   })
+
   tree.watchContributedPanes()
   paneMirror({
     source: $sessionTiles,
@@ -80,12 +87,14 @@ it('a native click reveals the existing remote Bot tab without changing its owne
       sessions: []
     })
   )
+
   const scope = {
     ownerRoute: { connectionId: 'remote-writer', profile: 'writer', mode: 'remote' as const },
     workspaceMode: 'bots' as const,
     workspaceOwnerKey: 'remote-writer::writer',
     workspaceTabTitle: 'Bot Chat'
   }
+
   openSessionTile('bot-chat', 'center', 'workspace', undefined, scope)
   patchSessionTile('bot-chat', { runtimeId: 'bot-runtime' })
   tree.revealTreePane('workspace')

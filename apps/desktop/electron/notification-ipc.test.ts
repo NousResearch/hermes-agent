@@ -47,13 +47,18 @@ it('returns native clicks and approval actions to the emitting window, not the p
   const focusWindow = vi.fn()
   registerNativeNotifications({ getMainWindow: () => primary as unknown as BrowserWindow, focusWindow })
   const notify = host.handle.mock.calls[0][1] as (event: IpcMainInvokeEvent, payload: HermesNotification) => boolean
+
   const payload = {
     kind: 'approval',
     sessionId: 'runtime-source',
     focusSessionId: 'stored-source',
     title: 'Approval',
-    actions: [{ id: 'approve', text: 'Approve' }, { id: 'reject', text: 'Reject' }]
+    actions: [
+      { id: 'approve', text: 'Approve' },
+      { id: 'reject', text: 'Reject' }
+    ]
   }
+
   expect(notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, payload)).toBe(true)
   expect(focusWindow).not.toHaveBeenCalled()
   expect(primary.webContents.send).not.toHaveBeenCalled()
@@ -89,16 +94,22 @@ it('delivers plugin callbacks to their source and falls back only for navigation
     actions: [{ id: 'open', text: 'Open', activate: '/plugin/detail' }]
   })
   host.shown[0].emit('action', { actionIndex: 0 }, undefined)
-  expect(source.webContents.send).toHaveBeenCalledWith('hermes:notification-activate', expect.objectContaining({
-    actionId: 'open',
-    notifyId: 'source-callback',
-    activate: '/plugin/detail'
-  }))
+  expect(source.webContents.send).toHaveBeenCalledWith(
+    'hermes:notification-activate',
+    expect.objectContaining({
+      actionId: 'open',
+      notifyId: 'source-callback',
+      activate: '/plugin/detail'
+    })
+  )
   expect(primary.webContents.send).not.toHaveBeenCalled()
   source.isDestroyed.mockReturnValue(true)
   host.shown[0].emit('click')
-  expect(primary.webContents.send).toHaveBeenCalledWith('hermes:notification-activate', expect.objectContaining({
-    activate: '/plugin',
-    notifyId: undefined
-  }))
+  expect(primary.webContents.send).toHaveBeenCalledWith(
+    'hermes:notification-activate',
+    expect.objectContaining({
+      activate: '/plugin',
+      notifyId: undefined
+    })
+  )
 })

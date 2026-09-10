@@ -212,7 +212,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     actions: input.actions,
     activate: input.activate,
     body: input.body,
-    focusSessionId: input.sessionId ? storedSessionIdForRuntimeId(input.sessionId) ?? undefined : undefined,
+    focusSessionId: input.sessionId ? (storedSessionIdForRuntimeId(input.sessionId) ?? undefined) : undefined,
     icon: input.icon,
     kind: input.kind,
     notifyId: input.notifyId,

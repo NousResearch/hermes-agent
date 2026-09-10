@@ -1,63 +1,68 @@
-"""Tests for KeyboardInterrupt handling in exit cleanup paths.
+"""A second Ctrl+C during cron finalization must not skip resource cleanup."""
 
-``except Exception`` does not catch ``KeyboardInterrupt`` (which inherits
-from ``BaseException``).  A second Ctrl+C during exit cleanup must not
-abort remaining cleanup steps.  These tests exercise the actual production
-code paths — not a copy of the try/except pattern.
-"""
-
-from unittest.mock import MagicMock, patch
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _mock_runtime_provider(monkeypatch):
-    """run_job calls resolve_runtime_provider which can try real network
-    auto-detection (~4s of socket timeouts in hermetic CI). Mock it out
-    since these tests don't care about provider resolution — the agent
-    is mocked too."""
-    import hermes_cli.runtime_provider as rp
-    def _fake_resolve(*args, **kwargs):
-        return {
-            "provider": "openrouter",
-            "api_key": "test-key",
-            "base_url": "https://openrouter.ai/api/v1",
-            "model": "test/model",
-            "api_mode": "chat_completions",
-        }
-    monkeypatch.setattr(rp, "resolve_runtime_provider", _fake_resolve)
+@pytest.mark.asyncio
+async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, monkeypatch):
+    """Exercise owner execution and release its borrowed store despite Ctrl+C."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_cron import current_execution, execute
+    from hermes_state_registry import acquire, release
 
+    home = tmp_path / "owner"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (home / "config.yaml").write_text("model:\n  default: test/model\n  provider: custom\n")
+    db = acquire(home / "state.db")
+    ref = SessionRef(str(home), "cron-cleanup-session")
+    db.create_session(ref.session_id, source="cron")
+    authority = SimpleNamespace(
+        db=db, sessions={ref.session_id: SimpleNamespace(
+            source=SimpleNamespace(user_id="cron-owner"))}, pending_results={})
+    job = {"id": "test-job-1", "name": "test cleanup", "prompt": "hello",
+           "schedule": "0 9 * * *", "model": "test/model"}
+    row = {"admission_id": "cleanup-admission", "request_id": "cleanup-request",
+           "principal_id": "cron-owner", "payload": {"text": ""}}
+    policy = SimpleNamespace(request_json=json.dumps({
+        "cron_job": job, "extra_prompt": None, "request_id": row["request_id"]}))
+    runtime = {"provider": "custom", "api_key": "test-key",
+               "base_url": "http://127.0.0.1:1/v1", "model": "test/model",
+               "api_mode": "chat_completions"}
+    reached = []
 
-class TestCronJobCleanup:
-    """cron/scheduler.py — end_session + close in the finally block."""
+    def fail_turn(*args, **kwargs):
+        reached.append(current_execution())
+        raise RuntimeError("boom")
 
-    def test_keyboard_interrupt_in_end_session_does_not_skip_close(self):
-        """If end_session raises KeyboardInterrupt, close() must still run."""
-        mock_db = MagicMock()
-        mock_db.end_session.side_effect = KeyboardInterrupt
+    try:
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime), \
+             patch("run_agent.AIAgent") as agent_class, \
+             patch.object(db, "end_session", side_effect=KeyboardInterrupt) as end_session, \
+             patch.object(db, "close", wraps=db.close) as close:
+            agent = agent_class.return_value
+            agent.session_id = ref.session_id
+            agent.run_conversation.side_effect = fail_turn
+            previous = current_execution()
+            with pytest.raises(RuntimeError, match="RuntimeError: boom"):
+                await execute(authority, ref, row, policy)
 
-        from cron import scheduler
-        from cron import scheduler_delivery as sched_delivery
-
-        job = {
-            "id": "test-job-1",
-            "name": "test cleanup",
-            "prompt": "hello",
-            "schedule": "0 9 * * *",
-            "model": "test/model",
-        }
-
-        with patch("hermes_state_registry.acquire", return_value=mock_db), \
-             patch.object(scheduler, "_build_job_prompt", return_value="hello"), \
-             patch.object(sched_delivery, "_resolve_origin", return_value=None), \
-             patch.object(scheduler, "_resolve_delivery_target", return_value=None), \
-             patch("dotenv.load_dotenv", return_value=None), \
-             patch("run_agent.AIAgent") as MockAgent:
-            # Make the agent raise immediately so we hit the finally block
-            MockAgent.return_value.run_conversation.side_effect = RuntimeError("boom")
-            scheduler.run_job(job)
-
-        mock_db.end_session.assert_called_once()
-        mock_db.close.assert_called_once()
-
+            assert reached == [(authority, ref.session_id, job["id"], row["admission_id"])]
+            assert agent_class.call_args.kwargs["session_db"] is db
+            end_session.assert_called_once_with(ref.session_id, "cron_incomplete_no_output")
+            close.assert_called_once()
+            agent.close.assert_called_once()
+            assert current_execution() is previous
+            assert not authority._cron_cancellations
+            result = authority.pending_results[row["admission_id"]]["result"]["cron_result"]
+            assert result[0] is False and result[3] == "RuntimeError: boom"
+            # Cron released its borrow, not the owner's live SQLite connection.
+            saved = db.get_session(ref.session_id)
+            assert saved is not None and saved["title"].startswith(job["name"])
+    finally:
+        assert release(db)

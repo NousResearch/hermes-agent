@@ -105,6 +105,51 @@ def test_slack_preserves_duration_groups_and_primary_rightmost(mute_view):
     assert "across clients in this organization" in wisdom_fallback_text(mute_view)
 
 
+@pytest.mark.parametrize("kind", ["digest", "share", "install", "update"])
+def test_advice_settings_opens_read_only_menu_then_requires_explicit_choice(
+    controls, monkeypatch, kind,
+):
+    from hermes_wisdom.mediation_view import advice_view
+    from plugins.platforms.slack.wisdom_blocks import render_wisdom_blocks
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    p, service, _ = controls
+    monkeypatch.setattr("hermes_wisdom.preferences.WisdomPreferences", lambda service: p)
+    context = WisdomCommandContext("user", "dm", "demo", "org")
+    item = {"advice": {"title": "A skill", "explanation": "Relevant to your work.",
+                       "relevance": "digest" if kind == "digest" else "recommend"}}
+    if kind != "digest":
+        item["interaction"] = {
+            "id": "consent-id", "operation": kind, "state": "pending",
+            "facts": {"slug": "example", "version": 1},
+            "actions": ["defer", "inspect", "confirm"],
+        }
+    view = bind_view_callbacks(advice_view([item]), context)
+    settings = next(action for action in view.actions if action.operation == "mute")
+    html = TelegramAdapter._wisdom_command_html(view, full_details=True)
+    blocks = render_wisdom_blocks(view)
+    assert settings.callback_data in html
+    assert any(button.get("value") == settings.callback_data
+               for block in blocks if block["type"] == "actions"
+               for button in block["elements"])
+    if kind != "digest":
+        assert view.items[0].actions[-1].callback_data == "wi:agent:confirm:consent-id"
+        assert view.items[0].actions[-1].primary
+    controller = WisdomCommandController()
+    menu = controller.execute_token(settings.callback_data.removeprefix("wi:cmd:"), service, context)
+    assert p.mute_status("org") is None
+    service.client.set_recommendation_mute.assert_not_called()
+    bind_view_callbacks(menu, context)
+    back = menu.navigation_actions[0].callback_data.removeprefix("wi:cmd:")
+    inbox = controller.execute_token(back, service, context)
+    assert inbox.title == controller.execute("inbox", service, context).title
+    assert p.mute_status("org") is None
+    choice = menu.items[0].actions[0]
+    controller.execute_token(choice.callback_data.removeprefix("wi:cmd:"), service, context)
+    assert p.mute_status("org")["requested_duration"] == choice.arguments["duration"]
+    service.client.set_recommendation_mute.assert_called_once()
+
+
 def test_pending_sync_is_visible_in_both_renderers(controls, monkeypatch):
     from plugins.platforms.slack.wisdom_blocks import wisdom_fallback_text
     from plugins.platforms.telegram.adapter import TelegramAdapter

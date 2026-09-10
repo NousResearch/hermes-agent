@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 
+from gateway.wisdom_command import WisdomCommandContext, bind_view_callbacks
 from hermes_wisdom.consent import ConsentActor
 from hermes_wisdom.mediation import WisdomMediation, delivery_mode, session_runtime
 from hermes_wisdom.mediation_view import advice_view, delivery_groups
@@ -157,6 +158,10 @@ async def schedule(
                 continue
             try:
                 view = advice_view(selected, introduction=introduction)
+                bind_view_callbacks(view, WisdomCommandContext(
+                    user_id=actor.actor_id, chat_id=actor.chat_id,
+                    profile=profile, organization_id=org,
+                ))
             except Exception:
                 await scoped(
                     lambda: WisdomMediation(WisdomService()).cancel_delivery(

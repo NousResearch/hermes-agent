@@ -50,6 +50,12 @@ passively; opening them does not run another assessment.
   prevent you from reviewing it manually. Offline changes remain pending until
   they sync to the Gateway.
 
+Proactive Telegram and Slack advice includes **Notification settings**. Opening
+it reads the current state without muting anything; choose a duration separately.
+Use **Back** to return to the current inbox. Local notifications offer
+`/wisdom mute` for the same controls. Muting does not disable manual review,
+installation, updates, or sharing.
+
 Older recommendation buttons open current review or notification settings.
 They cannot start packaging, install a skill, or change preferences themselves.
 Review and confirm with the new controls; a prior button does not carry consent

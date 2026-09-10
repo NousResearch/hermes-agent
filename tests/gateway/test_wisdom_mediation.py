@@ -84,6 +84,8 @@ async def test_idle_workers_respect_copy_and_model_availability(tmp_path, monkey
         drain.assert_called_once()
         advice = [payload for method, payload in emissions if payload.get("key") == "wisdom.advice"]
         assert len(advice) == int(requested)
+        if requested:
+            assert "/wisdom mute" in advice[0]["text"]
     else:
         adapter = SimpleNamespace(_active_sessions={}, _background_tasks=set())
 
@@ -116,6 +118,19 @@ async def test_idle_workers_respect_copy_and_model_availability(tmp_path, monkey
         assert await schedule(gateway, adapter, source, actor.session_key) is (copy_mode == "agent")
         await next(iter(adapter._background_tasks))
         assert adapter.send_wisdom_mediation.await_count == int(requested)
+        if requested:
+            from dataclasses import replace
+            from gateway.wisdom_command import CALLBACK_TOKENS, WisdomCommandContext
+
+            delivered = adapter.send_wisdom_mediation.call_args.args[0]
+            settings = next(action for action in delivered.actions if action.operation == "mute")
+            token = settings.callback_data.removeprefix("wi:cmd:")
+            context = WisdomCommandContext(actor.actor_id, actor.chat_id, None, "org")
+            assert CALLBACK_TOKENS.resolve(token, context, consume=False).operation == "mute"
+            for changed in ({"user_id": "other"}, {"chat_id": "other"},
+                            {"profile": "other"}, {"organization_id": "other"}):
+                with pytest.raises(PermissionError):
+                    CALLBACK_TOKENS.resolve(token, replace(context, **changed), consume=False)
     rows = {row["id"]: row for row in queue.assessments("org")}
     assert rows[unsolicited]["state"] == "pending" and rows[unsolicited]["attempts"] == 0
     assert queued is None or rows[queued]["state"] == "delivered"
@@ -185,8 +200,10 @@ def view():
 
 
 @pytest.mark.asyncio
-async def test_slack_proactive_advice_cannot_consume_slash_response():
+@pytest.mark.parametrize("source_profile", [None, "secondary"])
+async def test_slack_proactive_advice_cannot_consume_slash_response(source_profile):
     adapter = slack_adapter()
+    adapter._owner_profile = "primary"
     adapter._team_clients["T1"].chat_postMessage.return_value = {
         "ok": True,
         "channel": "D1",
@@ -196,8 +213,11 @@ async def test_slack_proactive_advice_cannot_consume_slash_response():
         side_effect=AssertionError("must not consume slash response")
     )
     receipt = await adapter.send_wisdom_mediation(
-        view(), source=SimpleNamespace(chat_id="D1", scope_id="T1", thread_id="123")
+        view(), source=SimpleNamespace(chat_id="D1", scope_id="T1", thread_id="123", profile=source_profile)
     )
+    assert adapter._wisdom_callback_profile(
+        team_id="T1", channel_id="D1", value="wi:agent:confirm:identity",
+    ) == (source_profile or "primary")
     assert receipt.message_id == "123.456" and receipt.scope_id == "T1"
     sent = adapter._team_clients["T1"].chat_postMessage.call_args.kwargs
     assert sent["thread_ts"] == "123"

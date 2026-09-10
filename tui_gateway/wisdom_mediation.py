@@ -134,6 +134,7 @@ def poll(session: dict, *, emit, profile_scope, connected=lambda: True) -> None:
                 text = (
                     view.to_text()
                     + "\n\nOpen /wisdom inbox to review and use consent controls."
+                    + "\nNotification settings: /wisdom mute"
                 )
             except Exception:
                 mediation.cancel_delivery(org, selected)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from gateway.wisdom_command import WisdomAction, WisdomItem, WisdomView
+from gateway.wisdom_command import WisdomAction, WisdomItem, WisdomView, _NavigationTarget
 from .consent import ConsentActor, WisdomConsent
 from .review_presentation import (
     full_review_text,
@@ -99,6 +99,10 @@ def advice_view(
         else "Assessment unavailable"
         if unavailable_only
         else "Team skill activity",
+        actions=[WisdomAction(
+            "Notification settings", "mute", local_command="/wisdom mute",
+        )],
+        _navigation_target=_NavigationTarget("command", {"raw_args": "inbox"}),
     )
     has_digest = False
     for item in items:

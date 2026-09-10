@@ -265,7 +265,8 @@ class SlackWisdomMixin:
 
         self._remember_wisdom_callbacks(
             view, team_id=str(getattr(source, "scope_id", None) or ""),
-            channel_id=str(source.chat_id), profile=getattr(self, "_owner_profile", None),
+            channel_id=str(source.chat_id),
+            profile=getattr(source, "profile", None) or getattr(self, "_owner_profile", None),
         )
         response = await self._send_wisdom_view(view, source=source, proactive=True)
         return slack_receipt(

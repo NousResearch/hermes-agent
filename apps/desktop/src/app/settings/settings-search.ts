@@ -26,7 +26,6 @@ export interface SettingsSearchTarget {
   field?: string
   key?: string
   keysView?: CredentialSettingsView
-  plugin?: string
   providerView?: 'accounts' | 'custom-endpoints' | 'keys'
   setting?: string
   view: SettingsView
@@ -219,10 +218,6 @@ export function settingsSearchTargetQuery(target: SettingsSearchTarget): string 
 
   if (target.key) {
     params.set('key', target.key)
-  }
-
-  if (target.plugin) {
-    params.set('plugin', target.plugin)
   }
 
   return params.toString()

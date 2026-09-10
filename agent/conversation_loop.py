@@ -756,15 +756,16 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # request naming a surface the conversation has left (#104414).
     stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
 
-    # Plugin hook: on_session_start — fired once for a brand-new session, not on continuation.
-    try:
-        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_start", session_id=agent.session_id, model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-        )
-    except Exception as exc:
-        logger.warning("on_session_start hook failed: %s", exc)
+    # Persistence-disabled forks share their parent's session ID and are not real sessions.
+    if not getattr(agent, "_persist_disabled", False):
+        try:
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_start", session_id=agent.session_id, model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_start hook failed: %s", exc)
 
     # Cold-start credits seed (L3) fallback for the first-turn path; TUI/desktop seed at
     # session open, so this is idempotent (skips when _credits_state exists). Fail-open.
@@ -1304,6 +1305,11 @@ class _LoopState:
     failed: bool = False
     codex_ack_continuations: int = 0
     length_continue_retries: int = 0
+    # Per-turn backstop for the refunding restarts (redirect / rebuilt-for-fallback).
+    # Unlike ``retry_count`` (rebound to 0 each iteration) this accumulates for the whole
+    # turn so a runaway interrupt/redirect that keeps re-arming a restart flag cannot
+    # refund the iteration budget forever and hold the turn lease indefinitely.
+    restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
     truncated_response_parts: List[str] = field(default_factory=list)

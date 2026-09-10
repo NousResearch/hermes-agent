@@ -36,9 +36,9 @@ This is broader than the source installer's extra named `all`.
 
 The backend runs from app resources. Launchers execute the store interpreter
 with the source and dependency paths; they do not boot through a relocated
-venv executable. First boot verifies payload facts without changing signed files.
-It can create user-state records and CLI links. Provider calls, model downloads,
-and optional integration setup can still use the network.
+venv executable. Startup can create user-state records and CLI links.
+Provider calls, model downloads, and optional integration setup can still use
+the network.
 
 Git is a platform exception: Windows stages Git for Windows with Bash.
 POSIX targets use system Git. A Mac without Command Line Tools can therefore
@@ -48,15 +48,17 @@ User data remains outside the package. Optional additions use writable PM
 storage and complete Python environment generations, not writes into the app.
 See [Package management](../../website/docs/reference/package-management.md).
 
-## Current Python migration blocker
+## Python runtime contract
 
-The staging pin now selects Python 3.14, but
-`electron/payload-backend.ts` still defaults POSIX dependency discovery to
-`venv/lib/python3.11/site-packages`. No build path supplies its `PYTHON_VER`
-override. This mismatch prevents normal bundled macOS/Linux backend resolution.
-The native resolver must use the payload's actual Python version before a
-3.14 bundle can satisfy startup and update acceptance. A successful staging
-step does not resolve this blocker.
+The PM bundle builder records interpreter and dependency paths in the payload
+manifest. `scripts/write-build-stamp.mjs` copies that runtime contract into the
+desktop stamp. The desktop build embeds the stamp in Electron.
+`electron/payload-backend.ts` reads `runtime.sitePackages` from this stamp.
+It does not select a Python version or search for dependency directories.
+
+Staging does not prove native startup or package replacement. Those checks
+use the [bundled-update acceptance suite](../../tests/install/BUNDLED_UPDATES.md).
+Acceptance requires a native run with the actual signed release artifacts.
 
 ## Complete native build
 

@@ -93,7 +93,7 @@ This suppresses both cached update notices and passive update-check network requ
 
 For an admitted source checkout, `hermes update` runs these phases:
 
-1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other state files that get modified at runtime; individual files over 1 GiB are skipped so a large sessions DB never slows the update down). Because the code swap and gateway restarts touch every profile, the same snapshot is taken for **every profile** on the install — each into its own `state-snapshots/` directory — and the post-update cron-jobs safety net checks each profile against its own snapshot. Controlled by `updates.pre_update_backup` (`quick` by default, `full` for a zip of all of `HERMES_HOME`, `off` to disable). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md). Quick snapshots are file-loss recovery, not code-rollback insurance — for a coherent point-in-time rollback use `--backup` (full mode).
+1. **Pre-update snapshot** — Hermes saves selected state files for every profile in that profile's `state-snapshots/` directory. These include pairing data, cron jobs, `config.yaml`, `.env`, and `auth.json`. Automatic quick snapshots skip individual files larger than 1 GiB. `updates.pre_update_backup` selects `quick`, `full`, or `off`. Full archives use the [backup exclusions](/reference/faq#hermes-backup-vs-hermes-profile-export). Recovery uses [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md). Quick snapshots recover state files, not application code.
 2. **Code update** — applies the configured source branch or stable release tag and updates submodules.
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
 4. **Dependency preparation** — PM provisions required tools and prepares a complete Python environment from the new lock, existing extras, and enabled plugin requirements. It validates that environment before publishing its selection.
@@ -203,7 +203,13 @@ updates:
   pre_update_backup: full
 ```
 
-`updates.pre_update_backup` is a single knob with three modes: `quick` (default — the lightweight state snapshot described above), `full` (the quick snapshot plus a complete `HERMES_HOME` zip; can add minutes on large homes), and `off` (no pre-update backup at all — `--no-backup` does the same for a single run). Legacy boolean values still work: `true` means `full`, `false` means `off`.
+`updates.pre_update_backup` has three modes:
+
+- `quick` saves the selected state files described above. This is the default.
+- `full` adds a zip archive with the [backup exclusions](/reference/faq#hermes-backup-vs-hermes-profile-export). Large data directories can take several minutes.
+- `off` disables pre-update backups. `--no-backup` selects this mode for one run.
+
+Legacy boolean values remain supported: `true` means `full`, and `false` means `off`.
 
 :::tip Moving to a new machine instead?
 Update backups protect an in-place update. If you're migrating your whole setup to different hardware, use `hermes backup` + `hermes import` instead — see [Exporting Hermes to another machine](/reference/faq#exporting-hermes-to-another-machine) and [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export).
@@ -336,7 +342,11 @@ same manager that installed them. Their package files are not removed by the
 source uninstaller. Data deletion is separate from package removal.
 
 :::tip Moving to a new machine rather than leaving?
-Take your setup with you before removing anything: `hermes backup` captures the entire `~/.hermes` directory including credentials, while `hermes profile export` packs a single profile with credentials excluded by design (so an export alone is not a full backup). See [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export).
+Run `hermes backup` before you remove the installation. The full archive includes
+credentials but excludes downloaded runtimes, dependency environments, caches,
+and browser profiles. Review its skipped-file report before you delete source data.
+`hermes profile export` packs one profile without credentials.
+See [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export).
 :::
 
 ### Manual Uninstall

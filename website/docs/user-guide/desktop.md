@@ -32,13 +32,9 @@ hermes desktop
 
 That uses the selected installation's configuration and data home.
 
-:::warning Current source-branch package limit
-The Python 3.14 migration still needs a POSIX payload-resolver correction:
-Electron currently defaults to a Python 3.11 dependency path. Do not treat
-new macOS/Linux bundles from this branch as accepted until that correction
-and native startup/update checks pass. This does not describe the status of
-an older published package.
-:::
+The bundled app uses the interpreter and dependency paths embedded in its
+build stamp. It does not use a fixed Python-version directory.
+Successful payload staging does not prove native installation, startup, or updates.
 
 ### Package variants and CLI commands
 
@@ -53,8 +49,9 @@ release matrix leg.
   execution aliases expose `hermes`, `hermes-agent`, and `hermes-acp`.
 - **macOS:** copy the app from its DMG into Applications before opening it.
   Bundled startup attempts to link those CLI commands into `~/.local/bin`.
-  Add that directory to your shell's PATH. Existing entries, including stale
-  symlinks, are left untouched; inspect them if the wrong command runs.
+  Add that directory to your shell's PATH. Startup repairs broken links that
+  name the same command in an old bundled payload. It preserves regular files,
+  live links, and links to unrelated commands.
 - **Linux:** source development and AppImage build support exist, but the
   bundled desktop release legs are disabled. Do not assume a published Linux
   package from the local build target alone.

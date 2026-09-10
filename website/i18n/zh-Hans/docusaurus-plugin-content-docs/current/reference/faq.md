@@ -739,7 +739,9 @@ skills:
    ```bash
    hermes backup
    ```
-   这会将您整个 `~/.hermes/` 目录（配置、API key、记忆、技能、会话和 profiles）打包为 zip 文件，保存到主目录 `~/hermes-backup-<timestamp>.zip`。
+   归档保存到 `~/hermes-backup-<timestamp>.zip`。
+   完整备份涵盖 Hermes 数据根目录中的配置、凭据、记忆、技能、会话和 profiles。
+   它不是应用程序或运行时的完整镜像。
 
 3. 将 zip 文件复制到新机器并导入：
    ```bash
@@ -766,15 +768,30 @@ hermes profile import ./work-backup.tar.gz work
 
 导入的 profile 将包含导出时的所有配置、记忆、会话和技能。如果新机器的设置不同，您可能需要更新路径或重新向提供商进行身份验证。
 
-### `hermes backup` 与 `hermes profile export` 的对比
+### `hermes backup` 与 `hermes profile export` 的对比 {#hermes-backup-vs-hermes-profile-export}
 
 | 功能 | `hermes backup` | `hermes profile export` |
 | :--- | :--- | :--- |
 | **使用场景** | **整机迁移** | **移植/共享特定 profile** |
-| **范围** | 全局（整个 `~/.hermes` 目录） | 局部（单个 profile 目录） |
+| **范围** | Hermes 数据根目录，下列排除项除外 | 单个 profile 目录 |
 | **包含内容** | 所有 profiles、全局配置、API key、会话 | 单个 profile：SOUL.md、记忆、会话、技能 |
 | **凭据** | **包含**（`.env` 和 `auth.json`） | **排除**（为安全共享而剥离） |
 | **格式** | `.zip` | `.tar.gz` |
+
+完整备份不包含以下内容：
+
+- 源代码仓库、依赖环境，以及下载的工具、模型和运行时。
+- 构建缓存、checkpoints、旧备份和快速快照。
+- 浏览器配置目录，包括真实浏览器凭据的副本。
+- 字节码、SQLite 辅助文件，以及 `gateway.pid`、`cron.pid` 和 `.backup.lock`。
+
+`hermes backup --quick` 只保存指定的状态文件，不生成完整归档。
+迁移机器前，它不能替代完整备份。
+
+完整备份会报告复制失败的文件。因此，即使归档已生成，也可能缺少部分数据。
+删除源安装前，请检查跳过文件的报告。
+还原后的软件包声明可让 PM 再次下载依赖项。字节码和 SQLite 辅助文件在本地重新生成。
+上述排除项不会把 `.env` 和 `auth.json` 排除在完整备份之外。
 
 **手动备选方案（rsync）：** 如果您倾向于直接复制文件，请排除代码仓库：
 ```bash

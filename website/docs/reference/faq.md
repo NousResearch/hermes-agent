@@ -766,7 +766,9 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
    ```bash
    hermes backup
    ```
-   This creates a zip of your entire `~/.hermes/` directory — config, API keys, memories, skills, sessions, and profiles — saved to your home directory as `~/hermes-backup-<timestamp>.zip`.
+   This saves a zip archive at `~/hermes-backup-<timestamp>.zip`.
+   The full backup covers configuration, credentials, memories, skills, sessions,
+   and profiles under the Hermes data root. It is not an application or runtime image.
 
 3. Copy the zip to the new machine and import it:
    ```bash
@@ -793,15 +795,31 @@ hermes profile import ./work-backup.tar.gz work
 
 The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
 
-### `hermes backup` vs `hermes profile export`
+### `hermes backup` vs `hermes profile export` {#hermes-backup-vs-hermes-profile-export}
 
 | Feature | `hermes backup` | `hermes profile export` |
 | :--- | :--- | :--- |
 | **Use Case** | **Full machine migration** | **Porting/sharing a specific profile** |
-| **Scope** | Global (entire `~/.hermes` directory) | Local (single profile directory) |
+| **Scope** | Hermes data root, with the exclusions listed below | Single profile directory |
 | **Includes** | All profiles, global config, API keys, sessions | Single profile: SOUL.md, memories, sessions, skills |
 | **Credentials** | **Included** (`.env` and `auth.json`) | **Excluded** (stripped for safe sharing) |
 | **Format** | `.zip` | `.tar.gz` |
+
+The full backup excludes:
+
+- The source checkout, dependency environments, and downloaded tools, models, and runtimes.
+- Build caches, checkpoints, previous backups, and quick snapshots.
+- Browser profiles, including copies of real-browser credentials.
+- Bytecode, SQLite sidecars, `gateway.pid`, `cron.pid`, and `.backup.lock`.
+
+`hermes backup --quick` saves selected state files instead of a full archive.
+It is not a replacement for the full backup before a machine migration.
+
+Full backups report files that fail to copy. An archive can therefore exist
+with missing data. Review the skipped-file report before you remove the source installation.
+Restored package declarations let PM download dependencies again. Bytecode and
+SQLite sidecars regenerate locally. The exclusions do not remove `.env` or
+`auth.json` from the full backup.
 
 **Manual fallback (rsync):** If you prefer to copy files directly, exclude the code repo:
 ```bash

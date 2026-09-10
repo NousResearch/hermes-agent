@@ -11,7 +11,9 @@ import hashlib
 import json
 import logging
 import re
+from copy import copy
 from functools import partial
+from types import SimpleNamespace
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -315,6 +317,59 @@ def _tc_set(tc: Any, key: str, value: Any) -> None:
     tc.__setitem__(key, value) if isinstance(tc, dict) else setattr(tc, key, value)
 
 
+def _tool_call_argument_key(tc: Any) -> tuple[str, bool]:
+    """Return a stable argument signature and whether it is an empty-object shadow."""
+    function = _tc_field(tc, "function")
+    arguments = _tc_field(function, "arguments")
+    if arguments is None or (isinstance(arguments, str) and not arguments.strip()):
+        return ("json:{}", True)
+    try:
+        parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+        canonical = json.dumps(parsed, separators=(",", ":"), sort_keys=True)
+        return (f"json:{canonical}", parsed == {})
+    except (TypeError, ValueError):
+        return (f"raw:{type(arguments).__name__}:{arguments!r}", False)
+
+
+def _replace_tool_call_fields(tc: Any, updates: dict[str, Any]) -> Any:
+    """Apply id updates, rebuilding immutable SDK/Pydantic-like entries when needed."""
+    try:
+        for key, value in updates.items():
+            _tc_set(tc, key, value)
+        return tc
+    except Exception:
+        pass
+
+    for method_name in ("model_copy", "copy"):
+        method = getattr(tc, method_name, None)
+        if callable(method):
+            try:
+                rebuilt = method(update=updates)
+                if all(_tc_field(rebuilt, key) == value for key, value in updates.items()):
+                    return rebuilt
+            except Exception:
+                pass
+
+    try:
+        rebuilt = copy(tc)
+        for key, value in updates.items():
+            object.__setattr__(rebuilt, key, value)
+        return rebuilt
+    except Exception:
+        # Last-resort structural rebuild: downstream tool handling requires only the
+        # standard tool-call fields, and duplicate ids are unsafe to leave in place.
+        try:
+            fields = dict(vars(tc))
+        except (TypeError, ValueError):
+            fields = {
+                key: _tc_field(tc, key)
+                for key in ("id", "call_id", "response_item_id", "type", "function")
+                if _tc_field(tc, key) is not None
+            }
+        fields.update(updates)
+        return SimpleNamespace(**fields)
+
+
 # --------------------------------------------------------------------------- call_id policy — single owner
 # (audit F4, incident chain I4) ---------------------------------------------------------------------------
 # Three forked policy sites converged here: * agent/codex_responses_adapter.py `_deterministic_call_id` —
@@ -366,16 +421,49 @@ def coalesce_tool_call_id(tc: Any) -> str:
 
 
 def uniquify_tool_call_ids(tool_calls: list) -> list:
-    """Ensure every tool call in one assistant turn has a distinct id.
+    """Coalesce same-id duplicates/shadows, then ensure every surviving id is distinct.
 
-    Some providers reuse one id across a batch; the pre-API sanitizer then keeps only the
-    first call/result pair per id and strict providers reject duplicates. Later collisions
-    get a deterministic ``<id>_d<n>`` suffix (never uuid4 — cache-prefix stability). Mutates
-    entries (SDK models / SimpleNamespace / dicts) in place. Blank ids are left for the
-    deterministic fallback in ``build_assistant_message``.
+    For one non-empty original id and function, exact duplicate payloads execute once and
+    an empty/missing-argument shadow is discarded when a populated payload exists. Distinct
+    meaningful calls remain lossless. Later collisions get deterministic ``<id>_d<n>``
+    suffixes (never uuid4 — cache-prefix stability). The input list is mutated in place;
+    immutable SDK entries are rebuilt. Blank ids remain for ``build_assistant_message``.
     """
+    if not tool_calls:
+        return tool_calls
+
+    metadata = []
+    meaningful_groups: set[tuple[str, Any]] = set()
+    for tc in tool_calls:
+        cid = coalesce_tool_call_id(tc)
+        function_name = _tc_field(_tc_field(tc, "function"), "name")
+        try:
+            hash(function_name)
+            name_key = function_name
+        except TypeError:
+            name_key = repr(function_name)
+        argument_key, is_empty = _tool_call_argument_key(tc)
+        group = (cid, name_key)
+        metadata.append((group, argument_key, is_empty))
+        if cid and not is_empty:
+            meaningful_groups.add(group)
+
+    seen_payloads: set[tuple[tuple[str, Any], str]] = set()
+    survivors = []
+    for tc, (group, argument_key, is_empty) in zip(tool_calls, metadata):
+        cid = group[0]
+        payload = (group, argument_key)
+        if cid and ((is_empty and group in meaningful_groups) or payload in seen_payloads):
+            logger.warning("Removed duplicate/empty-shadow tool call id %s (tool=%s)", cid, group[1] or "?")
+            continue
+        if cid:
+            seen_payloads.add(payload)
+        survivors.append(tc)
+    if len(survivors) != len(tool_calls):
+        tool_calls[:] = survivors
+
     seen: set = set()
-    for tc in tool_calls or []:
+    for index, tc in enumerate(tool_calls):
         # Same coalescing rule as coalesce_tool_call_id, tolerant of non-string ids.
         raw = _tc_field(tc, "call_id") or _tc_field(tc, "id") or ""
         raw = raw.strip() if isinstance(raw, str) else ""
@@ -390,15 +478,14 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
         new_id = next(f"{cid}_d{n}" for n in range(2, len(seen) + 3) if f"{cid}_d{n}" not in seen)
         seen.add(new_id)
 
-        try:
-            # Keep a composite id's response-item half so the provider's fc_/item id survives.
-            old = _tc_field(tc, "id")
-            _tc_set(tc, "id", f"{new_id}|{old.split('|', 1)[1]}" if isinstance(old, str) and "|" in old else new_id)
-            if _tc_field(tc, "call_id"):
-                _tc_set(tc, "call_id", new_id)
-        except Exception:
-            logger.warning("Could not uniquify duplicate tool call id %s", cid)
-            continue
+        # Keep a composite id's response-item half so the provider's fc_/item id survives.
+        old = _tc_field(tc, "id")
+        updates = {
+            "id": f"{new_id}|{old.split('|', 1)[1]}" if isinstance(old, str) and "|" in old else new_id,
+        }
+        if _tc_field(tc, "call_id"):
+            updates["call_id"] = new_id
+        tc = tool_calls[index] = _replace_tool_call_fields(tc, updates)
         _fn_name = _tc_field(_tc_field(tc, "function"), "name") or "?"
         logger.warning(
             "Model reused tool call id %s within one turn; renamed the duplicate to %s (tool=%s) to keep "

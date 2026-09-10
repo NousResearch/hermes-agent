@@ -129,7 +129,7 @@ class TestDeepseekVSeriesPassThrough:
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
 class TestDeepseekCanonicalAndReasonerMapping:
-    """Retired aliases and fuzzy names rewrite to deepseek-v4-flash.
+    """Retired aliases and fuzzy names rewrite to deepseek-flash.
 
     DeepSeek cut off ``deepseek-chat`` / ``deepseek-reasoner`` on
     2026-07-24; sending them on the wire returns HTTP 400.
@@ -139,7 +139,7 @@ class TestDeepseekCanonicalAndReasonerMapping:
     def test_provider_path_rewrites_reasoner(self):
         assert (
             normalize_model_for_provider("deepseek-reasoner", "deepseek")
-            == "deepseek-v4-flash"
+            == "deepseek-flash"
         )
 
     @pytest.mark.parametrize("model", [
@@ -149,8 +149,8 @@ class TestDeepseekCanonicalAndReasonerMapping:
         "deepseek-reasoning-preview",
         "deepseek-cot-experimental",
     ])
-    def test_reasoner_keywords_map_to_v4_flash(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
+    def test_reasoner_keywords_map_to_flash(self, model):
+        assert _normalize_for_deepseek(model) == "deepseek-flash"
 
 
 # ── Regression: issue #78796 ───────────────────────────────────────────

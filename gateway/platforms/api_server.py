@@ -115,6 +115,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+from gateway.active_work import notify_active_work_changed
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
@@ -901,6 +902,7 @@ def _admit_api_agent_request(handler):
         reservation = {"active": True}
         token = _api_agent_request_reservation.set(reservation)
         self._pending_agent_requests += 1
+        notify_active_work_changed()
         try:
             return await handler(self, request, *args, **kwargs)
         finally:
@@ -914,6 +916,7 @@ def _release_pending_api_work(adapter, reservation: dict[str, bool]) -> None:
     if reservation["active"]:
         reservation["active"] = False
         adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+        notify_active_work_changed()
 
 
 def _require_auth(handler):
@@ -933,6 +936,7 @@ def _reserve_pending_api_work(adapter):
     the reservation to a task whose done callback then owns release."""
     reservation = {"active": True, "detached": False}
     adapter._pending_agent_requests += 1
+    notify_active_work_changed()
     try:
         yield reservation
     finally:
@@ -3713,10 +3717,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     clear_session_vars(tokens)
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
+        notify_active_work_changed()
         try:
             return await loop.run_in_executor(None, _run)
         finally:
             self._inflight_agent_runs -= 1
+            notify_active_work_changed()
 
     # -- /v1/runs, room grants, room dispatch: thin delegators (real methods: tests assert
     # __dict__ membership and patch the module-level implementations) ---------------------

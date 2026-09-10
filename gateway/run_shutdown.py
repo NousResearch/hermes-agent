@@ -20,6 +20,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from gateway.active_work import notify_active_work_changed
 from gateway.config import Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, resolve_cron_drain_budget
@@ -234,9 +235,13 @@ class GatewayShutdownMixin:
         if workers is None:
             workers = self._deferred_agent_workers = {}
         workers[future] = agent
+        notify_active_work_changed()
 
         def _discard_worker(done_future: asyncio.Future) -> None:
             workers.pop(done_future, None)
+            # A deferred worker outlives the turn that started it, so its exit is the LAST
+            # chance to correct the persisted count — by definition no turn boundary follows.
+            notify_active_work_changed()
             # Workers that outlive their starting coroutine have no later waiter: consume the
             # terminal exception so asyncio emits no unhandled-future warning.
             # See #98973.

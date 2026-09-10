@@ -18,6 +18,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
     RequestKey = None  # type: ignore[assignment,misc]
 
+from gateway.active_work import notify_active_work_changed
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
@@ -493,8 +494,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
+    notify_active_work_changed()
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
+        # ``active_agent_work_count`` counts un-done run tasks, so task completion — not the
+        # dict pop — is this counter's decrement edge.
+        task.add_done_callback(lambda _t: notify_active_work_changed())
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 
 

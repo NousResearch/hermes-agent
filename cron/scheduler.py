@@ -563,6 +563,31 @@ def get_running_job_ids() -> "frozenset[str]":
         return frozenset(_running_job_ids | _running_fire_owners.keys())
 
 
+def _notify_gateway_active_work_changed() -> None:
+    """Tell a co-hosted gateway that the in-flight cron set moved.
+
+    ``GatewayRunner._active_work_count()`` folds ``get_running_job_ids()``
+    into the ``active_agents`` number it persists to ``gateway_state.json``,
+    but that aggregate was only ever persisted at a CHAT-turn boundary.  A
+    cron job in flight when a turn ended therefore got baked into the file
+    and was never decremented on completion, so the file stayed inflated
+    until the next chat turn — for hours on a quiet gateway.
+
+    Gated on ``gateway.run`` already being imported so a bare ``hermes cron
+    run`` / ticker process never pulls the gateway package in just to
+    discover there is nothing to notify.  Best-effort in every direction:
+    status persistence must never break a cron run.
+    """
+    if "gateway.run" not in sys.modules:
+        return
+    try:
+        from gateway.active_work import notify_active_work_changed
+
+        notify_active_work_changed()
+    except Exception:
+        pass
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
@@ -583,15 +608,22 @@ def try_register_running_job(job_id: str) -> bool:
         # can bound. Sentinel is replaced by the real future once ``pool.submit`` returns.
         _running_since[job_id] = time.time()
         _running_futures[job_id] = _FUTURE_PENDING
-        return True
+    # Outside the lock: the notify writes a file and must not hold the
+    # in-flight lock the ticker and the stale sweep contend on.
+    _notify_gateway_active_work_changed()
+    return True
 
 
 def release_running_job(job_id: str) -> None:
     """Remove ``job_id`` from the in-flight running set (idempotent)."""
     with _running_lock:
+        present = job_id in _running_job_ids
         _running_job_ids.discard(job_id)
         _running_since.pop(job_id, None)
         _running_futures.pop(job_id, None)
+    if present:
+        # THE decrement edge this whole notify exists for.
+        _notify_gateway_active_work_changed()
 
 
 def _inflight_min_allowance_minutes() -> float:
@@ -2466,6 +2498,9 @@ def run_one_job(
     with _running_lock:
         _running_fire_owners.setdefault(job["id"], {})[execution_token] = (
             fire_owner or None, profile_home)
+    # Second contributor to get_running_job_ids() — same aggregate, same
+    # persist edge as the _running_job_ids registration.
+    _notify_gateway_active_work_changed()
     try:
         return _run_with_fire_claim_heartbeat(
             job,
@@ -2488,6 +2523,7 @@ def run_one_job(
                 executions.pop(execution_token, None)
                 if not executions:
                     _running_fire_owners.pop(job["id"], None)
+        _notify_gateway_active_work_changed()
 
 
 _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."

@@ -557,13 +557,15 @@ def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
     return _send_via_adapter(p, pc, cid, chunk, thread_id=tid, media_files=media, force_document=fd)
 
 
-# Native-media chunked routes for built-in platforms; media rides on the final chunk, non-final
+# Native-media chunked routes; media rides on the final chunk, non-final
 # chunks get the sentinel. platform -> (media required, sentinel, sender(platform, pconfig,
 # chat_id, chunk, media, thread_id, force_document)). Matrix: ALL sends use the native adapter
-# (E2EE text). Signal: attachments ride the JSON-RPC param. Yuanbao / WeCom: media needs the
-# running gateway. Slack text: live adapter (multi-workspace, ignored_channels gates) else the
-# plugin's standalone sender. Names resolve at call time so tests can monkeypatch ``_send_signal``.
+# (E2EE text). Signal: attachments ride the JSON-RPC param. Yuanbao / WeCom / Google Chat: media
+# needs the running gateway. Slack text: live adapter (multi-workspace, ignored_channels gates)
+# else the plugin's standalone sender. Names resolve at call time so tests can monkeypatch
+# ``_send_signal``.
 _CHUNKED_ROUTES = {
+    "google_chat": (True, [], _via_adapter_route),
     "matrix": (False, [], lambda p, pc, cid, chunk, media, tid, fd: _send_matrix_via_adapter(
         pc, cid, chunk, media_files=media, thread_id=tid)),
     "signal": (True, [], lambda p, pc, cid, chunk, media, tid, fd: _send_signal(

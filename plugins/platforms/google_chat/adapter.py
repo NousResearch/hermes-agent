@@ -841,10 +841,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if event is None:
                 return
             text = (event.text or "").strip()
-            # The sender email (user_id_alt) is the per-user OAuth token key.
+            # The sender email (user_id) is the per-user OAuth token key.
             if text.startswith("/setup-files") and event.source is not None and await self._handle_setup_files_command(
                 chat_id=event.source.chat_id, thread_id=event.source.thread_id, raw_text=text,
-                sender_email=event.source.user_id_alt or None,
+                sender_email=event.source.user_id or None,
             ):
                 return
             await self.handle_message(event)

@@ -443,7 +443,9 @@ class WisdomCommandController:
             view = self._help(service, [])
             view.notice = f"Unknown /wisdom keyword: {keyword}"
             return self._attach_navigation(view, target, _navigation_history)
-        if keyword == "show":
+        if keyword == "browse":
+            view = self._browse(service, args, include_installation=not context.is_group)
+        elif keyword == "show":
             view = self._show(
                 service,
                 args,
@@ -490,6 +492,7 @@ class WisdomCommandController:
                 service,
                 [str(target.arguments.get("query") or "")],
                 page=max(0, int(target.arguments.get("page") or 0)),
+                include_installation=not context.is_group,
             )
             raw_args = "browse " + str(target.arguments.get("query") or "")
         elif target.operation == "versions_page":
@@ -1020,11 +1023,19 @@ class WisdomCommandController:
         args: list[str],
         *,
         page: int = 0,
+        include_installation: bool = True,
     ) -> WisdomView:
         query = " ".join(args).strip()
         matches = service.search_skills(query)
         start = page * PAGE_SIZE
         skills = matches[start : start + PAGE_SIZE]
+        org_id = service.store.active_org_id() if include_installation else None
+        installations = {
+            item["skill_id"]: item
+            for item in service.store.installations()
+            if item.get("state") == "active"
+            and item.get("org_id") == org_id
+        } if include_installation else {}
         actions: list[WisdomAction] = []
         if page > 0:
             actions.append(
@@ -1049,16 +1060,17 @@ class WisdomCommandController:
                 if query
                 else f"Skills published by your team · page {page + 1}"
             ),
-            items=[self._skill_item(item) for item in skills],
+            items=[self._skill_item(item, installations.get(item["id"])) for item in skills],
             actions=actions,
             notice=None if skills else "No matching shared skills.",
         )
 
-    def _skill_item(self, item: dict[str, Any]) -> WisdomItem:
+    def _skill_item(
+        self, item: dict[str, Any], installation: dict[str, Any] | None = None,
+    ) -> WisdomItem:
         skill_id = str(item.get("id") or "")
         skill_name = str(item.get("slug") or skill_id)
         version = item.get("latest_version")
-        reference = f"{skill_id}@v{version}" if version is not None else skill_id
         return WisdomItem(
             skill_name,
             "\n".join([
@@ -1066,6 +1078,7 @@ class WisdomCommandController:
                 aggregate_review_text(
                     item.get("security_check"), item.get("professionalism_check")
                 ),
+                *([f"Installed: v{installation['version']}"] if installation else []),
             ]),
             actions=[
                 WisdomAction(
@@ -1074,15 +1087,27 @@ class WisdomCommandController:
                     {"skill": skill_id},
                     local_command=_wisdom_command("show", skill_name),
                 ),
-                WisdomAction(
-                    "Install",
-                    "install_modes",
-                    {"reference": reference},
-                    primary=True,
-                    local_command=_wisdom_command("install", reference),
-                ),
+                *self._discovery_install_actions(skill_id, version, installation),
             ],
         )
+
+    @staticmethod
+    def _discovery_install_actions(
+        skill_id: str, version: int | None, installation: dict[str, Any] | None,
+    ) -> list[WisdomAction]:
+        if installation:
+            if isinstance(version, int) and installation["version"] >= version:
+                return []
+            return [WisdomAction(
+                "Review update" if version is not None else "Check update",
+                "update_plan", {"skill_id": skill_id}, primary=True,
+                local_command=_wisdom_command("update", skill_id),
+            )]
+        reference = f"{skill_id}@v{version}" if version is not None else skill_id
+        return [WisdomAction(
+            "Install", "install_modes", {"reference": reference}, primary=True,
+            local_command=_wisdom_command("install", reference),
+        )]
 
     def _show(
         self,
@@ -1122,7 +1147,12 @@ class WisdomCommandController:
             or skill.get("scan_verdict")
             or "not reported"
         )
-        installation = detail.get("local_installation") or {}
+        installation = detail.get("local_installation") if include_compatibility else None
+        if installation and (
+            installation.get("state") != "active"
+            or installation.get("org_id") != service.store.active_org_id()
+        ):
+            installation = None
         installation_text = (
             f"Installed: v{installation.get('version')} · "
             f"{installation.get('update_mode')}"
@@ -1148,7 +1178,7 @@ class WisdomCommandController:
                 f"Latest: v{latest or '?'} · scan: {scan_verdict}",
                 f"Compatibility: {compatibility.get('outcome') or 'review on install'}",
                 f"Requirements: {requirements}",
-                installation_text,
+                *([installation_text] if include_compatibility else []),
                 "",
                 review_text,
             ]),
@@ -1162,13 +1192,7 @@ class WisdomCommandController:
                 WisdomAction(
                     "View in Portal ↗", url=self._portal_skill_url(service, skill_id)
                 ),
-                WisdomAction(
-                    "Install",
-                    "install_modes",
-                    {"reference": skill_id},
-                    primary=True,
-                    local_command=_wisdom_command("install", skill_id),
-                ),
+                *self._discovery_install_actions(skill_id, latest, installation),
             ],
         )
 

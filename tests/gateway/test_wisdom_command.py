@@ -82,7 +82,8 @@ def test_sync_status_and_retry_stay_private_and_use_bound_controls():
 
 class _Service:
     def __init__(self) -> None:
-        self.store = SimpleNamespace(active_org_id=lambda: "org-1")
+        self.store = SimpleNamespace(active_org_id=lambda: "org-1", installations=lambda: [])
+        self.local_installation = None
         self.calls: list[tuple] = []
 
     def status(self):
@@ -149,10 +150,7 @@ class _Service:
                     },
                 }
             },
-            "local_installation": {
-                "version": 1,
-                "update_mode": "MANUAL",
-            },
+            "local_installation": self.local_installation,
         }
 
     def list_candidates(self, *, qualified_only=True, query=None):
@@ -357,6 +355,107 @@ def test_browse_install_control_is_session_bound_and_has_local_command():
     assert service.calls == [("search_skills", "")]
 
 
+@pytest.mark.parametrize("version, state, org, expected", [
+    (1, "active", "org-1", "update_plan"),
+    (2, "active", "org-1", None),
+    (3, "active", "org-1", None),
+    (2, "inactive", "org-1", "install_modes"),
+    (2, "active", "other-org", "install_modes"),
+])
+@pytest.mark.parametrize("command", ["browse", "show skill-1"])
+def test_discovery_actions_match_current_org_installation(tmp_path, version, state, org, expected, command):
+    from hermes_wisdom.store import WisdomStore
+
+    service = _Service()
+    service.store = WisdomStore(tmp_path / "profile")
+    service.store.activate_installation_identity("installation-1", "org-1")
+    service.store.record_install(dict(
+        skill_id="skill-1", org_id=org, slug="incident-handoff",
+        version=version, state=state, content_hash="sha256:fixture",
+        baseline={}, target_path=str(tmp_path / "skill"), update_mode="MANUAL",
+    ))
+    detail = service.resolve_skill("skill-1")
+    detail["local_installation"] = service.store.installation("skill-1")
+    service.resolve_skill = lambda *args, **kwargs: detail
+    service.calls.clear()
+    controller = WisdomCommandController()
+    view = controller.execute(command, service, _context())
+    actions = view.items[0].actions if view.items else view.actions
+    device_actions = [a for a in actions if a.operation in {"install_modes", "update_plan"}]
+    assert [a.operation for a in device_actions] == ([expected] if expected else [])
+    if state == "active" and org == "org-1":
+        assert f"Installed: v{version}" in view.to_text()
+        if expected:
+            assert device_actions[0].label == "Review update"
+            assert device_actions[0].local_command == "/wisdom update skill-1"
+            bind_view_callbacks(view, _context())
+            token = device_actions[0].callback_data.removeprefix("wi:cmd:")
+            with pytest.raises(PermissionError):
+                controller.execute_token(token, service, _context(user_id="other-user"))
+            review = controller.execute_token(token, service, _context())
+            assert review.title == "Confirm update"
+            assert any(a.operation == "update_apply" for a in review.actions)
+    else:
+        assert f"Installed: v{version}" not in view.to_text()
+    assert not any(call[0].endswith("_apply") for call in service.calls)
+    from plugins.platforms.slack.wisdom_blocks import render_wisdom_blocks
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    bind_view_callbacks(view, _context())
+    telegram = TelegramAdapter._wisdom_command_html(view)
+    slack = render_wisdom_blocks(view)
+    buttons = [
+        element for block in slack for element in block.get("elements", [])
+        if element.get("type") == "button"
+    ]
+    for action in device_actions:
+        assert action.callback_data in telegram
+        assert any(button.get("value") == action.callback_data for button in buttons)
+    if not expected:
+        assert not any(button["text"]["text"] in {"Install", "Review update"} for button in buttons)
+
+
+def test_group_browse_and_page_navigation_do_not_read_device_state():
+    service = _Service()
+    service.store.installations = Mock(side_effect=AssertionError("private device read"))
+    skills = service.search_skills() * (command_module.PAGE_SIZE + 1)
+    service.search_skills = lambda query="": skills
+    controller = WisdomCommandController()
+    context = _context(is_group=True)
+    view = controller.execute("browse", service, context)
+    bind_view_callbacks(view, context)
+    page = next(a for a in view.actions if a.operation == "browse_page")
+    next_view = controller.execute_token(page.callback_data.removeprefix("wi:cmd:"), service, context)
+    for result in (view, next_view):
+        assert "Installed:" not in result.to_text()
+        assert all(a.operation == "show" for item in result.items for a in item.actions)
+        assert any(a.operation == "continue_dm" for a in result.actions)
+    service.store.installations.assert_not_called()
+
+
+def test_private_browse_pagination_refreshes_install_state_without_planning():
+    service = _Service()
+    skill = service.search_skills()[0]
+    service.search_skills = lambda query="": [
+        {**skill, "id": f"skill-{index}"} for index in range(command_module.PAGE_SIZE + 1)
+    ]
+    installed_id = f"skill-{command_module.PAGE_SIZE}"
+    rows = [{"skill_id": installed_id, "version": 1, "state": "active", "org_id": "org-1"}]
+    service.store.installations = lambda: rows
+    controller = WisdomCommandController()
+    context = _context()
+    first = controller.execute("browse", service, context)
+    bind_view_callbacks(first, context)
+    next_token = next(a for a in first.actions if a.label == "Next").callback_data.removeprefix("wi:cmd:")
+    second = controller.execute_token(next_token, service, context)
+    assert second.items[0].actions[-1].operation == "update_plan"
+    assert second.items[0].actions[-1].arguments == {"skill_id": installed_id}
+    rows[0]["version"] = skill["latest_version"]
+    refreshed = controller.execute_token(next_token, service, context)
+    assert [a.operation for a in refreshed.items[0].actions] == ["show"]
+    assert not any(call[0].endswith(("_plan", "_apply")) for call in service.calls)
+
+
 def test_local_action_command_resumes_bound_controller_action():
     service = _Service()
     context = _context(chat_id="local:session-1")
@@ -519,7 +618,11 @@ def test_group_versions_pagination_never_reintroduces_install_controls():
 
 
 def test_private_show_includes_requirements_and_installation_state():
-    view = WisdomCommandController().execute("show skill-1", _Service(), _context())
+    service = _Service()
+    service.local_installation = {
+        "version": 1, "update_mode": "MANUAL", "state": "active", "org_id": "org-1",
+    }
+    view = WisdomCommandController().execute("show skill-1", service, _context())
 
     assert "Summarize an incident" in view.summary
     assert "Latest: v2 · scan: pass" in view.summary

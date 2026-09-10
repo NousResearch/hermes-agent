@@ -2236,3 +2236,32 @@ class TestOAuthSanitizerUrlPreservation:
         assert "Claude Code" in result
         assert "hermes-agent.nousresearch.com" in result
         assert "claude-code.nousresearch.com" not in result
+
+    def test_windows_path_is_preserved(self):
+        """Windows-style backslash paths must survive sanitization intact.
+
+        Without a backslash in the sanitizer's lookbehind, Windows venv/
+        install paths (the default layout on Windows) get silently rewritten
+        to a directory that does not exist, causing the agent to load or
+        execute against a nonexistent path (see chazmaniandinkle's comment
+        on issue #48860)."""
+        prompt = (
+            r"Interpreter: C:\Users\me\.hermes\hermes-agent\venv\Scripts\python.exe"
+        )
+        result = self._sanitized_system_text(prompt)
+        assert r"\.hermes\hermes-agent\venv\Scripts\python.exe" in result, (
+            "Windows path was corrupted by the OAuth sanitizer"
+        )
+        assert "claude-code" not in result
+
+    def test_word_char_prefixed_slug_is_preserved(self):
+        """A slug that is part of a longer identifier must not be rewritten.
+
+        Guards the lookbehind's \\w (word-character) branch specifically:
+        adding backslash support to the character class must not accidentally
+        break the existing word-character exclusion."""
+        prompt = "See myhermes-agent-thing for details."
+        result = self._sanitized_system_text(prompt)
+        assert "myhermes-agent-thing" in result, (
+            "Word-character-prefixed slug was incorrectly rewritten"
+        )

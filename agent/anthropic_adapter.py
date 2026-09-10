@@ -2346,7 +2346,12 @@ def build_anthropic_kwargs(
                 text = block.get("text", "")
                 text = text.replace("Hermes Agent", "Claude Code")
                 text = text.replace("Hermes agent", "Claude Code")
-                text = re.sub(r"(?<![:/\w])hermes-agent(?!\.nousresearch\.com)", "claude-code", text)
+                # Lookbehind excludes ':' '/' '\' and word chars so the slug is
+                # left untouched inside URLs, POSIX paths (/.../hermes-agent/...)
+                # AND Windows paths (\...\hermes-agent\...). Without the backslash
+                # here, Windows venv/install paths get silently rewritten to a
+                # nonexistent directory (see issue #48860 thread, chazmaniandinkle).
+                text = re.sub(r"(?<![:/\\\w])hermes-agent(?!\.nousresearch\.com)", "claude-code", text)
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 

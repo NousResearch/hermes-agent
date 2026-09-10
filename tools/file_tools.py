@@ -258,6 +258,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     from tools.terminal_tool_config import _is_container_backend
     from tools.terminal_tool import (
         _create_configured_env, _get_env_config, _is_unusable_container_cwd,
+        _is_unusable_ssh_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
 
     config = _get_env_config()
@@ -283,6 +284,20 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
                 "Ignoring host/relative cwd override %r for %s backend "
                 "(won't exist in sandbox). Using %r instead.",
                 cwd, env_type, config["cwd"])
+        cwd = config["cwd"]
+    elif env_type == "ssh" and _is_unusable_ssh_cwd(cwd):
+        # file_tools builds its own environment and does not route through
+        # _resolve_command_cwd, so the terminal guards do not cover it -- and
+        # it reads BOTH sources above, the registered override and the session
+        # record. Over ssh the cost is not an empty search result but a shell
+        # that dies in `cd` with 126 before the tool's command runs, so a file
+        # tool arriving before any terminal command is enough to break a
+        # session outright.
+        if cwd != config["cwd"]:
+            logger.info(
+                "Ignoring host cwd override %r for ssh backend "
+                "(won't resolve on the peer). Using %r instead.",
+                cwd, config["cwd"])
         cwd = config["cwd"]
     logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
     terminal_env = _create_configured_env(

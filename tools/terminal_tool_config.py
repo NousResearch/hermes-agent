@@ -103,6 +103,27 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return bool(cwd) and (_is_host_cwd(cwd) or not os.path.isabs(cwd))
 
 
+def _is_unusable_ssh_cwd(cwd: str) -> bool:
+    """True if *cwd* can't be a working directory on the SSH peer.
+
+    ``ssh`` is the one backend whose cwd is resolved by a shell on *another*
+    machine, so a path taken from this host is not merely useless there --
+    ``cd`` fails and the command returns 126 before it runs.
+
+    It needs its own predicate rather than the container one. A container must
+    reject ``/Users/me`` because that path is absent inside the sandbox; over
+    ``ssh`` that is very likely exactly where the caller means to run. What
+    cannot work is a path that is not a POSIX path at all: a Windows drive, or
+    anything relative. ``~`` and ``~/...`` are the peer's own home and are left
+    for the remote shell to expand (see ``_is_ssh_remote_tilde_cwd``).
+    """
+    if not cwd:
+        return False
+    if cwd == "~" or cwd.startswith("~/"):
+        return False
+    return not cwd.startswith("/")
+
+
 def _tenv(name: str, default: str = "") -> str:
     """Scope-aware read of a ``TERMINAL_*`` variable. Every terminal setting
     must go through this: under gateway multiplexing the active profile's

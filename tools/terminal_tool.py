@@ -44,7 +44,8 @@ from tools.terminal_tool_lifecycle import (
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
-    _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
+    _is_container_backend, _is_host_cwd, _is_unusable_container_cwd,
+    _is_unusable_ssh_cwd, _parse_env_var,
     _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
 from tools.terminal_tool_backends import (
@@ -591,6 +592,11 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
                     "(host/relative path won't work in sandbox). Using %r instead.",
                     cwd, env_type, default_cwd)
         cwd = default_cwd
+    elif env_type == "ssh" and cwd and _is_unusable_ssh_cwd(cwd) and cwd != default_cwd:
+        logger.info("Ignoring TERMINAL_CWD=%r for ssh backend "
+                    "(host path won't resolve on the peer). Using %r instead.",
+                    cwd, default_cwd)
+        cwd = default_cwd
     return cwd, host_cwd
 
 
@@ -781,6 +787,19 @@ def _resolve_command_cwd(
             recorded, env_type, default_cwd,
         )
         return default_cwd
+    if recorded and env_type == "ssh" and _is_unusable_ssh_cwd(recorded):
+        # register_task_env_overrides writes a registered override straight
+        # into the record, so a host path lands here even when the two
+        # env-creation guards did their job -- and the failure then sustains
+        # itself: `cd` dies before the cwd marker is printed, so the record is
+        # never corrected and the same value is re-recorded after every
+        # command.
+        logger.info(
+            "Ignoring recorded session cwd %r for ssh backend "
+            "(won't resolve on the peer). Using %r instead.",
+            recorded, default_cwd,
+        )
+        return default_cwd
     return recorded or default_cwd
 
 
@@ -948,6 +967,16 @@ def _plan_execution(
                 cwd, env_type, remapped,
             )
         cwd = remapped
+    elif env_type == "ssh" and _is_unusable_ssh_cwd(cwd):
+        # No /workspace remap here: there is no mount on the peer, so the only
+        # safe value is the already-sanitized config cwd.
+        if cwd != config["cwd"]:
+            logger.info(
+                "Ignoring host cwd override %r for ssh backend "
+                "(won't resolve on the peer). Using %r instead.",
+                cwd, config["cwd"],
+            )
+        cwd = config["cwd"]
     # Reject non-positive timeouts before deadline math: ``timeout or
     # default`` would silently turn 0 into the default, and a negative
     # value is truthy and would fire an immediate "-Ns" timeout.

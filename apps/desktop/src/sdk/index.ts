@@ -99,6 +99,7 @@ import {
   sessionTileDelegate
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
+import { openUpdateOverlayFor, type UpdateTarget } from '@/store/updates'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
@@ -663,6 +664,17 @@ export const host = {
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {
     window.location.hash = path.startsWith('#') ? path : `#${path}`
+  },
+
+  /** Open the app's own update overlay — the guarded apply flow (blocker
+   *  checks, pre-update backup, detached close-and-update handoff). This is a
+   *  LAUNCHER, not an updater: a plugin must never run `hermes update` itself.
+   *  A running Windows client cannot swap its own files, so the overlay's
+   *  handoff script owns that lifecycle and the app quits mid-update by
+   *  design. 'client' = this desktop app; 'backend' = the connected backend
+   *  (remote connections). */
+  updates: {
+    open: (target: UpdateTarget = 'client'): void => openUpdateOverlayFor(target)
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no

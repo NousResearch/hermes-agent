@@ -515,8 +515,7 @@ class DockerEnvironment(BaseEnvironment):
         shm_size: str = _DEFAULT_SHM_SIZE,
         isolate_host_data: bool = False,
         shared_container_key: str = "",
-        snap_compat: bool = False,
-        isolate_host_data: bool = False):
+        snap_compat: bool = False):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)

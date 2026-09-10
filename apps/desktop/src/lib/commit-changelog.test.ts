@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildCommitChangelog, parseCommitHeader } from './commit-changelog'
+import { buildCommitChangelog, formatFullChangelogText, parseCommitHeader } from './commit-changelog'
 
 describe('parseCommitHeader', () => {
   it('extracts type, scope, and subject from a conventional header', () => {
@@ -110,5 +110,66 @@ describe('buildCommitChangelog', () => {
 
     const totalItems = groups.reduce((sum, g) => sum + g.items.length, 0)
     expect(totalItems).toBe(3)
+  })
+})
+
+describe('formatFullChangelogText', () => {
+  it('formats conventional commit lines', () => {
+    const result = formatFullChangelogText(
+      [{ sha: 'abc', summary: 'feat: add login', author: 'Alice' }],
+      3,
+      'main'
+    )
+    expect(result).toContain('=== Hermes Update Changelog ===')
+    expect(result).toContain('Behind by 3 commits on branch main')
+    expect(result).toContain('feat: add login — Alice')
+  })
+
+  it('formats scoped commit', () => {
+    const result = formatFullChangelogText(
+      [{ sha: 'abc', summary: 'fix(api): handle timeout', author: 'Bob' }],
+      0,
+      'main'
+    )
+    expect(result).toContain('fix(api): handle timeout — Bob')
+  })
+
+  it('formats breaking commit with bang after scope', () => {
+    const result = formatFullChangelogText(
+      [{ sha: 'abc', summary: 'feat(api)!: change endpoint shape', author: 'Carol' }],
+      0
+    )
+    // Canonical: type(scope)!:  not type!(scope):
+    expect(result).toContain('feat(api)!: change endpoint shape — Carol')
+    expect(result).not.toContain('feat!(api)')
+  })
+
+  it('falls back to raw summary for non-conventional headers', () => {
+    const result = formatFullChangelogText(
+      [{ sha: 'abc', summary: 'fix bug in login', author: 'Dave' }],
+      0
+    )
+    expect(result).toContain('fix bug in login — Dave')
+  })
+
+  it('includes singular behind message when behind === 1', () => {
+    const result = formatFullChangelogText(
+      [{ sha: 'abc', summary: 'fix: minor', author: 'Eve' }],
+      1
+    )
+    expect(result).toContain('Behind by 1 commit')
+  })
+
+  it('omits branch when not provided', () => {
+    const result = formatFullChangelogText(
+      [{ sha: 'abc', summary: 'fix: minor', author: 'Eve' }],
+      0
+    )
+    expect(result).not.toContain('on branch')
+  })
+
+  it('handles empty commits list gracefully', () => {
+    const result = formatFullChangelogText([], 0, 'main')
+    expect(result).toContain('=== Hermes Update Changelog ===')
   })
 })

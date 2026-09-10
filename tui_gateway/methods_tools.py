@@ -336,7 +336,7 @@ class _Catalog:
     def __init__(self) -> None:
         self.pairs: list[list[str]] = []
         self.canon: dict[str, str] = {}
-        self.commands: dict[str, dict[str, str | None]] = {}
+        self.commands: dict[str, dict[str, object]] = {}  # values include desktop_subcommands lists
         self.cat_map: dict[str, list[list[str]]] = {}  # insertion order = category order
 
     def add(self, key: str, desc: str, cat: str) -> None:
@@ -785,6 +785,57 @@ def _cmd_compress(rid, params, session, name, arg):
         return _err(rid, 5009, f"compress failed: {exc}")
 
 
+# ─── /skills surface gate ────────────────────────────────────────────────────
+# Identity minted by web_server_chat._ws_auth_reason for the server-spawned PTY child.
+_SERVER_INTERNAL_IDENTITY = {"user_id": "server-internal", "provider": "server-internal"}
+
+
+def _cmd_skills_hub_allowed() -> bool:
+    """True on the two transports that own an interactive terminal: the stdio TUI and the
+    server-spawned TUI WebSocket. Everything else (Desktop, native WS clients) gets the
+    registry's review-only slice, because the hub subcommands run a full interactive CLI.
+
+    Keyed on server-authenticated transport state only — an RPC param claiming
+    ``surface=tui`` is not authority.
+    """
+    transport = current_transport()
+    return (transport is _stdio_transport
+            or getattr(transport, "auth_identity", None) == _SERVER_INTERNAL_IDENTITY)
+
+
+def _cmd_skills_review_only(rid, session: dict, arg: str) -> dict:
+    """Serve /skills from ``CommandDef.desktop_subcommands`` (the write-approval review
+    slice), rejecting anything outside it. Runs in the session's own profile home so a
+    review or an approval toggle lands in that profile's config, not the process default."""
+    commands, constants = _tools_mod("hermes_cli.commands"), _tools_mod("hermes_constants")
+    wa = _tools_mod("tools.write_approval")
+    allowed = {sub.lower() for sub in (
+        getattr(commands.resolve_command("skills"), "desktop_subcommands", ()) or ())}
+    args = arg.split()
+    if (args[0].lower() if args else "") not in allowed:
+        return _err(rid, 4018, "/skills slash.exec only supports review subcommands: "
+                               + ", ".join(sorted(allowed)))
+
+    def _set_skills_approval(enabled: bool) -> None:
+        config = _tools_mod("hermes_cli.config")
+        config_path = constants.get_hermes_home() / "config.yaml"
+        user_config = config.read_user_config_raw(config_path)
+        user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
+        config.atomic_config_write(config_path, user_config)
+
+    profile_home = session.get("profile_home")
+    token = constants.set_hermes_home_override(profile_home) if profile_home else None
+    try:
+        output = _tools_mod("hermes_cli.write_approval_commands").handle_pending_subcommand(
+            wa.SKILLS, args, set_mode_fn=_set_skills_approval)
+    finally:
+        if token is not None:
+            constants.reset_hermes_home_override(token)
+    if output is None:
+        return _err(rid, 4018, "unsupported /skills review subcommand")
+    return _ok(rid, {"output": output or "(no output)"})
+
+
 _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
@@ -821,6 +872,8 @@ def _(rid, params: dict) -> dict:
     base = (parts[0] if parts else "").lower()
     arg = parts[1] if len(parts) > 1 else ""
     sid = params.get("session_id", "")
+    if base == "skills" and not _cmd_skills_hub_allowed():
+        return _cmd_skills_review_only(rid, session, arg)
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:
         return _ok(rid, {"output": live_output or "(no output)"})

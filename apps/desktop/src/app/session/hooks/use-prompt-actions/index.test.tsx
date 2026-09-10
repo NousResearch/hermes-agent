@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -38,9 +39,15 @@ import { uploadComposerAttachment, usePromptActions } from '.'
 
 // Suites in this file reuse the same stored-id constants. The module-level
 // single-flight resume map (and drift-recovery cache) would otherwise leak a
-// never-settling in-flight promise from one test into the next.
+// never-settling promise from one test into the next.
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
+})
+
+afterEach(() => {
+  // Suite-local catalog overrides (see the /skills scope test) must not leak
+  // into other suites through the module-level remembered catalog.
+  rememberDesktopCommandsCatalog(undefined)
 })
 
 vi.mock('@/hermes', () => ({
@@ -323,6 +330,52 @@ describe('usePromptActions /title', () => {
     expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'title' }))
   })
 
+  it('keeps /skills hub mutations off the desktop exec path (review subcommands only)', async () => {
+    // The registry narrows /skills to its write-approval review slice via
+    // desktop_subcommands (#98330 review): install/search/… run the
+    // interactive CLI hub on the worker path, so the dispatcher must stop
+    // them client-side while review subcommands still forward.
+    rememberDesktopCommandsCatalog({
+      commands: {
+        '/skills': {
+          argument_mode: 'options',
+          desktop: null,
+          desktop_subcommands: ['pending', 'approve', 'reject', 'diff', 'approval']
+        }
+      },
+      canon: { '/skills': '/skills' }
+    })
+
+    const refreshSessions = vi.fn(async () => undefined)
+    const requestGateway = vi.fn(async () => ({ output: 'no pending writes' }) as never)
+    const seeds: Record<string, unknown>[] = []
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => seeds.push(state)}
+        refreshSessions={refreshSessions}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/skills install my-skill')
+    await handle!.submitText('/skills')
+
+    expect((requestGateway.mock.calls as unknown[][]).some(call => call[0] === 'slash.exec')).toBe(false)
+    expect((requestGateway.mock.calls as unknown[][]).some(call => call[0] === 'command.dispatch')).toBe(false)
+    expect(renderedSeedTexts(seeds).some(text => text.includes('not available in the desktop app'))).toBe(true)
+    expect(renderedSeedTexts(seeds).some(text => text.includes('needs a subcommand here'))).toBe(true)
+
+    await handle!.submitText('/skills pending')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'skills pending', surface: 'desktop' })
+    )
+  })
+
   it('surfaces a rename error without touching the sidebar store', async () => {
     const refreshSessions = vi.fn(async () => undefined)
 
@@ -347,6 +400,42 @@ describe('usePromptActions /title', () => {
     )
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+})
+
+describe('usePromptActions /skills desktop scope', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('refuses CLI-hub mutations before the desktop slash worker', async () => {
+    // A current Desktop must keep this boundary even when an older backend
+    // catalog has no subcommand-scope metadata. The explicit compatibility
+    // spec is authoritative for the review-only slice.
+    const refreshSessions = vi.fn(async () => undefined)
+    const requestGateway = vi.fn(async () => ({ output: 'installed' }) as never)
+    const seeds: Record<string, unknown>[] = []
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => seeds.push(state)}
+        refreshSessions={refreshSessions}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/skills install my-skill')
+
+    expect((requestGateway.mock.calls as unknown[][]).some(call => call[0] === 'slash.exec')).toBe(false)
+    expect((requestGateway.mock.calls as unknown[][]).some(call => call[0] === 'command.dispatch')).toBe(false)
+    expect(renderedSeedTexts(seeds).some(text => text.includes('not available in the desktop app'))).toBe(true)
   })
 })
 
@@ -532,7 +621,11 @@ describe('usePromptActions slash session targeting', () => {
     expect(calls.map(c => c.method)).toEqual(['session.resume', 'slash.exec'])
     expect(calls[0]?.params).toMatchObject({ session_id: STORED_SESSION_ID })
     // The command lands on the recovered runtime that owns the goal.
-    expect(calls[1]?.params).toEqual({ command: 'goal status', session_id: RECOVERED_SESSION_ID })
+    expect(calls[1]?.params).toEqual({
+      command: 'goal status',
+      session_id: RECOVERED_SESSION_ID,
+      surface: 'desktop'
+    })
   })
 
   it('does not fork the chat when the routed session cannot be rebound', async () => {
@@ -1182,7 +1275,7 @@ describe('usePromptActions exec fallback error reporting', () => {
       }
 
       if (method === 'command.dispatch') {
-        throw new Error('not a quick/plugin/skill command: debug')
+        throw new Error('not a quick/plugin/bundle/skill command: debug')
       }
 
       return {} as never
@@ -1206,7 +1299,7 @@ describe('usePromptActions exec fallback error reporting', () => {
     // the worker timeout is what actually went wrong (#44456).
     const texts = renderedSeedTexts(seeds)
     expect(texts.some(text => text.includes('slash worker timed out'))).toBe(true)
-    expect(texts.some(text => text.includes('not a quick/plugin/skill command'))).toBe(false)
+    expect(texts.some(text => text.includes('not a quick/plugin/bundle/skill command'))).toBe(false)
   })
 
   it('falls back to slash.exec when an older gateway lacks a dedicated RPC', async () => {
@@ -1319,7 +1412,8 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('slash.exec', {
       command: 'approvals off',
-      session_id: focusedSessionId
+      session_id: focusedSessionId,
+      surface: 'desktop'
     })
     expect(persistedModes.get(focusedProfile)).toBe('off')
     expect(persistedModes.has('default')).toBe(false)
@@ -1358,7 +1452,8 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(calls.map(c => c.method)).toEqual(['slash.exec', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({
       command: 'goal write the implementation plan',
-      session_id: RUNTIME_SESSION_ID
+      session_id: RUNTIME_SESSION_ID,
+      surface: 'desktop'
     })
     expect(calls[1]?.params).toEqual({
       session_id: RUNTIME_SESSION_ID,
@@ -1807,7 +1902,8 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(calls.map(c => c.method)).toEqual(['slash.exec', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({
       command: 'goal Write a Python script\nthat prints Hello World',
-      session_id: RUNTIME_SESSION_ID
+      session_id: RUNTIME_SESSION_ID,
+      surface: 'desktop'
     })
 
     const renderedText = states

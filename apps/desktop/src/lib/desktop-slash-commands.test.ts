@@ -8,7 +8,10 @@ import {
   desktopSlashCommandArgumentMode,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
+  desktopSubcommandAllowlist,
+  desktopSubcommandUnavailableMessage,
   filterDesktopCommandsCatalog,
+  filterDesktopSubcommandCompletions,
   isDesktopSlashCommand,
   isDesktopSlashSuggestion,
   isModelPickerCommand,
@@ -124,9 +127,16 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/redraw')).toBe(false)
     expect(isDesktopSlashSuggestion('/approve')).toBe(false)
     expect(isDesktopSlashSuggestion('/model')).toBe(false)
-    expect(isDesktopSlashSuggestion('/skills')).toBe(false)
     expect(isDesktopSlashSuggestion('/voice')).toBe(false)
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
+  })
+
+  it('executes /skills pending so staged skill writes are reviewable from desktop', () => {
+    expect(resolveDesktopCommand('/skills pending')?.surface).toEqual({ kind: 'exec' })
+    expect(desktopSlashCommandArgumentMode('/skills')).toBe('options')
+    expect(isDesktopSlashSuggestion('/skills')).toBe(true)
+    expect(isDesktopSlashCommand('/skills pending')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/skills pending')).toBeNull()
   })
 
   it('/voice points at the composer voice button instead of the generic advanced message', () => {
@@ -159,6 +169,190 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/tools')).toBeNull()
     expect(desktopSlashUnavailableMessage('/save')).toBeNull()
     expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
+  })
+
+  it('surfaces /skills on the desktop so pending write-approval review is reachable', () => {
+    // /skills' pending/approve/reject/diff subcommands run on the backend via
+    // the slash worker — the same exec path /memory uses. Marking it a
+    // "settings" surface left staged skill writes with no desktop review
+    // path while the pending store grew silently (#98330).
+    expect(isDesktopSlashSuggestion('/skills')).toBe(true)
+    expect(isDesktopSlashCommand('/skills')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/skills')).toBeNull()
+  })
+
+  it('narrows /skills to its review subcommands across backend catalog versions', () => {
+    // The explicit static spec protects current Desktop clients connected to
+    // older backends. A new backend repeats the same boundary through
+    // desktop_subcommands in its registry catalog.
+    rememberDesktopCommandsCatalog({
+      commands: {
+        '/skills': {
+          argument_mode: 'options',
+          desktop: null,
+          desktop_subcommands: ['pending', 'approve', 'reject', 'diff', 'approval']
+        },
+        '/memory': { argument_mode: 'options', desktop: null }
+      },
+      canon: { '/skills': '/skills', '/memory': '/memory' }
+    })
+
+    expect(desktopSubcommandAllowlist('/skills')).toEqual(['pending', 'approve', 'reject', 'diff', 'approval'])
+    // Unrestricted commands pass through.
+    expect(desktopSubcommandAllowlist('/memory')).toBeNull()
+    expect(desktopSubcommandAllowlist('/goal')).toBeNull()
+
+    // Execution gate: review subcommands forward, everything else stops.
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBeNull()
+    expect(desktopSubcommandUnavailableMessage('/skills', 'approve a1b2')).toBeNull()
+    expect(desktopSubcommandUnavailableMessage('/skills', 'DIFF a1b2')).toBeNull()
+    expect(desktopSubcommandUnavailableMessage('/memory', 'approve a1b2')).toBeNull()
+
+    const installBlocked = desktopSubcommandUnavailableMessage('/skills', 'install my-skill')
+    expect(installBlocked).toContain('/skills install')
+    expect(installBlocked).toContain('terminal')
+    expect(installBlocked).toContain('pending')
+
+    // Bare /skills would open the interactive CLI hub on the worker path —
+    // the desktop answer is the subcommand list instead.
+    const bare = desktopSubcommandUnavailableMessage('/skills', '')
+    expect(bare).toContain('subcommand')
+    expect(bare).toContain('pending')
+
+    // Completion filter: only allowlisted tokens survive the arg stage.
+    const hubItems = [
+      { text: 'search' },
+      { text: 'install' },
+      { text: 'inspect' },
+      { text: 'pending' },
+      { text: 'approve <id>' },
+      { text: 'reject' },
+      { text: 'diff <id>' },
+      { text: 'approval' },
+      { text: 'audit' },
+      { text: 'browse' }
+    ]
+
+    expect(filterDesktopSubcommandCompletions('/skills ', hubItems).map(item => item.text)).toEqual([
+      'pending',
+      'approve <id>',
+      'reject',
+      'diff <id>',
+      'approval'
+    ])
+    // Prefix stage: the gate is the allowlist boundary, not ranking — the
+    // backend already narrows to prefix matches before we see the items.
+    expect(filterDesktopSubcommandCompletions('/skills ap', hubItems).map(item => item.text)).toEqual([
+      'pending',
+      'approve <id>',
+      'reject',
+      'diff <id>',
+      'approval'
+    ])
+    expect(filterDesktopSubcommandCompletions('/skills\tap', hubItems).map(item => item.text)).toEqual([
+      'pending',
+      'approve <id>',
+      'reject',
+      'diff <id>',
+      'approval'
+    ])
+    // Command-token stage (`/skills` itself, no space) passes through.
+    expect(filterDesktopSubcommandCompletions('/skills', hubItems)).toHaveLength(hubItems.length)
+    // Unrestricted commands keep their full arg completions.
+    expect(filterDesktopSubcommandCompletions('/memory ', hubItems)).toHaveLength(hubItems.length)
+  })
+
+  it('uses the backend arg-stage flag instead of re-parsing the query', () => {
+    expect(
+      filterDesktopSubcommandCompletions('/skills ', [{ text: '/skills' }], { isArgCompletion: false }).map(
+        item => item.text
+      )
+    ).toEqual(['/skills'])
+    expect(
+      filterDesktopSubcommandCompletions('/skills', [{ text: 'install' }, { text: 'pending' }], {
+        isArgCompletion: true
+      }).map(item => item.text)
+    ).toEqual(['pending'])
+  })
+
+  it('skips a malformed completion row instead of wiping the list', () => {
+    expect(() =>
+      filterDesktopSubcommandCompletions('/skills ', [{ text: undefined as unknown as string }, { text: 'pending' }])
+    ).not.toThrow()
+    expect(
+      filterDesktopSubcommandCompletions('/skills ', [
+        { text: undefined as unknown as string },
+        { text: 'pending' }
+      ]).map(item => item.text)
+    ).toEqual(['pending'])
+  })
+
+  it('normalizes the raw command prefix before filtering subcommands', () => {
+    const hubItems = [
+      { text: 'install' },
+      { text: 'pending' },
+      { text: 'approve <id>' },
+      { text: 'reject' },
+      { text: 'diff <id>' },
+      { text: 'approval' }
+    ]
+
+    const allowed = ['pending', 'approve <id>', 'reject', 'diff <id>', 'approval']
+
+    expect(filterDesktopSubcommandCompletions(' /skills ', hubItems).map(item => item.text)).toEqual(allowed)
+    expect(filterDesktopSubcommandCompletions('skills ', hubItems).map(item => item.text)).toEqual(allowed)
+  })
+
+  it('filters value completions by the first subcommand', () => {
+    expect(filterDesktopSubcommandCompletions('/skills approval o', [{ text: 'on' }, { text: 'off' }])).toEqual([
+      { text: 'on' },
+      { text: 'off' }
+    ])
+    expect(filterDesktopSubcommandCompletions('/skills approve a1b', [{ text: 'a1b2' }])).toEqual([{ text: 'a1b2' }])
+    expect(filterDesktopSubcommandCompletions('/skills install g', [{ text: 'github.com/example/skill' }])).toEqual(
+      []
+    )
+  })
+
+  it('lets a live catalog narrow the static /skills allowlist', () => {
+    rememberDesktopCommandsCatalog({
+      commands: {
+        '/skills': {
+          argument_mode: 'options',
+          desktop: null,
+          desktop_subcommands: ['pending', 'approve', 'reject']
+        }
+      },
+      canon: { '/skills': '/skills' }
+    })
+
+    expect(desktopSubcommandAllowlist('/skills')).toEqual(['pending', 'approve', 'reject'])
+    expect(desktopSubcommandUnavailableMessage('/skills', 'diff a1b2')).toContain('/skills diff')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBeNull()
+  })
+
+  it('lets a live catalog revoke the static /skills allowlist with an empty list', () => {
+    rememberDesktopCommandsCatalog({
+      commands: {
+        '/skills': {
+          argument_mode: 'options',
+          desktop: null,
+          desktop_subcommands: []
+        }
+      },
+      canon: { '/skills': '/skills' }
+    })
+
+    expect(desktopSubcommandAllowlist('/skills')).toEqual([])
+    expect(isDesktopSlashSuggestion('/skills')).toBe(false)
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBe(
+      '/skills is not available in the desktop app — use the terminal for it.'
+    )
+  })
+
+  it('falls back to the static /skills allowlist when the catalog has none', () => {
+    expect(desktopSubcommandAllowlist('/skills')).toEqual(['pending', 'approve', 'reject', 'diff', 'approval'])
+    expect(desktopSubcommandUnavailableMessage('/skills', 'diff a1b2')).toBeNull()
   })
 
   it('routes /pet through the desktop action handler and drops /pets', () => {
@@ -352,6 +546,12 @@ describe('desktop slash command curation', () => {
     )
   })
 
+  it('describes /skills as the review slice the desktop actually exposes', () => {
+    expect(desktopSlashDescription('/skills', 'Search, install, inspect, or manage skills')).toBe(
+      'Review staged skill writes and approval mode'
+    )
+  })
+
   it('builds /skin completions from desktop themes', () => {
     const completions = desktopSkinSlashCompletions(
       [
@@ -379,7 +579,7 @@ describe('desktop slash command curation', () => {
 
   it('explains known commands that desktop owns elsewhere', () => {
     expect(desktopSlashUnavailableMessage('/model sonnet')).toContain('model picker')
-    expect(desktopSlashUnavailableMessage('/skills')).toContain('desktop sidebar')
+    expect(desktopSlashUnavailableMessage('/pets')).toContain('desktop sidebar')
     expect(desktopSlashUnavailableMessage('/clear')).toContain('terminal interface')
   })
 

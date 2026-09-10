@@ -8,8 +8,10 @@ import {
   type CommandsCatalogLike,
   desktopSkinSlashCompletions,
   desktopSlashDescription,
+  desktopSubcommandAllowlist,
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
+  filterDesktopSubcommandCompletions,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
   rankSkillCommands,
@@ -200,13 +202,36 @@ export function useSlashCompletions(options: {
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —
         // e.g. complete.slash returns `{text: "alice"}` for `/personality alic`
-        // with replace_from = 14. Rewrite those entries so the popover inserts
+        // with replace_from = 13. Rewrite those entries so the popover inserts
         // the full `/personality alice` token instead of stranding `/alice`.
-        const replaceFrom = typeof result.replace_from === 'number' ? result.replace_from : 1
-        const isArgCompletion = replaceFrom > 1
-        const prefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
+        const replaceFromRaw = result.replace_from
+        const hasReplaceFrom = typeof replaceFromRaw === 'number'
 
-        const decorated = (result.items ?? [])
+        const inferredArgCompletion =
+          desktopSubcommandAllowlist(commandText(text.trimStart().split(/\s+/, 1)[0] ?? '')) !== null &&
+          /\s/.test(text.trimStart())
+
+        const inferredReplaceFrom = text.match(/\S+$/)?.index ?? text.length
+        const replaceFrom = hasReplaceFrom ? replaceFromRaw : inferredReplaceFrom
+        const isArgCompletion = hasReplaceFrom ? replaceFrom > 1 : inferredArgCompletion
+        const rawPrefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
+
+        const prefix =
+          !hasReplaceFrom && rawPrefix && !/\s$/.test(rawPrefix) ? `${rawPrefix} ` : rawPrefix
+
+        // Commands narrowed by `desktop_subcommands` (e.g. /skills exposes
+        // only its review slice here) must not suggest the subcommands the
+        // exec gate would refuse — filter before the arg-stub rewrite so the
+        // token under test is the bare subcommand word. Pass the backend
+        // stage only when replace_from is present; older backends omit it
+        // and the filter must keep its query-whitespace fallback.
+        const scopedItems = filterDesktopSubcommandCompletions(
+          text,
+          result.items ?? [],
+          hasReplaceFrom ? { isArgCompletion } : undefined
+        )
+
+        const decorated = scopedItems
           .map(item => {
             if (!isArgCompletion) {
               return item

@@ -4711,7 +4711,12 @@ def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
     assert env is not None
     gateway_url = env.get("HERMES_TUI_GATEWAY_URL", "")
     assert gateway_url.startswith("ws://127.0.0.1:9119/api/ws?")
-    assert "token=" in gateway_url
+    # The PTY child gets the server-internal credential in every mode, loopback
+    # included: the gateway authorizes privileged JSON-RPC (the /skills review
+    # gate) off the identity only that credential mints. The legacy session
+    # token would admit the child but leave its transport identity-less.
+    assert "token=" not in gateway_url
+    assert "internal=" in gateway_url
 
 
 class TestDashboardPluginStaticAssetAllowlist:

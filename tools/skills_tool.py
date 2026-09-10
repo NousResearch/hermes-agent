@@ -176,10 +176,13 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 def _skill_search_dirs() -> Tuple[list, list, Path]:
     """(project_dirs, all_dirs, active_skills_dir); trusted project-local dirs come FIRST so
     first-wins dedup / the collision resolver prefer them."""
-    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
+    from agent.skill_utils import _shared_user_skills_dir, get_external_skills_dirs, get_project_skills_dirs
     project_dirs = list(get_project_skills_dirs())
     active_skills_dir = _skills_dir()
     all_dirs = project_dirs + ([active_skills_dir] if active_skills_dir.exists() else [])
+    shared_dir = _shared_user_skills_dir()
+    if shared_dir is not None:
+        all_dirs.append(shared_dir.resolve())
     all_dirs += get_external_skills_dirs()
     return project_dirs, all_dirs, active_skills_dir
 

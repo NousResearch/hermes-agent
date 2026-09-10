@@ -1244,6 +1244,8 @@ export interface HermesNotification {
   silent?: boolean
   kind?: string
   sessionId?: string
+  /** Durable click target captured before runtime bindings can be recycled. */
+  focusSessionId?: string
   /** Dedupe discriminator for session-less notifications (e.g. plugin id). */
   tag?: string
   /** Absolute icon path for Electron `Notification`. */

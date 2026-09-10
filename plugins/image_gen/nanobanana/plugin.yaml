@@ -1,0 +1,5 @@
+name: nanobanana
+version: 1.0.0
+description: "NanoBanana 2 image generation backend (Gemini 3.1 Flash Image). Calls a self-hosted Cloud Run proxy that speaks the OpenAI /v1/images/generations API. No external API key needed."
+author: Laurence Laforest
+kind: backend

@@ -547,19 +547,37 @@ class TestVerifySession:
         token = _mint_id_token(rsa_keypair, ttl_seconds=-1)
         assert provider.verify_session(access_token=token) is None
 
-    def test_wrong_audience_raises(self, provider, rsa_keypair):
+    def test_wrong_audience_returns_none(self, provider, rsa_keypair):
+        # A wrong-audience token is a confirmed denial: the IdP answered (JWKS fetched,
+        # token parsed) but the token isn't ours. verify_session must return None so the
+        # middleware refreshes / re-logins instead of answering the misleading 503
+        # "provider unreachable" (folding denials into ProviderError produced exactly
+        # that against a desktop reusing one session across same-issuer gateways).
         token = _mint_id_token(rsa_keypair, aud="some-other-client")
-        with pytest.raises(ProviderError, match="verification failed"):
-            provider.verify_session(access_token=token)
-
+        assert provider.verify_session(access_token=token) is None
 
     def test_failure_message_surfaces_claims(self, provider, rsa_keypair):
         token = _mint_id_token(rsa_keypair, iss="https://evil.example")
-        with pytest.raises(ProviderError) as excinfo:
-            provider.verify_session(access_token=token)
+        with pytest.raises(InvalidCodeError) as excinfo:
+            provider._verify_id_token(token)
         msg = str(excinfo.value)
         assert "'https://evil.example'" in msg
         assert f"'{_ISSUER}'" in msg
+
+    def test_refresh_verify_denial_maps_to_refresh_expired(self, rsa_keypair):
+        """A verify-stage denial inside the refresh grant maps to RefreshExpiredError so
+        the middleware refresh scan rejects this provider instead of crashing on an
+        uncaught InvalidCodeError."""
+        provider = _make_provider(rsa_keypair)
+        id_token = _mint_id_token(rsa_keypair, aud="some-other-client")
+        mock_resp = _mock_post(
+            200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(RefreshExpiredError, match="verification failed"):
+                provider.refresh_session(refresh_token="rt_old")
 
 
     def test_jwks_unreachable_raises(self, provider, rsa_keypair):

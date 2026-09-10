@@ -59,7 +59,12 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         if allowed is not True:
             return f"Security scan blocked this skill ({reason}):\n{format_scan_report(result)}"
     except Exception as e:
+        # We only reach here with the guard ENABLED (the disabled paths returned
+        # None above). A scanner exception must FAIL CLOSED: callers treat a
+        # non-empty return as "blocked" and roll back the write, so returning None
+        # here silently installs an UNSCANNED agent-created skill.
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+        return f"Security scan errored (fail-closed): {e}"
     return None
 
 

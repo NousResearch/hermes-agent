@@ -24,8 +24,8 @@ from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
 )
 from tools.environments.base_session_env import (
-    _SHELL_ENV_NAME_RE, _SNAP_TMP_SUFFIX, _cwd_marker, _snapshot_bootstrap_script, _split_cwd_marker,
-    _wrap_command_script,
+    _SHELL_ENV_NAME_RE, _SNAP_TMP_SUFFIX, _cwd_marker, _export_dump_excluding_session_vars,
+    _snapshot_bootstrap_script, _split_cwd_marker, _wrap_command_script,
 )
 from tools.environments.base_wait import _WaitTrace
 
@@ -235,21 +235,76 @@ class BaseEnvironment(ABC):
         return ()
 
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
-        """Profile-scoped names that must not persist in the snapshot. Monotonic for the
-        environment lifetime: an allowlist can be cleared after a value was captured, and
-        retaining the exclusion keeps that old value from leaking to a later profile."""
+        """Return names that must not persist in the snapshot.
+
+        The exclusions are monotonic for the environment lifetime: an allowlist
+        can be cleared after a value was captured, and retaining the exclusion
+        keeps that old value from leaking to a later profile.
+
+        Cross-profile passthrough exclusions are needed only while multiplexing,
+        but profile credential names must always be excluded. ``export -p`` dumps
+        the complete process environment, including credentials injected by the
+        profile secret loader, so those names must never be written to disk even
+        on a single-profile host.
+        """
         if not self._profile_scoped_passthrough:
             return ()
         try:
             from agent.secret_scope import is_multiplex_active
+            from tools.env_passthrough import get_all_passthrough
+            names: tuple[str, ...] = ()
             if is_multiplex_active():
-                from tools.env_passthrough import get_all_passthrough
                 names = (*get_all_passthrough(), *self._additional_profile_scoped_passthrough_names())
-                self._snapshot_passthrough_names.update(
-                    name for name in names if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name))
+            names = (*names, *self._profile_secret_env_names())
+            self._snapshot_passthrough_names.update(
+                name for name in names if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name))
         except Exception:
             logger.debug("Could not refresh profile-scoped snapshot exclusions", exc_info=True)
         return tuple(sorted(self._snapshot_passthrough_names))
+
+    def _profile_secret_env_names(self) -> tuple[str, ...]:
+        """Return profile credential names without reading or exposing their values.
+
+        Two populations, because a resolved secret and the credential used to
+        REACH it arrive by different routes:
+
+        - values the profile resolved (``<home>/.env`` plus fetched external
+          secrets), from ``build_profile_secret_scope``;
+        - each configured source's *bootstrap* auth token, which never appears in
+          that scope. ``load_hermes_dotenv`` seeds it from a gitignored
+          ``.op.env`` or the launcher/systemd environment, so it reaches
+          ``os.environ`` — and therefore ``export -p`` — while being absent from
+          the resolved mapping.
+
+        Bootstrap names come from each source's own ``protected_env_vars()``, the
+        existing declaration of "env vars no source may overwrite", so a new or
+        plugin-provided source is covered without editing this method.
+        """
+        names: set[str] = set()
+        home = Path(get_hermes_home())
+        try:
+            from agent.secret_scope import build_profile_secret_scope
+            names.update(build_profile_secret_scope(home))
+        except Exception:
+            logger.debug("Could not enumerate profile secret names", exc_info=True)
+        names.update(self._secret_source_bootstrap_env_names(home))
+        return tuple(sorted(names))
+
+    def _secret_source_bootstrap_env_names(self, home: Path) -> tuple[str, ...]:
+        """Bootstrap-auth env names declared by the configured secret sources."""
+        try:
+            from agent.secret_sources.registry import list_sources
+            from hermes_cli.env_loader import _load_secrets_config
+            secrets_cfg = _load_secrets_config(home) or {}
+            names: set[str] = set()
+            for source in list_sources():
+                cfg = secrets_cfg.get(source.name)
+                cfg = cfg if isinstance(cfg, dict) else {}
+                names.update(source.protected_env_vars(cfg))
+            return tuple(n for n in names if n)
+        except Exception:
+            logger.debug("Could not enumerate secret-source bootstrap names", exc_info=True)
+            return ()
 
     def _snapshot_script_kwargs(self, cwd: str) -> dict:
         """Quoting inputs shared by the bootstrap and per-command wrapper scripts.

@@ -510,6 +510,61 @@ class TestToolHandlers:
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
 
+    def test_recall_and_reflect_support_allowlisted_per_call_bank(self, provider_with_config):
+        provider = provider_with_config(recall_bank_allowlist="audit-bank, other-bank")
+
+        recall_props = RECALL_SCHEMA["parameters"]["properties"]
+        reflect_props = REFLECT_SCHEMA["parameters"]["properties"]
+        assert "bank" in recall_props
+        assert "bank" in reflect_props
+        assert "bank" not in RECALL_SCHEMA["parameters"]["required"]
+        assert "bank" not in REFLECT_SCHEMA["parameters"]["required"]
+
+        default_recall = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "default"}
+        ))
+        assert "bank=test-bank" in default_recall["result"]
+        assert provider._client.arecall.call_args.kwargs["bank_id"] == "test-bank"
+
+        recall = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "audit", "bank": "audit-bank"}
+        ))
+        reflect = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": "audit", "bank": "other-bank"}
+        ))
+
+        assert "error" not in recall
+        assert "error" not in reflect
+        assert provider._client.arecall.call_args.kwargs["bank_id"] == "audit-bank"
+        assert provider._client.areflect.call_args.kwargs["bank_id"] == "other-bank"
+
+        blocked = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "audit", "bank": "private-bank"}
+        ))
+        assert "not allowed" in blocked["error"]
+        assert provider._client.arecall.await_count == 2
+
+    def test_recall_result_preserves_per_hit_provenance(self, provider):
+        provider._client.arecall.return_value = SimpleNamespace(results=[
+            SimpleNamespace(
+                text="Auditable memory",
+                document_id="doc-17",
+                metadata={"source": "session-import"},
+            ),
+            SimpleNamespace(text="Legacy memory", document_id=None, metadata=None),
+        ])
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "audit"}
+        ))["result"]
+
+        assert "Auditable memory [bank=test-bank; document_id=doc-17; source=session-import]" in result
+        assert "Legacy memory [bank=test-bank; document_id=unknown; source=unknown]" in result
+
+        prefetch_result, count = provider._do_recall("audit")
+        assert count == 2
+        assert "Auditable memory [bank=test-bank; document_id=doc-17; source=session-import]" in prefetch_result
+
 
     def test_reflect_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -542,7 +597,10 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
 
-        assert result["result"] == "1. Recovered memory"
+        assert result["result"] == (
+            "1. Recovered memory "
+            "[bank=test-bank; document_id=unknown; source=unknown]"
+        )
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()

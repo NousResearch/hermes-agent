@@ -122,24 +122,25 @@ def test_zeroed_db_quarantine_cannot_recreate_profile_deleted_after_precheck(
     profile_dir.mkdir(parents=True)
     db_path = profile_dir / "state.db"
     db_path.write_bytes(b"\0" * 64)
-    real_zeroed_check = hermes_state.is_zeroed_state_db
+    real_header_check = hermes_state.has_invalid_sqlite_header_preopen
     deleted = False
 
-    def delete_during_zeroed_check(path, *args, **kwargs):
+    def delete_during_header_check(path, *args, **kwargs):
         nonlocal deleted
         if Path(path) == db_path and not deleted:
-            assert real_zeroed_check(path, *args, **kwargs) is True
+            assert real_header_check(path, *args, **kwargs) is True
             profile_lifecycle.mark_profile_deleting(profile_dir)
             shutil.rmtree(profile_dir)
             deleted = True
             return True
-        return real_zeroed_check(path, *args, **kwargs)
+        return real_header_check(path, *args, **kwargs)
 
-    monkeypatch.setattr(hermes_state, "is_zeroed_state_db", delete_during_zeroed_check)
+    monkeypatch.setattr(hermes_state, "has_invalid_sqlite_header_preopen", delete_during_header_check)
 
     with pytest.raises(FileNotFoundError, match="missing or being deleted"):
         SessionDB(db_path=db_path)
 
+    assert deleted, "the startup header probe must exercise the deletion race"
     assert not profile_dir.exists()
     assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
 

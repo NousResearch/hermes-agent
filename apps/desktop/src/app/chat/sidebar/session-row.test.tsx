@@ -7,6 +7,7 @@ import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
+import { $backgroundRunningSessionIds } from '@/store/composer-status'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
@@ -156,6 +157,12 @@ const handoffAvatar = (container: HTMLElement) =>
 
 const noop = vi.fn()
 
+// The production export is computed/read-only; this file replaces it with an
+// atom above so individual row tests can drive the exact resolved state.
+const writableBackgroundRunningSessionIds = $backgroundRunningSessionIds as unknown as {
+  set: (ids: string[]) => void
+}
+
 const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
   render(
     <SidebarSessionRow
@@ -178,7 +185,10 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
 // the wiring rather than the predicate — the arc has gone missing before.
 describe('SidebarSessionRow running arc', () => {
   afterEach(() => {
-    clearAllSessionStates()
+    act(() => {
+      writableBackgroundRunningSessionIds.set([])
+      clearAllSessionStates()
+    })
   })
 
   const arc = (container: HTMLElement) => container.querySelector('.arc-row')
@@ -195,6 +205,18 @@ describe('SidebarSessionRow running arc', () => {
     const { container } = renderRow(makeSession({ title: 'Running' }))
 
     expect(arc(container)).toBeTruthy()
+  })
+
+  it('keeps the active title treatment when background work outlives the turn', () => {
+    act(() => {
+      writableBackgroundRunningSessionIds.set(['s1'])
+    })
+
+    const { container } = renderRow(makeSession({ title: 'Background work' }))
+    const row = container.querySelector<HTMLElement>('.row-hover')
+
+    expect(row?.dataset.working).toBe('true')
+    expect(arc(container)).toBeNull()
   })
 
   // The row owns its status subscription so a turn starting repaints that row

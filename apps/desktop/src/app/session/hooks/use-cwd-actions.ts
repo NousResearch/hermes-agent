@@ -13,7 +13,7 @@ import type { SessionRuntimeInfo } from '@/types/hermes'
 
 interface CwdActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
-  onSessionRuntimeInfo?: (info: Pick<SessionRuntimeInfo, 'branch' | 'cwd'>) => void
+  onSessionRuntimeInfo?: (sessionId: string, info: Pick<SessionRuntimeInfo, 'branch' | 'cwd'>) => void
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -46,18 +46,19 @@ export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, reques
   )
 
   const changeSessionCwd = useCallback(
-    async (cwd: string) => {
+    async (cwd: string, sessionIdOverride?: string) => {
       const trimmed = cwd.trim()
 
       if (!trimmed) {
         return
       }
 
-      // Ref, not the closure-captured prop: this hook's consumers are memoized
-      // on a stable actions object, so the prop can still name the previously
-      // focused chat. Re-anchoring the wrong session's workspace would point
-      // that agent's terminal/file tools at another conversation's project.
-      const sessionId = activeSessionIdRef.current
+      // Prefer the caller's target session (the statusbar operates on the
+      // FOCUSED session — a tile, or the primary), falling back to the ref so
+      // existing primary-scoped callers keep working. The ref alone would
+      // re-anchor the primary's workspace even when the statusbar is
+      // describing a focused tile (mis-associating session state).
+      const sessionId = sessionIdOverride ?? activeSessionIdRef.current
 
       if (!sessionId) {
         setCurrentCwd(trimmed)
@@ -98,7 +99,7 @@ export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, reques
 
         setCurrentCwd(info.cwd || trimmed)
         setCurrentBranch(info.branch || '')
-        onSessionRuntimeInfo?.({ branch: info.branch || '', cwd: info.cwd || trimmed })
+        onSessionRuntimeInfo?.(sessionId, { branch: info.branch || '', cwd: info.cwd || trimmed })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
 

@@ -131,7 +131,17 @@ def run_close_task_slash(text: str) -> dict[str, Any]:
         after = kb.get_task(conn, task_id)
         if not changed:
             # complete_task fails closed on: parent-not-satisfied, CAS mismatch, and any
-            # concurrent status transition out of the eligible set observed above.
+            # concurrent status transition out of the eligible set observed above. A
+            # concurrent caller may have already driven the task to a terminal state
+            # between our initial read and this CAS attempt; classify against the fresh
+            # re-read (`after`, via the canonical kb.get_task accessor) rather than the
+            # stale pre-mutation snapshot, so the losing caller reports idempotent
+            # already-closed instead of a false rejection.
+            if after is not None and after.status in {"done", "archived"}:
+                return _result(task_id=task_id, board=board, task_status=after.status,
+                               closure_state="already-closed", action="none", mutation_performed=False,
+                               dispatch_status="already_closed",
+                               message=f"task is already {after.status}; no action was taken")
             return _result(task_id=task_id, board=board, task_status=after.status if after else task.status,
                            closure_state="rejected", action="none", mutation_performed=False,
                            dispatch_status="not_eligible",

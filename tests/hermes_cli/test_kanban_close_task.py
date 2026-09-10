@@ -153,6 +153,57 @@ def test_close_task_deterministic_structured_output(kanban_home):
     assert result["command"] == "close-task"
 
 
+def test_close_task_race_reclassifies_as_already_closed(kanban_home, monkeypatch):
+    """Deterministic (non-threaded) regression for the stale-classification race.
+
+    Forces the exact interleaving: the adapter observes the task as eligible, then
+    (before its own complete_task CAS attempt) another caller drives the task through
+    the real lifecycle machinery to a terminal state, so complete_task legitimately
+    returns False for this caller's own attempted mutation. The adapter must re-read
+    via the canonical accessor and reclassify as already-closed/idempotent, never as
+    a rejected/not_eligible false negative.
+    """
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="race", assignee="a")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (task_id,))
+        conn.commit()
+
+    real_complete_task = kb.complete_task
+
+    def racing_complete_task(conn, tid, **kwargs):
+        # Simulate a concurrent winner closing the task through the real lifecycle
+        # engine, in a separate connection, before this caller's own CAS attempt.
+        with kbc.connect() as other_conn:
+            assert real_complete_task(other_conn, tid) is True
+        # This caller's own attempt now legitimately loses the CAS.
+        return real_complete_task(conn, tid, **kwargs)
+
+    monkeypatch.setattr(kb, "complete_task", racing_complete_task)
+    result = close_task.run_close_task_slash(task_id)
+    assert result["dispatch_status"] == "already_closed"
+    assert result["closure_state"] == "already-closed"
+    assert result["mutation_performed"] is False
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "done"
+
+
+def test_close_task_genuine_rejection_not_misclassified_as_already_closed(kanban_home, monkeypatch):
+    """complete_task returning False for a genuine reason (fresh status non-terminal)
+    must still surface as rejected/not_eligible, never hidden behind already-closed."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="genuine-reject", assignee="a")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (task_id,))
+        conn.commit()
+
+    monkeypatch.setattr(kb, "complete_task", lambda conn, tid, **kwargs: False)
+    result = close_task.run_close_task_slash(task_id)
+    assert result["dispatch_status"] == "not_eligible"
+    assert result["closure_state"] == "rejected"
+    assert result["mutation_performed"] is False
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "ready"
+
+
 def test_close_task_concurrent_calls_close_exactly_once(kanban_home):
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="concurrent", assignee="a")

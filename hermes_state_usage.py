@@ -51,12 +51,12 @@ _TOKEN_UPDATE_DELTA_SQL = _token_update_sql(delta=True)
 
 _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    session_id, model, billing_provider, billing_base_url, billing_mode,
-                   task, api_call_count, input_tokens, output_tokens,
+                   task, provider_name, api_call_count, input_tokens, output_tokens,
                    cache_read_tokens, cache_write_tokens, reasoning_tokens,
                    estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
                    first_seen, last_seen
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
+               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task, provider_name)
                DO UPDATE SET
                    api_call_count = api_call_count + excluded.api_call_count,
                    input_tokens = input_tokens + excluded.input_tokens,
@@ -76,7 +76,7 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
 _MODEL_USAGE_FIELDS = frozenset((
     "model", "billing_provider", "billing_base_url", "billing_mode", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
-    "actual_cost_usd", "cost_status", "cost_source", "api_call_count"))
+    "actual_cost_usd", "cost_status", "cost_source", "api_call_count", "provider_name"))
 
 
 class SessionUsageMixin:
@@ -277,7 +277,7 @@ class SessionUsageMixin:
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
-        billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
+        billing_mode: Optional[str]=None, provider_name: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
     ) -> None:
         """Update token counters and backfill model if unset. *absolute*=False increments
         (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
@@ -336,7 +336,8 @@ class SessionUsageMixin:
         billing_base_url: Optional[str]=None, billing_mode: Optional[str]=None, input_tokens: int=0,
         output_tokens: int=0, cache_read_tokens: int=0, cache_write_tokens: int=0, reasoning_tokens: int=0,
         estimated_cost_usd: Optional[float]=None, actual_cost_usd: Optional[float]=None,
-        cost_status: Optional[str]=None, cost_source: Optional[str]=None, api_call_count: int=0, task: str="",
+        cost_status: Optional[str]=None, cost_source: Optional[str]=None, provider_name: Optional[str]=None,
+        api_call_count: int=0, task: str="",
     ) -> None:
         """Accumulate a per-API-call usage delta into session_model_usage, inside the caller's
         write txn after the ``sessions`` UPDATE. A missing model/provider falls back to
@@ -358,7 +359,8 @@ class SessionUsageMixin:
             session_id, model or sess.get("model") or "unknown",
             billing_provider or sess.get("billing_provider") or "",
             billing_base_url or sess.get("billing_base_url") or "",
-            billing_mode or sess.get("billing_mode") or "", task or "", api_call_count or 0, *counts,
+            billing_mode or sess.get("billing_mode") or "", task or "", (provider_name or "").strip() or "",
+            api_call_count or 0, *counts,
             float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0), cost_status, cost_source, now, now))
 
     def record_auxiliary_usage(

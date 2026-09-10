@@ -396,7 +396,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     total_cost REAL NOT NULL DEFAULT 0,
     first_seen REAL,
     last_seen REAL,
-    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task, provider_name)
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (

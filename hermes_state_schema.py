@@ -79,7 +79,7 @@ _SESSION_MODEL_USAGE_HEAL_DDL = """CREATE TABLE session_model_usage (
     total_cost REAL NOT NULL DEFAULT 0,
     first_seen REAL,
     last_seen REAL,
-    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task, provider_name)
 )"""
 # v22-migration rendering of the same table (column lines at 35 spaces, paren at 31; pinned SQL).
 _SESSION_MODEL_USAGE_V22_DDL = "\n".join(
@@ -730,26 +730,29 @@ class SessionSchemaMixin:
         )
 
     def _heal_session_model_usage_pk(self, cursor: sqlite3.Cursor) -> None:
-        """Rebuild ``session_model_usage`` when its PRIMARY KEY lacks ``task``: installs already at
-        v22+ when ``task`` landed carry the 5-column PK, the reconciler ADDs ``task`` but
-        SQLite cannot ALTER a PK, and the v22 rebuild is unreachable — every upsert then
-        fails (ON CONFLICT mismatch), silently zeroing accounting. Idempotent. FK-off
+        """Rebuild ``session_model_usage`` when its PRIMARY KEY lacks ``task`` or
+        ``provider_name``. SQLite cannot ALTER a PK, so the table must be rebuilt;
+        this is idempotent. FK-off
         window: INSERT OR IGNORE does NOT suppress FK violations, so an orphaned usage row
         would abort the rebuild (PRAGMA foreign_keys is a no-op inside a transaction; none
         is open here). OR IGNORE: COALESCE(task, '') on legacy NULL rows can collide with a
         genuine ''-task row — keep the first.
 
         Installs whose ``state.db`` reached ``schema_version >= 22`` before the ``task`` dimension was added
-        carry a 5-column PRIMARY KEY ``(session_id, model, billing_provider, billing_base_url,
+        carry a 5-column PRIMARY KEY; newer installs may carry the 6-column key from before upstream-host
+        attribution was added. Both shapes are healed here.
         billing_mode)``. See #73823.
         """
         pk_cols = self._live_pk_columns(cursor, "session_model_usage")
-        if pk_cols is None or "task" in pk_cols:
+        expected_pk = ["session_id", "model", "billing_provider", "billing_base_url", "billing_mode", "task", "provider_name"]
+        if pk_cols is None or pk_cols == expected_pk:
             return
         logger.info(
-            "session_model_usage has legacy primary key %r (missing task); rebuilding with composite 6-column key",
+            "session_model_usage has legacy primary key %r; rebuilding with composite route key",
             sorted(pk_cols),
         )
+        live_cols = {row[1] for row in cursor.execute('PRAGMA table_info("session_model_usage")').fetchall()}
+        provider_expr = "COALESCE(provider_name, '')" if "provider_name" in live_cols else "''"
         cursor.execute("PRAGMA foreign_keys=OFF")
         try:
             self._rebuild_table(
@@ -763,21 +766,26 @@ class SessionSchemaMixin:
                 # doubling it.
                 """INSERT OR IGNORE INTO session_model_usage (
                        session_id, model, billing_provider, billing_base_url,
-                       billing_mode, task, api_call_count, input_tokens,
+                       billing_mode, task, provider_name, api_call_count, input_tokens,
                        output_tokens, cache_read_tokens, cache_write_tokens,
                        reasoning_tokens, estimated_cost_usd, actual_cost_usd,
-                       cost_status, cost_source, first_seen, last_seen
+                       cost_status, cost_source, native_tokens_prompt,
+                       native_tokens_cached, cache_discount, total_cost,
+                       first_seen, last_seen
                    )
                    SELECT session_id, model,
                           COALESCE(billing_provider, ''),
                           COALESCE(billing_base_url, ''),
                           COALESCE(billing_mode, ''),
                           COALESCE(task, ''),
+                          {provider_expr},
                           api_call_count, input_tokens,
                           output_tokens, cache_read_tokens, cache_write_tokens,
                           reasoning_tokens, estimated_cost_usd, actual_cost_usd,
-                          cost_status, cost_source, first_seen, last_seen
-                   FROM session_model_usage_legacy_pk""",
+                          cost_status, cost_source, native_tokens_prompt,
+                          native_tokens_cached, cache_discount, total_cost,
+                          first_seen, last_seen
+                   FROM session_model_usage_legacy_pk""".format(provider_expr=provider_expr),
                 _SESSION_MODEL_USAGE_INDEX_SQL,
             )
         except sqlite3.OperationalError as exc:

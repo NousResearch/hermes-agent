@@ -1460,14 +1460,14 @@ class SessionDB(
         conn.execute(
             """INSERT INTO session_model_usage (
                    session_id, model, billing_provider, billing_base_url, billing_mode,
-                   task, api_call_count, input_tokens, output_tokens,
+                   task, provider_name, api_call_count, input_tokens, output_tokens,
                    cache_read_tokens, cache_write_tokens, reasoning_tokens,
                    estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                   provider_name, native_tokens_prompt, native_tokens_cached,
+                   native_tokens_prompt, native_tokens_cached,
                    cache_discount, total_cost,
                    first_seen, last_seen
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
+               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task, provider_name)
                DO UPDATE SET
                    api_call_count = api_call_count + excluded.api_call_count,
                    input_tokens = input_tokens + excluded.input_tokens,
@@ -1492,6 +1492,7 @@ class SessionDB(
                 eff_base_url,
                 eff_billing_mode,
                 task or "",
+                (provider_name or "").strip() or "",
                 api_call_count or 0,
                 input_tokens or 0,
                 output_tokens or 0,
@@ -1502,7 +1503,6 @@ class SessionDB(
                 float(actual_cost_usd or 0.0),
                 cost_status,
                 cost_source,
-                (provider_name or "").strip() or "",
                 native_tokens_prompt or 0,
                 native_tokens_cached or 0,
                 float(cache_discount or 0.0),

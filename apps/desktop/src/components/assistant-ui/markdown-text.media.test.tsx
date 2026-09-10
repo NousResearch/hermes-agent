@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -69,7 +69,19 @@ describe('MarkdownImage media routing', () => {
     const { container } = render(<MarkdownImage alt="note" src="file:///tmp/note.mp3" />)
 
     await waitFor(() => expect(container.querySelector('audio')).not.toBeNull())
-    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('audio')).toBeTruthy()
+  })
+
+  it('preloads video metadata and surfaces retry after a stream error', async () => {
+    const { container } = render(<MarkdownImage alt="clip" src="file:///tmp/clip.mp4" />)
+
+    await waitFor(() => expect(container.querySelector('video')).not.toBeNull())
+    const video = container.querySelector('video')!
+    expect(video.getAttribute('preload')).toBe('metadata')
+
+    fireEvent.error(video)
+
+    expect(await screen.findByRole('button', { name: 'Retry video' })).toBeTruthy()
   })
 
   it('still renders an <img> for an image source', () => {

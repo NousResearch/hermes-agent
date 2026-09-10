@@ -143,9 +143,14 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   )
 }
 
+const VIDEO_INITIAL_LOAD_RETRY_MS = 4_000
+const VIDEO_LOAD_TIMEOUT_MS = 12_000
+
 function MediaAttachment({ path }: { path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
+  const [videoAttempt, setVideoAttempt] = useState(0)
+  const [videoReady, setVideoReady] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
   const name = mediaName(path)
@@ -192,6 +197,39 @@ function MediaAttachment({ path }: { path: string }) {
     }
   }, [kind, path])
 
+  useEffect(() => {
+    setVideoAttempt(0)
+    setVideoReady(false)
+  }, [kind, src])
+
+  // Chromium can leave a custom-protocol video in an unbounded native spinner
+  // when the first remote stream races backend readiness. Start metadata loading
+  // immediately, retry that one transient race once, then make recovery explicit.
+  useEffect(() => {
+    if (kind !== 'video' || !src || videoReady || failed) {
+      return
+    }
+
+    const retry =
+      videoAttempt === 0 ? window.setTimeout(() => setVideoAttempt(1), VIDEO_INITIAL_LOAD_RETRY_MS) : undefined
+
+    const timeout = window.setTimeout(() => setFailed(true), VIDEO_LOAD_TIMEOUT_MS)
+
+    return () => {
+      if (retry !== undefined) {
+        window.clearTimeout(retry)
+      }
+
+      window.clearTimeout(timeout)
+    }
+  }, [failed, kind, src, videoAttempt, videoReady])
+
+  const retryVideo = () => {
+    setFailed(false)
+    setVideoReady(false)
+    setVideoAttempt(attempt => attempt + 1)
+  }
+
   if (kind === 'image' && src) {
     return (
       <span className="block">
@@ -217,10 +255,24 @@ function MediaAttachment({ path }: { path: string }) {
         <video
           className="block max-h-112 w-full rounded-lg bg-black"
           controls
+          key={videoAttempt}
+          onCanPlay={() => setVideoReady(true)}
           onError={() => setFailed(true)}
+          preload="metadata"
           src={src}
         />
-        {failed && <OpenMediaButton kind="video" path={path} />}
+        {failed && (
+          <span className="mt-2 flex gap-3">
+            <button
+              className="ref text-xs font-medium text-muted-foreground hover:text-foreground"
+              onClick={retryVideo}
+              type="button"
+            >
+              Retry video
+            </button>
+            <OpenMediaButton kind="video" path={path} />
+          </span>
+        )}
       </span>
     )
   }

@@ -328,6 +328,14 @@ class GatewaySlashCommandsMixin(
         runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else "(none)"
         return head + f"Tier: user\nSlash commands you can run: {runnable_str}"
 
+    async def _handle_bot_ping_command(self, event: MessageEvent) -> str:
+        """Handle /bot-ping — reply 'pong' to verify bot is alive.
+
+        Designed as a liveness check for QQBot platform, similar to OpenClaw's
+        /bot-ping command. Returns simple 'pong' text for latency measurement.
+        """
+        return "pong"
+
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI (DB work in a thread pool). Allowed
         while an agent runs: the board is profile-agnostic and never touches agent state."""

@@ -582,10 +582,18 @@ if (PASSWORD_STORE.store) {
 // sandbox (any cause, including a manual --no-sandbox flag) — guards the
 // relaunch handlers. `windowsSandboxFallbackSticky` = the fallback machinery
 // engaged and the marker must stay `fallback` after a successful boot; a
-// manual flag alone is honored but never made sticky.
+// manual flag alone is honored but never made sticky. A successful launch-time
+// ACL repair re-probes the sandbox once (like a version change), and
+// `windowsSandboxFallbackAclProbed` keeps that one-shot consumed so a
+// still-broken host returns to sticky --no-sandbox instead of re-crashing on
+// every launch.
 let windowsSandboxFallbackActive = false
 let windowsSandboxFallbackSticky = false
 let windowsSandboxFallbackReason: SandboxFallbackReason = 'boot-loop'
+// True once the one-shot ACL-repair re-probe is in flight (or already failed)
+// for this fallback episode; the relaunch handlers carry it into the fallback
+// marker they write so a still-broken host does not re-probe every launch.
+let windowsSandboxFallbackAclProbed = false
 let windowsNoSandboxRelaunchAttempted = false
 
 if (IS_WINDOWS) {
@@ -596,10 +604,17 @@ if (IS_WINDOWS) {
   // engaged — icacls /T recurses the whole install tree, so healthy launches
   // skip it (the installer already granted the ACE at install time). Repair
   // targets the install dir only: granting AppContainer read on userData would
-  // expose Hermes sessions/config to every packaged app on the machine.
+  // expose Hermes sessions/config to every packaged app on the machine. A
+  // SUCCESSFUL repair is fed into the sandbox decision below: while the
+  // fallback is engaged it triggers the same one-shot re-probe as a version
+  // change, so a healed host returns to full sandboxing without waiting for
+  // the next app update.
+  let aclRepairSucceeded = false
+
   if (shouldAttemptAclRepair(priorMarker)) {
     const exeDir = path.dirname(process.execPath)
     const acl = grantAllApplicationPackagesAcl(exeDir, { execFileSync })
+    aclRepairSucceeded = acl.ok
 
     if (acl.ok) {
       console.log(`[hermes] granted ALL APPLICATION PACKAGES RX on ${exeDir} (#38216)`)
@@ -612,11 +627,13 @@ if (IS_WINDOWS) {
     argv: process.argv,
     env: process.env,
     marker: priorMarker,
-    appVersion: app.getVersion()
+    appVersion: app.getVersion(),
+    aclRepairSucceeded
   })
 
   windowsSandboxFallbackActive = sandboxDecision.enable
   windowsSandboxFallbackSticky = sandboxDecision.nextMarker.state === 'fallback'
+  windowsSandboxFallbackAclProbed = sandboxDecision.nextMarker.aclRepairProbed === true
 
   if (sandboxDecision.nextMarker.state === 'fallback' && sandboxDecision.nextMarker.reason) {
     windowsSandboxFallbackReason = sandboxDecision.nextMarker.reason
@@ -651,7 +668,13 @@ if (IS_WINDOWS) {
     windowsSandboxFallbackReason = 'gpu-breakpoint'
 
     try {
-      writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+      const marker = fallbackMarker('gpu-breakpoint', app.getVersion())
+
+      if (windowsSandboxFallbackAclProbed) {
+        marker.aclRepairProbed = true
+      }
+
+      writeSandboxMarker(app.getPath('userData'), marker)
     } catch {
       void 0
     }
@@ -14669,7 +14692,8 @@ function createWindow() {
             markerAfterSuccessfulBoot({
               fallbackActive: windowsSandboxFallbackSticky,
               reason: windowsSandboxFallbackReason,
-              appVersion: app.getVersion()
+              appVersion: app.getVersion(),
+              aclRepairProbed: windowsSandboxFallbackAclProbed
             })
           )
         } catch (error) {
@@ -14752,7 +14776,13 @@ function createWindow() {
         windowsSandboxFallbackReason = 'renderer-crash-loop'
 
         try {
-          writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
+          const marker = fallbackMarker('renderer-crash-loop', app.getVersion())
+
+          if (windowsSandboxFallbackAclProbed) {
+            marker.aclRepairProbed = true
+          }
+
+          writeSandboxMarker(app.getPath('userData'), marker)
         } catch {
           void 0
         }

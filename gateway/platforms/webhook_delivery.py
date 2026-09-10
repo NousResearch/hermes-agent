@@ -28,7 +28,11 @@ def validate_destination(delivery):
             raise RuntimeStoreError('invalid_params')
     elif target != 'log' and not _is_known_platform(target):
         raise RuntimeStoreError('invalid_params')
-    return deepcopy(delivery)
+    # Configuration extras may contain credentials or whole rendered payloads.
+    # Persist only fields the selected sender actually consumes.
+    fields = {'log': (), 'github_comment': ('repo', 'pr_number')}.get(
+        target, ('chat_id', 'message_thread_id', 'thread_id'))
+    return {'deliver': target, 'deliver_extra': deepcopy({key: extra[key] for key in fields if key in extra})}
 
 
 def retained_destination(adapter, chat_id):

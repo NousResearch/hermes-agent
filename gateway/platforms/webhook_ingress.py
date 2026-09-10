@@ -54,6 +54,14 @@ async def _webhook_retry(authority, event):
     if not rows:
         return None
     row = get_session_admission(authority.db, admission_id=rows[0]['admission_id'])
+    retained = row['payload']['native_text_v1']
+    if 'webhook_delivery' not in retained and 'webhook_route' not in retained:
+        # A pre-destination receipt is still a receipt, not permission to infer
+        # again. Do not retrofit today's destination into its queued execution.
+        payload['native_text_v1'].pop('webhook_delivery')
+        payload['native_text_v1'].pop('webhook_route')
+        if 'provenance' not in retained:
+            payload['native_text_v1'].pop('provenance', None)
     if len(rows) != 1 or row['payload'] != payload:
         raise RuntimeStoreError('admission_conflict')
     event._webhook_duplicate = True

@@ -4,6 +4,7 @@ turn tracking and turn-failure detail. Bodies are rebound onto server.py's globa
 from __future__ import annotations
 
 from .method_ctx import bind_module
+from agent.prompt_builder import STEER_DISPLAY_KIND
 
 
 def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
@@ -202,6 +203,10 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
+        if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
+            # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
+            from agent.conversation_compression import _extract_steer_text_from_message
+            content_text = _extract_steer_text_from_message(m) or content_text
         if role == "tool":
             tc_name, tc_args = tool_call_args.get(m.get("tool_call_id") or "", (None, None))
             name = tc_name or m.get("tool_name") or "tool"

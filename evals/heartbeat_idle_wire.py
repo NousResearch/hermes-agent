@@ -60,6 +60,7 @@ async def main(base_poller):
     release = asyncio.Event()
 
     async def handler(event):
+        event._heartbeat_execution_started = True  # fake agent execution boundary
         received.append(event.text)
         await release.wait()
         return "wire reply"
@@ -108,6 +109,16 @@ async def main(base_poller):
             assert key in adapter._active_sessions and recovery == []
             await drain()
             print(json.dumps({"phase": "pinned route", "recovery_calls": len(recovery)}))
+            # Admission can be cancelled before the fake agent boundary is reached.
+            clock.now += 60
+            before = heartbeat.HeartbeatManager("wire-session").state.to_json()
+            turns_before = len(received)
+            await runner._heartbeat_poll_once(watch)
+            await adapter.cancel_session_processing(key)
+            await drain()
+            assert len(received) == turns_before
+            assert heartbeat.HeartbeatManager("wire-session").state.to_json() == before
+            print(json.dumps({"phase": "cancelled admission", "claim_refunded": True}))
             runner.config = GatewayConfig()
             runner.session_store = SessionStore(
                 sessions_dir=Path(os.environ["HERMES_HOME"]) / "sessions", config=runner.config)
@@ -122,10 +133,13 @@ async def main(base_poller):
                               "recovery_calls": len(recovery)}))
             # Route mismatch is a real adapter rejection, not a fabricated return value.
             adapter._session_key_profile = lambda source: "different-profile"
+            route_sid = resolved[1].session_id
+            heartbeat.HeartbeatManager(route_sid).set("check status", 60)
             clock.now += 60
-            before = heartbeat.HeartbeatManager("wire-session").state.to_json()
+            before = heartbeat.HeartbeatManager(route_sid).state.to_json()
             await runner._heartbeat_poll_once(watch)
-            assert heartbeat.HeartbeatManager("wire-session").state.to_json() == before
+            assert watch[key][1] == route_sid
+            assert heartbeat.HeartbeatManager(route_sid).state.to_json() == before
             assert snapshot()["queue_depth"] == 0
             print(json.dumps({"phase": "rejected route", "claim_refunded": True}))
     await adapter.disconnect()

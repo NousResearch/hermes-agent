@@ -57,6 +57,7 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
     received = []
 
     async def handler(event):
+        event._heartbeat_execution_started = True  # fake agent execution boundary
         received.append(event)
         started.set()
         await release.wait()
@@ -96,6 +97,7 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
     await runner._heartbeat_poll_once(watch)
 
     async def handler(event):
+        event._heartbeat_execution_started = True  # fake agent execution boundary
         return None
 
     adapter.set_message_handler(handler)

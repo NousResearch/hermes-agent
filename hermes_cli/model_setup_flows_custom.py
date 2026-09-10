@@ -214,6 +214,9 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
         should_use_ollama_native_catalog,
     )
 
+    from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
+    source = build_command_token_provider(provider_info.get("key_cmd", ""), provider_info["name"])
+    api_key = materialize_probe_api_key(source if source is not None else api_key)
     name, base_url = provider_info["name"], provider_info["base_url"]
     api_mode = provider_info.get("api_mode", "")
     provider_key = (provider_info.get("provider_key") or "").strip()
@@ -254,8 +257,10 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
     # _save_discovered_models_to_config. A failed save is non-fatal.
     if live_models:
         with contextlib.suppress(Exception):
-            from hermes_cli.model_switch_providers import _save_discovered_models_to_config
-            _save_discovered_models_to_config(base_url, live_models, api_mode=api_mode, headers=extra_headers or None)
+            from hermes_cli.model_switch_providers import _entry_credentials, _save_discovered_models_to_config
+            _save_discovered_models_to_config(
+                base_url, live_models, api_mode=api_mode, headers=extra_headers or None,
+                credential_identity=_entry_credentials(provider_info, "key_env", "api_key_env")[2])
     return models, native_catalog_empty
 
 
@@ -305,6 +310,7 @@ def _model_flow_named_custom(config, provider_info):
     # Resolve key from env var if api_key not set directly
     if not api_key and key_env:
         api_key = os.environ.get(key_env, "")
+    # Only configured credentials may be persisted, never a short-lived probe token.
     config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)
 
     # ``discover_models: false`` (default True) uses the configured ``models:`` list

@@ -16,6 +16,7 @@ local → ``hermes -p <name> chat --in ~ -c "Bot Chat" --create-if-missing -Q
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ MESSAGE_MAX_CHARS = 16000
 # the machine dies between spawn ack and the runner's finally.
 _DM_DIR_NAME = "hermes-dm"
 _DM_STALE_SECONDS = 24 * 60 * 60
+_LIVE_WAIT_SECONDS = 300
 
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
@@ -192,7 +194,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"Bot Mode gate check failed: {exc}")
 
     root, me = _hermes_root(Path(home)), _self_profile_name(Path(home))
-    roster = [name for name, _dir in _roster(root)]
+    roster_homes = dict(_roster(root))
+    roster = list(roster_homes)
     peers = _peers(root)
     teammates = [_handle(n) for n in roster if n != me]
 
@@ -243,7 +246,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
     return _start_delivery(["hermes", "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
-                           stdin_file=False, **delivery)
+                           stdin_file=False, profile_home=roster_homes[resolved], **delivery)
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
@@ -396,9 +399,73 @@ def _run_local_turn(argv: list[str], dm_file: str) -> int:
     return proc.returncode
 
 
-def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
-    """Run one DM transport and remove its plaintext file after consumption. The turn
-    window (not the enqueue) holds the target profile's cross-process lock, so two
+def _admit_live_dm(profile_home: Path | None, dm_file: str) -> dict | None:
+    """Pin intent before admission; retries may inspect, never change transport."""
+    from tools.bot_live_delivery import (
+        _fsync_dir, deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
+    )
+
+    intent: dict[str, Any]
+    intent_path = Path(dm_file + ".live.json")
+    if intent_path.exists():
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    else:
+        assert profile_home is not None
+        owner = find_canonical_live_owner(profile_home)
+        if owner is None:
+            return None
+        intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8"),
+                      delivery_id=hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest())
+        try:
+            fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(intent, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _fsync_dir(intent_path.parent)
+    home = intent["owner"]["profile_home"]
+    record = read_delivery_result(home, intent["delivery_id"])
+    if record is None:
+        record = deliver_to_live_owner(home, intent["owner"], intent["message"],
+                                       delivery_id=intent["delivery_id"])
+    return record
+
+
+def _wait_live_dm(home: str, delivery_id: str) -> int:
+    from tools.bot_live_delivery import read_delivery_result
+
+    deadline = time.monotonic() + _LIVE_WAIT_SECONDS
+    while True:
+        record = read_delivery_result(home, delivery_id)
+        status = record["status"] if record else "ambiguous"
+        if status not in ("queued", "claimed") or time.monotonic() >= deadline:
+            break
+        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+    payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
+    payload.update(status=status, delivery_id=delivery_id)
+    if status in ("queued", "claimed", "ambiguous"):
+        payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
+    print(json.dumps(payload))
+    return 0 if status in ("settled", "queued", "claimed") else 1
+
+
+def _local_delivery_home(argv: list[str]) -> Path | None:
+    cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    if len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
+        return None
+    from tools.bot_mode_probe import _hermes_root, _roster
+
+    return dict(_roster(_hermes_root(Path(_default_home())))).get(argv[2])
+
+
+def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
+                  profile_home: Path | None = None) -> int:
+    """Route to the live owner before attempting a CLI transport. Live deliveries
+    retain their intent/payload and immutable receipt; only CLI/peer payloads are
+    removed after consumption. The CLI turn window holds the profile lock, so two
     deliveries into one profile queue; a bounded wait ends in a 'target_busy' refusal.
 
     Local (query-file) turns get one policy-gated retry (#93091 item 5): transient failures re-run the same
@@ -407,6 +474,20 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
     ever minted. Auth/quota/config failures never retry. Peer transports (stdin mode) retry on their own
     gateway's deliver path, not here.
     """
+    # The live consumer owns turn admission; never compete for its CLI lease.
+    if not stdin_file:
+        home = profile_home or _local_delivery_home(argv)
+        if home is not None or Path(dm_file + ".live.json").exists():
+            try:
+                record = _admit_live_dm(home, dm_file)
+            except Exception as exc:
+                print(json.dumps({"status": "ambiguous", "delivery_id": hashlib.sha256(
+                    str(Path(dm_file).resolve()).encode()).hexdigest(),
+                    "error": f"Live admission outcome unknown: {exc}. Do not resend.",
+                    "evidence_file": dm_file}))
+                return 1
+            if record is not None:
+                return _wait_live_dm(record["profile_home"], record["delivery_id"])
     try:
         with _delivery_lock(argv, stdin_file=stdin_file):
             if not stdin_file:
@@ -419,10 +500,14 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
         _unlink_dm_file(dm_file)
 
 
-def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool) -> str:
+def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
+                      profile_home: Path | None = None) -> str:
     """Build an argv-safe command for the cleanup-owning background runner."""
     runner_argv = [sys.executable, str(Path(__file__).resolve()), "--run-delivery",
-                   "stdin" if stdin_file else "query-file", dm_file, *argv]
+                   "stdin" if stdin_file else "query-file", dm_file]
+    if profile_home is not None:
+        runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])
+    runner_argv.extend(argv)
     if sys.platform == "win32":
         # The tracked local backend uses Git Bash on native Windows: forward slashes keep drive
         # paths executable there; backslash paths are parsed as command names (exit 127).
@@ -431,11 +516,29 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool) -> str
 
 
 def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bool,
-                    task_id: Optional[str], agent: Any) -> str:
+                    task_id: Optional[str], agent: Any, profile_home: Path | None = None) -> str:
     """Create a DM file and transfer its cleanup ownership to the runner."""
     dm_file = _write_dm_file(content)
+    if profile_home is not None:
+        try:
+            record = _admit_live_dm(profile_home, dm_file)
+        except Exception as exc:
+            return json.dumps({"status": "ambiguous", "delivery_id": hashlib.sha256(
+                str(Path(dm_file).resolve()).encode()).hexdigest(),
+                "error": f"Live delivery admission could not be confirmed: {exc}. Do not resend.",
+                "evidence_file": dm_file})
+        if record is not None:
+            command = _delivery_command(argv, dm_file, stdin_file=False, profile_home=profile_home)
+            notification = json.loads(_spawn_delivery(command, label, task_id=task_id, agent=agent))
+            result = dict(status=record["status"], delivery_id=record["delivery_id"], to=label,
+                          detail="Durably queued for the live Bot Chat owner. Do NOT wait or resend; finish your turn.")
+            if notification.get("error"):
+                result["notification_error"] = notification["error"]
+            elif notification.get("process_id"):
+                result["process_id"] = notification["process_id"]
+            return json.dumps(result)
     try:
-        command = _delivery_command(argv, dm_file, stdin_file=stdin_file)
+        command = _delivery_command(argv, dm_file, stdin_file=stdin_file, profile_home=profile_home)
     except BaseException:
         _unlink_dm_file(dm_file)
         raise
@@ -485,7 +588,10 @@ def _delivery_main(args: list[str]) -> int:
     if len(args) < 3 or args[0] != "--run-delivery" or args[1] not in ("stdin", "query-file"):
         return 2
     try:
-        return _run_delivery(args[3:], args[2], stdin_file=args[1] == "stdin")
+        argv, profile_home = args[3:], None
+        if len(argv) >= 2 and argv[0] == "--profile-home":
+            profile_home, argv = Path(argv[1]), argv[2:]
+        return _run_delivery(argv, args[2], stdin_file=args[1] == "stdin", profile_home=profile_home)
     except Exception as exc:
         # 'target_busy': the queued delivery gave up after its bounded wait — surface the
         # structured payload on stdout so the completion notification carries it back.
@@ -521,4 +627,5 @@ def _session_title(agent: Any) -> str:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     raise SystemExit(_delivery_main(sys.argv[1:]))

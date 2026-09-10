@@ -11,12 +11,15 @@ All run zero LLM calls.
 import inspect
 import json
 import time
+from datetime import datetime, timezone
 
 import pytest
 
 from hermes_state import SessionDB
+from tools.registry import registry
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
+    _branch_copy_edge,
     _format_timestamp,
     _is_compacted_message,
     _resolve_to_parent,
@@ -324,6 +327,112 @@ class TestDiscoveryShape:
         assert "s_newest" not in sids
 
 
+class TestGatewayRestartLineageDiscovery:
+    @pytest.fixture
+    def restarted_lineage(self, db, request):
+        """Gateway restart chain in production shape: each successor row carries the
+        ``_reset_from`` marker stamped atomically at CREATE time
+        (gateway/session_recovery.py ``_session_create_kwargs``); the predecessor's
+        end write is a separate best-effort and may be missing ("the old row remains
+        open"). ``request.param=False`` seeds the pre-marker bare-link shape."""
+        markers = getattr(request, "param", True)
+        root, owner, current = (
+            "20260812_gateway_root", "20260903_gateway_owner", "20260904_gateway_current",
+        )
+        parent = None
+        for sid, day, title in (
+            (root, "2026-08-12", "MCP серверы Hermes"),
+            (owner, "2026-09-03", "September gateway recovery"),
+            (current, "2026-09-04", "Current gateway conversation"),
+        ):
+            db.create_session(
+                sid, source="telegram", parent_session_id=parent,
+                session_key="tg:restart:1",
+                model_config={"_reset_from": parent} if markers and parent else None,
+            )
+            started_at = datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                (started_at, title, sid),
+            )
+            parent = sid
+        # A restart can create a successor without ever ending its predecessor.
+        for index in range(6):
+            db.append_message(
+                owner, role="user" if index % 2 == 0 else "assistant",
+                content=f"restartneedle recovery note {index}",
+                timestamp=datetime(2026, 9, 3, 12, index, tzinfo=timezone.utc).timestamp(),
+            )
+        db.append_message(current, role="user", content="currentneedle live context")
+        db._conn.commit()
+        return owner, current
+
+    # markers=True: production rows carry _reset_from; markers=False: pre-marker bare
+    # links. Both must behave identically for every end_reason — the marker decides
+    # the boundary, not the (optional, overwritable) end write.
+    @pytest.mark.parametrize("restarted_lineage", [True, False], indirect=True)
+    @pytest.mark.parametrize("end_reason", [None, "compression", "session_reset"])
+    def test_previous_owner_is_searchable_but_current_context_is_not(
+        self, db, restarted_lineage, end_reason,
+    ):
+        owner, current = restarted_lineage
+        if end_reason is not None:
+            db.end_session(owner, end_reason)
+        result = json.loads(registry.dispatch(
+            "session_search", {"query": "restartneedle"},
+            db=db, current_session_id=current,
+        ))
+        assert result["success"] is True
+        assert [hit["session_id"] for hit in result["results"]] == [owner]
+        assert result["sessions_searched"] == result["count"] == 1
+        live = json.loads(registry.dispatch(
+            "session_search", {"query": "currentneedle"},
+            db=db, current_session_id=current,
+        ))
+        assert live["success"] is True
+        assert live["results"] == []
+
+    def test_metadata_describes_the_message_owner_not_the_lineage_root(
+        self, db, restarted_lineage,
+    ):
+        owner, _ = restarted_lineage
+        # Omit current_session_id so the visibility bug cannot mask the metadata bug.
+        result = json.loads(registry.dispatch(
+            "session_search", {"query": "restartneedle"}, db=db,
+        ))
+        assert result["success"] is True
+        hit, = result["results"]
+        assert hit["session_id"] == owner
+        # The tool formats timestamps in the host's local zone — compute the expected
+        # string the same way instead of hardcoding a zone-dependent literal.
+        expected_when = datetime.fromtimestamp(
+            datetime.fromisoformat("2026-09-03").replace(tzinfo=timezone.utc).timestamp()
+        ).strftime("%B %d, %Y at %I:%M %p")
+        assert (hit["when"], hit["title"]) == (
+            expected_when, "September gateway recovery",
+        )
+
+    def test_unended_restart_predecessor_hit_is_scrollable(self, db, restarted_lineage):
+        """PR-head gap: discovery surfaced the unended restart predecessor but scroll
+        rejected its anchor — "scroll never rejects a discovery result"."""
+        owner, current = restarted_lineage
+        disc = json.loads(session_search(
+            query="restartneedle", db=db, current_session_id=current, limit=1,
+        ))
+        assert disc["count"] == 1
+        hit = disc["results"][0]
+        scrolled = json.loads(session_search(
+            session_id=hit["session_id"],
+            around_message_id=hit["match_message_id"],
+            db=db,
+            current_session_id=current,
+        ))
+        assert scrolled["success"] is True
+        assert scrolled["mode"] == "scroll"
+        contents = " ".join(m.get("content") or "" for m in scrolled["messages"])
+        assert "restartneedle" in contents
+
+
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):
         _seed_modpack_sessions(db)
@@ -377,9 +486,15 @@ class TestScrollShape:
 
 
     def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db):
+        """Production shape (run_agent.py source fallback): a delegate run can land
+        with source='cli', so the ``_delegate_from`` marker — not the source — is what
+        keeps live delegation children out of recall. A bare child row without a
+        marker is indistinguishable from a restart successor and must stay
+        scrollable (see TestGatewayRestartLineageDiscovery)."""
         db.create_session("s_current", source="cli")
         db.create_session(
-            "s_delegate", source="delegate", parent_session_id="s_current"
+            "s_delegate", source="cli", parent_session_id="s_current",
+            model_config={"_delegate_from": "s_current"},
         )
         mid = db.append_message(
             "s_delegate", role="assistant", content="live delegated result"
@@ -679,8 +794,8 @@ class TestCompactionSummaryFiltering:
 # After compression (in-place compaction or legacy rotation), pre-compaction
 # content is no longer in the live context but MUST stay discoverable via
 # session_search. The old code skipped any FTS hit on the current session or
-# lineage, creating a "memory black hole". Delegation children must STAY
-# excluded — their content is still visible to the parent agent.
+# lineage, creating a "memory black hole". Live context is scoped to the
+# current session; hidden subagent sources remain excluded separately.
 # =========================================================================
 
 class TestResolveToParent:
@@ -787,14 +902,13 @@ class TestLegacyRotationDiscovery:
         assert "s_parent" in sids
 
 
-class TestDelegationExclusion:
-    """Delegation children (delegate_task) must STAY excluded — their content
-    is still visible to the parent agent. parent_session_id is set but the
-    parent does NOT have end_reason='compression'."""
+class TestSameLineageDiscovery:
+    """A bare parent link proves nothing either way: with no marker and no branch end
+    write (pre-marker legacy rows) the predecessor is treated as NOT projected into
+    the caller's context — recall errs toward surfacing (#20856/#85756) — while the
+    current session's own rows stay excluded."""
 
-    def test_delegation_parent_excluded_from_child(self, db):
-        """Child can see its own content but parent's live content stays
-        excluded (it's in context via delegation)."""
+    def test_unended_parent_surfaces_but_current_child_is_excluded(self, db):
         db.create_session("s_parent", source="cli")
         db.append_message("s_parent", role="user",
                           content="nebula deployment infrastructure setup")
@@ -808,7 +922,7 @@ class TestDelegationExclusion:
         result = json.loads(session_search(
             query="nebula deployment", db=db, current_session_id="s_child",
         ))
-        assert result["count"] == 0
+        assert [hit["session_id"] for hit in result["results"]] == ["s_parent"]
 
 
 # =========================================================================
@@ -931,7 +1045,7 @@ class TestRewindExclusion:
 
 class TestLegacyContinuationPlusDelegation:
     """Regression: a delegation child created under a compression continuation
-    must stay excluded — its content is still live to the parent agent.
+    must stay excluded because subagent runs are not the user's history.
     Only the compression-ended ancestor's content should surface."""
 
     def test_compression_parent_surfaces_but_delegate_child_excluded(self, db):
@@ -955,7 +1069,7 @@ class TestLegacyContinuationPlusDelegation:
         db.create_session("s_current", source="cli", parent_session_id="s_p")
 
         # Delegation child under s_p (not compression-ended)
-        db.create_session("s_delegate", source="cli", parent_session_id="s_p")
+        db.create_session("s_delegate", source="subagent", parent_session_id="s_p")
         db.append_message("s_delegate", role="assistant",
                           content="delegated cosmic anomaly subtask results")
 
@@ -980,7 +1094,7 @@ class TestLegacyContinuationPlusDelegation:
 # current-lineage exclusion (which assumes same-root content is already in
 # context) goes blind: FTS hits in last-night's session are dropped, and
 # browse hides every recent interactive row because they all have a parent.
-# Delegation children (live parent, no end_reason) must stay excluded.
+# Hidden subagent sources must stay excluded independently of parent links.
 # =========================================================================
 
 def _seed_gateway_new_reset_chain(db, *, needle="ibuprofen night-dose protocol"):
@@ -1048,43 +1162,20 @@ class TestNewResetLineageDiscovery:
         assert result["count"] >= 1
         assert "s_cli_old" in [r["session_id"] for r in result["results"]]
 
-    def test_live_delegation_child_still_excluded(self, db):
-        """Unended parent+child (delegate_task) must stay hidden."""
+    def test_hidden_subagent_child_still_excluded(self, db):
+        """Source filtering must still hide subagent runs after lineage filtering changes."""
         db.create_session("s_parent", source="cli")
+        db.create_session(
+            "s_child", source="subagent", parent_session_id="s_parent",
+        )
         db.append_message(
-            "s_parent", role="user",
+            "s_child", role="user",
             content="nebula deployment infrastructure setup",
         )
-        db.create_session(
-            "s_child", source="cli", parent_session_id="s_parent",
-        )
         result = json.loads(session_search(
-            query="nebula deployment", db=db, current_session_id="s_child",
+            query="nebula deployment", db=db, current_session_id="s_parent",
         ))
         assert result["count"] == 0
-
-    def test_branched_parent_still_excluded(self, db):
-        """/branch verbatim-copies the transcript into the child, so the
-        parent's content IS the branch child's live context — it must not
-        surface as a same-lineage recall hit (unlike /new-reset parents)."""
-        db.create_session("s_p", source="cli")
-        db.append_message(
-            "s_p", role="user", content="zephyr crystal cache design",
-        )
-        db.end_session("s_p", "branched")
-        db.create_session(
-            "s_q", source="cli", parent_session_id="s_p",
-            model_config={"_branched_from": "s_p"},
-        )
-        # /branch copies history into the child
-        db.append_message(
-            "s_q", role="user", content="zephyr crystal cache design",
-        )
-        result = json.loads(session_search(
-            query="zephyr crystal", db=db, current_session_id="s_q",
-        ))
-        sids = [r["session_id"] for r in result.get("results", [])]
-        assert "s_p" not in sids
 
     def test_title_match_reset_parent_not_dropped(self, db):
         _seed_gateway_new_reset_chain(db)
@@ -1155,4 +1246,297 @@ class TestNewResetLineageBrowse:
         result = json.loads(session_search(db=db, current_session_id="s_other"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
+
+
+# =========================================================================
+# Branch-copy boundary (review rework of #105147 / upstream #103184)
+#
+# /branch is the only writer that carries a transcript verbatim into a child
+# session row, and it stamps ``_branched_from`` atomically in the child's
+# INSERT. A predecessor whose transcript is already projected into the
+# caller's live context must STAY excluded from recall (the review's core
+# ask); reset/restart predecessors (empty child) and compression ancestors
+# (summary, not transcript) must surface. The marker — not the parent link,
+# not the end write — is the boundary in both directions.
+# =========================================================================
+
+def _seed_branch_copy(db, parent_id, child_id, needle, *, end_parent=None):
+    """Seed a /branch in production shape: the child row's INSERT stamps the
+    ``_branched_from`` marker atomically (gateway/slash_commands_session.py,
+    tui_gateway/methods_session.py, hermes_cli/cli_commands_mixin.py) and the
+    transcript is then copied verbatim; the gateway /branch path does NOT end
+    the parent row. Returns the parent's needle message id."""
+    db.create_session(parent_id, source="cli")
+    parent_mid = db.append_message(parent_id, role="user", content=needle)
+    if end_parent:
+        db.end_session(parent_id, end_parent)
+    db.create_session(child_id, source="cli", parent_session_id=parent_id,
+                      model_config={"_branched_from": parent_id})
+    db.append_message(child_id, role="user", content=needle)  # verbatim copy
+    db._conn.commit()
+    return parent_mid
+
+
+class TestBranchCopyExclusion:
+    """Negative controls: predecessors whose transcripts were verbatim-copied into
+    the current session stay excluded — restoring the semantic distinction the
+    pre-PR tests pinned (this flip-back is the review's purpose, not a regression
+    of the restart-chain fix below)."""
+
+    def test_branched_parent_still_excluded(self, db):
+        _seed_branch_copy(db, "s_p", "s_q", "zephyr crystal cache design")
+        result = json.loads(session_search(
+            query="zephyr crystal", db=db, current_session_id="s_q",
+        ))
+        sids = [r["session_id"] for r in result.get("results", [])]
+        assert "s_p" not in sids
+        assert result["count"] == 0
+
+    def test_branched_parent_still_excluded_after_re_end(self, db):
+        """A later end write on the parent (tui_shutdown and friends overwrite
+        end_reason — #20856) must not turn the copied transcript back into
+        recall; the marker is the boundary, not the end_reason."""
+        _seed_branch_copy(db, "s_p", "s_q", "zephyr crystal cache design")
+        db.end_session("s_p", "session_reset")
+        result = json.loads(session_search(
+            query="zephyr crystal", db=db, current_session_id="s_q",
+        ))
+        assert result["count"] == 0
+
+    def test_legacy_api_fork_parent_still_excluded(self, db):
+        """api_server fork: no marker, parent ended 'branched' before the child row
+        (the legacy arm). Seed the child's started_at from the parent's actual
+        ended_at + 1 — end_session stamps wall-clock now, so a fake small timestamp
+        would make the ordering arm false-negative."""
+        db.create_session("s_p", source="api_server")
+        db.append_message("s_p", role="user", content="zephyr crystal cache design")
+        db.end_session("s_p", "branched")
+        ended_at = db.get_session("s_p")["ended_at"]
+        db.create_session("s_q", source="api_server", parent_session_id="s_p")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (ended_at + 1, "s_q"),
+        )
+        db.append_message("s_q", role="user", content="zephyr crystal cache design")
+        db._conn.commit()
+        result = json.loads(session_search(
+            query="zephyr crystal", db=db, current_session_id="s_q",
+        ))
+        assert result["count"] == 0
+
+    def test_current_sessions_branch_descendant_excluded(self, db):
+        """Downward closure: the branch child of the CURRENT session holds a copy of
+        the caller's own transcript (ancestor-prefix copy), so it is a duplicate
+        source, not new recall."""
+        db.create_session("s_cur", source="cli")
+        db.append_message("s_cur", role="user", content="zephyr crystal cache design")
+        db.create_session("s_bc", source="cli", parent_session_id="s_cur",
+                          model_config={"_branched_from": "s_cur"})
+        db.append_message("s_bc", role="user", content="zephyr crystal cache design")
+        db._conn.commit()
+        result = json.loads(session_search(
+            query="zephyr crystal", db=db, current_session_id="s_cur",
+        ))
+        assert result["count"] == 0
+
+    def test_branch_of_branch_excludes_both_ancestors(self, db):
+        db.create_session("s_a", source="cli")
+        db.append_message("s_a", role="user", content="aurora spindle calibration")
+        db.create_session("s_b", source="cli", parent_session_id="s_a",
+                          model_config={"_branched_from": "s_a"})
+        db.append_message("s_b", role="user", content="aurora spindle calibration")
+        db.append_message("s_b", role="user", content="aurora beacon alignment")
+        db.create_session("s_c", source="cli", parent_session_id="s_b",
+                          model_config={"_branched_from": "s_b"})
+        db.append_message("s_c", role="user", content="aurora spindle calibration")
+        db._conn.commit()
+        result = json.loads(session_search(
+            query="aurora", db=db, current_session_id="s_c",
+        ))
+        assert [r["session_id"] for r in result.get("results", [])] == []
+
+    def test_scroll_into_branched_parent_anchor_is_rejected(self, db):
+        """Scroll duality: the branch parent's transcript is already in the child's
+        active context, so scrolling its anchor must be rejected — while reset
+        predecessors stay scrollable (test_unended_restart_predecessor_hit_is_scrollable)."""
+        parent_mid = _seed_branch_copy(db, "s_p", "s_q", "zephyr crystal cache design")
+        result = json.loads(session_search(
+            session_id="s_p", around_message_id=parent_mid, db=db,
+            current_session_id="s_q",
+        ))
+        assert result["success"] is False
+        assert "current session" in result.get("error", "").lower()
+
+    def test_branch_parent_title_suppressed_from_child_side(self, db):
+        db.create_session("s_p", source="cli")
+        db.append_message("s_p", role="user", content="plain work note")
+        db._conn.execute("UPDATE sessions SET title = ? WHERE id = ?",
+                         ("Zephyr Branch Origin Story", "s_p"))
+        db.create_session("s_q", source="cli", parent_session_id="s_p",
+                          model_config={"_branched_from": "s_p"})
+        db._conn.commit()
+        from_child = json.loads(session_search(
+            query="Zephyr Branch Origin Story", db=db, current_session_id="s_q",
+        ))
+        assert from_child["count"] == 0
+        # From outside the lineage the same title must still resolve.
+        from_outside = json.loads(session_search(
+            query="Zephyr Branch Origin Story", db=db,
+        ))
+        assert [r["session_id"] for r in from_outside["results"]] == ["s_p"]
+
+
+class TestContinuationProjectionDiscovery:
+    """Positive controls: only branch-copy edges keep a predecessor inside the
+    caller's live context; every continuation that does NOT carry the transcript
+    (reset, restart, compression) surfaces."""
+
+    def test_compression_continuation_with_inherited_marker_surfaces_parent(self, db):
+        """s_a --branch--> s_b --compression--> s_c. The compression continuation
+        inherits ``_branched_from=s_a`` verbatim while its parent is s_b: binding
+        the marker BY VALUE must not misread s_c as a branch child of s_b."""
+        db.create_session("s_a", source="cli")
+        db.append_message("s_a", role="user", content="velvet compass assembly")
+        db.create_session("s_b", source="cli", parent_session_id="s_a",
+                          model_config={"_branched_from": "s_a"})
+        db.append_message("s_b", role="user", content="velvet compass assembly")
+        db.append_message("s_b", role="user", content="harbor winch calibration")
+        db.end_session("s_b", "compression")
+        db.create_session("s_c", source="cli", parent_session_id="s_b",
+                          model_config={"_branched_from": "s_a"})
+        db.append_message("s_c", role="user", content="continue after summary")
+        db._conn.commit()
+        # s_b's own post-branch message crossed the edge only as a summary — it must
+        # be reachable from the continuation (existence-only marker matching would
+        # misread s_c as s_b's branch child and hide it).
+        from_sc = json.loads(session_search(
+            query="harbor winch", db=db, current_session_id="s_c",
+        ))
+        assert [r["session_id"] for r in from_sc["results"]] == ["s_b"]
+        # From s_b itself the branch edge to s_a still binds: s_a and s_b's own copy
+        # of it stay hidden.
+        from_sb = json.loads(session_search(
+            query="velvet compass", db=db, current_session_id="s_b",
+        ))
+        assert from_sb["count"] == 0
+
+    def test_reset_edge_cuts_the_projection(self, db):
+        """s_a --branch--> s_b, then a fresh reset child s_r of s_b: the branch
+        chain is reachable from s_r (the reset child carries no transcript) while
+        staying hidden from s_b (the branch child carries a copy)."""
+        db.create_session("s_a", source="cli")
+        db.append_message("s_a", role="user", content="solstice ledger audit")
+        db.create_session("s_b", source="cli", parent_session_id="s_a",
+                          model_config={"_branched_from": "s_a"})
+        db.append_message("s_b", role="user", content="solstice ledger audit")
+        db.append_message("s_b", role="user", content="harbor winch calibration")
+        db.create_session("s_r", source="cli", parent_session_id="s_b",
+                          model_config={"_reset_from": "s_b"})
+        db._conn.commit()
+        from_sr = json.loads(session_search(
+            query="solstice ledger", db=db, current_session_id="s_r",
+        ))
+        assert from_sr["count"] == 1
+        assert from_sr["results"][0]["session_id"] in {"s_a", "s_b"}
+        from_sb = json.loads(session_search(
+            query="solstice ledger", db=db, current_session_id="s_b",
+        ))
+        assert from_sb["count"] == 0
+
+    def test_branch_sibling_under_non_projected_ancestor_surfaces(self, db):
+        """The projection stops at the reset edge below s_p, so s_p AND its branch
+        child (an alternate future of s_p, not of the caller) are both reachable
+        from the reset child — and stay hidden from the branch sibling itself."""
+        db.create_session("s_p", source="cli")
+        db.append_message("s_p", role="user", content="solstice ledger audit")
+        db.create_session("s_sib", source="cli", parent_session_id="s_p",
+                          model_config={"_branched_from": "s_p"})
+        db.append_message("s_sib", role="user", content="solstice ledger audit")
+        db.create_session("s_r", source="cli", parent_session_id="s_p",
+                          model_config={"_reset_from": "s_p"})
+        db._conn.commit()
+        from_sr = json.loads(session_search(
+            query="solstice ledger", db=db, current_session_id="s_r",
+        ))
+        assert from_sr["count"] == 1
+        assert from_sr["results"][0]["session_id"] in {"s_p", "s_sib"}
+        from_sib = json.loads(session_search(
+            query="solstice ledger", db=db, current_session_id="s_sib",
+        ))
+        assert from_sib["count"] == 0
+
+    def test_delegate_marker_hides_cli_sourced_delegate_child_from_discovery(self, db):
+        """run_agent.py can stamp delegate runs source='cli' (fallback chain), so the
+        ``_delegate_from`` marker — not the source filter — hides the live
+        delegation run from discovery."""
+        db.create_session("s_current", source="cli")
+        db.create_session(
+            "s_delegate", source="cli", parent_session_id="s_current",
+            model_config={"_delegate_from": "s_current"},
+        )
+        db.append_message(
+            "s_delegate", role="assistant", content="quasar delegation trace results",
+        )
+        db._conn.commit()
+        result = json.loads(session_search(
+            query="quasar delegation", db=db, current_session_id="s_current",
+        ))
+        assert result["count"] == 0
+
+
+class TestBranchCopyEdge:
+    """Unit matrix for the pure edge classifier behind the live-context projection."""
+
+    def test_marker_bound_by_value_to_the_parent(self):
+        assert _branch_copy_edge(
+            {"model_config": {"_branched_from": "p1"}}, {"id": "p1"}) is True
+
+    def test_marker_survives_json_text_storage(self):
+        # sessions.model_config is stored as JSON text; get_session returns it unparsed.
+        assert _branch_copy_edge(
+            {"model_config": '{"_branched_from": "p1"}'}, {"id": "p1"}) is True
+
+    def test_inherited_marker_names_the_grandparent_not_this_edge(self):
+        # compression copies model_config onto the continuation row: the inherited
+        # value names s_a while the parent here is s_b — not a branch copy.
+        assert _branch_copy_edge(
+            {"model_config": {"_branched_from": "s_a"}, "started_at": 200.0},
+            {"id": "s_b"}) is False
+
+    def test_marker_pointing_at_an_unrelated_id(self):
+        assert _branch_copy_edge(
+            {"model_config": {"_branched_from": "someone-else"}}, {"id": "p1"}) is False
+
+    def test_legacy_branched_end_with_later_child_start(self):
+        # api_server fork shape: parent ended 'branched', child started afterwards.
+        assert _branch_copy_edge(
+            {"started_at": 101.0},
+            {"id": "p1", "end_reason": "branched", "ended_at": 100.0}) is True
+
+    def test_legacy_arm_requires_an_ended_at(self):
+        assert _branch_copy_edge(
+            {"started_at": 101.0},
+            {"id": "p1", "end_reason": "branched", "ended_at": None}) is False
+
+    def test_legacy_arm_requires_child_started_after_parent_ended(self):
+        assert _branch_copy_edge(
+            {"started_at": 99.0},
+            {"id": "p1", "end_reason": "branched", "ended_at": 100.0}) is False
+
+    def test_reset_marker_is_not_a_copy_edge(self):
+        assert _branch_copy_edge(
+            {"model_config": {"_reset_from": "p1"}, "started_at": 101.0},
+            {"id": "p1", "end_reason": "session_reset", "ended_at": 100.0}) is False
+
+    def test_delegate_marker_is_not_a_copy_edge(self):
+        assert _branch_copy_edge(
+            {"model_config": {"_delegate_from": "p1"}, "started_at": 101.0},
+            {"id": "p1"}) is False
+
+    def test_bare_parent_link_is_not_a_copy_edge(self):
+        assert _branch_copy_edge({"started_at": 101.0}, {"id": "p1"}) is False
+
+    def test_compression_ended_parent_is_not_a_copy_edge(self):
+        assert _branch_copy_edge(
+            {"started_at": 101.0},
+            {"id": "p1", "end_reason": "compression", "ended_at": 100.0}) is False
 

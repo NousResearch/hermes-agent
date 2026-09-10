@@ -6,6 +6,13 @@ FTS5 deduped by lineage, adaptive detail hydrates only the top result),
 SCROLL (``session_id`` + ``around_message_id``; ±window around the anchor),
 READ (``session_id`` alone; whole session or head/tail), BROWSE (no args).
 No LLM calls — every shape returns actual DB messages.
+
+Same-lineage visibility is bounded by continuation semantics, not parent links
+or end writes (both are unproven in either direction — #20856): only sessions
+whose transcripts are already projected into the caller's active context — the
+branch-copy closure around the current session, plus live delegate runs — are
+excluded; reset/restart predecessors and compression ancestors stay searchable.
+See ``_live_context_projection``.
 """
 
 import json
@@ -13,7 +20,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_state_common import _RESET_END_REASONS
+from hermes_state_sessions import _parse_model_config
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
@@ -34,10 +41,16 @@ _DISCOVER_SCAN_LIMIT = 300
 _DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started")
 # Compaction handoff summaries (agent/context_compressor.py); excluded from bookends.
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
-# /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
-# carrying its transcript forward — unlike compression continuations and live delegation
-# children. Derived from the gateway set so the two cannot drift.
-_FRESH_RESET_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
+# Stable lineage markers in sessions.model_config, each written atomically in the child
+# row's CREATE INSERT — so a marker proves its edge's semantics even when the parent's
+# end write is missing or was later overwritten (#20856). Local to this file on purpose:
+# hermes_state keeps its SQL literals inline; do not widen these without the write sites.
+_BRANCHED_FROM_KEY = "_branched_from"  # /branch + api fork children: gateway/slash_commands_session.py, tui_gateway/methods_session.py + session_workdir.py, hermes_cli/cli_commands_mixin.py
+_RESET_FROM_KEY = "_reset_from"  # fresh starts (/new, /reset, idle/daily, restart promote): gateway/session_recovery.py _session_create_kwargs
+_DELEGATE_FROM_KEY = "_delegate_from"  # delegate subagent children: tools/delegate_tool.py (+ hermes_state_schema.py v16 backfill)
+# Soft cap on lineage nodes visited per projection; real branch chains are single digits,
+# so this only bounds pathological/corrupt graphs (the visited set is the cycle guard).
+_PROJECTION_NODE_CAP = 256
 
 
 def _quiet(fn, default, msg, *log_args, with_exc: bool = False):
@@ -113,13 +126,98 @@ def _same_lineage(db, a: str, b: str) -> bool:
     return bool(a_root and a_root == _resolve_lineage(db, b))
 
 
-def _session_left_live_context(db, session_id: str) -> bool:
-    """True when the transcript left everyone's live context: ``compression``
-    (summarised into the child) or a fresh reset (child starts empty). Live delegation
-    children (``end_reason is None``) and ``branched`` parents (copied verbatim into
-    the branch) ARE the current context, so they stay excluded from recall."""
-    end_reason = (session_id and _get_session_meta(db, session_id).get("end_reason")) or None
-    return end_reason == "compression" or end_reason in _FRESH_RESET_END_REASONS
+def _branch_copy_edge(child_meta: Dict[str, Any], parent_meta: Dict[str, Any]) -> bool:
+    """True when *child_meta*'s row started life as a verbatim copy of *parent_meta*'s
+    transcript (a /branch or api-fork child) — the only edge that carries a caller's
+    transcript into another row.
+
+    Marker arm binds BY VALUE (``_branched_from`` must equal the parent's id): compression
+    copies ``model_config`` onto its continuation row (hermes_state_compression.py
+    ``_publish_child_session_row``), so presence-only matching would misclassify every
+    compression continuation as a branch child (same binding as the
+    ``_is_explicit_fork_child_row`` precedent in hermes_state_messages.py). Legacy arm
+    mirrors the second disjunct of ``_BRANCH_CHILD_SQL`` (hermes_state_common.py) so
+    pre-marker api forks and old CLI branches stay covered — keep the two in sync.
+    Reset/restart edges, delegate edges, compression-ended parents and bare parent links
+    are all False."""
+    if _parse_model_config(child_meta.get("model_config")).get(_BRANCHED_FROM_KEY) == parent_meta.get("id"):
+        return True
+    return (parent_meta.get("end_reason") == "branched"
+            and parent_meta.get("ended_at") is not None
+            and (child_meta.get("started_at") or 0) >= parent_meta["ended_at"])
+
+
+def _live_context_projection(db, current_session_id: Optional[str]) -> tuple[frozenset[str], frozenset[str]]:
+    """``(projected, subagent_hidden)`` — the live-context boundary for *current_session_id*.
+
+    ``projected`` is the bidirectional closure of branch-copy edges around the current
+    session (itself included): every session whose transcript is already in the caller's
+    active context. /branch is the only writer that carries a transcript verbatim into a
+    child row, and it stamps ``_branched_from`` atomically in the child's INSERT; a
+    reset/restart/compression edge carries no transcript (empty child or a summary), so
+    the walk stops at the first non-copy edge and everything beyond it stays searchable.
+    ``subagent_hidden`` holds delegate-marked children of the visited walk (marker by
+    existence — the v16 migration also backfills ``'__orphaned__'``): a live delegation
+    run is its parent's own context, and its source can fall back to ``'cli'``
+    (run_agent.py), so the marker — not the source — is what hides it.
+
+    Cost: one indexed child-rows query (idx_sessions_parent) per visited node, computed
+    once per discover/title call — no per-scanned-row metadata lookups."""
+    if not current_session_id:
+        return frozenset(), frozenset()
+    projected = {current_session_id}
+    subagent_hidden = set()
+    metas: Dict[str, Dict[str, Any]] = {}
+
+    def _meta_of(sid: str) -> Dict[str, Any]:
+        if sid not in metas:
+            metas[sid] = _get_session_meta(db, sid)
+        return metas[sid]
+
+    def _child_rows(parent_id: str) -> List[Dict[str, Any]]:
+        def _query():
+            with db._lock:
+                return [dict(r) for r in db._conn.execute(
+                    "SELECT * FROM sessions WHERE parent_session_id = ?", (parent_id,)).fetchall()]
+        return _quiet(_query, [], "child-session lookup failed for %s", parent_id, with_exc=True) or []
+
+    # Upward: hop parent links while each edge is a branch copy; the first non-copy edge
+    # (reset, restart, compression, bare legacy link) ends the walk — nothing at or above
+    # it is in the caller's context.
+    visited = {current_session_id}
+    cur, boundary_id = current_session_id, None
+    while len(visited) < _PROJECTION_NODE_CAP:
+        cur_meta = _meta_of(cur)
+        parent_id = cur_meta.get("parent_session_id")
+        if not parent_id or parent_id in visited:
+            break
+        parent_meta = _meta_of(parent_id)
+        if not _branch_copy_edge(cur_meta, parent_meta):
+            boundary_id = parent_id  # delegate children of the boundary hide too
+            break
+        visited.add(parent_id)
+        projected.add(parent_id)
+        cur = parent_id
+    # Downward: branch descendants of every projected member also hold ancestor-prefix
+    # copies of the caller's transcript (same duplicate source), so they join the
+    # projection; the boundary predecessor's children only get the delegate sweep (its
+    # branch children are alternate futures of a session the caller replaced, not of the
+    # caller's own context).
+    stack = list(projected) + ([boundary_id] if boundary_id else [])
+    while stack:
+        node = stack.pop()
+        node_meta = _meta_of(node)
+        for child in _child_rows(node):
+            cid = child.get("id")
+            if not cid:
+                continue
+            if _parse_model_config(child.get("model_config")).get(_DELEGATE_FROM_KEY) is not None:
+                subagent_hidden.add(cid)
+            if (node in projected and cid not in projected
+                    and len(projected) < _PROJECTION_NODE_CAP and _branch_copy_edge(child, node_meta)):
+                projected.add(cid)
+                stack.append(cid)
+    return frozenset(projected), frozenset(subagent_hidden)
 
 
 def _get_message_storage_state(db, message_id) -> Optional[Dict[str, Any]]:
@@ -183,18 +281,21 @@ def _discovery_entry(lineage_root: Optional[str], **fields) -> Dict[str, Any]:
     return entry
 
 
-def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Discovery-shaped result when the query matches a session title, else None."""
+def _title_match_result(db, query: str, live_projection) -> Optional[Dict[str, Any]]:
+    """Discovery-shaped result when the query matches a session title, else None.
+    *live_projection* is the ``(projected, subagent_hidden)`` pair from
+    ``_live_context_projection`` for the caller's session: a title is suppressed only
+    when that very session is already in the caller's live context (a branch
+    predecessor); a reset/restart predecessor's title must surface."""
     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
     session_id = title_query and _quiet(lambda: db.resolve_session_by_title(title_query), None,
                                         "resolve_session_by_title failed for %r", title_query)
     if not session_id:
         return None
-    lineage_root = _resolve_lineage(db, session_id)
-    # Same-lineage title hits are in-context only while the session is live;
-    # /new-reset and compression-ended parents are not.
-    if current_lineage_root and lineage_root == current_lineage_root and not _session_left_live_context(db, session_id):
+    projected, subagent_hidden = live_projection
+    if session_id in projected or session_id in subagent_hidden:
         return None
+    lineage_root = _resolve_lineage(db, session_id)
     session_meta = _quiet(lambda: db.get_session(lineage_root) or db.get_session(session_id), None,
                           "get_session failed for title match %s", session_id) or {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
@@ -242,7 +343,8 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
     except Exception as e:
         logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
         return None
-    session_meta, full = _get_session_meta(db, lineage_root), result_detail == "full"
+    # A gateway lineage can span months; metadata must describe the matched session.
+    session_meta, full = _get_session_meta(db, hit_sid), result_detail == "full"
     return _discovery_entry(
         lineage_root, session_id=hit_sid,
         when=_format_timestamp(session_meta.get("started_at") or match_info.get("session_started")),
@@ -261,8 +363,8 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
 def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str = None, link_profile: str = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
-    current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    live_projection = _live_context_projection(db, current_session_id)
+    title_result = _title_match_result(db, query, live_projection)
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
         exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
@@ -285,28 +387,19 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         seen_sessions[title_lineage] = {"_title_only": True}
     # Dedupe by lineage (lineage_root -> first surviving FTS row) up to `limit`. The raw
     # owning session_id stays on the row — only it pairs validly with the FTS match id.
-    # Current-lineage hits are skipped UNLESS the transcript left live context
-    # (compression-ended, /new-reset predecessor, or an in-place compacted row on the
-    # SAME session); a live delegation child (end_reason=None) stays excluded.
+    # Live context is bounded by continuation semantics, not parent links or end writes:
+    # a hit is already in the caller's context only when its owning session sits inside
+    # the branch-copy closure around the current session, or is a live delegate run of
+    # the visited walk. Reset/restart predecessors without an end write, compression
+    # ancestors and branch siblings all stay searchable; compaction archives on the
+    # current session keep their exemption (archived rows are out-of-context history).
+    projected, subagent_hidden = live_projection
     for r in raw_results:
         if len(seen_sessions) >= limit:
             break
         raw_sid, resolved_sid = r["session_id"], _resolve_lineage(db, r["session_id"])
-        # Skip the current session lineage — UNLESS the hit's transcript has left live context. Three
-        # sub-cases: Legacy compression rotation: the FTS hit lives in a session that itself ended with
-        # end_reason='compression'. That session's content has been replaced by a summary in the
-        # continuation child, so it must stay discoverable. /new-reset (and idle/daily/CLI new_session): the
-        # predecessor was ended without carrying any transcript into the child. Same lineage root, but the
-        # prior conversation is NOT in the active context — hiding it made gateway recall go blind after
-        # every /new (#85756). A live delegation child has end_reason=None, so it stays excluded. In-place
-        # compaction: the FTS hit lives on the SAME session_id as the current session, but the matched
-        # message row is an archived (active=0, compacted=1) row. The live-context load filters active=1, so
-        # that content is no longer in context — let it through.
         is_compacted_hit = _is_compacted_message(db, r.get("id"))
-        if current_lineage_root and resolved_sid == current_lineage_root and not (
-                _session_left_live_context(db, raw_sid) or is_compacted_hit):
-            continue
-        if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
+        if not is_compacted_hit and (raw_sid in projected or raw_sid in subagent_hidden):
             continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
     for lineage_root, match_info in seen_sessions.items():
@@ -440,12 +533,16 @@ def _clamp_int(value, default: int, lo: int, hi: int) -> int:
 
 def _anchor_in_live_context(db, anchor_state, anchor_sid: str, current_session_id: str) -> bool:
     """True when the scroll anchor is still in the caller's active context (reject).
-    Same-lineage history that LEFT live context (compacted rows, compression-ended
-    parents, /new-reset predecessors) passes, so scroll never rejects a discovery result.
-    Rewind/undo rows (active=0, compacted!=1) never count as out-of-context history."""
-    if not _same_lineage(db, anchor_sid, current_session_id) or _is_compacted_state(anchor_state):
+    History that LEFT the context passes — compaction archives (active=0/compacted=1)
+    and any session outside the branch-copy projection (reset/restart predecessors,
+    compression ancestors) — so scroll never rejects a discovery result. Rewind/undo
+    rows (active=0, compacted!=1) never count as out-of-context history."""
+    if _is_compacted_state(anchor_state):
         return False
-    return (anchor_state is not None and anchor_state["active"] == 0) or not _session_left_live_context(db, anchor_sid)
+    if anchor_state is not None and anchor_state["active"] == 0:
+        return True
+    projected, subagent_hidden = _live_context_projection(db, current_session_id)
+    return anchor_sid in projected or anchor_sid in subagent_hidden
 
 
 def _scroll(db, session_id: str, around_message_id: int, window: int = 5,

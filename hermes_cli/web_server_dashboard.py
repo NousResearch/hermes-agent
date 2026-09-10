@@ -812,6 +812,15 @@ def _mount_plugin_api_routes():
         if not api_path.exists():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue
+        # Plugin api files are user code: some add their plugin root to sys.path and
+        # ship a top-level tools/ package for plugin-local helpers. Left behind, those
+        # shadow Hermes core modules (e.g. tools.skills_tool) for every later import.
+        original_sys_path = list(sys.path)
+        original_tools_modules = {
+            name: module
+            for name, module in sys.modules.items()
+            if name == "tools" or name.startswith("tools.")
+        }
         try:
             module_name = f"hermes_dashboard_plugin_{plugin['name']}"
             spec = importlib.util.spec_from_file_location(module_name, api_path)
@@ -834,3 +843,9 @@ def _mount_plugin_api_routes():
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+        finally:
+            sys.path[:] = original_sys_path
+            for name in list(sys.modules):
+                if name == "tools" or name.startswith("tools."):
+                    sys.modules.pop(name, None)
+            sys.modules.update(original_tools_modules)

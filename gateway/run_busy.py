@@ -713,6 +713,15 @@ class GatewayBusySessionMixin:
         # messages sent while the agent was busy (interrupt mode, or a steer that fell back to queue)
         # arrived as one mashed-together turn (#43066 sub-bug 2). The FIFO path gives each text its own turn
         # in arrival order while still preserving photo-burst / album merge semantics for media.
+        # A voice fast-lane follow-up must not discard an in-progress voice reply or task: queue
+        # it behind the current turn instead of interrupting, the same exemption TEXT queue-mode
+        # gets above (checked here, not there, because this event's message_type is VOICE).
+        _voice_fast_lane_queue = (
+            event.message_type == MessageType.VOICE
+            and bool(getattr(event.source, "_voice_fast_lane", False))
+        )
+        if _voice_fast_lane_queue:
+            effective_mode = "queue"
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
         is_redirect_mode = effective_mode == "interrupt" and redirected

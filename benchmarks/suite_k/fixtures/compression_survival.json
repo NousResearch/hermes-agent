@@ -1,0 +1,98 @@
+[
+  {
+    "id": "cs_01",
+    "description": "Critical deploy region survives compressed project summary",
+    "compressed_summary": "Session summary: deployment discussion settled on production region us-east-1, blue-green cutover at 02:00 UTC, rollback playbook verified.",
+    "recent_noise": [
+      "Current conversation moved on to editor settings and terminal fonts.",
+      "New discussion is about shell aliases and prompt themes."
+    ],
+    "query": "What production region did we settle on?",
+    "gold_answer": "us-east-1",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cs_02",
+    "description": "Chosen database survives compressed architecture recap",
+    "compressed_summary": "Architecture recap: team chose PostgreSQL 16 for the primary database, pgvector for embeddings, and Qdrant remains isolated for search experiments.",
+    "recent_noise": [
+      "The latest chat is about frontend animation polish.",
+      "No database changes are being discussed now."
+    ],
+    "query": "Which primary database did the team choose?",
+    "gold_answer": "PostgreSQL 16",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cs_03",
+    "description": "Security policy survives compressed decision log",
+    "compressed_summary": "Decision log: all admin accounts require MFA, production access stays gated behind Authentik, and break-glass access is manually audited.",
+    "recent_noise": [
+      "The active thread is now about dashboard colors.",
+      "People are picking chart palettes and icons."
+    ],
+    "query": "What is the rule for admin accounts?",
+    "gold_answer": "require MFA",
+    "difficulty": "medium"
+  },
+  {
+    "id": "cs_04",
+    "description": "Compressed sprint summary keeps delivery outcome",
+    "compressed_summary": "Sprint summary: auth module completed, API docs completed, and sprint 12 closed successfully with both goals done.",
+    "recent_noise": [
+      "The current discussion is about planning sprint 13 scope.",
+      "New ideas include metrics cleanup and CI speedups."
+    ],
+    "query": "What was accomplished in sprint 12?",
+    "gold_answer": "auth module completed",
+    "difficulty": "medium"
+  },
+  {
+    "id": "cs_05",
+    "description": "Compressed infra summary preserves exact endpoint",
+    "compressed_summary": "Infra summary: internal vector service remains at http://qdrant.internal:6333, backup cadence is every 6 hours, and observability uses Grafana plus Loki.",
+    "recent_noise": [
+      "The active topic is now privacy copy edits.",
+      "No infrastructure work is happening in the current turn."
+    ],
+    "query": "What is the internal vector service endpoint?",
+    "gold_answer": "qdrant.internal:6333",
+    "difficulty": "medium"
+  },
+  {
+    "id": "cs_06",
+    "description": "Compressed policy note preserves retention window",
+    "compressed_summary": "Policy note: logs are retained for 30 days, deleted accounts are anonymized after 30 days, and privacy review ownership sits with Mira.",
+    "recent_noise": [
+      "Current topic concerns CLI ergonomics.",
+      "The team is debating shell completion UX."
+    ],
+    "query": "How long are logs retained?",
+    "gold_answer": "30 days",
+    "difficulty": "medium"
+  },
+  {
+    "id": "cs_07",
+    "description": "Compressed summary preserves nuanced authorization fact",
+    "compressed_summary": "Security summary: authorization is role-based access control, editors cannot delete production resources, and operators can rotate secrets after audit approval.",
+    "recent_noise": [
+      "Current context is focused on landing-page copy.",
+      "No auth changes are active in the immediate thread."
+    ],
+    "query": "What authorization model do we use?",
+    "gold_answer": "role-based access control",
+    "difficulty": "hard"
+  },
+  {
+    "id": "cs_08",
+    "description": "Compressed summary preserves connection pool settings despite later noise",
+    "compressed_summary": "Ops summary: primary write pool increased to 200, read replica pool remains 50, and cache TTL stays at 900 seconds.",
+    "recent_noise": [
+      "The newest conversation is only about notification sounds.",
+      "No database tuning is happening in the current turn."
+    ],
+    "query": "What is the primary write pool size now?",
+    "gold_answer": "200",
+    "difficulty": "hard"
+  }
+]

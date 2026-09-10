@@ -3961,6 +3961,19 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+
+            # The agent/command handler has finished and the next visible action
+            # is final response delivery (or silence/queue handoff).  Stop the
+            # typing refresh *before* sending the final message, not only in the
+            # finally cleanup after delivery.  Platforms such as Discord have no
+            # explicit "typing stop" endpoint; a late refresh that lands just
+            # before the final send can leave the client showing "bot is typing"
+            # for the platform TTL after the answer has already appeared.  This
+            # boundary also closes the race where a handler-level stop_typing()
+            # (GatewayRunner does one after _run_agent()) is immediately undone
+            # by the still-running base refresh loop before _send_with_retry().
+            await _stop_typing_task()
+
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)

@@ -138,6 +138,46 @@ and DELETE of the `messages` table. The current triggers are gated on the
 background FTS rebuild can proceed without double-indexing) and cover all three
 indexed columns — see `SCHEMA_SQL` in `hermes_state.py` for the exact SQL.
 
+### Optional trigram search
+
+Trigram message search is controlled per profile by `sessions.trigram_fts`.
+It is **off by default**. Enable it explicitly in that profile's configuration
+when CJK or other substring search should use the SQLite trigram index:
+
+```yaml
+sessions:
+  trigram_fts: true
+```
+
+When the setting is false, Hermes does not create, populate, update, rebuild,
+or query `messages_fts_trigram` or its SQLite shadow tables. Normal keyword
+search continues to use `messages_fts`. A query that would otherwise use
+trigram semantics falls back to a `LIKE` scan; if no message matches, the
+search returns no results rather than raising a trigram-specific error. The
+independent `messages_fts_cjk` index remains governed by its own tokenizer and
+configuration.
+
+The setting is safe for both fresh and existing databases:
+
+- A new database with the default disabled has the standard FTS table but no
+  trigram table.
+- A database created or populated while trigram search was enabled continues to
+  open when the setting is later disabled. Existing trigram tables and shadow
+  tables are left in place, but their maintenance triggers are detached and the
+  disabled profile does not read them. Startup does not drop or destructively
+  clean up those old structures.
+- Re-enabling the setting allows Hermes to use the existing structures again and
+  create or repair the trigram index when necessary. Databases without those
+  structures are initialized and backfilled as part of the normal FTS setup.
+
+For a safe rollout, set `sessions.trigram_fts: true` only for profiles that need
+substring search, restart that profile, and monitor the first startup for the
+normal index setup/rebuild work. Keep a backup of `state.db` before changing the
+setting on a production profile. To roll back, set the option to `false` and
+restart; message writes and standard search remain available, with `LIKE` as
+the fallback for trigram-dependent queries. No manual deletion or migration of
+old trigram tables is required.
+
 
 ## Schema Version and Migrations
 

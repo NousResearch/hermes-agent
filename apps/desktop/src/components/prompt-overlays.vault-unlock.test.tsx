@@ -47,7 +47,11 @@ it('routes the master password to the owning profile socket, never the ambient g
   fireEvent.submit(input.closest('form')!)
 
   await waitFor(() => expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(1))
-  expect(gatewayMocks.requestGatewayForAgent.mock.calls[0].slice(0, 3)).toEqual(['conn-1', 'owner', 'vault.unlock.respond'])
+  expect(gatewayMocks.requestGatewayForAgent.mock.calls[0].slice(0, 3)).toEqual([
+    'conn-1',
+    'owner',
+    'vault.unlock.respond'
+  ])
   expect(ambient).not.toHaveBeenCalled()
   await waitFor(() => expect(sessionVaultUnlockRequest('session-a').get()).toBeNull())
 })

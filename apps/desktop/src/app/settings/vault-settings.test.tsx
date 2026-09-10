@@ -143,8 +143,22 @@ describe('VaultSettings', () => {
 
   it('unlocks a password manager from Settings; the master password leaves only via vault.unlock', async () => {
     const sources = [
-      { name: 'onepassword', display_name: '1Password', enabled: true, needs_unlock: true, unlocked: false, installed: true },
-      { name: 'bitwarden', display_name: 'Bitwarden', enabled: false, needs_unlock: true, unlocked: false, installed: false }
+      {
+        name: 'onepassword',
+        display_name: '1Password',
+        enabled: true,
+        needs_unlock: true,
+        unlocked: false,
+        installed: true
+      },
+      {
+        name: 'bitwarden',
+        display_name: 'Bitwarden',
+        enabled: false,
+        needs_unlock: true,
+        unlocked: false,
+        installed: false
+      }
     ]
 
     requestGateway.mockImplementation(async (method: string) => {
@@ -176,7 +190,9 @@ describe('VaultSettings', () => {
     await waitFor(() => expect(screen.getByText('Unlock 1Password')).toBeTruthy())
 
     fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'correct horse' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }).closest('form')!.querySelector('button[type=submit]')!)
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Unlock' }).closest('form')!.querySelector('button[type=submit]')!
+    )
 
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith('vault.unlock', { name: 'onepassword', password: 'correct horse' })

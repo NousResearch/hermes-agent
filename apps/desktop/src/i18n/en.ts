@@ -518,7 +518,7 @@ export const en: Translations = {
       loadFailed: 'Could not load vault items',
       empty: 'Nothing saved yet',
       emptyDesc:
-        'You don\'t have to add anything here. Ask the agent to sign into a site and it will ask you for the login once, on the spot. Use Add if you prefer to enter one ahead of time.',
+        "You don't have to add anything here. Ask the agent to sign into a site and it will ask you for the login once, on the spot. Use Add if you prefer to enter one ahead of time.",
       add: 'Add',
       addTitle: 'Add a login, card or address',
       addDescription: 'Stored encrypted on this machine. The agent never sees the password.',
@@ -562,7 +562,8 @@ export const en: Translations = {
         blurb:
           'Installed password managers are picked up automatically. The agent asks you to unlock one the first time it needs a login from it (once per session); only a session token stays in memory, and the agent never sees your master password or any login.',
         toggleFailed: 'Could not update password manager',
-        notInstalled: name => `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
+        notInstalled: name =>
+          `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
         disabledDesc: 'Detected but turned off for Hermes.',
         lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
         unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',

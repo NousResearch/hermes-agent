@@ -38,7 +38,12 @@ it('sends identifier + password as one vault.save_login.respond to the owning pr
   const ambient = vi.fn().mockResolvedValue({ status: 'ok' })
   $activeSessionId.set('session-b')
   $gateway.set({ request: ambient } as never)
-  setVaultSaveLoginRequest({ origin: 'https://github.com', requestId: 'req-s', sessionId: 'session-a', site: 'github.com' })
+  setVaultSaveLoginRequest({
+    origin: 'https://github.com',
+    requestId: 'req-s',
+    sessionId: 'session-a',
+    site: 'github.com'
+  })
 
   render(<PromptOverlays sessionId="session-a" />)
   expect(document.body.textContent).toContain('Save your github.com login?')
@@ -55,7 +60,10 @@ it('sends identifier + password as one vault.save_login.respond to the owning pr
   await waitFor(() => expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(1))
   const [conn, profile, method, params] = gatewayMocks.requestGatewayForAgent.mock.calls[0] as unknown[]
   expect([conn, profile, method]).toEqual(['conn-1', 'owner', 'vault.save_login.respond'])
-  expect(JSON.parse((params as { login: string }).login)).toEqual({ identifier: 'tek@acme.test', password: 'fixture-pw' })
+  expect(JSON.parse((params as { login: string }).login)).toEqual({
+    identifier: 'tek@acme.test',
+    password: 'fixture-pw'
+  })
   expect(ambient).not.toHaveBeenCalled()
   await waitFor(() => expect(sessionVaultSaveLoginRequest('session-a').get()).toBeNull())
 })
@@ -64,13 +72,21 @@ it("Don't save answers an empty login and clears the card", async () => {
   $profiles.set([{ name: 'owner' }] as never)
   setSessionOwnerHint('session-a', { connectionId: 'conn-1', profile: 'owner' })
   $gateway.set({ request: vi.fn() } as never)
-  setVaultSaveLoginRequest({ origin: 'https://github.com', requestId: 'req-d', sessionId: 'session-a', site: 'github.com' })
+  setVaultSaveLoginRequest({
+    origin: 'https://github.com',
+    requestId: 'req-d',
+    sessionId: 'session-a',
+    site: 'github.com'
+  })
 
   render(<PromptOverlays sessionId="session-a" />)
   const decline = Array.from(document.querySelectorAll('button')).find(b => b.textContent === "Don't save")!
   fireEvent.click(decline)
 
   await waitFor(() => expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(1))
-  expect((gatewayMocks.requestGatewayForAgent.mock.calls[0] as unknown[])[3]).toEqual({ login: '', request_id: 'req-d' })
+  expect((gatewayMocks.requestGatewayForAgent.mock.calls[0] as unknown[])[3]).toEqual({
+    login: '',
+    request_id: 'req-d'
+  })
   await waitFor(() => expect(sessionVaultSaveLoginRequest('session-a').get()).toBeNull())
 })

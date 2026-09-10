@@ -182,7 +182,6 @@ export function VaultSettings() {
   const pendingMasterPassword = useRef('')
   const pendingSecret = useRef<null | Record<string, string>>(null)
 
-
   const { data: sourcesData } = useQuery({
     enabled: gatewayState === 'open',
     queryKey: VAULT_SOURCES_QUERY_KEY,
@@ -298,10 +297,7 @@ export function VaultSettings() {
     setSearchParams(next, { replace: true })
   }, [openAdd, searchParams, setSearchParams])
 
-  const invalidate = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }),
-    [queryClient]
-  )
+  const invalidate = useCallback(() => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }), [queryClient])
 
   const addMutation = useMutation({
     mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string }) => {
@@ -419,11 +415,17 @@ export function VaultSettings() {
               {item.identifier && <span className="truncate">{v.identifierShown(item.identifier)}</span>}
               {item.origin && item.origin.replace(/^https?:\/\//, '') !== item.label && (
                 <>
-                  {item.identifier && <span aria-hidden className="text-(--ui-text-tertiary)">·</span>}
+                  {item.identifier && (
+                    <span aria-hidden className="text-(--ui-text-tertiary)">
+                      ·
+                    </span>
+                  )}
                   <span className="truncate">{item.origin}</span>
                 </>
               )}
-              <span aria-hidden className="text-(--ui-text-tertiary)">·</span>
+              <span aria-hidden className="text-(--ui-text-tertiary)">
+                ·
+              </span>
               <span>{v.createdOn(formatCreated(item.created_at))}</span>
             </span>
           }
@@ -462,7 +464,13 @@ export function VaultSettings() {
                     {v.sources.lock}
                   </Button>
                 ) : (
-                  <Button className="gap-1.5" onClick={() => setUnlockTarget(source)} size="sm" type="button" variant="outline">
+                  <Button
+                    className="gap-1.5"
+                    onClick={() => setUnlockTarget(source)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
                     <KeyRound className="size-3.5" />
                     {v.sources.unlock}
                   </Button>
@@ -565,10 +573,7 @@ export function VaultSettings() {
           >
             <div className="grid items-start gap-4 sm:grid-cols-2">
               <Field htmlFor="vault-kind" label={v.kindField}>
-                <Select
-                  onValueChange={value => setForm(f => ({ ...f, kind: value as VaultKind }))}
-                  value={form.kind}
-                >
+                <Select onValueChange={value => setForm(f => ({ ...f, kind: value as VaultKind }))} value={form.kind}>
                   <SelectTrigger className={CONTROL_TEXT} id="vault-kind">
                     <SelectValue />
                   </SelectTrigger>

@@ -270,10 +270,10 @@ export const hasBlockingPromptRequest = (sessionId: string | null | undefined): 
 
   return Boolean(
     approval.$all.get()[key] ||
-      sudo.$all.get()[key] ||
-      secret.$all.get()[key] ||
-      vaultUnlock.$all.get()[key] ||
-      vaultSave.$all.get()[key]
+    sudo.$all.get()[key] ||
+    secret.$all.get()[key] ||
+    vaultUnlock.$all.get()[key] ||
+    vaultSave.$all.get()[key]
   )
 }
 

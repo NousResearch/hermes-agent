@@ -7,7 +7,9 @@ import { stubResizeObserver } from '@/test/jsdom'
 
 // Every vault RPC is routed to the OWNER profile's socket; the mock records which profile each
 // call targeted so the tests can prove a draft never crosses owners.
-const { calls } = vi.hoisted(() => ({ calls: [] as { method: string; params: Record<string, unknown>; profile: string }[] }))
+const { calls } = vi.hoisted(() => ({
+  calls: [] as { method: string; params: Record<string, unknown>; profile: string }[]
+}))
 let respond: (profile: string, method: string) => Promise<unknown> = async () => ({})
 
 vi.mock('@/store/gateway', async importActual => ({
@@ -59,7 +61,8 @@ beforeEach(() => {
   queryClient.clear()
   $activeGatewayProfile.set('default')
   $gatewayState.set('open')
-  respond = async (_profile, method) => (method === 'vault.sources' ? { sources } : method === 'vault.list' ? { items: [] } : { ok: true })
+  respond = async (_profile, method) =>
+    method === 'vault.sources' ? { sources } : method === 'vault.list' ? { items: [] } : { ok: true }
 })
 
 afterEach(() => {
@@ -80,7 +83,7 @@ it('a master-password draft is wiped on a profile switch and never submitted to 
   await waitFor(() => expect(calls.some(c => c.profile === 'other-profile' && c.method === 'vault.list')).toBe(true))
 })
 
-it("a late list response from profile A never paints under profile B", async () => {
+it('a late list response from profile A never paints under profile B', async () => {
   let resolveA!: (value: unknown) => void
   const held = new Promise(r => (resolveA = r))
 
@@ -103,25 +106,51 @@ it("a late list response from profile A never paints under profile B", async () 
   await waitFor(() => expect(calls.some(c => c.profile === 'other-profile' && c.method === 'vault.list')).toBe(true))
 
   await act(async () => {
-    resolveA({ items: [{ id: 'a', kind: 'login', label: 'A-only private account', origin: 'https://a.example', identifier: 'a@example.com', created_at: '' }] })
+    resolveA({
+      items: [
+        {
+          id: 'a',
+          kind: 'login',
+          label: 'A-only private account',
+          origin: 'https://a.example',
+          identifier: 'a@example.com',
+          created_at: ''
+        }
+      ]
+    })
     await held
   })
   expect(screen.queryByText('A-only private account')).toBeNull()
 })
 
 it('vault.add secrets never enter the mutation cache', async () => {
-  respond = async (_profile, method) => (method === 'vault.sources' ? { sources } : method === 'vault.list' ? { items: [] } : { id: 'created' })
+  respond = async (_profile, method) =>
+    method === 'vault.sources' ? { sources } : method === 'vault.list' ? { items: [] } : { id: 'created' }
   const view = mount()
   fireEvent.click(await screen.findByRole('button', { name: 'Add' }))
 
-  for (const [label, value] of [['Label', 'fixture'], ['Site origin', 'https://example.com'], ['Identifier', 'fixture@example.com'], ['Password', 'fixture-retained-password']] as const) {
+  for (const [label, value] of [
+    ['Label', 'fixture'],
+    ['Site origin', 'https://example.com'],
+    ['Identifier', 'fixture@example.com'],
+    ['Password', 'fixture-retained-password']
+  ] as const) {
     fireEvent.change(screen.getByLabelText(label), { target: { value } })
   }
 
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
   await waitFor(() => expect(calls.some(c => c.method === 'vault.add')).toBe(true))
-  expect((calls.find(c => c.method === 'vault.add')!.params.secret as Record<string, string>).password).toBe('fixture-retained-password')
+  expect((calls.find(c => c.method === 'vault.add')!.params.secret as Record<string, string>).password).toBe(
+    'fixture-retained-password'
+  )
   await waitFor(() => expect(screen.queryByLabelText('Password')).toBeNull())
   view.unmount()
-  expect(JSON.stringify(queryClient.getMutationCache().getAll().map(m => m.state.variables))).not.toContain('fixture-retained-password')
+  expect(
+    JSON.stringify(
+      queryClient
+        .getMutationCache()
+        .getAll()
+        .map(m => m.state.variables)
+    )
+  ).not.toContain('fixture-retained-password')
 })

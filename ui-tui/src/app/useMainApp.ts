@@ -646,7 +646,12 @@ export function useMainApp(gw: GatewayClient) {
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
-  const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
+  const marker =
+    overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify
+      ? '⚠'
+      : ui.busy
+        ? '⏳'
+        : '✓'
 
   const tabCwd = ui.info?.cwd
 

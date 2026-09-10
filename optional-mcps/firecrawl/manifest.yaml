@@ -1,0 +1,56 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: firecrawl
+description: >-
+  Firecrawl MCP server — web search, scrape, interact, crawl, map, and
+  docs-search tools for AI agents. Hosted endpoint; no local process.
+source: https://docs.firecrawl.dev/ai-onboarding
+
+# Firecrawl ships a remote MCP server over Streamable HTTP. No local
+# install or subprocess needed — just point Hermes at the hosted endpoint.
+transport:
+  type: http
+  url: https://mcp.firecrawl.dev/v2/mcp
+
+# API key auth: the catalog install flow prompts for FIRECRAWL_API_KEY,
+# saves it to ~/.hermes/.env, and writes a Bearer-token header into the
+# mcp_servers.firecrawl config block. The ${FIRECRAWL_API_KEY} placeholder
+# is resolved at connection time.
+#
+# FIRECRAWL_API_KEY is already registered in OPTIONAL_ENV_VARS (used by
+# the web search/extract plugin), so users who already have it set won't
+# be re-prompted during install.
+#
+# The key is optional (required: false) to support Firecrawl's keyless free
+# tier — search, scrape, and interact work without an API key (rate-limited).
+# When the user skips the key at install time, no headers block is written
+# and the MCP client connects anonymously. Users can add a key later by
+# setting FIRECRAWL_API_KEY in .env and re-running `hermes mcp install
+# firecrawl`.
+auth:
+  type: api_key
+  env:
+    - name: FIRECRAWL_API_KEY
+      prompt: "Firecrawl API key (starts with fc-). Press Enter to skip and use the keyless free tier (rate-limited)."
+      required: false
+      secret: true
+
+# Tool selection at install time:
+# Firecrawl's MCP tool surface includes search, scrape, interact, crawl,
+# map, ask, and docs-search. We leave default_enabled unset so the
+# install-time probe pre-checks everything — users prune what they don't
+# want.
+#
+# Note: Firecrawl also offers a keyless free tier (rate-limited) for
+# search/scrape/interact. To use it, manually remove the headers block
+# from config.yaml after install. The catalog path defaults to the
+# authenticated (recommended) configuration.
+
+post_install: |
+  Firecrawl MCP installed. Start a new Hermes session to load its tools.
+  Docs: https://docs.firecrawl.dev
+  Get an API key: https://www.firecrawl.dev/signin
+  No key? Search, scrape, and interact work on the keyless free tier
+  (rate-limited). Crawl, map, and other endpoints require a key.

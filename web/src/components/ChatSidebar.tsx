@@ -539,7 +539,9 @@ export function ChatSidebar({
           // Same path the Models page uses (REST /api/model/set), not the
           // sidecar config.set RPC, which didn't reliably land in the
           // config.yaml the agent boots from. Always persisted (alwaysGlobal).
-          loader={() => api.getModelOptions(profile)}
+          loader={(options?: { refresh?: boolean }) =>
+            api.getModelOptions({ profile, refresh: options?.refresh })
+          }
           alwaysGlobal
           onApply={async ({ provider, model, confirmExpensiveModel }) => {
             setModelNotice(null);

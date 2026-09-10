@@ -1,0 +1,123 @@
+# Standalone compose file for running the local stack against the fork's
+# published GHCR image (includes Weixin QR onboarding + dashboard auth).
+#
+# Routine refresh:
+#   docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
+#
+# Override HERMES_FORK_IMAGE if you want a different fork tag:
+#   HERMES_FORK_IMAGE=ghcr.io/jzkk720/hermes-agent:sha-abc1234 \
+#     docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
+# Supported voice architecture for this lane:
+# - Hermes runtime comes from the published GHCR image in this compose file.
+# - Active voice provider and default voice come from mounted data/config.yaml.
+# - edge-tts and piper-tts are runtime-wired packages, not part of a repo-local build lane.
+# - Qwen3-TTS remains a separate host-side sidecar reached via host.docker.internal:17494.
+
+x-hermes-common: &hermes-common
+  image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
+  pull_policy: always
+  restart: unless-stopped
+  volumes:
+    - ./data:/opt/data
+    - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro
+    # entrypoint.sh is NOT mounted here — the upstream image bakes in its own
+    # working entrypoint. Mounting a Windows-checked-out copy causes CRLF
+    # failures (tini: No such file or directory).
+  environment:
+    - HERMES_UID=1000
+    - HERMES_GID=1000
+    - HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
+    - OPENAI_API_KEY=ollama
+    # Ollama lives on the Docker host. host.docker.internal resolves via the
+    # extra_hosts entry below — works on Docker Desktop (Win/macOS) and on
+    # Linux with the host-gateway mapping.
+    - OPENAI_BASE_URL=http://host.docker.internal:11434/v1
+    - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
+  env_file:
+    - path: ./data/.env
+      required: false
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  hermes-web:
+    <<: *hermes-common
+    container_name: hermes-web
+    # Bind 0.0.0.0 inside the container so Docker port forwarding works.
+    # Host-side binding is 127.0.0.1 (see ports below) so it's not LAN-exposed.
+    # Upstream 0.17+ requires auth for non-loopback binds — basic_auth is
+    # configured in data/config.yaml (username=admin, password=hermes).
+    # Voice package availability is currently reinforced at container startup. This does not change the supported runtime lane: the containers still run from the published GHCR image.
+    command: ["sh", "-lc", "(/opt/hermes/.venv/bin/python3 -m pip show edge-tts >/dev/null 2>&1 && /opt/hermes/.venv/bin/python3 -m pip show piper-tts >/dev/null 2>&1) || /opt/hermes/.venv/bin/python3 -m pip install -q edge-tts==7.2.7 piper-tts==1.6.0; exec /opt/hermes/.venv/bin/hermes dashboard --host 0.0.0.0 --port 9119 --no-open"]
+    environment:
+      - GATEWAY_HEALTH_URL=http://hermes-gateway:8642
+    volumes:
+      - ./data:/opt/data
+      - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro
+      # The dashboard container registers a placeholder gateway-default log
+      # service under /run/service during boot. Keep its log dir private so it
+      # does not lock the shared gateway log path used by hermes-gateway.
+      - hermes_web_gateway_default_log:/opt/data/logs/gateways/default
+    ports:
+      - "127.0.0.1:9119:9119"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:9119/api/status'); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  hermes-gateway:
+    <<: *hermes-common
+    container_name: hermes-gateway
+    # Runs the gateway with the weixin (WeChat personal / iLink) platform enabled
+    # per docker/hermes-config.yaml. weixin uses outbound long-poll to
+    # ilinkai.weixin.qq.com — no inbound host port needed.
+    # Voice package availability is currently reinforced at container startup. This does not change the supported runtime lane: the containers still run from the published GHCR image.
+    command: ["sh", "-lc", "(/opt/hermes/.venv/bin/python3 -m pip show edge-tts >/dev/null 2>&1 && /opt/hermes/.venv/bin/python3 -m pip show piper-tts >/dev/null 2>&1) || /opt/hermes/.venv/bin/python3 -m pip install -q edge-tts==7.2.7 piper-tts==1.6.0; exec /opt/hermes/.venv/bin/hermes gateway run"]
+    environment:
+      - API_SERVER_KEY=${API_SERVER_KEY:-28765d337208aa3c0b6671cb1969e8cad9c22d7b7967b216}
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_CORS_ORIGINS=http://localhost:8788,http://host.docker.internal:8788
+      - GATEWAY_ALLOW_ALL_USERS=true
+    ports:
+      - "8642:8642"
+      - "8789:8789"
+      - "8644:8644"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hermes-web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8642/health'); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hermes-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hermes
+      POSTGRES_USER: hermes
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  hermes_web_gateway_default_log:
+  postgres_data:

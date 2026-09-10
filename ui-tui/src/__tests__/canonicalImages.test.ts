@@ -8,7 +8,7 @@ import { expect, it, vi } from 'vitest'
 import { submitPrompt } from '../app/submissionCore.js'
 import { captureDestination } from '../app/submissionDestination.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
-import { stageImagePath } from '../lib/imageAttachments.js'
+import { stageClipboardImage, stageImagePath } from '../lib/imageAttachments.js'
 import { loadPendingInputs } from '../lib/pendingInputs.js'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64')
@@ -47,6 +47,23 @@ it('stages private immutable local bytes, uploads remote bytes, and never falls 
     await expect(stageImagePath(source, gw, captureDestination())).rejects.toThrow('upload refused')
     writeFileSync(source, 'not an image')
     await expect(stageImagePath(source, gw, captureDestination())).rejects.toThrow(/image/i)
+  } finally { resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
+})
+
+it('extracts clipboard on the client and uploads only captured bytes to a remote owner', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'ink-clipboard-'))
+  vi.stubEnv('HERMES_HOME', home)
+  vi.stubEnv('HERMES_TUI_GATEWAY_URL', 'wss://remote.example')
+  resetUiState(); patchUiState({ sid: 'owner' })
+  const request = vi.fn(async () => ({ path: '/owner/cache/images/clip.png' }))
+  const extract = vi.fn(async (path: string) => { writeFileSync(path, png); return true })
+  try {
+    const image = await stageClipboardImage({ request } as any, captureDestination(), extract)
+    expect(image).toMatchObject({ path: '/owner/cache/images/clip.png', mime: 'image/png' })
+    expect(request).toHaveBeenCalledWith('image.attach_bytes', expect.objectContaining({ content_base64: png.toString('base64') }))
+    expect(() => readFileSync(extract.mock.calls[0]![0])).toThrow()
+    expect(await stageClipboardImage({ request } as any, captureDestination(), async () => false)).toBeNull()
+    expect(request).toHaveBeenCalledTimes(1)
   } finally { resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
 })
 

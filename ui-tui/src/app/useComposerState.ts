@@ -15,7 +15,7 @@ import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
-import { stageImagePath } from '../lib/imageAttachments.js'
+import { stageClipboardImage, stageImagePath } from '../lib/imageAttachments.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
@@ -273,11 +273,13 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         return null
       }
 
-      return resolveAttachment(
+      return resolveAttachment<ClipboardPasteResponse & { path?: string; mime?: string }>(
         destination,
         revision,
-        gw.request<ClipboardPasteResponse & { path?: string }>('clipboard.paste', { session_id: sid })
-          .catch(() => null),
+        (gw.isCanonical
+          ? stageClipboardImage(gw, destination).then(image => image ? { ...image, attached: true } : null)
+          : gw.request<ClipboardPasteResponse & { path?: string; mime?: string }>('clipboard.paste', { session_id: sid }))
+          .catch((error: Error) => { if (!quiet) { sys(`clipboard image failed: ${error.message}`) } return null }),
         r => {
           if (r?.attached) {
             return attachImageToken(r, value, cursor)

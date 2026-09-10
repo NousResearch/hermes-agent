@@ -64,13 +64,46 @@ FACT_FEEDBACK_SCHEMA = {
     },
 }
 
-# Auto-extraction (on_session_end): (patterns, category) — user preferences -> user_pref, decisions -> project.
+def _format_extracted_fact(prefix: str, fragment: str, *, colon: bool = False) -> str:
+    """Build a concise fact from a regex capture instead of raw chat text."""
+    detail = " ".join(str(fragment or "").split()).strip()
+    if not detail:
+        return ""
+    detail = detail[:400].rstrip()
+    fact = f"{prefix}: {detail}" if colon else f"{prefix} {detail}"
+    return fact if fact[-1] in ".!?" else fact + "."
+
+
+def _pref_prefix(match):
+    return {"prefer": "User prefers", "like": "User likes", "love": "User likes",
+            "use": "User uses", "want": "User wants", "need": "User needs"}[match.group(1).lower()]
+
+
+def _habit_prefix(match):
+    return {"always": "User always", "never": "User never",
+            "usually": "User usually"}[match.group(1).lower()]
+
+
+def _subject_prefix(match):
+    # "my default shell is zsh" must become "User's default shell is zsh.",
+    # not "User prefers zsh." — keep what the value applies to.
+    return f"User's {match.group(1).lower()} {' '.join(match.group(2).split())} is"
+
+
+# Auto-extraction (on_session_end): ((pattern, fact_formatter), category) — user preferences -> user_pref,
+# decisions -> project. Each formatter derives a concise fact from the regex capture instead of
+# storing the raw chat message.
 _EXTRACT_CATEGORIES = (
-    ([re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
-      re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
-      re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE)], "user_pref"),
-    ([re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
-      re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE)], "project"),
+    ([(re.compile(r'\bI\s+(prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
+       lambda m: _format_extracted_fact(_pref_prefix(m), m.group(2))),
+      (re.compile(r'\bmy\s+(favorite|preferred|default)\s+(\w+(?:\s+\w+)*?)\s+is\s+(.+)', re.IGNORECASE),
+       lambda m: _format_extracted_fact(_subject_prefix(m), m.group(3))),
+      (re.compile(r'\bI\s+(always|never|usually)\s+(.+)', re.IGNORECASE),
+       lambda m: _format_extracted_fact(_habit_prefix(m), m.group(2)))], "user_pref"),
+    ([(re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
+       lambda m: _format_extracted_fact("Project decision", m.group(1), colon=True)),
+      (re.compile(r'\bthe\s+project\s+(uses|needs|requires)\s+(.+)', re.IGNORECASE),
+       lambda m: _format_extracted_fact(f"Project {m.group(1).lower()}", m.group(2)))], "project"),
 )
 
 
@@ -250,12 +283,18 @@ class HolographicMemoryProvider(MemoryProvider):
             if not isinstance(content, str) or len(content) < 10:
                 continue
             for patterns, category in _EXTRACT_CATEGORIES:
-                if any(p.search(content) for p in patterns):
-                    try:
-                        self._store.add_fact(content[:400], category=category)
-                        extracted += 1
-                    except Exception:
-                        pass
+                for pattern, formatter in patterns:
+                    match = pattern.search(content)
+                    if not match:
+                        continue
+                    fact = formatter(match)
+                    if fact:
+                        try:
+                            self._store.add_fact(fact, category=category)
+                            extracted += 1
+                        except Exception:
+                            pass
+                    break
         if extracted:
             logger.info("Auto-extracted %d facts from conversation", extracted)
 

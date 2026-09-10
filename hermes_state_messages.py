@@ -777,6 +777,8 @@ class SessionMessagesMixin:
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
+        if after_id is not None and include_ancestors:
+            raise ValueError("after_id is incompatible with include_ancestors (merged-lineage reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
         # Ancestor expansion uses the resume lineage (explicit /branch copies stay single-session).
         session_ids = self._resume_lineage_ids(session_id) if include_ancestors else [session_id]

@@ -6022,3 +6022,21 @@ class TestGetMessagesAncestors:
         assert [m["content"] for m in rows] == ["p1", "c2", "c3"]
         rows = db.get_messages("child", include_ancestors=True, limit=3, offset=3)
         assert [m["content"] for m in rows] == ["c4", "c5"]
+
+
+class TestGetMessagesAncestorsGuards:
+    """Paging guards for the merged-lineage read (get_messages)."""
+
+    def test_after_id_rejected_with_include_ancestors(self, db):
+        """after_id keyset paging must not silently drop the cursor on a merged
+        lineage read (the multi-segment set is deduped before paging, so the
+        per-row cursor is not meaningful across segments)."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="p1")
+        db.end_session("parent", "compression")
+        db.create_session("child", source="tui", parent_session_id="parent")
+        db.append_message("child", role="user", content="c1")
+        anchor = db.get_messages("child")[0]
+
+        with pytest.raises(ValueError, match="after_id is incompatible with include_ancestors"):
+            db.get_messages("child", include_ancestors=True, after_id=anchor["id"])

@@ -530,6 +530,36 @@ def _lock_in_submit_turn(
     return None, fields
 
 
+@method("prompt.optimize.preview")
+def _(rid, params: dict) -> dict:
+    """Return a structured optimisation preview for the TUI overlay."""
+    session_id = params.get("session_id") or ""
+    text = params.get("text") or ""
+    if not text:
+        return _err(rid, 4004, "text required")
+    if not session_id:
+        return _err(rid, 4001, "session_id required")
+
+    session = _sessions.get(session_id)
+    model = ""
+    provider = ""
+    if session:
+        agent = session.get("agent")
+        if agent:
+            model = getattr(agent, "model", "") or ""
+            provider = getattr(agent, "provider", "") or ""
+
+    try:
+        from hermes_plugins.prompt_optimizer import get_tui_preview
+
+        preview = get_tui_preview(session_id, text, model, provider)
+        return _ok(rid, preview)
+    except ImportError:
+        return _ok(rid, {"status": "bypass", "reason": "plugin_not_loaded"})
+    except Exception as e:
+        return _ok(rid, {"status": "bypass", "reason": f"error: {e}"})
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text

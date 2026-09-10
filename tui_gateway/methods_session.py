@@ -1251,6 +1251,52 @@ def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | Non
             "scale": scale}
 
 
+@_pet_method("pet.info", fail_open=_PET_OFF)
+def _(rid, params: dict) -> dict:
+    """Active pet for sprite renderers: spritesheet (base64) + frame geometry + state-row taxonomy."""
+    if (active := _active_pet()) is None:
+        return _ok(rid, {"enabled": False})
+    pet, scale = active
+    payload = {"enabled": True, **_pet_sprite_payload(pet, scale=scale)}
+    # Send-once for the multi-MB sheet: same revision → metadata only.
+    if (known := str(params.get("knownRevision", "") or "")) and known == payload.get("spritesheetRevision"):
+        # Send-once semantics for the multi-MB spritesheet (#54730): a caller that already holds the sheet
+        # passes the revision it has, and an unchanged sheet comes back as metadata only
+        # (spritesheetUnchanged).
+        payload.pop("spritesheetBase64", None)
+        payload["spritesheetUnchanged"] = True
+    return _ok(rid, payload)
+
+
+@_pet_method("pet.info.meta", fail_open=_PET_OFF)
+def _(rid, params: dict) -> dict:
+    """Cheap active-pet metadata used to avoid full payload refreshes."""
+    if (active := _active_pet()) is None:
+        return _ok(rid, {"enabled": False})
+    pet, scale = active
+    return _ok(rid, {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "scale": scale,
+                     "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)})
+
+
+def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
+    """kitty payload for a TTY that speaks it (dashboard PTY falls through); only kitty is grid-safe in Ink."""
+    from agent.pet import constants, render
+    from agent.pet.render import PetRenderer
+    configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
+    if (render.detect_terminal_graphics() if configured in ("", "auto") else configured) != "kitty":
+        return None
+    image_id = render.kitty_image_id(pet.slug)
+    # kitty sizes from scaled pixels, so unicode_cols is moot here.
+    payload = PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
+    if not payload:
+        return None
+    return {"graphics": "kitty", "imageId": image_id, "color": render.kitty_color_hex(image_id),
+            "cols": payload["cols"], "rows": payload["rows"], "placeholder": payload["placeholder"],
+            "frames": payload["frames"], "frameMs": constants.LOOP_MS / max(1, len(payload["frames"]) or 1),
+            "scale": scale}
+
+
+
 @_pet_method("pet.cells", fail_open=_PET_OFF)
 def _(rid, params: dict) -> dict:
     """Half-block cell frames (``[tr,tg,tb,ta, br,bg,bb,ba]``) for one pet ``state``; ``cols``, ``graphics``."""

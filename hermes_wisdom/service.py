@@ -1602,6 +1602,7 @@ class WisdomService:
         *,
         expected_hashes: dict[str, str] | None = None,
         _pre_upload_guard=None,
+        _record_intent=None,
     ) -> dict[str, Any]:
         """Use an explicit qualification action as exact-package owner consent."""
         drafted = self.draft_candidate(
@@ -1610,6 +1611,8 @@ class WisdomService:
             _pre_upload_guard=_pre_upload_guard,
         )
         state = str(drafted["state"])
+        if _record_intent is not None and state in {"pending_moderation", "published", "owner_approved", "publishing"}:
+            _record_intent(self.review(str(drafted["draft_id"]), acknowledge=False, expected_hashes=expected_hashes))
         if state in {"pending_moderation", "published"}:
             return {
                 **drafted,
@@ -1634,6 +1637,7 @@ class WisdomService:
         draft_id = str(drafted["draft_id"])
         # Approval still passes through the ordinary authoritative re-fetch and
         # three-hash receipt. The button is consent, not a bypass around review.
+        intent_recorded = False
         try:
             reviewed = self.review(draft_id, acknowledge=True)
             if _pre_upload_guard is not None:
@@ -1644,8 +1648,13 @@ class WisdomService:
                     "the package changed after the consent control was displayed",
                     code="wisdom_consent_stale",
                 )
+            if _record_intent is not None:
+                _record_intent(reviewed)
+                intent_recorded = True
             result = self.approve(draft_id)
         except WisdomConflict:
+            if _record_intent is not None and not intent_recorded:
+                raise
             # Portal approval and Telegram approval may race. Re-read Gateway
             # and accept the committed winner instead of surfacing a stale
             # button error or creating a second publication proposal.
@@ -2038,7 +2047,8 @@ class WisdomService:
         return {**result, "publication_mode": policy.publication_mode}
 
     def submit_reviewed_package(
-        self, draft_id: str, *, expected_hashes: dict[str, str], publication_mode: str
+        self, draft_id: str, *, expected_hashes: dict[str, str], publication_mode: str,
+        _record_intent=None,
     ) -> dict[str, Any]:
         local = self.store.draft(draft_id)
         key = "publication:" + (str(local["skill_id"]) if local else draft_id)
@@ -2047,13 +2057,15 @@ class WisdomService:
             raise WisdomConflict("This package is already being submitted. Reload its status before retrying.")
         try:
             return self._submit_reviewed_package(
-                draft_id, expected_hashes=expected_hashes, publication_mode=publication_mode
+                draft_id, expected_hashes=expected_hashes, publication_mode=publication_mode,
+                _record_intent=_record_intent,
             )
         finally:
             self.store.release_operation_lock(key, lock)
 
     def _submit_reviewed_package(
-        self, draft_id: str, *, expected_hashes: dict[str, str], publication_mode: str
+        self, draft_id: str, *, expected_hashes: dict[str, str], publication_mode: str,
+        _record_intent=None,
     ) -> dict[str, Any]:
         """One explicit local confirmation, bound to the entire displayed package."""
         self.require_setup()
@@ -2095,11 +2107,15 @@ class WisdomService:
         reviewed = self.review(draft_id, acknowledge=False, expected_hashes=expected_hashes)
         state = reviewed["draft"]["state"]
         if state in {"pending_moderation", "published"}:
+            if _record_intent is not None:
+                _record_intent(reviewed)
             return {"draft_id": draft_id, "publication_state": state, "portal_url": self.portal_review_url(draft_id)}
         if state not in {"ready", "owner_approved", "publishing"}:
             raise WisdomConflict(f"This draft cannot be submitted while it is {state}.")
         check_policy()
-        self.review(draft_id, acknowledge=True, expected_hashes=expected_hashes)
+        reviewed = self.review(draft_id, acknowledge=True, expected_hashes=expected_hashes)
+        if _record_intent is not None:
+            _record_intent(reviewed)
         result = self.approve(draft_id) if state == "ready" else self._resume_owner_publication(draft_id, reviewed["draft"])
         publication = result.get("publication") or {}
         return {

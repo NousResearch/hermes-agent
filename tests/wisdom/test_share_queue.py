@@ -78,6 +78,7 @@ class PublishingClient(FakeClient):
         self.drafts[draft.id] = draft.model_copy(
             update={
                 "orgId": "org",
+                "ownerUserId": self.identity["owner"],
                 "authorDescriptionHash": author_description_hash(
                     payload["description"]
                 ),

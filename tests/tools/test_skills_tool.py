@@ -744,6 +744,11 @@ class TestFindAllSkillsSecureSetup:
 
 
 class TestSkillViewPrerequisites:
+    @pytest.fixture(autouse=True)
+    def isolate_secret_capture(self, monkeypatch):
+        # Other suites register a live UI responder; these tests own their callbacks.
+        monkeypatch.setattr(skills_tool_module, "_secret_capture_callback", None)
+
     def test_legacy_prerequisites_expose_required_env_setup_metadata(
         self, tmp_path, monkeypatch
     ):

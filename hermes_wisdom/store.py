@@ -1189,11 +1189,11 @@ class WisdomStore:
                 (skill_id, content_hash),
             )
 
-    def complete_contribution(self, draft_id: str, state: str) -> None:
+    def complete_contribution(self, draft_id: str, state: str, *, _db: sqlite3.Connection | None = None) -> None:
         """Retire a candidate event after its owner-approved contribution succeeds."""
 
         now = utc_now()
-        with self.transaction() as db:
+        with self.transaction() if _db is None else nullcontext(_db) as db:
             draft = db.execute(
                 "SELECT skill_id,source_hash FROM local_draft WHERE id=?",
                 (draft_id,),
@@ -1422,8 +1422,8 @@ class WisdomStore:
             ).fetchone()
             return dict(row) if row else None
 
-    def consume_receipt(self, draft_id: str) -> None:
-        with self.transaction() as db:
+    def consume_receipt(self, draft_id: str, *, _db: sqlite3.Connection | None = None) -> None:
+        with self.transaction() if _db is None else nullcontext(_db) as db:
             db.execute(
                 "UPDATE review_receipt SET consumed_at=? WHERE draft_id=?",
                 (utc_now(), draft_id),

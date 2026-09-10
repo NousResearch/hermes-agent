@@ -475,10 +475,84 @@ class WisdomConsent:
         local = self.service.store.draft(draft_id)
         if local is None or (local["skill_id"], local["source_hash"]) != (value["plan"]["skill_id"], value["plan"]["source_hash"]):
             raise WisdomConflict("This package does not belong to the reviewed contribution")
-        result = self.service.submit_reviewed_package(draft_id, expected_hashes=expected_hashes, publication_mode=publication_mode)
+        # The local modal authorizes this exact revision and submission, not just packaging.
+        value["operation"] = "publish"
+        value["plan"]["hashes"] = expected_hashes
+        with self.service.store.transaction() as db:
+            self.queue._check_org(db, org)
+            accepted = db.execute(
+                "UPDATE wisdom_consent SET state='applying',operation='publish',plan_json=?,updated_at=? WHERE id=? AND state='pending'",
+                (json.dumps(value["plan"]), self.queue.clock(), interaction_id),
+            )
+            if accepted.rowcount != 1:
+                raise WisdomConflict("This contribution is already being submitted")
+        try:
+            result = self.service.submit_reviewed_package(
+                draft_id, expected_hashes=expected_hashes, publication_mode=publication_mode,
+                _record_intent=lambda review: self._record_publication_intent(value, review),
+            )
+        except WisdomConflict:
+            with self.service.store.transaction() as db:
+                self._finish(db, value, "stale", {"reason": "package_or_authority_changed"})
+            raise
         with self.service.store.transaction() as db:
             self._finish(db, value, "completed", result)
         return result
+
+    def _record_publication_intent(self, value, review):
+        """Bind acceptance to the authoritative reviewed draft before the approval RPC."""
+        self.service.require_setup()
+        org = value["organization_id"]
+        owner = self.service.client.identity.get("owner")
+        draft = review["draft"]
+        if (not owner or draft["orgId"] != org or draft["ownerUserId"] != owner
+                or review["hashes"] != value["plan"]["hashes"]
+                or self.queue.clock() >= value["expires_at"]):
+            raise WisdomConflict("Publication review or account changed")
+        intent = {
+            "draft_id": draft["id"], "org_id": org, "owner_user_id": owner,
+            "server_revision": draft["updatedAt"], "draft_commit": draft["draftCommit"],
+            "hashes": review["hashes"],
+        }
+        with self.service.store.transaction() as db:
+            self.queue._check_org(db, org)
+            row = db.execute("SELECT state,plan_json FROM wisdom_consent WHERE id=?", (value["id"],)).fetchone()
+            if row is None or row["state"] != "applying":
+                raise WisdomConflict("Publication acceptance changed")
+            plan = json.loads(row["plan_json"])
+            if plan.get("publication_intent") not in (None, intent):
+                raise WisdomConflict("A different publication intent is already recorded")
+            plan["publication_intent"] = intent
+            db.execute("UPDATE wisdom_consent SET plan_json=? WHERE id=?", (json.dumps(plan), value["id"]))
+            value["plan"] = plan
+
+    def _recover_publication(self, value):
+        intent = value["plan"].get("publication_intent")
+        if not intent:
+            return None
+        self.service.require_setup()
+        org = value["organization_id"]
+        owner = self.service.client.identity.get("owner")
+        if (intent["org_id"], intent["owner_user_id"]) != (org, owner):
+            raise WisdomConflict("Publication account changed")
+        # Reconstruct bytes and metadata; a matching title or local draft state is not evidence.
+        reviewed = self.service.review(intent["draft_id"], acknowledge=False, expected_hashes=intent["hashes"])
+        self.service.require_setup()
+        if self.service.client.identity.get("owner") != owner:
+            raise WisdomConflict("Publication account changed during recovery")
+        draft = reviewed["draft"]
+        if (draft["id"], draft["orgId"], draft["ownerUserId"], draft["draftCommit"]) != (
+            intent["draft_id"], org, owner, intent["draft_commit"],
+        ):
+            raise WisdomConflict("Publication draft binding changed")
+        if draft["state"] not in {"pending_moderation", "published", "changes_requested"}:
+            return None
+        return {
+            "operation": "publish", "draft_id": draft["id"],
+            "publication_state": draft["state"], "owner_user_id": owner,
+            "portal_url": self.service.portal_review_url(draft["id"]),
+            "reason": "gateway_publication_reconciled",
+        }
 
     def resolve(
         self, org: str, interaction_id: str, actor: ConsentActor, action: str
@@ -853,6 +927,7 @@ class WisdomConsent:
                     plan["event_id"],
                     expected_hashes=plan["hashes"],
                     _pre_upload_guard=check_authority,
+                    _record_intent=lambda review: self._record_publication_intent(value, review),
                 )
             else:
                 ref = {
@@ -908,6 +983,10 @@ class WisdomConsent:
             state, outcome = "stale", {"reason": "package_or_authority_changed"}
         except Exception as exc:
             state, outcome = "needs_review", {"reason": type(exc).__name__}
+            if value["operation"] == "publish" and value["plan"].get("publication_intent"):
+                # A lost response is not failure evidence. Leave the exact accepted
+                # operation for read-only reconciliation rather than report failure.
+                return {**self.project(value), "state": "applying", "result": {"reason": "publication_reconciliation_pending"}}
         with self.service.store.transaction() as db:
             current = _decode(db.execute("SELECT * FROM wisdom_consent WHERE id=?", (interaction_id,)).fetchone())
             if value["operation"] == "setup" and current["state"] != "applying":
@@ -962,7 +1041,7 @@ class WisdomConsent:
         Existing setup/check recovery owns unfinished service journals. A missing
         or unfinished exact journal stays visible for manual review, not replay.
         """
-        setup = []
+        setup, publications = [], []
         with self.service.store.transaction() as db:
             self.queue._check_org(db, org)
             rows = db.execute(
@@ -974,6 +1053,9 @@ class WisdomConsent:
                 value = _decode(row)
                 if value["operation"] == "setup":
                     setup.append(value)
+                    continue
+                if value["operation"] == "publish":
+                    publications.append(value)
                     continue
                 plan = value["plan"]
                 completed = False
@@ -1004,3 +1086,20 @@ class WisdomConsent:
                 )
         for value in setup:
             self._refresh_setup(value)
+        for value in publications:
+            try:
+                outcome = self._recover_publication(value)
+            except WisdomConflict:
+                outcome = None
+            except Exception:
+                continue  # Offline or unavailable Gateway: retain the exact pending intent.
+            with self.service.store.transaction() as db:
+                self.queue._check_org(db, org)
+                current = _decode(db.execute("SELECT * FROM wisdom_consent WHERE id=?", (value["id"],)).fetchone())
+                if current["state"] != "applying" or current["plan"] != value["plan"]:
+                    continue
+                if outcome:
+                    self.service.store.complete_contribution(outcome["draft_id"], outcome["publication_state"], _db=db)
+                    self.service.store.consume_receipt(outcome["draft_id"], _db=db)
+                self._finish(db, current, "completed" if outcome else "needs_review",
+                             outcome or {"reason": "interrupted_publication_requires_review"})

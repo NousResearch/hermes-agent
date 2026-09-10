@@ -1,6 +1,6 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 
@@ -83,7 +83,7 @@ def test_local_publication_review_keeps_actor_binding_and_completes_original_car
     instance.service.submit_reviewed_package.return_value = result
     hashes = {"content": "content", "author_description": "description", "package_manifest": "manifest"}
     assert instance.submit_local_publication("org", card["id"], local_actor, draft_id="local:draft", expected_hashes=hashes, publication_mode="moderated") == result
-    instance.service.submit_reviewed_package.assert_called_once_with("local:draft", expected_hashes=hashes, publication_mode="moderated")
+    instance.service.submit_reviewed_package.assert_called_once_with("local:draft", expected_hashes=hashes, publication_mode="moderated", _record_intent=ANY)
     completed = instance._resolve("org", card["id"], local_actor, "inspect")
     assert completed["state"] == "completed"
     assert completed["result"]["publication_state"] == "pending_moderation"

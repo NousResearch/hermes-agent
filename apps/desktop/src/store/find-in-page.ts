@@ -7,9 +7,13 @@ export interface FindInPageState {
   query: string
   matchOrdinal: number
   matchCount: number
+  /** Monotonic counter bumped each time openFindBar() is called while the bar
+   *  is already visible. The FindBar component watches this to re-focus its
+   *  input when the user presses ⌘F again after clicking away. */
+  focusRequest: number
 }
 
-const EMPTY: FindInPageState = { active: false, query: '', matchOrdinal: 0, matchCount: 0 }
+const EMPTY: FindInPageState = { active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 }
 
 export const $findInPage = atom<FindInPageState>({ ...EMPTY })
 
@@ -25,6 +29,15 @@ export const $findInPage = atom<FindInPageState>({ ...EMPTY })
  * "current view" predicate (#81726).
  */
 export function openFindBar(): void {
+  const prev = $findInPage.get()
+
+  if (prev.active) {
+    // Bar is already visible (user clicked away and pressed ⌘F again).
+    // Bump the focus counter so the component's focus effect re-fires.
+    $findInPage.set({ ...prev, focusRequest: prev.focusRequest + 1 })
+    return
+  }
+
   $findInPage.set({ ...EMPTY, active: true })
   captureFindScope()
 }

@@ -342,7 +342,15 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
-  'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
+  'tts.elevenlabs.model_id': [
+    'eleven_v3',
+    'eleven_ttv_v3',
+    'eleven_multilingual_v2',
+    'eleven_turbo_v2',
+    'eleven_turbo_v2_5',
+    'eleven_flash_v2',
+    'eleven_flash_v2_5'
+  ],
   // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
   'updates.non_interactive_local_changes': ['stash', 'discard']
@@ -358,6 +366,8 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.openai.model',
   'tts.openai.voice',
   'tts.elevenlabs.voice_id',
+  'tts.elevenlabs.model_id',
+  'stt.openai.model',
   'tts.gemini.model',
   'tts.gemini.voice',
   'tts.xai.voice_id',

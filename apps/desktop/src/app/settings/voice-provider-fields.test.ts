@@ -52,12 +52,34 @@ describe('voice field option coverage', () => {
       'tts.openai.voice',
       'tts.openai.model',
       'tts.elevenlabs.voice_id',
+      'tts.elevenlabs.model_id',
+      'stt.openai.model',
       'tts.edge.voice',
       'tts.xai.voice_id',
       'tts.piper.voice'
     ]) {
       expect(FREE_INPUT_KEYS.has(key), key).toBe(true)
     }
+  })
+
+  it('suggests ElevenLabs v3 and current flash/turbo ids, not just multilingual v2', () => {
+    const models = ENUM_OPTIONS['tts.elevenlabs.model_id']
+
+    for (const model of [
+      'eleven_v3',
+      'eleven_ttv_v3',
+      'eleven_multilingual_v2',
+      'eleven_turbo_v2',
+      'eleven_turbo_v2_5',
+      'eleven_flash_v2',
+      'eleven_flash_v2_5'
+    ]) {
+      expect(models).toContain(model)
+    }
+  })
+
+  it('suggests gpt-transcribe as an OpenAI STT model', () => {
+    expect(ENUM_OPTIONS['stt.openai.model']).toContain('gpt-transcribe')
   })
 
   it('keeps closed enums (devices, providers) out of the free-input set', () => {

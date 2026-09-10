@@ -11179,7 +11179,9 @@ class TelegramAdapter(BasePlatformAdapter):
         msg_type = self._media_message_type(msg)
 
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        self._ingress_coordinator().stamp(event, update.update_id)
+        coordinator = self._ingress_coordinator()
+        if update.update_id in coordinator.downloads:
+            coordinator.stamp(event, update.update_id)
 
         # Add caption as text
         if msg.caption:

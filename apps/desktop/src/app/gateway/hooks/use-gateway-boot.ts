@@ -56,6 +56,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { loadPoolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
+  invalidateProfileListFetches,
   normalizeProfileKey,
   refreshActiveProfile,
   touchActiveGatewayBackend
@@ -786,6 +787,12 @@ export function useGatewayBoot({
       // #89206 "Waking up… → retries gave up" wake failure, while the bot's
       // own backend sat healthy and idle.
       onActiveRouteChanged: profile => {
+        // A refresh can refill the slot after beginGatewaySwitch clears it but
+        // before activation. Strand it again at publication, even for default → default.
+        if ($gatewaySwitching.get()) {
+          invalidateProfileListFetches()
+        }
+
         const key = normalizeProfileKey(profile)
 
         if (normalizeProfileKey($activeGatewayProfile.get()) !== key) {

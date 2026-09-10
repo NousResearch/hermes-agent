@@ -2568,6 +2568,11 @@ def save_env_value(key: str, value: str):
         lines.append(f"{key}={serialized_value}\n")
 
     _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
+    # _write_anthropic_slots / use_anthropic_claude_code_credentials blank a slot by writing "":
+    # describe that write as what it is rather than calling an emptied credential "set".
+    logger.info(
+        "env %s %s in %s (value not logged; %s)",
+        _audit_text(key), "set" if value else "cleared", env_path, _write_origin())
     _publish_env_value(key, value)
     invalidate_env_cache()
 
@@ -2597,6 +2602,7 @@ def remove_env_value(key: str) -> bool:
     found = len(new_lines) < len(lines)
     if found:
         _write_env_lines(env_path, new_lines, preserve_mode=True)
+        logger.info("env %s removed from %s (%s)", _audit_text(key), env_path, _write_origin())
     _publish_env_value(key, None)
     invalidate_env_cache()
     return found
@@ -2723,6 +2729,98 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, list):
         return [redact_config_value(v, _depth + 1) for v in value]
     return value
+
+
+# Leaf-key suffixes treated as credential-shaped for the audit log ONLY. This is deliberately a
+# superset of the exact-match ``_SECRET_CONFIG_KEYS`` the stdout echo uses (set_config_value's
+# ``_display_value`` block): a leaf like ``openrouter_api_key``, ``smtp_pass`` or ``db_password``
+# is not an exact match against that frozenset but is still a credential by shape, and the audit
+# log has no stdout-parity requirement to preserve. Over-masking (e.g. an ``ssh_key`` path) costs
+# nothing here; under-masking writes a credential into a persistent, rotated file.
+_AUDIT_SECRET_LEAF_SUFFIXES = ("_api_key", "_key", "_token", "_secret", "_pass", "_passwd", "password")
+
+
+def _audit_text(text: str) -> str:
+    """Strip control characters (newlines included) from a caller- or environment-supplied field
+    so it can never terminate the audit line early and forge a second one."""
+    return "".join(ch for ch in text if ch.isprintable())
+
+
+def _write_origin() -> str:
+    """``session=<key> platform=<platform>`` for the audit log line; ``-`` when either half is
+    absent. Read through ``gateway.session_context.get_session_env`` (the documented drop-in
+    for ``os.getenv``: a bound ContextVar wins, else ``os.environ``) so the two ways a write
+    can carry a session are both seen -- the gateway's in-process callers of ``save_env_value``
+    (gateway/pairing.py, gateway/slash_commands.py) have the session only in the ContextVars,
+    while the agent's ``hermes config set`` subprocess has it only in the environment the local
+    terminal backend bridged in (tools/environments/local.py, ``_inject_session_context_env``).
+    It prints what it sees, never an attribution: for an unengaged CLI the env values may be
+    stale or absent."""
+    try:
+        from gateway.session_context import get_session_env
+    except ImportError:  # pragma: no cover - defensive: gateway package absent
+        get_session_env = os.getenv
+    session = _audit_text(get_session_env("HERMES_SESSION_KEY") or "") or "-"
+    platform = _audit_text(get_session_env("HERMES_SESSION_PLATFORM") or "") or "-"
+    return f"session={session} platform={platform}"
+
+
+def _is_audit_secret_leaf(name: str) -> bool:
+    leaf = name.rsplit(".", 1)[-1].lower()
+    return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_AUDIT_SECRET_LEAF_SUFFIXES)
+
+
+def _audit_mask(value: Any) -> str:
+    """Log-grade mask for a secret leaf of any scalar type: ``_coerce_config_set_value`` turns an
+    all-digit password into an ``int``, so the value is stringified before masking rather than
+    gated on ``isinstance(value, str)``. Same head/tail/floor as ``agent.redact._mask_token`` --
+    the display defaults (4/4/12) would reveal 8 characters of a 12-char password into a
+    persistent file."""
+    from agent.redact import mask_secret
+    return mask_secret(str(value), head=6, tail=4, floor=18)
+
+
+def _audit_redact(value: Any, is_secret: bool = False, _depth: int = 0) -> Any:
+    """Copy of a mapping/list for the audit log with every secret-shaped leaf masked, using the
+    same (superset) leaf test as the top-level key so a ``--force`` overwrite of a whole section
+    masks ``providers.*.openrouter_api_key`` exactly as a direct ``set`` of that key would."""
+    if _depth > 20:  # bound recursion for pathological/cyclic configs
+        return value
+    if isinstance(value, dict):
+        return {
+            k: _audit_redact(v, isinstance(k, str) and _is_audit_secret_leaf(k), _depth + 1)
+            for k, v in value.items()}
+    if isinstance(value, list):
+        return [_audit_redact(v, is_secret, _depth + 1) for v in value]
+    if is_secret and value is not None and value != "":
+        return _audit_mask(value)
+    return value
+
+
+def _audit_repr(key: str, value: Any) -> str:
+    """Render a config value for the write-audit log: never the raw secret.
+
+    ``_MISSING`` -> ``"<unset>"``. A credential-shaped leaf (``_is_audit_secret_leaf``: exact
+    match against ``_SECRET_CONFIG_KEYS`` or a suffix in ``_AUDIT_SECRET_LEAF_SUFFIXES``) is
+    masked whatever its coerced type, a list under it included. A mapping or list is rendered
+    with every nested secret-shaped leaf masked by the same test, so a ``--force`` overwrite of
+    a whole section never logs a credential that a direct ``set`` would have masked. Everything
+    else is
+    ``repr()`` (which also escapes control characters). Capped at 200 characters so a
+    pathological value cannot blow up a log line.
+    """
+    if value is _MISSING:
+        return "<unset>"
+    is_secret = _is_audit_secret_leaf(key)
+    if isinstance(value, (dict, list)):
+        # The key's own secret-ness carries into the container: ``set model.api_key "[a, b]"``
+        # yaml-parses to a list (no str default pins the type), and every element is the secret.
+        rendered = repr(_audit_redact(value, is_secret))
+    elif is_secret and value is not None and value != "":
+        rendered = _audit_mask(value)
+    else:
+        rendered = repr(value)
+    return rendered[:200]
 
 
 def _section(title: str) -> None:
@@ -3449,12 +3547,20 @@ def set_config_value(key: str, value: str, force: bool = False):
     if key.strip().lower().startswith("model.") and isinstance(_model_val, str) and _model_val:
         user_config["model"] = {"default": _model_val}
     key = _guard_section_overwrite(key, value, user_config, force)
+    # The api_base -> base_url alias below is a fallback-only rename (_normalize_root_model_keys
+    # never overrides an explicit base_url), so the audit snapshot has to be taken under the key
+    # the write will actually land on, not the pre-alias input key — otherwise a `set
+    # model.api_base` against a config that already has model.base_url reads _old_value as
+    # <unset> (api_base was never set) instead of the real, unchanged base_url.
+    _is_api_base_alias = key.strip().lower() in ("model.api_base", "api_base")
+    _audit_key = "model.base_url" if _is_api_base_alias else key
+    _old_value = _get_nested(user_config, _audit_key)
     try:
         _set_nested(user_config, key, value)
     except ValueError as e:
         _exit_invalid(f"✗ {e}")
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
-    if key.strip().lower() in ("model.api_base", "api_base"):
+    if _is_api_base_alias:
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
         # set model.api_base ...` lands on the canonical key the runtime resolver actually reads, instead of
         # being silently ignored.
@@ -3462,6 +3568,14 @@ def set_config_value(key: str, value: str, force: bool = False):
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
     _write_user_config(config_path, user_config)
+    # Log the value actually persisted (re-read post-write), not the raw input: the alias above
+    # can make this a no-op against an existing base_url, and old -> new must never claim a
+    # change that didn't happen.
+    _persisted_value = _get_nested(user_config, key)
+    logger.info(
+        "config set %s: %s -> %s in %s (%s)",
+        _audit_text(key), _audit_repr(key, _old_value), _audit_repr(key, _persisted_value),
+        config_path, _write_origin())
 
     # Keep .env in sync: terminal_tool reads TERMINAL_ENV etc. directly from env vars.
     env_var = terminal_config_env_var_for_key(key)
@@ -3527,6 +3641,7 @@ def unset_config_value(key: str):
     if _redirect_note:
         # Mirror set_config_value's display.platforms canonicalization (#71047).
         print(_redirect_note.replace("saved as", "resolved as"))
+    _old_value = _get_nested(user_config, key)
     removed = _unset_nested(user_config, key)
 
     env_var = terminal_config_env_var_for_key(key)
@@ -3537,6 +3652,13 @@ def unset_config_value(key: str):
         _exit_invalid(f"Config key not set: {key}")
 
     _write_user_config(config_path, user_config)
+    # A terminal.* key present only in .env makes ``removed`` truthy above with nothing removed
+    # from config.yaml; the .env removal is already logged by remove_env_value, so don't
+    # fabricate a ``<unset> -> <unset>`` config.yaml line for it.
+    if _old_value is not _MISSING:
+        logger.info(
+            "config unset %s: %s -> <unset> in %s (%s)",
+            _audit_text(key), _audit_repr(key, _old_value), config_path, _write_origin())
     print(f"✓ Unset {key} from {config_path}")
 
 

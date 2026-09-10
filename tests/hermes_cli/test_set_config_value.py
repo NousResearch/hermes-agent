@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import os
 from unittest.mock import patch
 
@@ -9,7 +10,9 @@ import pytest
 
 from hermes_cli.config import (
     config_command,
+    save_env_value,
     set_config_value,
+    unset_config_value,
 )
 
 
@@ -856,3 +859,158 @@ class TestLiteralDotKeyEscaping:
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"
+
+
+# ---------------------------------------------------------------------------
+# Audit log: every set/unset write is recorded at INFO with key, old -> new
+# ---------------------------------------------------------------------------
+
+def _audit_lines(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == "hermes_cli.config"]
+
+
+def _audit_values(line):
+    """The ``<key>: <old> -> <new>`` part of an audit line, without the ``in <path> (...)`` tail
+    so a pytest tmp path can never satisfy or defeat a substring assertion."""
+    return line.rsplit(" in ", 1)[0]
+
+
+class TestConfigWriteAuditLog:
+    """A ``hermes config set``/``unset`` write logs one INFO line that names the key, what it
+    replaced and what it became; credential-shaped values are masked before they reach the
+    logger; a write that changes nothing never logs a change."""
+
+    def test_write_logs_key_old_new_and_file(self, _isolated_hermes_home, caplog):
+        with caplog.at_level(logging.INFO, logger="hermes_cli.config"):
+            set_config_value("agent.max_turns", "100")
+            set_config_value("agent.max_turns", "300")
+            unset_config_value("agent.max_turns")
+        first, rewrite, unset = _audit_lines(caplog)
+        config_path = str(_isolated_hermes_home / "config.yaml")
+
+        for line in (first, rewrite, unset):
+            assert "agent.max_turns" in line and config_path in line
+            assert "session=" in line and "platform=" in line
+        # first write: no prior value; rewrite: old before new; unset: removed value, then nothing.
+        first, rewrite, unset = (_audit_values(line) for line in (first, rewrite, unset))
+        assert "<unset>" in first and first.index("<unset>") < first.index("100")
+        assert rewrite.index("100") < rewrite.index("300")
+        assert "<unset>" in unset and unset.index("300") < unset.index("<unset>")
+
+    def test_noop_writes_never_log_a_fabricated_change(self, _isolated_hermes_home, caplog):
+        # ``model.api_base`` is a fallback-only alias for ``model.base_url`` (issue #8919): with
+        # base_url already present the write is a no-op, so old and new must both be the real,
+        # unchanged base_url -- never ``<unset> -> <new>``.
+        set_config_value("model.base_url", "https://old.example.com")
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="hermes_cli.config"):
+            set_config_value("model.api_base", "https://new.example.com")
+        (line,) = _audit_lines(caplog)
+        assert "model.base_url" in line and "<unset>" not in line
+        assert line.count("https://old.example.com") == 2
+        assert "https://new.example.com" not in line
+
+        # A terminal.* key present only in .env: the .env removal is logged, but there is no
+        # config.yaml value to remove, so no ``config unset ... -> <unset>`` line is fabricated.
+        caplog.clear()
+        save_env_value("TERMINAL_ENV", "docker")
+        with caplog.at_level(logging.INFO, logger="hermes_cli.config"):
+            unset_config_value("terminal.backend")
+        lines = _audit_lines(caplog)
+        assert any("TERMINAL_ENV" in line and "removed" in line for line in lines)
+        assert not any(line.startswith("config unset") for line in lines)
+
+    @pytest.mark.parametrize("key, secret, raw, force", [
+        ("model.api_key", "sk-live-1234567890abcdef", None, False),      # exact-match secret leaf
+        ("model.api_key", "Zq7Xw2Pv9Lk4M", None, False),                 # shorter than the log floor
+        ("terminal.sudo_password", "48213977261", None, False),         # numeric: coerced to int
+        # a ``[``-leading value yaml-parses to a list (model.api_key has no str default to pin
+        # the type): the leaf is still a secret, every element must be masked
+        ("model.api_key", "sk-live-1234567890abcdef", "[sk-live-1234567890abcdef, other]", False),
+        ("providers", "opaque-token-xyz-0123456789", None, True),        # --force over a nested secret
+        ("OPENROUTER_API_KEY", "sk-or-supersecret-0123456789", None, False),  # .env-routed
+    ])
+    def test_secret_values_never_reach_the_logger(
+        self, _isolated_hermes_home, caplog, key, secret, raw, force
+    ):
+        if force:
+            # a suffix-shaped leaf (not an exact _SECRET_CONFIG_KEYS member) nested in the
+            # section being replaced
+            set_config_value("providers.mine.openrouter_api_key", secret)
+        with caplog.at_level(logging.INFO, logger="hermes_cli.config"):
+            set_config_value(key, "x" if force else (raw or secret), force=force)
+            if key == "OPENROUTER_API_KEY":
+                unset_config_value(key)
+        lines = _audit_lines(caplog)
+        assert lines and all(key in line for line in lines)
+        for line in map(_audit_values, lines):
+            assert secret not in line
+            if len(secret) >= 18:
+                # the log-grade mask keeps at most 6 leading + 4 trailing characters
+                assert secret[6:-4] not in line
+            else:
+                # below the 18-character floor nothing of the secret survives, only the mask
+                assert secret[:4] not in line and secret[-4:] not in line
+                assert "***" in line
+        if force:
+            # structural masking: the nested key name survives, only its value is masked
+            assert "openrouter_api_key" in caplog.text
+
+    def test_env_line_says_cleared_when_the_slot_is_blanked(self, _isolated_hermes_home, caplog):
+        # _write_anthropic_slots / use_anthropic_claude_code_credentials blank the other slot by
+        # writing ""; the audit line must describe that write, not call it a "set".
+        with caplog.at_level(logging.INFO, logger="hermes_cli.config"):
+            save_env_value("ANTHROPIC_API_KEY", "sk-ant-1234567890abcdef")
+            save_env_value("ANTHROPIC_API_KEY", "")
+        set_line, cleared_line = _audit_lines(caplog)
+        assert set_line.startswith("env ANTHROPIC_API_KEY set in ")
+        assert cleared_line.startswith("env ANTHROPIC_API_KEY cleared in ")
+        assert "sk-ant-1234567890abcdef" not in caplog.text
+
+    def test_audit_line_is_single_line_and_names_the_bridged_session(
+        self, _isolated_hermes_home, caplog, monkeypatch
+    ):
+        # Key and session fields come from the caller/environment: control characters are
+        # stripped so neither can inject a second, forged log line.
+        monkeypatch.setenv("HERMES_SESSION_KEY", "telegram:42\nINFO forged line")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        with caplog.at_level(logging.INFO, logger="hermes_cli.config"):
+            set_config_value("agent.max_turns\nINFO forged", "300", force=True)
+        (line,) = _audit_lines(caplog)
+        assert "\n" not in line and "\r" not in line
+        assert "session=telegram:42" in line and "platform=telegram" in line
+        assert "agent.max_turns" in line
+
+        caplog.clear()
+        monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        with caplog.at_level(logging.INFO, logger="hermes_cli.config"):
+            set_config_value("agent.max_turns", "300")
+        assert "session=- platform=-" in _audit_lines(caplog)[-1]
+
+    def test_audit_line_names_the_in_process_gateway_session(
+        self, _isolated_hermes_home, caplog, monkeypatch
+    ):
+        # gateway/pairing.py and gateway/slash_commands.py call save_env_value in-process, where
+        # the session lives in gateway.session_context's ContextVars, not os.environ; the origin
+        # must come from there (and the bound ContextVar beats a stale environment value).
+        from gateway import session_context
+        from gateway.session_context import _SESSION_ASYNC_DELIVERY, _SESSION_VARS, set_session_vars
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", "stale:1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "stale")
+        was_engaged = session_context._session_context_engaged
+        tokens = set_session_vars(platform="discord", session_key="discord:77")
+        try:
+            with caplog.at_level(logging.INFO, logger="hermes_cli.config"):
+                save_env_value("DISCORD_HOME_CHANNEL", "77")
+                set_config_value("agent.max_turns", "300")
+        finally:
+            for var, token in zip((*_SESSION_VARS, _SESSION_ASYNC_DELIVERY), tokens):
+                var.reset(token)
+            session_context._session_context_engaged = was_engaged
+        lines = _audit_lines(caplog)
+        assert len(lines) == 2
+        for line in lines:
+            assert "session=discord:77 platform=discord" in line
+            assert "stale" not in line

@@ -50,6 +50,11 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
 :::
 
+The key named in a `config set` or `config unset` command is also recorded at `INFO` in
+`~/.hermes/logs/agent.log` when it is written (e.g. `config set agent.max_turns: 100 -> 300 in
+~/.hermes/config.yaml`), with credential-shaped values masked before they reach the logger and
+`.env` entries logged by name only — the value never appears.
+
 ## Configuration Precedence
 
 Settings are resolved in this order (highest priority first):

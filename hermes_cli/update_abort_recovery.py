@@ -105,8 +105,12 @@ def _normalize_user_bus_env() -> None:
         from hermes_cli.gateway import _ensure_user_systemd_env
 
         _ensure_user_systemd_env()
-    except Exception:
-        logger.debug("User-bus env normalization unavailable; recovery child inherits environment as-is")
+    except Exception as exc:
+        # Only the adoption is lost (never the spawn), but losing it silently restores the bug on
+        # a bus-less dispatcher, so the fallback must be visible at the operator level.
+        logger.warning(
+            "User-bus env normalization unavailable (%s); recovery child inherits the "
+            "environment as-is and may report relaunch_attempted on a healthy fleet", exc)
 
 
 def _run_fresh_recovery_process(

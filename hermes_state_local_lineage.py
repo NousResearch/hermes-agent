@@ -35,6 +35,18 @@ def validate_local_lineage(conn, receipt):
     return lineage[-1]
 
 
+def local_physical_target(conn, session_id):
+    """Resolve a local owner's current transcript on the caller's transaction."""
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                         (POLICY_PREFIX + session_id,)).fetchone()
+    if saved is None:
+        return session_id
+    receipt = json.loads(saved[0])
+    if receipt['session_id'] != session_id:
+        raise RuntimeStoreError('storage_unavailable')
+    return validate_local_lineage(conn, receipt)
+
+
 def advance_local_target(conn, parent_session_id, child_session_id, *, entry=None):
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (parent_session_id,)).fetchone()
     logical_id = parent['chat_id'] if parent else None

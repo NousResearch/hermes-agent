@@ -67,14 +67,19 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
             raise RuntimeStoreError('producer_not_started')
         if admission['principal_id'] != principal_id:
             raise RuntimeStoreError('permission_denied')
-        sid, generation = admission['target_session_id'], admission['generation']
-        if _session(conn, sid)['runtime_generation'] != generation:
+        owner, generation = admission['target_session_id'], admission['generation']
+        if _session(conn, owner)['runtime_generation'] != generation:
             raise RuntimeStoreError('stale_generation')
+        from hermes_state_local_lineage import local_physical_target
+        sid = local_physical_target(conn, owner)
         execution_id = 'admission-worker:' + admission_id
         if conn.execute('SELECT 1 FROM worker_executions WHERE execution_id=?', (execution_id,)).fetchone():
             raise RuntimeStoreError('admission_conflict')
         if conn.execute("SELECT 1 FROM worker_executions WHERE session_id=? AND status!='terminal'", (sid,)).fetchone():
             raise RuntimeStoreError('stale_generation')
+        # The private worker fence follows its physical assignment; admission/FIFO
+        # generation and identity remain on the logical owner.
+        conn.execute('UPDATE sessions SET runtime_generation=? WHERE id=?', (generation, sid))
         scope = dict(profile_id=authority.profile_id, session_id=sid, execution_id=execution_id,
                      generation=generation, pid=pid, birth=birth, secret=secret)
         claim = admission_fingerprint(canonical_target=sid, payload=scope | {'principal': principal_id})

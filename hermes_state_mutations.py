@@ -71,14 +71,16 @@ def _delete(db, conn, session_id, payload):
 def _rewind(db, conn, session_id, payload):
     from hermes_state_mutation_guards import require_idle
     from hermes_state_mutation_transcript import rewind_in_transaction
-    require_idle(db, conn, [session_id])
-    target, ids, head, replacement = rewind_in_transaction(db, conn, session_id,
+    from hermes_state_local_lineage import local_physical_target
+    physical = local_physical_target(conn, session_id)
+    require_idle(db, conn, list({session_id, physical}))
+    target, ids, head, replacement = rewind_in_transaction(db, conn, physical,
         payload['target_message_id'], preserve_compaction_handoff=payload.get('preserve_compaction_handoff', False))
     # Receipts are JSON: publish the same public message shape get_messages() returns (decoded
     # content/tool_calls, no internal display_identity BLOB / display_order).
     target = db._row_to_message_dict(target, warn_context='rewind receipt', summary_flag=True)
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
-    return {session_id}, {'rewound_count': len(ids), 'target_message': target,
+    return {session_id, physical}, {'rewound_count': len(ids), 'target_message': target,
         'new_head_id': head, 'replacement_message_id': replacement}
 
 

@@ -172,7 +172,6 @@ def _prompt_frame(authority, ref, row, worker, frame):
 
 
 async def execute_managed(authority, ref, row, policy):
-    from gateway.session_results import retain_result
     process = await asyncio.to_thread(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
         cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
@@ -215,7 +214,6 @@ async def execute_managed(authority, ref, row, policy):
                 if (not isinstance(result, dict) or set(result) - {'final_response', 'failed', 'interrupted'}
                         or not isinstance(result.get('final_response'), str)):
                     raise RuntimeStoreError('invalid_worker_result')
-                retain_result(authority.db, epoch=authority.epoch, row=row, result={'result': result, 'usage': {}})
                 accepted = result
                 authority.sessions[ref.session_id].controls.snapshot(ref.session_id, None)
                 await asyncio.to_thread(worker.send, {'type': 'finish'})
@@ -224,6 +222,9 @@ async def execute_managed(authority, ref, row, policy):
                 code = await asyncio.to_thread(process.wait, 10)
                 if code != 0:
                     raise RuntimeStoreError('managed_worker_lost')
+                # Like in-process execution, settlement belongs to the drain's stream lock.
+                # The worker must acknowledge its durable finish before that boundary.
+                authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': {}}
                 return accepted['final_response']
             raise RuntimeStoreError('invalid_worker_frame')
     except (Exception, asyncio.CancelledError) as exc:

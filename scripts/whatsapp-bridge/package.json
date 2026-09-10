@@ -10,11 +10,12 @@
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc13",
     "express": "^4.21.0",
-    "qrcode-terminal": "^0.12.0",
-    "pino": "^9.0.0"
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0"
   },
   "overrides": {
     "protobufjs": "^7.5.5",
-    "body-parser": "1.20.6"
+    "body-parser": "1.20.6",
+    "qs": "6.16.0"
   }
 }

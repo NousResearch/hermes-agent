@@ -17,11 +17,9 @@ import { TextTab } from '@/components/ui/text-tab'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import {
-  authMcpServer,
   getActionStatus,
   getLogs,
   getMcpCatalog,
-  getMcpOAuthFlow,
   getUsageAnalytics,
   type HermesGateway,
   installMcpCatalogEntry,
@@ -33,6 +31,7 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { startCompletionPoll } from '@/lib/completion-poll'
 import { compactNumber } from '@/lib/format'
 import { brandFor } from '@/lib/mcp-brands'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
@@ -527,6 +526,15 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // write its result into profile B's state after the user switched.
   const profileEpoch = useRef(0)
 
+  // Scoped Skills tabs remount when their owner changes; stop the old native
+  // OAuth waiter even when no app-wide profile-switch event is emitted.
+  useEffect(
+    () => () => {
+      profileEpoch.current += 1
+    },
+    [scopeProfileKey]
+  )
+
   // A profile switch invalidates the config query (see store/profile.ts), which
   // refetches the new backend's mcp.json. Reset ALL per-profile view state — the
   // draft (incl. a dirty one, so profile A's edits can't be saved into B), its
@@ -611,9 +619,8 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     try {
       const flow = await completeMcpDesktopOAuth({
         serverName,
-        start: name => authMcpServer(name, profile ?? undefined),
-        status: flowId => getMcpOAuthFlow(flowId, profile ?? undefined),
-        openExternal: url => window.hermesDesktop.openExternal(url)
+        profile,
+        cancelled: () => profileEpoch.current !== epoch
       })
 
       const result: McpTestResult = { ok: true, tools: flow.tools ?? [] }
@@ -1719,36 +1726,25 @@ function McpLogs({
 }) {
   const [lines, setLines] = useState<null | string[]>(null)
   // A profile switch reroutes getLogs to the new backend; keying the effect on
-  // the active profile tears down the old poll (its `cancelled` flag blocks a
-  // late setLines) so profile A's logs never flash in B.
+  // the active profile tears down the old poll (stop suppresses a late
+  // publish) so profile A's logs never flash in B.
   const activeProfile = useStore($activeGatewayProfile)
 
   useEffect(() => {
-    let cancelled = false
+    setLines(null)
 
-    const poll = async () => {
-      try {
+    return startCompletionPoll({
+      delayMs: LOG_POLL_MS,
+      poll: async () => {
         const response =
           source === 'stdio'
             ? await getLogs({ file: 'mcp', lines: 500 })
             : await getLogs({ file: 'agent', lines: 300, search: server ?? 'mcp' })
 
-        if (!cancelled) {
-          setLines(source === 'stdio' && server ? filterStdioSections(response.lines, server) : response.lines)
-        }
-      } catch {
-        // Backend momentarily unavailable — keep the last tail.
-      }
-    }
-
-    setLines(null)
-    void poll()
-    const timer = window.setInterval(() => void poll(), LOG_POLL_MS)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
+        return source === 'stdio' && server ? filterStdioSections(response.lines, server) : response.lines
+      },
+      publish: setLines
+    })
   }, [server, source, activeProfile])
 
   return <LogTail emptyLabel={emptyLabel} lines={lines} />

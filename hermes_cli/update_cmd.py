@@ -683,17 +683,14 @@ def _stable_channel_active(args) -> bool:
     except Exception as exc:
         logger.warning("Channel resolution failed; defaulting to main: %s", exc)
         return False
-def _github_latest_release_tag():
-    """Resolve the newest final-release tag with the GitHub API (no git necessary).
 
-    The ZIP-fallback path uses this function. That path exists because git
-    file I/O is broken. The function tries /releases/latest first, because that
-    endpoint obeys the draft and prerelease curation. If that fails, it lists
-    the tags and selects the maximum final release.
-    Returns the tag name or None.
-    """
+
+def _github_latest_release():
+    """Resolve the official release tag and commit without local Git state."""
+    import json
     import urllib.error
     import urllib.request
+    from urllib.parse import quote
 
     def _get_json(url):
         req = urllib.request.Request(
@@ -706,9 +703,11 @@ def _github_latest_release_tag():
     base = "https://api.github.com/repos/NousResearch/hermes-agent"
     try:
         data = _get_json(f"{base}/releases/latest")
-        tag = data.get("tag_name")
+        tag = data.get("tag_name") if isinstance(data, dict) else None
         if isinstance(tag, str) and _parse_release_tag(tag) is not None:
-            return tag
+            commit = _get_json(f"{base}/commits/{quote(tag, safe='')}")
+            sha = commit.get("sha") if isinstance(commit, dict) else None
+            return tag, sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) else None
     except (urllib.error.URLError, OSError, ValueError) as exc:
         logger.debug("GitHub /releases/latest unavailable: %s", exc)
     try:
@@ -718,11 +717,16 @@ def _github_latest_release_tag():
             name = entry.get("name") if isinstance(entry, dict) else None
             version = _parse_release_tag(name) if isinstance(name, str) else None
             if version is not None and (best is None or version > best[0]):
-                best = (version, name)
-        return best[1] if best else None
+                commit = entry.get("commit")
+                sha = commit.get("sha") if isinstance(commit, dict) else None
+                best = (version, name, sha)
+        if best:
+            sha = best[2]
+            return best[1], sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+        return None, None
     except (urllib.error.URLError, OSError, ValueError) as exc:
         logger.debug("GitHub /tags unavailable: %s", exc)
-        return None
+        return None, None
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
@@ -1260,7 +1264,7 @@ def _prepare_checkout_for_update(
         # Stable channel: the checkout does NOT switch branches — the current branch
         # pointer fast-forwards (or merges) to the release tag, so the parked-branch
         # machinery is main-channel only.
-        parked_branch_switched, in_place_update, switch_block_reason = False, False, None
+        parked_branch_switched, in_place_update, switch_block_reason = False, True, None
     else:
         parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
             git_cmd, branch, current_branch, switch_branch=switch_branch,
@@ -1311,7 +1315,7 @@ def _prepare_checkout_for_update(
     # "Already up to date!" and verified nothing). Non-fork checkouts have no upstream question: origin IS
     # the official repo, so "Already up to date!" is fully verified there.
     upstream_checked = True
-    if commit_count == 0 and is_fork and branch == "main":
+    if commit_count == 0 and is_fork and branch == "main" and not stable_tag:
         pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         upstream_checked = _m()._sync_with_upstream_if_needed(
             git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
@@ -1509,7 +1513,8 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 
 
 def _handle_update_called_process_error(
-    e, args, gateway_mode: bool, had_desktop_app_before_update: bool) -> None:
+    e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
+    *, target_sha: str | None = None) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
     stage = _format_update_failure_stage(e)
     if _should_zip_fallback_on_update_error(e):
@@ -1517,7 +1522,8 @@ def _handle_update_called_process_error(
         print("→ Falling back to ZIP download...")
         print()
         desktop_build_ok = _update_via_zip(
-            args, had_desktop_app_before_update=had_desktop_app_before_update)
+            args, had_desktop_app_before_update=had_desktop_app_before_update,
+            target_sha=target_sha)
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
     else:
@@ -1681,10 +1687,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     use_zip_update, git_cmd, is_fork = _prepare_git_command()
 
+    branch = _m()._resolve_update_branch(args)
+    target_ref = f"origin/{branch}"
+    stable_tag, stable_sha = None, None
+    if _stable_channel_active(args):
+        print("→ Update channel: stable (tagged releases)")
+        stable_tag, stable_sha = (
+            _github_latest_release() if use_zip_update
+            else _resolve_latest_release_tag(git_cmd, _m().PROJECT_ROOT))
+        if stable_tag is None or not re.fullmatch(r"[0-9a-f]{40}", stable_sha or ""):
+            print("✗ Could not resolve the stable release commit. No update was applied.")
+            print("  Retry, or switch channels with: hermes update --set-channel main")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
+        print(f"→ Latest release: {stable_tag}")
+        target_ref = stable_sha
+
     if use_zip_update:
         try:
             desktop_build_ok = _update_via_zip(
-                args, had_desktop_app_before_update=had_desktop_app_before_update)
+                args, had_desktop_app_before_update=had_desktop_app_before_update,
+                target_sha=stable_sha)
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if gateway_mode:
@@ -1692,9 +1715,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         return
 
     try:
-        # Scoped fetch: a bare `git fetch origin` pulls thousands of branches and can stall.
-        branch = _m()._resolve_update_branch(args)
-
         # Self-heal abandoned .git/*.lock files (crashed fetch) or the fetch fails "File exists".
         from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
         cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
@@ -1704,32 +1724,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
 
-        # Stable channel targets the newest release tag instead of origin/<branch>: the
-        # current branch fast-forwards to the tag's commit, so the checkout keeps its
-        # branch shape (no detached HEAD) and the next stable update ff-merges to the tag.
-        target_ref = f"origin/{branch}"
-        stable_tag = None
-        if _stable_channel_active(args):
-            print("→ Update channel: stable (tagged releases)")
-            stable_tag, _stable_tag_sha = _resolve_latest_release_tag(git_cmd, _m().PROJECT_ROOT)
-            if stable_tag is None:
-                print("✗ No release tags found on origin. An update on the stable channel is not possible.")
-                print("  Switch channels with: hermes update --set-channel main")
-                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-                sys.exit(1)
-            print(f"→ Latest release: {stable_tag}")
-            target_ref = stable_tag
-
         # Surface autostashes left by earlier updates (--keep-stash, failed restores).
         # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        fetch_target = ["tag", stable_tag] if stable_tag else [branch]
-        fetch_result = _git_run(git_cmd, ["fetch", "origin", *fetch_target], network=True)
+        if stable_tag:
+            fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
+            if fetch_result.returncode != 0:
+                # Older servers require a named ref. Do not change local tags.
+                fetch_result = _git_run(
+                    git_cmd, ["fetch", "--no-tags", "origin", f"refs/tags/{stable_tag}"], network=True)
+                if fetch_result.returncode == 0:
+                    fetched = _git_run(git_cmd, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"])
+                    if fetched.returncode != 0 or fetched.stdout.strip() != target_ref:
+                        print("✗ The release tag changed during this update. Retry to select its new commit.")
+                        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+                        sys.exit(1)
+        else:
+            fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
 
         current_branch = _current_branch_name(git_cmd, check=True)
@@ -1763,12 +1780,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
             keep_stash=opts.keep_stash, target_ref=target_ref)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
-            is_fork=is_fork, desktop_dir=desktop_dir,
+            is_fork=is_fork and not stable_tag, desktop_dir=desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
             _windows_gateway_resume=_windows_gateway_resume)
     except subprocess.CalledProcessError as e:
-        _handle_update_called_process_error(e, args, gateway_mode, had_desktop_app_before_update)
+        try:
+            _handle_update_called_process_error(
+                e, args, gateway_mode, had_desktop_app_before_update, target_sha=stable_sha)
+        finally:
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -7,6 +7,7 @@ resolving/monkeypatching. Origin helpers are imported lazily per function (no cy
 import logging
 from contextlib import suppress
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -344,9 +345,13 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     _m()._refresh_active_memory_provider_dependencies()
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
+                   target_sha: str | None = None) -> bool:
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
-    drivers causing 'Invalid argument'). Returns ``False`` when a Desktop rebuild ran and failed."""
+    drivers causing 'Invalid argument'). Returns ``False`` when a Desktop rebuild ran and failed.
+
+    A supplied commit keeps the archive on the target selected before Git failed.
+    """
     from hermes_cli.update_cmd import (
         _finish_dashboard_update_cleanup,
         _m,
@@ -376,7 +381,10 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
-    _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")
+    if target_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+        raise ValueError("ZIP update requires an exact full commit SHA")
+    ref = target_sha if target_sha is not None else f"refs/heads/{branch}"
+    _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/{ref}.zip")
     _sweep_bytecode_after_update(branch)
     print("→ Updating Python dependencies...")
     _reinstall_python_deps_after_zip(active_tool_dependencies)

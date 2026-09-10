@@ -27,7 +27,7 @@ import {
   useQueryClient,
   useValue
 } from '@hermes/plugin-sdk'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ClipboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import {
   $boardSlug,
@@ -59,6 +59,7 @@ import {
   ago,
   Avatar,
   Callout,
+  clipboardImageFiles,
   columnLabel,
   duration,
   errText,
@@ -653,6 +654,21 @@ export function TaskDrawer({
     onSuccess: invalidate
   })
 
+  // Paste an image anywhere in the open drawer to attach it — the same upload
+  // path as the attachment button, minus the file-picker hop. A paste that
+  // holds no image (plain text) is left untouched so the comment/description
+  // textareas keep their normal behaviour.
+  const onPaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const files = clipboardImageFiles(event)
+
+    if (files.length === 0) {
+      return
+    }
+
+    event.preventDefault()
+    files.forEach(file => uploadMut.mutate(file))
+  }
+
   if (!id) {
     return null
   }
@@ -674,7 +690,10 @@ export function TaskDrawer({
   }
 
   return (
-    <div className="absolute inset-y-0 right-0 z-20 flex w-[26rem] flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out animate-in fade-in slide-in-from-right-4">
+    <div
+      className="absolute inset-y-0 right-0 z-20 flex w-[26rem] flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out animate-in fade-in slide-in-from-right-4"
+      onPaste={onPaste}
+    >
       <header className="flex flex-col gap-2 px-4 pt-3.5 pb-3">
         <div className="flex items-center gap-2">
           {task ? (

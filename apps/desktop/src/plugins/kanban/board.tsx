@@ -51,6 +51,7 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 import {
+  type ClipboardEvent,
   type CSSProperties,
   type DragEvent as ReactDragEvent,
   type ReactNode,
@@ -75,7 +76,8 @@ import {
   fetchBoards,
   fetchProfiles,
   patchTask,
-  PROFILES_KEY
+  PROFILES_KEY,
+  uploadAttachment
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
@@ -88,6 +90,7 @@ import {
   type ArcState,
   arcState,
   Avatar,
+  clipboardImageFiles,
   columnHelp,
   columnLabel,
   errText,
@@ -577,6 +580,8 @@ function NewTaskDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
   const [estimate, setEstimate] = useState<null | TaskEstimate>(null)
+  // Images pasted into the dialog, attached once the task exists.
+  const [pastedFiles, setPastedFiles] = useState<File[]>([])
 
   // Rough effort estimate from the typed title/body (before the task exists),
   // via the auto-routed auxiliary model. Makes a model call — explicit action.
@@ -610,8 +615,23 @@ function NewTaskDialog({
       setError(null)
       setBusy(false)
       setEstimate(null)
+      setPastedFiles([])
     }
   }, [target, boardDefaultKind])
+
+  // Paste an image into the dialog to attach it once the task exists. A paste
+  // with no image (plain text) is left untouched so the title/description
+  // inputs keep their normal behaviour.
+  const onPaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const files = clipboardImageFiles(event)
+
+    if (files.length === 0) {
+      return
+    }
+
+    event.preventDefault()
+    setPastedFiles(prev => [...prev, ...files])
+  }
 
   const submit = async () => {
     const trimmed = title.trim()
@@ -656,6 +676,23 @@ function NewTaskDialog({
         host.notify({ kind: 'warning', message: warning })
       }
 
+      // Attach pasted images to the freshly-created task (best-effort: the
+      // task exists regardless, and a failed upload just toasts — the file can
+      // still be added from the drawer).
+      if (task && pastedFiles.length > 0) {
+        for (const file of pastedFiles) {
+          try {
+            await uploadAttachment(task.id, {
+              bytes: await file.arrayBuffer(),
+              contentType: file.type || undefined,
+              filename: file.name
+            })
+          } catch (err) {
+            host.notify({ kind: 'warning', message: errText(err) })
+          }
+        }
+      }
+
       await qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
       onClose()
     } catch (err) {
@@ -678,7 +715,7 @@ function NewTaskDialog({
         <DialogHeader>
           <DialogTitle>{target ? k.newTaskIn(columnLabel(k, target)) : k.newTask}</DialogTitle>
         </DialogHeader>
-        <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pr-0.5">
+        <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pr-0.5" onPaste={onPaste}>
           <Input
             autoFocus
             onChange={event => setTitle(event.target.value)}
@@ -697,6 +734,28 @@ function NewTaskDialog({
             placeholder={k.descPlaceholder}
             value={bodyText}
           />
+
+          {pastedFiles.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {pastedFiles.map((file, index) => (
+                <li
+                  className="flex items-center gap-1.5 rounded bg-(--ui-bg-quinary) px-2 py-1 text-[0.75rem] text-(--ui-text-secondary)"
+                  key={`${file.name}-${index}`}
+                >
+                  <Codicon name="file" size="0.75rem" />
+                  <span className="min-w-0 truncate">{file.name}</span>
+                  <button
+                    aria-label={k.delete}
+                    className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-quaternary) transition-colors hover:text-foreground"
+                    onClick={() => setPastedFiles(prev => prev.filter((_, i) => i !== index))}
+                    type="button"
+                  >
+                    <Codicon name="close" size="0.7rem" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <Field label={k.priority}>

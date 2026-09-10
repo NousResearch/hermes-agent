@@ -71,6 +71,23 @@ export function errText(err: unknown): string {
   return raw
 }
 
+/** Image files carried by a clipboard paste event. Empty when the clipboard
+ *  held no image — callers must leave a normal text paste untouched in that
+ *  case. Pulls `image/*` items off `clipboardData.items` (the native way to
+ *  get a pasted screenshot) rather than touching the file-picker path. */
+export function clipboardImageFiles(event: { clipboardData: null | DataTransfer }): File[] {
+  const items = event.clipboardData?.items
+
+  if (!items) {
+    return []
+  }
+
+  return Array.from(items)
+    .filter(item => item.type.startsWith('image/'))
+    .map(item => item.getAsFile())
+    .filter((file): file is File => file != null)
+}
+
 /** Backend timestamps are epoch SECONDS; the canonical formatter takes ms. */
 export const ago = (seconds?: null | number): null | string => (seconds ? relativeTime(seconds * 1000) : null)
 

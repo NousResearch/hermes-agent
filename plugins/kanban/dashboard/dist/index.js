@@ -1202,7 +1202,7 @@
        destructive: true,
      }).then(function (r) {
        if (!r.confirmed) return null;
-       return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
+       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
          method: "DELETE",
        }).then(function () {
          loadBoard();
@@ -1228,7 +1228,7 @@
         const ids = Array.from(selectedIds);
         setSelectedIds(new Set());
         return Promise.all(ids.map(function (id) {
-          return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+          return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(id)}`, board), { method: "DELETE" });
         })).then(function () {
           loadBoard();
         }).catch(function (e) { setError(String(e.message || e)); });

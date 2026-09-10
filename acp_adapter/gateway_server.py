@@ -218,8 +218,11 @@ class GatewayACPAgent(acp.Agent):
             await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None)
             if self._failure:
                 raise self._failure
-            self._terminals.pop(admission_id)
-        return PromptResponse(stop_reason="end_turn")
+            terminal = self._terminals.pop(admission_id)
+        outcome = terminal.get("outcome")
+        if outcome == "failed":
+            raise GatewayClientError("admitted_turn_failed")
+        return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn")
 
     async def _events(self):
         try:
@@ -262,7 +265,12 @@ class GatewayACPAgent(acp.Agent):
             if text and self._conn:
                 await self._conn.session_update(session_id=sid, update=acp.update_agent_message_text(text))
         elif kind == "message.complete":
+            from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
             text = payload.get("text", "")
+            # Local interrupt status is metadata; ACP carries it in stop_reason.
+            if payload.get("outcome") == "cancelled" and text.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
+                text = ""
             prefix = self._streamed.pop(aid, "")
             remainder = text[len(prefix):] if text.startswith(prefix) else text
             if remainder and self._conn:

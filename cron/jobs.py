@@ -1391,6 +1391,52 @@ def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]]) -> str:
 _SAVE_JOBS_MERGE_ATTEMPTS = 5
 
 
+def _refuse_unexplained_shrink(
+    jobs: List[Dict[str, Any]], removed_ids: Optional[Collection[str]],
+    replace: bool = False,
+) -> None:
+    """Structural guard against silent store wipes (wipe incident 2026-09-08).
+
+    The shrink-merge path (see ``_merge_unexpected_disk_jobs``) preserves on-disk
+    jobs that are absent from the in-memory payload; it cannot, however, tell
+    INTENTIONAL DELETE from UNINTENDED WIPE apart — both look the same at the
+    shrink-merge boundary. This guard makes the distinction explicit: a save
+    that shrinks the on-disk job count must account for EVERY missing ID via
+    ``removed_ids``. Any unexplained shrink refuses loudly (ValueError) rather
+    than silently overwriting the persistent store. ``replace=True`` opts out
+    of the guard by design (disaster recovery path; documented at save_jobs).
+
+    Defense in depth with the existing shrink-merge: that path catches
+    concurrent creates that landed during the save window (TOCTOU on the create
+    side); this guard catches concurrent DELETES that landed during the save
+    window (TOCTOU on the delete side). Both bugs are now impossible by
+    construction — a save either succeeds with all IDs accounted for, or fails
+    loudly with the offending IDs named in the exception.
+    """
+    if replace:
+        return
+    try:
+        disk_jobs = _peek_jobs_unlocked()
+    except Exception:
+        return  # _peek failures are non-fatal elsewhere; don't block saves on them.
+    if disk_jobs is None:
+        return  # corrupt disk; let the auto-repair branch handle it.
+    disk_ids = {str(d.get("id")) for d in disk_jobs if isinstance(d, dict) and d.get("id")}
+    payload_ids = {str(j.get("id")) for j in jobs if isinstance(j, dict) and j.get("id")}
+    accounted_removals = {str(r) for r in (removed_ids or ()) if r}
+    unexplained = disk_ids - payload_ids - accounted_removals
+    if unexplained:
+        raise ValueError(
+            f"save_jobs refusing unexplained shrink of cron store: "
+            f"{len(unexplained)} job(s) present on disk but missing from save "
+            f"payload AND not in removed_ids: {sorted(unexplained)}. "
+            f"Use replace=True for disaster recovery (silent replacement)."
+        )
+
+
+_SAVE_JOBS_MERGE_ATTEMPTS = 5
+
+
 def _save_jobs_unlocked(
     jobs: List[Dict[str, Any]], *, removed_ids: Optional[Collection[str]] = None,
     replace: bool = False,
@@ -1398,6 +1444,9 @@ def _save_jobs_unlocked(
     """Save all jobs; caller must hold _jobs_lock(). ``removed_ids`` = intentional deletes;
     ``replace=True`` skips the shrink-merge guard (wholesale rewrite for tests/disaster
     recovery)."""
+    # Structural guard against silent store wipes — runs BEFORE shrink-merge so TOCTOU
+    # deletes are caught explicitly rather than silently merged.
+    _refuse_unexplained_shrink(jobs, removed_ids, replace)
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
     # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.

@@ -1,6 +1,8 @@
 name: Docker Build, Test, and Publish
 
 on:
+  push:
+    branches: [main]
   # This workflow owns its own triggers. ci.yml does not call it.
   # A reusable-workflow call eeps the caller run in progress for that full time.
   # GitHub refuses  ``gh run rerun`` on a run that is still in progress.
@@ -9,6 +11,7 @@ on:
   #
   # Trusted main pushes resolve the environment-scoped Docker Hub secrets in
   # this same workflow, never across a workflow boundary.
+  pull_request:
   release:
     types: [published]
   workflow_dispatch:

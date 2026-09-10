@@ -42,6 +42,44 @@ from tools.file_tools_read_tracking import (
 logger = logging.getLogger(__name__)
 
 
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset(
+    {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+)
+
+
+def _uses_container_paths(task_id: str = "default") -> bool:
+    """Return whether *task_id* resolves paths inside a terminal backend."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _is_container_backend,
+            _resolve_container_task_id,
+        )
+
+        try:
+            container_key = _resolve_container_task_id(task_id)
+        except Exception:
+            container_key = task_id
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(
+                task_id
+            )
+        if env is not None:
+            backend = getattr(env, "_hermes_backend_name", None)
+            if not isinstance(backend, str) or not backend:
+                backend = env.__class__.__name__.lower()
+            return _is_container_backend(backend) or backend in _CONTAINER_PATH_BACKENDS_FALLBACK
+        config = _get_env_config()
+        backend = str(
+            config.get("env_type") or os.getenv("TERMINAL_ENV") or "local"
+        ).lower()
+        return _is_container_backend(backend) or backend in _CONTAINER_PATH_BACKENDS_FALLBACK
+    except Exception:
+        return str(os.getenv("TERMINAL_ENV") or "local").lower() in _CONTAINER_PATH_BACKENDS_FALLBACK
+
+
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
@@ -614,7 +652,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 pass  # stat failed — fall through to full read
 
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        # The resolved (task-scoped) path, not the raw operand: a shared backend instance's
+        # own cwd is unrelated to this task, so a relative operand must not be re-resolved
+        # against it downstream (#file_ops.read_file resolves relative paths itself).
+        result = file_ops.read_file(resolved_str, offset, limit)
         result_dict = result.to_dict()
 
         # Cache a not-found result for retries. Deliberately NO early return:

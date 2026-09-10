@@ -3,6 +3,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import tools.kanban_tools as kanban_tools
+from contextlib import contextmanager
+from hermes_cli import kanban_db_dispatch as dispatch
+
+
+@contextmanager
+def _test_board(kb):
+    yield kb, _Connection()
 
 
 class _Connection:
@@ -22,7 +29,8 @@ def test_auto_heartbeat_fences_worker_after_confirmed_claim_loss(monkeypatch):
         heartbeat_claim=lambda *_args, **_kwargs: False,
         heartbeat_worker=lambda *_args, **_kwargs: True,
     )
-    monkeypatch.setattr(kanban_tools, "_connect", lambda: (kb, _Connection()))
+    monkeypatch.setattr(kanban_tools, "_board", lambda *a, **kw: _test_board(kb))
+    monkeypatch.setattr(dispatch, "heartbeat_worker", kb.heartbeat_worker)
     _reset_heartbeat_window()
     lost: list[str] = []
 
@@ -42,7 +50,8 @@ def test_auto_heartbeat_fences_worker_after_confirmed_run_loss(monkeypatch):
         heartbeat_claim=lambda *_args, **_kwargs: True,
         heartbeat_worker=lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr(kanban_tools, "_connect", lambda: (kb, _Connection()))
+    monkeypatch.setattr(kanban_tools, "_board", lambda *a, **kw: _test_board(kb))
+    monkeypatch.setattr(dispatch, "heartbeat_worker", kb.heartbeat_worker)
     _reset_heartbeat_window()
     lost: list[str] = []
 
@@ -55,8 +64,8 @@ def test_auto_heartbeat_does_not_fence_on_unavailable_board(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
     monkeypatch.setattr(
         kanban_tools,
-        "_connect",
-        lambda: (_ for _ in ()).throw(OSError("database busy")),
+        "_board",
+        lambda *a, **kw: (_ for _ in ()).throw(OSError("database busy")),
     )
     _reset_heartbeat_window()
     lost: list[str] = []

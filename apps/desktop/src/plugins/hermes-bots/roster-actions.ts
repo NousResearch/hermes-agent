@@ -246,6 +246,9 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // round-trip. Both identities are recorded so the reclaim listener and
     // the roster-activity refresh treat it exactly like a registry open.
     $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
+    // Legacy visibility repair is profile-scoped and demand-driven: opening
+    // this bot may inspect this bot, but an idle Desktop never scans peers.
+    void reconcileBotProfileSessions(bot)
 
     // Fronting is presentation-only: the pane keeps whatever transcript it
     // last painted, which can predate rows the bot wrote while the user was

@@ -1142,6 +1142,21 @@ def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:
                         suffix=" — fallback will be disabled")
 
 
+def _validate_code_execution(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """A negative max_tool_calls otherwise only surfaces as a ValueError deep in the code
+    execution tool's first call; catch it at startup instead."""
+    ce_cfg = config.get("code_execution")
+    if not isinstance(ce_cfg, dict):
+        return
+    value = ce_cfg.get("max_tool_calls")
+    if isinstance(value, int) and not isinstance(value, bool) and value < 0:
+        _issue(
+            issues, "error",
+            f"code_execution.max_tool_calls is negative ({value!r})",
+            "Use zero to disable the limit, or a positive integer to cap tool calls",
+        )
+
+
 def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
     """A stale web backend selection otherwise fails only at the first web_search/web_extract
     call with a generic "no registered provider" error; warn at startup instead."""
@@ -1204,6 +1219,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                    f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                    f"Move '{key}' under the appropriate section")
 
+    _validate_code_execution(config, issues)
     _validate_web_backends(config, issues)
     return issues
 
@@ -1626,6 +1642,27 @@ def _items_by_unique_name(items):
     return indexed
 
 
+def _best_structural_match(item, loaded_expanded, used_loaded):
+    """Find the unused ``loaded_expanded`` index that *item* was most likely edited from.
+
+    Scores each candidate by how many of its top-level dict fields still equal
+    *item*'s; a modified entry keeps most of its unchanged sibling fields, so
+    this reliably beats an unrelated item even when both were reordered.
+    """
+    if not isinstance(item, dict):
+        return None
+    best_index, best_score = None, 0
+    for index, candidate in enumerate(loaded_expanded):
+        if index in used_loaded or not isinstance(candidate, dict):
+            continue
+        score = sum(
+            1 for key, value in candidate.items()
+            if key in item and item[key] == value)
+        if score > best_score:
+            best_index, best_score = index, score
+    return best_index
+
+
 def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     """Restore raw ``${VAR}`` templates where the value is otherwise unchanged, so persisting a
     loaded (expanded) config never writes the plaintext secret back to ``config.yaml``."""
@@ -1653,6 +1690,57 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
                     item, raw_by_name.get(item.get("name")),
                     loaded_by_name.get(item.get("name")) if loaded_by_name is not None else None)
                 for item in current]
+        if isinstance(loaded_expanded, list):
+            # List mutations may reorder values (for example, set-backed plugin lists). Match
+            # unchanged values against their expanded counterparts before falling back to position,
+            # so an existing environment template is not lost when a new item sorts ahead of it.
+            #
+            # Exact matches are reserved in a first pass, over ALL items, before any structural/
+            # positional fallback runs. A single combined pass let an item with no real
+            # relationship to the loaded list (e.g. a brand-new entry that happens to be
+            # processed first) fall through to the positional fallback and greedily claim the
+            # unchanged env-backed item's own index -- leaving that item with no unused exact
+            # match, so it got persisted from its expanded value and leaked the secret into
+            # config.yaml.
+            used_loaded = set()
+            exact_match_for_index = {}
+            for i, item in enumerate(current):
+                match = next(
+                    (index for index, loaded_item in enumerate(loaded_expanded)
+                     if index not in used_loaded and item == loaded_item),
+                    None,
+                )
+                if match is not None:
+                    used_loaded.add(match)
+                    exact_match_for_index[i] = match
+            preserved = []
+            for i, item in enumerate(current):
+                if i in exact_match_for_index:
+                    match = exact_match_for_index[i]
+                    preserved.append(
+                        _preserve_env_ref_templates(
+                            item,
+                            raw[match] if match < len(raw) else None,
+                            loaded_expanded[match]))
+                    continue
+                # A modified unnamed object no longer equals its expanded counterpart.
+                # A plain positional fallback misidentifies it whenever the list was
+                # *both* reordered and edited (e.g. [A, B] -> [modified-B, A]: B's own
+                # output position is 0, but its loaded counterpart is at index 1) --
+                # pairing it with whichever raw item currently sits at that output
+                # position would restore the wrong item's templates, or silently drop
+                # an unchanged sibling field's ${VAR} template into plaintext. Instead,
+                # find the still-unused loaded item this one most resembles.
+                index = _best_structural_match(item, loaded_expanded, used_loaded)
+                if index is None:
+                    index = len(preserved)
+                if index < len(raw) and index < len(loaded_expanded) and index not in used_loaded:
+                    used_loaded.add(index)
+                    preserved.append(
+                        _preserve_env_ref_templates(item, raw[index], loaded_expanded[index]))
+                else:
+                    preserved.append(item)
+            return preserved
         return [
             _preserve_env_ref_templates(
                 item,

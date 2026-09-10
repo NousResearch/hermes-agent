@@ -428,6 +428,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
     a ready-lane task is a duplicate-work signal and stays deferred.
     Rate-limit cooldown still applies in the review lane.
     """
+    import hermes_cli.kanban_db_dispatch as _hermes_cli_kanban_db_dispatch
     import hermes_cli.config as cfgmod
     import hermes_cli.profiles as profmod
 
@@ -478,9 +479,9 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             reason="operator requested a fresh verifier pass",
         )
         assert kb.unblock_task(conn, ready_id)
-        assert kbd.check_respawn_guard(conn, ready_id) is None
+        assert _hermes_cli_kanban_db_dispatch.check_respawn_guard(conn, ready_id) is None
 
-        rerun = kbd.dispatch_once(conn, dry_run=True)
+        rerun = _hermes_cli_kanban_db_dispatch.dispatch_once(conn, dry_run=True)
         assert ready_id in [s[0] for s in rerun.spawned]
 
         # Rate-limit cooldown still defers the review lane.
@@ -502,6 +503,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import hermes_cli.kanban_db_dispatch as _hermes_cli_kanban_db_dispatch
     import hermes_cli.config as cfgmod
     import hermes_cli.profiles as profmod
 
@@ -540,7 +542,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         guarded = kbd.dispatch_once(conn, spawn_fn=spawn)
         assert guarded.respawn_guarded == [(task_id, "rate_limit_cooldown")]
         assert not guarded.spawned
-        guarded_again = kbd.dispatch_once(conn, spawn_fn=spawn)
+        guarded_again = _hermes_cli_kanban_db_dispatch.dispatch_once(conn, spawn_fn=spawn)
         assert guarded_again.respawn_guarded == [(task_id, "rate_limit_cooldown")]
         guard_events = conn.execute(
             "SELECT COUNT(*) AS n FROM task_events "

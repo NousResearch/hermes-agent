@@ -568,6 +568,15 @@ describe('connect-on-demand sources', () => {
     expect(rows.filter(row => row.name === 'default')).toHaveLength(1)
   })
 
+  it('drops cached rows omitted by a successfully enumerated source', async () => {
+    $lastRoster.set(previouslyPainted('alias'))
+    const rows = await mergedRoster(
+      { profiles: [{ name: 'default' }] },
+      localOnlyUnion([{ connectionId: 'alias', kind: 'remote', reachable: true }])
+    )
+    expect(rows.find(row => row.connectionId === 'alias')).toBeUndefined()
+  })
+
   it('does not resurrect a row whose connection was removed from the registry', async () => {
     $lastRoster.set(previouslyPainted('gone'))
 

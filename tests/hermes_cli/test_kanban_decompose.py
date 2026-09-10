@@ -125,7 +125,8 @@ def test_decompose_makes_leaf_handoff_self_contained(kanban_home):
     reliable way to discover that card, so workers converted ordinary missing
     context into sticky ``needs_input`` blocks.
     """
-    with kbc.connect() as conn:
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         tid = kb.create_task(
             conn,
             title="investigate stream ordering",
@@ -154,7 +155,7 @@ def test_decompose_makes_leaf_handoff_self_contained(kanban_home):
             p.stop()
 
     assert outcome.ok, outcome.reason
-    with kbc.connect() as conn:
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         child = kb.get_task(conn, outcome.child_ids[0])
     assert child is not None
     assert "root task `" + tid + "`" in (child.body or "")
@@ -165,7 +166,8 @@ def test_decompose_makes_leaf_handoff_self_contained(kanban_home):
 
 def test_decompose_rejects_placeholder_child_scope_before_graph_write(kanban_home):
     """A generic monolith placeholder must not become a runnable leaf card."""
-    with kbc.connect() as conn:
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         tid = kb.create_task(
             conn,
             title="continue monolith burndown",
@@ -195,14 +197,15 @@ def test_decompose_rejects_placeholder_child_scope_before_graph_write(kanban_hom
 
     assert outcome.ok is False
     assert "placeholder target" in outcome.reason
-    with kbc.connect() as conn:
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         assert kb.get_task(conn, tid).status == "triage"
         assert kb.child_ids(conn, tid) == []
 
 
 def test_decompose_inherits_recent_root_handoffs(kanban_home):
     """Comments added after creation must reach fresh phase workers."""
-    with kbc.connect() as conn:
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         tid = kb.create_task(
             conn,
             title="continue monolith burndown",
@@ -237,7 +240,7 @@ def test_decompose_inherits_recent_root_handoffs(kanban_home):
             p.stop()
 
     assert outcome.ok, outcome.reason
-    with kbc.connect() as conn:
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         child = kb.get_task(conn, outcome.child_ids[0])
     assert child is not None
     assert "Recent root handoffs/comments" in (child.body or "")
@@ -317,7 +320,8 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
 def test_decompose_refuses_atomic_pr_automation_before_llm(
     kanban_home, idempotency_key, body
 ):
-    with kbc.connect() as conn:
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         tid = kb.create_task(
             conn,
             title="Repair ExampleApp PR #132",
@@ -334,12 +338,13 @@ def test_decompose_refuses_atomic_pr_automation_before_llm(
 
     assert outcome.ok is False
     assert "atomic PR automation" in outcome.reason
-    with kbc.connect() as conn:
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         assert kb.get_task(conn, tid).status == "triage"
 
 
 def test_decompose_refuses_governed_research_intake_before_llm(kanban_home):
-    with kbc.connect() as conn:
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         tid = kb.create_task(
             conn,
             title="[Lab] Research intake",
@@ -360,7 +365,7 @@ def test_decompose_refuses_governed_research_intake_before_llm(kanban_home):
 
     assert outcome.ok is False
     assert "governed research intake" in outcome.reason
-    with kbc.connect() as conn:
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task is not None
     assert task.status == "triage"

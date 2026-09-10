@@ -1,4 +1,5 @@
 from __future__ import annotations
+from hermes_cli import kanban_db_dispatch as dispatch_impl
 
 import subprocess
 
@@ -186,7 +187,7 @@ def test_resolve_worker_cli_toolsets_expands_all_without_unrestricted_sentinel(
 
     from hermes_cli import kanban_db as kb
 
-    resolved = kb._resolve_worker_cli_toolsets(str(profile))
+    resolved = dispatch_impl._resolve_worker_cli_toolsets(str(profile))
 
     assert resolved is not None
     assert "all" not in resolved

@@ -25,6 +25,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from agent.file_safety import get_read_block_error
+from agent.egress_source_annotations import mask_builtin_annotations
 from agent.cross_process_file_lock import (
     exclusive_file_lock,
     secure_file_descriptor_permissions,
@@ -253,6 +254,11 @@ _SAFE_DIAGNOSTIC_STATUS_WORDS = frozenset({
     "FAIL",
     "SHA1",
     "CRITICAL",
+    # Fixed command-syntax metavariables in the built-in Kanban guidance.
+    # They are not payloads even though their short all-caps forms can decode
+    # as canonical Base64 by coincidence.
+    "APPROVE",
+    "TEXT",
 })
 _LINTER_DIAGNOSTIC_CODE = re.compile(r"^[A-Z][0-9]{3,4}$")
 _PYTHON_DUNDER_IDENTIFIER = re.compile(r"^__[a-z][a-z0-9_]{0,62}__$")
@@ -260,11 +266,269 @@ _PYTHON_PRIVATE_IDENTIFIER = re.compile(r"^_[A-Za-z][A-Za-z0-9_]{1,63}$")
 _PYTHON_MIXED_CASE_IDENTIFIER = re.compile(
     r"^[a-z][A-Za-z0-9]*_[A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*$"
 )
+_BOUNDED_PASCAL_CASE_IDENTIFIER = re.compile(
+    r"^[A-Z][a-z0-9]{2,63}(?:[A-Z][a-z0-9]{2,63}){2,7}$"
+)
 _BOUNDED_SOURCE_CODE_ATOM = re.compile(
     r"(?:[a-z][a-z0-9]{0,63}(?:_[a-z0-9]{1,64}){1,7}"
     r"|[A-Z][A-Z0-9]{0,63}(?:_[A-Z0-9]{1,64}){1,7}"
     r"|[a-z][a-z0-9]{0,63}(?:-[a-z][a-z0-9]{0,63}){1,7}"
     r"|[A-Z][0-9]{3,4})"
+)
+# Large Python repositories routinely use descriptive identifiers with more
+# than eight components.  Keep this separate from the short atom grammar so
+# the bound remains explicit: only lowercase source identifiers with 9-16
+# non-empty components qualify, while opaque mixed-case/URL-safe blobs remain
+# visible to the fail-closed scanner.
+_BOUNDED_LONG_SOURCE_CODE_ATOM = re.compile(
+    r"^[a-z][a-z0-9]{0,63}(?:_[a-z0-9]{1,64}){8,15}$"
+)
+_BOUNDED_LONG_PRIVATE_IDENTIFIER = re.compile(r"^_[a-z][a-z0-9_]{8,191}$")
+_BOUNDED_SOURCE_DOUBLE_UNDERSCORE = re.compile(
+    r"^[a-z][a-z0-9]*__[a-z0-9]+(?:_[a-z0-9]+){1,7}$"
+)
+_BOUNDED_SOURCE_VERSIONED_IDENTIFIER = re.compile(
+    r"^[0-9]{1,3}[a-z]+(?:_[a-z0-9]+){2,8}$"
+)
+_BOUNDED_SOURCE_CAMEL_CASE_IDENTIFIER = re.compile(
+    r"^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+){1,7}$"
+)
+# These are fixed Python source literals used by the paper-runtime boundary.
+# Keep them source-presentation-only: the same words in generated or
+# untrusted provider context must still go through the ordinary fail-closed
+# Base64 detector.
+_BOUNDED_SOURCE_FIXED_LITERAL_ATOMS = frozenset(
+    {
+        "-128",
+        "-200",
+        "-tf_priority",
+        "1day",
+        "1e-3",
+        "1e-6",
+        "1e-9",
+        "1min",
+        "128_000_000",
+        "250_000",
+        "3min",
+        "40310000",
+        "42210000",
+        "5GB+",
+        "5min",
+        "ACCT",
+        "ANOMALY",
+        "ASSET_CLASS_",
+        "BASE",
+        "BEAR",
+        "BOOT",
+        "BULL",
+        "DATA",
+        "DAYTRADE",
+        "DEFERRED",
+        "DTBP",
+        "ENFORCE",
+        "EXIT",
+        "EXTENDED",
+        "EXTO",
+        "FIRE",
+        "GATE",
+        "HOST",
+        "INIT",
+        "INTRADAY",
+        "KEYS",
+        "LIVE",
+        "MPLCONFIGDIR",
+        "NAME",
+        "NEXT",
+        "hrl-",
+        "NONE",
+        "NULL",
+        "PERF",
+        "POST",
+        "PIPE",
+        "PROFILE",
+        "READONLY",
+        "REVERSAL",
+        "RUNTIME",
+        "SEAM",
+        "SELL",
+        # Fixed GitHub Actions workflow literals. These occur in exact
+        # source-granted YAML presentations; they are syntax/metadata, not
+        # encoded content. Keep the exception source-presentation-only.
+        "SECURITY",
+        "TEMPORARILY",
+        "DISABLED",
+        "REAL",
+        "installer-tests-",
+        "-ExecutionPolicy",
+        "addopts",
+        "ci-timings-baseline-",
+        "SOUL",
+        "SIM-",
+        "TRUE",
+        "USDC",
+        "USDT",
+        "asset_class_",
+        "columns",
+        "cycle_id-derived",
+        "ema_",
+        "emitted_",
+        "lineage_",
+        "log_",
+        "options",
+        "options_",
+        "position_guard_only_",
+        "reasons",
+        "rsi_",
+        "runtime_",
+        "sha1",
+        "shared-prebuild-",
+        "sma_",
+        "sources",
+        "targets",
+        "three_layer_",
+        "top5",
+        "top_slowest_",
+        "atr_",
+        "adx_",
+        # Exact atoms observed in authorized PR repair source presentations.
+        # Keep these source-presentation-only; untrusted/generated context
+        # still goes through the ordinary fail-closed Base64 detector.
+        "400+",
+        "262_144",
+        "SAME",
+        "DOES",
+        "DISABLE",
+        "LOOPBACK",
+        "compression-SUMMARY",
+        "WITH",
+        "READ",
+    }
+)
+# Source-granted PR diffs contain bounded command filters, issue keys, and
+# unified-diff marker lines. Their URL-safe alphabet can resemble encoded
+# payloads, but the surrounding source grammar proves they are presentation
+# metadata. These masks apply only after an exact source grant is validated.
+_BOUNDED_SOURCE_CLI_VALUE = re.compile(
+    r"(?P<prefix>--[a-z][a-z0-9]*(?:-[a-z0-9]+)*=)"
+    r"(?P<value>[A-Z]{3,8})(?P<suffix>[^A-Za-z0-9_+/=-])"
+)
+_BOUNDED_SOURCE_REVIEW_SYNTAX = re.compile(
+    r"(?:(?<=--event )(?:APPROVE|REQUEST_CHANGES|COMMENT)(?=[|` ])"
+    r"|(?<=\|)(?:APPROVE|REQUEST_CHANGES|COMMENT)(?=[|` ])"
+    r"|(?<=--body )TEXT(?=[`;]|\Z))"
+)
+_BOUNDED_SOURCE_ADVISORY_KEY = re.compile(
+    r"(?:GHSA-[A-Za-z0-9]+(?:-[A-Za-z0-9]+){2,8}|PYSEC-[0-9]{4}-[0-9]{3,})"
+)
+_BOUNDED_SOURCE_GIT_HEAD_OUTPUT = re.compile(
+    r"(?m)^(?P<full>[0-9a-f]{40})\n(?P<prefix>[0-9a-f]{10})[0-9a-f]{0,30} [^\n]*$"
+)
+_BOUNDED_SOURCE_GIT_LOG_ENTRY = re.compile(
+    r"(?m)^(?P<sha>[0-9a-f]{40})(?= "
+    r"(?:fix|feat|test|docs|chore|refactor|perf|build|ci|style|revert|Merge)"
+    r"(?:\(|:|\s))"
+)
+_BOUNDED_NUMBERED_SOURCE_GIT_LOG_ENTRY = re.compile(
+    r"(?m)^\d+\|[0-9a-f]{7,12}\s+"
+    r"(?=(?:fix|feat|test|docs|chore|refactor|perf|build|ci|style|revert|Merge)"
+    r"(?:\(|:|\s))[^\n]*$"
+)
+_BOUNDED_SOURCE_DIFF_STAT_BINARY = re.compile(
+    r"(?m)^(?:\d+\|\s*)?(?P<prefix>[^\n|]*\|\s+Bin\s+\d+\s*->\s+)"
+    r"(?P<size>\d+)(?P<suffix>\s+bytes\s*)$"
+)
+_BOUNDED_SOURCE_DIFF_STAT_COUNT = re.compile(
+    r"(?m)^(?:\d+\|\s*)?(?P<prefix>[^\n|]*\|\s+)(?P<count>\d{1,8})"
+    r"(?P<suffix>\s+[+]+\s*)$"
+)
+_BOUNDED_SOURCE_NUMSTAT_PATH = re.compile(
+    r"(?m)^(?P<prefix>\d+\t\d+\t)(?P<path>"
+    r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.+@-]+(?:\.[A-Za-z0-9_.-]+)?"
+    r"|[A-Za-z0-9_.+@-]+\.[A-Za-z0-9_.-]+)\s*$"
+)
+_BOUNDED_SOURCE_PATH_FRAGMENT = re.compile(
+    r"^[A-Za-z0-9]/[A-Za-z0-9._-]{2,}(?:/[A-Za-z0-9._-]{2,})+$"
+)
+# Protected repair workers persist a bare full Git SHA in ``current_head.txt``
+# and prefix porcelain paths in ``changed_names.txt``.  These are bounded
+# source-presentation receipts, not encoded payloads.
+_BOUNDED_SOURCE_RECEIPT_SHA = re.compile(r"^[0-9a-f]{40}$")
+_BOUNDED_SOURCE_CHANGED_NAME = re.compile(
+    r"^zz_changed__[A-Za-z0-9][A-Za-z0-9._-]{2,191}$"
+)
+_BOUNDED_SOURCE_DASHED_TITLE = re.compile(
+    r"^[A-Z][A-Za-z0-9]+(?:-[A-Za-z][A-Za-z0-9]+)+$"
+)
+_BOUNDED_SOURCE_LINE_LABEL = re.compile(r"^[nN][0-9]{2,6}$")
+_BOUNDED_SOURCE_FILE_TOKEN = re.compile(
+    r"\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z][A-Za-z0-9]*)+\.[A-Za-z0-9]{1,8}\b"
+)
+_BOUNDED_ISO_DURATION = re.compile(r"\bP[0-9]{1,4}[DWMY]\b")
+_BOUNDED_SOURCE_CODE_ASSIGNMENT = re.compile(
+    r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+){1,7}="
+)
+_BOUNDED_SOURCE_ISSUE_KEY = re.compile(
+    r"\b[A-Z]{1,8}\d{2,}-[A-Z0-9]+(?:-[A-Z0-9]+){1,8}\b"
+)
+_BOUNDED_SOURCE_DIFF_METADATA = re.compile(
+    r"(?m)^\+[A-Za-z0-9+/=_-]{1,128}\s*$"
+)
+_BOUNDED_SOURCE_DIFF_HUNK = re.compile(
+    r"(?m)^(?:\d+\|)?@@ -\d{1,8}(?:,\d{1,8})? \+\d{1,8}(?:,\d{1,8})? @@[^\n]*$"
+)
+_BOUNDED_NUMBERED_SOURCE_DIFF_LINE = re.compile(
+    r"(?m)^(?:(?P<number>\d+)\|)?(?P<marker>[+-])(?P<body>[^\n]*)$"
+)
+_BOUNDED_SOURCE_SECRET_NAMED_CODE_ASSIGNMENT = re.compile(
+    r"\b(?P<name>[a-z][a-z0-9_]*_(?:pass|token|secret|password|auth|key))"
+    r"\s*=\s*(?P<value>_[a-z][a-z0-9_]*(?:\([^\n]*\))?|[a-z][a-z0-9_]*)"
+)
+_BOUNDED_SOURCE_SECRET_CODE_ASSIGNMENT = re.compile(
+    r"\b(?P<name>(?:token|secret|password|passwd|api[_-]?key|apikey|"
+    r"client[_-]?secret|private[_-]?key|(?:[a-z][a-z0-9_]*_)?credentials))"
+    r"\s*=\s*(?P<value>_[A-Za-z][A-Za-z0-9_]*(?:\([^\n]*\))?|"
+    r"[A-Za-z][A-Za-z0-9_]*(?:\([^\n]*\))?)(?![A-Za-z0-9_-])"
+)
+_BOUNDED_SOURCE_NUMERIC_CONSTANT_ASSIGNMENT = re.compile(
+    r"\b[A-Z][A-Z0-9_]{2,63}\s*=\s*[0-9][0-9_]{2,63}\b"
+)
+_BOUNDED_SOURCE_SECRET_PLACEHOLDER = re.compile(
+    r"(?i)\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|"
+    r"password|passwd|api[_-]?key|apikey|client[_-]?secret|private[_-]?key)"
+    r"\s*[:=]\s*[\"']?(?:stale-key|legacy-stale-key|test-key|dummy-key|"
+    r"example-key|placeholder-key|redacted-key)[\"']?\b"
+)
+_BOUNDED_SOURCE_SECRET_PLACEHOLDER_VALUE = re.compile(
+    r"(?P<prefix>[:=]\s*)(?:"
+    r"ghp_x{4,}|xox[bap]-\.\.\.|your_[a-z0-9_]+|"
+    r"x{4,}(?:\s+x{4,})*|\*{3,}"
+    r")(?=$|[\s#])",
+    re.IGNORECASE,
+)
+_BOUNDED_SOURCE_SECRET_ENV_NAME = re.compile(
+    r"\b[A-Z][A-Z0-9_]{2,63}_(?:TOKEN|SECRET|PASSWORD|PASSWD|"
+    r"API_KEY|PRIVATE_KEY|CREDENTIALS)\b"
+)
+_BOUNDED_SOURCE_UPPER_SECRET_CODE_ASSIGNMENT = re.compile(
+    r"(?<![A-Za-z0-9])_?[A-Z][A-Z0-9_]*"
+    r"(?:TOKEN|TOKENS|SECRET|SECRETS|PASSWORD|PASSWORDS|PASSWD|"
+    r"API_KEY|PRIVATE_KEY|CREDENTIALS|KEYS)[A-Z0-9_]*"
+    r"\s*=\s*[A-Za-z_][A-Za-z0-9_]*(?:\([^\n]*\))?"
+)
+_BOUNDED_SOURCE_SECRET_EXPRESSION_ASSIGNMENT = re.compile(
+    r"(?im)\b(?:[a-z][a-z0-9_-]*[_-])?"
+    r"(?:token|tokens|secret|secrets|password|passwd|api[_-]?key|"
+    r"private[_-]?key|credential|credentials)\b"
+    r"\s*:\s*\$\{\{[^}\n]+\}\}"
+    r"|\b[A-Z][A-Z0-9_]*(?:TOKEN|TOKENS|SECRET|SECRETS|PASSWORD|"
+    r"PASSWD|API_KEY|PRIVATE_KEY|CREDENTIALS|KEYS)[A-Z0-9_]*\b"
+    r"\s*:\s*\$\{\{[^}\n]+\}\}"
+ )
+_BOUNDED_SOURCE_BOOLEAN_SECRET_SETTING = re.compile(
+    r"(?im)\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|"
+    r"secret|password|passwd|api[_-]?key|apikey|client[_-]?secret|"
+    r"private[_-]?key|credential|credentials)\b"
+    r"\s*:\s*(?:true|false|null)\b"
 )
 # Bounded operational tokens are emitted by ordinary CLI/test tooling. They
 # can decode as Base64 by coincidence, but are not opaque encoded payloads.
@@ -290,7 +554,13 @@ _BOUNDED_COMMAND_PATH = re.compile(r"^/[a-z][a-z0-9_.-]{2,31}$")
 _BOUNDED_RENDER_MARKER = re.compile(r"^[nN]---$")
 _BOUNDED_SOURCE_CONTROL_FRAGMENT = re.compile(r"^[0-9a-f]{13,39}$")
 _SOURCE_CONTROL_CONTEXT = re.compile(
-    r"\b(?:commit|sha(?:1|256)?|head|base|revision|digest|hash)\b",
+    r"\b(?:commit|sha(?:1|256)?|head|base|revision|digest|hash)"
+    r"(?:_sha)?\b",
+    re.IGNORECASE,
+)
+_GITHUB_SOURCE_CONTROL_URL_CONTEXT = re.compile(
+    r"(?:https://github\.com/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/"
+    r"(?:compare|commit|commits)/|\]\(https://github\.com/)",
     re.IGNORECASE,
 )
 # Any-case letters + optional trailing slash: GitHub-style org/repo slugs
@@ -348,6 +618,16 @@ _PRIVATE_ABSOLUTE_PATH = re.compile(
     r"|[A-Za-z]:\\+(?:Users|Documents and Settings)\\+[^\s\"'`)]+"
     r")",
     re.IGNORECASE,
+)
+# Remote egress needs a stricter assignment scan than ordinary log redaction.
+# ``redact_sensitive_text`` intentionally leaves bare ``token=...`` in prose
+# alone to avoid false positives, but a provider-bound request must fail closed
+# when it contains an explicit credential-shaped assignment.
+_EGRESS_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])"
+    r"(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|"
+    r"password|passwd|api[_-]?key|apikey|client[_-]?secret|private[_-]?key)"
+    r"\s*[:=]\s*(?!<redacted>)[^\s,}\"']+"
 )
 # These are fixed provider-protocol grammar atoms, not a caller-configurable
 # egress allowlist. Several happen to round-trip as unpadded Base64 even though
@@ -420,9 +700,12 @@ _PROTOCOL_GRAMMAR_ATOMS = frozenset(
         "claim/finalize/retry",
         "com/docs",
         "content",
+        "codex_review_request",
+        "current_step_key",
         "developer",
         "doc/",
         "dispatcher_current_directory",
+        "evidence_heading",
         "acceptance-valid",
         "architecture-diagram",
         "autonomous-ai-agents",
@@ -435,6 +718,7 @@ _PROTOCOL_GRAMMAR_ATOMS = frozenset(
         "get_symbols_overview",
         "github-pr-workflow",
         "google-workspace",
+        "hermes_independent_code_review",
         "hermes-agent-skill-authoring",
         "match_message_id",
         "meeting-action-items",
@@ -486,6 +770,7 @@ _PROTOCOL_GRAMMAR_ATOMS = frozenset(
         "repository-owned",
         "runtime-executed",
         "reasoning",
+        "reasoning_effort",
         "role",
         "sed/awk",
         "servers/daemons",
@@ -495,8 +780,10 @@ _PROTOCOL_GRAMMAR_ATOMS = frozenset(
         "logic-regression",
         "system",
         "tool",
+        "untrusted_provenance",
         "user",
         "workspace_access",
+        "workflow_template_id",
     }
 )
 
@@ -615,6 +902,10 @@ def validate_tool_syntax(text: str, syntax_kind: str) -> str:
 def _canonical_base64_candidate(candidate: str) -> bool:
     """Recognize bounded canonical encodings without flagging ordinary IDs."""
 
+    # Source-diff callers supply whole lines, including Unicode comments.
+    # Neither standard nor URL-safe Base64 has non-ASCII alphabet members.
+    if not candidate.isascii():
+        return False
     if candidate in _PROTOCOL_GRAMMAR_ATOMS:
         return False
     if candidate in _SAFE_DIAGNOSTIC_STATUS_WORDS:
@@ -845,7 +1136,9 @@ def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> b
     return False
 
 
-def _source_text_for_base64_scan(text: str) -> str:
+def _source_text_for_base64_scan(
+    text: str, *, allow_fixed_source_literals: bool = False
+) -> str:
     """Mask bounded code atoms only after exact source-grant validation.
 
     Snake-case config keys, lowercase kebab-case rule names, and linter codes
@@ -854,22 +1147,228 @@ def _source_text_for_base64_scan(text: str) -> str:
     unchanged and are still rejected by the canonical scanner.
     """
 
-    def is_source_code_atom(candidate: str) -> bool:
+    def is_source_code_atom(match: re.Match[str], source_text: str) -> bool:
+        # ``_BASE64_CANDIDATE`` includes padding characters in the match, so
+        # a source keyword such as ``line_ranges=`` arrives here with its
+        # trailing assignment marker attached. Strip only that marker; a
+        # padded encoded value remains unchanged and fail-closed.
+        candidate = match.group(1)
+        source_atom = candidate[:-1] if candidate.endswith("=") else candidate
+        source_control_window = source_text[
+            max(0, match.start() - 256) : min(len(source_text), match.end() + 32)
+        ]
+        line_start = source_text.rfind("\n", 0, match.start()) + 1
+        line_end = source_text.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(source_text)
+        source_line = source_text[line_start:line_end]
+        is_numbered_receipt_sha = (
+            allow_fixed_source_literals
+            and _BOUNDED_SOURCE_RECEIPT_SHA.fullmatch(source_atom) is not None
+            and re.fullmatch(r"\s*\d+\|[0-9a-f]{40}\s*", source_line) is not None
+        )
+        is_source_control_identity = (
+            re.fullmatch(
+                r"[0-9a-f]{7,12}|[0-9a-f]{40}|[0-9a-f]{64}",
+                candidate.lower(),
+            )
+            is not None
+            and (
+                _SOURCE_CONTROL_CONTEXT.search(source_control_window) is not None
+                or _GITHUB_SOURCE_CONTROL_URL_CONTEXT.search(source_control_window)
+                is not None
+            )
+        )
         return (
-            _BOUNDED_SOURCE_CODE_ATOM.fullmatch(candidate) is not None
-            or _PYTHON_DUNDER_IDENTIFIER.fullmatch(candidate) is not None
-            or _PYTHON_PRIVATE_IDENTIFIER.fullmatch(candidate) is not None
-            or _PYTHON_MIXED_CASE_IDENTIFIER.fullmatch(candidate) is not None
+            is_source_control_identity
+            or
+            _BOUNDED_SOURCE_CODE_ATOM.fullmatch(source_atom) is not None
+            or _BOUNDED_LONG_SOURCE_CODE_ATOM.fullmatch(source_atom) is not None
+            or _BOUNDED_LONG_PRIVATE_IDENTIFIER.fullmatch(source_atom) is not None
+            or _BOUNDED_SOURCE_DOUBLE_UNDERSCORE.fullmatch(source_atom) is not None
+            or _BOUNDED_SOURCE_VERSIONED_IDENTIFIER.fullmatch(source_atom) is not None
+            or _PYTHON_DUNDER_IDENTIFIER.fullmatch(source_atom) is not None
+            or _PYTHON_PRIVATE_IDENTIFIER.fullmatch(source_atom) is not None
+            or _PYTHON_MIXED_CASE_IDENTIFIER.fullmatch(source_atom) is not None
+            or _BOUNDED_PASCAL_CASE_IDENTIFIER.fullmatch(source_atom) is not None
+            or _BOUNDED_SOURCE_CAMEL_CASE_IDENTIFIER.fullmatch(source_atom) is not None
+            or _BOUNDED_SOURCE_ADVISORY_KEY.fullmatch(source_atom) is not None
+            or _BOUNDED_SOURCE_PATH_FRAGMENT.fullmatch(source_atom) is not None
+            or is_numbered_receipt_sha
+            or (
+                allow_fixed_source_literals
+                and _BOUNDED_SOURCE_CHANGED_NAME.fullmatch(source_atom) is not None
+            )
+            or _BOUNDED_SOURCE_DASHED_TITLE.fullmatch(source_atom) is not None
+            or _BOUNDED_SOURCE_LINE_LABEL.fullmatch(source_atom) is not None
+            or (
+                allow_fixed_source_literals
+                and source_atom in _BOUNDED_SOURCE_FIXED_LITERAL_ATOMS
+            )
+            or source_atom in {
+                "LICENSE",
+                "BM25",
+                "HTML",
+                "PKCS",
+                "IANA",
+                "CONTRIBUTING",
+                "sprmn24",
+                "BOUNDARY",
+                "CASH",
+                "FIFO",
+                "FIRE",
+                "MPLCONFIGDIR",
+            }
+            # argparse usage renders a small, fixed set of all-caps
+            # metavariables.  They are command syntax, not encoded payloads;
+            # keep this exception enumerated so arbitrary values such as
+            # ``PAYLOAD`` remain visible to the fail-closed scanner.
+            # SQL snippets in source comments/queries likewise use fixed
+            # keywords whose short uppercase spelling can decode by chance.
+            or source_atom in {"PROVIDER", "TOOLSETS", "OPEN", "LIKE", "YAML"}
         )
 
-    return _BASE64_CANDIDATE.sub(
+    def is_source_identifier_in_code(
+        match: re.Match[str], source_text: str
+    ) -> bool:
+        candidate = match.group(1)
+        source_atom = candidate[:-1] if candidate.endswith("=") else candidate
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{2,191}", source_atom) is None:
+            return False
+        line_start = source_text.rfind("\n", 0, match.start()) + 1
+        line_end = source_text.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(source_text)
+        line = source_text[line_start:line_end]
+        offset = match.start() - line_start
+        before = line[:offset]
+        after = line[match.end() - line_start :]
+        if before.rstrip().endswith(("'", '"')):
+            return False
+        if re.search(r"\b(?:def|class)\s+$", before):
+            return True
+        at_line_assignment = not before and re.match(r"\s*=", after) is not None
+        return (
+            not before.rstrip().endswith((".", "'", '"'))
+            and (
+                at_line_assignment
+                or (
+                    bool(before)
+                    and before[-1] in " \t([{,:;"
+                )
+            )
+            and re.match(r"\s*(?:[=,.;:)(\]}])", after) is not None
+        )
+
+    # Explicit credential placeholders in checked-in examples are source
+    # grammar, not credential material. Keep the exception exact and scoped
+    # to validated source grants; arbitrary credential-shaped values remain
+    # visible to the fail-closed scan.
+    masked = _BOUNDED_SOURCE_SECRET_PLACEHOLDER_VALUE.sub(
+        r"\g<prefix><source-placeholder>", text
+    )
+    # A source path such as ``execution_submit_boundary.py`` is one lexical
+    # token, but the Base64 candidate regex sees its uppercase suffix after
+    # the underscore as a standalone candidate. Mask the whole path-shaped
+    # token before that scan; an opaque payload cannot contain a dot.
+    masked = _BOUNDED_SOURCE_FILE_TOKEN.sub("<source-file>", masked)
+    masked = _BOUNDED_ISO_DURATION.sub("<source-duration>", masked)
+    masked = _BOUNDED_SOURCE_NUMERIC_CONSTANT_ASSIGNMENT.sub(
+        "<source-constant>", masked
+    )
+    masked = _BOUNDED_NUMBERED_SOURCE_GIT_LOG_ENTRY.sub(
+        "<source-control-log>", masked
+    )
+    masked = _BOUNDED_SOURCE_DIFF_STAT_BINARY.sub(
+        "<source stat bytes>", masked
+    )
+    masked = _BOUNDED_SOURCE_DIFF_STAT_COUNT.sub(
+        "<source stat count>", masked
+    )
+    masked = _BASE64_CANDIDATE.sub(
         lambda match: (
-            "<code>"
-            if is_source_code_atom(match.group(1))
+            "<src>"
+            if is_source_code_atom(match, masked)
+            or is_source_identifier_in_code(match, masked)
             else match.group(0)
         ),
-        text,
+        masked,
     )
+    # A simple assignment such as ``sources=sources`` can expose the left
+    # hand side after the right-hand identifier is replaced above.  Mask the
+    # fixed source keys as a whole so the second scan cannot manufacture a
+    # new ``sources=`` Base64 candidate at that boundary.
+    if allow_fixed_source_literals:
+        masked = re.sub(
+            r"\b(?:columns|reasons|sources|targets)=",
+            "<source-key>",
+            masked,
+        )
+    # CLI filter values such as ``--diff-filter=ACMR`` are source syntax, not
+    # opaque payloads. Keep this grammar tied to a long-option assignment so
+    # short quoted Base64 values elsewhere remain rejected.
+    masked = _BOUNDED_SOURCE_CODE_ASSIGNMENT.sub("<src>", masked)
+    masked = _BOUNDED_SOURCE_ISSUE_KEY.sub("<source issue key>", masked)
+
+    def mask_diff_metadata(match: re.Match[str]) -> str:
+        line = match.group(0)
+        candidate = line[1:].strip()
+        # A unified-diff marker is metadata only when the added line itself
+        # is not an encoded payload. Keep canonical Base64 (including wrapped
+        # form) visible to the fail-closed scanner.
+        if _canonical_base64_candidate(candidate) or _canonical_chunked_base64_candidate(
+            candidate
+        ):
+            # Separate the marker from the candidate. The candidate regex
+            # includes ``+`` in its URL-safe alphabet, so returning ``+blob``
+            # would change the bytes being tested and accidentally hide a
+            # real encoded payload behind the diff marker.
+            suffix = "\n" if line.endswith("\n") else ""
+            return "+ " + candidate + suffix
+        return "<diff metadata>"
+
+    masked = _BOUNDED_SOURCE_DIFF_METADATA.sub(mask_diff_metadata, masked)
+    masked = _BOUNDED_SOURCE_DIFF_HUNK.sub("<source diff hunk>", masked)
+
+    def mask_numbered_diff_line(match: re.Match[str]) -> str:
+        body = match.group("body").strip()
+        candidate = f"{match.group('marker')}{body}"
+        # Keep an entire added/removed line visible when it is itself an
+        # encoded payload. Ordinary source syntax (``+def ...``, imports,
+        # assertions, and so on) is presentation metadata for this scan; the
+        # independent secret scan still sees the original source bytes.
+        if (
+            _canonical_base64_candidate(candidate)
+            or _canonical_chunked_base64_candidate(candidate)
+            or _canonical_base64_candidate(body)
+            or _canonical_chunked_base64_candidate(body)
+        ):
+            return match.group(0)
+        return "<source diff line>"
+
+    masked = _BOUNDED_NUMBERED_SOURCE_DIFF_LINE.sub(mask_numbered_diff_line, masked)
+    masked = _BOUNDED_SOURCE_GIT_LOG_ENTRY.sub("<source-control-sha>", masked)
+    masked = _BOUNDED_SOURCE_GIT_HEAD_OUTPUT.sub(
+        lambda match: f"<source-control-sha>\n<source-control-sha> {match.group(0).split(' ', 1)[1]}",
+        masked,
+    )
+    masked = _BOUNDED_SOURCE_DIFF_STAT_BINARY.sub(
+        "<source stat bytes>",
+        masked,
+    )
+    masked = _BOUNDED_SOURCE_DIFF_STAT_COUNT.sub(
+        "<source stat count>",
+        masked,
+    )
+    masked = _BOUNDED_SOURCE_NUMSTAT_PATH.sub(
+        "<source stat path>",
+        masked,
+    )
+    masked = _BOUNDED_SOURCE_CLI_VALUE.sub(
+        lambda match: f"{match.group('prefix')}<src>{match.group('suffix')}",
+        masked,
+    )
+    return _BOUNDED_SOURCE_REVIEW_SYNTAX.sub("<src>", masked)
 
 
 def _generated_context_text_for_base64_scan(text: str) -> str:
@@ -881,7 +1380,34 @@ def _generated_context_text_for_base64_scan(text: str) -> str:
     the final scan; arbitrary encoded values remain untouched and fail closed.
     """
 
+    # A protected Kanban assignment may contain this fixed worker result
+    # marker. It is application protocol text, not an encoded payload, but its
+    # all-caps/underscore spelling is a valid Base64 candidate. Keep the
+    # marker visible on the wire and mask it only in the generated-context
+    # scan; arbitrary task markers remain fail-closed.
+    text = text.replace("PAPER_SAFETY_SENTINEL_OK", "<protocol-marker>")
     return _source_text_for_base64_scan(text)
+
+
+def _source_text_for_secret_scan(text: str) -> str:
+    """Mask code identifiers that resemble secret names, not secret values."""
+
+    if _EGRESS_SECRET_ASSIGNMENT.search(text) is not None:
+        text = mask_builtin_annotations(text)
+    text = _BOUNDED_SOURCE_BOOLEAN_SECRET_SETTING.sub(
+        "<source-secret-setting>", text
+    )
+    text = _BOUNDED_SOURCE_SECRET_PLACEHOLDER_VALUE.sub(
+        r"\g<prefix><source-placeholder>", text
+    )
+    text = _BOUNDED_SOURCE_SECRET_EXPRESSION_ASSIGNMENT.sub(
+        "<source-secret-expression>", text
+    )
+    text = _BOUNDED_SOURCE_SECRET_ENV_NAME.sub("<source-secret-name>", text)
+    text = _BOUNDED_SOURCE_UPPER_SECRET_CODE_ASSIGNMENT.sub("<code>", text)
+    text = _BOUNDED_SOURCE_SECRET_PLACEHOLDER.sub("<source-placeholder>", text)
+    text = _BOUNDED_SOURCE_SECRET_CODE_ASSIGNMENT.sub("<code>", text)
+    return _BOUNDED_SOURCE_SECRET_NAMED_CODE_ASSIGNMENT.sub("<code>", text)
 
 
 def _contains_secret(value: Any, *, seen: set[int] | None = None) -> bool:
@@ -892,7 +1418,7 @@ def _contains_secret(value: Any, *, seen: set[int] | None = None) -> bool:
             value,
             force=True,
             redact_url_credentials=True,
-        ) != value
+        ) != value or _EGRESS_SECRET_ASSIGNMENT.search(value) is not None
     if isinstance(value, (bytes, bytearray, memoryview)):
         # Binary request material is not safely inspectable as text.
         return True
@@ -1011,6 +1537,14 @@ def redact_remote_unsafe_text(text: str) -> str:
         if candidate in _PROTOCOL_GRAMMAR_ATOMS or _HERMES_TASK_ID.fullmatch(candidate):
             return match.group(0)
         if _BOUNDED_SOURCE_CODE_ATOM.fullmatch(candidate):
+            return match.group(0)
+        if (
+            _BOUNDED_LONG_SOURCE_CODE_ATOM.fullmatch(candidate)
+            or _BOUNDED_LONG_PRIVATE_IDENTIFIER.fullmatch(candidate)
+            or _BOUNDED_SOURCE_DOUBLE_UNDERSCORE.fullmatch(candidate)
+            or _BOUNDED_SOURCE_VERSIONED_IDENTIFIER.fullmatch(candidate)
+            or _BOUNDED_SOURCE_CAMEL_CASE_IDENTIFIER.fullmatch(candidate)
+        ):
             return match.group(0)
         if re.fullmatch(r"(?:call|fc)_[A-Za-z0-9_-]{8,128}", candidate):
             return match.group(0)
@@ -1704,7 +2238,7 @@ class LLMEgressFirewall:
                     return ""
                 referenced_grants.add(segment.source_grant_digest)
                 source_segment_count += 1
-                scan_values.append(text)
+                scan_values.append(_source_text_for_secret_scan(text))
                 base64_scan_values.append(_source_text_for_base64_scan(text))
                 return text
             if isinstance(segment, SourcePresentationSegment):
@@ -1733,9 +2267,11 @@ class LLMEgressFirewall:
                     return ""
                 referenced_grants.add(segment.source_grant_digest)
                 source_segment_count += 1
-                scan_values.append(segment.text)
+                scan_values.append(_source_text_for_secret_scan(raw_text))
                 base64_scan_values.append(
-                    _source_text_for_base64_scan(raw_text)
+                    _source_text_for_base64_scan(
+                        raw_text, allow_fixed_source_literals=True
+                    )
                 )
                 return segment.text
             if isinstance(segment, UntrustedProvenanceSegment):

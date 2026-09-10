@@ -336,27 +336,6 @@ def _notify_aux_provider_response() -> None:
     _notify_aux_progress()
 
 
-def _notify_aux_dispatch() -> None:
-    """Record an actual provider dispatch without claiming response progress."""
-    hook = getattr(_aux_dispatch, "hook", None)
-    if hook is not None:
-        try:
-            hook()
-        except Exception:
-            logger.debug("aux dispatch hook failed", exc_info=True)
-
-
-def _notify_aux_provider_response() -> None:
-    """Record a provider response/chunk, then preserve the liveness signal."""
-    hook = getattr(_aux_provider_response, "hook", None)
-    if hook is not None:
-        try:
-            hook()
-        except Exception:
-            logger.debug("aux provider response hook failed", exc_info=True)
-    _notify_aux_progress()
-
-
 def _aux_progress_active() -> bool:
     return getattr(_aux_progress, "hook", None) is not None
 
@@ -2386,8 +2365,21 @@ def _auxiliary_egress_binding(
     model: str | None,
     api_mode: str | None,
 ) -> tuple[Any, Any] | None:
-    """Build the complete identity and route for every remote auxiliary call."""
+    """Build the complete identity and route for protected auxiliary calls.
+
+    Protected exactly like the main request path (`authorize_agent_sdk_kwargs`):
+    an exact firewall-owning provider (anthropic/openai-codex/nous/nous-portal/
+    nousresearch), OR every provider when ``HERMES_KANBAN_PROTECTED_REMOTE=1`` --
+    a compression/review/vision auxiliary call inside a protected Kanban task is
+    just as much an egress point as the main request, and previously skipped
+    authorization/sanitization entirely whenever it used a non-firewall provider.
+    """
+    from agent.llm_egress_runtime import provider_uses_egress_firewall
+
     normalized_provider = _normalize_aux_provider(provider)
+    protected_remote_marker = os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
+    if not protected_remote_marker and not provider_uses_egress_firewall(normalized_provider):
+        return None
     from agent.source_provenance import DEFAULT_POLICY_DIGEST
 
     runtime = _normalize_main_runtime(None)
@@ -2643,7 +2635,7 @@ def _relay_sync_stream(
         request,
         lambda authorized: client.chat.completions.create(**authorized),
         provider=provider,
-        model=request.get("model"),
+        model=kwargs.get("model"),
         api_mode=api_mode,
     )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
@@ -2652,7 +2644,7 @@ def _relay_sync_stream(
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, callback, name=provider_name,
+        kwargs, lambda request: client.chat.completions.create(**request), name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
@@ -7197,6 +7189,7 @@ def call_llm(
     prior_progress_hook = getattr(_aux_progress, "hook", None)
     try:
         with (
+            scoped_runtime_main(main_runtime),
             aux_progress_hook(
                 prior_progress_hook
                 if callable(prior_progress_hook)
@@ -7376,6 +7369,29 @@ def _call_llm_impl(
         except Exception as transient_err:
             if not _should_retry_same_provider(task, transient_err, ""):
                 raise
+            # Compression is on the critical preflight path: a user cannot
+            # continue or resume an oversized session until it compacts. A
+            # same-provider retry on a timeout means another full ``timeout``-
+            # long wall-clock block before the except-chain below can fall
+            # back — doubling the user-visible stall (issue #54465). Skip the
+            # same-provider retry for compression on a full-budget timeout and
+            # fall straight through to provider/model fallback; fast blips (a
+            # streaming-close or a 5xx) still retry, since those are cheap.
+            if task == "compression" and _is_timeout_error(transient_err):
+                # A fast first-token fail (dead stream detected within the
+                # 60s no-progress window, zero output seen) is cheap — take
+                # the normal same-provider retry chain first; the provider
+                # is often fine and only that one stream was stillborn. A
+                # mid-stream stall or hard-ceiling timeout skips straight to
+                # fallback, because re-running a multi-minute summary on the
+                # same provider doubles the user-visible stall (#54465).
+                if "no-progress timeout" not in str(transient_err):
+                    logger.info(
+                        "Auxiliary compression: timeout on the critical path; "
+                        "skipping same-provider retry and falling back: %s",
+                        transient_err,
+                    )
+                    raise
             _max_transient_retries = _transient_retry_count()
             _last_transient = transient_err
             for _attempt in range(1, _max_transient_retries + 1):

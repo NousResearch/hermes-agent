@@ -239,6 +239,82 @@ def test_remote_raw_request_is_never_authorized_even_with_a_valid_grant(tmp_path
     assert "typed_request_required" in exc_info.value.decision.reason_codes
 
 
+def test_source_grant_allows_pr_metadata_without_disabling_base64_detection(tmp_path):
+    """PR diffs and issue keys are metadata, not encoded source payloads."""
+
+    path = tmp_path / "pr.diff"
+    source = (
+        "Q383-LIVE-RUNNER-STAGE1-CONTRACT-GAP-FREEZE\n"
+        "--diff-filter=ACMR\n"
+        "+status\n"
+    )
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=3)
+
+    decision = firewall(tmp_path).preflight(
+        _typed_request(_request(source), source_grant=grant),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+
+
+def test_source_grant_still_rejects_encoded_payload_next_to_pr_metadata(tmp_path):
+    path = tmp_path / "pr.diff"
+    encoded = base64.b64encode(b"private source that must not leave the host").decode()
+    source = f"Q383-LIVE-RUNNER-STAGE1-CONTRACT-GAP-FREEZE\n+{encoded}\n"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=2)
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(
+            _typed_request(_request(source), source_grant=grant),
+            _route(),
+            grants=(grant,),
+        )
+
+    assert "base64_payload" in exc_info.value.decision.reason_codes
+
+
+def test_source_grant_allows_secret_shaped_github_expressions_only(tmp_path):
+    source = (
+        "private-key: ${{ inputs.private-key }}\n"
+        "token: ${{ steps.app-token.outputs.token }}\n"
+        "password: ${{ secrets.DOCKERHUB_TOKEN }}\n"
+    )
+    path = tmp_path / "action.yml"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=3)
+
+    decision = firewall(tmp_path).preflight(
+        _typed_request(_request(source), source_grant=grant),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+
+
+def test_source_grant_allows_documented_credential_placeholders_only(tmp_path):
+    source = (
+        "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx\n"
+        "SLACK_BOT_TOKEN=xoxb-...\n"
+        "GOOGLE_API_KEY=your_google_ai_studio_key_here\n"
+    )
+    path = tmp_path / ".env.example"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=3)
+
+    decision = firewall(tmp_path).preflight(
+        _typed_request(_request(source), source_grant=grant),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+
+
 def test_source_bytes_cannot_be_smuggled_as_a_sanitized_literal(tmp_path):
     path = tmp_path / "private.py"
     path.write_text("private source\n", encoding="utf-8")
@@ -666,6 +742,119 @@ def test_source_presentation_allows_bounded_code_and_config_atoms(tmp_path):
     assert "base64_payload" not in decision.reason_codes
 
 
+def test_source_presentation_allows_bounded_diagnostic_literals_and_paths(tmp_path):
+    source = (
+        'if "CASH" in labels:\n'
+        '    logger.error("[SUBMIT][BOUNDARY] bridge state")\n'
+        'command = "execution_submit_boundary.py"\n'
+    )
+    path = tmp_path / "diagnostics.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=3)
+    presentation = json.dumps(
+        {
+            "content": "\n".join(
+                f"{number}|{line}"
+                for number, line in enumerate(source.split("\n"), start=1)
+            )
+        }
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_allows_long_python_boundary_identifiers(tmp_path):
+    source = (
+        "from live_runner import (\n"
+        "    install_live_runner_cross_cycle_daily_cache_loader_owner,\n"
+        ")\n"
+        'phase = "EXTENDED"\n'
+        'event = "FIRE"\n'
+        "epsilon = 1e-6\n"
+        "sources = sources\n"
+        'runbooks = sorted(root.glob("hrl-*.md"))\n'
+        'usage = "hermes honcho peer --user NAME"\n'
+        'identity = "SOUL.md"\n'
+    )
+    path = tmp_path / "live_runner.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=10)
+    presentation = json.dumps(
+        {
+            "content": "\n".join(
+                f"{number}|{line}"
+                for number, line in enumerate(source.split("\n"), start=1)
+            )
+        }
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_allows_code_context_identifiers_and_fixtures(tmp_path):
+    source = (
+        "MANIFEST = Path(__file__).parents[2]\n"
+        "manifest = load_manifest(MANIFEST)\n"
+        "departments = ()\n"
+        "def test_seed_does_not_refresh_owned_profile_without_explicit_opt_in():\n"
+        '    config = "  api_key: stale-key\\n"\n'
+    )
+    path = tmp_path / "test_federation.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=5)
+    presentation = json.dumps(
+        {
+            "content": "\n".join(
+                f"{number}|{line}"
+                for number, line in enumerate(source.split("\n"), start=1)
+            )
+        }
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "secret_detected" not in decision.reason_codes
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_still_rejects_non_placeholder_secret_fixture(tmp_path):
+    source = 'config = "  api_key: live-key-value\\n"\n'
+    path = tmp_path / "test_federation.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path)
+    presentation = json.dumps(
+        {"content": "\n".join(f"{index}|{line}" for index, line in enumerate(source.split("\n"), 1))}
+    )
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(
+            _source_presentation_request(grant, presentation),
+            _route(),
+            grants=(grant,),
+        )
+
+    assert "secret_detected" in exc_info.value.decision.reason_codes
+
+
 def test_source_presentation_scans_raw_source_not_json_line_number_artifacts(tmp_path):
     source_lines = ["PR_CI_RECEIPT_V1 = True", *[f"value_{number} = {number}" for number in range(1, 121)]]
     source = "\n".join(source_lines) + "\n"
@@ -726,6 +915,383 @@ def test_source_presentation_still_rejects_actual_base64_payload(tmp_path):
         )
 
     assert "base64_payload" in exc_info.value.decision.reason_codes
+
+
+def test_source_presentation_allows_fixed_github_actions_literals(tmp_path):
+    path = tmp_path / "ci.yaml"
+    source = (
+        "SECURITY\n"
+        "TEMPORARILY\n"
+        "DISABLED\n"
+        "ci-timings-baseline-\n"
+    )
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=4)
+    presentation = json.dumps(
+        {"content": "\n".join(f"{index}|{line}" for index, line in enumerate(source.split("\n"), 1))}
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_allows_worker_receipt_sha_and_changed_name(tmp_path):
+    source = (
+        "85cc6d01d9556f759d0e2e812f6a504ec13199b3\n"
+        "?? zz_changed__github_workflows_ci_yaml"
+    )
+    path = tmp_path / "current_head.txt"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=2)
+    presentation = json.dumps(
+        {
+            "content": (
+                "1|85cc6d01d9556f759d0e2e812f6a504ec13199b3\n"
+                "2|?? zz_changed__github_workflows_ci_yaml"
+            )
+        }
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+
+
+@pytest.mark.parametrize("comment", ["", " # source mapping ↔ target mapping"])
+def test_source_presentation_allows_numbered_diff_hunks_and_boolean_secret_settings(tmp_path, comment):
+    source = "@@ -1,1 +1,2 @@\n-    password: false\n+def example():\n+    password: false" + comment
+    path = tmp_path / "pr.diff"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=4)
+    presentation = json.dumps(
+        {
+            "content": (
+                "1|@@ -1,1 +1,2 @@\n"
+                "2|-    password: false\n"
+                "3|+def example():\n"
+                "4|+    password: false" + comment
+            )
+        }
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+
+
+def test_source_presentation_allows_numbered_git_log_and_diff_stat_receipts(tmp_path):
+    source = (
+        "85cc6d01a2b3 fix(egress): classify source diff presentations\n"
+        "agent/llm_egress_firewall.py | 14 ++++++++++++++\n"
+        "Binary fixture.bin | Bin 1024 -> 2048 bytes\n"
+    )
+    path = tmp_path / "receipt.txt"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=3)
+    presentation = json.dumps(
+        {
+            "content": "\n".join(
+                f"{number}|{line}"
+                for number, line in enumerate(source.split("\n"), start=1)
+            )
+        }
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_allows_exact_repair_source_atoms_but_not_payloads(tmp_path):
+    source = (
+        "SAME\n"
+        "400+\n"
+        "compression-SUMMARY\n"
+        "DOES\n"
+        "DISABLE\n"
+        "262_144\n"
+        "LOOPBACK\n"
+        "WITH\n"
+        "READ\n"
+    )
+    path = tmp_path / "repair-source.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=9)
+    presentation = json.dumps(
+        {"content": "\n".join(f"{index}|{line}" for index, line in enumerate(source.split("\n"), 1))}
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_allows_secret_shaped_github_expressions_only(tmp_path):
+    source = (
+        "private-key: ${{ inputs.private-key }}\n"
+        "token: ${{ steps.app-token.outputs.token }}\n"
+        "password: ${{ secrets.DOCKERHUB_TOKEN }}\n"
+    )
+    path = tmp_path / "action.yml"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=3)
+    presentation = json.dumps(
+        {"content": "\n".join(f"{index}|{line}" for index, line in enumerate(source.split("\n"), 1))}
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(_sanitized_request(presentation), _route())
+    assert "secret_detected" in exc_info.value.decision.reason_codes
+
+
+def test_source_presentation_allows_bounded_worker_source_syntax(tmp_path):
+    source = (
+        "_SDK_CONTROL_KEYS=frozenset({\"_hermes_source_provenance\"})\n"
+        "# arm a short cooldown so the NEXT turn stays gated\n"
+        "# Why this job: the image is 5GB+; passing it is expensive\n"
+        "group: installer-tests-${{ github.ref }}\n"
+        "run: pwsh -NoProfile -ExecutionPolicy Bypass -File test.ps1\n"
+        "pytest -o addopts= -v -p no:cacheprovider\n"
+        "# REAL detection runs against the live process\n"
+        "// callback hooks belong to the HOST component\n"
+    )
+    path = tmp_path / "worker-source.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=len(source.splitlines()))
+    presentation = json.dumps(
+        {
+            "content": "\n".join(
+                f"{index}|{line}"
+                for index, line in enumerate(source.split("\n"), 1)
+            )
+        }
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_still_rejects_short_encoded_payload(tmp_path):
+    source = "AQID\n"
+    path = tmp_path / "encoded.txt"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path)
+    presentation = json.dumps({"content": "1|AQID\n2|"})
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(
+            _source_presentation_request(grant, presentation),
+            _route(),
+            grants=(grant,),
+        )
+
+    assert "base64_payload" in exc_info.value.decision.reason_codes
+
+
+def test_source_presentation_allows_secret_env_name_but_not_value(tmp_path):
+    source = (
+        "token_env: HERMES_GITHUB_BOT_TOKEN\n"
+        "_SDK_CONTROL_KEYS = frozenset({\"_hermes_source_provenance\"})\n"
+        "_REMOTE_KANBAN_SECRET_ASSIGNMENT = re.compile(\"token\")\n"
+        "token_value: ghp_012345678901234567890123456789012345\n"
+    )
+    path = tmp_path / "README.md"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=4)
+    presentation = json.dumps(
+        {
+            "content": "\n".join(
+                f"{index}|{line}"
+                for index, line in enumerate(source.split("\n"), 1)
+            )
+        }
+    )
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(
+            _source_presentation_request(grant, presentation),
+            _route(),
+            grants=(grant,),
+        )
+
+    assert "secret_detected" in exc_info.value.decision.reason_codes
+
+    safe_source = (
+        "token_env: HERMES_GITHUB_BOT_TOKEN\n"
+        "_SDK_CONTROL_KEYS = frozenset({\"_hermes_source_provenance\"})\n"
+        "_REMOTE_KANBAN_SECRET_ASSIGNMENT = re.compile(\"token\")\n"
+    )
+    path.write_text(safe_source, encoding="utf-8")
+    safe_grant = _source_grant(path, end=3)
+    safe_presentation = json.dumps(
+        {"content": "\n".join(f"{index}|{line}" for index, line in enumerate(safe_source.split("\n"), 1))}
+    )
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(safe_grant, safe_presentation),
+        _route(),
+        grants=(safe_grant,),
+    )
+    assert decision.allowed is True
+
+
+@pytest.mark.parametrize("presentation", [False, True])
+def test_source_annotations_preserve_credential_default_scanning(tmp_path, presentation):
+    path = tmp_path / "source.py"
+    for default in ("None", '"live-key-value"'):
+        source = (
+            f"def request(token: str, api_key: str | None = {default}):\n    pass\n"
+            f"api_key: str | None = {default}\n"
+        )
+        path.write_text(source, encoding="utf-8")
+        grant = _source_grant(path, end=3)
+        request = _typed_request(_request(), source_grant=grant)
+        if presentation:
+            rendered = json.dumps({"content": "\n".join(
+                f"{index}|{line}" for index, line in enumerate(source.split("\n"), 1)
+            )})
+            request = _source_presentation_request(grant, rendered)
+        if default == "None":
+            assert firewall(tmp_path).preflight(request, _route(), grants=(grant,)).allowed
+        else:
+            with pytest.raises(EgressBlocked) as exc_info:
+                firewall(tmp_path).preflight(request, _route(), grants=(grant,))
+            assert "secret_detected" in exc_info.value.decision.reason_codes
+
+
+def test_annotation_recognition_does_not_exempt_unbound_or_quoted_text(tmp_path):
+    source = "def request(token: str):\n    pass\n"
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(_sanitized_request(source), _route())
+    assert "secret_detected" in exc_info.value.decision.reason_codes
+    path = tmp_path / "source.py"
+    path.write_text('message = "token: str"\n', encoding="utf-8")
+    grant = _source_grant(path)
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(
+            _typed_request(_request(), source_grant=grant), _route(), grants=(grant,)
+        )
+    assert "secret_detected" in exc_info.value.decision.reason_codes
+
+
+def test_source_presentation_allows_code_constants_and_secret_identifiers(tmp_path):
+    path = tmp_path / "source.py"
+    source = (
+        "MAX_SOURCE_SLICE_BYTES = 262_144\n"
+        "token = _active_context.set(context)\n"
+        "redact_url_credentials=True\n"
+    )
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=3)
+    presentation = json.dumps(
+        {"content": "\n".join(f"{index}|{line}" for index, line in enumerate(source.splitlines(), 1)) + "\n4|"}
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "secret_detected" not in decision.reason_codes
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_allows_bounded_git_metadata(tmp_path):
+    source = (
+        "8ad4da4e0457672fa035776cbe4e79feb4a1fc39 fix(egress): classify source code assignments safely\n"
+        " .../asset-board.glb |  Bin 0 -> 49600114 bytes\n"
+        " .../manifest.json   |  332 ++++\n"
+        "2\t0\tcontributors/emails/298902573+pierrenode@users.noreply.github.com\n"
+    )
+    path = tmp_path / "git-output.txt"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=4)
+    presentation = json.dumps(
+        {"content": "\n".join(f"{index}|{line}" for index, line in enumerate(source.split("\n"), 1))}
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_allows_unified_diff_hunk_headers(tmp_path):
+    source = "@@ -704,15 +704,11 @@ def _pid_is_alive(pid: int) -> bool:\n"
+    path = tmp_path / "diff.txt"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path)
+    presentation = json.dumps(
+        {"content": "\n".join(f"{index}|{line}" for index, line in enumerate(source.split("\n"), 1))}
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_still_rejects_quoted_secret_after_code_mask(tmp_path):
+    path = tmp_path / "source.py"
+    source = "token = super-secret-value\n"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path)
+    presentation = json.dumps({"content": "1|" + source + "2|"})
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(
+            _source_presentation_request(grant, presentation),
+            _route(),
+            grants=(grant,),
+        )
+
+    assert "secret_detected" in exc_info.value.decision.reason_codes
 
 
 @pytest.mark.parametrize(
@@ -828,6 +1394,58 @@ def test_generated_kanban_context_still_rejects_real_base64(tmp_path):
         firewall(tmp_path).preflight(request, _route())
 
     assert "base64_payload" in exc_info.value.decision.reason_codes
+
+
+def test_generated_context_allows_source_control_sha_with_explicit_context(tmp_path):
+    """Generated completion arguments may carry a bounded commit identity."""
+    commit_sha = "a9fcb3ffdde6378ee9f3a7ca0e9f104d83d61fe4"
+    request = TypedOutboundRequest(
+        payload={
+            "messages": [
+                {
+                    "role": LiteralSegment("user"),
+                    "content": GeneratedContextSegment(
+                        f'{{"exact_head_sha":"{commit_sha}"}} '
+                        f"https://github.com/mrkillbob/hermes-agent/compare/base...{commit_sha}"
+                    ),
+                }
+            ]
+        },
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="req-1",
+        policy_digest="policy-1",
+    )
+
+    decision = firewall(tmp_path).preflight(request, _route())
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_generated_context_allows_bounded_review_command_syntax(tmp_path):
+    request = TypedOutboundRequest(
+        payload={
+            "messages": [
+                {
+                    "role": LiteralSegment("user"),
+                    "content": GeneratedContextSegment(
+                        "github-pr-feedback submit-review --event "
+                        "APPROVE|REQUEST_CHANGES|COMMENT --body TEXT"
+                    ),
+                }
+            ]
+        },
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="req-1",
+        policy_digest="policy-1",
+    )
+
+    decision = firewall(tmp_path).preflight(request, _route())
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
 
 
 def test_generated_context_attribution_prefix_does_not_skip_redaction(tmp_path):
@@ -1130,6 +1748,8 @@ def test_source_presentation_allows_mixed_case_python_names(tmp_path):
         "skills/plugins/cron/memories",
         "MIME",
         "REQUIRED",
+        "APPROVE",
+        "TEXT",
         "2000",
         "2026",
         "4dae",
@@ -1155,6 +1775,21 @@ def test_builtin_tool_schema_atoms_are_not_base64_false_positives(
         policy_digest="policy-1",
     )
     assert firewall(tmp_path).preflight(request, _route()).allowed
+
+
+def test_builtin_review_syntax_in_sanitized_guidance_is_not_base64_false_positive(
+    tmp_path,
+):
+    decision = firewall(tmp_path).preflight(
+        _sanitized_request(
+            "github-pr-feedback submit-review --event "
+            "APPROVE|REQUEST_CHANGES|COMMENT --body TEXT"
+        ),
+        _route(),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
 
 
 def test_fixed_hermes_task_id_is_not_a_base64_false_positive(tmp_path):

@@ -875,8 +875,6 @@ class TestContractAndBackgroundCompose:
         # The judge can return a wait verdict on a contract goal.
         assert verdict == "wait"
         assert wait_directive and wait_directive.get("pid") == 4242
-
-
 class TestBlockedVerdict:
     """#100954: a genuinely unachievable goal must be refused, not completed."""
 

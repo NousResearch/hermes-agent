@@ -252,7 +252,7 @@ def _filter_secret_env(
             if not _is_hermes_internal_secret(key):
                 out[key] = value
             continue
-        if _is_hermes_internal_secret(key) or key in plugin_strip:
+        if key in _ALWAYS_STRIP_KEYS or _is_hermes_internal_secret(key) or key in plugin_strip:
             continue
         first_party = _is_terminal_first_party_env(key)
         passthrough = is_env_passthrough(key)
@@ -264,6 +264,18 @@ def _filter_secret_env(
             out[key] = value
 
 
+def _neutralize_github_credential_paths(env: dict) -> None:
+    """Force GH_CONFIG_DIR/GIT_CONFIG_GLOBAL to a nonexistent path rather than merely
+    stripping them: a caller-supplied value survives scrubbing (it isn't itself a secret,
+    just a path), and simply removing it lets `gh`/`git` fall back to their DEFAULT
+    location — the operator's own keyring/config — silently granting a spawned child the
+    operator's real GitHub credentials. GIT_TERMINAL_PROMPT=0 stops `gh`/`git` from
+    blocking on (or leaking through) an interactive credential prompt instead."""
+    env["GH_CONFIG_DIR"] = os.devnull
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+
 def _finalize_child_env(env: dict) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
@@ -272,6 +284,7 @@ def _finalize_child_env(env: dict) -> dict:
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
+    _neutralize_github_credential_paths(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 

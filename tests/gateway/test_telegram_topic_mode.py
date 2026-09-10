@@ -120,8 +120,8 @@ def _make_runner(session_db=None):
             platform=Platform.TELEGRAM,
             chat_type="dm",
             origin=None,
-            cwd=kwargs.get("task_owned_cwd"),
-            conversation_worktree=kwargs.get("conversation_worktree") or {},
+            cwd=kwargs.get("persisted_cwd"),
+            conversation_worktree={},
         )
     runner.session_store.switch_session = MagicMock(side_effect=_switch_session)
     runner._running_agents = {}
@@ -671,8 +671,8 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
     runner.session_store.switch_session.assert_called_once_with(
         expected_key,
         "cli-session",
-        task_owned_cwd=str(cli_workspace),
-        conversation_worktree={},
+        conversation_kind="task",
+        persisted_cwd=str(cli_workspace),
     )
     assert captured["source"].chat_type == "dm"
     assert captured["source"].user_id == "208214988"

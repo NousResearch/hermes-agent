@@ -933,7 +933,10 @@ function mergeMultiSourceRoster(
         continue
       }
 
-      if (omitted.has(connectionId) || !unionSourceIds.has(connectionId)) {
+      // A successful inventory is authoritative even when backend-identity
+      // collapse omits this alias. Carry rows only while inventory is unknown.
+      const source = union?.sources?.find(item => item.connectionId === connectionId)
+      if (omitted.has(connectionId) || (source?.reachable !== true && !unionSourceIds.has(connectionId))) {
         profiles.push({
           ...row,
           remoteSource: true,

@@ -160,13 +160,15 @@ def test_host_capacity_is_reported_when_board_cap_is_checked_first(
     kanban_home, all_assignees_spawnable,
 ):
     """A board-local cap must not hide an already-full host cap."""
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    import hermes_cli.kanban_db_dispatch as _hermes_cli_kanban_db_dispatch
     spawns: list = []
-    with kbc.connect() as conn:
+    with _hermes_cli_kanban_db_connect.connect() as conn:
         running_id = kb.create_task(conn, title="already-running", assignee="alice")
         assert kb.claim_task(conn, running_id) is not None
         kb.create_task(conn, title="waiting-for-slot", assignee="alice")
 
-        res = kbd.dispatch_once(
+        res = _hermes_cli_kanban_db_dispatch.dispatch_once(
             conn,
             spawn_fn=_fake_spawn_factory(spawns),
             max_spawn=1,

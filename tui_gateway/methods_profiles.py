@@ -234,6 +234,32 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
 
+# hermes_cli.federation._write_role_identity() writes federation_role.json with these plus
+# manifest_version/profile_aliases/model_policy* -- a roster row needs only the governed
+# identity a Bot Mode teammate presents to peers, not the seeding provenance.
+_FEDERATION_ROLE_FIELDS = (
+    "role_id", "display_name", "department", "authority", "schedule", "skills", "toolsets", "handoffs",
+)
+
+
+def _profile_federation_role_field(row: dict, profile_dir) -> None:
+    """Attach ``federation_role`` from federation_role.json when present and valid; omit the key
+    entirely on any missing/unreadable/malformed file (a profile with no federation role is the
+    overwhelming common case, not an error)."""
+    def load():
+        role_path = Path(profile_dir) / "federation_role.json"
+        if not role_path.is_file():
+            return None
+        data = json.loads(role_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("schema_name") != "hermes_federation_role_v1":
+            return None
+        return {key: data[key] for key in _FEDERATION_ROLE_FIELDS if key in data}
+
+    role = _try(load, None)
+    if role:
+        row["federation_role"] = role
+
+
 @_profile_handler("profiles.list", 5061)
 def _(rid, params: dict) -> dict:
     """List Hermes profiles. ``include_sessions`` (default true) adds ``last_session`` /
@@ -248,6 +274,7 @@ def _(rid, params: dict) -> dict:
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
+        _profile_federation_role_field(row, Path(str(p.path)))
         out.append(row)
     # bot_mode_protocol: this backend injects the Bot Mode teammate-messaging protocol into every
     # session, so clients must not append it to SOUL.md.
@@ -543,21 +570,50 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
         launch_mcp = _try(lambda: (load_launch() or {}).get("mcp_servers"), {})
         launch_mcp = launch_mcp if isinstance(launch_mcp, dict) else {}
     with _hermes_home_scope(profile_dir):
-        from hermes_cli.config import load_config, save_config
+        from hermes_cli.config import load_config
+        from hermes_cli.plugin_capabilities import _write_raw_config_values
         cfg = load_config() or {}
+        updates = {}
         if isinstance(params.get("disabled_skills"), list):
-            try:
-                from hermes_cli.skills_config import save_disabled_skills
-                save_disabled_skills(cfg, _clean_names(params["disabled_skills"]))
-                applied["skills"] = True
-                cfg = load_config() or {}
-            except Exception:
-                applied["skills"] = False
+            from agent.skill_utils import ESSENTIAL_SKILLS
+            updates[("skills", "disabled")] = sorted(
+                _clean_names(params["disabled_skills"]) - ESSENTIAL_SKILLS)
         if isinstance(params.get("enabled_toolsets"), list):
-            applied["toolsets"] = _best_effort(lambda: _save_toolset_pin(cfg, params["enabled_toolsets"], save_config))
+            wanted = sorted(_clean_names(params["enabled_toolsets"]))
+            updates[("tools", "enabled_toolsets")] = wanted
         if want_mcp:
-            applied["mcp_servers"] = _best_effort(lambda: _save_mcp_toggles(
-                load_config() or {}, params["enabled_mcp_servers"], launch_mcp, save_config))
+            source_mcp = cfg.get("mcp_servers")
+            mcp_cfg = source_mcp if isinstance(source_mcp, dict) else {}
+            mcp_cfg = {name: dict(entry) if isinstance(entry, dict) else entry
+                       for name, entry in mcp_cfg.items()}
+            wanted = _clean_names(params["enabled_mcp_servers"])
+            for srv in wanted:
+                if not isinstance(mcp_cfg.get(srv), dict) and isinstance(launch_mcp.get(srv), dict):
+                    mcp_cfg[srv] = dict(launch_mcp[srv])
+                if isinstance(mcp_cfg.get(srv), dict):
+                    mcp_cfg[srv].pop("disabled", None)
+            for srv, entry in mcp_cfg.items():
+                if srv not in wanted and isinstance(entry, dict):
+                    entry["disabled"] = True
+            updates[("mcp_servers",)] = mcp_cfg
+        if updates:
+            try:
+                _write_raw_config_values(updates)
+                for key in ("skills", "toolsets", "mcp_servers"):
+                    if (key == "skills" and isinstance(params.get("disabled_skills"), list)) or \
+                       (key == "toolsets" and isinstance(params.get("enabled_toolsets"), list)) or \
+                       (key == "mcp_servers" and want_mcp):
+                        applied[key] = True
+            except (Exception, SystemExit):
+                # _write_raw_config_values() raises SystemExit (not Exception) when a
+                # requested key is pinned by managed scope -- must still be caught here
+                # so a refused write reports applied=False instead of killing this
+                # shared TUI/Desktop/dashboard RPC backend.
+                for key in ("skills", "toolsets", "mcp_servers"):
+                    if (key == "skills" and isinstance(params.get("disabled_skills"), list)) or \
+                       (key == "toolsets" and isinstance(params.get("enabled_toolsets"), list)) or \
+                       (key == "mcp_servers" and want_mcp):
+                        applied[key] = False
 
 
 @_profile_handler("profiles.configure", 5064)

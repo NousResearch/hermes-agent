@@ -76,11 +76,14 @@ def test_claim_hook_uses_explicit_connection_board(
         tid = kb.create_task(conn, title="t", assignee="worker")
         monkeypatch.setattr(kb, "get_current_board", lambda: "beta")
         assert kb.claim_task(conn, tid) is not None
+        assert kb.block_task(conn, tid, reason="test hold")
+        assert kb.complete_task(conn, tid, summary="verified")
     finally:
         conn.close()
     fired = [e for e in captured_hooks if e[0] == "kanban_task_claimed"]
     assert len(fired) == 1
     assert fired[0][1]["board"] == "alpha"
+    assert all(fields["board"] == "alpha" for _, fields in captured_hooks)
 
 
 

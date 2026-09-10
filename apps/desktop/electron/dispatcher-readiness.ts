@@ -58,14 +58,12 @@ export async function ensureKanbanDispatcherReady(
   try {
     payload = await fetchJson(url, token, { timeoutMs: 5_000 })
   } catch (error) {
+    // A 404 means the Kanban plugin is not mounted (disabled or absent).
+    // Treat it the same as an explicit { status: "disabled" } response —
+    // Desktop startup must not fail because an optional plugin is turned off.
     const detail = error instanceof Error ? error.message : String(error)
-    if (/\b404\b|not found|disabled/i.test(detail)) {
-      return {
-        status: 'disabled',
-        ready: false,
-        gateway_pid: null,
-        message: 'Kanban dispatcher readiness is unavailable because the optional plugin is disabled',
-      }
+    if (/^404[^\d]/.test(detail)) {
+      return { status: 'disabled', ready: false, gateway_pid: null, message: detail }
     }
     throw new DispatcherReadinessError(`dispatcher readiness could not be verified: ${detail}`)
   }
@@ -73,6 +71,13 @@ export async function ensureKanbanDispatcherReady(
   let result = parseReadiness(payload)
 
   if (result.status === 'ready' && result.ready === true) {
+    return result as DispatcherReadiness
+  }
+
+  // The standalone daemon is a supported configuration.  A disabled
+  // embedded dispatcher is an optional capability, not a failed Desktop
+  // backend boot; callers can still use chat and the WebSocket normally.
+  if (result.status === 'disabled') {
     return result as DispatcherReadiness
   }
 
@@ -114,4 +119,19 @@ export async function ensureKanbanDispatcherReady(
   }
 
   throw new DispatcherReadinessError(`dispatcher did not become ready after gateway start: ${readinessDetail(result)}`)
+}
+
+type AdvancePhase = (id: string, label: string, pct: number) => Promise<void>
+
+/** Wrap the two startup steps that gate `backend.ready` behind Kanban dispatcher
+ *  readiness so they can be tested as a unit without text-scanning `main.ts`.
+ *  Call this from the local-backend startup path before advancing to `backend.ready`. */
+export async function runDispatcherReadinessGate(
+  baseUrl: string,
+  token: string,
+  fetchJson: FetchJson,
+  advancePhase: AdvancePhase
+): Promise<DispatcherReadiness> {
+  await advancePhase('backend.dispatcher', 'Verifying Kanban dispatcher readiness', 92)
+  return ensureKanbanDispatcherReady(baseUrl, token, fetchJson)
 }

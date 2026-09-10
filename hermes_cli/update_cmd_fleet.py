@@ -120,6 +120,16 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     if not expected_sha:
         return False
 
+    # An unfinished receipt is evidence for the update generation it was
+    # attempting to install, not for every later commit in the checkout.  A
+    # normal development commit after a controlled restart must not resurrect
+    # the old receipt as a live mixed-runtime warning; a new update will write
+    # its own marker/receipt for that generation.
+    plan = receipt.get("plan")
+    planned_sha = plan.get("expected_sha") if isinstance(plan, dict) else None
+    if planned_sha and str(planned_sha) != str(expected_sha):
+        return False
+
     def _sha_mismatch(code_sha) -> bool:
         return bool(code_sha) and str(code_sha) != str(expected_sha)
 
@@ -133,7 +143,6 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
 
     if not _receipt_looks_unfinished(receipt):
         return False
-    plan = receipt.get("plan")
     if not isinstance(plan, dict):
         return False
     return any(

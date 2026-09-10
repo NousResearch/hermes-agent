@@ -827,6 +827,9 @@ _LATER_TASK_COLUMNS = (
 )
 
 _NOTIFY_SUB_COLUMNS = (
+    ("notify_claim_owner", "notify_claim_owner TEXT"),
+    ("notify_claimed_at", "notify_claimed_at INTEGER"),
+    ("notify_claimed_cursor", "notify_claimed_cursor INTEGER"),
     ("last_ping_event_id", "last_ping_event_id INTEGER NOT NULL DEFAULT 0"),
     ("notifier_profile", "notifier_profile TEXT"),
     ("delivery_mode", "delivery_mode TEXT NOT NULL DEFAULT 'notify'"),

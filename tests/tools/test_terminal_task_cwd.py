@@ -116,10 +116,11 @@ def test_kanban_workspace_beats_stale_recorded_session_cwd(monkeypatch, tmp_path
         terminal_tool.clear_session_cwd(task_id)
 
     assert result["exit_code"] == 0
-    assert len(calls) == 1
-    assert calls[0]["timeout"] == 60
-    assert calls[0]["cwd"] == str(workspace)
-    assert calls[0]["bounded_capture"] is True
+    # yield_handler is an unrelated background-yield feature; only cwd resolution is under test.
+    (calls[0] if calls else {}).pop("yield_handler", None)
+    assert calls == [
+        {"timeout": 60, "cwd": str(workspace), "bounded_capture": True}
+    ]
 
 
 def test_kanban_relative_workdir_is_anchored_to_worker_workspace(
@@ -159,10 +160,11 @@ def test_kanban_relative_workdir_is_anchored_to_worker_workspace(
     result = json.loads(terminal_tool.terminal_tool(command="pwd", workdir="."))
 
     assert result["exit_code"] == 0
-    assert len(calls) == 1
-    assert calls[0]["timeout"] == 60
-    assert calls[0]["cwd"] == str(workspace)
-    assert calls[0]["bounded_capture"] is True
+    # yield_handler is an unrelated background-yield feature; only cwd resolution is under test.
+    (calls[0] if calls else {}).pop("yield_handler", None)
+    assert calls == [
+        {"timeout": 60, "cwd": str(workspace), "bounded_capture": True}
+    ]
 
 
 def test_explicit_workdir_does_not_persist_into_session_cwd(monkeypatch):

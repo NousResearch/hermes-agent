@@ -26,12 +26,13 @@ import {
   loadAgentPlugins,
   toggleAgentPlugin
 } from '@/store/agent-plugins'
+import { $worldEnabled, setWorldEnabled } from '@/store/lunar-city'
 import { notifyError } from '@/store/notifications'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
-import { EmptyState, ListRowSkeleton, Pill, SettingsContent, SettingsSection } from './primitives'
+import { EmptyState, ListRowSkeleton, Pill, SettingsContent, SettingsSection, ToggleRow } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 const KIND_ORDER: Record<PluginRecord['kind'], number> = { disk: 0, runtime: 1, bundled: 2 }
@@ -359,6 +360,7 @@ export function PluginsSettings() {
   const { t } = useI18n()
   const p = t.settings.plugins
   const records = useStore($pluginRecords)
+  const worldEnabled = useStore($worldEnabled)
 
   // Deep-link from settings search (?plugin=<id or key>): rows render as soon
   // as their store hydrates, so "ready" is simply target-present; the polling
@@ -382,6 +384,13 @@ export function PluginsSettings() {
       </div>
       <SettingsSection icon={Monitor} meta={p.count(rows.length)} title={p.title}>
         <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{p.blurb}</p>
+
+        <ToggleRow
+          checked={worldEnabled}
+          description="Show Lunar City in the desktop navigation and allow its setup surface."
+          label="Enable World"
+          onChange={setWorldEnabled}
+        />
 
         <div className="mb-2 flex items-center gap-3">
           <Button onClick={() => void revealPluginsDir()} size="sm" type="button" variant="textStrong">

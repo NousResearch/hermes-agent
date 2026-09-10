@@ -221,6 +221,11 @@ def specify_task(
     if task is None:
         return SpecifyOutcome(task_id, False, reason)
 
+    if _is_already_concrete(task):
+        with kbc.connect_closing() as conn:
+            ok = kb.specify_triage_task(conn, task_id, author=author or _profile_author())
+        return SpecifyOutcome(task_id, ok, "already concrete" if ok else "task moved out of triage before promotion")
+
     raw, reason = _call_aux(
         "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(**_task_prompt_fields(task)),

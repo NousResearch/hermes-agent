@@ -3,8 +3,6 @@
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
 
 
 def test_plain_english_burndown_pr_question_is_a_progress_query():
@@ -21,6 +19,8 @@ def test_plain_english_burndown_pr_question_is_a_progress_query():
 def test_plain_english_plural_burndown_question_summarizes_all_matching_roots(
     tmp_path, monkeypatch
 ):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    import hermes_cli.kanban_db_notify as _hermes_cli_kanban_db_notify
     from gateway.progress_queries import ProgressSource, resolve_progress_query
 
     home = tmp_path / ".hermes"
@@ -28,7 +28,7 @@ def test_plain_english_plural_burndown_question_summarizes_all_matching_roots(
     monkeypatch.setenv("HERMES_HOME", str(home))
     board = "exampleproject-burndown"
     kb.init_db(board=board)
-    with kbc.connect(board=board) as conn:
+    with _hermes_cli_kanban_db_connect.connect(board=board) as conn:
         first = kb.create_task(
             conn,
             title="July exception burndown patches",
@@ -44,7 +44,7 @@ def test_plain_english_plural_burndown_question_summarizes_all_matching_roots(
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (first,))
         for task_id in (first, second):
-            kbn.add_notify_sub(
+            _hermes_cli_kanban_db_notify.add_notify_sub(
                 conn,
                 task_id=task_id,
                 platform="discord",
@@ -69,6 +69,8 @@ def test_plain_english_plural_burndown_question_summarizes_all_matching_roots(
 def test_plain_english_spaced_burn_downs_matches_burndown_workstream(
     tmp_path, monkeypatch
 ):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    import hermes_cli.kanban_db_notify as _hermes_cli_kanban_db_notify
     from gateway.progress_queries import ProgressSource, resolve_progress_query
 
     home = tmp_path / ".hermes"
@@ -76,14 +78,14 @@ def test_plain_english_spaced_burn_downs_matches_burndown_workstream(
     monkeypatch.setenv("HERMES_HOME", str(home))
     board = "exampleproject-burndown"
     kb.init_db(board=board)
-    with kbc.connect(board=board) as conn:
+    with _hermes_cli_kanban_db_connect.connect(board=board) as conn:
         task_id = kb.create_task(
             conn,
             title="Audit current exception burndowns",
             initial_status="running",
             created_by="test",
         )
-        kbn.add_notify_sub(
+        _hermes_cli_kanban_db_notify.add_notify_sub(
             conn,
             task_id=task_id,
             platform="discord",
@@ -106,6 +108,8 @@ def test_plain_english_spaced_burn_downs_matches_burndown_workstream(
 def test_multiple_progress_roots_remain_available_when_vault_enrichment_is_enabled(
     tmp_path, monkeypatch
 ):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    import hermes_cli.kanban_db_notify as _hermes_cli_kanban_db_notify
     from gateway.progress_queries import ProgressSource, resolve_progress_query
 
     home = tmp_path / ".hermes"
@@ -124,7 +128,7 @@ def test_multiple_progress_roots_remain_available_when_vault_enrichment_is_enabl
     monkeypatch.setenv("HERMES_HOME", str(home))
     board = "exampleproject-burndown"
     kb.init_db(board=board)
-    with kbc.connect(board=board) as conn:
+    with _hermes_cli_kanban_db_connect.connect(board=board) as conn:
         for title in ("July exception burndowns", "August exception burndowns"):
             task_id = kb.create_task(
                 conn,
@@ -132,7 +136,7 @@ def test_multiple_progress_roots_remain_available_when_vault_enrichment_is_enabl
                 initial_status="running",
                 created_by="test",
             )
-            kbn.add_notify_sub(
+            _hermes_cli_kanban_db_notify.add_notify_sub(
                 conn,
                 task_id=task_id,
                 platform="discord",

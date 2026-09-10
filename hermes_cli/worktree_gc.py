@@ -96,7 +96,7 @@ def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
         for rel in untracked:
             src = tree / rel
             if not src.exists() or src.is_symlink():
-                return record_actions
+                continue
             (dest / rel).parent.mkdir(parents=True, exist_ok=True)
             if src.is_dir():
                 shutil.copytree(src, dest / rel, dirs_exist_ok=True)
@@ -113,6 +113,13 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     path = str(entry)
     if _KANBAN_RE.match(entry.name):
         return "keep", "kanban task tree (owned by kanban gc)", []
+    from agent.conversation_worktree import conversation_worktree_is_manager_owned
+
+    ownership = conversation_worktree_is_manager_owned(entry)
+    if ownership is True:
+        return "keep", "manager-owned conversation worktree", []
+    if ownership is None:
+        return "keep", "conversation ownership could not be verified", []
     if _ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
         return "keep", "in use by a running hermes session", []
     tracked_dirty, untracked = _dirty_split(path)
@@ -183,13 +190,7 @@ def reclaim_worktrees(
     destructive loop, so trees created by concurrent sessions after the audit are out of scope."""
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
-    actions: List[str] = []
-    for record in records:
-        if record.verdict not in _REAP_VERDICTS:
-            continue
-        if dry_run:
-            actions.append(f"would remove {record.name} ({record.reason})")
-            continue
+    from agent.conversation_worktree import conversation_worktree_reclaim_guard
 
     def reclaim_one(record: TreeRecord) -> List[str]:
         record_actions: List[str] = []
@@ -208,14 +209,10 @@ def reclaim_worktrees(
         try:
             remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
             if remove_result.returncode != 0:
-                record_actions.append(
-                    f"failed to remove {record.name}: {remove_result.stderr.strip()}"
-                )
+                record_actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
                 return record_actions
             if record.verdict == "reap-keep-branch":
-                record_actions.append(
-                    f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)"
-                )
+                record_actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
                 return record_actions
             if record.branch and record.branch not in _PROTECTED_BRANCHES:
                 _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
@@ -226,7 +223,7 @@ def reclaim_worktrees(
 
     actions: List[str] = []
     for record in records:
-        if record.verdict not in {"reap", "reap-archive", "reap-keep-branch"}:
+        if record.verdict not in _REAP_VERDICTS:
             continue
         if dry_run:
             actions.append(f"would remove {record.name} ({record.reason})")

@@ -35,7 +35,7 @@ import { resolveVersionStatus } from '@/lib/version-status'
 import { copyFilePath, revealFile } from '@/store/file-actions'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $projectTree, projectNameForCwd } from '@/store/projects'
+import { projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -238,8 +238,7 @@ export function useStatusbarItems({
   // (backend truth via projects.*), so the status item labels by project without
   // a second per-session copy of the same fact. Re-derives whenever the cwd or
   // the tree changes; null (no named project) falls back to the cwd leaf below.
-  const projectTree = useStore($projectTree)
-  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd])
 
   const sessionStartedAt = primaryFocused
     ? primarySessionStartedAt

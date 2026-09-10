@@ -423,7 +423,7 @@ exclude-newer = "14 days"
 # risk — their newest releases are years old — and unbricks resolvers that
 # cannot see upload dates.
 #
-# setuptools, wheel, pillow, mcp: build/core pin bricks (#78227, #75992, #76020, #96488). uv
+# setuptools, pillow, mcp: exact-pinned bricks (#78227, #75992, #76020). uv
 # applies exclude-newer to build-system.requires and core deps too; when a
 # resolver cannot see an upload date (old uv, mirror index, stale HTTP cache)
 # it filters the pinned version and the package cannot even BUILD
@@ -437,25 +437,6 @@ exclude-newer = "14 days"
 # firecrawl-anydoc: same exact-pin shape (==0.2.4, hosted-OCR wiring PR).
 # The pin bump WAS the review; exclude-newer adds zero float protection to
 # an exact pin and would only delay the reviewed version 14 days.
-#
-# Every other exact-pinned package below: the release-day brick shape
-# (observed 2026-08-29 updating three long-running installs v0.20.0 ->
-# v0.20.6 — one Termux, two Linux servers). Each release exact-pins at least
-# one dependency to a version published days before the release (v0.20.6
-# pinned snowballstemmer==3.1.1 and psutil==7.2.2 in core, plus fastapi /
-# uvicorn / python-telegram-bot pins across extras). For two weeks after
-# release the cutoff filters those versions out, so any venv that predates
-# the release bricks on `hermes update` ("no version of
-# snowballstemmer==3.1.1") until the window passes. Same zero-float-
-# protection logic as setuptools/pillow/mcp above; enforced for every exact
-# pin by
-# tests/test_packaging_metadata.py::test_exact_pinned_deps_exempt_from_exclude_newer.
-#
-# maturin, setuptools-rust: build-system.requires of the cryptography pin
-# above. cryptography itself is exempted, but on wheel-less platforms
-# (Termux/Android) it must build from sdist, and the isolated build
-# environment resolves under the same cutoff ("Failed to resolve
-# requirements from build-system.requires ... maturin>=1.9,<2").
 [tool.uv.exclude-newer-package]
 agent-client-protocol = false
 ai-edge-litert = false
@@ -556,7 +537,6 @@ vercel = false
 websockets = false
 youtube-transcript-api = false
 
-
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the
 # source tree (see the ``_root_py_modules`` helper there). A static
@@ -568,6 +548,12 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*",
 
 [tool.setuptools.package-data]
 hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.json"]
+
+[tool.setuptools.data-files]
+# Federation is a checked-in, user-auditable manifest rather than Python
+# code. Install it beside the environment so the CLI remains functional from
+# a wheel as well as from a source checkout.
+"configs/federation" = ["configs/federation/roles.json"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram

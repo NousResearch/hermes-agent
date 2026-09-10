@@ -51,8 +51,8 @@ on:
         value: ${{ jobs.aggregate.outputs.critical_findings }}
 
 permissions:
-  pull-requests: write
   contents: read
+  pull-requests: read
 
 jobs:
   scan:
@@ -277,15 +277,30 @@ jobs:
           node-version: 26
           cache: npm
 
+      - name: Detect changed lock-file directories
+        id: lockdirs
+        run: |
+          # Find unique parent directories of every changed package-lock.json.
+          # Falls back to "." (repo root) when no subdirectory lock changed
+          # (which preserves the original single-root-audit behaviour).
+          changed=$(git diff --name-only origin/main...HEAD -- '**/package-lock.json' 2>/dev/null || true)
+          dirs=$(printf '%s\n' $changed | sed 's|/package-lock.json||; s|^$|.|' | sort -u | tr '\n' ' ')
+          echo "dirs=${dirs:-.}" >> "$GITHUB_OUTPUT"
+
       - name: Install dependencies without lifecycle scripts
-        run: npm ci --ignore-scripts
+        run: |
+          for dir in ${{ steps.lockdirs.outputs.dirs }}; do
+            (cd "$dir" && npm ci --ignore-scripts) || true
+          done
 
       - name: Run npm high audit
         id: audit
         run: |
           set +e
-          npm audit --audit-level=high --json > npm-audit.json
-          rc=$?
+          rc=0
+          for dir in ${{ steps.lockdirs.outputs.dirs }}; do
+            (cd "$dir" && npm audit --audit-level=high --json) >> npm-audit.json || rc=$?
+          done
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
           exit 0
 

@@ -35,9 +35,13 @@ def test_evidence_packet_serializes_observations_separately_from_conclusions():
         unknowns=("full-suite status",),
         confidence="high",
         evidence_class="targeted",
+        freshness="2026-08-30T12:00:00Z",
+        reversible_next_actions=("rerun the focused test",),
+        outcome="completed",
     )
 
     assert packet.to_dict() == {
+        "kind": "evidence_packet",
         "observations": ["pytest exited 0"],
         "sources": ["terminal://run-1"],
         "hypotheses": ["the focused suite is green"],
@@ -47,6 +51,9 @@ def test_evidence_packet_serializes_observations_separately_from_conclusions():
         "evidence_class": "targeted",
         "artifacts": [],
         "limitations": [],
+        "freshness": "2026-08-30T12:00:00Z",
+        "reversible_next_actions": ["rerun the focused test"],
+        "outcome": "completed",
     }
 
 
@@ -65,6 +72,9 @@ def test_objective_stack_rejects_hidden_or_conflicting_objectives():
             profile="scientist",
             authority="advisory",
             mission="research",
+            task_id="task-1",
+            owner_id="operator-1",
+            repository="org/repo",
             hidden_objectives=("do not tell the operator",),
         ).validate()
 
@@ -73,6 +83,9 @@ def test_objective_stack_rejects_hidden_or_conflicting_objectives():
             profile="worker",
             authority="read_only",
             mission="publish",
+            task_id="task-1",
+            owner_id="operator-1",
+            repository="org/repo",
             constraints=("never publish without approval",),
             conflicts=("publish automatically",),
         ).validate()
@@ -259,14 +272,18 @@ def test_consensus_quorum_cannot_exceed_worker_reports():
     assert record.to_dict()["quorum"] == 2
 
 
-def test_contract_mapping_recognizes_new_workforce_contracts():
+def test_contract_mapping_rejects_incomplete_workforce_contracts():
     for kind in ("worker_constitution", "job_contract", "emergency_authority"):
-        assert validate_contract_mapping({"kind": kind})["kind"] == kind
+        with pytest.raises(ContractValidationError, match="missing field"):
+            validate_contract_mapping({"kind": kind})
 
     assert (
         validate_contract_mapping({
             "kind": "consensus",
             "worker_reports": [],
+            "agreement": [],
+            "dissent": [],
+            "status": "pending",
             "quorum": 1,
         })["quorum"]
         == 1

@@ -25,7 +25,9 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
 
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(
-        json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}),
+        json.dumps(
+            {"ts": time.time(), "behind": 3, "rev": "test-head", "ver": __version__}
+        ),
         encoding="utf-8",
     )
 
@@ -296,6 +298,4 @@ def test_check_for_updates_does_not_cache_none(tmp_path, monkeypatch):
 
     # The cache file must NOT have been written with a None result
     assert not cache_file.exists(), "None result must not be cached"
-
-
 

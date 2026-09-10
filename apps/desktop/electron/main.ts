@@ -160,7 +160,6 @@ import { adoptServedDashboardToken } from './dashboard-token'
 import { stopDesktopBackgroundServices } from './desktop-background-shutdown'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
-import { poolBackendAuthorityEnv } from './desktop-pool-cron-authority'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
@@ -172,7 +171,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
-import { ensureKanbanDispatcherReady } from './dispatcher-readiness'
+import { runDispatcherReadinessGate } from './dispatcher-readiness'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
@@ -415,7 +414,6 @@ import {
   scanVenvBlockers,
   stopSafeVenvBlockers
 } from './venv-blocker-scan'
-import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
@@ -3476,54 +3474,6 @@ function isShimLocked(shimPath) {
   }
 }
 
-// Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:
-// exe under venv\Scripts AND cmdline referencing hindsight_api.main). The
-// daemon is spawned DETACHED, so it outlives the backend tree-kill and keeps
-// venv files mapped. External holders (a user terminal running `hermes`,
-// unrelated scripts) are NOT killed — scanVenvBlockers reports them and the
-// hand-off aborts, per existing design. Selection lives in the pure
-// venv-holder-select module (ordinal path-prefix, no PowerShell -like
-// wildcard hazards) so it's testable without Electron.
-function killHermesOwnedVenvDaemons(updateRoot) {
-  if (!IS_WINDOWS) {
-    return
-  }
-
-  const scriptsDir = path.join(updateRoot, 'venv', 'Scripts')
-
-  let holders = []
-
-  try {
-    const out = execFileSync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-Command',
-        'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.CommandLine } | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress'
-      ],
-      hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 })
-    )
-
-    const parsed = JSON.parse(String(out || '[]'))
-
-    holders = (Array.isArray(parsed) ? parsed : [parsed]).filter(p =>
-      isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir)
-    )
-  } catch {
-    // Best-effort: the venv-blocker scan downstream is the real backstop.
-    return
-  }
-
-  for (const holder of holders) {
-    const pid = Number(holder?.ProcessId)
-
-    if (Number.isInteger(pid) && pid > 0) {
-      rememberLog(`[updates] stopping Hermes-owned venv daemon (hindsight) PID ${pid} before hand-off`)
-      forceKillProcessTree(pid)
-    }
-  }
-}
-
 // Force-kill the entire process TREE rooted at each PID. Node's child.kill()
 // only signals the direct child, so on Windows a backend `hermes.exe` that
 // spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
@@ -3896,13 +3846,6 @@ async function releaseBackendLock(updateRoot, tag) {
   // agents, and force-kills survivors. Best-effort; abort paths restore via
   // startGatewaysAfterUpdateAbort. No-op off Windows.
   stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
-
-  // Reap Hermes-OWNED venv daemons the tree-kill above cannot reach: the
-  // memory plugin's hindsight daemon is spawned DETACHED (it outlives the
-  // backend) yet runs off venv\Scripts\pythonw.exe, keeping venv files
-  // mapped past the backend teardown (#75477/#75478). Narrowly scoped
-  // (venv-holder-select) — external holders are never killed here.
-  killHermesOwnedVenvDaemons(updateRoot)
 
   const shim = venvHermesShimPath(updateRoot)
 
@@ -12683,7 +12626,8 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
         // Marks this dashboard backend as desktop-spawned so it runs the cron
         // lifecycle. Pool helpers must not also become machine-wide cron
         // authorities: the primary backend alone multiplexes every profile.
-        ...poolBackendAuthorityEnv,
+        HERMES_DESKTOP: '1',
+        HERMES_DESKTOP_POOL: '1',
         // Exact parent identity lets the backend self-exit after an unclean
         // Desktop death without mistaking a reused PID for its owner. If the
         // optional marker probe fails, retain legacy PID-only tracking.
@@ -13262,8 +13206,7 @@ async function startHermes() {
       )
     }
 
-    await advanceBootProgress('backend.dispatcher', 'Verifying Kanban dispatcher readiness', 92)
-    await ensureKanbanDispatcherReady(baseUrl, authToken, fetchJson)
+    await runDispatcherReadinessGate(baseUrl, authToken, fetchJson, advanceBootProgress)
 
     updateBootProgress({
       phase: 'backend.ready',

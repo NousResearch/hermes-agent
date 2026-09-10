@@ -104,3 +104,19 @@ def test_fast_version_reports_install_method_stamp(tmp_path):
     result = _run_version({"HERMES_HOME": str(home), "TERMUX_VERSION": ""})
     assert result.returncode == 0, result.stderr
     assert "Install method: git" in result.stdout
+
+
+def test_readiness_version_skips_the_network_update_check(monkeypatch, capsys):
+    """The machine readiness probe must not inherit --version's updater latency."""
+    from hermes_cli import _startup_fast
+    from hermes_cli import banner
+
+    def unexpected_update_check():
+        raise AssertionError("readiness version must not contact the updater")
+
+    monkeypatch.setattr(banner, "check_for_updates", unexpected_update_check)
+
+    assert _startup_fast.try_fast_version(["--version-local"]) is True
+    out = capsys.readouterr().out
+    assert "Hermes Agent v" in out
+    assert f"Install directory: {REPO_ROOT}" in out

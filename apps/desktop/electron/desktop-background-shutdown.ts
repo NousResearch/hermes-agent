@@ -141,7 +141,11 @@ export function stopDesktopBackgroundServices({
 
   const [gateway, ...afterDrain] = commands
 
-  return runStopCommand(spawnFn, gateway, 0, onError).then(async gatewayStopped => {
+  // Bound the drain helper too.  Gateway drain intentionally waits for
+  // in-flight turns and workers, but a wedged worker must not make Electron's
+  // before-quit promise immortal.  The timeout path sends SIGTERM and lets the
+  // caller complete teardown with an explicit failure result.
+  return runStopCommand(spawnFn, gateway, timeoutMs, onError).then(async gatewayStopped => {
     if (!gatewayStopped) {
       return false
     }

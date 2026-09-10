@@ -1689,6 +1689,39 @@ class TestBackgroundNotificationsConciseMigration:
 class TestConfigNormalizationDoesNotOverwriteUserValues:
     """Regression tests for #27354."""
 
+    def test_migration_preserves_custom_benchmark_tuning(self, tmp_path):
+        """An update must retain user tuning outside the schema defaults."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"] - 1,
+                    "model": {"provider": "ollama-launch", "default": "qwen3.5:4b"},
+                    "benchmark_tune": {
+                        "warmup_runs": 3,
+                        "max_concurrency": 1,
+                        "notes": "operator calibration",
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["benchmark_tune"] == {
+            "warmup_runs": 3,
+            "max_concurrency": 1,
+            "notes": "operator calibration",
+        }
+        assert raw["model"] == {
+            "provider": "ollama-launch",
+            "default": "qwen3.5:4b",
+        }
+
     def test_save_config_does_not_inject_max_turns_when_unset(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(

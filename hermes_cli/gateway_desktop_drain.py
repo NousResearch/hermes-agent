@@ -27,6 +27,7 @@ def desktop_profile_homes() -> tuple[Path, ...]:
 
 def read_desktop_drain_snapshot(homes: Iterable[Path]) -> tuple[int, int]:
     """Count live gateway turns and board workers without mutating either."""
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     from gateway.status import (
         parse_active_agents,
         read_runtime_status,
@@ -52,9 +53,7 @@ def read_desktop_drain_snapshot(homes: Iterable[Path]) -> tuple[int, int]:
         if identity in seen_paths or not path.exists():
             continue
         seen_paths.add(identity)
-        from hermes_cli.kanban_db_connect import connect
-
-        conn = connect(board=slug)
+        conn = _hermes_cli_kanban_db_connect.connect(board=slug)
         try:
             rows = conn.execute(
                 "SELECT worker_pid FROM tasks WHERE status = 'running' "

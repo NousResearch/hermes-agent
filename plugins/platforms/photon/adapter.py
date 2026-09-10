@@ -524,6 +524,12 @@ class PhotonAdapter(BasePlatformAdapter):
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
         self._typing_last_sent: Dict[str, float] = {}
         self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
+        # Behavioral config: extra wins, then env; the sidecar reads PHOTON_READ_RECEIPTS from its
+        # own spawn env (see _start_sidecar) since it -- not this adapter -- sends the receipt.
+        read_receipts = extra.get("read_receipts")
+        if read_receipts is None:
+            read_receipts = _get_scoped_secret("PHOTON_READ_RECEIPTS", "true")
+        self._read_receipts = str(read_receipts).strip().lower() in {"true", "1", "yes", "on"}
         # Group-chat mention gating (parity with BlueBubbles); DMs are never gated.
         require_mention = extra.get("require_mention")
         if require_mention is None:
@@ -936,6 +942,7 @@ class PhotonAdapter(BasePlatformAdapter):
             "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
             "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,
             "PHOTON_SIDECAR_TOKEN": self._sidecar_token,
+            "PHOTON_READ_RECEIPTS": "true" if self._read_receipts else "false",
             # Exit on stdin EOF so ANY gateway death (incl. SIGKILL) can't orphan it on the port.
             "PHOTON_SIDECAR_WATCH_STDIN": "1"})
         from hermes_cli._subprocess_compat import windows_hide_flags  # hide child console on Windows

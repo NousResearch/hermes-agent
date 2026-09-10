@@ -18,6 +18,12 @@ from agent.lsp.client import LSPClient
 from agent.lsp.protocol import LSPProtocolError
 
 
+# This file intentionally launches and terminates a fixed in-process mock LSP
+# child. The repository-wide live-system guard cannot reliably identify that
+# child after it exits and is reparented on macOS.
+pytestmark = pytest.mark.live_system_guard_bypass
+
+
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 

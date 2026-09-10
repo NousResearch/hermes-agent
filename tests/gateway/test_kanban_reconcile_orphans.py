@@ -22,7 +22,6 @@ Inspired by openai/symphony's tracker reconciliation (Apache-2.0), idea-level.
 from __future__ import annotations
 
 import subprocess
-import os
 from pathlib import Path
 
 import pytest
@@ -123,11 +122,16 @@ class TestReconcileOrphanedRunning:
         """If the orphan row still records a live PID on this host, don't
         requeue beside a possibly-alive worker — defer to the next tick."""
         tid = kb.create_task(conn, title="maybe-alive", assignee="w")
-        _orphan_running(conn, tid, worker_pid=os.getpid())
-        assert kbd.reconcile_orphaned_running(conn) == []
-        assert conn.execute(
-            "SELECT status FROM tasks WHERE id=?", (tid,)
-        ).fetchone()["status"] == "running"
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            _orphan_running(conn, tid, worker_pid=sleeper.pid)
+            assert kbd.reconcile_orphaned_running(conn) == []
+            assert conn.execute(
+                "SELECT status FROM tasks WHERE id=?", (tid,)
+            ).fetchone()["status"] == "running"
+        finally:
+            sleeper.terminate()
+            sleeper.wait()
 
     def test_dead_worker_pid_orphan_requeued(self, conn):
         """Orphan with a recorded but dead PID is reconciled."""
@@ -145,12 +149,14 @@ class TestReconcileOrphanedRunning:
         not evidence that the remote owner stopped.  Requeueing here could
         create two workers for one task.
         """
+        import hermes_cli.kanban_db_dispatch as _hermes_cli_kanban_db_dispatch
         tid = kb.create_task(conn, title="remote-claim", assignee="w")
         _orphan_running(conn, tid, claim_lock="remote-host:123", worker_pid=123)
-        monkeypatch.setattr(kb, "_claim_is_host_local", lambda *args, **kwargs: False)
+        from hermes_cli import kanban_worker_process as worker_process
+        monkeypatch.setattr(worker_process, "claim_is_host_local", lambda *args, **kwargs: False)
         monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
 
-        assert kbd.reconcile_orphaned_running(conn) == []
+        assert _hermes_cli_kanban_db_dispatch.reconcile_orphaned_running(conn) == []
         assert conn.execute(
             "SELECT status, claim_lock FROM tasks WHERE id=?", (tid,)
         ).fetchone()["status"] == "running"

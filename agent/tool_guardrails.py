@@ -285,6 +285,7 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         # signature -> a mutating call succeeded since its last failure
         self._progress_since_failure: dict[ToolCallSignature, bool] = {}
+        self._same_tool_failure_result_hashes: dict[str, str] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
         # Identical-call streak: CONSECUTIVE identical (tool, args, result) calls; any different call or
@@ -353,10 +354,20 @@ class ToolCallGuardrailController:
             if self._progress_since_failure.pop(signature, False):
                 self._exact_failure_counts.pop(signature, None)
             exact_count = self._exact_failure_counts[signature] = self._exact_failure_counts.get(signature, 0) + 1
-            same_count = self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
+            # same_tool_failure counts REPEATS of the same failure cause on one tool, not just
+            # any failure on that tool: three distinct diagnostic misses (a missing repo, a red
+            # test, a missing path) are three different problems, not one broken path. A change
+            # in result content restarts the streak at 1 instead of compounding onto it.
+            cause_hash = _result_hash(result)
+            if self._same_tool_failure_result_hashes.get(tool_name) != cause_hash:
+                self._same_tool_failure_counts[tool_name] = 1
+            else:
+                self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
+            self._same_tool_failure_result_hashes[tool_name] = cause_hash
+            same_count = self._same_tool_failure_counts[tool_name]
             self._no_progress.pop(signature, None)
-            # same_tool_failure counts DIFFERENT args on one tool; for failure-tolerant
-            # tools a run of distinct red commands is diagnosis, not a loop — warn, never halt.
+            # for failure-tolerant tools a run of distinct red commands is diagnosis,
+            # not a loop — warn, never halt.
             if (
                 # Hard-stop widening (#89069 / #100849 bundle): the per-turn no-progress BLOCK above only
                 # covers tools in idempotent_tools, so a model replaying the same successful
@@ -380,11 +391,13 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+        self._same_tool_failure_result_hashes.pop(tool_name, None)
         # A successful mutation is progress for every failing signature still counted
         # this turn. Pure loops never mutate between attempts, so the replay detector keeps its teeth.
         if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
+            self._same_tool_failure_result_hashes.clear()
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)

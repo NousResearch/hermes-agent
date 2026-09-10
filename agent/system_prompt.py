@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    GUARDED_EXECUTION_CONTRACT, HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS,
-    KANBAN_GUIDANCE, PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
@@ -35,6 +35,45 @@ _PLUGIN_SECTION_FRAME_RE = re.compile(
     re.MULTILINE,
 )
 _GATE_WORDS = {**dict.fromkeys(("true", "always", "yes", "on"), True), **dict.fromkeys(("false", "never", "no", "off"), False)}
+
+GUARDED_EXECUTION_CONTRACT = (
+    "# Guarded coding execution contract\n"
+    "- Work only in the current session worktree. Inspect git status before edits "
+    "and preserve unrelated user changes.\n"
+    "- Ground claims in tools: read/search before changing code; use tools for "
+    "files, git, system state, calculations, and current facts.\n"
+    "- Make the requested change through tools, then verify it with the relevant "
+    "command and report its real result. Do not claim completion from a plan or guess.\n"
+    "- Batch independent read-only calls. Serialize dependent edits. Respect tool "
+    "permissions and confirmations for side effects.\n"
+    "- All listed skills remain available. Load a relevant skill with skill_view; "
+    "use tool discovery when a needed capability is not visible."
+)
+
+
+def _guarded_prompt_flags(agent: Any) -> Tuple[bool, bool]:
+    """``(remote_kanban, guarded)``: a remote Kanban worker on a protected egress
+    route is always guarded (and additionally path-neutral); otherwise guarded mode
+    is the explicit opt-in resolved by ``agent.coding_context.guarded_prompt_enabled``.
+    """
+    from agent.llm_egress_runtime import provider_uses_egress_firewall
+
+    remote_kanban = bool(
+        str(os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+        and provider_uses_egress_firewall(agent.provider)
+    )
+    guarded = remote_kanban
+    if not guarded and agent.valid_tool_names:
+        try:
+            from agent.coding_context import guarded_prompt_enabled
+
+            guarded = guarded_prompt_enabled(
+                platform=agent.platform, cwd=resolve_context_cwd(),
+                provider=agent.provider, model=agent.model,
+            )
+        except Exception:
+            guarded = False
+    return remote_kanban, guarded
 
 
 def _model_gate(setting: Any, model: Optional[str], default_models) -> bool:
@@ -269,14 +308,20 @@ def _profile_name_for_home(home: Path) -> str:
         return "default"
 
 
-def _tool_guidance_block(agent: Any) -> Optional[str]:
-    """Tool-aware behavioral guidance, injected only when the tools are loaded."""
+def _tool_guidance_block(agent: Any, *, guarded: bool = False) -> Optional[str]:
+    """Tool-aware behavioral guidance, injected only when the tools are loaded.
+
+    Guarded mode drops the general memory/session-search/skills coaching (the
+    compact contract replaces it) but keeps Kanban worker/orchestrator lifecycle
+    guidance — that protocol is load-bearing for a dispatcher-spawned worker even
+    when ordinary tool coaching is suppressed.
+    """
     names = agent.valid_tool_names
     # With both memory stores disabled no store is built, so the full guidance
     # would steer the model at a tool that always answers "Memory is not
     # available"; with only USER.md enabled the narrower block is used.
     memory_guidance = None
-    if "memory" in names:
+    if not guarded and "memory" in names:
         memory_guidance = _pb.build_memory_guidance(
             getattr(agent, "_memory_enabled", True),
             getattr(agent, "_user_profile_enabled", True),
@@ -289,16 +334,17 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
         _kanban_guidance = KANBAN_GUIDANCE
     tool_guidance = [
         memory_guidance,
-        SESSION_SEARCH_GUIDANCE if "session_search" in names else None,
-        SKILLS_GUIDANCE if "skill_manage" in names else None,
+        SESSION_SEARCH_GUIDANCE if not guarded and "session_search" in names else None,
+        SKILLS_GUIDANCE if not guarded and "skill_manage" in names else None,
         _kanban_guidance,
     ]
     return " ".join(g for g in tool_guidance if g) or None
 
 
-def _skills_prompt(agent: Any) -> str:
+def _skills_prompt(agent: Any, *, guarded: bool = False) -> str:
     """Skills index (empty without skills tools).  Focus mode demotes non-coding
-    categories to names-only — never hidden, every name stays visible."""
+    categories to names-only — never hidden, every name stays visible. Guarded
+    mode compacts every category (not just the focus-mode subset)."""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
     import model_tools
@@ -309,7 +355,8 @@ def _skills_prompt(agent: Any) -> str:
     except Exception:
         _compact_cats = frozenset()
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+                                         compact_categories=_compact_cats or None, compact_all_categories=guarded,
+                                         skills_dir_override=_agent_skills_dir(agent))
 
 
 def _bot_mode_parts(agent: Any) -> List[str]:
@@ -494,21 +541,31 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
 
 
-def _guidance_parts(agent: Any) -> List[str]:
-    """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
+def _guidance_parts(agent: Any, *, guarded: bool = False) -> List[str]:
+    """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key.
+
+    Guarded mode prepends the compact GUARDED_EXECUTION_CONTRACT and suppresses
+    parallel-tool-call coaching, the steer-channel note, and model-specific
+    execution guidance (superseded by the contract's own instructions).
+    Task-completion guidance and tool-use enforcement still apply — the failure
+    modes they target aren't specific to the verbose per-model coaching above.
+    """
     parts: List[str] = []
+    if guarded:
+        parts.append(GUARDED_EXECUTION_CONTRACT)
     if agent.valid_tool_names:
         parts += [
             text for flag, text in (
                 ("_task_completion_guidance", TASK_COMPLETION_GUIDANCE),
-                ("_parallel_tool_call_guidance", PARALLEL_TOOL_CALL_GUIDANCE),
+                *(() if guarded else (("_parallel_tool_call_guidance", PARALLEL_TOOL_CALL_GUIDANCE),)),
             ) if getattr(agent, flag, True)
         ]
-    parts.append(_tool_guidance_block(agent))  # None/empty entries are dropped by _join_tier
+    parts.append(_tool_guidance_block(agent, guarded=guarded))  # None/empty entries dropped by _join_tier
     if not agent.valid_tool_names:
         return parts
-    # Steering only lands inside tool results, so only reachable with tools.
-    parts.append(STEER_CHANNEL_NOTE)
+    if not guarded:
+        # Steering only lands inside tool results, so only reachable with tools.
+        parts.append(STEER_CHANNEL_NOTE)
     # agent.tool_use_enforcement / agent.execution_guidance: "auto" (default)
     # matches the hardcoded model lists; true/false force; a list gives custom
     # model-name substrings.  Execution guidance is an independent gate so
@@ -517,7 +574,7 @@ def _guidance_parts(agent: Any) -> List[str]:
         parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
         if any(g in (agent.model or "").lower() for g in ("gemini", "gemma")):
             parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-    if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
+    if not guarded and _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
         parts.append(execution_guidance_text(agent.valid_tool_names))
     return parts
@@ -537,7 +594,7 @@ def _alibaba_identity_part(agent: Any) -> List[str]:
     ]
 
 
-def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
+def _coding_parts(agent: Any, *, remote_kanban: bool = False) -> Tuple[List[str], List[str], List[str]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
     without tools or when probing fails (it must never block prompt build).
 
@@ -546,10 +603,14 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     repo that moved and defeats the keep-prompt fast path.  So the bytes are pinned per
     session on the agent, keyed by the resolved cwd (a gateway serves many cwds), and
     replayed on rebuilds; ``reset_session_state`` drops the pin at a session boundary.
+
+    A remote Kanban worker's workspace snapshot leaks the host's absolute paths (git
+    status, worktree root) into a request that already crosses the protected egress
+    boundary, so it's suppressed entirely rather than path-scrubbed.
     """
     try:
         from agent.coding_context import coding_system_prompt_parts
-        if not agent.valid_tool_names:
+        if not agent.valid_tool_names or remote_kanban:
             return [], [], []
         cwd = resolve_context_cwd()
         cwd_key = str(cwd) if cwd is not None else ""
@@ -566,12 +627,16 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     return [], [], []
 
 
-def _post_workspace_parts(agent: Any) -> List[str]:
+def _post_workspace_parts(agent: Any, *, remote_kanban: bool = False) -> List[str]:
     """Blocks that follow the worktree-specific context: environment probe
     (config.yaml agent.environment_probe; one line, nothing when clean, skipped
-    for remote backends), bot-mode protocol, profile line, platform hint."""
+    for remote backends), bot-mode protocol, profile line, platform hint.
+
+    A remote Kanban worker gets a path-neutral profile line instead of
+    ``_active_profile_line``'s absolute host paths.
+    """
     parts: List[str] = []
-    if getattr(agent, "_environment_probe", True):
+    if not remote_kanban and getattr(agent, "_environment_probe", True):
         try:
             from tools.env_probe import get_environment_probe_line
             parts.append(get_environment_probe_line())
@@ -579,7 +644,15 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), platform_hint(agent)]
+    if remote_kanban:
+        active_profile = _active_profile_name(agent, _ambient_file_safety_profile_name)
+        parts.append(
+            f"Active Hermes profile: {active_profile}. Work only in the current "
+            "task workspace and use relative paths."
+        )
+    else:
+        parts.append(_active_profile_line(agent))
+    parts.append(platform_hint(agent))
     return parts
 
 
@@ -602,51 +675,6 @@ def _join_tier(parts: List[Optional[str]]) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
-def guarded_prompt_enabled(agent: Any) -> bool:
-    """Return True when guarded_prompt_mode should activate for this session.
-
-    Three conditions must all hold:
-    1. ``agent.coding_context`` is ``focus`` (toolset-collapse is intentional).
-    2. A coding workspace is detected at the current cwd.
-    3. The active provider + model pair exactly matches one entry in
-       ``agent.guarded_prompt_mode.routes``.
-
-    Route matching is case-insensitive substring: a route ``{provider: 'ollama-launch',
-    model: 'hermes-qwen3-fast'}`` matches when both substrings appear in the live values.
-    Any config error or missing field is treated as disabled (fail-open).
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly()
-        agent_cfg = (cfg or {}).get("agent", {}) or {}
-        gpm = agent_cfg.get("guarded_prompt_mode") or {}
-        if not gpm.get("enabled"):
-            return False
-        routes = gpm.get("routes") or []
-        if not routes:
-            return False
-        # Condition 1: coding_context must be focus.
-        if str(agent_cfg.get("coding_context", "auto")).strip().lower() not in ("focus", "strict", "lean"):
-            return False
-        # Condition 2: a coding workspace must be active.
-        from agent.coding_context import is_coding_context
-        if not is_coding_context(platform=getattr(agent, "platform", None), config=cfg):
-            return False
-        # Condition 3: route match (case-insensitive substring on both fields).
-        provider = (getattr(agent, "provider", None) or "").lower()
-        model = (getattr(agent, "model", None) or "").lower()
-        for route in routes:
-            if not isinstance(route, dict):
-                continue
-            rp = str(route.get("provider", "")).lower()
-            rm = str(route.get("model", "")).lower()
-            if rp and rm and rp in provider and rm in model:
-                return True
-    except Exception:
-        pass
-    return False
-
-
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
     guidance and the coding brief), ``context`` (caller ``system_message``, project
@@ -664,9 +692,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
     _help_guidance_slot = len(stable_parts)
+    # A remote Kanban worker on a protected egress route is always guarded (and
+    # additionally path-neutral); otherwise guarded mode is the explicit opt-in
+    # resolved by agent.coding_context.guarded_prompt_enabled.
+    _remote_kanban_prompt, _guarded_prompt = _guarded_prompt_flags(agent)
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
-    stable_parts.extend(_guidance_parts(agent))
-    skills_prompt = _skills_prompt(agent)
+    stable_parts.extend(_guidance_parts(agent, guarded=_guarded_prompt))
+    skills_prompt = _skills_prompt(agent, guarded=_guarded_prompt)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
@@ -674,13 +706,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     stable_parts.extend(_alibaba_identity_part(agent))
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after
-    # project context, not ahead of a large shared AGENTS.md block.
-    environment_hints = _pb.build_environment_hints()
-    coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(agent)
+    # project context, not ahead of a large shared AGENTS.md block. A remote
+    # Kanban worker's request already crosses the protected egress boundary, so
+    # host environment details are suppressed rather than path-scrubbed.
+    environment_hints = "" if _remote_kanban_prompt else _pb.build_environment_hints()
+    coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(
+        agent, remote_kanban=_remote_kanban_prompt)
     stable_parts.extend(coding_prefix_parts)
-    if guarded_prompt_enabled(agent):
-        stable_parts.append(GUARDED_EXECUTION_CONTRACT)
-    post_workspace_parts = _post_workspace_parts(agent)
+    post_workspace_parts = _post_workspace_parts(agent, remote_kanban=_remote_kanban_prompt)
     # ── Context tier (project/worktree-dependent, may change between sessions) ──
     context_parts: List[str] = []
     # ephemeral_system_prompt is injected at API-call time only, never cached.
@@ -699,7 +732,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts: List[str] = [skills_prompt, *_memory_parts(agent)]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
-    volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
+    # A remote Kanban worker's request already crosses the protected egress boundary,
+    # so plugin-authored prose (which may embed host-specific paths) is suppressed.
+    if not _remote_kanban_prompt:
+        volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
     volatile_parts.append(_timestamp_line(agent))
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.

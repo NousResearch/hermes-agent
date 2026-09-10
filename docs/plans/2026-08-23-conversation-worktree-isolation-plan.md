@@ -680,3 +680,5 @@ were neither copied nor changed. Verify a cron/Kanban dispatch still uses its ta
 
 Report exact commits, commands, test totals, four smoke-session bindings, stable source status before
 and after, and any retained cleanup blockers. Do not claim existing historical sessions were migrated.
+
+State binding implementation: `hermes_state_worktrees.py` owns the record, conflict type, and `SessionWorktreesMixin`; `SessionDB` composes that mixin. Callers import binding types from their defining module.

@@ -35,6 +35,7 @@ _CAPABILITY_ORDER = {
     for index, status in enumerate(("proposed", "tested", "reviewed", "active"))
 }
 _CONSENSUS_STATUSES = {"pending", "partial", "needs_review", "accepted", "rejected"}
+_OUTCOMES = {"completed", "partial", "blocked", "failed"}
 _VERBOSITIES = {"concise", "normal", "detailed"}
 _DIRECTNESS = {"low", "normal", "high"}
 _MEMORY_RETENTIONS = {"ephemeral", "session", "bounded"}
@@ -53,16 +54,12 @@ def _require_text(name: str, value: Any) -> str:
 def _validate_texts(name: str, values: Any) -> tuple[str, ...]:
     if values is None:
         return ()
-    if isinstance(values, (str, bytes)):
+    if not isinstance(values, (list, tuple)):
         raise ContractValidationError(f"{name} must be a sequence of strings")
-    try:
-        normalized = tuple(
-            _require_text(f"{name}[{index}]", value)
-            for index, value in enumerate(values)
-        )
-    except TypeError as exc:
-        raise ContractValidationError(f"{name} must be a sequence of strings") from exc
-    return normalized
+    return tuple(
+        _require_text(f"{name}[{index}]", value)
+        for index, value in enumerate(values)
+    )
 
 
 def _validate_choice(name: str, value: Any, choices: set[str]) -> str:
@@ -82,6 +79,43 @@ def _parse_timestamp(name: str, value: Any) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ContractValidationError(f"{name} must include a timezone")
     return parsed.astimezone(timezone.utc)
+
+
+def _validate_timestamp(name: str, value: Any) -> str:
+    timestamp = _require_text(name, value)
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ContractValidationError(
+            f"{name} must be a timezone-aware ISO-8601 timestamp"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ContractValidationError(
+            f"{name} must be a timezone-aware ISO-8601 timestamp"
+        )
+    return timestamp
+
+
+def _validate_json_value(name: str, value: Any) -> None:
+    if value is None or isinstance(value, (bool, int, str)):
+        return
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return
+        raise ContractValidationError(f"{name} must contain only JSON-compatible values")
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_value(f"{name}[{index}]", item)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ContractValidationError(
+                    f"{name} must contain only JSON-compatible values"
+                )
+            _validate_json_value(f"{name}.{key}", item)
+        return
+    raise ContractValidationError(f"{name} must contain only JSON-compatible values")
 
 
 def _validate_bool(name: str, value: Any) -> bool:
@@ -109,6 +143,9 @@ class EvidencePacket:
     evidence_class: str = "unknown"
     artifacts: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
+    freshness: str = ""
+    reversible_next_actions: tuple[str, ...] = ()
+    outcome: str = ""
 
     def validate(self) -> "EvidencePacket":
         observations = _validate_texts("observations", self.observations)
@@ -127,11 +164,25 @@ class EvidencePacket:
             raise ContractValidationError("observations require sources")
         if conclusions and not sources:
             raise ContractValidationError("conclusions require sources")
+        _validate_timestamp("freshness", self.freshness)
+        next_actions = _validate_texts(
+            "reversible_next_actions", self.reversible_next_actions
+        )
+        if not next_actions:
+            raise ContractValidationError(
+                "reversible_next_actions must not be empty"
+            )
+        outcome = _validate_choice("outcome", self.outcome, _OUTCOMES)
+        if outcome == "completed" and not observations:
+            raise ContractValidationError(
+                "completed outcome requires source-backed observations"
+            )
         return self
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
         return {
+            "kind": "evidence_packet",
             "observations": list(self.observations),
             "sources": list(self.sources),
             "hypotheses": list(self.hypotheses),
@@ -141,6 +192,13 @@ class EvidencePacket:
             "evidence_class": self.evidence_class,
             "artifacts": list(self.artifacts),
             "limitations": list(self.limitations),
+            "freshness": _validate_timestamp("freshness", self.freshness),
+            "reversible_next_actions": list(
+                _validate_texts(
+                    "reversible_next_actions", self.reversible_next_actions
+                )
+            ),
+            "outcome": _validate_choice("outcome", self.outcome, _OUTCOMES),
         }
 
 
@@ -151,6 +209,9 @@ class ObjectiveStack:
     profile: str
     authority: str
     mission: str
+    task_id: str = ""
+    owner_id: str = ""
+    repository: str = ""
     constraints: tuple[str, ...] = ()
     forbidden_actions: tuple[str, ...] = ()
     hidden_objectives: tuple[str, ...] = ()
@@ -160,6 +221,9 @@ class ObjectiveStack:
         _require_text("profile", self.profile)
         _require_text("authority", self.authority)
         _require_text("mission", self.mission)
+        _require_text("task_id", self.task_id)
+        _require_text("owner_id", self.owner_id)
+        _require_text("repository", self.repository)
         _validate_texts("constraints", self.constraints)
         _validate_texts("forbidden_actions", self.forbidden_actions)
         hidden = _validate_texts("hidden_objectives", self.hidden_objectives)
@@ -176,6 +240,9 @@ class ObjectiveStack:
             "profile": self.profile,
             "authority": self.authority,
             "mission": self.mission,
+            "task_id": self.task_id,
+            "owner_id": self.owner_id,
+            "repository": self.repository,
             "constraints": list(self.constraints),
             "forbidden_actions": list(self.forbidden_actions),
             "hidden_objectives": [],
@@ -260,20 +327,37 @@ class ConsensusRecord:
     quorum: int = 1
 
     def validate(self) -> "ConsensusRecord":
+        if not isinstance(self.worker_reports, (list, tuple)):
+            raise ContractValidationError(
+                "worker_reports must be a stable sequence of objects"
+            )
         if not self.worker_reports:
             raise ContractValidationError("worker_reports must not be empty")
+        workers: set[str] = set()
         for index, report in enumerate(self.worker_reports):
             if not isinstance(report, Mapping):
                 raise ContractValidationError(
                     f"worker_reports[{index}] must be an object"
                 )
-            _require_text(f"worker_reports[{index}].worker", report.get("worker"))
+            _validate_json_value(f"worker_reports[{index}]", report)
+            worker = _require_text(
+                f"worker_reports[{index}].worker", report.get("worker")
+            )
+            if worker in workers:
+                raise ContractValidationError(
+                    "worker_reports must contain independent workers; duplicate worker"
+                )
+            workers.add(worker)
         _validate_texts("agreement", self.agreement)
         _validate_texts("dissent", self.dissent)
         _validate_choice("status", self.status, _CONSENSUS_STATUSES)
         quorum = _validate_positive_int("quorum", self.quorum)
         if quorum > len(self.worker_reports):
             raise ContractValidationError("quorum cannot exceed worker_reports")
+        if self.status == "accepted" and len(workers) < 2:
+            raise ContractValidationError(
+                "accepted consensus requires independent worker reports"
+            )
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -1077,12 +1161,18 @@ _CONTRACT_FIELDS = {
         "evidence_class",
         "artifacts",
         "limitations",
+        "freshness",
+        "reversible_next_actions",
+        "outcome",
     },
     "objective_stack": {
         "kind",
         "profile",
         "authority",
         "mission",
+        "task_id",
+        "owner_id",
+        "repository",
         "constraints",
         "forbidden_actions",
         "hidden_objectives",
@@ -1193,7 +1283,7 @@ _CONTRACT_FIELDS = {
 
 
 def validate_contract_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Reject unknown fields before a serialized contract is interpreted."""
+    """Reject incomplete or unknown fields before a contract is interpreted."""
 
     if not isinstance(value, Mapping):
         raise ContractValidationError("contract must be an object")
@@ -1204,4 +1294,8 @@ def validate_contract_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
     if unknown:
         field_names = ", ".join(sorted(str(field) for field in unknown))
         raise ContractValidationError(f"unknown field(s): {field_names}")
+    missing = _CONTRACT_FIELDS[kind] - set(value)
+    if missing:
+        field_names = ", ".join(sorted(missing))
+        raise ContractValidationError(f"missing field(s): {field_names}")
     return value

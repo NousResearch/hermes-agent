@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from gateway.kanban_watchers import _format_gave_up_notification
+from gateway.kanban_watchers_notifier import _format_gave_up_notification
 
 
 def test_budget_exhaustion_is_not_described_as_a_spawn_failure():

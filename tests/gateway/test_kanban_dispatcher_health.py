@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.kanban_watchers import (
+from gateway.kanban_watchers_dispatcher import (
     _dispatcher_capacity_saturated,
     _dispatcher_tick_is_unhealthy,
 )
@@ -67,3 +67,26 @@ def test_all_boards_saturated_defers_aggregate_health_warning() -> None:
     ]
 
     assert _dispatcher_capacity_saturated(results)
+
+
+def test_priority_capacity_is_rechecked_between_gateway_ticks(tmp_path, monkeypatch):
+    from gateway.kanban_watchers_dispatcher import _KanbanDispatcher, _resolve_dispatcher_settings
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as dispatcher
+    from hermes_cli import kanban_runtime_priority as priority
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    root = tmp_path / "project"
+    root.mkdir()
+    active = [False]
+    monkeypatch.setattr(priority, "_process_scan", lambda: priority.ProcessScan(
+        (priority.ProcessSnapshot(123, ("python3", "main.py"), str(root)),) if active[0] else (), True))
+    settings = _resolve_dispatcher_settings({"max_in_progress": 8, "priority_runtime_guard": {
+        "enabled": True, "project_roots": [str(root)], "entrypoints": ["main.py"], "max_in_progress": 2,
+    }}, kb)
+    observed = []
+    monkeypatch.setattr(dispatcher, "dispatch_once", lambda conn, **kwargs: observed.append(kwargs["max_in_progress"]))
+    worker = _KanbanDispatcher(kb, settings)
+    for state in (False, True, False):
+        active[0] = state
+        worker.tick_once_for_board("default")
+    assert observed == [8, 2, 8]

@@ -225,9 +225,12 @@ class _Collector:
         from gateway.config import Platform
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
             return None
+        from uuid import uuid4
+        sub = {**sub, "notify_claim_owner": uuid4().hex}
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
+            claim_owner=sub["notify_claim_owner"],
         )
         if not events:
             return None
@@ -344,11 +347,39 @@ def _fmt_changes_requested(ev, n) -> tuple:
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
+def _format_gave_up_notification(
+    *,
+    board_tag: str,
+    tag: str,
+    task_id: str,
+    payload: Optional[dict],
+) -> str:
+    """Render a truthful terminal notice for a circuit-breaker give-up."""
+    payload = payload or {}
+    trigger = str(payload.get("trigger_outcome") or "")
+    error = str(payload.get("error") or "")[:200]
+    if trigger == "timed_out" and payload.get("budget_used") is not None:
+        used = payload["budget_used"]
+        maximum = payload.get("budget_max", "?")
+        return (
+            f"✖ {board_tag}{tag}Kanban {task_id} gave up: iteration budget "
+            f"exhausted ({used}/{maximum}) after repeated attempts"
+        )
+    if trigger == "spawn_failed":
+        reason = "after repeated spawn failures"
+    elif trigger:
+        reason = f"after repeated {trigger} failures"
+    else:
+        reason = "after repeated worker failures"
+    suffix = f"\n{error}" if error else ""
+    return f"✖ {board_tag}{tag}Kanban {task_id} gave up {reason}{suffix}"
+
+
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
     "gave_up": lambda ev, n: (
-        f"✖ {n.head} gave up after repeated spawn failures{_clip(ev, 'error', _NL, 200)}", None, None,
+        _format_gave_up_notification(board_tag=n.board_tag, tag=n.worker_tag, task_id=n.task_id, payload=ev.payload), None, None,
     ),
     "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); dispatcher will retry", None, None),
     "timed_out": lambda ev, n: (
@@ -393,6 +424,7 @@ class _KanbanNotification:
         self.board_tag = f"[{self.board_slug}] " if self.board_slug else ""
         # Attribute the ping to the worker that did the work.
         tag = f"@{task.assignee} " if task and task.assignee else ""
+        self.worker_tag = tag
         self.head = f"{self.board_tag}{tag}Kanban {self.task_id}"
         # The wake self-post path needs the key even when every event was skipped.
         self.sub_key = (sub["task_id"], sub["platform"], sub["chat_id"], sub.get("thread_id") or "")

@@ -2,7 +2,9 @@
 
 import subprocess
 
-from hermes_cli.kanban_db import (
+import pytest
+
+from hermes_cli.kanban_worker_routing import (
     _resolve_explicit_local_task_route,
     _resolve_local_first_route,
 )
@@ -102,8 +104,9 @@ fallback_model:
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
 
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
 
     class FakeProc:
@@ -137,7 +140,7 @@ fallback_model:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    assert kb._default_spawn(task, str(workspace)) == 4245
+    assert kbd._default_spawn(task, str(workspace)) == 4245
     model_index = captured["cmd"].index("-m")
     provider_index = captured["cmd"].index("--provider")
     assert captured["cmd"][model_index + 1] == "qwen3.6:35b-a3b"
@@ -165,8 +168,9 @@ def test_default_spawn_bridges_process_local_provider_into_profile_worker(
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
 
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
 
     class FakeProc:
@@ -200,7 +204,7 @@ def test_default_spawn_bridges_process_local_provider_into_profile_worker(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    assert kb._default_spawn(task, str(workspace)) == 4247
+    assert kbd._default_spawn(task, str(workspace)) == 4247
     provider_index = captured["cmd"].index("--provider")
     assert captured["cmd"][provider_index + 1] == "ollama"
     assert captured["env"]["CUSTOM_BASE_URL"] == "http://127.0.0.1:11434/v1"
@@ -234,8 +238,9 @@ fallback_model:
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
 
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
 
     class FakeProc:
@@ -269,9 +274,98 @@ fallback_model:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    assert kb._default_spawn(task, str(workspace)) == 4246
+    assert kbd._default_spawn(task, str(workspace)) == 4246
     model_index = captured["cmd"].index("-m")
     provider_index = captured["cmd"].index("--provider")
     assert captured["cmd"][model_index + 1] == "gpt-5.6-terra"
     assert captured["cmd"][provider_index + 1] == "openai-codex"
     assert "gemma4:e2b-it-qat" not in captured["cmd"]
+
+
+def test_default_spawn_pins_project_virtualenv_for_worker_commands(
+    monkeypatch, tmp_path
+) -> None:
+    """A worker for one repository cannot inherit the dispatcher's venv."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli.kanban_db import Task
+
+    workspace = tmp_path / "lunabot-worktree"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+    python = workspace / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    python.chmod(0o755)
+    monkeypatch.setenv("VIRTUAL_ENV", "/wrong/hermes/.venv")
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4248
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs["env"])
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    task = Task(
+        id="t_project_venv",
+        title="project venv",
+        body=None,
+        assignee="researcher-a",
+        status="running",
+        priority=0,
+        created_by="test",
+        created_at=1,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="worktree",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        model_override="gpt-5.6-terra",
+        provider_override="openai-codex",
+    )
+
+    assert kbd._default_spawn(task, str(workspace)) == 4248
+    assert captured["env"]["VIRTUAL_ENV"] == str((workspace / ".venv").resolve())
+    assert captured["env"]["HERMES_KANBAN_WORKTREE_PYTHON"] == str(python.resolve())
+    assert captured["env"]["PATH"].split(":", 1)[0] == str(python.parent)
+
+
+def test_default_spawn_fails_closed_for_python_workspace_without_venv(
+    monkeypatch, tmp_path
+) -> None:
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli.kanban_db import Task
+
+    workspace = tmp_path / "python-worktree"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    task = Task(
+        id="t_missing_project_venv",
+        title="missing project venv",
+        body=None,
+        assignee="researcher-a",
+        status="running",
+        priority=0,
+        created_by="test",
+        created_at=1,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="worktree",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        model_override="gpt-5.6-terra",
+        provider_override="openai-codex",
+    )
+
+    with pytest.raises(RuntimeError, match=r"no executable \.venv/bin/python"):
+        kbd._default_spawn(task, str(workspace))

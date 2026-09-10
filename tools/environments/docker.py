@@ -42,6 +42,7 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
+_HOST_DATA_LABEL_KEY = "hermes-host-data"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -514,7 +515,8 @@ class DockerEnvironment(BaseEnvironment):
         shm_size: str = _DEFAULT_SHM_SIZE,
         isolate_host_data: bool = False,
         shared_container_key: str = "",
-        snap_compat: bool = False):
+        snap_compat: bool = False,
+        isolate_host_data: bool = False):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -541,7 +543,8 @@ class DockerEnvironment(BaseEnvironment):
 
         resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
         volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
-        volume_args.extend(_readonly_skill_mount_args())
+        if not self._isolate_host_data:
+            volume_args.extend(_readonly_skill_mount_args())
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)
@@ -582,11 +585,13 @@ class DockerEnvironment(BaseEnvironment):
         # creation, so reusing a pre-egress container would bypass the firewall.
         profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
+        host_data_label = "isolated" if self._isolate_host_data else "ambient"
         self._labels = {
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
-            _EGRESS_LABEL_KEY: egress_label}
+            _EGRESS_LABEL_KEY: egress_label,
+            _HOST_DATA_LABEL_KEY: host_data_label}
         # Saved for container recreation on "No such container" recovery.
         self._image = image
         self._image_uses_s6_init = image_uses_s6_init
@@ -608,8 +613,13 @@ class DockerEnvironment(BaseEnvironment):
         instead of real API keys), merged with docker_env into name-only ``-e`` args, plus the
         validated docker_extra_args. Returns ``(egress_label, volume_args, host_args, env_args,
         validated_extra)``; sets ``self._run_env_values`` (injected into the docker-client
-        subprocess env at run time and reused verbatim by container-recreation recovery)."""
-        egress_volume_args, egress_env_overrides, egress_host_args = _egress_proxy_args_for_docker()
+        subprocess env at run time and reused verbatim by container-recreation recovery).
+        ``isolate_host_data`` skips the proxy entirely — the sandbox gets no host credentials
+        to route through it in the first place."""
+        if self._isolate_host_data:
+            egress_volume_args, egress_env_overrides, egress_host_args = [], {}, []
+        else:
+            egress_volume_args, egress_env_overrides, egress_host_args = _egress_proxy_args_for_docker()
         egress_label = _egress_reuse_fingerprint(egress_volume_args, egress_env_overrides, egress_host_args)
         enforce_egress = _egress_enforce_on_docker() if egress_env_overrides else True
         critical_egress_names = _critical_egress_env_names(egress_env_overrides)
@@ -721,7 +731,8 @@ class DockerEnvironment(BaseEnvironment):
         Network guard is lockdown-only: a bridge container under ``docker_network: false``
         is removed and recreated, but a ``none`` container under default config is kept so
         ``--network=none`` in extra args doesn't churn containers every startup."""
-        existing = self._find_reusable_container(task_label, profile_name, egress_label)
+        existing = self._find_reusable_container(
+            task_label, profile_name, egress_label, self._labels.get(_HOST_DATA_LABEL_KEY, "ambient"))
         if existing is None:
             return False
         container_id, state = existing
@@ -884,7 +895,8 @@ class DockerEnvironment(BaseEnvironment):
         existing = self._find_reusable_container(
             self._labels.get("hermes-task-id", ""),
             self._labels.get("hermes-profile", ""),
-            self._labels.get(_EGRESS_LABEL_KEY, "off"))
+            self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_HOST_DATA_LABEL_KEY, "ambient"))
         if existing is not None:
             cid, state = existing
             if state == "running":
@@ -965,18 +977,22 @@ class DockerEnvironment(BaseEnvironment):
         return (result.stdout.strip() or None) if result is not None else None
 
     def _find_reusable_container(
-        self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
+        self, task_label: str, profile_label: str, egress_label: str,
+        host_data_label: str = "ambient") -> Optional[tuple[str, str]]:
         """``(container_id, state)`` of an existing container labeled for this task/profile/
         egress posture, or ``None`` on miss or any failure. The egress posture is a label
         FILTER for every posture, "off" included: a container built with egress on must not be
         reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
-        container this class creates carries the label. The ``{{.Label "key"}}`` template
+        container this class creates carries the label. The host-data posture is filtered the
+        same way — a sanitized (isolated) worker must never reuse an ambient container carrying
+        credential/skills/cache mounts, or vice versa. The ``{{.Label "key"}}`` template
         function is Docker-only — podman ps exits 125 on it — so the probe never uses it (#99213)."""
         filters = [
             "--filter", "label=hermes-agent=1",
             "--filter", f"label=hermes-task-id={task_label}",
             "--filter", f"label=hermes-profile={profile_label}",
-            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
+            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}",
+            "--filter", f"label={_HOST_DATA_LABEL_KEY}={host_data_label}"]
         result = _docker_query(
             [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",

@@ -40,6 +40,7 @@ class FailoverReason(enum.Enum):
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
+    egress_policy_blocked = "egress_policy_blocked"  # Local privacy firewall denied remote transport — fall back locally without retry
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
@@ -279,6 +280,12 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
 )
 
+# Local inference server rejects a request that still carries reasoning
+# controls when the selected model has no thinking capability.
+_UNSUPPORTED_THINKING_PATTERNS = (
+    "does not support thinking", "thinking is not supported", "unsupported thinking",
+)
+
 # Auth patterns (non-status-code signals).
 _AUTH_PATTERNS = (
     "invalid api key", "invalid_api_key", "gateway_auth_failed", "authentication", "unauthorized",
@@ -367,6 +374,10 @@ _V_AUTH_ROTATE = _v(_R.auth, retryable=False, **_ROTATE_FALLBACK)
 _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
 _V_CONTENT_BLOCKED = _v(_R.content_policy_blocked, **_ABORT_FALLBACK)
+_V_EGRESS_BLOCKED = _v(_R.egress_policy_blocked, retryable=False, should_fallback=False)
+# The only two size-based egress reason codes — every other code (secret detection etc.)
+# is a security denial and must stay terminal, even mixed with a size code.
+_EGRESS_SIZE_REASON_CODES = frozenset({"serialized_bytes_exceeded", "token_cap_exceeded"})
 _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
 _V_POLICY_BLOCKED = _v(_R.provider_policy_blocked, retryable=False)
 _V_SSL_CERT = _v(_R.ssl_cert_verification, retryable=False)
@@ -512,6 +523,13 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
+    # A local inference server rejecting a request that still carries reasoning
+    # controls when the model has no thinking capability is deterministic
+    # deployment/configuration drift — the local capability probe normally
+    # prevents this request, so reaching here must never trigger a remote
+    # fallback (retrying or falling back reproduces the identical rejection).
+    if any(p in msg for p in _UNSUPPORTED_THINKING_PATTERNS):
+        return _v(_R.unsupported_thinking, retryable=False, should_fallback=False)
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
@@ -557,6 +575,19 @@ def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
     # Persisted MoA preset name that was renamed/deleted — deterministic config error.
     from agent.errors import MoAPresetNotFoundError
     return _v(_R.model_not_found, retryable=False) if isinstance(c.error, MoAPresetNotFoundError) else None
+
+
+def _egress_special_cases(c: _Ctx) -> Optional[Verdict]:
+    # The local privacy firewall's own denial, not a provider response — distinct
+    # exception type, checked ahead of every status/message-based stage.
+    from agent.llm_egress_firewall import EgressBlocked
+
+    if not isinstance(c.error, EgressBlocked):
+        return None
+    reason_codes = c.error.decision.reason_codes
+    if reason_codes and set(reason_codes) <= _EGRESS_SIZE_REASON_CODES:
+        return {**_V_PAYLOAD_TOO_LARGE, "error_context": {"reason_codes": reason_codes}}
+    return {**_V_EGRESS_BLOCKED, "error_context": {"reason_codes": reason_codes}}
 
 
 def _by_error_code(c: _Ctx) -> Optional[Verdict]:
@@ -625,7 +656,7 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
 # MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _egress_special_cases, _plugin_verdict, _provider_special_cases, _by_status, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 

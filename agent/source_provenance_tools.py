@@ -13,11 +13,13 @@ from typing import Any
 
 from agent.source_provenance import active_source_provenance
 
+_TRUSTED_READ_TOOL_NAMES = {"read_file", "read"}
+
 
 def source_provenance_activation(agent: Any, function_name: str):
     """Activate request identity only around the trusted ``read_file`` tool."""
 
-    if function_name != "read_file":
+    if function_name not in _TRUSTED_READ_TOOL_NAMES:
         return nullcontext()
     try:
         from agent.source_provenance import (
@@ -67,7 +69,7 @@ def attach_trusted_source_provenance_metadata(
     the exact following provider request; it is never serialized to a provider.
     """
 
-    if function_name != "read_file":
+    if function_name not in _TRUSTED_READ_TOOL_NAMES:
         return None
     try:
         from agent.llm_egress_firewall import source_grant_digest

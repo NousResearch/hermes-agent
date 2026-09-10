@@ -899,27 +899,32 @@ def judge_goal(
     # Prompt priority: contract > subgoals > plain. With both, subgoals fold into the contract
     # block as extra criteria so the judge sees a single source of truth.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+    contract_block = contract.render_block() if contract is not None else ""
+    if len(goal) + len(contract_block) + sum(map(len, clean_subgoals)) > 32768:
+        return "continue", "acceptance criteria exceed judge input budget; split into bounded tasks", False, None, False
     common = dict(
-        goal=_truncate(goal, 2000),
+        goal=goal,
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         background_block=_render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
         current_time=datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
     )
     if contract is not None and not contract.is_empty():
-        contract_block = contract.render_block()
         if clean_subgoals:
             contract_block = f"{contract_block}\n{_render_extra_criteria(clean_subgoals)}"
-        prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(contract_block=_truncate(contract_block, 2500), **common)
+        prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(contract_block=contract_block, **common)
     elif clean_subgoals:
         subgoals_block = "\n".join(f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1))
-        prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(subgoals_block=_truncate(subgoals_block, 2000), **common)
+        prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(subgoals_block=subgoals_block, **common)
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
 
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
     except Exception as exc:
+        from agent.llm_egress_firewall import EgressBlocked
+        if isinstance(exc, EgressBlocked):
+            return "continue", "judge deferred: egress policy blocked the request", False, None, False
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
         return "continue", f"judge error: {type(exc).__name__}", False, None, True
 

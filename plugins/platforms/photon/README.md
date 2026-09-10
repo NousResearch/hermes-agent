@@ -126,6 +126,7 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_TELEMETRY`        | false                      | Spectrum SDK telemetry — toggle with `hermes photon telemetry on\|off` (restart the gateway to apply) |
 | `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
+| `platforms.photon.extra.read_receipts` | true | Mark inbound iMessages read after forwarding (behavioral config; the legacy `PHOTON_READ_RECEIPTS` env var remains an internal override) |
 
 ## Attachments & limitations
 
@@ -167,7 +168,9 @@ All env vars are documented in `plugin.yaml`. The most important:
   after forwarding it to Hermes, so the sender sees `Read` without waiting for
   a model/tool turn. Inbound receipts for Hermes-sent messages are consumed as
   presence telemetry and never create an agent turn. Set
-  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
+  `platforms.photon.extra.read_receipts: false` in `config.yaml` to keep
+  messages at `Delivered` (the legacy `PHOTON_READ_RECEIPTS=false` environment
+  override is still accepted for compatibility).
 - **Native polls are supported.** Hermes posts poll content through
   `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
 - **Message effects are supported.** Text can be sent with native iMessage

@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 from hermes_cli import worktree_ops
+from hermes_cli.cli_conversation_worktree_mixin import _should_use_legacy_worktree
 from pathlib import Path
 
 
@@ -646,7 +647,7 @@ class TestCLIFlagLogic:
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
         config = {"worktree": True, "conversation_worktree": {"enabled": False}}
 
-        assert cli._should_use_legacy_worktree(
+        assert _should_use_legacy_worktree(
             worktree=False,
             shorthand=False,
             config=config,
@@ -668,7 +669,7 @@ class TestCLIFlagLogic:
             },
         }
 
-        assert cli._should_use_legacy_worktree(
+        assert _should_use_legacy_worktree(
             worktree=False,
             shorthand=False,
             config=config,

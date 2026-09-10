@@ -448,6 +448,7 @@ def _persist_session_row_for_submit(rid, session):
                 "session storage unavailable: "
                 f"{_db_error or 'state.db could not be opened'} — the message "
                 "was not saved; repair state.db and try again")
+        _bind_conversation_worktree_on_submit(session)
         _persist_branch_seed(session)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
@@ -603,6 +604,8 @@ def _(rid, params: dict) -> dict:
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
     if err is not None:
         return err
+    if (err := _persist_session_row_for_submit(rid, session)) is not None:
+        return err
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
@@ -621,8 +624,6 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
-        return err
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
@@ -1127,7 +1128,11 @@ def _(rid, params: dict) -> dict:
 def _approval_respond_session_fallback(params: dict):
     """Durable-identity fallback for a stale live sid (re-minted after a reconnect while
     the prompt stayed on screen): (1) the ``request_id`` against every live session's
-    pending approvals, then (2) ``session_id`` as a STORED id.  Live session or None.
+    pending approvals, (2) ``session_id`` as a STORED id, then (3) the ``request_id`` against
+    every pending approval queue directly -- the UI runtime may be fully gone from ``_sessions``
+    (not just re-minted under a different id), and the approval queue itself is the durable
+    record of which session_key still owns this exact request. Live session, a minimal
+    ``{"session_key": ...}`` stand-in for tier 3, or None.
 
     See #91684.
     """
@@ -1151,6 +1156,13 @@ def _approval_respond_session_fallback(params: dict):
                 return live[1]
         except Exception:
             logger.debug("approval.respond stored-id fallback failed", exc_info=True)
+    if request_id:
+        try:
+            from tools.approval import find_gateway_approval_session
+            if key := find_gateway_approval_session(request_id):
+                return {"session_key": key}
+        except Exception:
+            logger.debug("approval.respond queue-scan fallback failed", exc_info=True)
     return None
 
 

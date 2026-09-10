@@ -118,11 +118,12 @@ def test_create_task_appears_on_board(client):
 
 
 def test_running_card_clock_uses_current_attempt_start_after_reclaim(client):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     created = client.post(
         "/api/plugins/kanban/tasks",
         json={"title": "Retry exact work", "assignee": "worker"},
     ).json()["task"]
-    conn = kbc.connect()
+    conn = _hermes_cli_kanban_db_connect.connect()
     try:
         kb.claim_task(conn, created["id"])
         run = kb.latest_run(conn, created["id"])
@@ -143,11 +144,12 @@ def test_running_card_clock_uses_current_attempt_start_after_reclaim(client):
 
 
 def test_task_drawer_clock_agrees_with_card_after_reclaim(client):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     created = client.post(
         "/api/plugins/kanban/tasks",
         json={"title": "Retry drawer work", "assignee": "worker"},
     ).json()["task"]
-    conn = kbc.connect()
+    conn = _hermes_cli_kanban_db_connect.connect()
     try:
         kb.claim_task(conn, created["id"])
         run = kb.latest_run(conn, created["id"])
@@ -321,6 +323,18 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
             event.kind == "review_reopened"
             for event in kb.list_events(conn, task["id"])
         )
+
+
+@pytest.mark.parametrize("status", ["running", "not-a-status"])
+def test_patch_rejected_status_verbs_are_bad_requests(client, status):
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "reject me"}).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": status},
+    )
+
+    assert response.status_code == 400
 
 
 def test_reopening_parent_demotes_ready_child(client):
@@ -1279,4 +1293,5 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
+
 

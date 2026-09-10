@@ -26,11 +26,15 @@ class TestReadFileHandler:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
+        from pathlib import Path
+
         from tools.file_tools import read_file_tool
         result = json.loads(read_file_tool("/tmp/test.txt"))
         assert result["content"] == "line1\nline2"
         assert result["total_lines"] == 2
-        mock_ops.read_file.assert_called_once_with("/tmp/test.txt", 1, 2000)
+        # The task-resolved (symlink-resolved) path is passed through, not the raw operand —
+        # a shared backend's own cwd must not re-resolve it downstream.
+        mock_ops.read_file.assert_called_once_with(str(Path("/tmp/test.txt").resolve()), 1, 2000)
 
 
     @patch("tools.file_tools._get_file_ops")

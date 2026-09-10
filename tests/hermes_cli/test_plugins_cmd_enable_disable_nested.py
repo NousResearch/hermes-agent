@@ -86,12 +86,11 @@ class TestResolvePluginKey:
 class TestEnableDisableNested:
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._save_plugin_sets")
     @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
     @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
     def test_enable_bare_name_writes_key(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
+        self, mock_en, mock_dis, mock_save_sets,
         mock_user, mock_bundled, nested_plugin_env,
     ):
         from hermes_cli.plugins_cmd import cmd_enable
@@ -100,7 +99,7 @@ class TestEnableDisableNested:
 
         cmd_enable("trace_sink", allow_tool_override=False)  # bare name
 
-        saved = mock_save_en.call_args[0][0]
+        saved = mock_save_sets.call_args[0][0]
         # The canonical key — NOT the bare name — must be persisted, because
         # that is what PluginManager matches when deciding to load.
         assert "observability/trace_sink" in saved
@@ -118,12 +117,11 @@ class TestEnableDisableNested:
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._save_plugin_sets")
     @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
     @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
     def test_enable_flat_plugin_unchanged(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
+        self, mock_en, mock_dis, mock_save_sets,
         mock_user, mock_bundled, nested_plugin_env,
     ):
         """Flat plugins keep writing their bare name (key == name) — no regression."""
@@ -132,7 +130,7 @@ class TestEnableDisableNested:
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
         cmd_enable("disk-cleanup", allow_tool_override=False)
-        saved = mock_save_en.call_args[0][0]
+        saved = mock_save_sets.call_args[0][0]
         assert "disk-cleanup" in saved
 
 
@@ -205,11 +203,10 @@ class TestCompositeMenuWritesCanonicalKey:
     name is what silently vetoed a bundled backend forever (pi314).
     """
 
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._save_plugin_sets")
     @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
     def test_fallback_unchecked_plugin_disables_by_key_not_name(
-        self, mock_en, mock_save_en, mock_save_dis,
+        self, mock_en, mock_save_sets,
     ):
         from hermes_cli.plugins_cmd import _run_composite_fallback
         from rich.console import Console
@@ -227,6 +224,6 @@ class TestCompositeMenuWritesCanonicalKey:
                 set(), [], Console(),
             )
 
-        saved_dis = mock_save_dis.call_args[0][0]
+        saved_dis = mock_save_sets.call_args[0][1]
         assert "web/firecrawl" in saved_dis      # canonical key persisted
         assert "web-firecrawl" not in saved_dis   # never the bare name

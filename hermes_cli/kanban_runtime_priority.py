@@ -229,4 +229,3 @@ def configured_priority_runtime_guard() -> Mapping[str, Any]:
     except Exception:
         return {}
     return raw if isinstance(raw, Mapping) else {}
-

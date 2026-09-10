@@ -56,6 +56,7 @@ def _make_dummy_env(**kwargs):
         persist_across_processes=kwargs.get("persist_across_processes", True),
         shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
+        isolate_host_data=kwargs.get("isolate_host_data", False),
         snap_compat=kwargs.get("snap_compat", False),
     )
 

@@ -179,8 +179,17 @@ def test_run_conversation_flushes_assistant_tool_call_before_execution():
 
 def test_kanban_worker_exits_after_durable_successful_completion(monkeypatch):
     """A completed worker must not make another provider call and keep working."""
+    import tools.kanban_tools as kanban_tools
+
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_completed")
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "715")
+    # This test's "t_completed"/715 have no real board row, so the real auto-heartbeat/
+    # comment-injection bridges (agent._touch_activity -> heartbeat_current_worker_from_env /
+    # inject_new_comments_from_env) would either hard-interrupt the turn on a "lease lost"
+    # false positive or block opening a real board connection -- both unrelated to what this
+    # test actually exercises (kanban_complete tool-call persistence ordering).
+    monkeypatch.setattr(kanban_tools, "heartbeat_current_worker_from_env", lambda **kwargs: False)
+    monkeypatch.setattr(kanban_tools, "inject_new_comments_from_env", lambda *args, **kwargs: False)
     agent = _make_agent()
     agent.valid_tool_names.add("kanban_complete")
     tool_call = _mock_tool_call(name="kanban_complete", call_id="complete-1")

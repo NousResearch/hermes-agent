@@ -1552,6 +1552,8 @@ class GatewayShutdownMixin:
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
+        if getattr(self, "_kanban_shutdown_drain_marker", None) is not None:
+            self._request_kanban_shutdown_drain(reason="gateway shutdown")
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
         if callable(stop_room_worker):

@@ -217,6 +217,41 @@ def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):
     assert update_cmd._pending_fleet_restart_needed() is True
 
 
+def test_later_checkout_commit_does_not_reuse_old_unfinished_receipt(monkeypatch):
+    disk_sha = "e" * 40
+    old_target_sha = "d" * 40
+    old_runtime_sha = "7" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "exit_code": 1,
+                "stop_reason": "KeyboardInterrupt: ",
+                "outcome": "failed",
+                "plan": {
+                    "expected_sha": old_target_sha,
+                    "runtimes": [
+                        {
+                            "kind": "gateway",
+                            "profile": "default",
+                            "pid": 2111768,
+                            "supervisor": "launchd",
+                            "code_sha": old_runtime_sha,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
 def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
     monkeypatch,
 ):

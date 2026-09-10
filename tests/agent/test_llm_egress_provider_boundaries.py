@@ -63,17 +63,18 @@ def test_local_main_provider_keeps_zero_firewall_overhead(tmp_path):
     callback.assert_called_once_with(request)
 
 
-def test_unknown_remote_provider_still_uses_firewall(tmp_path):
-    agent = _agent(tmp_path, provider="custom-provider")
+def test_unknown_remote_provider_enters_firewall_before_callback(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, provider="custom")
     agent.base_url = "https://custom.example.test/v1"
     callback = MagicMock()
 
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
     with pytest.raises(EgressBlocked):
         _dispatch_provider_request(
             agent,
             {
                 "model": "test-model",
-                "messages": [{"role": "user", "content": "/Users/private/file.py"}],
+                "messages": [{"role": "user", "content": "token=super-secret-value"}],
             },
             callback,
         )

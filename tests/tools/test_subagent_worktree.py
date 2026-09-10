@@ -111,6 +111,29 @@ class SubagentWorktreeTests(unittest.TestCase):
         self.assertTrue((worktree / ".venv" / "bin" / "python").is_file())
         self.assertTrue(os.access(worktree / ".venv" / "bin" / "python", os.X_OK))
 
+    def test_create_uses_remote_default_not_parked_feature_head(self):
+        repo = _make_repo(self.tmp)
+        _git(["branch", "-M", "main"], repo)
+        remote = self.tmp / "remote.git"
+        _git(["init", "--bare", str(remote)], self.tmp)
+        _git(["remote", "add", "origin", str(remote)], repo)
+        _git(["push", "-u", "origin", "main"], repo)
+        _git(["symbolic-ref", "HEAD", "refs/heads/main"], remote)
+        _git(["remote", "set-head", "origin", "main"], repo)
+        main_sha = _git(["rev-parse", "origin/main"], repo).stdout.strip()
+        _git(["switch", "-c", "feature"], repo)
+        (repo / "feature.txt").write_text("feature\n", encoding="utf-8")
+        _git(["add", "feature.txt"], repo)
+        _git(["commit", "-m", "feature"], repo)
+
+        info = sw.create_subagent_worktree(str(repo), "remote-default")
+
+        self.assertIsNotNone(info)
+        assert info is not None
+        self.assertEqual(info["base_commit"], main_sha)
+        self.assertEqual(_git(["rev-parse", "HEAD"], Path(info["path"])).stdout.strip(), main_sha)
+        self.assertFalse((Path(info["path"]) / "feature.txt").exists())
+
     def test_create_unborn_head_returns_none(self):
         repo = self.tmp / "empty"
         repo.mkdir()

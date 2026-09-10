@@ -49,6 +49,13 @@ class TestParseResponse:
         )
         assert r == {"action": "block", "message": "nope"}
 
+    def test_pre_kanban_invalid_decision_is_preserved_for_validation(self):
+        r = shell_hooks._parse_response(
+            "pre_kanban_complete",
+            '{"action": "blok"}',
+        )
+        assert r == {"action": "blok"}
+
 
 
     def test_empty_stdout_returns_none(self):
@@ -200,6 +207,34 @@ class TestCallbackSubprocess:
             args={"command": "rm"},
         )
         assert msg == "blocked-by-shell"
+
+    def test_completion_hook_spawn_error_fails_closed_by_default(self, tmp_path, monkeypatch):
+        """Completion gates must not disappear when their command cannot spawn."""
+        from hermes_cli import plugins
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        plugins._plugin_manager = plugins.PluginManager()
+
+        missing = tmp_path / "missing-hook"
+        registered = shell_hooks.register_from_config(
+            {"hooks": {"pre_kanban_complete": [{"command": str(missing)}]}},
+            accept_hooks=True,
+        )
+        assert len(registered) == 1
+
+        results = plugins.invoke_hook("pre_kanban_complete", task_id="task-1")
+
+        assert results == [{"action": "block", "message": f"hook {missing} failed closed: command not found"}]
+
+    def test_completion_hook_timeout_fails_closed_by_default(self):
+        spec = shell_hooks.ShellHookSpec(event="pre_kanban_complete", command="/tmp/hook.sh")
+
+        result = shell_hooks._evaluate_result(spec, _spawn_result(timed_out=True))
+
+        assert result is not None
+        assert result["action"] == "block"
+        assert "failed closed" in result["message"]
 
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""

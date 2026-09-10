@@ -14,7 +14,10 @@ import math
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
+
+if TYPE_CHECKING:
+    from gateway.capability_registry import CapabilityRegistry
 
 
 SPECIALIST_PROFILES: dict[str, str] = {
@@ -63,6 +66,12 @@ def _general(audit_reason: str) -> SpecialistRouteDecision:
     return SpecialistRouteDecision(kind=RouteKind.GENERAL, audit_reason=audit_reason)
 
 
+_NEGATION_RE = re.compile(
+    r"\b(?:do\s*not|don'?t|never|stop|avoid|shouldn'?t|should\s*not|won'?t|will\s*not|"
+    r"no\s+need\s+to|please\s+don'?t|didn'?t|hasn'?t|has\s*not|isn'?t)\b"
+)
+
+
 def classify_explicit_burndown_patch_request(request: str) -> Optional[SpecialistRouteDecision]:
     """Route the one unambiguous exception-burndown instruction without an LLM.
 
@@ -76,11 +85,13 @@ def classify_explicit_burndown_patch_request(request: str) -> Optional[Specialis
     if not isinstance(request, str):
         return None
     normalized = " ".join(request.casefold().split())
-    if (
-        "exception" not in normalized
-        or "burndown" not in normalized
-        or re.search(r"\bpatch(?:es|ed|ing)?\b", normalized) is None
-    ):
+    patch_match = re.search(r"\bpatch(?:es|ed|ing)?\b", normalized)
+    if "exception" not in normalized or "burndown" not in normalized or patch_match is None:
+        return None
+    # A question or a negation preceding the patch verb ("Do not patch...",
+    # "Why hasn't this been patched?") is not an affirmative work request;
+    # leave it to the classifier or normal chat instead of misfiring here.
+    if normalized.endswith("?") or _NEGATION_RE.search(normalized[: patch_match.start()]):
         return None
     return SpecialistRouteDecision(
         kind=RouteKind.SPECIALIST,
@@ -118,7 +129,11 @@ def build_classifier_messages(request: str) -> list[dict[str, str]]:
 
 
 def parse_specialist_response(
-    raw: str, *, threshold: float = 0.80, fallback_title: str = ""
+    raw: str,
+    *,
+    threshold: float = 0.80,
+    fallback_title: str = "",
+    registry: "CapabilityRegistry | None" = None,
 ) -> SpecialistRouteDecision:
     """Validate an untrusted classifier answer without repair or coercion."""
     if not isinstance(raw, str):
@@ -155,6 +170,8 @@ def parse_specialist_response(
     if kind is RouteKind.SPECIALIST:
         if not isinstance(profile, str) or profile not in SPECIALIST_PROFILES:
             return _general("unknown_profile")
+        if registry is not None and not registry.is_profile_declared(profile):
+            return _general("registry_unresolved")
         if not title.strip():
             title = " ".join(fallback_title.split())[:_MAX_TITLE_CHARS]
             if not title:
@@ -189,6 +206,7 @@ async def classify_specialist_request(
     *,
     threshold: float = 0.80,
     timeout: float = 12.0,
+    registry: "CapabilityRegistry | None" = None,
 ) -> SpecialistRouteDecision:
     """Run one bounded classifier call and turn every failure into fallback."""
     if not isinstance(request, str) or not request.strip():
@@ -209,4 +227,4 @@ async def classify_specialist_request(
         return _general("classifier_error")
     if not isinstance(raw, str):
         return _general("invalid_classifier_output")
-    return parse_specialist_response(raw, threshold=threshold, fallback_title=request)
+    return parse_specialist_response(raw, threshold=threshold, fallback_title=request, registry=registry)

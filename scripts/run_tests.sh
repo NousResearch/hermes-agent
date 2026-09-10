@@ -51,7 +51,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV=""
 VENV_PYTHON=""
 SKIPPED_VENVS=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+VENV_CANDIDATES=("$REPO_ROOT/.venv" "$REPO_ROOT/venv")
+# The managed live-checkout venv is an editable install. Reusing it from a
+# different checkout makes subprocesses that change cwd import the live tree,
+# silently mixing source identities inside one test run. It is a valid fallback
+# only when this runner itself belongs to that exact live checkout.
+if [ "$REPO_ROOT" = "$HOME/.hermes/hermes-agent" ]; then
+  VENV_CANDIDATES+=("$HOME/.hermes/hermes-agent/venv")
+fi
+for candidate in "${VENV_CANDIDATES[@]}"; do
   if [ -f "$candidate/bin/activate" ]; then
     if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
       VENV="$candidate"

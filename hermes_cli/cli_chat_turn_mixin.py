@@ -36,12 +36,22 @@ class CLIChatTurnMixin:
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
         from tools.process_registry_notifications import SubagentNotification
+        self._ensure_conversation_worktree_binding()
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
 
         if not self._ensure_runtime_credentials():
+            # A Kanban worker supervisor distinguishes a failed one-shot turn from a process
+            # that exited without a terminal Kanban call via _last_turn_result; leaving it
+            # unset here made an early credential failure look like a clean protocol exit
+            # and get retried as if the task itself were broken.
+            self._last_turn_result = {
+                "failed": True,
+                "failure_reason": "credentials",
+                "error": "runtime credentials unavailable",
+            }
             return None
 
         turn_route = self._resolve_turn_agent_config(message)

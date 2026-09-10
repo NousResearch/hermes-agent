@@ -82,6 +82,40 @@ def test_clean_open_and_second_open_still_work(tmp_path, force_wal):
         reopened.close()
 
 
+def test_refactored_holder_authority_keeps_sessiondb_open_path_available(
+    tmp_path, monkeypatch
+):
+    """The holder-module split must leave both SessionDB delegates defined."""
+    calls = {"deleted": 0, "identity": 0}
+
+    def no_deleted_holders(db_path, *, include_self=True):
+        calls["deleted"] += 1
+        assert include_self is True
+        return []
+
+    def no_sidecars(db_path):
+        calls["identity"] += 1
+        return {}
+
+    monkeypatch.setattr(
+        hermes_state._state_holders,
+        "deleted_sqlite_sidecar_holders",
+        no_deleted_holders,
+    )
+    monkeypatch.setattr(
+        hermes_state._state_holders,
+        "sqlite_sidecar_identity",
+        no_sidecars,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        assert calls["deleted"] >= 1
+        assert calls["identity"] >= 1
+    finally:
+        db.close()
+
+
 def test_delete_journal_two_writers_still_work(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: "delete")
     monkeypatch.setattr(

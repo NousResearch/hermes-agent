@@ -15,6 +15,8 @@ import sys
 import json
 import re
 import atexit
+
+from hermes_cli.github_identity import run_as_github_automation
 import errno
 import time
 import uuid
@@ -32,6 +34,7 @@ logger = logging.getLogger(__name__)
 os.environ["HERMES_QUIET"] = "1"  # suppress our modules' startup chatter
 
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.worktree_base import resolve_worktree_base
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
@@ -2532,7 +2535,10 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+from hermes_cli.cli_conversation_worktree_mixin import CLIConversationWorktreeMixin
+
+
+class HermesCLI(CLIConversationWorktreeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -2563,7 +2569,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._init_display_options(verbose, compact)
         self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
-        self._init_runtime_state(resume, manage_conversation_worktree=manage_conversation_worktree)
+        self._init_runtime_state(resume)
+        self._initialize_conversation_worktree(CLI_CONFIG, resume, manage_conversation_worktree)
 
     def _init_display_options(self, verbose, compact):
         """Display-related config: compact/tool-progress/focus view, bells, streaming, previews, stream buffers."""
@@ -2811,7 +2818,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
-    def _init_runtime_state(self, resume, *, manage_conversation_worktree: bool = True):
+    def _init_runtime_state(self, resume):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
@@ -2830,19 +2837,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._resumed = bool(resume)
         self.session_id = resume or f"{self.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
-        self._conversation_worktree_binding = None
-        if manage_conversation_worktree and self._session_db is not None:
-            try:
-                from agent.conversation_worktree import ConversationWorktreeManager
-                from agent.conversation_worktree_policy import resolve_conversation_worktree_policy
-                _cw_policy = resolve_conversation_worktree_policy(CLI_CONFIG)
-                if _cw_policy.enabled:
-                    _cw_mgr = ConversationWorktreeManager(_cw_policy, self._session_db)
-                    self._conversation_worktree_binding = _cw_mgr.bind_new_root_session(
-                        self.session_id, conversation_kind="interactive"
-                    )
-            except Exception as _cw_err:
-                logger.debug("conversation_worktree setup failed: %s", _cw_err)
 
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttles UI repaints
@@ -4244,7 +4238,7 @@ def _install_single_query_signal_handlers(cli):
                 _signal.signal(getattr(_signal, _name), _signal_handler_q)
 
 
-def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
+def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills, *, manage_conversation_worktree=True):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
     toolsets_list = None
     if isinstance(toolsets, str) and toolsets:
@@ -4283,6 +4277,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             checkpoints=checkpoints,
             pass_session_id=pass_session_id,
             ignore_rules=ignore_rules,
+            manage_conversation_worktree=manage_conversation_worktree,
         )
     except ImportError as e:
         # Direct `python cli.py` bypasses cmd_chat's partial-update ImportError handler.
@@ -4326,7 +4321,9 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
     Returns a join callable that publishes ``_active_worktree``/TERMINAL_CWD and
     schedules stale-worktree GC, or None when no worktree is wanted.
     """
-    if list_tools or list_toolsets or not (worktree or w or CLI_CONFIG.get("worktree", False)):
+    from hermes_cli.cli_conversation_worktree_mixin import _should_use_legacy_worktree
+
+    if list_tools or list_toolsets or not _should_use_legacy_worktree(worktree=worktree, shorthand=w, config=CLI_CONFIG):
         return None
     # Overlap tool discovery with the I/O-bound worktree setup so show_banner() hits a warm
     # cache (~0.4s). Only on the -w path: plain `hermes` has no I/O wait to hide.
@@ -4529,7 +4526,8 @@ def main(
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
-                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills,
+                               manage_conversation_worktree=not list_tools and not list_toolsets)
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.

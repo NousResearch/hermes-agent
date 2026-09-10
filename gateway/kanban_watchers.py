@@ -27,6 +27,8 @@ from gateway.kanban_watchers_common import (
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
+    _dispatcher_tick_is_unhealthy,
+    _dispatcher_capacity_saturated,
     _log_spawn_results,
     _resolve_dispatcher_settings,
 )
@@ -39,6 +41,38 @@ _HEALTH_WINDOW = 6
 
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
+
+    def _prepare_kanban_shutdown_drain(self) -> None:
+        """Allocate the marker inherited by workers from this dispatcher."""
+        try:
+            from hermes_cli import kanban_db as _kb
+
+            self._kanban_shutdown_drain_marker = _kb.prepare_shutdown_drain_marker()
+        except Exception:
+            logger.debug("kanban shutdown marker preparation failed", exc_info=True)
+
+    def _request_kanban_shutdown_drain(self, *, reason: str) -> None:
+        """Tell this dispatcher's workers to yield at their next turn end."""
+        try:
+            from hermes_cli import kanban_db as _kb
+
+            marker = getattr(self, "_kanban_shutdown_drain_marker", None)
+            if marker is not None:
+                os.environ["HERMES_KANBAN_DRAIN_MARKER"] = str(marker)
+            payload = _kb.request_shutdown_drain(reason=reason)
+            logger.info(
+                "kanban shutdown drain requested: workers will pause at their "
+                "next turn boundary (marker=%s)",
+                payload.get("marker"),
+            )
+        except Exception:
+            # Shutdown must continue to the existing reclaim/termination
+            # fallback if the cooperative marker cannot be written.
+            logger.warning(
+                "kanban shutdown drain marker could not be written; "
+                "worker reclaim remains the fallback",
+                exc_info=True,
+            )
 
     def _owns_kanban_dispatcher_lock(self) -> bool:
         return getattr(self, "_kanban_dispatcher_lock_handle", None) is not None
@@ -125,14 +159,14 @@ class GatewayKanbanWatchersMixin:
             conn.close()
 
     def _kanban_advance(self, sub: dict, cursor: int, board: Optional[str] = None) -> None:
-        self._kanban_sub_op(board, "advance_notify_cursor", sub, new_cursor=cursor)
+        self._kanban_sub_op(board, "advance_notify_cursor", sub, new_cursor=cursor, claim_owner=sub.get("notify_claim_owner"))
 
     def _kanban_unsub(self, sub: dict, board: Optional[str] = None) -> None:
         self._kanban_sub_op(board, "remove_notify_sub", sub)
 
     def _kanban_rewind(self, sub: dict, claimed_cursor: int, old_cursor: int, board: Optional[str] = None) -> None:
         """Undo a claimed notification cursor after send failure."""
-        self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
+        self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor, claim_owner=sub.get("notify_claim_owner"))
 
     async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task) -> None:
         """Upload artifact files referenced by a completed kanban task.
@@ -236,6 +270,7 @@ class GatewayKanbanWatchersMixin:
         else:
             logger.warning("kanban dispatcher: advisory lock unavailable at %s; proceeding "
                            "on config control alone.", _lock_path)
+        self._prepare_kanban_shutdown_drain()
         return _load_config, _kb, kanban_cfg
 
     async def _kanban_dispatcher_watcher(self) -> None:
@@ -279,19 +314,22 @@ class GatewayKanbanWatchersMixin:
             try:
                 # Emergency stop (`hermes pause`): no auto-decompose or
                 # dispatch while paused; running workers finish naturally.
-                if not _kanban_dispatch_allowed():
+                if not _kanban_dispatch_allowed(self):
                     bad_ticks = 0
                 else:
+                    results = await _to_thread_process_service(dispatcher.tick_once)
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
                     # See #49638.
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
-                    results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
-                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    bad_ticks = bad_ticks + 1 if _dispatcher_tick_is_unhealthy(
+                        ready_pending=ready_pending, any_spawned=any_spawned,
+                        all_capacity_saturated=_dispatcher_capacity_saturated(results),
+                    ) else 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
                     logger.warning(

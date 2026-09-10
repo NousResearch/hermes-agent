@@ -125,6 +125,58 @@ def canonical_sqlite_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
 
 
+def sqlite_sidecar_identity(db_path: Path) -> dict[str, tuple[int, int]]:
+    """Snapshot stable identities for existing WAL/SHM sidecars."""
+    identities: dict[str, tuple[int, int]] = {}
+    base = os.fspath(db_path)
+    for suffix in ("-wal", "-shm"):
+        try:
+            stat_result = os.stat(base + suffix)
+        except OSError:
+            continue
+        if stat_result.st_dev and stat_result.st_ino:
+            identities[suffix] = (stat_result.st_dev, stat_result.st_ino)
+    return identities
+
+
+def deleted_sqlite_sidecar_holders(
+    db_path: Path, *, include_self: bool = True
+) -> List[Tuple[int, str]]:
+    """Return Linux processes holding an unlinked WAL/SHM for ``db_path``."""
+    if _IS_WINDOWS or not sys.platform.startswith("linux"):
+        return []
+
+    holders: List[Tuple[int, str]] = []
+    own_pid = os.getpid()
+    base = os.path.abspath(os.fspath(db_path))
+    watched = {
+        canonical_sqlite_path(base + "-wal"),
+        canonical_sqlite_path(base + "-shm"),
+    }
+    try:
+        for pid_str in os.listdir("/proc"):
+            if not pid_str.isdigit():
+                continue
+            pid = int(pid_str)
+            if pid == own_pid and not include_self:
+                continue
+            fd_dir = f"/proc/{pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    target = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if " (deleted)" in target and canonical_sqlite_path(target) in watched:
+                    holders.append((pid, target))
+    except Exception as exc:
+        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
+    return holders
+
+
 def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     """Return foreign holders of the DB or one of its WAL sidecars.
 

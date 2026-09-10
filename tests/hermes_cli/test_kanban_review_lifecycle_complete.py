@@ -10,6 +10,7 @@ These tests cover the two review models that must coexist:
 """
 
 from __future__ import annotations
+from hermes_cli import kanban_db_dispatch as dispatch_impl
 
 import time
 from pathlib import Path
@@ -387,7 +388,7 @@ def test_reclaim_fails_safe_on_non_object_claim_provenance(
     monkeypatch,
 ) -> None:
     task_id, _review = _claimed_review(conn, "Non-object claimed payload")
-    kb._set_worker_pid(conn, task_id, 999_999)
+    dispatch_impl._set_worker_pid(conn, task_id, 999_999)
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     with kb.write_txn(conn):
         conn.execute(
@@ -435,7 +436,7 @@ def test_interrupted_review_runs_retry_in_review_phase(
             )
         assert kb.release_stale_claims(conn) == 1
     elif reclaim_kind == "manual_reclaim":
-        kb._set_worker_pid(conn, task_id, 999_999)
+        dispatch_impl._set_worker_pid(conn, task_id, 999_999)
         monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
         assert kb.reclaim_task(conn, task_id, reason="operator retry")
     else:

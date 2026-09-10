@@ -9,6 +9,8 @@ parity across every registered verb.
 """
 
 from __future__ import annotations
+from hermes_cli import kanban_worker_process as worker_process
+from hermes_cli import kanban_db_dispatch as dispatch_impl
 
 import argparse
 import json
@@ -215,6 +217,7 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
 
 def test_notify_claim_lease_reclaims_events_after_watcher_crash(kanban_home, monkeypatch):
     """A dead watcher cannot permanently consume a terminal notification."""
+    import hermes_cli.kanban_db_notify as _hermes_cli_kanban_db_notify
     conn1 = kbc.connect()
     conn2 = kbc.connect()
     try:
@@ -266,7 +269,7 @@ def test_notify_claim_lease_reclaims_events_after_watcher_crash(kanban_home, mon
             chat_id="123",
             new_cursor=reclaimed,
         )
-        assert kbn.unseen_events_for_sub(
+        assert _hermes_cli_kanban_db_notify.unseen_events_for_sub(
             conn1,
             task_id=tid,
             platform="telegram",
@@ -341,7 +344,7 @@ def test_worker_tree_signal_uses_owned_process_group(monkeypatch):
     monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
     monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
 
-    kbd._worker_tree_signal(222, 15)
+    worker_process.signal_worker_tree(222, 15)
 
     assert calls == [("group", 222, 15)]
 
@@ -358,7 +361,7 @@ def test_worker_tree_signal_signals_orphaned_group_when_leader_dead(monkeypatch)
     monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
     monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
 
-    kbd._worker_tree_signal(222, 15)
+    worker_process.signal_worker_tree(222, 15)
 
     assert calls == [("group", 222, 15)]
 
@@ -371,7 +374,7 @@ def test_worker_tree_signal_never_targets_own_process_group(monkeypatch):
     monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
     monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
 
-    kbd._worker_tree_signal(222, 15)
+    worker_process.signal_worker_tree(222, 15)
 
     assert calls == [("pid", 222, 15)]
 
@@ -383,8 +386,9 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         killed.append((pid, sig))
 
     # We bypass _pid_alive by stubbing it so the grace-poll exits fast.
-    original_alive = kbd._pid_alive
-    kbd._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+    import hermes_cli.kanban_db as _kb
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
 
     try:
         conn = kbc.connect()
@@ -427,25 +431,27 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         finally:
             conn.close()
     finally:
-        kbd._pid_alive = original_alive
+        _kb._pid_alive = original_alive
 
 
 def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home):
     """A running task without an explicit cap still receives the dispatch cap."""
+    import hermes_cli.kanban_db_dispatch as _hermes_cli_kanban_db_dispatch
     killed = []
 
     def _signal_fn(pid, sig):
         killed.append((pid, sig))
 
-    original_alive = kbd._pid_alive
-    kbd._pid_alive = lambda pid: False
+    import hermes_cli.kanban_db as _kb
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda pid: False
 
     try:
         conn = kbc.connect()
         try:
             tid = kb.create_task(conn, title="uncapped job", assignee="worker")
             kb.claim_task(conn, tid)
-            kbd._set_worker_pid(conn, tid, os.getpid())
+            dispatch_impl._set_worker_pid(conn, tid, os.getpid())
             old_started = int(time.time()) - 30
             with kb.write_txn(conn):
                 conn.execute(
@@ -458,7 +464,7 @@ def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home
                     (old_started, tid),
                 )
 
-            timed_out = kbd.enforce_max_runtime(
+            timed_out = _hermes_cli_kanban_db_dispatch.enforce_max_runtime(
                 conn, default_max_runtime_seconds=1, signal_fn=_signal_fn
             )
 
@@ -469,7 +475,7 @@ def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home
         finally:
             conn.close()
     finally:
-        kbd._pid_alive = original_alive
+        _kb._pid_alive = original_alive
 
 
 
@@ -824,7 +830,7 @@ def test_pid_alive_detects_zombie(kanban_home):
     )
     pid = proc.pid
     try:
-        assert kbd._pid_alive(pid) is True  # live non-zombie
+        assert kb._pid_alive(pid) is True  # live non-zombie
         os.kill(pid, 9)
         time.sleep(0.3)
         # Verify /proc reports zombie state so the test is actually
@@ -835,7 +841,7 @@ def test_pid_alive_detects_zombie(kanban_home):
             )
         assert "Z" in state_line, f"expected zombie, got {state_line!r}"
         # And _pid_alive must see through it.
-        assert kbd._pid_alive(pid) is False
+        assert kb._pid_alive(pid) is False
     finally:
         try:
             proc.wait(timeout=1)
@@ -1457,12 +1463,12 @@ def _drive_worker_exit(conn, tid, fake_pid, raw_status):
     assert claimed is not None, "task was not claimable for the next attempt"
     _kbd._set_worker_pid(conn, tid, fake_pid)
     _kbd._record_worker_exit(fake_pid, raw_status)
-    original_alive = _kbd._pid_alive
-    _kbd._pid_alive = lambda p: False
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda p: False
     try:
         return _kbd.detect_crashed_workers(conn)
     finally:
-        _kbd._pid_alive = original_alive
+        _kb._pid_alive = original_alive
 
 
 def _drive_protocol_violation(conn, tid, fake_pid):

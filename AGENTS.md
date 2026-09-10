@@ -3,8 +3,9 @@
 ## Local project environment
 
 This checkout is the separate Hermes-agent project and targets Python 3.13.6. Use
-`./venv/bin/python` for the primary
-Hermes-agent checkout. New Hermes-agent Git worktrees created by the task, conversation,
+`./.venv/bin/python` for the primary Hermes-agent checkout. The canonical environment
+is managed outside the checkout and is shared only by Hermes-agent worktrees. New
+Hermes-agent Git worktrees created by the task, conversation,
 subagent, web-Git, CLI, or PR-maintenance paths receive a `.venv` link to the verified
 repository runtime before an agent is released; inside those worktrees use
 `./.venv/bin/python` (which must resolve to Python 3.13.6). Do not install Hermes dependencies into the LunaBot environment at

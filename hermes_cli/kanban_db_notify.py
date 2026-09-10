@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import threading
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -79,6 +79,7 @@ def add_notify_sub(
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
+    allow_nested: bool = False,
 ) -> None:
     """Register a gateway source wanting terminal-state notifications for
     ``task_id``; idempotent on (task, platform, chat, thread).
@@ -98,7 +99,7 @@ def add_notify_sub(
     insert_mode = valid_mode or ("notify+wake" if platform == "api_server" else "notify")
     metadata_json = _encode_notify_delivery_metadata(delivery_metadata)
     key = _sub_key(task_id, platform, chat_id, thread_id)
-    with _kb.write_txn(conn):
+    with _kb.write_txn(conn, allow_nested=allow_nested):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
@@ -350,16 +351,17 @@ def claim_unseen_events_for_sub(
     claim_owner: Optional[str] = None,
     claim_lease_seconds: int = 300,
 ) -> tuple[int, int, list[Event]]:
-    """Atomically claim unseen events for one subscription.
+    """Atomically claim unseen notification events for one subscription.
 
-    Returns ``(old_cursor, new_cursor, events)``; when events are returned the
-    row's ``last_event_id`` has already been advanced inside ``BEGIN IMMEDIATE``,
-    so concurrent gateway watchers on the same board DB serialize on SQLite's
-    writer lock and only the first claims a given event range. Callers send the
-    events, then leave the cursor or call :func:`rewind_notify_cursor` on
-    delivery failure.
+    Returns ``(old_cursor, new_cursor, events)``. Claims are durable leases:
+    the cursor is advanced only by :func:`advance_notify_cursor` after
+    delivery succeeds. If a watcher dies after this function returns, a later
+    watcher can reclaim the claim after its bounded lease expires instead of
+    permanently losing a blocked/triage/completion notification.
     """
-    owner = (claim_owner or f"pid:{os.getpid()}:thread:{threading.get_ident()}").strip()
+    owner = (
+        claim_owner or f"pid:{os.getpid()}:thread:{threading.get_ident()}"
+    ).strip()
     if not owner:
         raise ValueError("notification claim owner must be non-empty")
     try:
@@ -369,8 +371,9 @@ def claim_unseen_events_for_sub(
     now = int(time.time())
     with _kb.write_txn(conn):
         row = conn.execute(
-            "SELECT last_event_id, notify_claim_owner, notify_claimed_at, notify_claimed_cursor "
-            "FROM kanban_notify_subs WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            "SELECT last_event_id, notify_claim_owner, notify_claimed_at, "
+            "notify_claimed_cursor FROM kanban_notify_subs "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
             (task_id, platform, chat_id, thread_id or ""),
         ).fetchone()
         if row is None:
@@ -380,34 +383,43 @@ def claim_unseen_events_for_sub(
         claimed_at = row["notify_claimed_at"]
         claimed_cursor = row["notify_claimed_cursor"]
         claim_active = (
-            isinstance(existing_owner, str) and bool(existing_owner)
-            and isinstance(claimed_at, int) and now - claimed_at < lease_seconds
+            isinstance(existing_owner, str)
+            and bool(existing_owner)
+            and isinstance(claimed_at, int)
+            and now - claimed_at < lease_seconds
         )
-        if claim_active and existing_owner != owner:
+        if claim_active:
             return old_cursor, old_cursor, []
         new_cursor, events = unseen_events_for_sub(
-            conn, task_id=task_id, platform=platform, chat_id=chat_id,
-            thread_id=thread_id, kinds=kinds,
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            kinds=kinds,
         )
         if not events:
             return old_cursor, old_cursor, []
         conn.execute(
-            "UPDATE kanban_notify_subs SET notify_claim_owner = ?, notify_claimed_at = ?, "
-            "notify_claimed_cursor = ? WHERE task_id = ? AND platform = ? AND chat_id = ? "
-            "AND thread_id = ? AND last_event_id = ? AND (notify_claimed_at IS NULL "
+            "UPDATE kanban_notify_subs SET notify_claim_owner = ?, "
+            "notify_claimed_at = ?, notify_claimed_cursor = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ? AND (notify_claimed_at IS NULL "
             "OR notify_claimed_at <= ? OR notify_claim_owner = ?)",
-            (owner, now, int(new_cursor), task_id, platform, chat_id, thread_id or "",
-             old_cursor, now - lease_seconds, owner),
+            (
+                owner,
+                now,
+                int(new_cursor),
+                task_id,
+                platform,
+                chat_id,
+                thread_id or "",
+                int(old_cursor),
+                now - lease_seconds,
+                owner,
+            ),
         )
         return old_cursor, new_cursor, events
-
-
-def _cas_cursor(conn: sqlite3.Connection, key: tuple, new_cursor: int, expected: int) -> sqlite3.Cursor:
-    """Move ``last_event_id`` only if it still equals ``expected``."""
-    return conn.execute(
-        "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE + " AND last_event_id = ?",
-        (int(new_cursor), *key, int(expected)),
-    )
 
 
 def advance_notify_cursor(
@@ -421,18 +433,21 @@ def advance_notify_cursor(
     claim_owner: Optional[str] = None,
 ) -> None:
     with _kb.write_txn(conn):
-        params: list[Any] = [int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id), int(new_cursor)]
         owner_clause = ""
+        params: list[Any] = [int(new_cursor)]
+        params.extend([task_id, platform, chat_id, thread_id or "", int(new_cursor)])
         if claim_owner is not None:
             owner_clause = " AND notify_claim_owner = ?"
             params.append(claim_owner)
-        cur = conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ?, notify_claim_owner = NULL, "
-            "notify_claimed_at = NULL, notify_claimed_cursor = NULL " + _SUB_KEY_WHERE +
-            " AND notify_claimed_cursor = ?" + owner_clause,
+        result = conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ?, "
+            "notify_claim_owner = NULL, notify_claimed_at = NULL, "
+            "notify_claimed_cursor = NULL "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND notify_claimed_cursor = ?" + owner_clause,
             params,
         )
-        if cur.rowcount != 1:
+        if result.rowcount != 1:
             raise RuntimeError("notification claim is no longer held")
 
 
@@ -460,19 +475,24 @@ def rewind_notify_cursor(
     old_cursor: int,
     claim_owner: Optional[str] = None,
 ) -> bool:
-    """Undo a claim when delivery fails. The CAS guard only rewinds if no later
-    notifier advanced the row, so retries never clobber newer progress.
+    """Undo a notification claim when delivery fails.
+
+    The CAS guard only rewinds if no later notifier advanced the row after our
+    claim. This keeps retry behavior for transient send failures without
+    clobbering newer progress.
     """
     with _kb.write_txn(conn):
         owner_clause = ""
-        params: list[Any] = [old_cursor, *_sub_key(task_id, platform, chat_id, thread_id), claimed_cursor]
+        params: list[Any] = [task_id, platform, chat_id, thread_id or "", int(old_cursor)]
+        params.append(int(claimed_cursor))
         if claim_owner is not None:
             owner_clause = " AND notify_claim_owner = ?"
             params.append(claim_owner)
         cur = conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ?, notify_claim_owner = NULL, "
-            "notify_claimed_at = NULL, notify_claimed_cursor = NULL " + _SUB_KEY_WHERE +
-            " AND notify_claimed_cursor = ?" + owner_clause,
+            "UPDATE kanban_notify_subs SET notify_claim_owner = NULL, "
+            "notify_claimed_at = NULL, notify_claimed_cursor = NULL "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ? AND notify_claimed_cursor = ?" + owner_clause,
             params,
         )
     return cur.rowcount > 0

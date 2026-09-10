@@ -13,7 +13,6 @@ from gateway.specialist_routing import (
     parse_specialist_response,
 )
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -27,6 +26,7 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 def test_specialist_handoff_creates_goal_mode_triage_root(kanban_home):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     decision = SpecialistRouteDecision(
         kind=RouteKind.SPECIALIST,
         profile="burndown-patch-steward",
@@ -51,7 +51,7 @@ def test_specialist_handoff_creates_goal_mode_triage_root(kanban_home):
 
     assert result.ok, result.reason
     assert result.task_id
-    with kbc.connect(board="exampleproject-burndown") as conn:
+    with _hermes_cli_kanban_db_connect.connect(board="exampleproject-burndown") as conn:
         task = kb.get_task(conn, result.task_id)
     assert task is not None
     assert task.status == "triage"
@@ -63,6 +63,7 @@ def test_specialist_handoff_creates_goal_mode_triage_root(kanban_home):
 def test_specialist_handoff_explicit_board_ignores_database_environment_override(
     kanban_home, monkeypatch, tmp_path
 ):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     decision = SpecialistRouteDecision(
         kind=RouteKind.SPECIALIST,
         profile="burndown-patch-steward",
@@ -78,10 +79,10 @@ def test_specialist_handoff_explicit_board_ignores_database_environment_override
         message_id="message-env-isolation",
     )
     board = "exampleproject-burndown"
-    with kbc.connect(board=board):
+    with _hermes_cli_kanban_db_connect.connect(board=board):
         pass
     override_path = tmp_path / "override" / "kanban.db"
-    with kbc.connect(db_path=override_path):
+    with _hermes_cli_kanban_db_connect.connect(db_path=override_path):
         pass
     monkeypatch.setenv("HERMES_KANBAN_DB", str(override_path))
 
@@ -94,9 +95,9 @@ def test_specialist_handoff_explicit_board_ignores_database_environment_override
 
     assert result.ok, result.reason
     monkeypatch.delenv("HERMES_KANBAN_DB")
-    with kbc.connect(board=board) as configured_conn:
+    with _hermes_cli_kanban_db_connect.connect(board=board) as configured_conn:
         configured_task = kb.get_task(configured_conn, result.task_id)
-    with kbc.connect(db_path=override_path) as override_conn:
+    with _hermes_cli_kanban_db_connect.connect(db_path=override_path) as override_conn:
         override_task = kb.get_task(override_conn, result.task_id)
     assert configured_task is not None
     assert override_task is None

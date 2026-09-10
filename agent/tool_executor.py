@@ -680,7 +680,14 @@ def _dispatch_authorized_once(
         agent._iters_since_skill = 0
 
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+
+    def _execute_with_source_provenance(args):
+        from agent.source_provenance_tools import source_provenance_activation
+
+        with source_provenance_activation(agent, ref.name):
+            return execute(args)
+
+    return _run_with_activity_heartbeat(agent, ref.name, lambda: _execute_with_source_provenance(ref.args))
 
 
 def _run_agent_tool_execution_middleware(
@@ -1023,7 +1030,15 @@ def _commit_tool_result(
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
-    tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    from agent.source_provenance_tools import attach_trusted_source_provenance_metadata
+
+    _source_provenance = attach_trusted_source_provenance_metadata(
+        agent, function_name, content=persisted_result
+    )
+    tool_message = make_tool_result_message(
+        function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition,
+        source_provenance=_source_provenance,
+    )
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None

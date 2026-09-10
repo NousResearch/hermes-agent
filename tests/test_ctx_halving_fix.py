@@ -170,6 +170,9 @@ class TestEphemeralMaxOutputTokens:
         agent = object.__new__(AIAgent)
         # Minimal attributes used by _build_api_kwargs
         agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        agent._base_url_lower = agent.base_url.lower()
         agent.model = "claude-opus-4-6"
         agent.tools = []
         agent.max_tokens = None

@@ -14,12 +14,13 @@ import hmac
 import json
 import logging
 import re
-import subprocess
 import sys
 import time
 from collections import deque
 from contextlib import nullcontext, suppress
 from typing import Any, Deque, Dict, List, Optional
+
+from hermes_cli.github_identity import GitHubIdentityError, run_as_github_automation
 
 try:
     from aiohttp import web
@@ -733,9 +734,12 @@ class WebhookAdapter(BasePlatformAdapter):
             # Running it inline froze every adapter and timer on the gateway event loop for the duration
             # (Pattern A, #91912 class). asyncio.to_thread keeps the loop serving while the subprocess runs;
             # the worker thread is bounded by the subprocess timeout below.
+            # Verified through the governed Hermes bot identity, not the ambient `gh` viewer —
+            # this delivery path posts as automation, not the operator (see hermes_cli.github_identity).
             result = await asyncio.to_thread(
-                subprocess.run, ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+                run_as_github_automation,
+                ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
+                timeout=30)
             if result.returncode == 0:
                 logger.info("[webhook] Posted comment on %s#%s", repo, pr_number)
                 return SendResult(success=True)
@@ -744,6 +748,9 @@ class WebhookAdapter(BasePlatformAdapter):
         except FileNotFoundError:
             logger.error("[webhook] 'gh' CLI not found — install GitHub CLI for github_comment delivery")
             return SendResult(success=False, error="gh CLI not installed")
+        except GitHubIdentityError as e:
+            logger.error("[webhook] github_comment identity verification failed: %s", e)
+            return SendResult(success=False, error=str(e))
         except Exception as e:
             logger.error("[webhook] github_comment delivery error: %s", e)
             return SendResult(success=False, error=str(e))

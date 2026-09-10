@@ -117,6 +117,7 @@ def test_touch_activity_persist_errors_are_swallowed(monkeypatch):
 
 
 def test_touch_activity_hard_interrupts_worker_after_lease_loss(monkeypatch):
+    import agent.interrupt_compat as _agent_interrupt_compat
     import tools.kanban_tools as kanban_tools
 
     agent = _agent_with_db()
@@ -135,7 +136,8 @@ def test_touch_activity_hard_interrupts_worker_after_lease_loss(monkeypatch):
         heartbeat,
     )
     monkeypatch.setattr(
-        "agent.interrupt_compat.request_hard_interrupt",
+        _agent_interrupt_compat,
+        "request_hard_interrupt",
         lambda target, message, *, tool_reason: interrupted.append(
             (target, message, tool_reason)
         )

@@ -49,6 +49,7 @@ _DOCKER_KWARGS = (
     ("extra_args", "docker_extra_args", []), ("persist_across_processes", "docker_persist_across_processes", True),
     ("shared_container_key", "docker_shared_container_key", ""), ("shm_size", "docker_shm_size", "1g"),
     ("snap_compat", "docker_snap_compat", False),
+    ("isolate_host_data", "docker_isolate_host_data", False),
 )
 
 

@@ -373,6 +373,32 @@ def test_codex_reasoning_replay_encrypted_content_is_not_treated_as_a_credential
     assert authorized["input"][0]["encrypted_content"] == encrypted_replay
 
 
+def test_codex_reasoning_replay_uses_body_shape_when_api_mode_missing(tmp_path):
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = None
+    encrypted_replay = "gAAAAABm3gZrX7xP0Yk3V8nQ2aBcD4eFgH5jKlMnOpQrStUvWxYz0123456789"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "encrypted_content": encrypted_replay,
+                    "summary": [{"type": "summary_text", "text": "checked PR"}],
+                }
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["input"][0]["encrypted_content"] == encrypted_replay
+    assert authorized["input"][0]["summary"][0]["text"] == "checked PR"
+
+
 def test_codex_user_supplied_encrypted_token_still_blocks(tmp_path):
     agent = _agent(tmp_path)
     agent.provider = "openai-codex"
@@ -456,10 +482,121 @@ def test_protected_codex_elides_bound_kanban_show_result(tmp_path, monkeypatch):
 
     rendered = authorized["messages"][1]["content"]
     assert receipt.allowed
-    assert "untrusted" in rendered
     assert rendered.startswith("kanban_show completed locally.")
     assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
     assert "super-secret-value" not in rendered
+    assert "/Users/private/source.py" not in rendered
+
+
+def test_protected_codex_kanban_projection_drops_raw_assignment_text(
+    tmp_path, monkeypatch
+):
+    """A valid board record cannot replay arbitrary title/body text remotely."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_kanban_show_projection_boundary"
+    board_text = json.dumps(
+        {
+            "task": {
+                "title": "[Audit] Paper-safety posture 20260903",
+                "body": "private assignment c2VjcmV0LXBheWxvYWQ=",
+                "status": "blocked",
+                "workspace_access": "assigned",
+            },
+            "parents": [{"body": "private dependency detail"}],
+            "children": [{"body": "private child detail"}],
+        }
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "kanban_show",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": board_text,
+                },
+            ],
+        },
+    )
+
+    rendered = authorized["input"][1]["output"]
+    assert receipt.allowed
+    assert "20260903" not in rendered
+    assert "private assignment" not in rendered
+    assert "private dependency" not in rendered
+    assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
+    assert '"status": "blocked"' in rendered
+
+
+def test_protected_codex_kanban_projection_replays_only_versioned_task_spec(
+    tmp_path, monkeypatch
+):
+    """The trusted producer contract restores the assignment without history."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_kanban_show_task_spec"
+    board_text = json.dumps(
+        {
+            "task": {"status": "running", "workspace_access": "assigned"},
+            "protected_task_spec": {
+                "version": "v1",
+                "title": "Repair the current PR feedback worker",
+                "body": (
+                    "Inspect the current checkout and report the result. "
+                    "PAPER_SAFETY_SENTINEL_OK "
+                    "token=super-secret-value c2VjcmV0LXBheWxvYWQ= "
+                    "/Users/private/source.py"
+                ),
+            },
+            "comments": [{"body": "obsolete attempt"}],
+        }
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "kanban_show",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": board_text,
+                },
+            ],
+        },
+    )
+
+    rendered = authorized["input"][1]["output"]
+    assert receipt.allowed
+    assert "Repair the current PR feedback worker" in rendered
+    assert "Inspect the current checkout and report the result." in rendered
+    assert "PAPER_SAFETY_SENTINEL_OK" in rendered
+    assert "obsolete attempt" not in rendered
+    assert "super-secret-value" not in rendered
+    assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
     assert "/Users/private/source.py" not in rendered
 
 
@@ -498,6 +635,125 @@ def test_protected_codex_elides_responses_kanban_show_output(tmp_path, monkeypat
     assert rendered.startswith("kanban_show completed locally.")
     assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
     assert "super-secret-value" not in rendered
+
+
+def test_protected_codex_elides_bound_kanban_attachments_output(tmp_path, monkeypatch):
+    """Read-only attachment results cannot trigger an egress retry."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_kanban_attachments_123"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "input": [
+                {
+                    "id": call_id,
+                    "call_id": call_id,
+                    "type": "function_call",
+                    "function": {"name": "kanban_attachments", "arguments": "{}"},
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": "c2VjcmV0LXBheWxvYWQ= token=super-secret-value",
+                },
+            ],
+        },
+    )
+
+    rendered = authorized["input"][1]["output"]
+    assert receipt.allowed
+    assert rendered.startswith("kanban_attachments completed locally;")
+    assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
+    assert "super-secret-value" not in rendered
+
+
+def test_protected_codex_allows_benign_bound_kanban_attachments_output(
+    tmp_path, monkeypatch
+):
+    """A benign bound attachment result must not become untrusted provenance."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_kanban_attachments_benign"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "kanban_attachments",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": "No attachments found.",
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["input"][1]["output"].startswith(
+        "kanban_attachments completed locally;"
+    )
+
+
+def test_protected_codex_projects_bound_kanban_lifecycle_result(
+    tmp_path, monkeypatch
+):
+    """Lifecycle results replay only a fixed outcome, never raw control-plane text."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_kanban_comment_result"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "kanban_comment",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps(
+                        {
+                            "ok": True,
+                            "comment": "raw private path /Users/private/source.py",
+                        }
+                    ),
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["input"][1]["output"] == (
+        "Kanban lifecycle action completed locally; its raw control-plane result "
+        "was omitted from remote replay."
+    )
 
 
 def test_protected_nous_elides_bound_kanban_show_result(tmp_path, monkeypatch):
@@ -1174,6 +1430,114 @@ def test_protected_codex_projects_combined_github_issue_views(tmp_path, monkeypa
     assert [item["number"] for item in json.loads(json.loads(replay)["output"])["items"]] == [98168, 98160]
 
 
+@pytest.mark.parametrize("output_field", ["stderr", "output"])
+def test_protected_codex_replays_bounded_pr_feedback_failure_excerpt(
+    tmp_path, monkeypatch, output_field
+):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_pr_feedback_failure"
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "terminal",
+                "call_id": call_id,
+                "arguments": json.dumps(
+                    {
+                        "command": (
+                            "env HERMES_HOME=$HERMES_CONTROL_HOME python3 -m "
+                            "hermes_cli.main github-pr-feedback inspect-pr "
+                            "--repository acme/widgets --pr-number 17"
+                        )
+                    }
+                ),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps(
+                    {
+                        "exit_code": 1,
+                        output_field: (
+                            "Traceback: ModuleNotFoundError: No module named "
+                            "dotenv at /Users/operator/private.py"
+                        ),
+                    }
+                ),
+            },
+        ],
+    }
+
+    authorized, receipt = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert receipt.allowed
+    assert rendered["terminal_result"] == "github_pr_feedback"
+    assert rendered["exit_code"] == 1
+    assert "ModuleNotFoundError" in rendered["error_excerpt"]
+    assert "/Users/operator" not in rendered["error_excerpt"]
+    assert "raw_output" in rendered
+
+
+def test_protected_codex_preserves_audit_process_and_receipt_handoff(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_pr_feedback_failure"
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "terminal",
+                "call_id": call_id,
+                "arguments": json.dumps(
+                    {
+                        "command": (
+                            "env HERMES_HOME=$HERMES_CONTROL_HOME python3 -m "
+                            "hermes_cli.main github-pr-feedback inspect-pr "
+                            "--repository acme/widgets --pr-number 17"
+                        )
+                    }
+                ),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps(
+                    {
+                        "exit_code": 0,
+                        "session_id": "proc_162741633896",
+                        "pid": 88779,
+                        "output": json.dumps({"status": "audit_handoff_retryable", "receipt_id": "a" * 64, "handoff_reason": "base_refresh_required", "retryable": True}),
+                    }
+                ),
+            },
+        ],
+    }
+
+    authorized, receipt = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert receipt.allowed
+    assert rendered["terminal_result"] == "github_pr_feedback"
+    assert rendered["session_id"] == "proc_162741633896"
+    assert rendered["pid"] == 88779
+    assert rendered["json"]["receipt_id"] == "a" * 64
+    assert rendered["json"]["handoff_reason"] == "base_refresh_required"
+    assert rendered["json"]["retryable"] is True
+    assert "raw_output" in rendered
+
+
 def test_protected_codex_omits_rejected_terminal_command_replay(
     tmp_path, monkeypatch
 ):
@@ -1492,7 +1856,7 @@ def test_protected_codex_elides_structured_terminal_output(
                     "name": "terminal",
                     "call_id": call_id,
                     "arguments": json.dumps(
-                        {"command": "python3 -m pytest tests/unit -q"}
+                        {"command": "printf test-output"}
                     ),
                 },
                 {
@@ -1511,6 +1875,164 @@ def test_protected_codex_elides_structured_terminal_output(
         "exit_code": None,
         "raw_output": "omitted_from_remote_replay",
     }
+
+
+def test_protected_codex_projects_bound_pytest_failure_diagnostics(
+    tmp_path, monkeypatch
+):
+    """A bound pytest call retains safe failure facts without replaying source."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_pytest_failure"
+    raw_output = (
+        "============================= test session starts =============================\n"
+        "ERROR collecting tests/test_state.py\n"
+        "E   ImportError: cannot import name 'ConversationWorktreeRecord'\n"
+        "=========================== short test summary info ============================\n"
+        "ERROR tests/test_state.py - ImportError: missing state API\n"
+        "!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n"
+    )
+    terminal_result = json.dumps({"exit_code": 1, "output": raw_output})
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": call_id,
+                    "arguments": json.dumps(
+                        {"command": "python3 -m pytest -q tests"}
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": [{"type": "input_text", "text": terminal_result}],
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert rendered["terminal_result"] == "pytest"
+    assert rendered["exit_code"] == 1
+    assert "ConversationWorktreeRecord" in "\n".join(rendered["diagnostics"])
+    assert raw_output not in json.dumps(authorized)
+
+
+def test_protected_codex_elides_bound_browser_exec_output(
+    tmp_path, monkeypatch
+):
+    """Browser Use results follow the exact-call local-action replay boundary."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_browser_exec_output"
+    unsafe_output = json.dumps(
+        {"status": "ok", "text": "c2VjcmV0LXBheWxvYWQ="}
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "browser_exec",
+                    "call_id": call_id,
+                    "arguments": json.dumps(
+                        {"code": "print('c2VjcmV0LXBheWxvYWQ=')"}
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": unsafe_output,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert unsafe_output not in json.dumps(authorized)
+    assert "<redacted-base64>" in authorized["input"][0]["arguments"]
+    assert json.loads(authorized["input"][1]["output"]) == {
+        "terminal_result": "completed",
+        "exit_code": None,
+        "raw_output": "omitted_from_remote_replay",
+    }
+
+
+def test_protected_codex_projects_bound_paginated_github_api_output(
+    tmp_path, monkeypatch
+):
+    """The White-Knight ``gh api --paginate`` list path stays bounded."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_api_paginate_output"
+    command = (
+        "gh api --paginate "
+        "'/repos/NousResearch/hermes-agent/issues?state=open'"
+    )
+    raw_output = json.dumps(
+        [
+            {
+                "id": "c2VjcmV0LXBheWxvYWQ=",
+                "number": 102658,
+                "title": "Encoded-looking title is still bounded",
+                "state": "open",
+                "user": {"id": 42, "login": "contributor"},
+            }
+        ]
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": call_id,
+                    "arguments": json.dumps({"command": command}),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps({"exit_code": 0, "output": raw_output}),
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert "c2VjcmV0LXBheWxvYWQ=" not in json.dumps(authorized)
+    assert "NousResearch" not in authorized["input"][0]["arguments"]
+    projected = json.loads(authorized["input"][1]["output"])
+    assert json.loads(projected["output"])["items"] == [
+        {
+            "number": 102658,
+            "state": "open",
+            "title": "Encoded-looking title is still bounded",
+        }
+    ]
 
 
 def test_protected_codex_elides_structured_rg_output(tmp_path, monkeypatch):
@@ -1649,6 +2171,193 @@ def test_protected_codex_redacts_bound_web_search_replay(
     assert "Public result" in rendered
     assert unsafe_text not in rendered
     assert "/Users/private/repository/file.py" not in rendered
+
+
+def test_protected_codex_projects_git_diff_name_only_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_git_diff_name_only"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": call_id,
+                    "arguments": json.dumps({"command": "git diff --name-only"}),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps(
+                        {
+                            "exit_code": 0,
+                            "output": "agent/llm_egress_runtime.py\n../secret.txt\n",
+                        }
+                    ),
+                },
+            ],
+        },
+    )
+
+    rendered = json.loads(authorized["input"][1]["output"])
+    projection = json.loads(rendered["output"])
+    assert receipt.allowed
+    assert projection["files"] == ["agent/llm_egress_runtime.py"]
+    assert projection["omitted_files"] == 1
+
+
+def test_protected_codex_projects_bound_file_mutation_outcome(tmp_path, monkeypatch):
+    """A patch receipt keeps outcome facts while dropping its unified diff."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_patch_outcome"
+    patch_result = json.dumps(
+        {
+            "success": True,
+            "diff": "@@ -1 +1 @@\n-secret\n+changed\n",
+            "files_modified": ["/Users/private/worktree/hermes_state.py"],
+        }
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "patch",
+                    "call_id": call_id,
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": patch_result,
+                },
+            ],
+        },
+    )
+
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert receipt.allowed
+    assert rendered == {
+        "file_mutation": "completed",
+        "success": True,
+        "files_modified_count": 1,
+    }
+    assert "secret" not in receipt.payload_bytes.decode("utf-8")
+
+
+def test_protected_codex_projects_bound_file_mutation_error(tmp_path, monkeypatch):
+    """A failed patch keeps a bounded safe error for the next model turn."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_patch_error"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "patch",
+                    "call_id": call_id,
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps(
+                        {
+                            "success": False,
+                            "error": "Patch validation failed (no files were modified): missing symbol",
+                        }
+                    ),
+                },
+            ],
+        },
+    )
+
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert receipt.allowed
+    assert rendered["file_mutation"] == "completed"
+    assert rendered["success"] is False
+    assert "missing symbol" in rendered["error"]
+
+
+def test_protected_codex_projects_github_pr_feedback_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_pr_feedback"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": call_id,
+                    "arguments": json.dumps(
+                        {
+                            "command": (
+                                "env HERMES_HOME=/Users/mikedemott/.hermes "
+                                "/Users/mikedemott/.local/bin/hermes "
+                                "github-pr-feedback inspect-pr "
+                                "--repository acme/widgets --pr-number 17 --feedback-id 120"
+                            )
+                        }
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps(
+                        {
+                            "exit_code": 0,
+                            "output": json.dumps(
+                                {
+                                    "repository": "acme/widgets",
+                                    "number": 17,
+                                    "head_sha": "a" * 40,
+                                    "feedback_id": "120",
+                                    "feedback_body_excerpt": "bounded review finding",
+                                    "opaque_node_id": "c2VjcmV0LXBheWxvYWQ=",
+                                }
+                            ),
+                        }
+                    ),
+                },
+            ],
+        },
+    )
+
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert receipt.allowed
+    assert rendered["terminal_result"] == "github_pr_feedback"
+    assert rendered["json"]["feedback_body_excerpt"] == "bounded review finding"
+    assert "opaque_node_id" not in rendered["json"]
 
 
 def test_protected_codex_rejects_unbound_web_search_shaped_replay(
@@ -2218,6 +2927,82 @@ def test_protected_kanban_search_result_projects_source_content_to_locations(
         "total_count": 1,
         "matches": [{"path": "tests/fixture.py", "line": 42}],
     }
+
+
+def test_protected_kanban_tool_search_result_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_tool_search_projection",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_search",
+                            "arguments": '{"query":"github feedback"}',
+                        },
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_tool_search_projection",
+                    "content": '{"total_available":1,"results":[]}',
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][1]["content"].startswith(
+        "tool_search completed locally."
+    )
+
+
+def test_protected_kanban_tool_describe_result_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_tool_describe_projection",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_describe",
+                            "arguments": '{"names":["github_pr_feedback"]}',
+                        },
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_tool_describe_projection",
+                    "content": (
+                        '{"tools":{"github_pr_feedback":'
+                        '{"description":"post a governed review",'
+                        '"parameters":{"type":"object"}}}}'
+                    ),
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][1]["content"].startswith(
+        "tool_search completed locally."
+    )
 
 
 def test_protected_kanban_search_file_listing_projects_safe_relative_paths(
@@ -2941,6 +3726,29 @@ def test_real_read_file_wire_result_keeps_exact_source_provenance(
     assert receipt.decision.source_segment_count == 1
 
 
+def test_read_alias_can_attach_trusted_source_provenance(tmp_path, monkeypatch):
+    from agent.source_provenance_tools import (
+        attach_trusted_source_provenance_metadata,
+        source_provenance_activation,
+    )
+    from tools.file_tools import read_file_tool
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    source = tmp_path / "source.py"
+    source.write_text("first = 1\n", encoding="utf-8")
+    agent = _agent(tmp_path / "egress")
+    agent._current_api_request_id = "turn-1:api:1"
+
+    with source_provenance_activation(agent, "read"):
+        result = read_file_tool(str(source), task_id="egress-read-alias")
+    metadata = attach_trusted_source_provenance_metadata(
+        agent, "read", content=result
+    )
+
+    assert metadata is not None
+    assert metadata["source_grant_digests"]
+
+
 def test_bound_read_file_error_without_provenance_is_elided(tmp_path, monkeypatch):
     from agent.tool_dispatch_helpers import make_tool_result_message
 
@@ -3286,3 +4094,25 @@ def test_read_file_wire_result_fails_closed_without_exact_metadata(
         )
 
     assert "untrusted_provenance" in exc_info.value.decision.reason_codes
+
+
+@pytest.mark.parametrize("action,payload", [
+    ("inspect-pr", {"state": "CLOSED", "head_sha": "a" * 40}),
+    ("retire-feedback", {"status": "retired", "pr_state": "CLOSED", "task_id": "t_12345678"}),
+])
+def test_protected_feedback_replay_preserves_retirement_state(tmp_path, monkeypatch, action, payload):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    kwargs = {"model": agent.model, "input": [
+        {"type": "function_call", "name": "terminal", "call_id": "call_retire",
+         "arguments": json.dumps({"command": f"hermes github-pr-feedback {action} --repository acme/widgets --pr-number 17"})},
+        {"type": "function_call_output", "call_id": "call_retire",
+         "output": json.dumps({"exit_code": 0, "output": json.dumps(payload)})},
+    ]}
+    authorized, receipt = authorize_agent_sdk_kwargs(agent, kwargs)
+    assert receipt.allowed
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert all(rendered["json"].get(key) == value for key, value in payload.items())

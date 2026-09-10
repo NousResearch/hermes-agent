@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import cli as cli_module
+import hermes_cli.cli_conversation_worktree_mixin as worktree_module
 import hermes_state
 
 
@@ -47,7 +48,11 @@ class _SessionDB:
         self.created.append(kwargs["session_id"])
 
     def get_session(self, session_id: str) -> dict:
-        return {"id": session_id, "cwd": self.session_cwds.get(session_id, "")}
+        return {"id": session_id, "cwd": self.session_cwds.get(session_id, ""),
+                "parent_session_id": self.roots.get(session_id) if self.roots.get(session_id) != session_id else None}
+
+    def is_explicit_fork_child(self, session_id: str) -> bool:
+        return False
 
     def close(self) -> None:
         return None
@@ -116,7 +121,14 @@ def _enabled_config() -> dict:
     return config
 
 
-def _build_cli(monkeypatch, manager: _Manager, db: _SessionDB | None = None, **kwargs):
+def _build_cli(
+    monkeypatch,
+    manager: _Manager,
+    db: _SessionDB | None = None,
+    *,
+    bind_initial: bool = True,
+    **kwargs,
+):
     db = db or _SessionDB()
     monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -125,20 +137,48 @@ def _build_cli(monkeypatch, manager: _Manager, db: _SessionDB | None = None, **k
     monkeypatch.setattr(cli_module, "_run_state_db_auto_maintenance", lambda _db: None)
     monkeypatch.setattr(cli_module, "_run_checkpoint_auto_maintenance", lambda: None)
     monkeypatch.setattr(
-        cli_module,
+        worktree_module,
         "_build_cli_conversation_worktree_manager",
         lambda _config, _db: manager,
     )
-    return cli_module.HermesCLI(compact=True, **kwargs), db
+    cli = cli_module.HermesCLI(compact=True, **kwargs)
+    if bind_initial:
+        cli._ensure_conversation_worktree_binding()
+    return cli, db
 
 
-def test_enabled_conversation_policy_binds_initial_cli_root(monkeypatch, manager):
-    cli, _db = _build_cli(monkeypatch, manager)
+def test_enabled_conversation_policy_defers_initial_cli_root(monkeypatch, manager):
+    cli, _db = _build_cli(monkeypatch, manager, bind_initial=False)
+
+    assert manager.bound_roots == []
+    assert cli._conversation_worktree_binding is None
+    assert cli.agent is None
+    assert "certified Git worktree" not in cli.system_prompt
+
+
+def test_first_cli_prompt_binds_initial_cli_root(monkeypatch, manager):
+    cli, _db = _build_cli(monkeypatch, manager, bind_initial=False)
+
+    cli._ensure_conversation_worktree_binding()
 
     assert cli.working_directory == str(manager.worktree_root / cli.session_id)
     assert manager.bound_roots == [cli.session_id]
-    assert cli.agent is None
     assert "certified Git worktree" in cli.system_prompt
+
+
+def test_cli_chat_binds_before_runtime_setup(monkeypatch, manager):
+    cli, _db = _build_cli(monkeypatch, manager, bind_initial=False)
+    events: list[str] = []
+
+    def credentials_ready():
+        events.append("credentials")
+        return False
+
+    monkeypatch.setattr(cli, "_ensure_runtime_credentials", credentials_ready)
+
+    assert cli.chat("first prompt") is None
+    assert manager.bound_roots == [cli.session_id]
+    assert events == ["credentials"]
 
 
 def test_cli_resume_reuses_durable_root_binding(monkeypatch, manager):
@@ -274,7 +314,7 @@ def test_cmd_chat_resume_replaces_persisted_stable_cwd_end_to_end(
     monkeypatch.setattr(cli_module, "_run_state_db_auto_maintenance", lambda _db: None)
     monkeypatch.setattr(cli_module, "_run_checkpoint_auto_maintenance", lambda: None)
     monkeypatch.setattr(
-        cli_module,
+        worktree_module,
         "_build_cli_conversation_worktree_manager",
         lambda _config, _db: manager,
     )
@@ -367,6 +407,7 @@ def test_cli_new_allocates_another_worktree_before_agent_reset(monkeypatch, mana
     assert cli._conversation_worktree_binding.root_session_id == cli.session_id
     assert cli.system_prompt.count("certified Git worktree") == 1
     assert old_session_id not in cli.system_prompt
+    assert cli.agent.ephemeral_system_prompt == cli.system_prompt
 
 
 def test_cli_new_candidate_chdir_failure_preserves_complete_old_boundary(
@@ -446,7 +487,7 @@ def test_legacy_worktree_is_mutually_exclusive_only_for_interactive_roots(
     else:
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
-    assert cli_module._should_use_legacy_worktree(
+    assert worktree_module._should_use_legacy_worktree(
         worktree=True,
         shorthand=False,
         config=_enabled_config(),
@@ -458,8 +499,129 @@ def test_disabled_policy_preserves_legacy_worktree_flag(monkeypatch):
     config["conversation_worktree"]["enabled"] = False
     monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
 
-    assert cli_module._should_use_legacy_worktree(
+    assert worktree_module._should_use_legacy_worktree(
         worktree=True,
         shorthand=False,
         config=config,
     ) is True
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_cli_argument_builder_passes_explicit_conversation_ownership(monkeypatch, managed):
+    captured = {}
+    def construct(**kwargs):
+        captured.update(kwargs)
+        return object()
+    monkeypatch.setattr(cli_module, "HermesCLI", construct)
+    cli_module._build_cli_from_args(
+        None, "terminal", None, None, None, None, None, None,
+        False, True, None, None, False, False, None,
+        manage_conversation_worktree=managed,
+    )
+    assert captured["manage_conversation_worktree"] is managed
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_branch_resume_uses_its_own_durable_root(monkeypatch, manager, tmp_path, compressed):
+    db = hermes_state.SessionDB(tmp_path / "lineage.db")
+    try:
+        app, _ = _build_cli(monkeypatch, manager, db)
+        parent_id = app.session_id
+        db.create_session(session_id=parent_id, source="cli")
+        app.conversation_history = [{"role": "user", "content": "branch this work"}]
+        app.agent = MagicMock()
+        app.agent.ephemeral_system_prompt = app.system_prompt
+        app._handle_branch_command("/branch separate workspace")
+        branch_id = app.session_id
+        branch_path = app.working_directory
+        assert branch_id != parent_id
+        assert db.get_session(branch_id)["cwd"] == branch_path
+        assert app.agent.ephemeral_system_prompt == app.system_prompt
+        assert parent_id not in app.agent.ephemeral_system_prompt
+        target_id = branch_id
+        if compressed:
+            target_id = "compressed-branch-tip"
+            db.create_session(session_id=target_id, source="cli", parent_session_id=branch_id,
+                              model_config={"_branched_from": parent_id})
+        # General usage lineage deliberately includes parents; workspace ownership must not.
+        assert db.get_conversation_root(target_id) == parent_id
+        restored, _ = _build_cli(monkeypatch, manager, db, resume=target_id)
+        assert restored.working_directory == branch_path
+        assert restored._conversation_worktree_binding.root_session_id == branch_id
+        app.session_id = target_id
+        app._restore_session_cwd({"cwd": str(manager.worktree_root / parent_id)})
+        assert app.working_directory == branch_path
+        assert app.agent.ephemeral_system_prompt == app.system_prompt
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("command", ["branch", "new"])
+def test_persistence_failure_preserves_old_workspace_and_lease(monkeypatch, manager, tmp_path, command):
+    db = hermes_state.SessionDB(tmp_path / "failure.db")
+    try:
+        app, _ = _build_cli(monkeypatch, manager, db)
+        old_id = app.session_id
+        db.create_session(session_id=old_id, source="cli")
+        app.conversation_history = [{"role": "user", "content": "keep this conversation"}]
+        app.agent = MagicMock()
+        app.agent.ephemeral_system_prompt = app.system_prompt
+        old_binding, old_prompt = app._conversation_worktree_binding, app.system_prompt
+        app._conversation_root_lease.release()
+        old_lease = app._conversation_root_lease = MagicMock()
+        candidate_lease = MagicMock()
+        monkeypatch.setattr(app, "_acquire_conversation_root_lease", lambda *a, **kw: candidate_lease)
+
+        def fail_create(**kwargs):
+            assert cli_module.os.getcwd() != str(old_binding.path)
+            raise RuntimeError("database write failed")
+
+        monkeypatch.setattr(db, "create_session", fail_create)
+        if command == "branch":
+            app._handle_branch_command("/branch failing persistence")
+        else:
+            assert app.new_session(silent=True) is False
+        assert app.session_id == old_id
+        assert app._conversation_worktree_binding is old_binding
+        assert app.working_directory == cli_module.os.getcwd() == str(old_binding.path)
+        assert cli_module.os.environ["TERMINAL_CWD"] == str(old_binding.path)
+        assert app.system_prompt == app.agent.ephemeral_system_prompt == old_prompt
+        assert app._conversation_root_lease is old_lease
+        old_lease.release.assert_not_called()
+        candidate_lease.release.assert_called_once_with()
+        assert db.get_session(old_id)["ended_at"] is None
+        assert app.conversation_history == [{"role": "user", "content": "keep this conversation"}]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("phase", ["resolve", "lease"])
+def test_resume_setup_failure_preserves_active_conversation(monkeypatch, manager, tmp_path, phase):
+    db = hermes_state.SessionDB(tmp_path / "resume-failure.db")
+    try:
+        app, _ = _build_cli(monkeypatch, manager, db)
+        old_id = app.session_id
+        db.create_session(session_id=old_id, source="cli")
+        db.create_session(session_id="target", source="cli")
+        app.conversation_history = [{"role": "user", "content": "keep active work"}]
+        app.agent = MagicMock()
+        app.agent.ephemeral_system_prompt = app.system_prompt
+        old_binding, old_prompt = app._conversation_worktree_binding, app.system_prompt
+        old_lease = app._conversation_root_lease
+        monkeypatch.setattr(app, "_resolve_resume_target", lambda target: (target, db.get_session(target)))
+        failure = MagicMock(side_effect=RuntimeError("resume setup unavailable"))
+        if phase == "resolve":
+            monkeypatch.setattr(manager, "resolve_existing_session", failure)
+        else:
+            monkeypatch.setattr(app, "_acquire_conversation_root_lease", failure)
+        app._handle_resume_command("/resume target")
+        assert app.session_id == old_id
+        assert app._conversation_worktree_binding is old_binding
+        assert app._conversation_root_lease is old_lease
+        assert cli_module.os.getcwd() == app.working_directory == str(old_binding.path)
+        assert app.system_prompt == app.agent.ephemeral_system_prompt == old_prompt
+        assert db.get_session(old_id)["ended_at"] is None
+        assert app.conversation_history == [{"role": "user", "content": "keep active work"}]
+        app.agent.reset_session_state.assert_not_called()
+    finally:
+        db.close()

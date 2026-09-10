@@ -232,7 +232,7 @@ async def test_stream_events_without_since_baselines_at_current_max(monkeypatch)
     mod = _load_plugin_module()
     monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
     conn = _CursorBaselineConnection()
-    monkeypatch.setattr(mod.kanban_db, "connect", lambda *, board=None: conn)
+    monkeypatch.setattr(mod.kbc, "connect", lambda *, board=None: conn)
 
     wait_calls = 0
 

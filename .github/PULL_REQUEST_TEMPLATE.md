@@ -73,3 +73,10 @@ Fixes #
 
 <!-- If applicable, add screenshots or log output showing the fix/feature in action. -->
 
+## Contributor Info
+
+<!-- Optional: your Discord username in the Nous Research server so we can credit you. -->
+<!-- First-time contributor? Please also add yourself to CONTRIBUTORS.yml (see CONTRIBUTING.md). -->
+
+- **Discord Username** (optional):
+

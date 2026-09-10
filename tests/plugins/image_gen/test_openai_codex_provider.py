@@ -59,9 +59,18 @@ class TestMetadata:
     def test_default_model(self, provider):
         assert provider.default_model() == "gpt-image-2-medium"
 
-    def test_list_models_three_tiers(self, provider):
+    def test_picker_matches_resolvable_catalog(self, provider):
         ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
+        assert set(ids) == set(provider.models)
+        assert provider.default_model() in ids
+        assert "gpt-image-2.5-flare" in ids
+        assert "gpt-image-2.5-sunburst" in ids
+
+    def test_catalog_entries_have_display_speed_strengths(self, provider):
+        for entry in provider.list_models():
+            assert entry["display"].startswith("GPT Image 2")
+            assert entry["speed"]
+            assert entry["strengths"]
 
     def test_setup_schema_has_no_required_env_vars(self, provider):
         schema = provider.get_setup_schema()
@@ -127,7 +136,7 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality, input_images=None):
+        def _collect(token, *, prompt, size, quality, input_images=None, **kwargs):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
@@ -141,7 +150,7 @@ class TestGenerate:
         result = provider.generate("a cat", aspect_ratio="portrait")
         assert result["success"] is True
 
-        assert captured["model"] == "gpt-5.5"
+        assert captured["model"] == "gpt-5.6-luna"
         assert captured["store"] is False
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
@@ -161,6 +170,30 @@ class TestGenerate:
         # Progressive previews disabled: partial frames were being saved as
         # finals and presented as smeared/unfinished images.
         assert tool["partial_images"] == 0
+
+    def test_codex_stream_request_shape_gpt_image_2_5(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2.5-flare")
+
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None, api_model="gpt-image-2"):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                input_images=input_images,
+                api_model=api_model,
+            ))
+            return {"b64": _b64_png(), "source": "final"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("a cat", aspect_ratio="landscape")
+        assert result["success"] is True
+        assert result["api_model"] == "gpt-image-2.5-flare"
+        assert captured["tools"][0]["model"] == "gpt-image-2.5-flare"
+
 
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()

@@ -14,7 +14,7 @@ from typing import Any
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session_transcript import TranscriptReadError
 
 # Log-record parity with gateway/run.py and the origin module.

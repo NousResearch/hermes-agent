@@ -1030,6 +1030,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     delivery_metadata TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
+    last_ping_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
@@ -1220,7 +1221,7 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
-    workspace_kind: str = "scratch", workspace_path: Optional[str] = None,
+    workspace_kind: Optional[str] = None, workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
     parents: Iterable[str] = (), triage: bool = False, idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
@@ -1229,6 +1230,7 @@ def create_task(
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
@@ -1239,10 +1241,14 @@ def create_task(
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
     worker model (provider requires model); ``reasoning_effort`` is independent.
+    ``creator_task_id``: inherit durable session/subscriptions independently of
+    dependency edges; an explicit ``session_id`` still wins.
     ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
     in the active profile's projects.db — see ``_resolve_project_link``.
+    ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
+    an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
-    from hermes_cli.kanban_db_graph import initial_task_state
+    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
@@ -1253,6 +1259,17 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+    # A project-scoped board anchors every new task to its project's repo
+    # (deterministic worktree + branch) without each surface repeating it.
+    # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
+    # it must not be upgraded to a worktree in the board's repo (#106342).
+    if project_id is None and workspace_kind != "scratch":
+        try:
+            project_id = (_board_meta_for(board).get("project_id") or "").strip() or None
+        except Exception:
+            pass
+    if workspace_kind is None:
+        workspace_kind = "scratch"
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -1262,14 +1279,6 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
-
-    # A project-scoped board anchors every new task to its project's repo
-    # (deterministic worktree + branch) without each surface repeating it.
-    if project_id is None:
-        try:
-            project_id = (_board_meta_for(board).get("project_id") or "").strip() or None
-        except Exception:
-            pass
 
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
@@ -1345,6 +1354,7 @@ def create_task(
                         "assignee": assignee,
                         "status": task_status,
                         "parents": list(parents),
+                        "creator_task_id": creator_task_id,
                         "tenant": tenant,
                         "workspace_kind": workspace_kind,
                         "workspace_path": workspace_path,
@@ -1357,6 +1367,7 @@ def create_task(
                     },
                 )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
+                inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:
@@ -3167,11 +3178,11 @@ def request_changes(
 
 def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
-    force: bool = False, dry_run: bool = False,
+    dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
-    Refused while a parent is unfinished unless ``force``; ``dry_run`` only
-    validates. Returns ``(ok, reason)``."""
+    Refused while a parent is unfinished; ``dry_run`` only validates.
+    Returns ``(ok, reason)``."""
     cur_status = _task_status(conn, task_id)
     if cur_status is None:
         return False, f"task {task_id} not found"
@@ -3182,18 +3193,22 @@ def promote_task(
             f"'todo' or 'blocked'"
         )
 
-    if not force:
-        parents = conn.execute(
-            "SELECT t.id, t.status FROM tasks t "
-            "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?", (task_id,),
-        ).fetchall()
-        unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
-        if unsatisfied:
-            return False, (
-                f"unsatisfied parent dependencies: "
-                f"{', '.join(unsatisfied)} (use --force to override)"
-            )
+    # No override: claim_task demotes ready -> todo on an undone parent whichever
+    # writer set 'ready', so a forced promotion would only report a success the
+    # first claim silently reverts (#106195). The dependency itself is the knob.
+    parents = conn.execute(
+        "SELECT t.id, t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ?", (task_id,),
+    ).fetchall()
+    unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
+    if unsatisfied:
+        return False, (
+            f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
+            f"(the ready -> running claim re-checks parents, so promotion cannot "
+            f"bypass them; complete the parents or drop the link with "
+            f"`hermes kanban unlink <parent_id> {task_id}`)"
+        )
 
     if dry_run:
         return True, None
@@ -3205,9 +3220,7 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
-        _append_event(
-            conn, task_id, "promoted_manual", {"actor": actor, "reason": reason, "forced": force},
-        )
+        _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
 
     return True, None
 

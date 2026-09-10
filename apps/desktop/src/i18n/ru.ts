@@ -439,23 +439,9 @@ export const ru = defineLocale({
       kinds: { bundled: 'встроенный', disk: 'на диске', runtime: 'runtime' },
       agent: {
         title: 'Плагины агента',
-        blurb:
-          'Плагины, установленные в бэкенд Hermes — инструменты, навыки, MCP-серверы, хуки и slash-команды. Переносимые — пакеты Agent Plugins (навыки + MCP-бандлы, работающие и в других агентах). Переключатели действуют для новых сеансов.',
-        appliesTo: 'Применяется к:',
-        empty: 'Плагины агента пока не установлены.',
-        loadFailed: 'Не удалось загрузить плагины агента',
-        portable: 'переносимый',
-        search: 'Поиск плагинов…',
-        noMatches: 'Плагины, подходящие под поиск, не найдены.',
-        toggleFailed: name => `Не удалось переключить ${name}`,
-        updateBackendToManage: 'Обновите бэкенд Hermes, чтобы управлять этим плагином из приложения.',
-        sources: {
-          bundled: 'встроенный',
-          user: 'пользовательский',
-          git: 'git',
-          project: 'проектный',
-          entrypoint: 'pip'
-        }
+        movedToCapabilities:
+          'Плагины агента управляются для каждого профиля в разделе «Возможности» — список установленных, переключатели и каталог плагинов находятся там.',
+        openCapabilities: 'Открыть Возможности → Плагины'
       },
       installModal: {
         title: 'Установка плагина',
@@ -1135,6 +1121,11 @@ export const ru = defineLocale({
       },
       cloudRefresh: 'Обновить',
       cloudConnect: 'Подключиться',
+      cloudSavedTitle: 'Сохранённые облачные шлюзы',
+      cloudSavedDesc:
+        'Используйте сохранённый шлюз без изменения шлюза по умолчанию. Войдите ниже, чтобы добавить экземпляры. Имена и вход — в списке сохранённых подключений.',
+      cloudUseSaved: 'Использовать шлюз',
+      cloudActive: 'Активен в этом окне',
       cloudConnecting: 'Подключение…',
       cloudDiscoverFailed: 'Не удалось загрузить агентов Hermes Cloud',
       cloudConnectFailed: 'Не удалось подключиться к этому агенту',
@@ -1660,6 +1651,10 @@ export const ru = defineLocale({
     resetToMine: 'Вернуться к моей карте'
   },
   agents: {
+    extendedTranscript: 'Подробный журнал',
+    transcriptTruncated: 'Последние 16 КиБ',
+    transcriptUnavailable: 'Текущий журнал недоступен',
+
     close: 'Закрыть агентов',
     title: 'Дерево запусков',
     subtitle: 'Активные субагенты текущего хода в реальном времени.',
@@ -1671,6 +1666,14 @@ export const ru = defineLocale({
     streaming: 'Стримится',
     files: 'Файлы',
     moreFiles: count => `+ещё ${count} ${RU_NOUN(count, 'файл', 'файла', 'файлов')}`,
+    moreAgents: count => `Ещё ${count} агентов`,
+    queued: 'В очереди',
+    waitingActivity: 'Ожидание активности',
+    steer: 'Направить',
+    steerPlaceholder: 'Инструкции этому субагенту',
+    steerQueued: 'В очереди до следующей контрольной точки',
+    stopRequested: 'Запрошена остановка',
+    requestRejected: 'Субагент не принял запрос',
     delegation: index => `Делегирование ${index}`,
     workers: count => `${count} ${RU_NOUN(count, 'воркер', 'воркера', 'воркеров')}`,
     workersActive: count => `${count} ${RU_NOUN(count, 'активен', 'активно', 'активных')}`,
@@ -2195,9 +2198,9 @@ export const ru = defineLocale({
     title: 'Запланированные задачи',
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
     modelImpact: {
-      title: 'Запланированные задачи требуют проверки',
+      title: 'Запланированные задачи остаются на исходной модели',
       message: count =>
-        `Будет пропущено ${count} ${RU_NOUN(count, 'задача', 'задачи', 'задач')} до тех пор, пока вы не проверите их настройки модели.`,
+        `${count} незакреплённых запланированных задач продолжат работать на модели, с которой были созданы. Закрепите их или задайте cron.model, чтобы перевести.`,
       detailMore: (names, remaining) => `${names} и ещё ${remaining}`,
       review: 'Проверить запланированные задачи',
       saveFailed: 'Hermes не сохранил это изменение модели.'
@@ -2388,13 +2391,23 @@ export const ru = defineLocale({
     missingBody: 'Этот артефакт больше нет в локальном реестре.'
   },
   sidebar: {
+    gatewayGroups: {
+      grouping: 'Шлюз и профиль',
+      rename: 'Переименовать группу',
+      aliasLabel: 'Отображаемое имя',
+      aliasHint: 'Меняется только отображаемое имя; имена шлюза и профиля остаются прежними.',
+      resetName: 'Сбросить имя',
+      moveUp: 'Переместить вверх',
+      moveDown: 'Переместить вниз',
+      reorder: 'Изменить порядок групп',
+      actions: 'Действия с группой'
+    },
     nav: {
       'new-session': 'Новый сеанс',
       skills: 'Возможности',
       messaging: 'Сообщения',
       artifacts: 'Артефакты',
-      cron: 'Запланированные задачи',
-      'session-import': 'Импортировать сессию'
+      cron: 'Запланированные задачи'
     },
     searchAria: 'Поиск сеансов',
     searchPlaceholder: 'Поиск сеансов…',
@@ -2418,6 +2431,7 @@ export const ru = defineLocale({
     noSessions: 'Сеансов пока нет',
     noFilterMatches: 'Нет сеансов по этим фильтрам',
     projects: {
+      showAllSessions: 'Показать все сессии',
       sectionLabel: 'Проекты',
       home: 'Главная',
       newButton: 'Новый проект',

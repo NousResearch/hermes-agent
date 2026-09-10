@@ -18,7 +18,8 @@ import re
 import time
 from contextlib import suppress
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import EphemeralReply
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
 from gateway.session import (
     SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
@@ -1183,6 +1184,14 @@ class GatewayInboundMixin:
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
+        # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
+        # not on the adapter's raw inbound: profile routing, the ignored-channel
+        # guard, plugin hooks and user authorization all reject events above,
+        # and a rejected event must not be able to clear a refusal belonging to
+        # an active turn. This is also the single entry point every lane shares
+        # — Discord interaction passthrough builds its own MessageEvent and
+        # calls handle_message directly, so a teardown on the relay's inbound
+        # handler left those turns muted.
 
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:

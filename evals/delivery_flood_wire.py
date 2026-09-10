@@ -95,7 +95,7 @@ async def setup(url):
 
 async def produce(runner, adapter, chat):
     from gateway.config import Platform
-    from gateway.platforms.base import MessageEvent
+    from gateway.platforms.event import MessageEvent
     from gateway.session import SessionSource
     source = SessionSource(platform=Platform.TELEGRAM, chat_id=chat, thread_id='77')
     entry = await runner.async_session_store.get_or_create_session(source)

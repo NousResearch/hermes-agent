@@ -731,7 +731,8 @@ export function StatusRule({
         {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
+            <Text color={barColor}>[{bar}]</Text>{' '}
+            <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
           </Text>
         ) : null}
         {showDuration ? (

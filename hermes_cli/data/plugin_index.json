@@ -72,7 +72,7 @@
       "repo": "raktim-mondol/hermes-plugin-researchcraft",
       "ref": "4bc855e8489cd8abecd8e455470fc3d1ad139f09",
       "homepage": "https://github.com/raktim-mondol/hermes-plugin-researchcraft",
-      "capabilities": ["tools", "skills", "notebook", "image-gen", "compute"],
+      "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-09-06"
     }

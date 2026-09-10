@@ -613,16 +613,28 @@ def _neutralize_kanban_assignee_phantom_guard(request, monkeypatch):
     opt out with ``@pytest.mark.real_assignees`` (mirroring the way
     ``real_memory_guard`` opts out of its neutralizer).
     """
-    nodeid = getattr(request.node, "nodeid", "") or ""
-    if "kanban" not in nodeid:
-        return
     if request.node.get_closest_marker("real_assignees"):
         return
+    nodeid = getattr(request.node, "nodeid", "") or ""
+    if "kanban" in nodeid:
+        try:
+            from hermes_cli import profiles as _pf
+        except Exception:
+            return
+        monkeypatch.setattr(_pf, "profile_exists", lambda *a, **k: True)
+        return
+    # 2026-09-10 (catch-up merge): upstream tests that drive a card WITHOUT
+    # "kanban" in their path were being parked too — `test_busy_wake_admission`
+    # creates `assignee="worker"` and then asserts the card reaches ``done``.
+    # Outside kanban nodeids the narrower patch is the right one: neutralise
+    # ONLY the create-time parking guard, and leave ``profile_exists`` itself
+    # alone, so tests that assert profile existence semantics are unaffected.
     try:
-        from hermes_cli import profiles as _pf
+        from hermes_cli import kanban_db as _kbd
     except Exception:
         return
-    monkeypatch.setattr(_pf, "profile_exists", lambda *a, **k: True)
+    monkeypatch.setattr(_kbd, "_assignee_is_known", lambda *a, **k: True,
+                        raising=False)
 
 
 @pytest.fixture(autouse=True)

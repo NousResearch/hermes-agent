@@ -9,6 +9,8 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
 import { hasBlockingPromptRequest } from '@/store/prompts'
+import { $sessions, runtimeBelongsToComposerScope } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -206,7 +208,26 @@ export function useComposerSubmit({
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if
         // the turn already ended, steerDraft re-queues so nothing is lost.
-        steerDraft()
+        //
+        // Do NOT steer a leftover busy runtime after the composer/route has
+        // already moved to another chat — that injects B's text into A's
+        // in-flight turn (observed 2026-08-31: Qwen prompt answered in the
+        // still-running grok session). Start a real turn on this composer.
+        //
+        // Read the two stores imperatively here (not via useStore) — this is
+        // a one-shot decision on the submit boundary and must not subscribe
+        // the hook to $sessions / $sessionStates. Re-rendering the composer
+        // on every session-list refetch would burn cache and trigger the
+        // very race this guard exists to avoid.
+        const runtimeStoredId = sessionId ? $sessionStates.get()[sessionId]?.storedSessionId : null
+
+        if (runtimeBelongsToComposerScope(runtimeStoredId, activeQueueSessionKey, $sessions.get())) {
+          steerDraft()
+        } else {
+          triggerHaptic('submit')
+          clearDraft()
+          dispatchSubmit(text)
+        }
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —
         // queue the whole payload for the next turn. Same for a turn parked on

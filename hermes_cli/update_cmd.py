@@ -104,11 +104,12 @@ from hermes_cli.update_cmd_maint import (  # noqa: F401
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
     _print_fts_optimize_available_notice, _print_update_completion, _print_update_summary,
     _print_verified_update_completion, _purge_stale_hermes_modules, _read_project_version,
+    _normalize_pre_update_backup_keep, _normalize_pre_update_backup_mode,
     _reload_process_scan_modules, _reload_updated_runtime_modules,
     _resolve_pre_update_backup_mode, _restore_state_db_from_snapshot,
     _run_post_update_maintenance, _run_pre_update_backup, _sweep_bytecode_after_update,
     _update_complete_message, _verify_and_restore_one_state_db,
-    _verify_and_restore_state_dbs_post_update)
+    _verify_and_restore_state_dbs_post_update, resolve_pre_update_backup_policy_strict)
 logger = logging.getLogger(__name__)
 
 

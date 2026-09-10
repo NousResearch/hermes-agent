@@ -10,7 +10,7 @@
  *
  *  - the on-disk marker (`HERMES_HOME/.hermes-update-in-progress`), written
  *    by the updater — and by the desktop itself just before hand-off — and
- *  - the in-process `updateInFlight` flag, true for the whole
+ *  - the in-process `ExclusiveUpdateFlight` lease, active for the whole
  *    `applyUpdates()` critical section.
  *
  * The marker alone is NOT enough (#73822): `applyUpdates` kills its own
@@ -19,9 +19,9 @@
  * WebSocket, the renderer reconnects within ~1s, and a marker-only gate
  * happily spawns a fresh backend inside the update's own critical section —
  * which `scanVenvBlockers` then reports as a blocker, aborting every update
- * attempt forever. Consulting the flag closes that window. On the success
- * path the marker is written BEFORE the flag clears in `applyUpdates`'
- * `finally`, so there is no instant where both signals are false and a
+ * attempt forever. Consulting the lease closes that window. On the success
+ * path the marker is written BEFORE the lease releases, so there is no instant
+ * where both signals are false and a
  * waiter could slip through mid-update.
  */
 
@@ -92,4 +92,44 @@ export async function waitForUpdateClearance(
   }
 
   return reason ? 'timeout' : 'finished'
+}
+
+/**
+ * Owns the in-process update lease and always releases it, including when the
+ * preflight or handoff rejects.  Keeping the lifecycle here makes the retry
+ * invariant executable instead of relying on duplicated try/finally blocks.
+ */
+export class ExclusiveUpdateFlight {
+  #active = false
+
+  get active(): boolean {
+    return this.#active
+  }
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.#active) {
+      throw new Error('An update is already in progress.')
+    }
+
+    this.#active = true
+
+    try {
+      return await operation()
+    } finally {
+      this.#active = false
+    }
+  }
+}
+
+/**
+ * Await the database preflight to settlement before any destructive handoff
+ * work is allowed to start. Both Windows and POSIX update paths use this seam.
+ */
+export async function runPreflightThenHandoff<T>(
+  preflight: () => Promise<void>,
+  handoff: () => Promise<T>
+): Promise<T> {
+  await preflight()
+
+  return await handoff()
 }

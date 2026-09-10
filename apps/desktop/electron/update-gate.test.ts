@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { updateGateReason, waitForUpdateClearance } from './update-gate'
+import { ExclusiveUpdateFlight, runPreflightThenHandoff, updateGateReason, waitForUpdateClearance } from './update-gate'
 
 function deps(marker: boolean, inFlight: boolean) {
   return {
@@ -111,7 +111,7 @@ test('parks across the flag→marker handoff without a gap', async () => {
         }
 
         if (ticks === 3) {
-          inFlight = false // …then the flag clears; marker still holds the gate
+          inFlight = false // …then the lease releases; marker still holds the gate
         }
 
         if (ticks === 5) {
@@ -141,4 +141,75 @@ test('returns timeout when the gate never opens', async () => {
   })
 
   assert.equal(outcome, 'timeout')
+})
+
+// ---------------------------------------------------------------------------
+// Update transaction ordering / release
+// ---------------------------------------------------------------------------
+
+test('exclusive update flight clears after a preflight rejection and permits retry', async () => {
+  const flight = new ExclusiveUpdateFlight()
+  let downstreamCalls = 0
+
+  await assert.rejects(
+    flight.run(() =>
+      runPreflightThenHandoff(
+        async () => {
+          throw new Error('policy resolution failed')
+        },
+        async () => {
+          downstreamCalls += 1
+
+          return 'unreachable'
+        }
+      )
+    ),
+    /policy resolution failed/
+  )
+
+  assert.equal(downstreamCalls, 0)
+  assert.equal(flight.active, false)
+  assert.equal(await flight.run(async () => 'retry-ok'), 'retry-ok')
+  assert.equal(flight.active, false)
+})
+
+test.each(['windows', 'posix'])('%s handoff settles preflight before any downstream action', async platform => {
+  const events: string[] = []
+
+  const result = await runPreflightThenHandoff(
+    async () => {
+      events.push(`${platform}:preflight:start`)
+      await Promise.resolve()
+      events.push(`${platform}:preflight:end`)
+    },
+    async () => {
+      events.push(`${platform}:handoff`)
+
+      return platform
+    }
+  )
+
+  assert.equal(result, platform)
+  assert.deepEqual(events, [`${platform}:preflight:start`, `${platform}:preflight:end`, `${platform}:handoff`])
+})
+
+test('exclusive update flight rejects overlap without running a second operation', async () => {
+  const flight = new ExclusiveUpdateFlight()
+  let releaseFirst: (() => void) | undefined
+
+  const first = flight.run(
+    () =>
+      new Promise<void>(resolve => {
+        releaseFirst = resolve
+      })
+  )
+
+  assert.equal(flight.active, true)
+  await assert.rejects(
+    flight.run(async () => {}),
+    /already in progress/
+  )
+  releaseFirst?.()
+  await first
+  assert.equal(flight.active, false)
 })

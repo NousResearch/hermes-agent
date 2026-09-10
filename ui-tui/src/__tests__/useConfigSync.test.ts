@@ -119,6 +119,19 @@ describe('applyDisplay', () => {
     expect(s.sections).toEqual({})
   })
 
+  it('keeps terminal titles disabled until configuration is known (#102608)', () => {
+    expect($uiState.get().terminalTitle).toBe(false)
+  })
+
+  it.each([false, true])('preserves terminal_title=%s across a failed config refresh (#102608)', terminalTitle => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { terminal_title: terminalTitle } } }, setBell)
+    applyDisplay(null, setBell)
+
+    expect($uiState.get().terminalTitle).toBe(terminalTitle)
+  })
+
   it('defaults display.terminal_title on and honors an explicit false (#102608)', () => {
     const setBell = vi.fn()
 

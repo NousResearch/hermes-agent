@@ -309,7 +309,10 @@ export const applyDisplay = (
     statusBar: normalizeStatusBar(d.tui_statusbar),
     statusBarFields: normalizeStatusBarFields(d.status_bar?.fields),
     streaming: d.streaming !== false,
-    terminalTitle: d.terminal_title !== false,
+    // Unknown config (cfg=null, a failed poll) must neither enable title
+    // writes nor discard a known opt-out — only a real config payload moves
+    // this out of the disabled-by-default state set in uiStore.ts (#102608).
+    ...(cfg ? { terminalTitle: d.terminal_title !== false } : {}),
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.
     timestamps: d.timestamps === true

@@ -35,7 +35,10 @@ const buildUiState = (): UiState => ({
   statusBar: 'top',
   statusBarFields: null,
   streaming: true,
-  terminalTitle: true,
+  // Stay off until config hydrates — the title hook writes as soon as it
+  // mounts, before the first config RPC resolves, so a `true` default here
+  // would flip the terminal/pane title even when the user opted out (#102608).
+  terminalTitle: false,
   timestamps: false,
   // Last session's resolved theme paints frame one (flash-free boot, like
   // the desktop's hermes-boot-* keys); DEFAULT_THEME only on first launch.

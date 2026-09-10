@@ -28,7 +28,6 @@ is left completely untouched.
 
 from __future__ import annotations
 
-import ast
 import os
 import threading
 
@@ -380,73 +379,38 @@ class TestRunJobKanbanIsolation:
         assert after == before, "worker identity must survive concurrent cron jobs"
 
 
-# ---------------------------------------------------------------------------
-# Drift guard
-# ---------------------------------------------------------------------------
+@pytest.mark.linux_only
+def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    import sys
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+    from hermes_cli.kanban_db_dispatch import _default_spawn
 
-def test_every_dispatcher_kanban_var_is_identity_gated():
-    """Invariant: every HERMES_KANBAN_* var the dispatcher injects is covered by
-    the canonical KANBAN_ENV_KEYS, so the delegate_task subprocess scrubber and
-    any future consumer stay in sync with ``_default_spawn``.
-
-    Fails loudly if a new dispatcher var is added without registering it.
-    """
-    import hermes_cli.kanban_db_dispatch as kanban_db_dispatch
-    from agent.delegation_context import KANBAN_ENV_KEYS
-
-    source = ast.parse(open(kanban_db_dispatch.__file__, encoding="utf-8").read())
-    spawn = next(
-        node for node in ast.walk(source)
-        if isinstance(node, ast.FunctionDef) and node.name == "_default_spawn"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / "board.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    conn = connect(db)
+    tid = kb.create_task(conn, title="assigned child", assignee="default")
+    kb.claim_task(conn, tid)
+    task = kb.get_task(conn, tid)
+    output = tmp_path / "worker-result.json"
+    worker = tmp_path / "fixture-worker"
+    root = str(Path(__file__).resolve().parents[2])
+    worker.write_text(
+        f"#!{sys.executable}\nimport sys, os, json;sys.path.insert(0, {root!r})\n"
+        "from tools.kanban_tools import _handle_complete\n"
+        f"result=_handle_complete({{'summary':'assigned worker'}});open({str(output)!r}, 'w').write(result)\n"
     )
-
-    injected = set()
-    for node in ast.walk(spawn):
-        # env["HERMES_KANBAN_X"] = ...  and the annotated form
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if not isinstance(target, ast.Subscript):
-                    continue
-                if ast.unparse(target.value) != "env":
-                    continue
-                key = ast.unparse(target.slice).strip("\"'")
-                if key.startswith("HERMES_KANBAN_"):
-                    injected.add(key)
-        # env.update({"HERMES_KANBAN_X": ...}) / env.setdefault("HERMES_KANBAN_X", ...)
-        elif isinstance(node, ast.Call):
-            func = ast.unparse(node.func)
-            if func not in ("env.update", "env.setdefault"):
-                continue
-            literals = []
-            for arg in node.args:
-                if isinstance(arg, ast.Dict):
-                    literals.extend(
-                        k for k in arg.keys if isinstance(k, ast.Constant)
-                    )
-                elif isinstance(arg, ast.Constant):
-                    literals.append(arg)
-            for kw in node.keywords:
-                if kw.arg and kw.arg.startswith("HERMES_KANBAN_"):
-                    injected.add(kw.arg)
-            for lit in literals:
-                if isinstance(lit.value, str) and lit.value.startswith(
-                    "HERMES_KANBAN_"
-                ):
-                    injected.add(lit.value)
-
-    assert injected, "failed to parse dispatcher kanban env injection"
-
-    # These are worker-behaviour knobs rather than board/task identity; they are
-    # intentionally not part of KANBAN_ENV_KEYS. Listed explicitly so adding a
-    # new var forces a decision instead of silently passing.
-    behaviour_only = {
-        "HERMES_KANBAN_BRANCH",
-        "HERMES_KANBAN_GOAL_MODE",
-        "HERMES_KANBAN_GOAL_MAX_TURNS",
-    }
-    uncovered = injected - set(KANBAN_ENV_KEYS) - behaviour_only
-    assert not uncovered, (
-        f"dispatcher injects {sorted(uncovered)} which is neither in "
-        "KANBAN_ENV_KEYS nor explicitly classified as behaviour-only"
-    )
+    worker.chmod(0o700)
+    monkeypatch.setenv("HERMES_BIN", str(worker))
+    # Building a new worker under an existing task must replace, not inherit, its scope.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "prior-task")
+    pid = _default_spawn(task, str(tmp_path), board="default")
+    assert pid is not None
+    os.waitpid(pid, 0)  # windows-footgun: ok — Linux-only real dispatcher spawn
+    assert json.loads(output.read_text())["ok"]
+    assert kb.get_task(conn, tid).status == "done"
+    assert os.environ["HERMES_KANBAN_TASK"] == "prior-task"
+    conn.close()

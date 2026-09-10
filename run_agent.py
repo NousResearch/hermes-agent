@@ -41,12 +41,13 @@ from hermes_constants import get_hermes_home
 
 
 def _launch_cwd_for_session(source: str) -> Optional[str]:
-    """cwd to stamp on a new session row (``hermes -c`` / ``--resume``), or None.
+    """cwd to stamp on a new session row, or None.
 
-    Only local CLI sessions record one: gateway/cron/remote backends (non-"local" ``TERMINAL_ENV``) have no
-    stable host cwd for the agent's tools.
+    Only sources with a stable host cwd record one: ``cli`` (the user's shell) and ``kanban`` (the card
+    workspace the dispatcher launched the worker in). Gateway/cron/remote backends (non-"local"
+    ``TERMINAL_ENV``) have no stable host cwd for the agent's tools.
     """
-    if source not in CLI_FAMILY_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
+    if source not in _CWD_RECORDING_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
         return None
     try:
         return os.getcwd()
@@ -54,6 +55,11 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
+# Sources whose process cwd IS the session's real host working directory: the CLI family above,
+# plus ``kanban`` — the dispatcher spawns workers with ``cwd=<card workspace>``
+# (``hermes_cli/kanban_db_dispatch.py``), so ``os.getcwd()`` is the workspace the card's work
+# happens in, the value cwd-based attribution (e.g. session→project grouping) needs.
+_CWD_RECORDING_SOURCES = CLI_FAMILY_SOURCES | {"kanban"}
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     """Gateway routing ``origin_json`` for a session row; None when the agent carries no gateway identity.
 

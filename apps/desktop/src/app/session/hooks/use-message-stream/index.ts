@@ -722,6 +722,24 @@ export function useMessageStream({
         // tool-call parts that never saw their completion event.
         nextMessages = sealOpenToolParts(nextMessages)
 
+        // Retire this turn's optimistic user prompt(s), but ONLY those above
+        // the settled assistant row. A later queued turn (fromQueue drain or
+        // stale-busyRef edge) can seed its own optimistic user row below the
+        // streaming assistant bubble while turn A is still settling; its
+        // `pending` flag must survive A's settle until B persists/reconciles.
+        // The boundary is computed against `prev` (pre-settle geometry): when
+        // the completion path APPENDS the settled assistant row (no tracked
+        // stream row existed), the settle marks no pre-existing turn, so clear
+        // nothing here — deferred retirement keeps every pending row protected
+        // instead of gambling a queued turn's flag on a guess;
+        // finalizeInterruptedMessages retires them on the next submit/interrupt.
+        const boundaryIndex =
+          state.streamId !== null ? prev.findIndex(m => m.id === state.streamId) : -1
+        const cutoff = boundaryIndex >= 0 ? boundaryIndex : 0
+        nextMessages = nextMessages.map((m, i) =>
+          i < cutoff && m.role === 'user' && m.pending ? { ...m, pending: false } : m
+        )
+
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
@@ -840,9 +858,22 @@ export function useMessageStream({
               }
             ]
 
+        // Retire pending user prompts ABOVE the settled assistant row only —
+        // same scoped rationale as completeAssistantMessage. The boundary is
+        // computed against `prev` (pre-settle geometry): the fabricated
+        // `assistant-error-*` id never matches a row in `prev`, so the untracked
+        // failure path clears nothing here — this turn's optimistic rows stay
+        // protected until finalizeInterruptedMessages retires them on the next
+        // submit/interrupt.
+        const boundaryIndex = prev.findIndex(m => m.id === streamId)
+        const cutoff = boundaryIndex >= 0 ? boundaryIndex : 0
+        const settledMessages = nextMessages.map((m, i) =>
+          i < cutoff && m.role === 'user' && m.pending ? { ...m, pending: false } : m
+        )
+
         return {
           ...state,
-          messages: nextMessages,
+          messages: settledMessages,
           streamId: null,
           pendingBranchGroup: null,
           sawAssistantPayload: true,

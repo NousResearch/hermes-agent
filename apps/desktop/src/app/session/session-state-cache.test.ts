@@ -141,6 +141,38 @@ describe('SessionStateCache', () => {
     expect(cache.has('pending')).toBe(true)
   })
 
+  it('evicts a session after pending flag is cleared from user messages at turn settle', () => {
+    // Seed a state with an optimistic pending user message — simulates the
+    // state right after submit.ts sets pending: true on the user row.
+    const withPendingUser = settled('pending-user')
+    withPendingUser.messages = [
+      { id: 'user-123', role: 'user', parts: [{ type: 'text', text: 'hello' }], pending: true },
+      { id: 'assistant-1', role: 'assistant', parts: [{ type: 'text', text: 'reply' }] }
+    ]
+
+    const cache = new SessionStateCache(
+      { isReferenced: () => false, onEvict: () => undefined },
+      { maxBytes: 0, maxCount: 0 }
+    )
+
+    cache.set('pending-user', withPendingUser)
+    cache.prune()
+    // Session is protected while pending: true is on the user row.
+    expect(cache.has('pending-user')).toBe(true)
+
+    // Simulate completeAssistantMessage clearing pending from user rows.
+    const settledState = {
+      ...withPendingUser,
+      messages: withPendingUser.messages.map(m =>
+        m.role === 'user' && m.pending ? { ...m, pending: false } : m
+      )
+    }
+    cache.set('pending-user', settledState)
+    cache.prune()
+    // Session is now evictable.
+    expect(cache.has('pending-user')).toBe(false)
+  })
+
   it('retains lightweight status while releasing an evicted transcript', () => {
     const state = { ...settled('stored'), needsInput: false }
     $sessionStates.set({ runtime: state })

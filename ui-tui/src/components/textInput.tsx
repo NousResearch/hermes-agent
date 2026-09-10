@@ -11,6 +11,7 @@ import {
   isActionMod,
   isMac,
   isMacActionFallback,
+  isSpeakAloudKey,
   isVoiceToggleKey,
   type ParsedVoiceRecordKey
 } from '../lib/platform.js'
@@ -1834,6 +1835,9 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
+  // Read-aloud owns Ctrl+S globally (same predicate the global handler uses,
+  // so the two can never disagree and leak a typed "s" into the composer).
+  isSpeakAloudKey(key, input) ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

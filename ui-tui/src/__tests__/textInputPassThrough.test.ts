@@ -50,4 +50,15 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageDown: true }))).toBe(true)
   })
+
+  it('passes Ctrl+S through so the global handler speaks instead of typing', () => {
+    expect(shouldPassThroughToGlobalHandler('s', key({ ctrl: true }))).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('S', key({ ctrl: true, shift: true }))).toBe(true)
+  })
+
+  it('still types plain s and leaves Meta/Super-modified s alone', () => {
+    expect(shouldPassThroughToGlobalHandler('s', key())).toBe(false)
+    expect(shouldPassThroughToGlobalHandler('s', key({ ctrl: true, meta: true }))).toBe(false)
+    expect(shouldPassThroughToGlobalHandler('s', key({ ctrl: true, super: true }))).toBe(false)
+  })
 })

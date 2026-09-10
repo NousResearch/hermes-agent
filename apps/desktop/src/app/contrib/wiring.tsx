@@ -1148,7 +1148,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const titlebarToolsWidth = titlebarToolsWidthCss(2)
 
   const leftToolsWidth = titlebarToolsWidthCss(
-    4 + [...leftTitlebarTools, ...rightTitlebarTools].filter(tool => !tool.hidden).length
+    5 + [...leftTitlebarTools, ...rightTitlebarTools].filter(tool => !tool.hidden).length
   )
 
   return (

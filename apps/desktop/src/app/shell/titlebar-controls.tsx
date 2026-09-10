@@ -14,6 +14,7 @@ import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { toggleHud } from '@/store/hud'
 import {
   $fileBrowserOpen,
@@ -134,12 +135,25 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const navigate = useNavigate()
   const location = useLocation()
   const modHeld = useModifierHeld()
+  const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
+
+  const toggleHaptics = () => {
+    if (!hapticsMuted) {
+      triggerHaptic('tap')
+    }
+
+    toggleHapticsMuted()
+
+    if (hapticsMuted) {
+      window.requestAnimationFrame(() => triggerHaptic('success'))
+    }
+  }
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they
@@ -232,6 +246,13 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         triggerHaptic('open')
         toggleHud(hudTargetSessionId())
       }
+    },
+    {
+      active: hapticsMuted,
+      icon: <TitlebarIcon name={hapticsMuted ? 'mute' : 'unmute'} />,
+      id: 'haptics',
+      label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
+      onSelect: toggleHaptics
     }
   ]
 

@@ -8,7 +8,8 @@
     "ui-tui",
     "ui-tui/packages/*",
     "web",
-    "tests-js"
+    "tests-js",
+    "tools/oxlint"
   ],
   "scripts": {
     "postinstall": "echo '\u2705 Node dependencies installed. Run: python run_agent.py --help'",
@@ -23,7 +24,10 @@
     "audit:fix:web": "npm audit fix --workspace web",
     "audit:fix:tui": "npm audit fix --workspace ui-tui",
     "check": "npm run --ws check",
-    "fix": "npm run --ws fix"
+    "fix": "npm run --ws fix",
+    "lint:slop": "npm run --workspace tools/oxlint slop",
+    "lint:slop:baseline": "npm run --workspace tools/oxlint slop:baseline",
+    "lint:slop:diff": "npm run --workspace tools/oxlint slop:diff"
   },
   "repository": {
     "type": "git",

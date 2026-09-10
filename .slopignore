@@ -1,0 +1,14 @@
+# Paths the anti-slop lane (tools/oxlint) never lints. gitignore syntax.
+# The oxlint config lives in tools/oxlint/, and its own ignorePatterns are
+# rooted there, so repo-wide ignores have to come from this root file via
+# --ignore-path. Vendored, generated and third-party JS is not ours to shape.
+skills/
+optional-skills/
+**/dist/
+**/build/
+**/coverage/
+**/.docusaurus/
+**/.vite/
+*.d.ts
+# The rules and the ratchet judge the tree; they are not part of it.
+tools/oxlint/

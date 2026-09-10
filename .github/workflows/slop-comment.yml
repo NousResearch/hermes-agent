@@ -1,0 +1,76 @@
+# Advisory anti-slop lane, part 2 of 2: post the report. workflow_run always
+# executes the DEFAULT branch's copy of this file, so the write token here
+# never coexists with pull-request-controlled code. Everything taken from
+# the lint run is treated as data: the report is fenced text, and the PR
+# number comes from the trusted event payload / commit lookup, never from
+# the artifact. Ported from NousResearch/hermes-portal.
+name: Slop Comment
+
+on:
+  workflow_run:
+    workflows: ["Slop Lint"]
+    types: [completed]
+
+# One commenter at a time per source branch: two overlapping runs would both
+# read "no existing comment" and each create one. Never cancel-in-progress —
+# a cancelled commenter leaves the sticky comment stale.
+concurrency:
+  group: slop-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+jobs:
+  comment:
+    if: ${{ github.event.workflow_run.event == 'pull_request' && contains(fromJSON('["success","failure"]'), github.event.workflow_run.conclusion) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # continue-on-error: if Slop Lint died before uploading (setup failure),
+      # there is no artifact — the upsert script then posts its own
+      # "no output, see the job log" body instead of leaving the sticky
+      # comment absent or stale.
+      - name: Download the lint report
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: slop-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Resolve the PR from the head commit
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" \
+            --jq '[.[] | select(.state == "open")][0].number // empty')
+          if [ -z "$pr" ]; then
+            echo "No open PR for ${HEAD_SHA}; nothing to comment on."
+          fi
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+
+      # The lint job always concludes success (advisory lane), so the lint
+      # outcome arrives in the artifact. slop-exit.txt is PR-controlled data:
+      # anything but a literal "0" is treated as "found issues", and the
+      # value itself is never executed or interpolated beyond that compare.
+      - name: Read the lint outcome from the artifact
+        id: outcome
+        run: |
+          exit_code=$(tr -cd '0-9' < slop-exit.txt 2>/dev/null | head -c 3)
+          [ "$exit_code" = "0" ] || exit_code=1
+          echo "exit=$exit_code" >> "$GITHUB_OUTPUT"
+
+      - name: Post sticky PR comment
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          LINT_EXIT: ${{ steps.outcome.outputs.exit }}
+        run: bash .github/scripts/upsert-slop-comment.sh

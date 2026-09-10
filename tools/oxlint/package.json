@@ -1,0 +1,18 @@
+{
+  "name": "oxlint-anti-slop",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Vendored anti-slop oxlint rules and the diff ratchet; owns the oxlint dependency so bumps do not churn the root package",
+  "type": "module",
+  "devDependencies": {
+    "@oxlint/plugins": "1.79.0",
+    "oxlint": "1.79.0"
+  },
+  "scripts": {
+    "slop": "cd ../.. && oxlint -c tools/oxlint/oxlint.config.ts --ignore-path .slopignore",
+    "slop:baseline": "cd ../.. && node tools/oxlint/slop-ratchet.mjs baseline",
+    "slop:diff": "cd ../.. && bash tools/oxlint/slop-diff.sh",
+    "check": "true",
+    "fix": "true"
+  }
+}

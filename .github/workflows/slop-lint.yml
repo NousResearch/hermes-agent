@@ -1,0 +1,76 @@
+# Advisory anti-slop lane, part 1 of 2: lint the PR's diff with ZERO write
+# permissions — this job runs pull-request-controlled code (the vendored
+# rules execute inside oxlint), so it must hold nothing worth stealing.
+# A committed per-file, per-rule baseline (tools/oxlint/slop-baseline.json)
+# makes this a ratchet: only net-new findings in touched files are reported,
+# while existing counts may go down. The report uploads as an artifact;
+# slop-comment.yml (running trusted default-branch code via workflow_run)
+# posts it to the PR.
+#
+# This lane is NOT part of "All required checks pass" and never fails: it is
+# informational. Ported from NousResearch/hermes-portal.
+name: Slop Lint
+
+on:
+  pull_request:
+    paths:
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "**/*.js"
+      - "**/*.jsx"
+      - "**/*.mjs"
+      - "**/*.cjs"
+      - "tools/oxlint/**"
+      - ".github/workflows/slop-lint.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slop-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  slop-diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # Only the oxlint workspace: the rules are plain TS run by oxlint's own
+      # loader, so nothing else in the monorepo needs installing. --ignore-scripts
+      # keeps PR-controlled postinstalls out of a job that lints PR code.
+      - name: Install the oxlint workspace
+        run: npm ci --workspace tools/oxlint --no-fund --no-audit --ignore-scripts
+
+      # The check itself never fails: findings are advisory and surface
+      # through the sticky PR comment only. The lint exit code rides the
+      # artifact (slop-exit.txt), because a green workflow conclusion can no
+      # longer carry it to slop-comment.yml.
+      - name: Run anti-slop rules on the PR diff
+        env:
+          SLOP_BASE: origin/${{ github.base_ref }}
+        run: |
+          set +e
+          npm run --silent lint:slop:diff > slop-report.txt 2>&1
+          echo "$?" > slop-exit.txt
+          set -e
+          tail -c 12000 slop-report.txt > slop-report.trimmed.txt
+          cat slop-report.trimmed.txt
+
+      - name: Upload report for the comment workflow
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: slop-report
+          path: |
+            slop-report.trimmed.txt
+            slop-exit.txt
+          retention-days: 3

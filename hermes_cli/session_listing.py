@@ -8,6 +8,16 @@ from typing import Any
 _LIST_WORDS = {"list", "ls", "browse"}
 _SEARCH_WORDS = {"search", "find"}
 
+# Adaptive widening for query_session_listing(): the SQL fetch starts at 4×limit
+# and grows (never OFFSET pagination — each step re-fetches from row 0 so a live
+# insert can't skip or double a row) until enough *displayable* rows survive the
+# Python-side visibility filter or the DB returns fewer rows than asked (nothing
+# more to find). 16× is the ceiling. There is no session-count safety limit
+# anywhere in the repo to cap this against, and none is needed: interactive
+# callers pass limit 10–50, so the widest fetch is a few hundred rows from one
+# indexed query.
+_WIDEN_FACTORS = (4, 8, 16)
+
 
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:
     """Parse `/sessions`-style args into ``(include_all_sources, include_unnamed, target, search_query)``.
@@ -51,28 +61,46 @@ def query_session_listing(
 
     Source-scoped unless global is requested; unnamed hidden unless a full listing is asked for;
     current session hidden unless requested (then marked ``is_current_session``); ``session_key``
-    restricts gateway callers to one lane before the DB limit applies. With ``search_query`` rows
-    are filtered by title/id in SQL, ordered by recent activity, and unnamed sessions stay visible
-    since an id match may be the only handle.
+    restricts gateway callers to one lane, in SQL. With ``search_query`` rows are filtered by
+    title/id in SQL, ordered by recent activity, and unnamed sessions stay visible since an id
+    match may be the only handle.
+
+    The Python-side visibility filter (unnamed / current session) runs *after* the DB fetch, so a
+    single fixed window could hide an older eligible session behind newer hidden ones. The fetch
+    therefore widens adaptively (``_WIDEN_FACTORS``, always from row 0) until ``limit`` displayable
+    rows survive the filter or the DB is exhausted. ``limit <= 0`` returns ``[]`` without querying.
+    The returned list never exceeds ``limit``.
     """
+    if limit <= 0:
+        return []
     search = (search_query or "").strip()
-    rows = session_db.list_sessions_rich(
-        source=None if include_all_sources else source,
-        session_key=session_key,
-        exclude_sources=exclude_sources,
-        limit=max(limit * 4, limit),
-        search_query=search or None,
-        order_by_last_active=bool(search),
-    )
+
+    def _displayable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            is_current = bool(current_session_id and row.get("id") == current_session_id)
+            if (is_current and not include_current_session) or (
+                not include_unnamed and not row.get("title") and not search and not is_current
+            ):
+                continue
+            out.append({**row, "is_current_session": True} if is_current else row)
+            if len(out) >= limit:
+                break
+        return out
+
     result: list[dict[str, Any]] = []
-    for row in rows:
-        is_current = bool(current_session_id and row.get("id") == current_session_id)
-        if (is_current and not include_current_session) or (
-            not include_unnamed and not row.get("title") and not search and not is_current
-        ):
-            continue
-        result.append({**row, "is_current_session": True} if is_current else row)
-        if len(result) >= limit:
+    for factor in _WIDEN_FACTORS:
+        fetch = limit * factor
+        rows = session_db.list_sessions_rich(
+            source=None if include_all_sources else source,
+            session_key=session_key,
+            exclude_sources=exclude_sources,
+            limit=fetch,
+            search_query=search or None,
+            order_by_last_active=bool(search),
+        )
+        result = _displayable(rows)
+        if len(result) >= limit or len(rows) < fetch:
             break
     return result
 

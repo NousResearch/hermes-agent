@@ -188,3 +188,102 @@ class TestQuerySessionListingLaneScope:
         )
 
         assert [row["id"] for row in rows] == ["foreign_59"]
+
+
+class TestQuerySessionListingAdaptiveWidening:
+    """The Python-side visibility filter runs after the DB fetch, so a single
+    fixed window can hide an older eligible session behind newer hidden rows.
+    The fetch widens (4× → 8× → 16×, always from row 0) until enough displayable
+    rows survive or the DB is exhausted."""
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        yield db
+        db.close()
+
+    def _make(self, db, n_unnamed):
+        """One NAMED cli session (oldest) followed by *n_unnamed* unnamed cli
+        sessions (newer), with strictly increasing ``started_at`` so the
+        newest-first ordering is deterministic."""
+        db.create_session("named_old", "cli", user_id="u", chat_id="c")
+        db.set_session_title("named_old", "Keep Me")
+        db._write_sql(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            ("2026-01-01 00:00:00", "named_old"),
+        )
+        for i in range(n_unnamed):
+            sid = f"unnamed_{i:03d}"
+            db.create_session(sid, "cli", user_id="u", chat_id="c")
+            db._write_sql(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (f"2026-01-01 01:{(i + 1) // 60:02d}:{(i + 1) % 60:02d}", sid),
+            )
+
+    def test_limit_zero_or_negative_returns_empty_without_querying(self):
+        class _ExplodingDB:
+            def list_sessions_rich(self, *args, **kwargs):
+                raise AssertionError(
+                    "list_sessions_rich must not be called when limit <= 0"
+                )
+
+        assert query_session_listing(_ExplodingDB(), source="cli", limit=0) == []
+        assert query_session_listing(_ExplodingDB(), source="cli", limit=-3) == []
+
+    def test_older_named_session_survives_many_newer_unnamed(self, db):
+        # 10 unnamed rows sit above the named one — well past the first 4×limit window.
+        self._make(db, n_unnamed=10)
+        rows = query_session_listing(db, source="cli", limit=1)
+        assert [row["id"] for row in rows] == ["named_old"]
+
+    def test_widens_more_than_once(self, db, monkeypatch):
+        # 12 unnamed rows: the 4× window (4) and the 8× window (8) are both all
+        # unnamed; only the 16× window reaches the named row.
+        self._make(db, n_unnamed=12)
+        real = db.list_sessions_rich
+        fetched: list[int] = []
+
+        def spy(*args, **kwargs):
+            fetched.append(kwargs["limit"])
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(db, "list_sessions_rich", spy)
+        rows = query_session_listing(db, source="cli", limit=1)
+
+        assert len(fetched) >= 2, "should widen past the first 4x window"
+        assert fetched == [4, 8, 16][: len(fetched)]
+        assert [row["id"] for row in rows] == ["named_old"]
+
+    def test_current_session_filter_cannot_starve_the_result(self, db):
+        # Newest row is the current session (hidden by default); an older named
+        # session must still surface rather than the list coming back empty.
+        self._make(db, n_unnamed=6)
+        db.create_session("cur", "cli", user_id="u", chat_id="c")
+        db.set_session_title("cur", "Current")
+        db._write_sql(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            ("2026-01-01 09:00:00", "cur"),
+        )
+        rows = query_session_listing(
+            db, source="cli", current_session_id="cur", limit=1
+        )
+        assert [row["id"] for row in rows] == ["named_old"]
+
+    def test_stops_early_when_first_window_is_enough(self, db, monkeypatch):
+        # 2 unnamed only: the 4× window already yields the one displayable row,
+        # so exactly one fetch happens (no needless widening).
+        self._make(db, n_unnamed=2)
+        real = db.list_sessions_rich
+        fetched: list[int] = []
+
+        def spy(*args, **kwargs):
+            fetched.append(kwargs["limit"])
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(db, "list_sessions_rich", spy)
+        rows = query_session_listing(db, source="cli", limit=1)
+
+        assert fetched == [4]
+        assert [row["id"] for row in rows] == ["named_old"]

@@ -36,6 +36,7 @@ import {
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
+import { $updateEverything, startActiveUpdate } from '@/store/updates'
 
 import { EmptyState, ListRow, Pill, SectionHeading, ToggleRow } from './primitives'
 
@@ -247,7 +248,7 @@ export function ConnectionsRegistrySection() {
   const [removeTarget, setRemoveTarget] = useState<DesktopRegistryConnection | null>(null)
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
   const [launchModeBusy, setLaunchModeBusy] = useState(false)
-  const [updatingAll, setUpdatingAll] = useState(false)
+  const { running: updatingAll } = useStore($updateEverything)
   const [searchQuery, setSearchQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const pendingSearchTopRef = useRef<null | number>(null)
@@ -563,34 +564,6 @@ export function ConnectionsRegistrySection() {
     },
     [bridge, s.testFailed, s.testOk]
   )
-
-  // Fan out `hermes update` to every eligible source; per-connection results
-  // land as individual toasts so one dead box doesn't hide the others.
-  const updateAll = useCallback(async () => {
-    if (!bridge?.updateAll) {
-      return
-    }
-
-    setUpdatingAll(true)
-
-    try {
-      const { results } = await bridge.updateAll()
-
-      for (const row of results) {
-        if (row.ok) {
-          notify({ title: row.label, message: row.detail || s.updateAllDone })
-        } else if (row.skipped && row.reason === 'cloud-managed') {
-          notify({ title: row.label, message: s.updateSkippedCloud })
-        } else {
-          notifyError(new Error(row.error || row.detail || row.reason || row.label), s.updateAllFailed)
-        }
-      }
-    } catch (err) {
-      notifyError(err, s.updateAllFailed)
-    } finally {
-      setUpdatingAll(false)
-    }
-  }, [bridge, s.updateAllDone, s.updateAllFailed, s.updateSkippedCloud])
 
   const kindMeta: Record<DesktopConnectionKind, { label: string; desc: string }> = {
     cloud: { desc: s.kindCloudDesc, label: s.kindCloud },
@@ -970,7 +943,7 @@ export function ConnectionsRegistrySection() {
               disabled={updatingAll}
               onClick={() => {
                 triggerHaptic('selection')
-                void updateAll()
+                startActiveUpdate()
               }}
               size="sm"
               variant="outline"

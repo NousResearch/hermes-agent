@@ -111,6 +111,12 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"project": register_folder(pdb, conn, str(params.get("path") or "")).to_dict()})
 
 
+@_projects_method("projects.workspace.initialize")
+def _(rid, params, pdb, conn) -> dict:
+    from tui_gateway.coding_workspaces import initialize_workspace
+    return _ok(rid, initialize_workspace(str(params.get("path") or "")))
+
+
 @_projects_method("projects.workspace.prepare")
 def _(rid, params, pdb, conn) -> dict:
     from tui_gateway.coding_workspaces import prepare_workspace

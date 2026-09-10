@@ -5,6 +5,7 @@ import { requestGatewayForAgent } from '@/store/gateway'
 import {
   $codingWorkspaceDrafts,
   codingWorkspaceKey,
+  initializeCodingWorkspace,
   inspectCodingWorkspace,
   prepareCodingWorkspace,
   resetCodingWorkspaceDraft,
@@ -106,4 +107,37 @@ it('read-only non-Git inspection selects folder mode without initializing Git', 
   await inspectCodingWorkspace(owner)
   expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].intent?.mode).toBe('folder')
   expect(requestGatewayForAgent).toHaveBeenCalledTimes(1)
+})
+
+it('Initialize is an explicit write that continues the same draft on the current checkout', async () => {
+  setCodingWorkspaceIntent(owner, { path: '/folder', mode: 'worktree' })
+  vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({ path: '/folder', repoRoot: null, branch: null, dirty: false, worktrees: [] })
+  await inspectCodingWorkspace(owner)
+  const before = $codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]
+  expect(before.intent?.mode).toBe('folder')
+  vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({
+    path: '/folder', repoRoot: '/folder', branch: 'main', dirty: true, branches: ['main'],
+    worktrees: [{ path: '/folder', branch: 'main', isMain: true, dirty: true }]
+  })
+  await initializeCodingWorkspace(owner)
+  expect(vi.mocked(requestGatewayForAgent).mock.calls[1].slice(0, 4)).toEqual([
+    'local', 'coder', 'projects.workspace.initialize', { path: '/folder', profile: 'coder' }
+  ])
+  const after = $codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]
+  // Same draft (same request identity), now a Git project on the checkout that holds the files.
+  expect(after.requestId).toBe(before.requestId)
+  expect(after.status).toBe('ready')
+  expect(after.intent).toEqual({ path: '/folder', mode: 'current', existingPath: undefined })
+  expect(after.inspection?.repoRoot).toBe('/folder')
+  expect(after.prepared).toBeUndefined()
+})
+
+it('a failed Initialize keeps the folder draft and paints the error', async () => {
+  setCodingWorkspaceIntent(owner, { path: '/folder', mode: 'folder' })
+  vi.mocked(requestGatewayForAgent).mockRejectedValueOnce(new Error('Folder is already inside a Git repository'))
+  await expect(initializeCodingWorkspace(owner)).rejects.toThrow('already inside')
+  const draft = $codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]
+  expect(draft.status).toBe('error')
+  expect(draft.error).toContain('already inside')
+  expect(draft.intent?.mode).toBe('folder')
 })

@@ -125,6 +125,56 @@ def test_register_subdirectory_and_linked_checkout_share_canonical_project(tmp_p
         assert call("projects.list") == before
 
 
+def test_initialize_turns_a_plain_folder_into_a_repo_without_staging_files(tmp_path):
+    folder = tmp_path / "scaffold"
+    folder.mkdir()
+    (folder / "notes.md").write_text("draft")
+    assert call("projects.workspace.inspect", path=str(folder))["repoRoot"] is None
+    before = call("projects.list")
+    initialized = call("projects.workspace.initialize", path=str(folder))
+    # The folder is now a real checkout with a branch to base worktrees on ...
+    assert initialized["repoRoot"] == str(folder) and initialized["branch"]
+    assert git(folder, "rev-parse", "--is-inside-work-tree") == "true"
+    assert git(folder, "rev-list", "--count", "HEAD") == "1"
+    # ... but the user's files are still theirs to stage; nothing was committed for them.
+    assert git(folder, "ls-files") == ""
+    assert git(folder, "status", "--porcelain") == "?? notes.md"
+    # Read path: inspect now reports the same repo, so the regular checkout menu applies.
+    inspected = call("projects.workspace.inspect", path=str(folder))
+    assert inspected["repoRoot"] == str(folder) and inspected["dirty"]
+    assert inspected["worktrees"][0]["isMain"]
+    # Registering nothing: initialize is a Git write, not a Projects write.
+    assert call("projects.list") == before
+    # A second call is a no-op on a repo that already has commits.
+    assert call("projects.workspace.initialize", path=str(folder))["repoRoot"] == str(folder)
+    assert git(folder, "rev-list", "--count", "HEAD") == "1"
+    # And a worktree can now be prepared from it, which the pre-init folder refused.
+    prepared = call("projects.workspace.prepare", path=str(folder), mode="worktree", requestId="after-init")
+    assert Path(prepared["cwd"]).parent == folder / ".worktrees"
+
+
+def test_initialize_refuses_nested_and_broken_repositories(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-b", "main")
+    git(repo, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "--allow-empty", "-m", "base")
+    nested = repo / "nested"
+    nested.mkdir()
+    # A subdirectory of an existing checkout must not become a second repository.
+    refused = server._methods["projects.workspace.initialize"](1, {"path": str(nested)})
+    assert "error" in refused, refused
+    assert not (nested / ".git").exists()
+    assert git(repo, "rev-parse", "--show-toplevel") == str(repo)
+    # Corrupt metadata is an error, never silently re-initialized over.
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    git(broken, "init", "-b", "main")
+    (broken / ".git" / "config").write_text("[broken\n")
+    refused = server._methods["projects.workspace.initialize"](1, {"path": str(broken)})
+    assert "error" in refused, refused
+    assert (broken / ".git" / "config").read_text() == "[broken\n"
+
+
 def test_git_probe_errors_never_become_non_git(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

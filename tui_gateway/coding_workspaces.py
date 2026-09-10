@@ -257,6 +257,37 @@ def persist_session_workspace(session: dict) -> None:
         pdb.set_workspace_claim_state(conn, session["coding_workspace"]["requestId"], "bound")
 
 
+def initialize_workspace(path: str) -> dict:
+    """Turn a plain folder into a repository the checkout menu can work with.
+
+    The only writes are ``git init`` and an empty root commit: the user's files stay
+    untracked so nothing is committed on their behalf. A folder that already sits
+    inside a repository is refused rather than nested, and a broken repository is an
+    error rather than something to re-initialize over.
+    """
+    with _prepare_lock:
+        info = inspect_workspace(path)
+        if info["repoRoot"] and _directory(info["repoRoot"]) != info["path"]:
+            raise ValueError("Folder is already inside a Git repository")
+        if info["repoRoot"]:
+            # Retry receipt: the folder is this repository. Only a missing root commit is left to do.
+            if not git._git_line(info["path"], ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]):
+                _root_commit(info["path"])
+            return inspect_workspace(info["path"])
+        code, _out, err = git._git(info["path"], ["init"])
+        if code:
+            raise ValueError(err.strip() or "git init failed")
+        _root_commit(info["path"])
+        return inspect_workspace(info["path"])
+
+
+def _root_commit(root: str) -> None:
+    code, _out, err = git._git(root, ["-c", "user.email=hermes@localhost", "-c", "user.name=Hermes",
+                                      "commit", "--allow-empty", "-m", "Initial commit"])
+    if code:
+        raise ValueError(err.strip() or "Could not create the first commit")
+
+
 def register_folder(pdb, conn, path: str):
     info = inspect_workspace(path)
     path = info["repoRoot"] or info["path"]

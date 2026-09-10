@@ -98,6 +98,9 @@ export interface Translations {
     agentWorktreeNote: string
     newChatHere: string
     projectFolder: string
+    initializeGit: string
+    initializeGitDescription: string
+    initializeGitFailed: string
     searchProjects: string
     noProjects: string
     projectsFailed: string

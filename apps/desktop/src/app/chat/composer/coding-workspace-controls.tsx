@@ -3,12 +3,12 @@ import { getNested } from '@/app/settings/helpers'
 import { StatusRow } from '@/components/chat/status-row'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { pathLeaf } from '@/lib/display-path'
-import { type CodingWorkspaceDraft, type CodingWorkspaceIntent, type CodingWorkspaceOwner } from '@/store/coding-workspaces'
+import { type CodingWorkspaceDraft, type CodingWorkspaceIntent, type CodingWorkspaceOwner, initializeCodingWorkspace } from '@/store/coding-workspaces'
 import type { ProjectInfo } from '@/types/hermes'
 
 import { CodingProjectPicker } from './coding-project-picker'
@@ -50,6 +50,10 @@ export function CodingWorkspaceControls({ owner, draft, onSelectFolder }: Coding
 
   const update = async (next: CodingWorkspaceIntent | null) => {
     try { await selectCodingWorkspaceIntent(owner, next) } catch { /* The owner-bound draft paints the error. */ }
+  }
+
+  const initialize = async () => {
+    try { await initializeCodingWorkspace(owner) } catch { /* The owner-bound draft paints the error. */ }
   }
 
   const selectProject = (project: ProjectInfo | null) => void update(project?.primary_path
@@ -103,6 +107,13 @@ export function CodingWorkspaceControls({ owner, draft, onSelectFolder }: Coding
               <DropdownMenuLabel className="whitespace-normal font-normal">{c.shared}</DropdownMenuLabel>
             </>}
             {inspection.repoRoot && intent.mode === 'current' && mainCheckout && <DropdownMenuLabel className="whitespace-normal break-all font-normal">{mainCheckout.branch ?? c.detached} · {mainCheckout.path}{mainCheckout.dirty === undefined ? '' : ` · ${mainCheckout.dirty ? c.dirty : c.clean}`}</DropdownMenuLabel>}
+            {!inspection.repoRoot && <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="items-start" disabled={locked} onSelect={() => void initialize()}>
+                <Codicon className="mt-0.5 text-(--ui-text-tertiary)" name="git-branch" size="0.8rem" />
+                <span className="min-w-0"><span className="block">{c.initializeGit}</span><span className="block whitespace-normal text-(--ui-text-tertiary)">{c.initializeGitDescription}</span></span>
+              </DropdownMenuItem>
+            </>}
             {activeChats > 0 && <DropdownMenuLabel>{c.inUse} · {activeChats}</DropdownMenuLabel>}
           </DropdownMenuContent>
         </DropdownMenu>

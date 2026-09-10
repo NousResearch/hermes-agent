@@ -124,6 +124,23 @@ export async function registerCodingWorkspaceFolder(owner: CodingWorkspaceOwner,
 }
 
 export async function inspectCodingWorkspace(owner: CodingWorkspaceOwner): Promise<CodingWorkspaceInspection> {
+  return readCodingWorkspace(owner, 'projects.workspace.inspect')
+}
+
+/**
+ * Turn the selected plain folder into a repository (git init + empty root commit; the
+ * user's files stay untracked). The draft then continues as a normal Git project on
+ * `current` — the only checkout that carries those still-uncommitted files.
+ */
+export async function initializeCodingWorkspace(owner: CodingWorkspaceOwner): Promise<CodingWorkspaceInspection> {
+  return readCodingWorkspace(owner, 'projects.workspace.initialize', 'current')
+}
+
+async function readCodingWorkspace(
+  owner: CodingWorkspaceOwner,
+  method: 'projects.workspace.inspect' | 'projects.workspace.initialize',
+  modeOnRepo?: CodingWorkspaceIntent['mode']
+): Promise<CodingWorkspaceInspection> {
   const key = codingWorkspaceKey(owner)
   const draft = $codingWorkspaceDrafts.get()[key]
 
@@ -133,7 +150,7 @@ export async function inspectCodingWorkspace(owner: CodingWorkspaceOwner): Promi
   publish(key, { ...draft, status: 'inspecting', error: undefined })
 
   try {
-    const inspection = await request<CodingWorkspaceInspection>(draft.owner, 'projects.workspace.inspect', {
+    const inspection = await request<CodingWorkspaceInspection>(draft.owner, method, {
       path: draft.intent.path
     })
 
@@ -145,7 +162,9 @@ export async function inspectCodingWorkspace(owner: CodingWorkspaceOwner): Promi
         ...live,
         status: 'ready',
         inspection,
-        intent: inspection.repoRoot ? live.intent : { ...draft.intent, mode: 'folder' }
+        intent: inspection.repoRoot
+          ? modeOnRepo ? { ...live.intent!, mode: modeOnRepo, existingPath: undefined } : live.intent
+          : { ...draft.intent, mode: 'folder' }
       })
     }
 

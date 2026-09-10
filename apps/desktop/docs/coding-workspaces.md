@@ -5,7 +5,7 @@ Coding controls are optional and scoped to a profile and backend connection. Ena
 ## Workflow
 
 1. Start a new chat and choose **Project** in the quiet workspace row directly above the input border. Search by project name or path; the current project is checked. **Browse…** is below the separator, and **No project** clears only this draft's workspace choice. Reselecting the checked project leaves its checkout choice intact.
-2. Choose **New worktree**, **Existing worktree**, or **Current checkout**. A non-Git directory uses **Project folder** instead.
+2. Choose **New worktree**, **Existing worktree**, or **Current checkout**. A non-Git directory uses **Project folder** instead, and its menu offers **Initialize Git repository**: `git init` plus an empty first commit, with the folder's files left untracked. After that the same draft continues as a Git project on **Current checkout** — the only checkout that holds those still-uncommitted files — and the regular menu applies.
 3. Send the task. Selecting a project does not create a checkout, navigate into Projects, or change the sidebar's grouping, ordering, or filters.
 
 New worktrees live in the repository's managed `.worktrees` directory. A local Git exclusion keeps this directory out of source status without editing the project's `.gitignore`. The initial base branch is available under **From branch** inside the workspace picker; it is not a third control beside the input. Existing checkouts show their actual branch, path, dirty state and active-session usage. Current checkout means the main checkout, including when the chosen project path is itself a linked worktree.

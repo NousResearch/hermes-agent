@@ -9,13 +9,14 @@ import type { CodingWorkspaceDraft } from '@/store/coding-workspaces'
 import { CodingWorkspaceControls } from './coding-workspace-controls'
 import { workspaceRowClassName } from './workspace-row'
 
-const mocks = vi.hoisted(() => ({ inspect: vi.fn(), set: vi.fn(), request: vi.fn(), register: vi.fn(), config: vi.fn((..._args: unknown[]) => ({ data: {} })) }))
+const mocks = vi.hoisted(() => ({ inspect: vi.fn(), initialize: vi.fn(), set: vi.fn(), request: vi.fn(), register: vi.fn(), config: vi.fn((..._args: unknown[]) => ({ data: {} })) }))
 vi.mock('@/app/hooks/use-config-record', () => ({ useHermesConfigRecord: (...a: unknown[]) => mocks.config(...a) }))
 vi.mock('@/store/coding-workspaces', async () => {
   const { atom } = await import('nanostores')
 
   return { $codingWorkspaceDrafts: atom({}), codingWorkspaceKey: (o: unknown) => JSON.stringify(o),
     setCodingWorkspaceIntent: (...a: unknown[]) => mocks.set(...a), inspectCodingWorkspace: (...a: unknown[]) => mocks.inspect(...a),
+    initializeCodingWorkspace: (...a: unknown[]) => mocks.initialize(...a),
     registerCodingWorkspaceFolder: (...a: unknown[]) => mocks.register(...a),
     listCodingWorkspaceProjects: (owner: { connectionId: string; profile: string }) => mocks.request(owner.connectionId, owner.profile, 'projects.list', { profile: owner.profile }).then((r: { projects: unknown[] }) => r.projects) }
 })
@@ -119,6 +120,31 @@ describe('coding workspace controls', () => {
     fireEvent.keyDown(base, { key: 'ArrowRight' })
     fireEvent.click(await screen.findByRole('menuitemradio', { name: 'main' }))
     expect(mocks.set).toHaveBeenCalledWith(owner, { path: '/repo', mode: 'worktree', base: 'main' })
+  })
+
+  it('offers Initialize Git only for a plain folder and never while the draft is locked', async () => {
+    const folder = { path: '/folder', repoRoot: null, branch: null, dirty: false, worktrees: [] }
+    const view = mount({ owner, requestId: 'r', status: 'ready', intent: { path: '/folder', mode: 'folder' }, inspection: folder })
+    const workIn = screen.getByRole('button', { name: 'Work in: Project folder' })
+    fireEvent.keyDown(workIn, { key: 'Enter' })
+    expect(screen.getByRole('menuitemradio', { name: 'Project folder' }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.queryByRole('menuitemradio', { name: 'New worktree' })).toBeNull()
+    const init = screen.getByRole('menuitem', { name: /Initialize Git repository/ })
+    expect(init.textContent).toContain('Your files stay untracked')
+    fireEvent.click(init)
+    await waitFor(() => expect(mocks.initialize).toHaveBeenCalledWith(owner))
+    expect(mocks.set).not.toHaveBeenCalled()
+    view.unmount()
+
+    mount({ owner, requestId: 'r', status: 'preparing', intent: { path: '/folder', mode: 'folder' }, inspection: folder })
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Work in: Project folder' }), { key: 'Enter' })
+    expect(screen.getByRole('menuitem', { name: /Initialize Git repository/ }).getAttribute('aria-disabled')).toBe('true')
+    cleanup()
+
+    mount({ owner, requestId: 'r', status: 'ready', intent: { path: '/repo', mode: 'current' },
+      inspection: { path: '/repo', repoRoot: '/repo', branch: 'main', dirty: false, worktrees: [{ path: '/repo', branch: 'main', isMain: true }] } })
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Work in: Current checkout' }), { key: 'Enter' })
+    expect(screen.queryByRole('menuitem', { name: /Initialize Git repository/ })).toBeNull()
   })
 
   it('offers existing checkout path, branch, dirty state and warns about sharing', async () => {

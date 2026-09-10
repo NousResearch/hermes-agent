@@ -78,9 +78,15 @@ export const ZOOM_REASSERT_SETTLE_DELAY_MS = 300
 export const ZOOM_REASSERT_MAX_SETTLE_CHECKS = 3
 
 export function zoomReassertWindowEvents(platform = process.platform) {
-  return platform === 'linux'
-    ? ['show', 'restore', 'focus', 'resize', 'move']
-    : ['show', 'restore', 'focus', 'resized', 'moved']
+  if (platform === 'linux') {
+    return ['show', 'restore', 'focus', 'resize', 'move']
+  }
+
+  if (platform === 'win32') {
+    return ['show', 'restore', 'focus', 'maximize', 'unmaximize', 'resized', 'moved']
+  }
+
+  return ['show', 'restore', 'focus', 'resized', 'moved']
 }
 
 // Linux/Wayland fires `focus` on intra-app focus shifts (sidebar clicks,

@@ -353,11 +353,15 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
                 t.join()
         self.assertEqual([r["status"] for r in results], ["success"] * 6)
         self.assertEqual(len(_KERNELS), 1)
+        # `-c` (count) is a GNU/procps-only pgrep flag: macOS's BSD pgrep has no
+        # `-c` at all (usage error on stderr, empty stdout, exit 2), so count
+        # matched PID lines ourselves instead — portable across both (#105054).
         live = subprocess.run(
-            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
+            ["pgrep", "-f", "-P", str(os.getpid()), "hermes_kernel_runner"],
             capture_output=True, text=True,
-        ).stdout.strip()
-        self.assertEqual(live, "1")
+        ).stdout
+        live_count = len([line for line in live.splitlines() if line.strip()])
+        self.assertEqual(live_count, 1)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):

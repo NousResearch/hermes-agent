@@ -221,6 +221,18 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
     import hermes_cli.session_lost_and_found as laf
 
     monkeypatch.setattr(laf, "find_sqlite3_cli", lambda: None)
+    # find_sqlite3_cli_refusal() reads a process-global set by the last REAL
+    # find_sqlite3_cli() call, which this test does not make (it's mocked
+    # above). Left unpinned, that global carries over from whatever an
+    # earlier test in this file happened to leave behind by probing the
+    # actual on-PATH sqlite3 CLI — e.g. "wal_reset_vulnerable" on a machine
+    # whose CLI predates the WAL-reset fix (macOS's bundled 3.51.0 among
+    # others), which routes recover_session_database() through a different,
+    # version-specific message that doesn't mention ".recover" at all. Pin it
+    # to "missing" so this test deterministically exercises the "no CLI on
+    # PATH at all" scenario its name and assertions describe, independent of
+    # the host's actual sqlite3 CLI or any other test's ordering (#105054).
+    monkeypatch.setattr(laf, "find_sqlite3_cli_refusal", lambda: {"reason": "missing"})
     with pytest.raises(SessionRecoverySourceError) as excinfo:
         recover_session_database(
             source,

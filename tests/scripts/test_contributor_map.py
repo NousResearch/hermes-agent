@@ -157,7 +157,12 @@ def test_add_contributor_refuses_a_case_collision(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "EMAILS_DIR", d)
 
     assert mod.add_contributor("agent@example-host.local", "otherperson") == 1
-    assert not (d / "agent@example-host.local").exists()
+    # Not `not (d / "agent@example-host.local").exists()`: on a case-insensitive
+    # filesystem (default macOS/Windows) that's trivially true regardless of
+    # what add_contributor() did — the differently-cased path already "exists"
+    # because it's the same file as the fixture. A directory listing is
+    # filesystem-agnostic and actually proves no new file was written (#105054).
+    assert sorted(p.name for p in d.iterdir()) == ["agent@Example-Host.local"]
 
 
 def test_add_contributor_refuses_case_collision_even_for_same_login(emails_dir, capsys):

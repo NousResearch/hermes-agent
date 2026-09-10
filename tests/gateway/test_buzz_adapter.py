@@ -3064,8 +3064,16 @@ class TestInboundMediaAuthorizationGate:
     async def test_live_media_redacts_long_path_before_bounding(self, tmp_path):
         parent = tmp_path
         private_parts = []
-        for index in range(6):
-            part = f"private-{index}-" + ("x" * 150)
+        # 3 segments x ~70 chars is still a long, multi-segment path (enough to
+        # exercise per-segment redaction) while staying well under macOS's
+        # ~1024-byte PATH_MAX once stacked on pytest's own tmp_path prefix — the
+        # original 6 x 150-char segments (~960 bytes on their own) could exceed
+        # it and fail .mkdir() with ENAMETOOLONG before the adapter is ever
+        # exercised (#105054). The actual >900-char message bound below comes
+        # from the padded "z" * 1_000 error text, not from the path length, so
+        # shortening the path doesn't weaken what this test verifies.
+        for index in range(3):
+            part = f"private-{index}-" + ("x" * 60)
             private_parts.append(part)
             parent = parent / part
             parent.mkdir()

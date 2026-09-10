@@ -668,6 +668,13 @@ def _kill_process_group_posix(proc) -> None:
                 proc.wait(timeout=0.2)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # A process group that already exited by the time we signalled it is not a
+        # cleanup failure. ESRCH (-> ProcessLookupError) is the expected "already
+        # gone" errno, but macOS can return EPERM instead for an already-gone group
+        # in this race, same as the killpg(pgid, 0) probe in _wait_for_group_exit
+        # already tolerates (#105054).
+        pass
     _sweep_escaped_descendants(descendants, pgid)
 
 

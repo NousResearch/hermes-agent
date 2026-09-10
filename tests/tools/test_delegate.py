@@ -413,8 +413,14 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
+                # Compare resolved paths: on macOS, /tmp and /var are symlinks to
+                # /private/tmp and /private/var, so whichever of the parent-side vs.
+                # child-side db-path derivation resolves the symlink (and whichever
+                # doesn't) can produce a string mismatch even though both point at the
+                # identical file on disk. Path.resolve() on both sides makes the
+                # assertion symlink-invariant (#105054).
                 self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
+                    str(child_db.db_path.resolve()), str(parent_db.db_path.resolve())
                 )
             finally:
                 if child_db is not None:

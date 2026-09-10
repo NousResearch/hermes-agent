@@ -146,3 +146,37 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
     # escalation path completed despite the snapshot failure.
     assert killpg_calls[0] == (67890, signal.SIGTERM)
     assert (67890, 0) in killpg_calls
+
+
+def test_kill_process_group_posix_tolerates_permission_error_on_sigterm(monkeypatch):
+    """#105054: a process group that already exited by the time we signal it
+    is not a cleanup failure. ESRCH (-> ProcessLookupError) is the expected
+    "already gone" errno and was already caught here; macOS can return EPERM
+    (-> PermissionError) instead for an already-gone group in the same race —
+    exercised directly against the module-level helper rather than through
+    LocalEnvironment._kill_process, whose own broader ``except OSError``
+    fallback would otherwise mask a regression here."""
+    from tools.environments.local import _kill_process_group_posix
+
+    proc = SimpleNamespace(
+        pid=12345,
+        _hermes_pgid=67890,
+        poll=lambda: 0,
+        wait=lambda timeout=None: 0,
+    )
+    killpg_calls = []
+
+    def fake_getpgid(_pid):
+        return 67890
+
+    def fake_killpg(pgid, sig):
+        killpg_calls.append((pgid, sig))
+        if sig == signal.SIGTERM:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+
+    _kill_process_group_posix(proc)  # must not raise
+
+    assert killpg_calls == [(67890, signal.SIGTERM)]

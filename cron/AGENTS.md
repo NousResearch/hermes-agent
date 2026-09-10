@@ -19,8 +19,10 @@ Hardening invariants — each guards a real failure; don't weaken without answer
 - Catch-up window = half the period, clamped to 120s–2h; 120s grace for missed one-shots.
 - File lock `~/.hermes/cron/.tick.lock` prevents duplicate ticks across processes.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
-- Deliveries are **not mirrored** into the target gateway session — they land in their own cron
-  session with a header/footer frame so the main conversation's role alternation stays intact.
+- Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
+  reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
+  or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
+  briefs are labelled user turns appended at a turn boundary, preserving role alternation.
 - The cron ticker runs in the desktop-spawned backend when `HERMES_DESKTOP=1` — that env var means
   "spawned by the app", not "a GUI is watching" (root: capability is a property of the session).
 - Background `delegate_task` is process-local; work that must survive restarts is a cron job or a
@@ -33,7 +35,7 @@ Durable SQLite-backed board letting multiple profiles/workers collaborate. Users
 zero outside a kanban task (footprint ladder rung 3).
 
 - **CLI:** `hermes_cli/kanban.py` facade + 14 `kanban_*.py` siblings (`boards`, `db`, `db_connect`,
-  `db_dispatch`, `db_notify`, `workspace`, ...). Verbs: `init, create, list (ls), show, assign, link,
+  `db_dispatch`, `db_notify`, `db_graph` (task initialization and decomposition), `workspace`, ...). Verbs: `init, create, list (ls), show, assign, link,
   unlink, comment, attach, attachments, attach-rm, complete, request-review, request-changes,
   reopen-review, block, unblock, archive, tail`, plus `watch, stats, runs, log, assignees, heartbeat,
   notify-*, dispatch, daemon, gc`. Argparse alias dispatch must accept both `list` and `ls` (root).

@@ -115,7 +115,7 @@ def _admit_prompt_turn(
     return images, agent
 
 
-def _record_turn_marker(session: dict, text: Any) -> str:
+def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True) -> str:
     """Write the durable crash marker; returns the session key it was written under (compression
     can rotate session_key mid-turn).  A surviving marker means the process died mid-turn.
     The key is published before the disk write so an interrupt racing startup can retire
@@ -127,7 +127,8 @@ def _record_turn_marker(session: dict, text: Any) -> str:
     if isinstance(marker_text, str) and marker_text.strip():
         with session["history_lock"]:
             session["_active_turn_marker_key"] = marker_key
-        record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
+        record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
+                          auto_continue=auto_continue)
         with session["history_lock"]:
             marker_cancelled = bool(session.get("_turn_cancel_requested"))
         if marker_cancelled:
@@ -292,13 +293,17 @@ def _goal_followup_after_turn(
         return goal_followup
     try:
         if session.get("session_key") and (goal_mgr := _active_goal_manager(session)) is not None:
+            _active_deleg = 0
             try:
-                from hermes_cli.goals import gather_background_processes as _gather_bg
-                _bg_procs = _gather_bg()
+                from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
+                # Only THIS session's processes (TUI turns register under session_key): subagents'
+                # pollers must not park the parent's goal. Same rule as the CLI and gateway loops.
+                _bg_procs = _gather_bg(owner_task_id=session.get("session_key") or None)
+                _active_deleg = count_active_delegations(getattr(session.get("agent"), "session_id", None))
             except Exception:
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(
-                raw, user_initiated=True, background_processes=_bg_procs)
+                raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (
@@ -391,22 +396,14 @@ def _run_post_turn_followups(
             session_key=session.get("session_key", ""),
             owns_event=lambda e: _session_owns_notification_event(sid, session, e),
             skip_poll_observed=False)
-        for index, (_evt, synth) in enumerate(drained):
-            with session["history_lock"]:
-                if session.get("running"):
-                    for pending_evt, _pending_synth in drained[index:]:
-                        process_registry.completion_queue.put(pending_evt)
-                    break
-                session["running"] = True
-            from tools.async_delegation import (
-                claim_event_delivery, complete_event_delivery, release_event_delivery)
-            _claim = claim_event_delivery(_evt, "tui-post-turn")
-            if _claim is None:
-                continue
-            _dispatch_followup_turn(
-                rid, sid, session, synth, "completion notification dispatch",
-                on_done=lambda: complete_event_delivery(_evt, _claim),
-                on_error=lambda: release_event_delivery(_evt, _claim))
+        from tools.process_registry_notifications import format_process_notification
+        deferred = []
+        _notif_handle_ready(
+            sid, session, [event for event, _text in drained],
+            session.setdefault("_notification_emitted", set()), process_registry,
+            format_process_notification, deferred, owned=True)
+        for event in deferred:
+            process_registry.completion_queue.put(event)
     except Exception as _drain_exc:
         _hook_failure("completion queue drain", _drain_exc)
 
@@ -750,6 +747,37 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     _clear_session_context(scopes.session_tokens)
 
 
+# Bounded so a contended state.db cannot hold ``_sessions_lock``; a skipped heal is retried on the next prompt.
+_ROUTING_REOPEN_PATIENCE_S = 0.5
+
+
+def _routing_provenance_db(session: dict):
+    """The session's own SessionDB for :func:`_reopen_routed_session_row`, or a ``None`` context."""
+    try:
+        return _session_db(session)
+    except Exception:
+        logger.debug("could not resolve the session db for routing provenance", exc_info=True)
+        return contextlib.nullcontext(None)
+
+
+def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
+    """Routing provenance for #106459, called under ``_sessions_lock`` while this backend still has the
+    session registered and is about to start a turn for it: an explicit-close stamp on its row missed a
+    live conversation, so it is cleared (the gateway's #54878 stale-route self-heal, which this backend
+    lacked). ``_pop_session_by_id`` claims teardown under the same lock and sets ``_closing`` before
+    ``_finalize_session`` stamps, so a close of THIS session is either not written yet or already stops
+    the turn -- it is never cleared here. Best-effort: a failure never blocks the turn."""
+    session_id = getattr(session.get("agent"), "session_id", None)  # the compression tip this turn writes
+    if db is None or not session_id:
+        return
+    try:
+        db.reopen_if_explicitly_closed(
+            session_id, provenance=f"TUI session {sid} is still registered and accepting a turn",
+            patience_s=_ROUTING_REOPEN_PATIENCE_S)
+    except Exception:
+        logger.debug("routing-provenance reopen failed for %s", session_id, exc_info=True)
+
+
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
@@ -783,11 +811,16 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text)
+        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
         goal_followup = None
         try:
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
+                if st.terminal_callback is not None and not st.receipt_attempted:
+                    st.receipt_attempted = True
+                    st.terminal_callback({
+                        "status": "failed", "text": "", "error": "Context injection refused."})
+                    st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
@@ -800,6 +833,9 @@ def _run_prompt_submit(
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":
                 _after_complete_turn(sid, session, st, raw)
+            # Goal judge + loop tick evaluation mutate persisted state AFTER message.complete: publish the
+            # structured control snapshot now so the Desktop card never paints the pre-judge turn count.
+            _publish_session_control_snapshot(sid, session, only_if_present=True)
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
@@ -837,10 +873,16 @@ def _run_prompt_submit(
             _emit_settled_session_info(sid, session, st.agent)
         _run_post_turn_followups(rid, sid, session, st.result, goal_followup)
     run_thread = threading.Thread(target=run, daemon=True)
-    with _sessions_lock:
+    # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
+    # state registry, and _sessions_lock gates every create/close/prompt on this backend.
+    with _routing_provenance_db(session) as routing_db, _sessions_lock:
         registered = _sessions.get(sid)
         can_start = not session.get("_closing") and (registered is None or registered is session)
         if can_start:
+            # Only a registered session is proof the conversation is routed here; an unregistered one may
+            # still run its turn, but its stamp stays (#106459).
+            if registered is session:
+                _reopen_routed_session_row(routing_db, sid, session)
             session["_run_thread"] = run_thread
             run_thread.start()
     if not can_start:

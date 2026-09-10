@@ -654,7 +654,7 @@ class TestTextBatchFlushRace:
     async def test_superseded_task_does_not_pop_or_process_event(self):
         """A flush task that has been superseded must leave the event in the
         batch dict for the new task to handle."""
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -697,7 +697,7 @@ class TestTextBatchFlushRace:
     @pytest.mark.asyncio
     async def test_active_task_processes_event_normally(self):
         """When the task is not superseded it must still process the event."""
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -811,7 +811,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.3)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         assert event.text == "what is this?"
         assert event.media_urls == ["/tmp/x.png"]
@@ -831,7 +831,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.3)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         assert event.media_urls == ["/tmp/x.png"]
         assert event.message_type == MessageType.PHOTO
@@ -880,7 +880,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.2)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         assert event.text == "just text"
         assert event.media_urls == []

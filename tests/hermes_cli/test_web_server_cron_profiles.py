@@ -6,6 +6,7 @@ from queue import Empty, SimpleQueue
 import threading
 
 import pytest
+pytest.importorskip("fastapi")
 from fastapi import HTTPException
 import hermes_cli.web_models as _web_models
 import hermes_cli.web_routers.cron as _rt_cron

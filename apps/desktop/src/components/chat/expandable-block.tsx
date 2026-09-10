@@ -33,9 +33,11 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
     <div className="relative">
       <div
         className={cn(
+          // `expandable-block-scroll` ensures that the fade is removed when user scrolls to the bottom
+          // CSS of this class defined in apps/deskop/src/style.css
           // `scrollbar-overlay` opts out of the app-wide classic thin gutters so
           // this scroller keeps platform overlay bars (no always-on track).
-          'scrollbar-overlay overflow-y-auto overflow-x-auto',
+          'expandable-block-scroll scrollbar-overlay overflow-y-auto overflow-x-auto',
           expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]',
           className
         )}
@@ -44,13 +46,9 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
         {children}
       </div>
       {overflowing && (
-        // The fade is a pure overflow cue and must not intercept pointer events:
-        // it spans the full bottom edge (over the horizontal scrollbar of a wide
-        // code block AND the block's last line), so making it clickable killed
-        // both sideways scrolling and text selection. Keep the fade
-        // `pointer-events-none` and pin the only clickable target — a compact
-        // toggle — to the right edge, clear of the draggable scrollbar track.
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-7 justify-end bg-linear-to-t from-[var(--expandable-fade-from,var(--ui-chat-surface-background))] to-transparent">
+        // The button should not span the full bottom edge so that both sideways
+        // scrolling and rtext selection are not intercepted
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-7 justify-end bg-linear-to-t">
           <button
             aria-expanded={expanded}
             aria-label={expanded ? 'Collapse' : 'Expand'}

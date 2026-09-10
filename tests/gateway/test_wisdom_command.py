@@ -1011,22 +1011,27 @@ def test_expired_callback_is_rejected(monkeypatch):
 
 
 def test_group_continuation_is_user_profile_and_org_bound():
-    group = _context(chat_id="group-1", is_group=True)
+    from dataclasses import replace
+
+    group = _context(chat_id="group-1", is_group=True, scope_id="team-1", thread_id="parent")
+    dm = _context(chat_id="dm-1", scope_id="team-1", thread_id="different-private-thread")
     token = issue_continuation("drafts", group)
 
     with pytest.raises(PermissionError):
-        resolve_continuation(token, _context(user_id="user-2", chat_id="dm-2"))
+        resolve_continuation(token, replace(dm, user_id="user-2"))
     with pytest.raises(PermissionError):
-        resolve_continuation(token, _context(profile="other", chat_id="dm-1"))
+        resolve_continuation(token, replace(dm, profile="other"))
     with pytest.raises(PermissionError):
         resolve_continuation(
             token,
-            _context(organization_id="org-2", chat_id="dm-1"),
+            replace(dm, organization_id="org-2"),
         )
+    with pytest.raises(PermissionError):
+        resolve_continuation(token, replace(dm, scope_id="team-2"))
 
-    assert resolve_continuation(token, _context(chat_id="dm-1")) == "drafts"
+    assert resolve_continuation(token, dm) == "drafts"
     with pytest.raises(ValueError, match="expired"):
-        resolve_continuation(token, _context(chat_id="dm-1"))
+        resolve_continuation(token, dm)
 
 
 def test_group_continuation_cannot_be_redeemed_in_another_group():

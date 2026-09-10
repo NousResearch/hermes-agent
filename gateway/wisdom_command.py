@@ -62,6 +62,8 @@ class WisdomCommandContext:
     profile: str | None
     organization_id: str | None
     is_group: bool = False
+    thread_id: str = ""
+    scope_id: str = ""
 
 
 @dataclass
@@ -194,6 +196,8 @@ class _Token:
     profile: str | None
     organization_id: str | None
     expires_at: float
+    thread_id: str = ""
+    scope_id: str = ""
     allow_dm_continuation: bool = False
     navigation_history: tuple[_NavigationTarget, ...] = ()
 
@@ -223,6 +227,8 @@ class _CallbackTokens:
             profile=context.profile,
             organization_id=context.organization_id,
             expires_at=now + TOKEN_TTL_SECONDS,
+            thread_id=context.thread_id,
+            scope_id=context.scope_id,
             allow_dm_continuation=allow_dm_continuation,
             navigation_history=navigation_history,
         )
@@ -257,6 +263,8 @@ class _CallbackTokens:
                 or (not same_chat and not dm_continuation)
                 or value.profile != context.profile
                 or value.organization_id != context.organization_id
+                or value.scope_id != context.scope_id
+                or (value.thread_id != context.thread_id and not dm_continuation)
             ):
                 raise PermissionError(
                     "This Collective Wisdom control belongs to another session."
@@ -1511,6 +1519,26 @@ class WisdomCommandController:
             "security_check": detail.get("security_check"),
             "professionalism_check": detail.get("professionalism_check"),
         }
+
+    def review_install(
+        self, service: WisdomService, reference: str, *, kind: str,
+    ) -> WisdomView:
+        """Refresh an old notification into a checked, receipt-bound confirmation."""
+        service.require_setup()
+        plan = (
+            service.install_plan(reference, update_mode=None)
+            if kind == "install" else service.update_plan(reference)
+        )
+        if not plan.get("receipt"):
+            return WisdomView(
+                "Collective Wisdom",
+                "This skill is already current." if plan.get("state") == "current"
+                else "This skill is not ready to install. Reopen it to review the current state.",
+                actions=[WisdomAction(
+                    "Browse team skills", "browse", local_command="/wisdom browse",
+                )],
+            )
+        return self._plan_view(self._reviewed_plan(service, plan), kind=kind)
 
     def _plan_view(
         self, plan: dict[str, Any], *, kind: str, checks_expanded: bool = False,

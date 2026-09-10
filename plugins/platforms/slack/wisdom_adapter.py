@@ -236,6 +236,8 @@ class SlackWisdomMixin:
                 profile=profile,
                 organization_id=service.store.active_org_id(),
                 is_group=self._wisdom_is_group_channel(channel_id),
+                thread_id=str(getattr(source, "thread_id", None) or ""),
+                scope_id=team_id,
             )
             view = WisdomCommandController().execute(raw_args, service, context)
             return view, context
@@ -594,6 +596,8 @@ class SlackWisdomMixin:
                         user_id=user_id, chat_id=channel_id, profile=profile,
                         organization_id=service.store.active_org_id(),
                         is_group=self._wisdom_is_group_channel(channel_id),
+                        thread_id=str((body.get("message") or {}).get("thread_ts") or ""),
+                        scope_id=str(team_id or ""),
                     )
                     return current_action_view(value, service, context), context
 
@@ -636,6 +640,7 @@ class SlackWisdomMixin:
                         profile=profile,
                         organization_id=service.store.active_org_id(),
                         is_group=False,
+                        scope_id=str(team_id or ""),
                     )
                     raw_args = resolve_continuation(token, context)
                     view = WisdomCommandController().execute(
@@ -679,6 +684,8 @@ class SlackWisdomMixin:
                         profile=profile,
                         organization_id=service.store.active_org_id(),
                         is_group=self._wisdom_is_group_channel(channel_id),
+                        thread_id=str((body.get("message") or {}).get("thread_ts") or ""),
+                        scope_id=str(team_id or ""),
                     )
                     view = WisdomCommandController().execute_token(
                         token, service, context
@@ -694,72 +701,26 @@ class SlackWisdomMixin:
                 await self._update_wisdom_interaction(body, view)
                 return
 
-            if value.startswith("wi:plan:"):
-                parts = value.split(":", 3)
-                if (
-                    len(parts) != 4
-                    or parts[2] not in {"install", "update"}
-                    or not parts[3]
-                ):
-                    raise ValueError("Invalid Collective Wisdom action.")
-                operation, skill_id = parts[2], parts[3]
-
-                def plan_and_apply():
+            if value.startswith(("wi:plan:", "wi:confirm:")):
+                def review():
+                    from gateway.wisdom_command import WisdomCommandContext
+                    from hermes_wisdom.agent_led.actions import current_install_view
                     from hermes_wisdom.service import WisdomService
 
                     service = WisdomService()
-                    service.require_setup()
-                    if operation == "install":
-                        plan = service.install_plan(skill_id, update_mode=None)
-                    else:
-                        plan = service.update_plan(skill_id)
-                    if not isinstance(plan, dict) or not plan.get("receipt"):
-                        return {"state": str(plan.get("state") or "current")}
-                    compatibility = plan.get("compatibility")
-                    compatibility = (
-                        compatibility if isinstance(compatibility, dict) else {}
+                    context = WisdomCommandContext(
+                        user_id=user_id, chat_id=channel_id, profile=profile,
+                        organization_id=service.store.active_org_id(),
+                        is_group=self._wisdom_is_group_channel(channel_id),
+                        thread_id=str((body.get("message") or {}).get("thread_ts") or ""),
+                        scope_id=str(team_id or ""),
                     )
-                    needs_full_review = (
-                        compatibility.get("outcome") != "compatible"
-                        or plan.get("allowed") is False
-                        or bool(plan.get("modified"))
-                        or bool(plan.get("sensitive_expansion"))
-                    )
-                    if needs_full_review:
-                        return {"state": "review_required", "plan": plan}
-                    if operation == "install":
-                        return service.install_apply(
-                            str(plan["receipt"]), accept_partial=False
-                        )
-                    return service.update_apply(str(plan["receipt"]))
+                    return current_install_view(value, service, context), context
 
-                result = await self._run_wisdom_profile_operation(
-                    plan_and_apply, profile=profile
-                )
-                state = str(result.get("state") or "")
-                if state == "review_required":
-                    await self._wisdom_interaction_notice(
-                        body,
-                        "This change needs a full compatibility review. "
-                        "Run `/wisdom show <skill>` in DM or open Collective in Hermes.",
-                    )
-                    return
-                verb = "Installed" if operation == "install" else "Updated"
-                if state == "current":
-                    verb = "Already current"
-                version = result.get("version")
-                suffix = f" v{version}" if isinstance(version, int) else ""
-                if await self._mark_wisdom_interaction_complete(
-                    body,
-                    callback_value=value,
-                    completed_label=f"{verb}{suffix}",
-                ):
-                    return
-                await self._wisdom_interaction_notice(
-                    body, f"{verb}{suffix}."
-                )
+                view, context = await self._run_wisdom_profile_operation(review, profile=profile)
+                await self._prepare_wisdom_view(view, context, team_id=team_id, channel_id=channel_id)
+                await self._update_wisdom_interaction(body, view)
                 return
-
             parts = value.split(":", 2)
             if len(parts) != 3 or parts[:2] not in (
                 ["wi", "draft"],

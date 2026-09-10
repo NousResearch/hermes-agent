@@ -40,6 +40,7 @@ class TelegramWisdomMixin:
                 profile=getattr(self, "_owner_profile", None),
                 organization_id=service.store.active_org_id(),
                 is_group=chat_type.lower() != "private",
+                thread_id=str(getattr(message, "message_thread_id", None) or ""),
             )
             return current_action_view(data, service, context), context
 
@@ -76,7 +77,7 @@ class TelegramWisdomMixin:
             chat_type=str(query_chat_type) if query_chat_type is not None else None,
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
-            command="wisdom" if data.startswith("wi:cmd:") else None,
+            command="wisdom" if data.startswith(("wi:cmd:", "wi:plan:", "wi:confirm:")) else None,
         ):
             await query.answer(text="⛔ You are not authorized to manage skills.")
             return
@@ -118,6 +119,7 @@ class TelegramWisdomMixin:
                         organization_id=service.store.active_org_id(),
                         is_group=str(query_chat_type or "").lower()
                         in {"group", "supergroup", "channel", "forum"},
+                        thread_id=str(query_thread_id or ""),
                     )
                     view = WisdomCommandController().execute_token(
                         token, service, context
@@ -270,181 +272,33 @@ class TelegramWisdomMixin:
                 actions=actions,
             )
             return
-        if (
-            len(parts) != 4
-            or parts[1] not in {"plan", "confirm"}
-            or parts[2] not in {"install", "update"}
-        ):
-            await query.answer(text="Invalid Collective Wisdom action.")
-            return
-
-        phase, action, value = parts[1], parts[2], parts[3]
-        await query.answer(text="Verifying…" if phase == "plan" else "Applying…")
-
-        def apply_receipt(receipt: str):
-            from hermes_wisdom.service import WisdomService
-
-            service = WisdomService()
-            service.require_setup()
-            if action == "install":
-                if not receipt.startswith("wip_"):
-                    raise ValueError("invalid install receipt")
-                return service.install_apply(receipt, accept_partial=False)
-            if not receipt.startswith("wup_"):
-                raise ValueError("invalid update receipt")
-            return service.update_apply(
-                receipt,
-                accept_sensitive=False,
-                accept_partial=False,
-                preserve_modified=False,
-            )
-
+        await query.answer(text="Checking current state...")
         try:
-            from hermes_wisdom.service import WisdomService
+            def review():
+                from gateway.wisdom_command import WisdomCommandContext
+                from hermes_wisdom.agent_led.actions import current_install_view
+                from hermes_wisdom.service import WisdomService
 
-            def plan_action():
                 service = WisdomService()
-                service.require_setup()
-                return (
-                    # Omitting update_mode deliberately asks Gateway to apply
-                    # the organization's current default for this installation.
-                    service.install_plan(value, update_mode=None)
-                    if action == "install"
-                    else service.update_plan(value)
+                context = WisdomCommandContext(
+                    user_id=caller_id, chat_id=str(query_chat_id or caller_id),
+                    profile=getattr(self, "_owner_profile", None),
+                    organization_id=service.store.active_org_id(),
+                    is_group=str(query_chat_type or "").lower() != "private",
+                    thread_id=str(query_thread_id or ""),
                 )
+                return current_install_view(data, service, context), context
 
-            result = await self._run_wisdom_profile_operation(
-                plan_action if phase == "plan" else lambda: apply_receipt(value)
-            )
+            view, context = await self._run_wisdom_profile_operation(review)
+            await self._prepare_wisdom_command_view(view, context)
+            await self._edit_wisdom_command_view(query, view, full_details=True)
         except Exception as exc:
-            logger.warning(
-                "[%s] Collective Wisdom Telegram action failed: %s",
-                self.name,
-                _redact_telegram_error_text(exc),
+            logger.warning("[%s] Collective Wisdom review failed: %s",
+                           self.name, _redact_telegram_error_text(exc))
+            await query.answer(
+                text="Collective Wisdom is temporarily unavailable. Try again.",
+                show_alert=True,
             )
-            try:
-                await query.edit_message_text(
-                    text=(
-                        "<b>Collective Wisdom action could not continue</b>\n"
-                        "Open Collective in Hermes to review the current state and try again."
-                    ),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=None,
-                )
-            except Exception:
-                pass
-            return
-
-        if phase == "confirm":
-            version = result.get("version") if isinstance(result, dict) else None
-            suffix = f" v{version}" if isinstance(version, int) else ""
-            verb = "installed" if action == "install" else "updated"
-            try:
-                await query.edit_message_text(
-                    text=f"✅ <b>Skill {verb}{suffix}</b>",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=None,
-                )
-            except Exception:
-                pass
-            return
-
-        if not isinstance(result, dict) or not result.get("receipt"):
-            state = str(result.get("state") if isinstance(result, dict) else "current")
-            label = "already current" if state == "current" else "not ready"
-            if state == "current" and await self._mark_wisdom_action_complete(
-                query,
-                callback_data=data,
-                completed_label=(
-                    "✓ Installed" if action == "install" else "✓ Updated"
-                ),
-            ):
-                return
-            try:
-                await query.edit_message_text(
-                    text=f"<b>Collective Wisdom skill is {label}</b>",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=None,
-                )
-            except Exception:
-                pass
-            return
-
-        compatibility = result.get("compatibility")
-        compatibility = compatibility if isinstance(compatibility, dict) else {}
-        outcome = str(compatibility.get("outcome") or "")
-        sensitive = result.get("sensitive_expansion")
-        needs_full_review = (
-            outcome != "compatible"
-            or result.get("allowed") is False
-            or bool(result.get("modified"))
-            or bool(sensitive)
-        )
-        name = _html.escape(str(result.get("slug") or "skill"))
-        version = result.get("version")
-        version_label = f" v{version}" if isinstance(version, int) else ""
-        if needs_full_review:
-            try:
-                await query.edit_message_text(
-                    text=(
-                        f"⚠️ <b>{name}{version_label} needs a full review</b>\n"
-                        "Open Collective in Hermes to review compatibility, local changes, "
-                        "and sensitive requirements before continuing."
-                    ),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=None,
-                )
-            except Exception:
-                pass
-            return
-
-        # The notification button is the explicit user action. Once the exact
-        # package has planned as fully compatible and non-sensitive, apply its
-        # hash-bound receipt immediately. Any condition that needs judgment was
-        # stopped above and remains available in the full Collective UI.
-        receipt = str(result["receipt"])
-        try:
-            applied = await self._run_wisdom_profile_operation(
-                lambda: apply_receipt(receipt)
-            )
-        except Exception as exc:
-            logger.warning(
-                "[%s] Collective Wisdom Telegram apply failed: %s",
-                self.name,
-                _redact_telegram_error_text(exc),
-            )
-            try:
-                await query.edit_message_text(
-                    text=(
-                        f"<b>{name}{version_label} could not be applied</b>\n"
-                        "Open Collective in Hermes to review the current state and try again."
-                    ),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=None,
-                )
-            except Exception:
-                pass
-            return
-
-        applied_version = applied.get("version") if isinstance(applied, dict) else None
-        applied_suffix = f" v{applied_version}" if isinstance(applied_version, int) else ""
-        verb = "installed" if action == "install" else "updated"
-        if await self._mark_wisdom_action_complete(
-            query,
-            callback_data=data,
-            completed_label=(
-                "✓ Installed" if action == "install" else "✓ Updated"
-            ),
-        ):
-            return
-        try:
-            await query.edit_message_text(
-                text=f"✅ <b>{name}{applied_suffix} {verb}</b>",
-                parse_mode=ParseMode.HTML,
-                reply_markup=None,
-            )
-        except Exception:
-            pass
 
     async def _run_wisdom_profile_operation(self, operation):
         """Run local Wisdom state access inside this Telegram bot's profile."""
@@ -706,6 +560,7 @@ class TelegramWisdomMixin:
                 profile=getattr(self, "_owner_profile", None),
                 organization_id=service.store.active_org_id(),
                 is_group=is_group,
+                thread_id=str(getattr(source, "thread_id", None) or ""),
             )
             view = WisdomCommandController().execute(raw_args, service, context)
             return view, context
@@ -777,6 +632,7 @@ class TelegramWisdomMixin:
                 profile=getattr(self, "_owner_profile", None),
                 organization_id=service.store.active_org_id(),
                 is_group=False,
+                thread_id=str(getattr(source, "thread_id", None) or ""),
             )
             return resolve_continuation(token, context)
 

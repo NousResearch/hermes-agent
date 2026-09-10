@@ -67,3 +67,26 @@ def current_action_view(target, service, context):
         ])
     view.notice = "\n".join(filter(None, (view.notice, result["message"])))
     return view
+
+
+def current_install_view(target, service, context):
+    """An unversioned legacy click requests review, never approves latest bytes."""
+    from gateway.wisdom_command import WisdomAction, WisdomCommandController, WisdomView
+
+    match = re.fullmatch(
+        r"wi:(plan|confirm):(install|update):[A-Za-z0-9_-]{1,128}", target,
+    )
+    if match is None:
+        raise ValueError("Invalid Collective Wisdom action.")
+    if match[1] == "confirm":
+        return WisdomView(
+            "Review required", REPLACED_CONTROL_MESSAGE,
+            actions=[WisdomAction(
+                "Browse team skills", "browse", local_command="/wisdom browse",
+            )],
+        )
+    operation, reference = match[2], target.rsplit(":", 1)[1]
+    controller = WisdomCommandController()
+    if context.is_group:
+        return controller.execute(f"{operation} {reference}", service, context)
+    return controller.review_install(service, reference, kind=operation)

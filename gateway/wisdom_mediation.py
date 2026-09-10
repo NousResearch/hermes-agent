@@ -161,6 +161,7 @@ async def schedule(
                 bind_view_callbacks(view, WisdomCommandContext(
                     user_id=actor.actor_id, chat_id=actor.chat_id,
                     profile=profile, organization_id=org,
+                    thread_id=actor.thread_id, scope_id=actor.scope_id,
                 ))
             except Exception:
                 await scoped(

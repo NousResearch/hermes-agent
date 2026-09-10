@@ -215,7 +215,7 @@ class SessionPassiveHistoryMixin:
         if current is None:
             raise PassiveHistoryTargetError(f"Conversation {conversation_id!r} lineage row is missing")
         seen = {str(current["id"])}
-        for _hop in range(_MAX_LINEAGE_HOPS):
+        for _hop in range(_MAX_LINEAGE_HOPS + 1):
             if current["end_reason"] != "compression":
                 break
             children = self._passive_continuation_children(conn, str(current["id"]))

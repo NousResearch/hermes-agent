@@ -23,6 +23,7 @@ from hermes_state_passive_history import (
     PassiveHistoryRetiredError,
     PassiveHistoryTargetError,
     SessionPassiveHistoryMixin,
+    _MAX_LINEAGE_HOPS,
 )
 
 USER = {"role": "user", "content": "book the 9am flight"}
@@ -343,6 +344,28 @@ def test_only_live_compression_edges_select_the_target(store, kind):
     assert (receipt.conversation_id, receipt.session_id) == ("child", "child-tip")
     assert _append(writer, "child-tip", messages=[USER]).message_ids == receipt.message_ids
     assert _rows(writer, "child") == _rows(writer, "conv") == []
+
+
+@pytest.mark.parametrize("extra_hop", [0, 1])
+def test_lineage_hop_limit_accepts_the_boundary_and_refuses_overflow(store, extra_hop):
+    writer, peer = store
+    depth = _MAX_LINEAGE_HOPS + extra_hop
+    writer.end_session("conv", "compression")
+    rows = [(f"segment-{n}", "conv" if n == 1 else f"segment-{n - 1}",
+             1 if n < depth else None, "compression" if n < depth else None)
+            for n in range(1, depth + 1)]
+    writer._execute_write(lambda conn: conn.executemany(
+        "INSERT INTO sessions (id, parent_session_id, source, started_at, ended_at, end_reason) "
+        "VALUES (?, ?, 'test', 0, ?, ?)", rows))
+
+    if extra_hop:
+        with pytest.raises(PassiveHistoryTargetError):
+            _append(peer, "conv", messages=[USER])
+        assert _receipt_rows(writer) == []
+    else:
+        receipt = _append(peer, "conv", messages=[USER])
+        assert receipt.session_id == f"segment-{depth}"
+        assert writer.get_passive_history_tip("conv") == receipt.session_id
 
 
 def test_in_place_compaction_retry_keeps_the_original_identity(store):

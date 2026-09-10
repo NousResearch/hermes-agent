@@ -130,14 +130,39 @@ export function isImageGenerationTool(name?: string): boolean {
   return name === 'image_generate'
 }
 
+// Windows spellings: drive-letter (`C:\…`, `C:/…`), UNC (`\\srv`, `//srv`), or
+// any backslash-rooted path. A single leading `/` stays POSIX. Mirrors the
+// path-identity helper used for project membership in `@/store/projects` so the
+// two desktop path comparisons agree on what counts as a Windows path.
+const isWindowsPath = (path: string): boolean =>
+  /^[A-Za-z]:[/\\]/.test(path) || path.startsWith('\\') || path.startsWith('//')
+
 export function contextPath(path: string, cwd: string): string {
   if (!cwd) {
     return path
   }
 
-  const normalizedCwd = cwd.endsWith('/') ? cwd : `${cwd}/`
+  // Slash-normalize before the prefix compare: on Windows the OS supplies
+  // backslash paths (`C:\Users\me\proj\src\a.ts`), so a raw `startsWith` against
+  // `cwd + '/'` never matches and the full absolute path leaks into the ref.
+  // Every sibling helper (`pathLabel`, markdown `filenameExtToken`) is already
+  // backslash-aware; this one was the outlier.
+  const slash = (p: string) => p.replace(/\\/g, '/')
+  const normalizedPath = slash(path)
+  const normalizedCwdRoot = slash(cwd)
+  const normalizedCwd = normalizedCwdRoot.endsWith('/') ? normalizedCwdRoot : `${normalizedCwdRoot}/`
 
-  return path.startsWith(normalizedCwd) ? path.slice(normalizedCwd.length) : path
+  // Windows path identity is case-insensitive, so `C:\Users\Me\Proj\src\a.ts`
+  // really is under `c:/users/me/proj` and must relativize. Fold case for the
+  // *comparison key only* — the returned slice comes off `normalizedPath`, which
+  // keeps the caller's original spelling in the emitted `@file:` ref. POSIX is
+  // case-sensitive and is left alone.
+  const windows = isWindowsPath(path) || isWindowsPath(cwd)
+  const comparisonKey = (p: string) => (windows ? p.toLowerCase() : p)
+
+  return comparisonKey(normalizedPath).startsWith(comparisonKey(normalizedCwd))
+    ? normalizedPath.slice(normalizedCwd.length)
+    : path
 }
 
 // IDs are content-derived (`kind:value`), not uuids, so upsertAttachment's

@@ -241,6 +241,38 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
     return "\n".join(lines)
 
 
+def _accepted_consent_content(schema: dict) -> Optional[dict]:
+    """Translate a binary approval into a safe, schema-valid consent form.
+
+    Hermes' approval surfaces can answer yes/no, not collect arbitrary form
+    fields.  A required single boolean is unambiguous.  A required single
+    enum is only unambiguous when it offers the conventional one-shot
+    ``allow_once`` choice; choosing a session-wide grant would silently
+    broaden the user's approval.  Every other form must be declined rather
+    than submitted with the historical (and invalid) empty object.
+    """
+    if not isinstance(schema, dict):
+        return None
+    props = schema.get("properties")
+    required = schema.get("required")
+    # No required fields: the empty object already satisfies the form.
+    if required in (None, []):
+        return {}
+    if not isinstance(props, dict) or not isinstance(required, list) or len(required) != 1:
+        return None
+    field = required[0]
+    spec = props.get(field)
+    if not isinstance(field, str) or not isinstance(spec, dict):
+        return None
+    if spec.get("type") == "boolean":
+        return {field: True}
+    choices = spec.get("enum")
+    if not isinstance(choices, list):
+        choices = [choice.get("const") for choice in spec.get("oneOf", [])
+                   if isinstance(choice, dict) and "const" in choice]
+    return {field: "allow_once"} if "allow_once" in choices else None
+
+
 class ElicitationHandler:
     """``elicitation_callback`` for one MCP server. Form-mode routes through Hermes' approval system
     (CLI, TUI, Telegram, ...); URL-mode is declined. Fail-closed: any timeout, exception or unexpected
@@ -267,10 +299,10 @@ class ElicitationHandler:
         """Kwargs to pass to ClientSession for elicitation support."""
         return {"elicitation_callback": self}
 
-    def _result(self, action: str, metric: str):
-        """Count *metric* and return ``ElicitResult(action)`` (accept carries empty content)."""
+    def _result(self, action: str, metric: str, content: Optional[dict] = None):
+        """Count *metric* and return an ``ElicitResult``."""
         self.metrics[metric] += 1
-        return _core.ElicitResult(action=action, **({"content": {}} if action == "accept" else {}))
+        return _core.ElicitResult(action=action, **({"content": content or {}} if action == "accept" else {}))
 
     def _consent_thunk(self, message: str, description: str) -> Callable[[], str]:
         """Sync consent call replaying the agent's contextvars snapshot when the owning task captured one
@@ -310,4 +342,12 @@ class ElicitationHandler:
         except Exception as exc:
             logger.error("MCP server '%s' elicitation failed: %s", self.server_name, exc, exc_info=True)
             return self._result("decline", "errors")
-        return self._result(*self._ANSWER_RESULTS.get(answer, ("decline", "declined")))
+        action, metric = self._ANSWER_RESULTS.get(answer, ("decline", "declined"))
+        if action != "accept":
+            return self._result(action, metric)
+        content = _accepted_consent_content(schema)
+        if content is None:
+            logger.warning("MCP server '%s' elicitation requires form input that Hermes' binary "
+                           "approval surface cannot collect; declining", self.server_name)
+            return self._result("decline", "declined")
+        return self._result("accept", metric, content)

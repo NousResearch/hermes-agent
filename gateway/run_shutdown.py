@@ -928,11 +928,18 @@ class GatewayShutdownMixin:
 
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
+        from gateway.run import _planned_update_marker
         restart_source = self._restart_command_source if self._restart_requested else None
         msg = "⚠️ Gateway shutting down — Your current task will be interrupted."
         if self._restart_requested:
+            # An update-driven restart was asked for — say so, rather than
+            # sending the same ⚠️ wording a crash restart sends.
             msg = (
-                "⚠️ Gateway restarting — Your current task will be interrupted. "
+                "⬆️ Updating Hermes — planned restart, back in a moment. "
+                "Your current task will be interrupted; send any message once "
+                "I'm back and I'll try to resume where you left off."
+                if _planned_update_marker() is not None
+                else "⚠️ Gateway restarting — Your current task will be interrupted. "
                 "Send any message after restart and I'll try to resume where you left off."
             )
         restart_key = None

@@ -9,6 +9,8 @@ import pytest
 
 import gateway.wisdom_command as command_module
 from gateway.wisdom_command import (
+    WisdomAction,
+    WisdomView,
     WisdomCommandContext,
     WisdomCommandController,
     _CallbackTokens,
@@ -176,6 +178,7 @@ class _Service:
             "skill_id": "skill-1",
             "slug": "incident-handoff",
             "version": 2,
+            "update_mode": update_mode,
             "compatibility": {"outcome": "compatible"},
             "allowed": True,
         }
@@ -856,6 +859,7 @@ def test_plan_checks_preserve_exact_approval_and_navigation(route):
     original_history = view._navigation_history
     bind_view_callbacks(view, context)
     original_receipt = next(a.arguments["receipt"] for a in view.actions if a.operation == f"{kind}_apply")
+    original_approval = next(a.arguments for a in view.actions if a.operation == f"{kind}_apply")
     for expanded in (True, False):
         toggle = next(a for a in view.actions if a.operation == "plan_checks")
         assert toggle.label == ("Show checks" if expanded else "Hide checks")
@@ -868,7 +872,8 @@ def test_plan_checks_preserve_exact_approval_and_navigation(route):
         assert view._navigation_history == original_history
         bind_view_callbacks(view, context)
         apply = next(a for a in view.actions if a.operation == f"{kind}_apply")
-        assert apply.arguments == {"receipt": original_receipt}
+        assert apply.arguments == original_approval
+        assert apply.arguments["receipt"] == original_receipt
         assert apply.callback_data in TelegramAdapter._wisdom_command_html(view)
         assert apply.callback_data in str(render_wisdom_blocks(view))
     assert service.version_detail.call_count == 1
@@ -1008,6 +1013,46 @@ def test_expired_callback_is_rejected(monkeypatch):
 
     with pytest.raises(ValueError, match="expired"):
         controller.execute_token(token, service, context)
+
+
+@pytest.mark.parametrize("kind", ["install", "update"])
+@pytest.mark.parametrize("expired_action", ["confirm", "checks"])
+def test_check_toggles_do_not_extend_review_authority(monkeypatch, kind, expired_action):
+    now = [100.0]
+    monkeypatch.setattr(command_module.time, "monotonic", lambda: now[0])
+    service = _Service()
+    controller = WisdomCommandController()
+    context = _context()
+    initial = WisdomView("Review", actions=[WisdomAction(
+        "Review", f"{kind}_plan", {
+            "reference": "skill-1", "skill_id": "skill-1", "update_mode": "MANUAL",
+        },
+    )])
+    bind_view_callbacks(initial, context)
+    view = controller.execute_token(initial.actions[0].callback_data.removeprefix("wi:cmd:"), service, context)
+
+    def token_for(view, operation):
+        bind_view_callbacks(view, context)
+        return next(a.callback_data.removeprefix("wi:cmd:") for a in view.actions if a.operation == operation)
+
+    checks = token_for(view, "plan_checks")
+    now[0] = 650.0  # Still within the first review's ten-minute deadline.
+    expanded = controller.execute_token(checks, service, context)
+    late_control = token_for(expanded, f"{kind}_apply" if expired_action == "confirm" else "plan_checks")
+    # The transport token remains valid, but the underlying review has expired.
+    now[0] = 701.0
+    expired = controller.execute_token(late_control, service, context)
+    assert not any(call[0].endswith("_apply") for call in service.calls)
+    assert not any(a.operation == f"{kind}_apply" for a in expired.actions)
+    recheck = token_for(expired, f"{kind}_plan")
+    refreshed = controller.execute_token(recheck, service, context)
+    assert sum(call[0] == f"{kind}_plan" for call in service.calls) == 2
+    if kind == "install":
+        assert service.calls[-1] == ("install_plan", "skill-1@v2", "MANUAL")
+    assert not any(call[0].endswith("_apply") for call in service.calls)
+    confirm = token_for(refreshed, f"{kind}_apply")
+    controller.execute_token(confirm, service, context)
+    assert sum(call[0] == f"{kind}_apply" for call in service.calls) == 1
 
 
 def test_group_continuation_is_user_profile_and_org_bound():

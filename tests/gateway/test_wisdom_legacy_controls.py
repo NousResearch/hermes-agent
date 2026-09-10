@@ -18,12 +18,16 @@ from tests.gateway.test_telegram_wisdom_command import _adapter as telegram_adap
 @pytest.mark.asyncio
 @pytest.mark.parametrize("platform", ["telegram", "slack"])
 @pytest.mark.parametrize("operation", ["install", "update"])
+@pytest.mark.parametrize("expire_review", [False, True])
 async def test_unversioned_button_requires_fresh_review_before_exact_apply(
-    monkeypatch, tmp_path, platform, operation,
+    monkeypatch, tmp_path, platform, operation, expire_review,
 ):
     from pathlib import Path
     from hermes_wisdom.package import verify_content_files
     from tests.wisdom.test_service import InstallClient, _install_service
+
+    clock = [100.0]
+    monkeypatch.setattr("gateway.wisdom_command.time", SimpleNamespace(monotonic=lambda: clock[0]))
 
     class VersionedClient(InstallClient):
         latest = 2
@@ -109,6 +113,21 @@ async def test_unversioned_button_requires_fresh_review_before_exact_apply(
         await click(confirm, team="T2")
     service.install_apply.assert_not_called()
     service.update_apply.assert_not_called()
+    if expire_review:
+        clock[0] = 650.0
+        expanded = await click(next(a.callback_data for a in view.actions if a.operation == "plan_checks"))
+        confirm = next(a.callback_data for a in expanded.actions if a.operation == operation + "_apply")
+        clock[0] = 701.0
+        expired = await click(confirm)
+        service.install_apply.assert_not_called()
+        service.update_apply.assert_not_called()
+        assert client.records == []
+        baseline = service.store.installation("skill-1")
+        assert baseline is None if operation == "install" else baseline["version"] == 1
+        refreshed = await click(next(a.callback_data for a in expired.actions if a.operation == operation + "_plan"))
+        service.install_apply.assert_not_called()
+        service.update_apply.assert_not_called()
+        confirm = next(a.callback_data for a in refreshed.actions if a.operation == operation + "_apply")
     # A later publication must not replace the package this confirmation covers.
     client.latest = 3
     await click(confirm)

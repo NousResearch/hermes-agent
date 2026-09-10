@@ -531,6 +531,10 @@ class WisdomCommandController:
     ) -> WisdomView:
         value = CALLBACK_TOKENS.resolve(token, context, consume=False)
         operation, args = value.operation, value.arguments
+        if operation in {"install_apply", "update_apply"} and (
+            args.get("review_deadline", 0) <= time.monotonic()
+        ):
+            return self._expired_plan_view(args, kind=operation.removesuffix("_apply"))
         if operation == "back":
             if not value.navigation_history:
                 raise ValueError("This Collective Wisdom view has no previous page.")
@@ -1516,6 +1520,8 @@ class WisdomCommandController:
         # Opaque callbacks retain the receipt, never staging paths or raw files.
         return {
             **public_plan(plan), "receipt": plan["receipt"],
+            "review_deadline": time.monotonic() + TOKEN_TTL_SECONDS,
+            "update_mode": plan.get("update_mode"),
             "security_check": detail.get("security_check"),
             "professionalism_check": detail.get("professionalism_check"),
         }
@@ -1540,9 +1546,29 @@ class WisdomCommandController:
             )
         return self._plan_view(self._reviewed_plan(service, plan), kind=kind)
 
+    @staticmethod
+    def _expired_plan_view(plan: dict[str, Any], *, kind: str) -> WisdomView:
+        skill_id, version = plan.get("skill_id"), plan.get("version")
+        actions = [WisdomAction("Browse team skills", "browse", local_command="/wisdom browse")]
+        if skill_id and isinstance(version, int) and version > 0:
+            actions.insert(0, WisdomAction(
+                "Recheck", f"{kind}_plan",
+                {"reference": f"{skill_id}@v{version}", "update_mode": plan.get("update_mode")}
+                if kind == "install" else {"skill_id": skill_id},
+                primary=True,
+            ))
+        return WisdomView(
+            "Review expired",
+            "Recheck the package and its current permissions before confirming.",
+            actions=actions,
+        )
+
     def _plan_view(
         self, plan: dict[str, Any], *, kind: str, checks_expanded: bool = False,
     ) -> WisdomView:
+        # Expanding checks is a projection of the same review, not renewed authority.
+        if plan.get("review_deadline", 0) <= time.monotonic():
+            return self._expired_plan_view(plan, kind=kind)
         compatibility = plan.get("compatibility") or {}
         outcome = str(compatibility.get("outcome") or "unknown")
         blocked = (
@@ -1558,7 +1584,9 @@ class WisdomCommandController:
                 WisdomAction(
                     "Confirm install" if kind == "install" else "Confirm update",
                     f"{kind}_apply",
-                    {"receipt": plan["receipt"]},
+                    {key: plan[key] for key in (
+                        "receipt", "review_deadline", "skill_id", "version", "update_mode",
+                    )},
                     primary=True,
                 )
             )

@@ -155,6 +155,23 @@ describe('resolveMediaDisplaySrc', () => {
     })
   })
 
+  it('uses the explicit transcript owner instead of the ambient connection', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ connectionId: 'ambient', mode: 'remote', profile: 'ambient' } as never)
+
+    await expect(
+      resolveMediaDisplaySrc('/Users/me/project/a b.png', {
+        connectionId: 'transcript-owner',
+        profile: 'transcript-profile'
+      })
+    ).resolves.toBe('data:image/png;base64,ZHVtbXk=')
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'transcript-owner',
+      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Fa%20b.png',
+      profile: 'transcript-profile'
+    })
+  })
+
   it('reads local desktop file paths from the local desktop shell', async () => {
     const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
 

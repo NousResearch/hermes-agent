@@ -29,6 +29,7 @@ describe('TerminalRail', () => {
     const decoration = content?.firstElementChild
 
     expect(content).not.toBeNull()
+    expect(content?.classList.contains('text-pretty')).toBe(true)
     expect(view.container.contains(content)).toBe(false)
     // No flex box under the decoration: its per-line background only wraps
     // inline flow, so a flex label would hang its overflow dark-on-dark.

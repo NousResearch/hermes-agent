@@ -98,6 +98,17 @@ def test_up_to_date_desktop_returns_true_without_spawning(desktop_env):
     assert calls["builds"] == 0
 
 
+def test_appimage_update_skips_source_desktop_rebuild(desktop_env, monkeypatch, capsys):
+    desktop_dir, calls = desktop_env
+    monkeypatch.setenv("APPIMAGE", "/tmp/Hermes.AppImage")
+    monkeypatch.setenv("HERMES_APPIMAGE_UPDATE", "1")
+    monkeypatch.setattr(update_cmd.sys, "platform", "linux")
+
+    assert _run(desktop_dir) is True
+    assert calls["builds"] == 0
+    assert "handled separately" in capsys.readouterr().out
+
+
 def test_desktop_never_installed_returns_true(tmp_path, monkeypatch):
     spawned = []
     monkeypatch.setattr(

@@ -1454,20 +1454,23 @@ def dispatch_once(
             reconcile_orphans=reconcile_orphans,
         )
 
+    from hermes_cli.kanban_db_policy import board_policy
+    policy = board_policy(conn)
     try:
-        db_path = _kb.kanban_db_path(board=board)
+        db_path = policy.db_path if policy is not None else _kb.kanban_db_path(board=board)
     except Exception:
         # Must not lose the tick — fall through to an unguarded dispatch.
         result = _locked_tick()
         _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
-    with _kbc._dispatch_tick_lock(db_path) as held:
+    with _kbc._dispatch_tick_lock(db_path, required=policy is not None) as held:
         if not held:
             result = DispatchResult(skipped_locked=True)
         else:
             result = _locked_tick()
             # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
-            _kbc._maybe_checkpoint_wal(conn, db_path)
+            if not (dry_run and policy is not None):
+                _kbc._maybe_checkpoint_wal(conn, db_path)
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
@@ -1768,10 +1771,12 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
-    _run_reclaim_phase(
-        conn, result, stale_timeout_seconds=stale_timeout_seconds,
-        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
-    )
+    from hermes_cli.kanban_db_policy import board_policy
+    if not (dry_run and board_policy(conn) is not None):
+        _run_reclaim_phase(
+            conn, result, stale_timeout_seconds=stale_timeout_seconds,
+            failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )

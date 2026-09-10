@@ -155,6 +155,28 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_set_pre_claim(args: argparse.Namespace) -> int:
+    slug, rc = _board_slug_arg(args, "set-pre-claim", must_exist=True)
+    if rc:
+        return rc
+    native = kb.kanban_home() / "kanban.db" if slug == kb.DEFAULT_BOARD else kb.board_dir(slug) / "kanban.db"
+    if kb.kanban_db_path(slug).resolve() != native.resolve():
+        return _err("pre-claim policy requires this board's canonical native database", 2)
+    command = args.policy_command[1:] if args.policy_command[:1] == ["--"] else args.policy_command
+    if args.clear and command:
+        return _err("cannot set and clear pre-claim together", 2)
+    try:
+        meta = kb.write_board_metadata(
+            slug, clear_pre_claim=args.clear,
+            pre_claim=None if args.clear else {"command": command, "timeout_seconds": args.timeout},
+        )
+    except ValueError as exc:
+        return _err(str(exc), 2)
+    if not _json_out(args, meta):
+        print(f"Board {slug!r} pre-claim policy {'cleared' if args.clear else 'configured'}.")
+    return 0
+
+
 def _cmd_boards_export(args: argparse.Namespace) -> int:
     from hermes_cli import kanban_transfer
     from hermes_cli.sizefmt import format_bytes
@@ -209,6 +231,7 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-pre-claim": _cmd_boards_set_pre_claim,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

@@ -451,6 +451,7 @@ async def upload_task_attachment(
                             status_code=413, detail=f"attachment exceeds {KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit")
                     out.write(chunk)
         except OSError as exc:
+            dest_path.unlink(missing_ok=True)
             raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}")
         att_id = kanban_db.add_attachment(
             conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),

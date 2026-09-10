@@ -132,7 +132,7 @@ _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 # (18/18 -> 7/18) — the ask-the-user affordance must be ambient, a stub is not enough.
 _DEFAULT_DEFERRED_TOOLS = frozenset({
     "computer_use", "session_search", "image_generate",
-    "todo_list", "process_manage", "cronjob_manage",
+    "todo_list", "cronjob_manage",
     # Desktop GUI surface (desktop_ui + project toolsets)
     "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
     "show_tip", "setup_mcp", "desktop_project", "close_terminal",

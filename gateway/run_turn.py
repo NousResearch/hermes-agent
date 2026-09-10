@@ -2714,7 +2714,10 @@ class GatewayTurnMixin:
 
     @staticmethod
     def _proxy_error_result(text: str) -> dict[str, Any]:
-        return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
+        return {
+            "final_response": text, "messages": [], "api_calls": 0, "tools": [],
+            "failed": True, "completed": False, "error": text,
+        }
 
     def _proxy_stream_consumer(self, source: "SessionSource", event_message_id, _thread_metadata, _run_still_current):
         """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""
@@ -4319,8 +4322,27 @@ class GatewayTurnMixin:
             persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
             voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
         )
+        response = None
+        try:
+            await turn_runner.start_native_cot()
+            if self._get_proxy_url():
+                response = await self._run_agent_via_proxy(
+                    message=message, context_prompt=context_prompt, history=history, source=source,
+                    session_id=session_id, session_key=session_key, run_generation=run_generation,
+                    event_message_id=event_message_id,
+                )
+            else:
+                response = await self._run_agent_local_turn(
+                    disp, turn_ctx, turn_runner, _cleanup_adapter, message_type,
+                )
+            return response
+        finally:
+            await turn_runner.finish_native_cot(response)
+
+    async def _run_agent_local_turn(self, disp, turn_ctx, turn_runner, _cleanup_adapter, message_type):
+        source, session_key = turn_ctx.source, turn_ctx.session_key
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
-            turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
+            turn_ctx, turn_runner, source, turn_ctx.event_message_id, disp._native_slack_task_cards,
         )
         await turn_runner.start_native_cot()
         # Two independent quiet reasons: a muted diagnostic wake (ours) and a scheduled heartbeat.
@@ -4345,7 +4367,6 @@ class GatewayTurnMixin:
             else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
         )
 
-        cot_finished = False
         try:
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
@@ -4356,7 +4377,6 @@ class GatewayTurnMixin:
             self._run_agent_evict_on_fallback(turn_ctx)
 
             await turn_runner.finish_native_cot(response)
-            cot_finished = True
 
             # Interrupted OR queued message (/queue)?
             result = turn_ctx.result_holder[0]
@@ -4368,8 +4388,6 @@ class GatewayTurnMixin:
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
-            if not cot_finished:
-                await turn_runner.finish_native_cot(None)
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,

@@ -774,3 +774,66 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+class TestRelayDeliveryRespectsCircles:
+    """Cross-machine delivery obeys the caller's circle exactly like the local roster does: a
+    target in another circle is unreachable (nothing enqueued, None -> "no teammate"), a
+    same-circle target proceeds to envelope enqueue. `_try_relay_delivery` swallows every
+    exception and returns None, so the tests RECORD the enqueue call rather than raise from it —
+    None alone cannot distinguish "filtered out" from "failed"."""
+
+    _ROWS = [
+        {"profile": "programmer", "handle": "programmer", "connection_id": "mini",
+         "connection_label": "mini", "title": "", "description": "", "circle": "work"},
+    ]
+
+    @staticmethod
+    def _viewer(tmp_path, circle):
+        home = tmp_path / ".hermes"
+        d = home / "profiles" / "reviewer"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "profile.yaml").write_text(
+            f"ui_meta:\n  hermes-bots:\n    shape: cloud\n    circle: {circle}\n", encoding="utf-8")
+        return home, d
+
+    def _wire(self, monkeypatch):
+        """Record enqueue; stub the two steps after it so the positive path completes."""
+        import tools.bot_relay as relay
+        calls: list = []
+        monkeypatch.setattr(relay, "read_remote_roster", lambda root: list(self._ROWS))
+        monkeypatch.setattr(relay, "enqueue_envelope",
+                            lambda root, **kw: (calls.append(kw), {"id": "env-1"})[1])
+        monkeypatch.setattr(relay, "waiter_command", lambda root, envelope: ["true"])
+        monkeypatch.setattr(bot_mode_dm, "_spawn_delivery", lambda cmd, label, **k: f"spawned {label}")
+        return calls
+
+    def test_other_circle_target_is_unreachable_and_nothing_is_enqueued(self, tmp_path, monkeypatch):
+        home, viewer = self._viewer(tmp_path, "hobby")
+        calls = self._wire(monkeypatch)
+
+        result = bot_mode_dm._try_relay_delivery(home, "programmer", "hi", "reviewer",
+                                                 task_id=None, agent=None, viewer=viewer)
+
+        assert result is None
+        assert calls == []
+
+    def test_same_circle_target_reaches_enqueue(self, tmp_path, monkeypatch):
+        home, viewer = self._viewer(tmp_path, "work")
+        calls = self._wire(monkeypatch)
+
+        result = bot_mode_dm._try_relay_delivery(home, "programmer", "hi", "reviewer",
+                                                 task_id=None, agent=None, viewer=viewer)
+
+        assert result == "spawned @programmer on mini"
+        assert len(calls) == 1 and calls[0]["target"]["profile"] == "programmer"
+
+    def test_no_viewer_keeps_todays_unfiltered_behaviour(self, tmp_path, monkeypatch):
+        """Callers that pass no viewer (none in-tree today) keep the old, unfiltered semantics."""
+        home, _viewer = self._viewer(tmp_path, "hobby")
+        calls = self._wire(monkeypatch)
+
+        result = bot_mode_dm._try_relay_delivery(home, "programmer", "hi", "reviewer", task_id=None, agent=None)
+
+        assert result == "spawned @programmer on mini"
+        assert len(calls) == 1

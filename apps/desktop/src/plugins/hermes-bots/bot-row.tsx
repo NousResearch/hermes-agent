@@ -56,7 +56,7 @@ import {
 } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { botGroups, groupLastActivity } from './group-membership'
-import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
+import { botCircle, fallbackSelectionAfterHide, isBotHidden, isBotPinned, isBotPrivate } from './hidden-bots'
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
@@ -108,6 +108,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const meta = botRosterMeta(bot, allMeta)
   const hidden = isBotHidden(bot, allMeta)
   const pinned = isBotPinned(bot, allMeta)
+  const isPrivate = isBotPrivate(bot, allMeta)
+  const circle = botCircle(bot, allMeta)
   const sourceStatus = botSourceStatus(bot)
   const groups = botGroups(meta)
   const last = bot.last_session
@@ -177,7 +179,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
 
   const handle = botHandle(bot.name, bot)
   const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? 'This device' : '')
-  const showDetailsRow = Boolean(showHandle || displayPreview || fromBot)
+  const showDetailsRow = Boolean(showHandle || circle || displayPreview || fromBot)
 
   const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
     .filter(Boolean)
@@ -293,7 +295,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             {showHandle ? (
               <span className="shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)">{`@${handle}`}</span>
             ) : null}
-            {showHandle && displayPreview ? <span className="shrink-0 text-(--ui-text-quaternary)">·</span> : null}
+            {showHandle && circle ? <span className="shrink-0 text-(--ui-text-quaternary)">·</span> : null}
+            {circle ? (
+              <span className="shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)" data-slot="bot-circle">
+                {circle}
+              </span>
+            ) : null}
+            {(showHandle || circle) && displayPreview ? <span className="shrink-0 text-(--ui-text-quaternary)">·</span> : null}
             {displayPreview ? (
               <span className={cn('min-w-0 truncate', fromBot && 'italic')}>{displayPreview}</span>
             ) : null}
@@ -326,6 +334,24 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           }}
         >
           {pinned ? 'Unpin' : 'Pin to top'}
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={() => {
+            void ensureBotMetadata(bot)
+              .then(current => {
+                const wasPrivate = Boolean(current.private)
+                void saveBotMeta(bot, {
+                  private: !wasPrivate
+                })
+                host.notify({
+                  kind: 'info',
+                  message: `${displayName(bot, current)} ${wasPrivate ? b.roster.madePublic : b.roster.madePrivate}`
+                })
+              })
+              .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
+          }}
+        >
+          {isPrivate ? b.roster.makePublic : b.roster.makePrivate}
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() => {

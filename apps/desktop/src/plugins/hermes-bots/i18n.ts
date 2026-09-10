@@ -54,6 +54,12 @@ type BotsMessages = {
     noHiddenMatch: string
     hiddenFromRoster: string
     pinned: string
+    makePrivate: string
+    circle: string
+    circleHint: string
+    makePublic: string
+    madePrivate: string
+    madePublic: string
     needsAttention: string
     needsInput: string
     /** The kind filter's three options, in menu order. */
@@ -285,6 +291,12 @@ const en: BotsMessages = {
     noHiddenMatch: 'No hidden bots match these filters.',
     hiddenFromRoster: 'Hidden from the roster',
     pinned: 'Pinned',
+    makePrivate: 'Make private',
+    circle: 'Circle',
+    circleHint: 'Who this bot shares the mesh with. Blank = the shared circle; agents only see and message their own circle.',
+    makePublic: 'Make public',
+    madePrivate: 'is now private — other agents can no longer see or message it',
+    madePublic: 'is public again — other agents can see and message it',
     needsAttention: 'needs attention',
     needsInput: 'Needs your input',
     botsAndGroups: 'Bots and group chats',
@@ -503,6 +515,12 @@ const ja: BotsMessages = {
     noHiddenMatch: 'これらのフィルタに一致する非表示ボットはありません。',
     hiddenFromRoster: '名簿から非表示',
     pinned: 'ピン留め',
+    makePrivate: '非公開にする',
+    circle: 'サークル',
+    circleHint: 'このボットがメッシュを共有する相手。空欄＝共有サークル。エージェントは同じサークル内だけを見て、メッセージを送れます。',
+    makePublic: '公開にする',
+    madePrivate: 'は非公開になりました — 他のエージェントからは見えず、メッセージも届きません',
+    madePublic: 'は公開に戻りました — 他のエージェントから見え、メッセージを送れます',
     needsAttention: '要対応',
     needsInput: '入力が必要です',
     botsAndGroups: 'ボットとグループチャット',
@@ -720,6 +738,12 @@ const zh: BotsMessages = {
     noHiddenMatch: '没有已隐藏的机器人匹配这些筛选条件。',
     hiddenFromRoster: '已从名单中隐藏',
     pinned: '已置顶',
+    makePrivate: '设为私有',
+    circle: '圈子',
+    circleHint: '此机器人共享网格的范围。留空＝共享圈子；智能体只能看到并联系自己圈子内的成员。',
+    makePublic: '设为公开',
+    madePrivate: '已设为私有 — 其他智能体无法再看到或联系它',
+    madePublic: '已恢复公开 — 其他智能体可以看到并联系它',
     needsAttention: '需要处理',
     needsInput: '需要你输入',
     botsAndGroups: '机器人和群聊',
@@ -933,6 +957,12 @@ const zhHant: BotsMessages = {
     noHiddenMatch: '沒有已隱藏的機器人符合這些篩選條件。',
     hiddenFromRoster: '已從名單中隱藏',
     pinned: '已釘選',
+    makePrivate: '設為私有',
+    circle: '圈子',
+    circleHint: '此機器人共享網格的範圍。留空＝共享圈子；代理只能看到並聯繫自己圈子內的成員。',
+    makePublic: '設為公開',
+    madePrivate: '已設為私有 — 其他代理無法再看到或聯繫它',
+    madePublic: '已恢復公開 — 其他代理可以看到並聯繫它',
     needsAttention: '需要處理',
     needsInput: '需要您的輸入',
     botsAndGroups: '機器人和群組聊天',

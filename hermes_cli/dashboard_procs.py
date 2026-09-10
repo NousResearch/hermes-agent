@@ -328,18 +328,53 @@ def _kill_stale_dashboard_processes(
     """
     from hermes_cli import main_dashboard as _dash
 
-    if restart_managed and _dash._restart_managed_dashboard_service(reason):
-        # The dashboard unit is handled but other backends (e.g. hermes-serve.service) are not:
-        # mark the unit handled so the filter below drops its PIDs, and keep going.
-        _dash_unit = getattr(_dash, "_DASHBOARD_SYSTEMD_UNIT", "hermes-dashboard.service")
-        already_restarted_units = set(already_restarted_units or ()) | {
-            str(_dash_unit).removesuffix(".service")}
     exclude = _exclude_pids_from_env()
+    launchd_jobs: list[tuple[str, int | None, Path | None]] = []
+    launchd_targets: set[str] = set()
+    if restart_managed and sys.platform == "darwin":
+        discovered = _dash._launchd_dashboard_jobs()
+        if discovered is None:
+            return _empty_result()
+        launchd_jobs = discovered
+        exclude.update(pid for _target, pid, _home in launchd_jobs if pid is not None)
+        for target, _pid, home in launchd_jobs:
+            if _dash._launchd_home_matches_active(home):
+                _dash._restart_managed_dashboard_service(reason, launchd_target=target)
+        # Preserve both pre- and post-kickstart ownership. A final query after the
+        # generic scan closes the remaining process-replacement race.
+        after_restart = _dash._launchd_dashboard_jobs()
+        if after_restart is None:
+            return _empty_result()
+        if any(pid is None for _target, pid, _home in after_restart):
+            return _empty_result()
+        launchd_targets = {
+            target for target, _pid, _home in (*launchd_jobs, *after_restart)
+        }
+        exclude.update(pid for _target, pid, _home in after_restart if pid is not None)
+    elif restart_managed and _dash._restart_managed_dashboard_service(reason):
+            # The dashboard unit is handled but other backends (e.g. hermes-serve.service) are not:
+            # mark the unit handled so the filter below drops its PIDs, and keep going.
+            _dash_unit = getattr(_dash, "_DASHBOARD_SYSTEMD_UNIT", "hermes-dashboard.service")
+            already_restarted_units = set(already_restarted_units or ()) | {
+                str(_dash_unit).removesuffix(".service")}
     if restart_managed:
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
     pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None)
+    if restart_managed and sys.platform == "darwin":
+        latest_jobs = _dash._launchd_dashboard_jobs()
+        if latest_jobs is None:
+            return _empty_result()
+        latest = {target: pid for target, pid, _home in latest_jobs}
+        if any(target not in latest or latest[target] is None for target in launchd_targets):
+            # A loaded LaunchAgent is between PIDs or became unreadable. Do not let
+            # a global process scan turn an uncertain managed process into a manual one.
+            return _empty_result()
+        if any(pid is None for pid in latest.values()):
+            return _empty_result()
+        managed_pids = {pid for pid in latest.values() if pid is not None}
+        pids = [pid for pid in pids if pid not in managed_pids]
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).

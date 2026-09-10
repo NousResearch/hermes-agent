@@ -166,8 +166,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [])
 
-  const restartGatewayAction = { label: t.commandCenter.restartGateway, onClick: () => void restartGatewayNow() }
-
   const refreshPlatforms = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -339,8 +337,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: m.restartToApply,
-        action: restartGatewayAction
+        message: m.restartToApply
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -366,8 +363,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: m.restartToReconnect,
-        action: restartGatewayAction
+        message: m.restartToReconnect
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -498,18 +494,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           {/* Which profile's gateway this page configures (hidden for
               single-profile users). */}
           <SettingsProfileScope className="border-b border-(--ui-stroke-secondary) px-3 py-2" />
-          {restartNeeded && (
-            <Alert className="mx-3 mt-3 w-auto" variant="warning">
-              <AlertTriangle />
-              <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-                <span>{m.restartNeeded}</span>
-                <Button disabled={gatewayRestarting} onClick={() => void restartGatewayNow()} size="sm" variant="secondary">
-                  <RefreshCw className={gatewayRestarting ? 'animate-spin' : undefined} />
-                  {gatewayRestarting ? m.restarting : m.restartNow}
-                </Button>
-              </AlertDescription>
-            </Alert>
-          )}
           <div className="min-h-0 flex-1">
             <MasterDetail>
               <ListColumn>
@@ -540,6 +524,23 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   )
                 }
               >
+                {restartNeeded && (
+                  <Alert variant="warning">
+                    <AlertTriangle />
+                    <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                      <span>{m.restartNeeded}</span>
+                      <Button
+                        disabled={gatewayRestarting}
+                        onClick={() => void restartGatewayNow()}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        <RefreshCw className={gatewayRestarting ? 'animate-spin' : undefined} />
+                        {gatewayRestarting ? m.restarting : m.restartNow}
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                )}
                 {selected && (
                   <PlatformDetail
                     approved={approvedByPlatform[selected.id] ?? []}
@@ -677,7 +678,11 @@ function PlatformDetail({
             <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
             {/* Resting states earn no pill — only actionable ones. */}
             {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
-            {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
+            {/* The state pill already reads "gateway stopped" when that is the
+                platform's whole story; only add the hint when it is not. */}
+            {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
+              <SetupPill active={false}>{m.gatewayStopped}</SetupPill>
+            )}
           </div>
           <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
             {platform.description}

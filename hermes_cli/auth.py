@@ -345,6 +345,25 @@ def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Option
     return val
 
 
+def _model_level_key_env(provider_id: str) -> str:
+    """``model.key_env`` when config.yaml's main model targets *provider_id*, else ``""``.
+
+    The Desktop settings UI saves registry-provider keys as a credential pointer
+    (``model.key_env`` → ``$HERMES_HOME/.env``) instead of the registry's canonical env var,
+    so credential resolution must consult it (#106336).
+    """
+    try:
+        from hermes_cli.config import load_config
+        model_cfg = (load_config() or {}).get("model")
+    except Exception:
+        return ""
+    if not isinstance(model_cfg, dict):
+        return ""
+    if str(model_cfg.get("provider") or "").strip().lower() != provider_id:
+        return ""
+    return str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
+
+
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
@@ -364,6 +383,17 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
     # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation in .env isn't shadowed by
     # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).
     from hermes_cli.config import get_env_value_prefer_dotenv
+
+    # Desktop-saved credential pointer: the settings UI persists registry-provider keys as
+    # model.key_env → $HERMES_HOME/.env (e.g. HERMES_CUSTOM_LMSTUDIO_API_KEY) while keeping
+    # model.provider on the registry id, so the pointer must be honored here or the UI-saved
+    # key is silently ignored and lmstudio falls through to its no-auth placeholder (#106336).
+    key_env = _model_level_key_env(provider_id)
+    if key_env:
+        val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(key_env), key_env)
+        if val:
+            return val, key_env
+
     for env_var in pconfig.api_key_env_vars:
         val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(env_var), env_var)
         if val:

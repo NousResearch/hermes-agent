@@ -202,7 +202,8 @@ def _capture_run(monkeypatch, module, **result_kwargs):
 
 
 def _assert_noninteractive(call: dict):
-    assert call.get("stdin") is subprocess.DEVNULL, call["argv"]
+    # A stdin fed by ``input=`` (git credential fill's request) is written and closed, not a terminal.
+    assert call.get("stdin") is subprocess.DEVNULL or "input" in call, call["argv"]
     env = call.get("env")
     assert env is not None and env.get("GIT_TERMINAL_PROMPT") == "0", call["argv"]
 

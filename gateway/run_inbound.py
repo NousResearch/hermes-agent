@@ -1002,6 +1002,7 @@ class GatewayInboundMixin:
     async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:
         """Run a ``type: exec`` quick command in the gateway process (30 s cap, sanitized env — the
         gateway process has every API key in os.environ; output is redacted too)."""
+        proc = None
         try:
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(
@@ -1018,6 +1019,13 @@ class GatewayInboundMixin:
             return "Quick command timed out (30s)."
         except Exception as e:
             return f"Quick command error: {e}"
+        finally:
+            if proc is not None and proc.returncode is None:
+                # wait_for() only cancels communicate(): on timeout or task cancellation the shell and
+                # everything it spawned keep running under the gateway. Take the whole tree down —
+                # off the event loop, since Windows maps this to a synchronous taskkill /T /F.
+                from agent.deadline import kill_process_tree
+                await asyncio.to_thread(kill_process_tree, proc.pid)
 
     async def _hm_dispatch_quick_and_plugin_commands(
         self, event: "MessageEvent", source: SessionSource, command: Optional[str]

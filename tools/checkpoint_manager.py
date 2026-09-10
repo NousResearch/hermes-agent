@@ -792,11 +792,13 @@ class CheckpointManager:
 
     def get_working_dir_for_path(self, file_path: str) -> str:
         """Resolve a file path to its working directory (nearest project-marker ancestor)."""
+        from hermes_constants import exists_or_denied
         path = _normalize_path(file_path)
         candidate = path if path.is_dir() else path.parent
         check = candidate
+        # A parent the process cannot stat (locked-down shared host) is "no marker here", not a crash (#8751 class).
         while check != check.parent:
-            if any((check / m).exists() for m in _PROJECT_MARKERS):
+            if any(exists_or_denied(check / m) for m in _PROJECT_MARKERS):
                 return str(check)
             check = check.parent
         return str(candidate)

@@ -1198,6 +1198,17 @@ def is_first_party_module(name: str | None) -> bool:
     return bool(root) and (root in FIRST_PARTY_MODULE_ROOTS or root.startswith("hermes_"))
 
 
+def exists_or_denied(path) -> bool:
+    """``path.exists()`` that treats an unreadable path as absent. Parent-walking
+    marker probes (``.git``, project markers) hit directories the process cannot
+    stat on locked-down shared hosts (mode-700 parents); that must read as 'not
+    here', not raise out of prompt/checkpoint construction (#8751)."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def partial_update_hint(exc: BaseException) -> list[str]:
     """Recovery guidance lines when *exc* looks like a half-updated tree, else ``[]``."""
     # A missing third-party dep (bad venv, missing extra) is a different problem.

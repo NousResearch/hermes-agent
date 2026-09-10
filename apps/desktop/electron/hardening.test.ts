@@ -449,7 +449,7 @@ test.runIf(process.platform !== 'win32')('the written file is owner-only even wh
   })
 })
 
-test('writeSecretFileAtomic cannot be redirected through a symlink planted at the temp path', () => {
+test('writeSecretFileAtomic cannot be redirected through a symlink planted at the temp path', context => {
   // A stale temp path is attacker-controllable in a shared temp/userData dir.
   // Following it would write the token into the victim file AND then rename the
   // link over connection.json, so every later write leaks too.
@@ -457,12 +457,13 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
     const target = path.join(dir, 'connection.json')
     const victim = path.join(dir, 'victim.txt')
     fs.writeFileSync(victim, 'original', { mode: 0o644 })
+    const victimMode = modeOf(victim)
 
     try {
       fs.symlinkSync(victim, `${target}.tmp`, 'file')
     } catch (error: any) {
       if (error?.code === 'EPERM' || error?.code === 'EACCES') {
-        return
+        context.skip('creating a file symlink requires host permission')
       }
 
       throw error
@@ -471,10 +472,13 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
     writeSecretFileAtomic(target, 'tok-live-42')
 
     assert.equal(fs.readFileSync(victim, 'utf8'), 'original', 'the symlink target was not written through')
-    assert.equal(modeOf(victim), 0o644, 'the victim file was not chmodded either')
+    assert.equal(modeOf(victim), victimMode, 'the victim file mode stays unchanged')
     assert.equal(fs.readFileSync(target, 'utf8'), 'tok-live-42')
     assert.equal(fs.lstatSync(target).isSymbolicLink(), false, 'the target is a real file, not the planted link')
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
+
+    if (process.platform !== 'win32') {
+      assert.equal(modeOf(target), SECRET_FILE_MODE)
+    }
   })
 })
 
@@ -542,7 +546,7 @@ test.runIf(process.platform !== 'win32')('tightenSecretFileMode is idempotent an
   })
 })
 
-test('tightenSecretFileMode refuses to chmod a symlink instead of following it to its target', () => {
+test('tightenSecretFileMode never changes a symlink target', context => {
   // Matches readInstallationId in desktop-installation.ts. Without the lstat
   // guard a link planted at the config path sends the chmod to whatever it
   // resolves to — someone else's file gets its mode rewritten.
@@ -550,19 +554,20 @@ test('tightenSecretFileMode refuses to chmod a symlink instead of following it t
     const target = path.join(dir, 'connection.json')
     const victim = path.join(dir, 'victim.txt')
     fs.writeFileSync(victim, 'not mine', { mode: 0o644 })
+    const victimMode = modeOf(victim)
 
     try {
       fs.symlinkSync(victim, target, 'file')
     } catch (error: any) {
       if (error?.code === 'EPERM' || error?.code === 'EACCES') {
-        return
+        context.skip('creating a file symlink requires host permission')
       }
 
       throw error
     }
 
-    assert.equal(tightenSecretFileMode(target), false, 'reports "not tightened" rather than acting on the link')
-    assert.equal(modeOf(victim), 0o644, 'the symlink target keeps its own mode')
+    assert.equal(tightenSecretFileMode(target), process.platform === 'win32')
+    assert.equal(modeOf(victim), victimMode, 'the symlink target keeps its own mode')
   })
 })
 

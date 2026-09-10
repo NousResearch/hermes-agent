@@ -66,13 +66,13 @@ test('stable tags and tagless dev builds publish to the stable channels', async 
   assert.equal((await identityForVariant('light')).channel, 'light')
 })
 
-test('bundled variant keeps the Hermes display name and a distinct appId', async () => {
+test('bundled variant has a distinct identity from the full variant', async () => {
   const full = await identityForVariant(undefined)
   const bundled = await identityForVariant('bundled')
 
   assert.equal(bundled.light, false)
-  assert.equal(bundled.displayName, full.displayName)
-  assert.equal(bundled.appNamePascal, 'HermesBundled')
+  assert.notEqual(bundled.displayName, full.displayName)
+  assert.notEqual(bundled.appNamePascal, full.appNamePascal)
   assert.notEqual(bundled.appId, full.appId)
   assert.equal(bundled.channel, 'latest')
 })

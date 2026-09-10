@@ -900,7 +900,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
+        notify_on_complete: bool = False, watch_patterns: Optional[List[str]] = None,
+        watcher_platform: str = "", watcher_chat_id: str = "", watcher_user_id: str = "",
+        watcher_user_name: str = "", watcher_thread_id: str = "", watcher_message_id: str = "",
+    ) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
@@ -911,7 +915,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
+            notify_on_complete=bool(notify_on_complete), watch_patterns=list(watch_patterns or []),
+            watcher_platform=watcher_platform, watcher_chat_id=watcher_chat_id,
+            watcher_user_id=watcher_user_id, watcher_user_name=watcher_user_name,
+            watcher_thread_id=watcher_thread_id, watcher_message_id=watcher_message_id,
+        )
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -980,17 +990,25 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
         session_key: str = "", owner_task_id: str = "", output_so_far: str = "",
-        notify_on_complete: bool = True) -> ProcessSession:
+        notify_on_complete: bool = True, watch_patterns: Optional[List[str]] = None,
+        watcher_platform: str = "", watcher_chat_id: str = "", watcher_user_id: str = "",
+        watcher_user_name: str = "", watcher_thread_id: str = "", watcher_message_id: str = "",
+    ) -> ProcessSession:
         """Take over a still-running foreground Popen as a tracked background session
         (yield-to-background: the user sent a message while the command was running).
         The caller has stopped its own drain thread; the registry's reader continues from
         the pipe's current position and ``output_so_far`` seeds the buffer so nothing
         already captured is lost."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd)
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key, cwd,
+            notify_on_complete=bool(notify_on_complete), watch_patterns=list(watch_patterns or []),
+            watcher_platform=watcher_platform, watcher_chat_id=watcher_chat_id,
+            watcher_user_id=watcher_user_id, watcher_user_name=watcher_user_name,
+            watcher_thread_id=watcher_thread_id, watcher_message_id=watcher_message_id,
+        )
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
-        session.notify_on_complete = notify_on_complete
         if output_so_far:
             session.append_output(output_so_far)
         self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
@@ -998,12 +1016,22 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "", notify_on_complete: bool = False,
+        watch_patterns: Optional[List[str]] = None, watcher_platform: str = "",
+        watcher_chat_id: str = "", watcher_user_id: str = "", watcher_user_name: str = "",
+        watcher_thread_id: str = "", watcher_message_id: str = "",
+    ) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
+            notify_on_complete=bool(notify_on_complete), watch_patterns=list(watch_patterns or []),
+            watcher_platform=watcher_platform, watcher_chat_id=watcher_chat_id,
+            watcher_user_id=watcher_user_id, watcher_user_name=watcher_user_name,
+            watcher_thread_id=watcher_thread_id, watcher_message_id=watcher_message_id,
+        )
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -1417,6 +1445,20 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return False
 
     @staticmethod
+    def should_surface_process_notification(evt: dict, surface_child: bool) -> bool:
+        """Keep routine child success quiet while never hiding a failed completion."""
+        if evt.get("type") == "async_delegation":
+            return True
+        task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
+        if not task_id.startswith("sa-") or surface_child:
+            return True
+        completion_reason = str(evt.get("completion_reason") or "exited")
+        return evt.get("type") == "completion" and (
+            evt.get("exit_code") != 0
+            or completion_reason not in {"exited", "already_exited"}
+        )
+
+    @staticmethod
     def _owns_event(evt: dict, session_key: str, owns_event, is_async_delegation: bool) -> bool:
         """Routing verdict for one drained event (see drain_notifications); False = requeue."""
         evt_session_key = str(evt.get("session_key") or "")
@@ -1473,7 +1515,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             if not is_async_delegation and _evt_task_id.startswith("sa-"):
                 if surface_child is None:
                     surface_child = self._surface_child_process_notifications()
-                if not surface_child:
+                if not self.should_surface_process_notification(evt, surface_child):
                     logger.debug(
                         "Suppressed subagent-owned process notification "
                         "(delegation.surface_child_process_notifications=false): "

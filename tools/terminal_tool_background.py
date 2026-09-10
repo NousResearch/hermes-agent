@@ -60,10 +60,6 @@ _ROUTING_FIELDS = (
     ("watcher_user_name", "HERMES_SESSION_USER_NAME"),
     ("watcher_thread_id", "HERMES_SESSION_THREAD_ID"),
     ("watcher_message_id", "HERMES_SESSION_MESSAGE_ID"),
-    # The spawning conversation's session-db id lets the gateway's completion
-    # pre-flight drop the notification if the user closed this session (/new)
-    # before the process finished, instead of injecting it into the NEW one.
-    ("parent_session_id", "HERMES_SESSION_ID"),
 )
 
 
@@ -74,43 +70,44 @@ def _looks_like_homebrew_ci_poller(command: str) -> bool:
     return "statusCheckRollup" in command or (has_gh and has_jq)
 
 
-def _stamp_gateway_routing(proc_session, get_session_env) -> None:
-    """Copy the spawning chat's routing metadata onto the process session so
-    completion / watch notifications reach the right chat/thread."""
+def _gateway_routing_fields(get_session_env) -> dict:
+    """Return routing metadata to persist with a newly admitted session."""
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
     if not platform:
-        return
-    proc_session.watcher_platform = platform
-    for attr, var in _ROUTING_FIELDS:
-        setattr(proc_session, attr, get_session_env(var, ""))
+        return {}
+    fields = {"watcher_platform": platform}
+    fields.update({attr: get_session_env(var, "") for attr, var in _ROUTING_FIELDS})
+    return fields
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty):
+           session_key, effective_pty, notification_fields=None):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
                   owner_task_id=task_id or effective_task_id, session_key=session_key)
+    if notification_fields:
+        common.update(notification_fields)
     if env_type == "local":
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
     return process_registry.spawn_via_env(env=env, **common)
 
 
-def _apply_async_support(proc_session, result_data, notify_on_complete, watch_patterns):
-    """Finite sessions (stateless HTTP, one-shot Kanban workers) can't route a
-    completion back after the turn ends: drop the flags and tell the agent to
-    poll. Otherwise stamp gateway routing. Returns (notify, watch_patterns)."""
+def _prepare_async_admission(result_data, notify_on_complete, watch_patterns):
+    """Validate delivery and build fields before a reader can observe process exit."""
     if not (notify_on_complete or watch_patterns):
-        return notify_on_complete, watch_patterns
+        return notify_on_complete, watch_patterns, {}
     from gateway.session_context import async_delivery_supported, get_session_env
 
-    if async_delivery_supported():
-        _stamp_gateway_routing(proc_session, get_session_env)
-        return notify_on_complete, watch_patterns
-    result_data["notify_on_complete"] = False
-    result_data["notify_unsupported"] = _ASYNC_UNSUPPORTED_NOTE
-    logger.info("background proc %s: async delivery unsupported on this "
-                "session; notify_on_complete/watch_patterns disabled", proc_session.id)
-    return False, None
+    if not async_delivery_supported():
+        result_data["notify_on_complete"] = False
+        result_data["notify_unsupported"] = _ASYNC_UNSUPPORTED_NOTE
+        logger.info("background proc async delivery unsupported; notifications disabled")
+        return False, None, {}
+    return notify_on_complete, watch_patterns, {
+        "notify_on_complete": bool(notify_on_complete),
+        "watch_patterns": list(watch_patterns or []),
+        **_gateway_routing_fields(get_session_env),
+    }
 
 
 def _register_completion_watcher(process_registry, proc_session, session_key) -> None:
@@ -121,7 +118,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
         "session_id": proc_session.id, "check_interval": 5, "session_key": session_key,
         "platform": proc_session.watcher_platform,
         **{attr.removeprefix("watcher_"): getattr(proc_session, attr)
-           for attr, _ in _ROUTING_FIELDS[:-1]},
+           for attr, _ in _ROUTING_FIELDS},
         "notify_on_complete": True, "parent_session_id": proc_session.parent_session_id,
     })
 
@@ -146,34 +143,38 @@ def spawn_background_process(
         workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
     )
     try:
+        watch_patterns, conflict_note = _resolve_notification_flag_conflict(
+            notify_on_complete=bool(notify_on_complete), watch_patterns=watch_patterns, background=True,
+        )
+        admission_result = {}
+        notify_on_complete, watch_patterns, notification_fields = _prepare_async_admission(
+            admission_result, notify_on_complete, watch_patterns,
+        )
+        if not notify_on_complete:
+            conflict_note = None
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
-            effective_pty=effective_pty,
+            effective_pty=effective_pty, notification_fields=notification_fields,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
+        result_data.update(admission_result)
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:
             result_data["pty_note"] = pty_disabled_reason
-        if not notify_on_complete and not watch_patterns:
+        if not notify_on_complete and not watch_patterns and not admission_result:
             result_data["hint"] = _SILENT_BACKGROUND_HINT
         if command and _looks_like_homebrew_ci_poller(command):
             existing = result_data.get("hint", "")
             result_data["hint"] = (existing + "\n\n" + _HOMEBREW_CI_POLLER_HINT if existing
                                    else _HOMEBREW_CI_POLLER_HINT)
 
-        notify_on_complete, watch_patterns = _apply_async_support(
-            proc_session, result_data, notify_on_complete, watch_patterns)
-        watch_patterns, conflict_note = _resolve_notification_flag_conflict(
-            notify_on_complete=bool(notify_on_complete), watch_patterns=watch_patterns, background=True,
-        )
         if conflict_note:
             logger.warning("background proc %s: %s", proc_session.id, conflict_note)
             result_data["watch_patterns_ignored"] = conflict_note
         if notify_on_complete:
-            proc_session.notify_on_complete = True
             result_data["notify_on_complete"] = True
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
@@ -182,7 +183,6 @@ def spawn_background_process(
                 result_data["notify_on_complete"] = False
                 result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
         if watch_patterns:
-            proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
         return json.dumps(result_data, ensure_ascii=False)
     except Exception as e:
@@ -221,24 +221,17 @@ def yield_to_background_handler(
 
     def _handler(proc, output_so_far: str) -> dict:
         from tools.process_registry import process_registry
+        notify_on_complete, _, notification_fields = _prepare_async_admission({}, True, None)
         session = process_registry.adopt_local(
             proc, command=command, cwd=cwd, task_id=effective_task_id,
             owner_task_id=task_id or effective_task_id, session_key=session_key,
-            output_so_far=output_so_far)
-        _stamp_routing_if_gateway(process_registry, session, session_key)
+            output_so_far=output_so_far, notify_on_complete=notify_on_complete,
+            **notification_fields,
+        )
+        if session.watcher_platform:
+            _register_completion_watcher(process_registry, session, session_key)
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {
             "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
         }
     return _handler
-
-
-def _stamp_routing_if_gateway(process_registry, session, session_key) -> None:
-    """Route the adopted session's completion like a normal notify_on_complete spawn."""
-    from gateway.session_context import async_delivery_supported, get_session_env
-    if not async_delivery_supported():
-        session.notify_on_complete = False
-        return
-    _stamp_gateway_routing(session, get_session_env)
-    if session.watcher_platform:
-        _register_completion_watcher(process_registry, session, session_key)

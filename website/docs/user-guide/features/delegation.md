@@ -214,15 +214,17 @@ delivered records are bounded and profile-local.
 Background processes a subagent starts (e.g. `npm ci` with
 `notify_on_complete`) technically route their completion and watch-pattern
 notifications to the **parent** conversation, because anything that outlives
-the child needs a durable consumer. By default those notifications are
-**suppressed** in the parent chat — the child's consolidated delegation result
-is the deliverable, and mid-conversation "process finished" walls from a
-child's internal builds are noise. Suppressed events are logged at debug level
-with the process session ID and subagent task ID, so they remain diagnosable.
+the child needs a durable consumer. Routine successful completions are
+**suppressed** in the parent chat by default — the child's consolidated
+delegation result is the deliverable, and mid-conversation "process finished"
+walls from a child's internal builds are noise. Failed or abnormal completions
+always surface so the parent cannot miss a child-process failure. Suppressed
+events are logged at debug level with the process session ID and subagent task
+ID, so they remain diagnosable.
 
-The delegation result itself is never suppressed. To restore delivery of the
-child process notifications (each carries a "Started by subagent …"
-attribution line):
+The delegation result itself is never suppressed. Set the following to also
+deliver routine child process notifications (each carries a "Started by
+subagent …" attribution line):
 
 ```yaml
 delegation:

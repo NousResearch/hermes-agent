@@ -527,6 +527,24 @@ def test_child_completion_notification_suppressed_by_default(monkeypatch):
     assert reg.completion_queue.qsize() == 0
 
 
+def test_child_failure_notification_is_visible_by_default(monkeypatch):
+    """Default suppression keeps routine child success quiet, not a failure."""
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    reg = ProcessRegistry()
+    event = _child_completion_evt(task_id="sa-9-failure0001")
+    event["exit_code"] = 7
+    reg.completion_queue.put(event)
+
+    deliveries = reg.drain_notifications()
+
+    assert len(deliveries) == 1
+    assert deliveries[0][0]["exit_code"] == 7
+    assert reg.completion_queue.empty()
+
+
 def test_async_delegation_event_from_child_never_suppressed(monkeypatch):
     """The delegation result itself (type async_delegation) always flows to
     the parent even while the same child's process notifications are
@@ -687,6 +705,79 @@ def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch, noti
     assert "notification-child-finished" in event["output"]
     reg.completion_queue.put(event)
     assert reg.drain_notifications() == []
+
+
+def test_terminal_admits_fast_child_notification_before_reader_completion(monkeypatch):
+    """A completion route must be present before a child can exit and be read."""
+    import json
+    import sys
+
+    import agent.delegation_context as delegation_context
+    import gateway.session_context as session_context
+    import hermes_cli.config as _cfg
+    import tools.process_registry as registry_module
+    from tools.process_registry import ProcessRegistry
+    from tools.terminal_tool_background import spawn_background_process
+
+    monkeypatch.setattr(
+        _cfg,
+        "read_raw_config",
+        lambda *a, **k: {"delegation": {"surface_child_process_notifications": True}},
+    )
+    session_env = {
+        "HERMES_SESSION_PLATFORM": "test",
+        "HERMES_SESSION_CHAT_ID": "synthetic-chat",
+        "HERMES_SESSION_MESSAGE_ID": "synthetic-message",
+        "HERMES_SESSION_ID": "synthetic-parent-session",
+    }
+    monkeypatch.setattr(session_context, "async_delivery_supported", lambda: True)
+    monkeypatch.setattr(
+        session_context,
+        "get_session_env",
+        lambda key, default="": session_env.get(key, default),
+    )
+    monkeypatch.setattr(delegation_context, "is_delegated_child_context", lambda: False)
+
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry_module, "process_registry", registry)
+
+    def complete_inline(self, session, reader_target, _reader_name, extra_args=()):
+        with self._lock:
+            self._running[session.id] = session
+        reader_target(session, *extra_args)
+
+    monkeypatch.setattr(ProcessRegistry, "_track_started", complete_inline)
+
+    result = json.loads(
+        spawn_background_process(
+            command=f'"{sys.executable}" -c "raise SystemExit(7)"',
+            env=type("SyntheticEnvironment", (), {"env": {}})(),
+            env_type="local",
+            effective_task_id="default",
+            task_id="sa-9-fastfail",
+            session_key="synthetic-parent-session",
+            workdir=None,
+            cwd=".",
+            effective_pty=False,
+            notify_on_complete=True,
+            watch_patterns=None,
+            approval_note=None,
+            pty_disabled_reason=None,
+        )
+    )
+
+    assert result.get("notify_on_complete") is True, result
+    event = registry.completion_queue.get(timeout=15)
+    assert event["exit_code"] == 7
+    assert event["owner_task_id"] == "sa-9-fastfail"
+    registry.completion_queue.put(event)
+    deliveries = registry.drain_notifications(session_key="synthetic-parent-session")
+    assert len(deliveries) == 1
+    session = registry.get(event["session_id"])
+    assert session is not None
+    assert session.parent_session_id == "synthetic-parent-session"
+    assert registry.pending_watchers[0]["message_id"] == "synthetic-message"
+    assert registry.completion_queue.empty()
 
 
 def test_spawn_local_without_owner_defaults_to_task_id(monkeypatch, notification_child):

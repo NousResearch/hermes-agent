@@ -1264,9 +1264,9 @@ DEFAULT_CONFIG = {
         # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
         # log a warning audit line. true only for trusted batch work.
         "subagent_auto_approve": False,
-        # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern
-        # notifications to the PARENT; false suppresses them (the child's result is the
-        # deliverable). Async-delegation results are NEVER suppressed.
+        # Subagent background processes (task_id "sa-...") route notifications to the PARENT.
+        # false suppresses routine child success; failed/abnormal completions and async-delegation
+        # results always surface so a child failure cannot be hidden.
         "surface_child_process_notifications": False,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of

@@ -28,9 +28,11 @@ it('retains a dismissed banner until its later click or action is consumed', () 
 it('dismisses an expired notification before releasing it and releases failed delivery immediately', () => {
   vi.useFakeTimers()
   const registry = createNotificationRegistry({ ttlMs: 1000 })
+
   const notification = Object.assign(new EventEmitter(), {
     close: vi.fn(() => expect(registry.has(notification)).toBe(true))
   })
+
   registry.retain(notification)
   vi.advanceTimersByTime(1000)
   expect(notification.close).toHaveBeenCalledOnce()

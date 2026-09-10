@@ -1229,6 +1229,31 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 
+def _cmd_tree(args: argparse.Namespace) -> int:
+    """Render the parent/child task hierarchy so each subtask's original root is visible.
+
+    ``task_id`` scopes to one subtree; without it, the whole board renders as a
+    forest. Output is Jira-style ASCII by default, nested JSON with ``--json``,
+    or a Mermaid flowchart with ``--mermaid`` (the desktop renders mermaid
+    fences directly). Read-only — derived from ``task_links``.
+    """
+    from hermes_cli import kanban_tree as kt
+
+    with kbc.connect_closing() as conn:
+        forest = kt.build_forest(
+            conn,
+            root_id=args.task_id,
+            include_archived=bool(getattr(args, "archived", False)),
+        )
+        if getattr(args, "mermaid", False):
+            print(kt.render_mermaid(forest))
+        elif getattr(args, "json", False):
+            print(kt.render_json(forest))
+        else:
+            print(kt.render_ascii(forest))
+    return 0
+
+
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
@@ -1248,6 +1273,7 @@ _HANDLERS = {
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
+    "tree": _cmd_tree,
     "gc": _cmd_gc,
 }
 

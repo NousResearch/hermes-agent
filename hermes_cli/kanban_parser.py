@@ -230,6 +230,13 @@ _SPECS = [
         _arg("--step-key", dest="current_step_key", metavar="KEY",
              help="Restrict to tasks with this current_step_key"),
     ], aliases=["ls"], help="List tasks"),
+    _cmd("tree", [
+        _arg("task_id", nargs="?", help="Root task id; without it, renders the whole board as a forest"),
+        _json_flag(help="Emit a nested {id, title, status, assignee, children} structure"),
+        _arg("--mermaid", action="store_true",
+             help="Emit a Mermaid flowchart (renders in the desktop app)"),
+        _arg("--archived", action="store_true", help="Include archived tasks in the tree"),
+    ], help="Render the parent/child task hierarchy (which original task each subtask belongs to)"),
     _cmd("show", [_TASK_ID, _json_flag(), *_run_state_args("filter listed runs by task_runs column")],
          help="Show a task with comments + events"),
     _cmd("assign", [_TASK_ID, _arg("profile", help="Profile name (or 'none' to unassign)")],

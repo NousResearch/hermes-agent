@@ -1,7 +1,25 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from tools import browser_tool_install as bt_install
+
+
+def test_acp_browser_setup_ignores_disabled_cli_browser_toolset(tmp_path):
+    """An explicit ACP setup request must install browser support."""
+    from acp_adapter.entry import _run_setup_browser
+
+    script = tmp_path / "install.sh"
+    script.touch()
+    config = {"platform_toolsets": {"cli": ["file", "terminal", "web"]}}
+    browser_check = Mock(side_effect=[False, True])
+    with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"node": lambda: True, "browser": browser_check}), \
+         patch("hermes_cli.config.load_config", return_value=config), \
+         patch("hermes_cli.dep_ensure._find_install_script", return_value=(script, "bash")), \
+         patch("hermes_cli.dep_ensure.subprocess.run", return_value=Mock(returncode=0)) as run:
+        assert _run_setup_browser(assume_yes=True) == 0
+
+    assert run.call_args.args[0] == ["bash", str(script), "--ensure", "browser"]
+    assert browser_check.call_count == 2
 
 
 @pytest.mark.linux_only
@@ -104,7 +122,7 @@ def test_ensure_dependency_uses_powershell_on_windows(tmp_path):
     from hermes_cli.dep_ensure import ensure_dependency
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir(parents=True)
-    (scripts_dir / "install.ps1").write_text("# fake")
+    (scripts_dir / "install.ps1").write_text("# fake", encoding="utf-8")
     with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"node": lambda: False}), \
          patch("hermes_cli.dep_ensure._find_install_script", return_value=(scripts_dir / "install.ps1", "powershell")), \
          patch("hermes_cli.dep_ensure.shutil") as mock_shutil, \

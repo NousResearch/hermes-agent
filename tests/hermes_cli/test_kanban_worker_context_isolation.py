@@ -137,6 +137,13 @@ def test_create_tool_roundtrips_policy_and_defaults_to_legacy_context(
     )
     assert ordinary_shown["task"]["context_isolation"] == "none"
 
+    listed_raw = kt.registry.dispatch("kanban_list", {})
+    assert isinstance(listed_raw, str)
+    listed = json.loads(listed_raw)
+    listed_by_id = {task["id"]: task for task in listed["tasks"]}
+    assert listed_by_id[isolated_created["task_id"]]["context_isolation"] == "task"
+    assert listed_by_id[ordinary_created["task_id"]]["context_isolation"] == "none"
+
     with kbc.connect() as conn:
         ordinary = kb.get_task(conn, ordinary_created["task_id"])
         assert ordinary is not None

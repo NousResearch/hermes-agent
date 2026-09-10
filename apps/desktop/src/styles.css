@@ -328,10 +328,18 @@
       var(--ui-accent) var(--theme-control-active-accent-mix),
       color-mix(in srgb, var(--ui-base) 5%, transparent)
     );
+    /* Text ramp: each rung is `--ui-base` at an alpha against the surface
+       beneath. The lowest rungs fell below WCAG AA (4.5:1) on light themes:
+       tertiary at 54% (3.47:1) and quaternary at 36% (2.16:1). Raising them
+       to 68% clears AA on every first-party theme (worst case nous-alt dark
+       at 4.91:1). Tertiary and quaternary end up equivalent - at these
+       alphas no gap can both keep a visual step and clear AA, so we trade
+       the finer hierarchy for readable text. Decorative text that wants a
+       genuinely faint rung should use its own token, not quaternary. */
     --ui-text-primary: color-mix(in srgb, var(--ui-base) 94%, transparent);
     --ui-text-secondary: color-mix(in srgb, var(--ui-base) 74%, transparent);
-    --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 54%, transparent);
-    --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 36%, transparent);
+    --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 68%, transparent);
+    --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 68%, transparent);
     /* Transcript scaffolding — thinking headers, settled tool runs, the live
        activity ticker. One colour for all of them (see `ScaffoldRow`), pitched
        between the secondary and tertiary greys those lines used to pick

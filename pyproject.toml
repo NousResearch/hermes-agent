@@ -16,6 +16,7 @@ requires-python = ">=3.11,<3.14"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
+
 dependencies = [
   # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
   # Rationale: ranges allow PyPI to ship a fresh version of a transitive
@@ -177,6 +178,12 @@ dependencies = [
   # before, worked around by installing with `--no-deps` or an older release.
   "nemo-relay>=0.8.3,<0.9; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
 ]
+
+[project.urls]
+Homepage = "https://hermes-agent.nousresearch.com/"
+Documentation = "https://hermes-agent.nousresearch.com/docs/"
+Repository = "https://github.com/NousResearch/hermes-agent"
+Issues = "https://github.com/NousResearch/hermes-agent/issues"
 
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via

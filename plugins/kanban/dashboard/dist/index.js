@@ -22,7 +22,7 @@
     Badge, Button, Input, Label, Select, SelectOption,
   } = SDK.components;
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
-  const { cn, timeAgo } = SDK.utils;
+  const { cn, timeAgo, handleImagePaste } = SDK.utils;
 
   // Newer host dashboards expose a DS-styled Checkbox on the plugin SDK.
   // Fall back to a native <input type="checkbox"> shim so older hosts that
@@ -311,6 +311,26 @@
     if (!board) return url;
     const sep = url.indexOf("?") >= 0 ? "&" : "?";
     return `${url}${sep}board=${encodeURIComponent(board)}`;
+  }
+
+  function uploadTaskAttachments(taskId, board, fileList) {
+    const files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return Promise.resolve();
+    const url = withBoard(`${API}/tasks/${encodeURIComponent(taskId)}/attachments`, board);
+    let chain = Promise.resolve();
+    files.forEach(function (file, index) {
+      chain = chain.then(function () {
+        const fd = new FormData();
+        fd.append("file", file, file.name || `clipboard-image-${index + 1}`);
+        return SDK.authedFetch(url, { method: "POST", body: fd }).then(function (resp) {
+          if (resp.ok) return undefined;
+          return resp.text().then(function (txt) {
+            throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+          });
+        });
+      });
+    });
+    return chain;
   }
 
   // The SDK's Select component fires ``onValueChange(value)`` directly
@@ -980,7 +1000,7 @@
         .catch(function () { /* dialog cancelled */ });
     }, [selectedIds, requestMoveConfirm, requestCompletionSummary, performMoveTask]);
 
-    const createTask = useCallback(function (body) {
+    const createTask = useCallback(function (body, attachments) {
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -993,9 +1013,20 @@
         if (res && res.warning) {
           setError(tx(t, "taskCreatedWarning", "Task created, but: ") + res.warning);
         }
-        loadBoard();
-        loadBoardList();  // refresh counts in the switcher
-        return res;
+        const taskId = res && res.task && res.task.id;
+        const upload = taskId
+          ? uploadTaskAttachments(taskId, board, attachments)
+          : Promise.resolve();
+        return upload.catch(function (e) {
+          // The task already exists; resolve so the create dialog closes rather
+          // than letting a retry create a duplicate card.
+          setError(tx(t, "taskCreatedUploadFailed",
+            "Task created, but attachment upload failed: ") + String(e.message || e));
+        }).then(function () {
+          loadBoard();
+          loadBoardList();  // refresh counts in the switcher
+          return res;
+        });
       });
     }, [loadBoard, loadBoardList, board, t]);
 
@@ -2922,8 +2953,8 @@
         allTasks: props.allTasks,
         defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
         defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || "",
-        onSubmit: function (body) {
-          props.onCreate(body).then(function () { setShowCreate(false); });
+        onSubmit: function (body, attachments) {
+          return props.onCreate(body, attachments).then(function () { setShowCreate(false); });
         },
         onCancel: function () { setShowCreate(false); },
       }) : null,
@@ -3164,6 +3195,10 @@
   function InlineCreate(props) {
     const { t } = useI18n();
     const [title, setTitle] = useState("");
+    const [description, setDescription] = useState("");
+    const [pendingImages, setPendingImages] = useState([]);
+    const [submitBusy, setSubmitBusy] = useState(false);
+    const [submitErr, setSubmitErr] = useState(null);
     const [assignee, setAssignee] = useState("");
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
@@ -3185,9 +3220,10 @@
 
     const submit = function () {
       const trimmed = title.trim();
-      if (!trimmed) return;
+      if (!trimmed || submitBusy) return;
       const body = {
         title: trimmed,
+        body: description.trim() || null,
         assignee: assignee.trim() || null,
         priority: Number(priority) || 0,
         triage: props.columnName === "triage",
@@ -3215,10 +3251,16 @@
         const gmt = parseInt(goalMaxTurns, 10);
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
-      props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
-      setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
-      setGoalMode(false); setGoalMaxTurns("");
+      setSubmitBusy(true);
+      setSubmitErr(null);
+      props.onSubmit(body, pendingImages).then(function () {
+        setTitle(""); setDescription(""); setPendingImages([]);
+        setAssignee(""); setPriority(0); setParent(""); setSkills("");
+        setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
+        setGoalMode(false); setGoalMaxTurns("");
+      }).catch(function (e) {
+        setSubmitErr(String(e.message || e));
+      }).finally(function () { setSubmitBusy(false); });
     };
 
     const showPathInput = workspaceKind !== "scratch";
@@ -3260,6 +3302,26 @@
               className: "text-sm min-h-[3rem] max-h-48 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
               rows: 3,
             }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            fieldLabel(tx(t, "description", "Description")),
+            h("textarea", {
+              value: description,
+              onChange: function (e) { setDescription(e.target.value); },
+              onPaste: function (e) {
+                handleImagePaste(e, function (files) {
+                  setPendingImages(function (current) { return current.concat(files); });
+                });
+              },
+              placeholder: tx(t, "taskDescriptionPlaceholder",
+                "Task details… Paste screenshots here to attach them."),
+              className: "text-sm min-h-[5rem] max-h-64 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+              rows: 5,
+            }),
+            pendingImages.length > 0 ? h("div", {
+              className: "text-xs text-muted-foreground",
+            }, `${pendingImages.length} pasted image${pendingImages.length === 1 ? "" : "s"} will be attached`) : null,
+            submitErr ? h("div", { className: "text-xs text-destructive" }, submitErr) : null,
           ),
           h("div", { className: "flex gap-2" },
             h("div", { className: "flex flex-col gap-1 flex-1" },
@@ -3383,8 +3445,8 @@
           h(Button, {
             type: "submit",
             size: "sm",
-            disabled: !title.trim(),
-          }, tx(t, "create", "Create")),
+            disabled: !title.trim() || submitBusy,
+          }, submitBusy ? tx(t, "creating", "Creating…") : tx(t, "create", "Create")),
         ),
       ),
     );
@@ -3463,28 +3525,7 @@
       if (!files.length) return;
       setUploadBusy(true);
       setUploadErr(null);
-      const url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug);
-      // Upload sequentially so a partial failure leaves a clear state.
-      let chain = Promise.resolve();
-      files.forEach(function (f) {
-        chain = chain.then(function () {
-          const fd = new FormData();
-          fd.append("file", f, f.name);
-          // SDK.authedFetch handles auth in BOTH modes (loopback token header /
-          // gated cookie) and applies the dashboard base-path prefix. The old
-          // hand-rolled Authorization:Bearer + credentials:'same-origin' sent
-          // an empty token and 401'd in gated mode.
-          return SDK.authedFetch(url, { method: "POST", body: fd })
-            .then(function (resp) {
-              if (!resp.ok) {
-                return resp.text().then(function (txt) {
-                  throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
-                });
-              }
-            });
-        });
-      });
-      chain.then(function () {
+      uploadTaskAttachments(props.taskId, boardSlug, files).then(function () {
         load();
         props.onRefresh();
       }).catch(function (e) {
@@ -3730,6 +3771,9 @@
             h(Input, {
               value: newComment,
               onChange: function (e) { setNewComment(e.target.value); },
+              onPaste: function (e) {
+                if (!uploadBusy) handleImagePaste(e, handleUpload);
+              },
               onKeyDown: function (e) {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault(); handleComment();
@@ -3936,6 +3980,8 @@
         task: t,
         renderMarkdown: props.renderMarkdown,
         onPatch: props.onPatch,
+        onUpload: props.onUpload,
+        uploadBusy: props.uploadBusy,
       }),
       h(DependencyEditor, {
         task: t,
@@ -4504,6 +4550,9 @@
             value: v,
             rows: 8,
             onChange: function (e) { setV(e.target.value); },
+            onPaste: function (e) {
+              if (!props.uploadBusy) handleImagePaste(e, props.onUpload);
+            },
           })
         : props.task.body
           ? h(MarkdownBlock, { source: props.task.body, enabled: props.renderMarkdown })

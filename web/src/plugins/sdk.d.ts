@@ -164,6 +164,11 @@ export interface HermesPluginSDK {
     timeAgo: (ts: number) => string;
     /** Relative-time formatter for an ISO-8601 string. */
     isoTimeAgo: (iso: string) => string;
+    /** Consume a paste only when it contains image files. */
+    handleImagePaste: (
+      event: Pick<ClipboardEvent, "clipboardData" | "preventDefault">,
+      onImages: (files: File[]) => void,
+    ) => boolean;
   };
 
   /**

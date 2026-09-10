@@ -201,6 +201,33 @@ def _get_langfuse() -> Optional[Langfuse]:
     return None if _LANGFUSE_CLIENT is _INIT_FAILED else _LANGFUSE_CLIENT
 
 
+def _default_environment() -> str:
+    """Fall back to the active Hermes profile name as the Langfuse environment.
+
+    Without this every profile exports under Langfuse's default environment, so
+    traces from different profiles are indistinguishable in the UI and cannot be
+    compared. The profile name is already derivable at runtime, so requiring
+    HERMES_LANGFUSE_ENV to be set per profile stores a second copy of something
+    the process already knows — and that copy goes stale: ``hermes profile
+    create --clone-from`` copies the source profile's .env verbatim, so a cloned
+    profile silently reports under the name of the profile it was cloned from.
+
+    An explicit HERMES_LANGFUSE_ENV / LANGFUSE_ENV still takes precedence.
+    Returns "" when the profile cannot be determined, leaving ``environment``
+    unset exactly as before.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        name = (get_active_profile_name() or "").strip()
+    except Exception:  # pragma: no cover - fail-open, tracing must never break
+        return ""
+    # "custom" is what get_active_profile_name() returns for an unrecognized
+    # HERMES_HOME. It carries no information, so prefer leaving the environment
+    # unset over bucketing traces under a placeholder.
+    return "" if name == "custom" else name
+
+
 def _build_client() -> Optional[Langfuse]:
     """Construct the SDK client from env, or None (with one warning) when it can't be."""
     if Langfuse is None:
@@ -232,7 +259,8 @@ def _build_client() -> Optional[Langfuse]:
         return None
 
     kwargs: Dict[str, Any] = {"public_key": public_key, "secret_key": secret_key}
-    for key, name, default in (("base_url", "BASE_URL", "https://cloud.langfuse.com"), ("environment", "ENV", ""),
+    for key, name, default in (("base_url", "BASE_URL", "https://cloud.langfuse.com"),
+                               ("environment", "ENV", _default_environment()),
                                ("release", "RELEASE", "")):
         value = _env(f"HERMES_LANGFUSE_{name}") or _env(f"LANGFUSE_{name}") or default
         if value:

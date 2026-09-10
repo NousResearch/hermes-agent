@@ -177,6 +177,95 @@ class TestNoninteractiveGitEnv:
         assert "/attacker/controlled" not in safe
         assert "/mnt/nfs/repo" in safe
 
+    def test_safe_directory_preserves_git_ordering_and_reset_markers(self, tmp_path, monkeypatch):
+        """The user's effective trust policy is replayed verbatim, resets included.
+
+        ``safe.directory`` is an ordered multi-valued setting where an empty value resets every
+        earlier entry, which is how a user revokes a system-wide ``safe.directory=*`` and then
+        names only the repositories they trust. Reading global-before-system, dropping the empty
+        marker, or de-duplicating turns ``* -> reset -> /trusted/only`` into ``/trusted/only, *``
+        and silently restores the wildcard the user revoked. Contract: the injected sequence equals
+        what git itself reports for the same config (system scope first, then global, verbatim).
+        """
+        system_config = tmp_path / "system-gitconfig"
+        system_config.write_text("[safe]\n\tdirectory = *\n", encoding="utf-8")
+        global_config = tmp_path / "gitconfig"
+        global_config.write_text(
+            "[safe]\n\tdirectory = \n\tdirectory = /trusted/only\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(system_config))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+
+        env = noninteractive_git_env()
+        injected = [
+            env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+            if env[f"GIT_CONFIG_KEY_{idx}"] == "safe.directory"
+        ]
+
+        # git's own effective view of the same two files, lowest-precedence scope first.
+        expected = subprocess.run(
+            ["git", "config", "-z", "--get-all", "safe.directory"],
+            capture_output=True, text=True, check=True,
+            env={**os.environ, "GIT_CONFIG_SYSTEM": str(system_config),
+                 "GIT_CONFIG_GLOBAL": str(global_config)},
+        ).stdout.split("\0")[:-1]
+
+        assert expected == ["*", "", "/trusted/only"], "git's documented reset shape changed"
+        assert injected == expected
+
+    def test_safe_directory_reset_still_revokes_wildcard_for_real_git(self, tmp_path):
+        """End-to-end: a revoked wildcard stays revoked, and the named repo stays usable.
+
+        Proves the injected sequence produces the same *trust decision* real git makes, not merely
+        the same list. Both repos are made cross-owner via ``safe.directory=*`` being the only
+        thing that could authorise them, so the negative control fails exactly as the user's
+        interactive git does.
+        """
+        if not shutil.which("git"):
+            pytest.skip("git not installed")
+
+        def _repo(name: str) -> Path:
+            path = tmp_path / name
+            path.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                 "commit", "-q", "--allow-empty", "-m", "x"],
+                cwd=path, check=True,
+            )
+            return path
+
+        trusted = _repo("trusted")
+        unrelated = _repo("unrelated")
+
+        system_config = tmp_path / "system-gitconfig"
+        system_config.write_text("[safe]\n\tdirectory = *\n", encoding="utf-8")
+        global_config = tmp_path / "gitconfig"
+        global_config.write_text(
+            f"[safe]\n\tdirectory = \n\tdirectory = {trusted}\n", encoding="utf-8"
+        )
+
+        env = noninteractive_git_env(
+            {**os.environ, "GIT_CONFIG_SYSTEM": str(system_config),
+             "GIT_CONFIG_GLOBAL": str(global_config)}
+        )
+        # Force the ownership check that safe.directory governs; without it git trusts the repo
+        # because the test process owns the checkout it just created.
+        env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+
+        def _rev_parse(repo: Path) -> int:
+            return subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+            ).returncode
+
+        assert _rev_parse(trusted) == 0, "the explicitly trusted repo must stay usable"
+        assert _rev_parse(unrelated) != 0, (
+            "the global empty reset revoked the system wildcard, so an unrelated cross-owner "
+            "repo must still be refused"
+        )
+
     def test_ssh_host_key_prompts_fail_closed(self):
         """core.sshCommand is pinned to BatchMode ssh (#104591).
 

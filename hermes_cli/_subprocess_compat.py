@@ -233,12 +233,20 @@ _GIT_CONFIG_OVERRIDES = {
 
 
 def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
-    """The user's configured ``safe.directory`` values, read from their real global/system config.
+    """The user's configured ``safe.directory`` values, in git's own effective order.
 
-    Read with ``git config --get-all`` under *base_env* (the caller's untouched environment) so an
-    explicit ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` still points at the file the user means.
+    Read with ``git config -z --get-all`` under *base_env* (the caller's untouched environment) so
+    an explicit ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` still points at the file the user means.
     Best-effort: any failure (git missing, malformed config, timeout) yields no entries and leaves
     the caller exactly as it behaved before.
+
+    ``safe.directory`` is an *ordered* multi-valued setting and an empty value resets every entry
+    seen so far, so a user can revoke a system-wide ``safe.directory=*`` and then name only the
+    repositories they actually trust. Order and empty resets are therefore policy, not formatting:
+    scopes are read lowest-precedence first (system, then global) and every value is preserved
+    verbatim -- no de-duplication (it is a sequence, not a set) and no dropping of the reset
+    marker, either of which would resurrect a revoked wildcard and widen trust. ``-z`` keeps a
+    value containing whitespace or a newline as the single entry git reads it as.
     """
     env = dict(base_env)
     # --get-all itself must not be derailed by ambient injection or an interactive prompt.
@@ -248,11 +256,10 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
     env.pop("GIT_CONFIG_COUNT", None)
     env["GIT_TERMINAL_PROMPT"] = "0"
     values: list[str] = []
-    seen: set[str] = set()
-    for scope in ("--global", "--system"):
+    for scope in ("--system", "--global"):
         try:
             proc = subprocess.run(
-                ["git", "config", scope, "--get-all", "safe.directory"],
+                ["git", "config", scope, "-z", "--get-all", "safe.directory"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=5, stdin=subprocess.DEVNULL, env=env, check=False,
             )
@@ -260,11 +267,12 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
             continue
         if proc.returncode != 0:
             continue
-        for line in proc.stdout.splitlines():
-            entry = line.strip()
-            if entry and entry not in seen:
-                seen.add(entry)
-                values.append(entry)
+        # -z terminates every value with NUL, so the trailing split field is always empty and is
+        # not a config entry; interior empty fields are real reset markers and must survive.
+        records = proc.stdout.split("\0")
+        if records and records[-1] == "":
+            records.pop()
+        values.extend(records)
     return values
 
 
@@ -318,9 +326,11 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     # st_uid != geteuid() -- NFS/CIFS mounts without idmapping, shared checkouts, containers with
     # a remapped uid -- even though the user's own `git config --global --add safe.directory` is
     # correctly set and their interactive git works fine. Carried over the GIT_CONFIG_KEY_n
-    # channel, which survives GIT_CONFIG_GLOBAL=/dev/null. Read-only: it never widens the set
-    # beyond what the user already trusts, and the hardening overrides above still win because a
-    # later key of the same name takes precedence in git's config order.
+    # channel, which survives GIT_CONFIG_GLOBAL=/dev/null. Read-only and non-widening: the values
+    # are replayed in git's own effective order, empty reset markers included (see
+    # _user_safe_directories), so a global reset still revokes a system-wide wildcard exactly as it
+    # does for the user's interactive git. Appended last, but the hardening overrides above are
+    # distinct keys, so they are unaffected by ordering within safe.directory.
     overrides.extend(("safe.directory", value) for value in safe_directories)
     env["GIT_CONFIG_COUNT"] = str(len(overrides))
     for idx, (key, value) in enumerate(overrides):

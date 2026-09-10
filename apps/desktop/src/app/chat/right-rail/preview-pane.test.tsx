@@ -456,6 +456,42 @@ describe('PreviewPane console state', () => {
     expect(fireEvent.click(sourceLink!)).toBe(false)
   })
 
+  it('keeps PDFs on the blob path instead of probing the incompatible media scheme', async () => {
+    const dataUrl = 'data:application/pdf;base64,JVBERi0xLjQ='
+    const readFileDataUrl = vi.fn(async () => dataUrl)
+    const fetchPdf = vi.fn()
+    const { createObjectURL } = stubPdfObjectUrls()
+
+    $connection.set({ mode: 'local' } as never)
+    vi.stubGlobal('fetch', fetchPdf)
+    vi.stubGlobal('window', {
+      ...window,
+      hermesDesktop: {
+        readFileDataUrl
+      }
+    })
+
+    const rendered = render(
+      <PreviewPane
+        target={{
+          kind: 'file',
+          label: 'spec.pdf',
+          path: '/tmp/spec.pdf',
+          previewKind: 'pdf',
+          source: '/tmp/spec.pdf',
+          url: 'file:///tmp/spec.pdf'
+        }}
+      />
+    )
+
+    await waitFor(() => expect(rendered.container.querySelector('iframe')).not.toBeNull(), {
+      container: rendered.container
+    })
+    expect(fetchPdf).not.toHaveBeenCalled()
+    expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/spec.pdf')
+    expect(createObjectURL).toHaveBeenCalledOnce()
+  })
+
   it('renders PDF targets in an embedded viewer', async () => {
     const dataUrl = 'data:application/pdf;base64,JVBERi0xLjQ='
     const readFileDataUrl = vi.fn(async () => dataUrl)

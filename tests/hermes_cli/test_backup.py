@@ -171,6 +171,13 @@ class TestShouldExclude:
         assert _should_exclude(Path("profiles/clean/models/big.gguf"))
         assert _should_exclude(Path("profiles/clean/runtimes/llamacpp/x.dll"))
 
+    def test_excludes_regenerable_cache_at_profile_roots(self):
+        """Live browser/tool caches are mutable and unsafe to snapshot."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("cache/chrome-debug/Default/Cookies"))
+        assert _should_exclude(Path("profiles/sage/cache/chrome-debug/cache.db"))
+        assert not _should_exclude(Path("skills/example/cache/notes.md"))
+
     def test_keeps_nested_dirs_named_like_runtime_trees(self):
         """A deeper directory that happens to be called models/ or node/ is
         user data (a skill's assets, project files) and must survive."""
@@ -231,6 +238,30 @@ class TestIterBackupFiles:
         assert rel_nested in selected
         assert str(Path("models/big.gguf")) not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
+
+    def test_prunes_profile_root_caches_but_keeps_nested_user_cache(self, tmp_path):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        root_cache = root / "cache" / "browser"
+        profile_cache = root / "profiles" / "sage" / "cache" / "browser"
+        nested_cache = root / "skills" / "example" / "cache"
+        for directory in (root_cache, profile_cache, nested_cache):
+            directory.mkdir(parents=True)
+            (directory / "state.db").write_bytes(b"cache contents")
+
+        skipped: set = set()
+        selected = {
+            str(rel)
+            for _, rel in _iter_backup_files(root, tmp_path / "out.zip", skipped)
+        }
+
+        assert str(Path("cache/browser/state.db")) not in selected
+        assert str(Path("profiles/sage/cache/browser/state.db")) not in selected
+        assert str(Path("skills/example/cache/state.db")) in selected
+        assert "cache" in skipped
+        assert str(Path("profiles/sage/cache")) in skipped
 
     def test_skipped_dirs_collected_for_summary(self, tmp_path):
         from hermes_cli.backup import _iter_backup_files

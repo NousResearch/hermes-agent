@@ -36,6 +36,13 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('cron.promptPlaceholder')).toBe('代理每次執行時應做什麼？')
   })
 
+  it('translates representative pt-BR runtime strings', () => {
+    setRuntimeI18nLocale('pt-br')
+
+    expect(translateNow('common.save')).toBe('Salvar')
+    expect(translateNow('cron.blueprints.scheduled')).toBe('Modelo de automação agendado')
+  })
+
   it('translates settings copy for newly supported locales', () => {
     setRuntimeI18nLocale('ja')
     expect(translateNow('settings.appearance.title')).toBe('外観')

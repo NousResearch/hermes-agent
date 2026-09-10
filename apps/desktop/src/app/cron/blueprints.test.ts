@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import type { AutomationBlueprint } from '@/hermes'
+import { ptBr } from '@/i18n/pt-br'
 
-import { initialBlueprintValues } from './blueprints'
+import { blueprintDisplayCopy, initialBlueprintValues } from './blueprints'
 
 function blueprint(fields: AutomationBlueprint['fields']): AutomationBlueprint {
   return {
@@ -101,5 +102,31 @@ describe('initialBlueprintValues', () => {
     )
 
     expect(values).toEqual({ deliver: 'telegram' })
+  })
+})
+
+describe('blueprintDisplayCopy', () => {
+  it('uses the pt-BR catalog without replacing backend-owned English copy', () => {
+    const item = blueprint([])
+    item.key = 'morning-brief'
+    item.title = 'Morning briefing'
+    item.description = 'Backend description'
+
+    expect(blueprintDisplayCopy(item, ptBr.cron.blueprints.catalog)).toEqual({
+      title: 'Briefing matinal',
+      description: 'Um breve resumo diário: agenda de hoje, clima e itens urgentes aguardando você.'
+    })
+  })
+
+  it('falls back to backend copy for blueprints added after the locale was shipped', () => {
+    const item = blueprint([])
+    item.key = 'new-blueprint'
+    item.title = 'New blueprint'
+    item.description = 'New backend description'
+
+    expect(blueprintDisplayCopy(item, ptBr.cron.blueprints.catalog)).toEqual({
+      title: 'New blueprint',
+      description: 'New backend description'
+    })
   })
 })

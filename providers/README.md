@@ -41,7 +41,8 @@ layer reads from it:
 - `hermes_cli/config.py` injects every `env_var` into
   `OPTIONAL_ENV_VARS` so the setup wizard knows about it.
 - `hermes_cli/runtime_provider.py` reads `profile.api_mode` as a fallback
-  when URL detection finds nothing.
+  when URL detection finds nothing, and lets a profile-owned mode supersede a
+  stale persisted `model.api_mode`.
 - `agent/model_metadata.py` maps hostname → provider via
   `profile.get_hostname()`.
 - `agent/auxiliary_client.py` reads `profile.default_aux_model` first
@@ -69,8 +70,16 @@ under `$HERMES_HOME/plugins/model-providers/` for a private plugin).
 | `prepare_messages(msgs)` | Provider-specific message preprocessing (Qwen normalises to list-of-parts, injects `cache_control`). |
 | `build_extra_body(**ctx)` | Provider-specific `extra_body` (OpenRouter provider prefs, Gemini `thinking_config`). |
 | `build_api_kwargs_extras(**ctx)` | `(extra_body_additions, top_level_kwargs)` — Kimi puts reasoning_effort top-level, Qwen splits `enable_thinking`/`thinking_budget`. |
+| `normalize_auxiliary_extra_body(extra_body, **ctx)` | Final normalization for auxiliary request bodies after profile fields, generic reasoning, and caller overrides are merged. |
+| `finalize_api_kwargs(api_kwargs, **ctx)` | Final normalization for the main Chat Completions request after shared assembly and prompt-cache routing. |
 | `supported_reasoning_efforts(model)` | Declared per-model reasoning-effort vocabulary for gateways that 400 on unknown levels (Ramp Router reads its live catalog). `None` = defer to transport defaults, `()` = model takes no reasoning params, tuple = clamp target. Must be cache-only — called on the request hot path. |
 | `fetch_models(*, api_key)` | Live catalog fetch — default hits `{models_url or base_url}/models` with Bearer auth. Override for no-REST providers (Bedrock), OAuth catalogs (Anthropic), or public catalogs (OpenRouter). |
+
+Profiles that expose an OpenAI-compatible endpoint without credentials can set
+`keyless=True` and provide a non-secret `api_key_placeholder`; auth status and
+runtime resolution then agree without a provider-specific branch. A
+`response_tool_name_normalizer(name, context)` callback can similarly restore
+provider wire names for both streamed deltas and completed tool calls.
 
 ---
 

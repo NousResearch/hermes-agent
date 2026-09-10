@@ -307,6 +307,46 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_profile_normalizes_streamed_tool_start_name(self, mock_close, mock_create):
+        from providers.base import ProviderProfile
+        from run_agent import AIAgent
+
+        started = []
+        profile = ProviderProfile(
+            name="test-stream-profile",
+            response_tool_name_normalizer=lambda name, context: f"canonical_{name}",
+        )
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_123", name="terminal"),
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://gateway.example/v1",
+            model="test/model",
+            provider="test-stream-profile",
+            tool_gen_callback=started.append,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            response = agent._interruptible_streaming_api_call({})
+
+        assert started == ["canonical_terminal"]
+        assert response.choices[0].message.tool_calls[0].function.name == "terminal"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_tool_argument_deltas_are_collected_without_concatenating_each_chunk(
         self, mock_close, mock_create
     ):

@@ -83,6 +83,63 @@ class TestChatCompletionsBasic:
             "{}",
         ]
 
+    def test_profile_finalizer_runs_after_request_assembly(self, transport):
+        from providers.base import ProviderProfile
+
+        class FinalizingProfile(ProviderProfile):
+            def finalize_api_kwargs(self, api_kwargs, *, model=None, **context):
+                api_kwargs["profile_finalized"] = True
+                api_kwargs["extra_body"] = {**api_kwargs.get("extra_body", {}), "profile_marker": model}
+                return api_kwargs
+
+        kwargs = transport.build_kwargs(
+            model="test-model",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=FinalizingProfile(name="test-provider"),
+            request_overrides={"profile_finalized": False},
+        )
+
+        assert kwargs["profile_finalized"] is True
+        assert kwargs["extra_body"]["profile_marker"] == "test-model"
+
+    def test_profile_normalizes_final_tool_name_with_context(self, transport):
+        from providers.base import ProviderProfile, ToolNameNormalizeContext
+
+        seen = []
+
+        def normalize(name, context):
+            seen.append(context)
+            return f"canonical_{name}"
+
+        profile = ProviderProfile(name="test-provider", response_tool_name_normalizer=normalize)
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=[SimpleNamespace(
+                        id="call-1",
+                        function=SimpleNamespace(name="wire_tool", arguments="{}"),
+                    )],
+                ),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+
+        normalized = transport.normalize_response(
+            response,
+            provider_profile=profile,
+            model="test-model",
+        )
+
+        assert normalized.tool_calls[0].name == "canonical_wire_tool"
+        assert seen == [ToolNameNormalizeContext(
+            phase="final_tool_call",
+            provider="test-provider",
+            model="test-model",
+            request_wire_aliases=None,
+        )]
+
     @pytest.mark.parametrize("provider", ["nous", "openrouter"])
     def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):
         from providers import get_provider_profile

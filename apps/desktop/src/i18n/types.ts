@@ -488,6 +488,10 @@ export interface Translations {
       optional: string
       createdOn: (date: string) => string
       deleteAction: string
+      otpField: string
+      otpPlaceholder: string
+      otpHint: string
+      twoFactorBadge: string
       deleteTitle: string
       deleteDescription: (label: string) => string
       deleteConfirm: string
@@ -3390,6 +3394,13 @@ export interface Translations {
     vaultSaveFootnote: string
     vaultSaveDecline: string
     vaultSaveConfirm: string
+    vaultCodeSendFailed: string
+    vaultCodeTitle: (site: string) => string
+    vaultCodeDesc: (site: string) => string
+    vaultCodeLabel: string
+    vaultCodeFootnote: string
+    vaultCodeSkip: string
+    vaultCodeConfirm: string
     vaultUnlockPlaceholder: string
     vaultUnlockKeepLocked: string
     vaultUnlockConfirm: string

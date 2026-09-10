@@ -40,6 +40,19 @@ def get_unlock_prompt_callback() -> Optional[UnlockPrompt]:
     return getattr(_callback_tls, "prompt", None)
 
 
+# (site, hint) -> the one-time code the user reads off their phone/email/app, "" when declined.
+CodePrompt = Callable[[str, str], str]
+
+
+def set_code_prompt_callback(cb: Optional[CodePrompt]) -> None:
+    """Register the surface's "enter the code {site} sent you" prompt, per thread."""
+    _callback_tls.code = cb
+
+
+def get_code_prompt_callback() -> Optional[CodePrompt]:
+    return getattr(_callback_tls, "code", None)
+
+
 def set_save_login_prompt_callback(cb: Optional[SaveLoginPrompt]) -> None:
     """Register the surface's "save this login" prompt (identifier + masked password), per thread."""
     _callback_tls.save_login = cb

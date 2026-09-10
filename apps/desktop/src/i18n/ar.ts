@@ -429,6 +429,10 @@ export const ar = defineLocale({
       optional: '(اختياري)',
       createdOn: date => `أُضيفت ${date}`,
       deleteAction: 'إزالة العنصر المحفوظ',
+      otpField: 'مفتاح المصادقة',
+      otpPlaceholder: 'سر Base32 أو رابط otpauth://',
+      otpHint: '«مفتاح الإعداد» الذي يعرضه الموقع عند تفعيل المصادقة الثنائية. بحفظه يولّد Hermes الرموز بنفسه.',
+      twoFactorBadge: '2FA تلقائي',
       deleteTitle: 'حذف هذا العنصر؟',
       deleteDescription: label => `سيُزال "${label}" من الخزنة المشفّرة. لا يمكن التراجع عن هذا.`,
       deleteConfirm: 'حذف',
@@ -3050,7 +3054,15 @@ export const ar = defineLocale({
     vaultSavePasswordPlaceholder: 'كلمة المرور',
     vaultSaveFootnote: 'أدِر بيانات الدخول المحفوظة من الإعدادات ← كلمات المرور وتسجيلات الدخول.',
     vaultSaveDecline: 'عدم الحفظ',
-    vaultSaveConfirm: 'حفظ وتسجيل الدخول'
+    vaultSaveConfirm: 'حفظ وتسجيل الدخول',
+    vaultCodeSendFailed: 'تعذر إرسال الرمز',
+    vaultCodeTitle: site => `رمز التحقق لـ ${site}`,
+    vaultCodeDesc: site =>
+      `يطلب ${site} رمزًا لمرة واحدة (رسالة نصية أو بريد إلكتروني أو تطبيق مصادقة). أدخله هنا وسيكتبه Hermes في الصفحة؛ لا يراه النموذج أبدًا.`,
+    vaultCodeLabel: 'الرمز',
+    vaultCodeFootnote: 'تلميح: احفظ مفتاح المصادقة مع بيانات الدخول هذه في الإعدادات ← كلمات المرور وتسجيلات الدخول وسيُدخل Hermes الرموز نيابةً عنك.',
+    vaultCodeSkip: 'تخطٍ',
+    vaultCodeConfirm: 'إدخال الرمز'
   },
   desktop: {
     audioReadFailed: 'فشلت قراءة الصوت',

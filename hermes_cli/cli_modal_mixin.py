@@ -902,6 +902,28 @@ class CLIModalMixin:
         _cprint(f"\n{_DIM}  ✓ Login for {site} saved to your vault{_RST}")
         return answer
 
+    def _vault_code_callback(self, site: str, hint: str) -> str:
+        """One-time-code prompt (shown as typed; a 6-digit code is not a secret worth masking and users
+        need to see typos) on the sudo panel. "" = declined/timed out."""
+        from cli import _DIM, _RST, _cprint
+
+        response_queue = queue.Queue()
+        self._capture_modal_input_snapshot()
+        self._sudo_state = {"response_queue": response_queue, "vault_code": {"site": site, "hint": hint}}
+        self._sudo_deadline = _time.monotonic() + 180
+        self._ring_bell(prompt=True, context=f"verification code for {site}")
+        self._paint_now()
+        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._restore_modal_input_snapshot()
+        self._paint_now()
+        if result is _TIMED_OUT or not result:
+            _cprint(f"\n{_DIM}  ⏭ No code entered for {site}{_RST}")
+            return ""
+        _cprint(f"\n{_DIM}  ✓ Code entered into {site}{_RST}")
+        return result
+
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         self._capture_modal_input_snapshot()
         try:

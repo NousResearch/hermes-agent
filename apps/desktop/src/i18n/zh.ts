@@ -471,6 +471,10 @@ export const zh: Translations = {
       optional: '（可选）',
       createdOn: date => `添加于 ${date}`,
       deleteAction: '移除已保存项',
+      otpField: '验证器密钥',
+      otpPlaceholder: 'Base32 密钥或 otpauth:// 链接',
+      otpHint: '启用两步验证时网站显示的“设置密钥”。保存后 Hermes 会自动生成验证码。',
+      twoFactorBadge: '自动 2FA',
       deleteTitle: '删除此项？',
       deleteDescription: label => `“${label}”将从加密保险库中移除。此操作无法撤销。`,
       deleteConfirm: '删除',
@@ -4025,7 +4029,15 @@ export const zh: Translations = {
     vaultSavePasswordPlaceholder: '密码',
     vaultSaveFootnote: '在“设置 → 密码与登录”中管理已保存的登录信息。',
     vaultSaveDecline: '不保存',
-    vaultSaveConfirm: '保存并登录'
+    vaultSaveConfirm: '保存并登录',
+    vaultCodeSendFailed: '无法发送验证码',
+    vaultCodeTitle: site => `${site} 的验证码`,
+    vaultCodeDesc: site =>
+      `${site} 要求输入一次性验证码（短信、邮件或验证器应用）。在此输入，Hermes 会将其填入页面；模型永远看不到它。`,
+    vaultCodeLabel: '验证码',
+    vaultCodeFootnote: '提示：在“设置 → 密码与登录”中为该登录保存验证器密钥后，Hermes 会自动填写验证码。',
+    vaultCodeSkip: '跳过',
+    vaultCodeConfirm: '输入验证码'
   },
 
   desktop: {

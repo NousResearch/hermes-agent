@@ -554,6 +554,10 @@ export const en: Translations = {
       optional: '(optional)',
       createdOn: date => `Added ${date}`,
       deleteAction: 'Remove saved item',
+      otpField: 'Authenticator key',
+      otpPlaceholder: 'Base32 secret or otpauth:// link',
+      otpHint: 'The "setup key" the site shows when you enable 2FA. With it saved, Hermes generates the codes itself.',
+      twoFactorBadge: '2FA auto',
       deleteTitle: 'Delete this item?',
       deleteDescription: label => `"${label}" will be removed. This cannot be undone.`,
       deleteConfirm: 'Delete',
@@ -3907,7 +3911,15 @@ export const en: Translations = {
     vaultSavePasswordPlaceholder: 'Password',
     vaultSaveFootnote: 'Manage saved logins in Settings → Passwords & Logins.',
     vaultSaveDecline: "Don't save",
-    vaultSaveConfirm: 'Save & sign in'
+    vaultSaveConfirm: 'Save & sign in',
+    vaultCodeSendFailed: 'Could not send the code',
+    vaultCodeTitle: site => `Verification code for ${site}`,
+    vaultCodeDesc: site =>
+      `${site} is asking for a one-time code (text message, email or authenticator app). Enter it here and Hermes types it into the page; the model never sees it.`,
+    vaultCodeLabel: 'Code',
+    vaultCodeFootnote: 'Tip: save the authenticator key with this login in Settings → Passwords & Logins and Hermes enters codes for you.',
+    vaultCodeSkip: 'Skip',
+    vaultCodeConfirm: 'Enter code'
   },
 
   desktop: {

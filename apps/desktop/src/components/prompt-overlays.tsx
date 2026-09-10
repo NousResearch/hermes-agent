@@ -24,10 +24,12 @@ import { notifyError } from '@/store/notifications'
 import {
   clearSecretRequest,
   clearSudoRequest,
+  clearVaultCodeRequest,
   clearVaultSaveLoginRequest,
   clearVaultUnlockRequest,
   sessionSecretRequest,
   sessionSudoRequest,
+  sessionVaultCodeRequest,
   sessionVaultSaveLoginRequest,
   sessionVaultUnlockRequest
 } from '@/store/prompts'
@@ -470,6 +472,113 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
   )
 }
 
+/** One-time-code card: the site asked for a second factor and no authenticator key is saved. The code
+ *  is shown as typed (a 6-digit code is not worth masking and typos must be visible) and goes to the
+ *  page over the vault socket; the model never sees it. Closing answers "" (skip). */
+function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
+  const { t } = useI18n()
+  const copy = t.prompts
+  const $request = useMemo(() => sessionVaultCodeRequest(sessionId), [sessionId])
+  const request = useStore($request)
+  const gateway = useStore($gateway)
+  const [code, setCode] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    setCode('')
+    setSubmitting(false)
+  }, [request?.requestId])
+
+  const send = useCallback(
+    async (value: string) => {
+      if (!request) {
+        return
+      }
+
+      if (!gateway) {
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultCodeSendFailed)
+
+        return
+      }
+
+      setSubmitting(true)
+
+      try {
+        await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          ambientRequestFor(gateway),
+          'vault.code.respond',
+          { code: value, request_id: request.requestId }
+        )
+        triggerHaptic('submit')
+        clearVaultCodeRequest(request.sessionId, request.requestId)
+      } catch (error) {
+        if (isMissingPendingPromptRequest(error, 'code')) {
+          clearVaultCodeRequest(request.sessionId, request.requestId)
+
+          return
+        }
+
+        notifyError(error, copy.vaultCodeSendFailed)
+        setSubmitting(false)
+      } finally {
+        setCode('')
+      }
+    },
+    [copy.gatewayDisconnected, copy.vaultCodeSendFailed, gateway, request]
+  )
+
+  if (!request) {
+    return null
+  }
+
+  const trimmed = code.replace(/[\s-]/g, '')
+
+  return (
+    <Dialog onOpenChange={open => !open && !submitting && void send('')} open>
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle icon={ShieldLock}>{copy.vaultCodeTitle(request.site)}</DialogTitle>
+          <DialogDescription>{copy.vaultCodeDesc(request.site)}</DialogDescription>
+        </DialogHeader>
+
+        <form
+          className="grid gap-3"
+          onSubmit={event => {
+            event.preventDefault()
+
+            if (trimmed) {
+              void send(trimmed)
+            }
+          }}
+        >
+          <Field htmlFor="vault-code" label={copy.vaultCodeLabel}>
+            <Input
+              autoComplete="one-time-code"
+              autoFocus
+              disabled={submitting}
+              id="vault-code"
+              inputMode="numeric"
+              onChange={event => setCode(event.target.value)}
+              placeholder="123 456"
+              value={code}
+            />
+          </Field>
+          <p className="text-xs text-muted-foreground">{copy.vaultCodeFootnote}</p>
+          <DialogFooter>
+            <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
+              {copy.vaultCodeSkip}
+            </Button>
+            <Button disabled={submitting || !trimmed} type="submit">
+              {submitting ? <Loader2 className="size-3.5 animate-spin" /> : copy.vaultCodeConfirm}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 /** Mid-turn prompt surfaces for ONE session. Mounted by both the primary chat
  *  and each tile with its own session id, so a background/tiled session's
  *  blocking prompt renders instead of silently stalling. */
@@ -481,6 +590,7 @@ export function PromptOverlays({ sessionId }: { sessionId: string | null }) {
       <SecretDialog sessionId={sessionId} />
       <VaultUnlockDialog sessionId={sessionId} />
       <VaultSaveLoginDialog sessionId={sessionId} />
+      <VaultCodeDialog sessionId={sessionId} />
     </>
   )
 }

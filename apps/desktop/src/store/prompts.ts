@@ -129,6 +129,16 @@ export interface VaultSaveLoginRequest extends KeyedPrompt {
 
 const vaultSave = keyedPromptStore<VaultSaveLoginRequest>()
 
+// Second-factor code for the page the agent is on. Resolved via vault.code.respond
+// {request_id, code}; "" skips.
+export interface VaultCodeRequest extends KeyedPrompt {
+  site: string
+  hint: string
+  requestId: string
+}
+
+const vaultCode = keyedPromptStore<VaultCodeRequest>()
+
 // Inline approval anchors, keyed by session: a tile's inline bar mounting must
 // not suppress the PRIMARY session's floating fallback (and vice versa).
 const $approvalInlineAnchors = atom<Record<string, number>>({})
@@ -249,14 +259,22 @@ export const $vaultSaveLoginRequests = vaultSave.$all
 export const sessionVaultSaveLoginRequest = (sessionId: string | null) =>
   computed(vaultSave.$all, all => all[keyFor(sessionId)] ?? null)
 
+export const $vaultCodeRequest = vaultCode.$active
+export const setVaultCodeRequest = vaultCode.set
+export const clearVaultCodeRequest = vaultCode.clear
+export const $vaultCodeRequests = vaultCode.$all
+export const sessionVaultCodeRequest = (sessionId: string | null) =>
+  computed(vaultCode.$all, all => all[keyFor(sessionId)] ?? null)
+
 // True when the active session is blocked on the user (clarify question or an
 // approval / sudo / secret prompt). Mirrors the pet's `awaitingInput` concept
 // (agent/pet/state.py): the turn is paused on you, not working — so callers can
 // suppress "thinking" indicators and the Esc-to-interrupt shortcut while you
 // decide, instead of treating the wait as an in-flight turn.
 export const $activeSessionAwaitingInput = computed(
-  [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest, $vaultUnlockRequest, $vaultSaveLoginRequest],
-  (clarify, approval, sudo, secret, vault, save) => Boolean(clarify || approval || sudo || secret || vault || save)
+  [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest, $vaultUnlockRequest, $vaultSaveLoginRequest, $vaultCodeRequest],
+  (clarify, approval, sudo, secret, vault, save, code) =>
+    Boolean(clarify || approval || sudo || secret || vault || save || code)
 )
 
 /** True when `sessionId` is parked on a blocking prompt that typing cannot
@@ -273,7 +291,8 @@ export const hasBlockingPromptRequest = (sessionId: string | null | undefined): 
     sudo.$all.get()[key] ||
     secret.$all.get()[key] ||
     vaultUnlock.$all.get()[key] ||
-    vaultSave.$all.get()[key]
+    vaultSave.$all.get()[key] ||
+    vaultCode.$all.get()[key]
   )
 }
 
@@ -282,11 +301,11 @@ export const hasBlockingPromptRequest = (sessionId: string | null | undefined): 
  *  turn is parked on a prompt Enter can't answer). */
 export const sessionBlockingPrompt = (sessionId: string | null) =>
   computed(
-    [approval.$all, sudo.$all, secret.$all, vaultUnlock.$all, vaultSave.$all],
-    (approvals, sudos, secrets, vaults, saves) => {
+    [approval.$all, sudo.$all, secret.$all, vaultUnlock.$all, vaultSave.$all, vaultCode.$all],
+    (approvals, sudos, secrets, vaults, saves, codes) => {
       const key = keyFor(sessionId)
 
-      return Boolean(approvals[key] || sudos[key] || secrets[key] || vaults[key] || saves[key])
+      return Boolean(approvals[key] || sudos[key] || secrets[key] || vaults[key] || saves[key] || codes[key])
     }
   )
 
@@ -295,11 +314,13 @@ export const sessionBlockingPrompt = (sessionId: string | null) =>
  *  active one). */
 export function sessionAwaitingInput(sessionId: string | null) {
   return computed(
-    [$clarifyRequests, approval.$all, sudo.$all, secret.$all, vaultUnlock.$all, vaultSave.$all],
-    (clarify, approvals, sudos, secrets, vaults, saves) => {
+    [$clarifyRequests, approval.$all, sudo.$all, secret.$all, vaultUnlock.$all, vaultSave.$all, vaultCode.$all],
+    (clarify, approvals, sudos, secrets, vaults, saves, codes) => {
       const key = keyFor(sessionId)
 
-      return Boolean(clarify[key] || approvals[key] || sudos[key] || secrets[key] || vaults[key] || saves[key])
+      return Boolean(
+        clarify[key] || approvals[key] || sudos[key] || secrets[key] || vaults[key] || saves[key] || codes[key]
+      )
     }
   )
 }
@@ -313,6 +334,7 @@ export function clearAllPrompts(sessionId?: string | null): void {
     secret.reset()
     vaultUnlock.reset()
     vaultSave.reset()
+    vaultCode.reset()
     $approvalInlineAnchors.set({})
 
     return
@@ -323,4 +345,5 @@ export function clearAllPrompts(sessionId?: string | null): void {
   secret.clear(sessionId)
   vaultUnlock.clear(sessionId)
   vaultSave.clear(sessionId)
+  vaultCode.clear(sessionId)
 }

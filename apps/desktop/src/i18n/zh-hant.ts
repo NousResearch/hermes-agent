@@ -365,6 +365,10 @@ export const zhHant = defineLocale({
       optional: '（選填）',
       createdOn: date => `新增於 ${date}`,
       deleteAction: '移除已儲存項目',
+      otpField: '驗證器金鑰',
+      otpPlaceholder: 'Base32 金鑰或 otpauth:// 連結',
+      otpHint: '啟用兩步驟驗證時網站顯示的「設定金鑰」。儲存後 Hermes 會自動產生驗證碼。',
+      twoFactorBadge: '自動 2FA',
       deleteTitle: '刪除此項目？',
       deleteDescription: label => `「${label}」將從加密保險庫中移除。此操作無法復原。`,
       deleteConfirm: '刪除',
@@ -3308,7 +3312,15 @@ export const zhHant = defineLocale({
     vaultSavePasswordPlaceholder: '密碼',
     vaultSaveFootnote: '在「設定 → 密碼與登入」中管理已儲存的登入資訊。',
     vaultSaveDecline: '不儲存',
-    vaultSaveConfirm: '儲存並登入'
+    vaultSaveConfirm: '儲存並登入',
+    vaultCodeSendFailed: '無法傳送驗證碼',
+    vaultCodeTitle: site => `${site} 的驗證碼`,
+    vaultCodeDesc: site =>
+      `${site} 要求輸入一次性驗證碼（簡訊、電子郵件或驗證器應用程式）。在此輸入，Hermes 會將其填入頁面；模型永遠看不到它。`,
+    vaultCodeLabel: '驗證碼',
+    vaultCodeFootnote: '提示：在「設定 → 密碼與登入」中為此登入儲存驗證器金鑰後，Hermes 會自動填寫驗證碼。',
+    vaultCodeSkip: '略過',
+    vaultCodeConfirm: '輸入驗證碼'
   },
 
   desktop: {

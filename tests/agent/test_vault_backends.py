@@ -115,6 +115,7 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
              patch("tools.browser_vault_tool._eval_js_secret", return_value={"success": True, "result": json.dumps(
                  {"filled": 1})}) as secret_eval:
             out = json.loads(browser_vault_fill("bw:abc", task_id="t"))
+            out.pop("next")
             assert out == {"success": True, "filled_fields": 1, "backend": "bitwarden", "kind": "login",
                            "origin": "https://example.com"}
             assert prompts == [("bitwarden", "Bitwarden")]

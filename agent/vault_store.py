@@ -67,6 +67,39 @@ class VaultError(Exception):
     """Vault failure that is safe to surface (never contains secret values)."""
 
 
+def normalize_otp_secret(value: str) -> str:
+    """Accept a raw base32 seed or an ``otpauth://totp/...?secret=...`` URI; return the bare base32 seed
+    (uppercase, no spaces) or "" when empty/unusable. Only the seed is stored; issuer/digits/period use
+    RFC 6238 defaults, which every mainstream site uses."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if value.lower().startswith("otpauth://"):
+        from urllib.parse import parse_qs, urlparse
+        qs = parse_qs(urlparse(value).query)
+        value = (qs.get("secret") or [""])[0]
+    seed = re.sub(r"[\s-]", "", value).upper().rstrip("=")
+    if not seed or re.search(r"[^A-Z2-7]", seed):
+        raise VaultError("authenticator key must be a base32 secret or an otpauth:// URI")
+    return seed
+
+
+def totp_now(seed: str, *, digits: int = 6, period: int = 30, at: Optional[float] = None) -> str:
+    """RFC 6238 TOTP (SHA-1) for a base32 seed. Stdlib only: no dependency for six digits."""
+    import base64
+    import hashlib
+    import hmac
+    import struct
+    import time as _time
+
+    key = base64.b32decode(seed + "=" * (-len(seed) % 8), casefold=True)
+    counter = int((at if at is not None else _time.time()) // period)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+    return str(code).zfill(digits)
+
+
 def normalize_origin(url_or_origin: str) -> str:
     """Normalize a URL or origin to ``scheme://host[:port]``.
 
@@ -109,6 +142,7 @@ class VaultItemMeta:
     created_at: str
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
+    has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
 
     def to_dict(self) -> Dict[str, Any]:
         out = {
@@ -121,6 +155,8 @@ class VaultItemMeta:
         if self.identifier is not None:
             out["identifier"] = self.identifier
             out["identifier_type"] = self.identifier_type
+        if self.has_otp:
+            out["has_otp"] = True
         return out
 
 
@@ -282,9 +318,10 @@ class VaultStore:
             if not identifier or not secret.get("password"):
                 raise VaultError("login items require identifier and password")
             identifier_type = str(id_type)
-            # Login secret payload is password-only; identifier lives in
+            # Login secret payload is password (+ optional TOTP seed); identifier lives in
             # metadata and any stray origin echo is dropped.
-            secret = {"password": secret["password"]}
+            otp_secret = normalize_otp_secret(str(secret.get("otp_secret") or ""))
+            secret = {"password": secret["password"], **({"otp_secret": otp_secret} if otp_secret else {})}
         else:
             allowed = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
             secret = {k: str(v) for k, v in secret.items() if k in allowed and str(v or "").strip()}
@@ -362,6 +399,7 @@ class VaultStore:
             created_at=str(rec.get("created_at", "")),
             identifier_type=rec.get("identifier_type") if identifier else None,
             identifier=identifier or None,
+            has_otp=bool((rec.get("secret") or {}).get("otp_secret")),
         )
 
 

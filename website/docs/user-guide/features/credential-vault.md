@@ -34,6 +34,22 @@ fills the password through Hermes. The tool result it sees is
 `{filled_fields: 1, origin: "https://github.com"}`; the password is also
 registered with the redactor so a later page read cannot echo it back.
 
+## Two-factor codes
+
+Sites that ask for a code after the password are handled the same way:
+
+- **Authenticator key saved with the login** (the "setup key" or `otpauth://`
+  link a site shows when you enable 2FA; 1Password and Bitwarden items that
+  hold a TOTP seed count too): Hermes generates the current code and enters
+  it. Nobody is asked. Add the key in **Settings → Passwords & Logins → Add**
+  or `hermes vault add`; the item shows a *2FA auto* badge.
+- **Code sent to your phone or email**: a small prompt appears in your
+  surface ("Verification code for github.com"), you type the code, Hermes
+  enters it into the page. The code never enters the conversation either.
+- **Passkeys, hardware keys, app approvals** ("tap Approve in Duo"): nothing
+  to type. The agent tells you to complete it on your device and waits for
+  the page to move on.
+
 ## Already using 1Password or Bitwarden?
 
 Nothing to enable. If the `op` or `bw` command-line tool is installed and signed

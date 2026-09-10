@@ -125,6 +125,30 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
     return None
 
 
+_RE_OTP = re.compile(
+    r"\b(?:one[\s-]?time|verification|security|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|"
+    r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
+)
+
+
+def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginControl]:
+    """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative;
+    otherwise a text/tel/number input whose name/label says code/OTP/2FA/verification. Some sites split
+    the code into one input per digit (``maxlength=1`` boxes): they are returned in DOM order and the
+    fill spreads the code across them."""
+    out: List[ClassifiedLoginControl] = []
+    for c in controls:
+        tokens = c.autocomplete.lower().split()
+        if "one-time-code" in tokens:
+            out.append(ClassifiedLoginControl(c, 100, "one-time-code"))
+            continue
+        if c.type not in ("text", "tel", "number", "password", ""):
+            continue
+        if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
+            out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
+    return out
+
+
 def select_password_fill(
     classified: List[ClassifiedLoginControl],
     password: str,
@@ -196,6 +220,16 @@ def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict
 # script resolves targets by the stamp of ITS OWN inspection instead of re-querying by position, so
 # neither a DOM reflow nor a second inspection in between can redirect the password into another field.
 INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
+
+
+def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> List[Dict[str, Any]]:
+    """One fill per box: a single input takes the whole code; N single-char boxes (maxlength=1 pattern,
+    detected as N>=4 same-form OTP controls) each take one digit in DOM order."""
+    boxes = sorted(otp_controls, key=lambda c: c.control.index)
+    if len(boxes) >= 4 and len(boxes) <= len(code):
+        return [{"index": b.control.index, "token": "one-time-code", "value": ch} for b, ch in zip(boxes, code)]
+    best = max(boxes, key=lambda c: c.score)
+    return [{"index": best.control.index, "token": "one-time-code", "value": code}]
 
 
 def build_inspection_js(nonce: str) -> str:
@@ -277,6 +311,7 @@ _FILL_JS_TEMPLATE = """(() => {
       }
       el.focus();
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
       el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true }));

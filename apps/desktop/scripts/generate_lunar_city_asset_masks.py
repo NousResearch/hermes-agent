@@ -50,7 +50,7 @@ class MaskResult:
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _try_rembg(image: Image.Image) -> Image.Image | None:

@@ -37,6 +37,7 @@ from agent.inline_tool_executors import (
     tool_hook_ids,
 )
 from agent.tool_dispatch_helpers import (
+    _attach_delegate_correlation_metadata,
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -984,6 +985,9 @@ def _commit_tool_result(
     pre-persist content for UI previews) or ``None`` when the flush failed (stop the batch).
     """
     function_name, function_args, tool_call_id, effective_task_id = ref.name, ref.args, ref.call_id, ref.task_id
+    # Capture the structured result before guardrail annotations or spill pointers
+    # replace the JSON envelope that carries the child-session identity.
+    correlation_result = function_result
     if observed:
         if not blocked:
             function_result = agent._append_guardrail_observation(
@@ -1030,6 +1034,9 @@ def _commit_tool_result(
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    _attach_delegate_correlation_metadata(
+        tool_message, name=function_name, content=correlation_result, tool_call_id=tool_call_id,
+    )
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
@@ -1510,7 +1517,10 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     if function_name == "delegate_task":
         spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
         agent._delegate_spinner = spinner
-        return _SequentialDispatch(agent._dispatch_delegate_task, spinner=spinner, is_delegate=True)
+        return _SequentialDispatch(
+            lambda next_args: agent._dispatch_delegate_task(next_args, parent_tool_call_id=tool_call_id),
+            spinner=spinner, is_delegate=True,
+        )
     if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
         return _SequentialDispatch(
             execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),

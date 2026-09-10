@@ -317,6 +317,7 @@ def _int_or_skip(v):
 # `tool_name`/`text` are fed from the positional name/preview; `output_tail` is a list of dicts.
 _SUBAGENT_FIELDS = (
     ("subagent_id", bool, str), ("parent_id", bool, str), ("child_session_id", bool, str),
+    ("parent_tool_call_id", bool, str),
     ("delegation_id", bool, str), ("depth", _not_none, int), ("model", bool, str), ("tool_count", _not_none, int),
     ("toolsets", bool, _str_list), ("input_tokens", _not_none, _int_or_skip), ("output_tokens", _not_none, _int_or_skip),
     ("reasoning_tokens", _not_none, _int_or_skip), ("api_calls", _not_none, _int_or_skip),

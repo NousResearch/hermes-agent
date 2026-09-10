@@ -750,6 +750,9 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
+    if is_batch and result.get("parent_tool_call_id"):
+        evt["parent_tool_call_id"] = result["parent_tool_call_id"]
+        evt["children"] = list(result.get("children") or [])
     _persist_completion(evt, result)
     try:
         process_registry.completion_queue.put(evt)

@@ -48,6 +48,23 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+    parent_tool_call_id: Optional[str] = None
+
+    def attach_correlation(self, payload: dict) -> dict:
+        """Keep the provider-call mapping on both dispatch and completed results."""
+        if not self.parent_tool_call_id:
+            return payload
+        associations = []
+        for task_index, _task, child in self.children:
+            association = {"task_index": task_index}
+            for attr, key in (("_subagent_id", "subagent_id"), ("session_id", "child_session_id")):
+                value = getattr(child, attr, None)
+                if isinstance(value, str) and value:
+                    association[key] = value
+            associations.append(association)
+        payload["parent_tool_call_id"] = self.parent_tool_call_id
+        payload["children"] = associations
+        return payload
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -187,7 +204,7 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
         combined["live_transcripts"] = unit_paths
     if batch.group is not None:
         combined["group"] = batch.group
-    return combined
+    return batch.attach_correlation(combined)
 
 _SYNC_FALLBACK_NOTES = {
     "no_async": (
@@ -415,7 +432,7 @@ def _dispatch_background(batch: _Batch) -> str:
     payload = _dispatched_payload(batch, dispatched)
     if inline_results:
         payload["inline_results"] = inline_results
-    return json.dumps(payload, ensure_ascii=False)
+    return json.dumps(batch.attach_correlation(payload), ensure_ascii=False)
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""

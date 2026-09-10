@@ -195,7 +195,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.setup_mcp_tool", "setup_mcp_tool", "setup_mcp_callback",
         ("server", "server", ""), ("action", "action", "install"), ("reason", "reason", ""),
     ),
-    "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+    "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args, parent_tool_call_id=ctx.tool_call_id),
 }
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three

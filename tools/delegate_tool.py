@@ -160,6 +160,7 @@ def _build_child_agent(
     max_iterations: int,
     task_count: int,
     parent_agent,
+    parent_tool_call_id: Optional[str] = None,
     # Credential overrides from delegation config
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -211,6 +212,7 @@ def _build_child_agent(
     child_session_ref: Dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index, goal, parent_agent, task_count, subagent_id=subagent_id, parent_id=parent_subagent_id,
+        parent_tool_call_id=parent_tool_call_id,
         depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
         model=model or getattr(parent_agent, "model", None), toolsets=child_toolsets, session_ref=child_session_ref,
     )
@@ -261,6 +263,7 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    child._parent_tool_call_id = parent_tool_call_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
@@ -361,6 +364,7 @@ def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list,
+    parent_tool_call_id: Optional[str] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -386,6 +390,7 @@ def _build_children(
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_tool_call_id=parent_tool_call_id,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -412,6 +417,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
+    parent_tool_call_id: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -425,6 +431,10 @@ def delegate_task(
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+
+    parent_tool_call_id = (
+        str(parent_tool_call_id).strip() if parent_tool_call_id is not None else ""
+    ) or None
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -486,12 +496,14 @@ def delegate_task(
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
+        parent_tool_call_id=parent_tool_call_id,
     )
     if err:
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        parent_tool_call_id=parent_tool_call_id,
     )
     return _run_batch(batch, background)
 
@@ -697,6 +709,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        parent_tool_call_id=kw.get("tool_call_id"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

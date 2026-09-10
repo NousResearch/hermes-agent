@@ -1,3 +1,6 @@
+# Normalise all text files to LF in the repo (platform-native on checkout).
+* text=auto
+
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
 

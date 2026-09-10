@@ -1,0 +1,1721 @@
+{
+  "acceptedFormats": [
+    ".blend",
+    ".glb",
+    ".fbx",
+    ".obj"
+  ],
+  "authoritativeMasterScene": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+  "authoritativeMasterSceneMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+  "counts": {
+    "missing": 0,
+    "present": 36,
+    "required": 36
+  },
+  "pipeline": {
+    "animation": "rig_and_animate_after_master_validation",
+    "retopology": "derive_smart_low_poly_lods_from_master",
+    "source": "full_resolution_high_poly_master_assets",
+    "textureBake": "bake_2k_default_4k_hero_pbr_from_master"
+  },
+  "productionReady": false,
+  "productionUse": "production_source_intake",
+  "rejectedProductionSources": [
+    "raw_scene_crop_image_to_3d",
+    "floating_blob_meshes",
+    "simple_mascot_generator",
+    "flat_reference_planes"
+  ],
+  "requiredAssets": [
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 0,
+      "displayName": "Concave lunar colony basin",
+      "evaluatedTriangleCount": 703488,
+      "heroAsset": true,
+      "id": "terrain-colony-basin",
+      "kind": "terrain",
+      "meshObjectCount": 2,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "environment",
+      "sculptedSurfaceCount": 2,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/terrain-colony-basin.blend",
+        "lunar-city/master-assets/sources/terrain-colony-basin.glb",
+        "lunar-city/master-assets/sources/terrain-colony-basin.fbx",
+        "lunar-city/master-assets/sources/terrain-colony-basin.obj"
+      ],
+      "sourceCollection": "Master Asset - terrain-colony-basin",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 0,
+      "displayName": "Ground-conforming city road network",
+      "evaluatedTriangleCount": 199296,
+      "heroAsset": false,
+      "id": "road-network-primary",
+      "kind": "road",
+      "meshObjectCount": 7,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "navigation",
+      "sculptedSurfaceCount": 7,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/road-network-primary.blend",
+        "lunar-city/master-assets/sources/road-network-primary.glb",
+        "lunar-city/master-assets/sources/road-network-primary.fbx",
+        "lunar-city/master-assets/sources/road-network-primary.obj"
+      ],
+      "sourceCollection": "Master Asset - road-network-primary",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 0,
+      "displayName": "Lunar orbit skybox/background",
+      "evaluatedTriangleCount": 479744,
+      "heroAsset": false,
+      "id": "skybox-lunar-orbit",
+      "kind": "skybox",
+      "meshObjectCount": 45,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "environment",
+      "sculptedSurfaceCount": 45,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/skybox-lunar-orbit.blend",
+        "lunar-city/master-assets/sources/skybox-lunar-orbit.glb",
+        "lunar-city/master-assets/sources/skybox-lunar-orbit.fbx",
+        "lunar-city/master-assets/sources/skybox-lunar-orbit.obj"
+      ],
+      "sourceCollection": "Master Asset - skybox-lunar-orbit",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Library",
+      "evaluatedTriangleCount": 594528,
+      "heroAsset": true,
+      "id": "building-library",
+      "kind": "building",
+      "meshObjectCount": 85,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "knowledge",
+      "sculptedSurfaceCount": 85,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-library.blend",
+        "lunar-city/master-assets/sources/building-library.glb",
+        "lunar-city/master-assets/sources/building-library.fbx",
+        "lunar-city/master-assets/sources/building-library.obj"
+      ],
+      "sourceCollection": "Master Asset - building-library",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Research Lab",
+      "evaluatedTriangleCount": 558304,
+      "heroAsset": true,
+      "id": "building-research-lab",
+      "kind": "building",
+      "meshObjectCount": 64,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "research",
+      "sculptedSurfaceCount": 64,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-research-lab.blend",
+        "lunar-city/master-assets/sources/building-research-lab.glb",
+        "lunar-city/master-assets/sources/building-research-lab.fbx",
+        "lunar-city/master-assets/sources/building-research-lab.obj"
+      ],
+      "sourceCollection": "Master Asset - building-research-lab",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Arts Studio",
+      "evaluatedTriangleCount": 576224,
+      "heroAsset": true,
+      "id": "building-arts-studio",
+      "kind": "building",
+      "meshObjectCount": 68,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "creative",
+      "sculptedSurfaceCount": 68,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-arts-studio.blend",
+        "lunar-city/master-assets/sources/building-arts-studio.glb",
+        "lunar-city/master-assets/sources/building-arts-studio.fbx",
+        "lunar-city/master-assets/sources/building-arts-studio.obj"
+      ],
+      "sourceCollection": "Master Asset - building-arts-studio",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Engineering Workshop",
+      "evaluatedTriangleCount": 556000,
+      "heroAsset": true,
+      "id": "building-engineering-workshop",
+      "kind": "building",
+      "meshObjectCount": 65,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "engineering",
+      "sculptedSurfaceCount": 65,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-engineering-workshop.blend",
+        "lunar-city/master-assets/sources/building-engineering-workshop.glb",
+        "lunar-city/master-assets/sources/building-engineering-workshop.fbx",
+        "lunar-city/master-assets/sources/building-engineering-workshop.obj"
+      ],
+      "sourceCollection": "Master Asset - building-engineering-workshop",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Operations Depot",
+      "evaluatedTriangleCount": 548512,
+      "heroAsset": true,
+      "id": "building-operations-depot",
+      "kind": "building",
+      "meshObjectCount": 57,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "operations",
+      "sculptedSurfaceCount": 57,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-operations-depot.blend",
+        "lunar-city/master-assets/sources/building-operations-depot.glb",
+        "lunar-city/master-assets/sources/building-operations-depot.fbx",
+        "lunar-city/master-assets/sources/building-operations-depot.obj"
+      ],
+      "sourceCollection": "Master Asset - building-operations-depot",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Release Gatehouse",
+      "evaluatedTriangleCount": 547360,
+      "heroAsset": true,
+      "id": "building-release-gatehouse",
+      "kind": "building",
+      "meshObjectCount": 54,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "release",
+      "sculptedSurfaceCount": 54,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-release-gatehouse.blend",
+        "lunar-city/master-assets/sources/building-release-gatehouse.glb",
+        "lunar-city/master-assets/sources/building-release-gatehouse.fbx",
+        "lunar-city/master-assets/sources/building-release-gatehouse.obj"
+      ],
+      "sourceCollection": "Master Asset - building-release-gatehouse",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Triage Clinic",
+      "evaluatedTriangleCount": 549088,
+      "heroAsset": true,
+      "id": "building-triage-clinic",
+      "kind": "building",
+      "meshObjectCount": 53,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "medical",
+      "sculptedSurfaceCount": 53,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-triage-clinic.blend",
+        "lunar-city/master-assets/sources/building-triage-clinic.glb",
+        "lunar-city/master-assets/sources/building-triage-clinic.fbx",
+        "lunar-city/master-assets/sources/building-triage-clinic.obj"
+      ],
+      "sourceCollection": "Master Asset - building-triage-clinic",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Council Hall",
+      "evaluatedTriangleCount": 566688,
+      "heroAsset": true,
+      "id": "building-council-hall",
+      "kind": "building",
+      "meshObjectCount": 56,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "governance",
+      "sculptedSurfaceCount": 56,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-council-hall.blend",
+        "lunar-city/master-assets/sources/building-council-hall.glb",
+        "lunar-city/master-assets/sources/building-council-hall.fbx",
+        "lunar-city/master-assets/sources/building-council-hall.obj"
+      ],
+      "sourceCollection": "Master Asset - building-council-hall",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Review Office",
+      "evaluatedTriangleCount": 549664,
+      "heroAsset": true,
+      "id": "building-review-office",
+      "kind": "building",
+      "meshObjectCount": 60,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "review",
+      "sculptedSurfaceCount": 60,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-review-office.blend",
+        "lunar-city/master-assets/sources/building-review-office.glb",
+        "lunar-city/master-assets/sources/building-review-office.fbx",
+        "lunar-city/master-assets/sources/building-review-office.obj"
+      ],
+      "sourceCollection": "Master Asset - building-review-office",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Archive",
+      "evaluatedTriangleCount": 594528,
+      "heroAsset": true,
+      "id": "building-archive",
+      "kind": "building",
+      "meshObjectCount": 85,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "archive",
+      "sculptedSurfaceCount": 85,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-archive.blend",
+        "lunar-city/master-assets/sources/building-archive.glb",
+        "lunar-city/master-assets/sources/building-archive.fbx",
+        "lunar-city/master-assets/sources/building-archive.obj"
+      ],
+      "sourceCollection": "Master Asset - building-archive",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 22,
+      "displayName": "Break Garden",
+      "evaluatedTriangleCount": 675680,
+      "heroAsset": true,
+      "id": "building-break-garden",
+      "kind": "building",
+      "meshObjectCount": 70,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "rest",
+      "sculptedSurfaceCount": 70,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-break-garden.blend",
+        "lunar-city/master-assets/sources/building-break-garden.glb",
+        "lunar-city/master-assets/sources/building-break-garden.fbx",
+        "lunar-city/master-assets/sources/building-break-garden.obj"
+      ],
+      "sourceCollection": "Master Asset - building-break-garden",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 31,
+      "displayName": "Owl archivist leader",
+      "evaluatedTriangleCount": 783072,
+      "heroAsset": true,
+      "id": "leader-owl-archivist",
+      "kind": "leader",
+      "meshObjectCount": 59,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "knowledge",
+      "sculptedSurfaceCount": 59,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-owl-archivist.blend",
+        "lunar-city/master-assets/sources/leader-owl-archivist.glb",
+        "lunar-city/master-assets/sources/leader-owl-archivist.fbx",
+        "lunar-city/master-assets/sources/leader-owl-archivist.obj"
+      ],
+      "sourceCollection": "Master Asset - leader-owl-archivist",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 15,
+      "displayName": "Fox scientist leader",
+      "evaluatedTriangleCount": 723584,
+      "heroAsset": true,
+      "id": "leader-fox-scientist",
+      "kind": "leader",
+      "meshObjectCount": 48,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "research",
+      "sculptedSurfaceCount": 48,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-fox-scientist.blend",
+        "lunar-city/master-assets/sources/leader-fox-scientist.glb",
+        "lunar-city/master-assets/sources/leader-fox-scientist.fbx",
+        "lunar-city/master-assets/sources/leader-fox-scientist.obj"
+      ],
+      "sourceCollection": "Master Asset - leader-fox-scientist",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 18,
+      "displayName": "Raccoon artist leader",
+      "evaluatedTriangleCount": 752320,
+      "heroAsset": true,
+      "id": "leader-raccoon-artist",
+      "kind": "leader",
+      "meshObjectCount": 47,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "creative",
+      "sculptedSurfaceCount": 47,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-raccoon-artist.blend",
+        "lunar-city/master-assets/sources/leader-raccoon-artist.glb",
+        "lunar-city/master-assets/sources/leader-raccoon-artist.fbx",
+        "lunar-city/master-assets/sources/leader-raccoon-artist.obj"
+      ],
+      "sourceCollection": "Master Asset - leader-raccoon-artist",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 17,
+      "displayName": "Eagle councillor leader",
+      "evaluatedTriangleCount": 719616,
+      "heroAsset": true,
+      "id": "leader-eagle-councillor",
+      "kind": "leader",
+      "meshObjectCount": 46,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "governance",
+      "sculptedSurfaceCount": 46,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-eagle-councillor.blend",
+        "lunar-city/master-assets/sources/leader-eagle-councillor.glb",
+        "lunar-city/master-assets/sources/leader-eagle-councillor.fbx",
+        "lunar-city/master-assets/sources/leader-eagle-councillor.obj"
+      ],
+      "sourceCollection": "Master Asset - leader-eagle-councillor",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 16,
+      "displayName": "Badger engineer leader",
+      "evaluatedTriangleCount": 772576,
+      "heroAsset": true,
+      "id": "leader-badger-engineer",
+      "kind": "leader",
+      "meshObjectCount": 48,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "engineering",
+      "sculptedSurfaceCount": 48,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-badger-engineer.blend",
+        "lunar-city/master-assets/sources/leader-badger-engineer.glb",
+        "lunar-city/master-assets/sources/leader-badger-engineer.fbx",
+        "lunar-city/master-assets/sources/leader-badger-engineer.obj"
+      ],
+      "sourceCollection": "Master Asset - leader-badger-engineer",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 12,
+      "displayName": "Gold medic leader",
+      "evaluatedTriangleCount": 762208,
+      "heroAsset": true,
+      "id": "leader-gold-medic",
+      "kind": "leader",
+      "meshObjectCount": 48,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "medical",
+      "sculptedSurfaceCount": 48,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-gold-medic.blend",
+        "lunar-city/master-assets/sources/leader-gold-medic.glb",
+        "lunar-city/master-assets/sources/leader-gold-medic.fbx",
+        "lunar-city/master-assets/sources/leader-gold-medic.obj"
+      ],
+      "sourceCollection": "Master Asset - leader-gold-medic",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 18,
+      "displayName": "Hawk reviewer leader",
+      "evaluatedTriangleCount": 718176,
+      "heroAsset": true,
+      "id": "leader-hawk-reviewer",
+      "kind": "leader",
+      "meshObjectCount": 43,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "review",
+      "sculptedSurfaceCount": 43,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-hawk-reviewer.blend",
+        "lunar-city/master-assets/sources/leader-hawk-reviewer.glb",
+        "lunar-city/master-assets/sources/leader-hawk-reviewer.fbx",
+        "lunar-city/master-assets/sources/leader-hawk-reviewer.obj"
+      ],
+      "sourceCollection": "Master Asset - leader-hawk-reviewer",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 31,
+      "displayName": "Owl historian leader",
+      "evaluatedTriangleCount": 783072,
+      "heroAsset": true,
+      "id": "leader-owl-historian",
+      "kind": "leader",
+      "meshObjectCount": 59,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "archive",
+      "sculptedSurfaceCount": 59,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-owl-historian.blend",
+        "lunar-city/master-assets/sources/leader-owl-historian.glb",
+        "lunar-city/master-assets/sources/leader-owl-historian.fbx",
+        "lunar-city/master-assets/sources/leader-owl-historian.obj"
+      ],
+      "sourceCollection": "Master Asset - leader-owl-historian",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Audit worker robot",
+      "evaluatedTriangleCount": 428640,
+      "heroAsset": false,
+      "id": "worker-audit",
+      "kind": "worker",
+      "meshObjectCount": 21,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "audit",
+      "sculptedSurfaceCount": 21,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-audit.blend",
+        "lunar-city/master-assets/sources/worker-audit.glb",
+        "lunar-city/master-assets/sources/worker-audit.fbx",
+        "lunar-city/master-assets/sources/worker-audit.obj"
+      ],
+      "sourceCollection": "Master Asset - worker-audit",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Operations worker robot",
+      "evaluatedTriangleCount": 421248,
+      "heroAsset": false,
+      "id": "worker-operations",
+      "kind": "worker",
+      "meshObjectCount": 20,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "operations",
+      "sculptedSurfaceCount": 20,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-operations.blend",
+        "lunar-city/master-assets/sources/worker-operations.glb",
+        "lunar-city/master-assets/sources/worker-operations.fbx",
+        "lunar-city/master-assets/sources/worker-operations.obj"
+      ],
+      "sourceCollection": "Master Asset - worker-operations",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Release worker robot",
+      "evaluatedTriangleCount": 421248,
+      "heroAsset": false,
+      "id": "worker-release",
+      "kind": "worker",
+      "meshObjectCount": 20,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "release",
+      "sculptedSurfaceCount": 20,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-release.blend",
+        "lunar-city/master-assets/sources/worker-release.glb",
+        "lunar-city/master-assets/sources/worker-release.fbx",
+        "lunar-city/master-assets/sources/worker-release.obj"
+      ],
+      "sourceCollection": "Master Asset - worker-release",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Research worker robot",
+      "evaluatedTriangleCount": 421632,
+      "heroAsset": false,
+      "id": "worker-research",
+      "kind": "worker",
+      "meshObjectCount": 20,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "research",
+      "sculptedSurfaceCount": 20,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-research.blend",
+        "lunar-city/master-assets/sources/worker-research.glb",
+        "lunar-city/master-assets/sources/worker-research.fbx",
+        "lunar-city/master-assets/sources/worker-research.obj"
+      ],
+      "sourceCollection": "Master Asset - worker-research",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Review worker robot",
+      "evaluatedTriangleCount": 421248,
+      "heroAsset": false,
+      "id": "worker-review",
+      "kind": "worker",
+      "meshObjectCount": 20,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "review",
+      "sculptedSurfaceCount": 20,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-review.blend",
+        "lunar-city/master-assets/sources/worker-review.glb",
+        "lunar-city/master-assets/sources/worker-review.fbx",
+        "lunar-city/master-assets/sources/worker-review.obj"
+      ],
+      "sourceCollection": "Master Asset - worker-review",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Support worker robot",
+      "evaluatedTriangleCount": 425184,
+      "heroAsset": false,
+      "id": "worker-support",
+      "kind": "worker",
+      "meshObjectCount": 20,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "support",
+      "sculptedSurfaceCount": 20,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-support.blend",
+        "lunar-city/master-assets/sources/worker-support.glb",
+        "lunar-city/master-assets/sources/worker-support.fbx",
+        "lunar-city/master-assets/sources/worker-support.obj"
+      ],
+      "sourceCollection": "Master Asset - worker-support",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Curious child robot",
+      "evaluatedTriangleCount": 416896,
+      "heroAsset": false,
+      "id": "child-curious",
+      "kind": "child",
+      "meshObjectCount": 19,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "child",
+      "sculptedSurfaceCount": 19,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/child-curious.blend",
+        "lunar-city/master-assets/sources/child-curious.glb",
+        "lunar-city/master-assets/sources/child-curious.fbx",
+        "lunar-city/master-assets/sources/child-curious.obj"
+      ],
+      "sourceCollection": "Master Asset - child-curious",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Social child robot",
+      "evaluatedTriangleCount": 416896,
+      "heroAsset": false,
+      "id": "child-social",
+      "kind": "child",
+      "meshObjectCount": 19,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "child",
+      "sculptedSurfaceCount": 19,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/child-social.blend",
+        "lunar-city/master-assets/sources/child-social.glb",
+        "lunar-city/master-assets/sources/child-social.fbx",
+        "lunar-city/master-assets/sources/child-social.obj"
+      ],
+      "sourceCollection": "Master Asset - child-social",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Bold child robot",
+      "evaluatedTriangleCount": 416896,
+      "heroAsset": false,
+      "id": "child-bold",
+      "kind": "child",
+      "meshObjectCount": 19,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "child",
+      "sculptedSurfaceCount": 19,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/child-bold.blend",
+        "lunar-city/master-assets/sources/child-bold.glb",
+        "lunar-city/master-assets/sources/child-bold.fbx",
+        "lunar-city/master-assets/sources/child-bold.obj"
+      ],
+      "sourceCollection": "Master Asset - child-bold",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 4,
+      "displayName": "Cautious child robot",
+      "evaluatedTriangleCount": 416896,
+      "heroAsset": false,
+      "id": "child-cautious",
+      "kind": "child",
+      "meshObjectCount": 19,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "child",
+      "sculptedSurfaceCount": 19,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/child-cautious.blend",
+        "lunar-city/master-assets/sources/child-cautious.glb",
+        "lunar-city/master-assets/sources/child-cautious.fbx",
+        "lunar-city/master-assets/sources/child-cautious.obj"
+      ],
+      "sourceCollection": "Master Asset - child-cautious",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 1,
+      "displayName": "Dispatcher companion cube",
+      "evaluatedTriangleCount": 207552,
+      "heroAsset": true,
+      "id": "dispatcher-cube",
+      "kind": "dispatcher",
+      "meshObjectCount": 5,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "dispatcher",
+      "sculptedSurfaceCount": 5,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/dispatcher-cube.blend",
+        "lunar-city/master-assets/sources/dispatcher-cube.glb",
+        "lunar-city/master-assets/sources/dispatcher-cube.fbx",
+        "lunar-city/master-assets/sources/dispatcher-cube.obj"
+      ],
+      "sourceCollection": "Master Asset - dispatcher-cube",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "4k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 0,
+      "displayName": "Colony bus / tram",
+      "evaluatedTriangleCount": 188544,
+      "heroAsset": false,
+      "id": "vehicle-bus",
+      "kind": "vehicle",
+      "meshObjectCount": 13,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "transport",
+      "sculptedSurfaceCount": 13,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/vehicle-bus.blend",
+        "lunar-city/master-assets/sources/vehicle-bus.glb",
+        "lunar-city/master-assets/sources/vehicle-bus.fbx",
+        "lunar-city/master-assets/sources/vehicle-bus.obj"
+      ],
+      "sourceCollection": "Master Asset - vehicle-bus",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 0,
+      "displayName": "In-world status signage set",
+      "evaluatedTriangleCount": 168096,
+      "heroAsset": false,
+      "id": "prop-status-signage",
+      "kind": "prop",
+      "meshObjectCount": 12,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "state",
+      "sculptedSurfaceCount": 12,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/prop-status-signage.blend",
+        "lunar-city/master-assets/sources/prop-status-signage.glb",
+        "lunar-city/master-assets/sources/prop-status-signage.fbx",
+        "lunar-city/master-assets/sources/prop-status-signage.obj"
+      ],
+      "sourceCollection": "Master Asset - prop-status-signage",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "requiresVisualApproval": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "animationRigWireCount": 0,
+      "displayName": "Repair and recovery tool set",
+      "evaluatedTriangleCount": 168096,
+      "heroAsset": false,
+      "id": "prop-repair-tools",
+      "kind": "prop",
+      "meshObjectCount": 12,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "role": "recovery",
+      "sculptedSurfaceCount": 12,
+      "selectedSource": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+      "sourceBytes": 8003254,
+      "sourceCandidateStatus": "authoritative_master_scene_collection",
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/prop-repair-tools.blend",
+        "lunar-city/master-assets/sources/prop-repair-tools.glb",
+        "lunar-city/master-assets/sources/prop-repair-tools.fbx",
+        "lunar-city/master-assets/sources/prop-repair-tools.obj"
+      ],
+      "sourceCollection": "Master Asset - prop-repair-tools",
+      "sourceMetadata": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json",
+      "status": "sculpted_master_scene_present_unvalidated",
+      "textureResolutionTarget": "2k"
+    }
+  ],
+  "schemaVersion": 1,
+  "sourceDirectory": "lunar-city/master-assets/sources",
+  "validation": {
+    "failsClosedUntilEveryRequiredMasterExists": false,
+    "requiresNoPrivateProfileIdentifiers": true,
+    "requiresNoRawSoulContent": true,
+    "requiresPbrTextureBake": true,
+    "requiresPerAssetLods": true,
+    "requiresPerAssetRetopologyPlan": true,
+    "requiresRecognizableReferenceSilhouette": true,
+    "usesPerAssetCollections": true,
+    "usesSingleAuthoritativeMasterScene": true
+  }
+}

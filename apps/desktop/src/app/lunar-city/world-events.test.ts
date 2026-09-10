@@ -6,8 +6,14 @@ import {
   classifyTaskCondition,
   dedupeWorldEvents,
   normalizeAgentNotice,
+  normalizeApprovalEvent,
+  normalizeCreditEvent,
   normalizeExternalEvent,
-  normalizeKanbanEvent
+  normalizeGatewayEvent,
+  normalizeKanbanEvent,
+  normalizeProfileLifecycleEvent,
+  normalizePullRequestEvent,
+  normalizeReleaseEvent
 } from './world-events'
 
 const now = 1_700_000_000_000
@@ -114,5 +120,50 @@ describe('world event normalization', () => {
 
     expect(dedupeWorldEvents([first], [replacement, external])).toHaveLength(2)
     expect(dedupeWorldEvents([first], [replacement])).toEqual([replacement])
+  })
+
+  it('normalizes pull request and release lifecycle events into scene-ready kinds', () => {
+    expect(
+      normalizePullRequestEvent({ id: 'pr-9', status: 'merged', title: 'Ship stable' }, now)
+    ).toMatchObject({
+      kind: 'pr.merged_stable',
+      scope: 'city',
+      severity: 'success',
+      source: 'pull_request',
+      sourceRef: { prId: 'pr-9' }
+    })
+    expect(
+      normalizePullRequestEvent({ id: 'pr-10', status: 'checks_failed', title: 'Fix tests' }, now)
+    ).toMatchObject({
+      kind: 'pr.review_findings',
+      severity: 'error'
+    })
+    expect(normalizeReleaseEvent({ id: 'release-1', name: 'Desktop release', status: 'failed' }, now)).toMatchObject({
+      kind: 'release.failed',
+      scope: 'city',
+      severity: 'critical'
+    })
+  })
+
+  it('normalizes gateway, approval, credit, and profile lifecycle alerts', () => {
+    expect(normalizeGatewayEvent({ id: 'gateway-1', status: 'disconnected' }, now)).toMatchObject({
+      kind: 'gateway.disconnected',
+      severity: 'critical'
+    })
+    expect(normalizeApprovalEvent({ actionId: 'a1', id: 'approval-1', status: 'required' }, now)).toMatchObject({
+      kind: 'approval.required',
+      severity: 'info'
+    })
+    expect(normalizeCreditEvent({ id: 'credits-1', remainingPercent: 0, status: 'depleted' }, now)).toMatchObject({
+      kind: 'credits.depleted',
+      scope: 'city',
+      severity: 'critical'
+    })
+    expect(
+      normalizeProfileLifecycleEvent({ id: 'profile-1', profile: 'reviewer', role: 'review', status: 'working' }, now)
+    ).toMatchObject({
+      kind: 'task.running',
+      sourceRef: { agentId: 'reviewer' }
+    })
   })
 })

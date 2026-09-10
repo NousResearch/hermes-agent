@@ -6,6 +6,7 @@ import type { DialogueSubject } from './dialogue-tray'
 import { resolveWorldAnimation } from './world-animation'
 import { LUNAR_CITY_ASSET_MANIFEST } from './world-assets'
 import type { WorldCondition, WorldEvent } from './world-events'
+import { WorldGlbScene } from './world-glb-scene'
 import { resolveWorldPresentation } from './world-presentation'
 
 interface WorldSceneProps {
@@ -31,6 +32,18 @@ function conditionEvent(condition: WorldCondition): WorldEvent {
     title: condition.title,
     ...(condition.detail ? { detail: condition.detail } : {}),
     transition: true
+  }
+}
+
+function sceneObjectSubject(objectName: string): DialogueSubject {
+  const normalized = objectName.replace(/_(shell|entry|sign|body|head|visor|lod_[a-z]+).*$/i, '')
+  const asset = LUNAR_CITY_ASSET_MANIFEST.assets.find(item => objectName === item.id || objectName.startsWith(item.id))
+
+  return {
+    detail: asset
+      ? `${asset.kind} asset in ${asset.collection}. Role: ${asset.role ?? 'world'}. LODs: ${asset.lod.join(', ')}.`
+      : `Scene object: ${objectName}`,
+    title: asset?.role ? `${normalized} (${asset.role})` : normalized || objectName
   }
 }
 
@@ -82,10 +95,10 @@ export function WorldScene({ onSelectSubject, projection }: WorldSceneProps) {
             aria-label="Baseline 3D scene"
             className="mt-4 overflow-hidden rounded-xl border border-cyan-300/20 bg-black/30"
           >
-            <img
-              alt="Lunar City Blender baseline with grounded roads and concave terrain"
-              className="block aspect-[16/9] w-full object-cover"
-              src={`${import.meta.env.BASE_URL}lunar-city/lunar-city-baseline.png`}
+            <WorldGlbScene
+              className="aspect-[16/9] w-full"
+              enabled
+              onSelect={({ objectName }) => onSelectSubject?.(sceneObjectSubject(objectName))}
             />
             <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[0.65rem] text-slate-300">
               <span>

@@ -16,6 +16,9 @@ export type WorldActionKind =
   | 'reclaim_task'
   | 'create_task'
   | 'create_session'
+  | 'dialogue_send'
+  | 'voice_send'
+  | 'approval_response'
   | 'request_approval'
   | 'show_source'
 
@@ -37,6 +40,62 @@ export interface ExternalWorldEventInput {
   scope?: WorldScope
   sourceRef?: WorldSourceRef
   facts?: Record<string, unknown>
+}
+
+export interface PullRequestWorldEventInput {
+  author?: string
+  base?: string
+  head?: string
+  id: string
+  number?: number
+  repository?: string
+  status:
+    | 'approved'
+    | 'checks_failed'
+    | 'closed'
+    | 'conflict'
+    | 'draft_merged'
+    | 'merged'
+    | 'review_findings'
+    | 'review_requested'
+  title: string
+  url?: string
+}
+
+export interface ReleaseWorldEventInput {
+  id: string
+  name: string
+  version?: string
+  status: 'failed' | 'started' | 'succeeded'
+  detail?: string
+}
+
+export interface GatewayWorldEventInput {
+  id: string
+  profile?: string
+  status: 'auth_failed' | 'connected' | 'degraded' | 'disconnected' | 'failed'
+  detail?: string
+}
+
+export interface ApprovalWorldEventInput {
+  actionId?: string
+  id: string
+  sessionId?: string
+  status: 'granted' | 'rejected' | 'required'
+  title?: string
+}
+
+export interface CreditWorldEventInput {
+  id: string
+  remainingPercent?: number
+  status: 'depleted' | 'low' | 'reset'
+}
+
+export interface ProfileLifecycleWorldEventInput {
+  id: string
+  profile: string
+  role?: string
+  status: 'active' | 'blocked' | 'crashed' | 'idle' | 'working'
 }
 
 export interface WorldEvent {
@@ -289,6 +348,171 @@ export function normalizeExternalEvent(input: ExternalWorldEventInput, now = Dat
     actionKinds: ['inspect', 'show_source'],
     transition: true
   }
+}
+
+export function normalizePullRequestEvent(input: PullRequestWorldEventInput, now = Date.now()): WorldEvent {
+  const kindByStatus: Record<PullRequestWorldEventInput['status'], string> = {
+    approved: 'pr.approved',
+    checks_failed: 'pr.review_findings',
+    closed: 'pr.closed',
+    conflict: 'pr.merge_conflict',
+    draft_merged: 'pr.merged_draft',
+    merged: 'pr.merged_stable',
+    review_findings: 'pr.review_findings',
+    review_requested: 'pr.review_requested'
+  }
+
+  const severityByStatus: Record<PullRequestWorldEventInput['status'], WorldSeverity> = {
+    approved: 'success',
+    checks_failed: 'error',
+    closed: 'info',
+    conflict: 'warning',
+    draft_merged: 'success',
+    merged: 'success',
+    review_findings: 'warning',
+    review_requested: 'info'
+  }
+
+  return normalizeExternalEvent(
+    {
+      facts: {
+        author: input.author,
+        base: input.base,
+        head: input.head,
+        number: input.number,
+        repository: input.repository,
+        status: input.status,
+        url: input.url
+      },
+      id: input.id,
+      kind: kindByStatus[input.status],
+      scope: input.status === 'merged' ? 'city' : 'district',
+      severity: severityByStatus[input.status],
+      source: 'pull_request',
+      sourceRef: { prId: input.id },
+      title: input.title
+    },
+    now
+  )
+}
+
+export function normalizeReleaseEvent(input: ReleaseWorldEventInput, now = Date.now()): WorldEvent {
+  const kindByStatus: Record<ReleaseWorldEventInput['status'], string> = {
+    failed: 'release.failed',
+    started: 'release.started',
+    succeeded: 'release.succeeded'
+  }
+
+  return normalizeExternalEvent(
+    {
+      detail: input.detail,
+      facts: { status: input.status, version: input.version },
+      id: input.id,
+      kind: kindByStatus[input.status],
+      scope: input.status === 'started' ? 'district' : 'city',
+      severity: input.status === 'failed' ? 'critical' : input.status === 'succeeded' ? 'success' : 'info',
+      source: 'system',
+      title: input.name
+    },
+    now
+  )
+}
+
+export function normalizeGatewayEvent(input: GatewayWorldEventInput, now = Date.now()): WorldEvent {
+  const kindByStatus: Record<GatewayWorldEventInput['status'], string> = {
+    auth_failed: 'auth.failed',
+    connected: 'gateway.connected',
+    degraded: 'gateway.degraded',
+    disconnected: 'gateway.disconnected',
+    failed: 'gateway.disconnected'
+  }
+
+  return normalizeExternalEvent(
+    {
+      detail: input.detail,
+      facts: { profile: input.profile, status: input.status },
+      id: input.id,
+      kind: kindByStatus[input.status],
+      scope: input.status === 'connected' ? 'building' : 'city',
+      severity:
+        input.status === 'connected'
+          ? 'success'
+          : input.status === 'degraded'
+            ? 'warning'
+            : input.status === 'auth_failed'
+              ? 'error'
+              : 'critical',
+      source: 'gateway',
+      title: input.profile ? `Gateway ${input.profile}` : 'Gateway'
+    },
+    now
+  )
+}
+
+export function normalizeApprovalEvent(input: ApprovalWorldEventInput, now = Date.now()): WorldEvent {
+  const kindByStatus: Record<ApprovalWorldEventInput['status'], string> = {
+    granted: 'approval.granted',
+    rejected: 'approval.rejected',
+    required: 'approval.required'
+  }
+
+  return normalizeExternalEvent(
+    {
+      facts: { actionId: input.actionId, sessionId: input.sessionId, status: input.status },
+      id: input.id,
+      kind: kindByStatus[input.status],
+      scope: 'task',
+      severity: input.status === 'granted' ? 'success' : input.status === 'rejected' ? 'warning' : 'info',
+      source: 'system',
+      title: input.title || 'Approval checkpoint'
+    },
+    now
+  )
+}
+
+export function normalizeCreditEvent(input: CreditWorldEventInput, now = Date.now()): WorldEvent {
+  const kindByStatus: Record<CreditWorldEventInput['status'], string> = {
+    depleted: 'credits.depleted',
+    low: 'credits.low',
+    reset: 'credits.reset'
+  }
+
+  return normalizeExternalEvent(
+    {
+      facts: { remainingPercent: input.remainingPercent, status: input.status },
+      id: input.id,
+      kind: kindByStatus[input.status],
+      scope: input.status === 'reset' ? 'district' : 'city',
+      severity: input.status === 'depleted' ? 'critical' : input.status === 'low' ? 'warning' : 'success',
+      source: 'system',
+      title: input.status === 'reset' ? 'Credits restored' : 'Credit capacity'
+    },
+    now
+  )
+}
+
+export function normalizeProfileLifecycleEvent(input: ProfileLifecycleWorldEventInput, now = Date.now()): WorldEvent {
+  const kindByStatus: Record<ProfileLifecycleWorldEventInput['status'], string> = {
+    active: 'agent.active',
+    blocked: 'task.blocked',
+    crashed: 'worker.crashed',
+    idle: 'agent.idle',
+    working: 'task.running'
+  }
+
+  return normalizeExternalEvent(
+    {
+      facts: { profile: input.profile, role: input.role, status: input.status },
+      id: input.id,
+      kind: kindByStatus[input.status],
+      scope: input.status === 'crashed' ? 'worker' : 'building',
+      severity: input.status === 'blocked' ? 'warning' : input.status === 'crashed' ? 'error' : 'info',
+      source: 'system',
+      sourceRef: { agentId: input.profile },
+      title: input.profile
+    },
+    now
+  )
 }
 
 /** Derive a persistent world condition from the current Kanban card snapshot. */

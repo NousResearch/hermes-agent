@@ -1,0 +1,332 @@
+{
+  "cards": [
+    {
+      "box": [
+        88,
+        38,
+        535,
+        372
+      ],
+      "id": "building-library",
+      "kind": "building",
+      "role": "knowledge",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-library.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-library.png"
+    },
+    {
+      "box": [
+        720,
+        42,
+        1255,
+        360
+      ],
+      "id": "building-research-lab",
+      "kind": "building",
+      "role": "research",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-research-lab.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-research-lab.png"
+    },
+    {
+      "box": [
+        42,
+        392,
+        455,
+        690
+      ],
+      "id": "building-arts-studio",
+      "kind": "building",
+      "role": "creative",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-arts-studio.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-arts-studio.png"
+    },
+    {
+      "box": [
+        12,
+        642,
+        424,
+        928
+      ],
+      "id": "building-engineering",
+      "kind": "building",
+      "role": "engineering",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-engineering.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-engineering.png"
+    },
+    {
+      "box": [
+        0,
+        760,
+        396,
+        1012
+      ],
+      "id": "building-operations-depot",
+      "kind": "building",
+      "role": "operations",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-operations-depot.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-operations-depot.png"
+    },
+    {
+      "box": [
+        555,
+        420,
+        826,
+        655
+      ],
+      "id": "building-release-gatehouse",
+      "kind": "building",
+      "role": "release",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-release-gatehouse.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-release-gatehouse.png"
+    },
+    {
+      "box": [
+        716,
+        568,
+        960,
+        770
+      ],
+      "id": "building-triage-clinic",
+      "kind": "building",
+      "role": "medical",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-triage-clinic.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-triage-clinic.png"
+    },
+    {
+      "box": [
+        1000,
+        360,
+        1456,
+        662
+      ],
+      "id": "building-council-hall",
+      "kind": "building",
+      "role": "governance",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-council-hall.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-council-hall.png"
+    },
+    {
+      "box": [
+        1016,
+        560,
+        1456,
+        820
+      ],
+      "id": "building-review-office",
+      "kind": "building",
+      "role": "review",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-review-office.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-review-office.png"
+    },
+    {
+      "box": [
+        1000,
+        760,
+        1395,
+        1042
+      ],
+      "id": "building-archive",
+      "kind": "building",
+      "role": "archive",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/building-archive.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/building-archive.png"
+    },
+    {
+      "box": [
+        300,
+        168,
+        438,
+        355
+      ],
+      "id": "leader-owl-archivist",
+      "kind": "leader",
+      "role": "knowledge",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/leader-owl-archivist.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/leader-owl-archivist.png"
+    },
+    {
+      "box": [
+        888,
+        92,
+        1054,
+        304
+      ],
+      "id": "leader-fox-scientist",
+      "kind": "leader",
+      "role": "research",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/leader-fox-scientist.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/leader-fox-scientist.png"
+    },
+    {
+      "box": [
+        160,
+        500,
+        306,
+        678
+      ],
+      "id": "leader-raccoon-artist",
+      "kind": "leader",
+      "role": "creative",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/leader-raccoon-artist.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/leader-raccoon-artist.png"
+    },
+    {
+      "box": [
+        1124,
+        470,
+        1288,
+        660
+      ],
+      "id": "leader-eagle-councillor",
+      "kind": "leader",
+      "role": "governance",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/leader-eagle-councillor.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/leader-eagle-councillor.png"
+    },
+    {
+      "box": [
+        194,
+        700,
+        340,
+        900
+      ],
+      "id": "leader-badger-engineer",
+      "kind": "leader",
+      "role": "engineering",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/leader-badger-engineer.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/leader-badger-engineer.png"
+    },
+    {
+      "box": [
+        1212,
+        642,
+        1380,
+        820
+      ],
+      "id": "leader-hawk-reviewer",
+      "kind": "leader",
+      "role": "review",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/leader-hawk-reviewer.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/leader-hawk-reviewer.png"
+    },
+    {
+      "box": [
+        1134,
+        818,
+        1288,
+        1006
+      ],
+      "id": "leader-owl-historian",
+      "kind": "leader",
+      "role": "archive",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/leader-owl-historian.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/leader-owl-historian.png"
+    },
+    {
+      "box": [
+        604,
+        548,
+        684,
+        656
+      ],
+      "id": "worker-bot-round",
+      "kind": "worker",
+      "role": "generic",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/worker-bot-round.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/worker-bot-round.png"
+    },
+    {
+      "box": [
+        676,
+        472,
+        760,
+        600
+      ],
+      "id": "worker-bot-carrying",
+      "kind": "worker",
+      "role": "delivery",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/worker-bot-carrying.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/worker-bot-carrying.png"
+    },
+    {
+      "box": [
+        1028,
+        490,
+        1110,
+        602
+      ],
+      "id": "worker-bot-review",
+      "kind": "worker",
+      "role": "review",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/worker-bot-review.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/worker-bot-review.png"
+    },
+    {
+      "box": [
+        602,
+        744,
+        684,
+        856
+      ],
+      "id": "child-bot-garden",
+      "kind": "child",
+      "role": "child",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/child-bot-garden.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/child-bot-garden.png"
+    },
+    {
+      "box": [
+        574,
+        300,
+        828,
+        432
+      ],
+      "id": "vehicle-bus",
+      "kind": "vehicle",
+      "role": "transit",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/vehicle-bus.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/vehicle-bus.png"
+    },
+    {
+      "box": [
+        438,
+        720,
+        804,
+        990
+      ],
+      "id": "prop-break-garden",
+      "kind": "prop",
+      "role": "resting",
+      "sourceImage": "clean",
+      "targetMesh": "lunar-city/generated-3d/meshes/prop-break-garden.glb",
+      "uri": "lunar-city/generated-3d/reference-crops/prop-break-garden.png"
+    }
+  ],
+  "privacy": {
+    "containsPrivateProfileIdentifiers": false,
+    "usesRawSoulContent": false
+  },
+  "schemaVersion": 1,
+  "source": "approved_lunar_city_reference_images"
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { resolveWorldAnimation } from './world-animation'
+import { resolveWorldAnimation, resolveWorldAnimationRuntime } from './world-animation'
 
 describe('resolveWorldAnimation', () => {
   it('turns blocked responders into a looping repair clip', () => {
@@ -28,5 +28,28 @@ describe('resolveWorldAnimation', () => {
         { cosmetic: { intensity: 0 } }
       ).clip
     ).toBe('idle')
+  })
+
+  it('produces the renderer runtime contract with actor and target selectors', () => {
+    expect(
+      resolveWorldAnimationRuntime(
+        {
+          actor: { agentId: 'worker-a' },
+          animationTags: ['repair'],
+          personality: 'methodical',
+          state: 'repairing',
+          target: { taskId: 'task-7' }
+        },
+        { cosmetic: { intensity: 2 } }
+      )
+    ).toEqual({
+      actorSelector: 'agent:worker-a',
+      clip: 'repair',
+      fallbackClip: 'idle',
+      intensity: 2,
+      loop: false,
+      tags: ['repair'],
+      targetSelector: 'task:task-7'
+    })
   })
 })

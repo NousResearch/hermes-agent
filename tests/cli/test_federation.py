@@ -29,7 +29,6 @@ def test_manifest_covers_the_federation_departments() -> None:
         "arts_media",
         "content_studio",
         "memory",
-        "revenue_lab",
     }
     role_ids = {role.id for role in manifest.roles}
     assert {
@@ -39,8 +38,6 @@ def test_manifest_covers_the_federation_departments() -> None:
         "memory-curator",
         "capability-planner",
         "scientific-validator",
-        "revenue-lab-steward",
-        "revenue-scout",
     } <= role_ids
     assert len(role_ids) == sum(len(department.roles) for department in manifest.departments)
     grouped_roles = {role_id for group in manifest.groups for role_id in group.roles}
@@ -68,19 +65,6 @@ def test_skill_discovery_honors_packaged_skill_roots(tmp_path: Path, monkeypatch
 
     assert {"packaged-skill", "optional-skill"} <= _discover_skill_names()
     assert _find_bundled_skill("packaged-skill") == bundled / "research" / "packaged-skill"
-
-
-def test_skill_discovery_can_sync_optional_revenue_lab_skill(tmp_path: Path, monkeypatch) -> None:
-    import hermes_cli.federation as federation
-
-    optional = tmp_path / "optional"
-    revenue_skill = optional / "revenue" / "revenue-lab"
-    revenue_skill.mkdir(parents=True)
-    (revenue_skill / "SKILL.md").write_text("# Revenue Lab\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_OPTIONAL_SKILLS", str(optional))
-
-    assert "revenue-lab" in federation._discover_skill_names()
-    assert federation._find_bundled_skill("revenue-lab") == revenue_skill
 
 
 def test_audit_distinguishes_exact_profiles_from_equivalent_coverage() -> None:

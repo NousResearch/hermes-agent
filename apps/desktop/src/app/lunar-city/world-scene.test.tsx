@@ -48,6 +48,7 @@ describe('WorldScene', () => {
 
     expect(screen.getByText('Fix authentication')).toBeTruthy()
     expect(screen.getByRole('img', { name: /Blender baseline/i })).toBeTruthy()
+    expect(screen.getByTestId('lunar-city-glb-host')).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Download 3D scene' })).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Download class roster' })).toBeTruthy()
     expect(screen.getByText('pr.merged_stable')).toBeTruthy()

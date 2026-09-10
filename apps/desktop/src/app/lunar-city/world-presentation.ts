@@ -157,6 +157,12 @@ const SCENES: Record<string, SceneSpec> = {
     npcState: 'celebrating',
     sceneTag: 'milestone.release.online'
   },
+  'release.started': {
+    animationTags: ['release.started', 'launch.sequence', 'inspect'],
+    intensity: 1,
+    npcState: 'inspecting',
+    sceneTag: 'activity.release.launching'
+  },
   'release.failed': {
     animationTags: ['release.failed', 'launch.malfunction', 'repair'],
     cameraBeat: 'launch_failure',
@@ -173,6 +179,19 @@ const SCENES: Record<string, SceneSpec> = {
     sceneTag: 'crisis.blackout.city',
     soundTag: 'alert.siren'
   },
+  'gateway.connected': {
+    animationTags: ['gateway.connected', 'communications.online'],
+    intensity: 1,
+    npcState: 'celebrating',
+    sceneTag: 'recovery.comms.online'
+  },
+  'gateway.degraded': {
+    animationTags: ['gateway.degraded', 'communications.static', 'inspect'],
+    intensity: 2,
+    npcState: 'inspecting',
+    sceneTag: 'crisis.comms.degraded',
+    soundTag: 'alert.warning'
+  },
   'auth.failed': {
     animationTags: ['auth.failed', 'checkpoint.locked'],
     intensity: 2,
@@ -185,6 +204,31 @@ const SCENES: Record<string, SceneSpec> = {
     intensity: 1,
     npcState: 'inspecting',
     sceneTag: 'activity.approval.required'
+  },
+  'approval.granted': {
+    animationTags: ['approval.granted', 'checkpoint.open', 'return'],
+    intensity: 1,
+    npcState: 'returning',
+    sceneTag: 'recovery.approval.open'
+  },
+  'approval.rejected': {
+    animationTags: ['approval.rejected', 'checkpoint.locked', 'talking'],
+    intensity: 1,
+    npcState: 'talking',
+    sceneTag: 'activity.approval.rejected',
+    soundTag: 'alert.warning'
+  },
+  'agent.active': {
+    animationTags: ['agent.active', 'travel'],
+    intensity: 0,
+    npcState: 'walking',
+    sceneTag: 'activity.agent.active'
+  },
+  'agent.idle': {
+    animationTags: ['agent.idle', 'resting'],
+    intensity: 0,
+    npcState: 'resting',
+    sceneTag: 'activity.agent.idle'
   },
   'agent.warning': {
     animationTags: ['agent.warning', 'alert.marker'],
@@ -204,6 +248,19 @@ const SCENES: Record<string, SceneSpec> = {
     npcState: 'waiting',
     sceneTag: 'crisis.power.paused',
     soundTag: 'alert.siren'
+  },
+  'credits.low': {
+    animationTags: ['credits.low', 'power.rationing', 'inspect'],
+    intensity: 2,
+    npcState: 'inspecting',
+    sceneTag: 'crisis.power.rationing',
+    soundTag: 'alert.warning'
+  },
+  'credits.reset': {
+    animationTags: ['credits.reset', 'power.restored', 'celebration.local'],
+    intensity: 2,
+    npcState: 'celebrating',
+    sceneTag: 'recovery.power.restored'
   },
   'task.completed': {
     animationTags: ['task.completed', 'construction.finished', 'celebration.local'],

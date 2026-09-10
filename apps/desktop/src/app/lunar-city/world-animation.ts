@@ -21,6 +21,12 @@ export interface ResolvedWorldAnimation {
   tags: string[]
 }
 
+export interface WorldAnimationRuntimeContract extends ResolvedWorldAnimation {
+  actorSelector: string
+  fallbackClip: WorldAnimationClip
+  targetSelector?: string
+}
+
 const CLIP_BY_STATE: Record<NpcActivity['state'], WorldAnimationClip> = {
   idle: 'idle',
   walking: 'walk',
@@ -49,5 +55,36 @@ export function resolveWorldAnimation(
     intensity: presentation.cosmetic.intensity,
     loop: !NON_LOOPING.has(clip),
     tags: [...activity.animationTags]
+  }
+}
+
+function selector(prefix: string, value: string | undefined): string | undefined {
+  const clean = value?.trim()
+
+  return clean ? `${prefix}:${clean}` : undefined
+}
+
+export function resolveWorldAnimationRuntime(
+  activity: NpcActivity,
+  presentation: Pick<WorldPresentation, 'cosmetic'>
+): WorldAnimationRuntimeContract {
+  const animation = resolveWorldAnimation(activity, presentation)
+
+  const actorSelector =
+    selector('agent', activity.actor.agentId) ??
+    selector('task', activity.actor.taskId) ??
+    selector('pr', activity.actor.prId) ??
+    'world:ambient'
+
+  const targetSelector =
+    selector('agent', activity.target?.agentId) ??
+    selector('task', activity.target?.taskId) ??
+    selector('pr', activity.target?.prId)
+
+  return {
+    ...animation,
+    actorSelector,
+    fallbackClip: 'idle',
+    ...(targetSelector ? { targetSelector } : {})
   }
 }

@@ -22,6 +22,7 @@ export interface MicRecorderErrorCopy {
   microphoneConstraintsUnsupported: string
   microphoneInUse: string
   microphonePermissionDenied: string
+  microphoneSecureContextRequired: string
   microphoneStartFailed: string
   microphoneUnsupported: string
   noMicrophone: string
@@ -57,6 +58,23 @@ function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
   }
 
   return new Error(copy.microphoneStartFailed)
+}
+
+export function microphoneCapabilityError(
+  copy: MicRecorderErrorCopy,
+  secureContext: boolean | undefined,
+  mediaDevices: MediaDevices | undefined,
+  mediaRecorder: typeof MediaRecorder | undefined
+): Error | null {
+  if (secureContext === false) {
+    return new Error(copy.microphoneSecureContextRequired)
+  }
+
+  if (!mediaDevices?.getUserMedia || typeof mediaRecorder === 'undefined') {
+    return new Error(copy.microphoneUnsupported)
+  }
+
+  return null
 }
 
 export function useMicRecorder(copy: MicRecorderErrorCopy): {
@@ -171,8 +189,15 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       return
     }
 
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      throw new Error(copy.microphoneUnsupported)
+    const capabilityError = microphoneCapabilityError(
+      copy,
+      window.isSecureContext,
+      navigator.mediaDevices,
+      typeof MediaRecorder === 'undefined' ? undefined : MediaRecorder
+    )
+
+    if (capabilityError) {
+      throw capabilityError
     }
 
     const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()

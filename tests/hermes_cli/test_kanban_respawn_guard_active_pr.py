@@ -32,10 +32,16 @@ def kanban_home(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clear_pr_guard_cache():
-    """Verdicts are cached per-process; don't leak between cases."""
-    kbd._PR_GUARD_CACHE.clear()
+    """Verdicts are cached per-process; don't leak between cases.
+
+    ``getattr`` with a default so this file still COLLECTS against a build that
+    predates the fix — otherwise the regression case would fail as a collection
+    error, which proves nothing about behaviour. On unpatched code the
+    assertions below are what must go red.
+    """
+    getattr(kbd, "_PR_GUARD_CACHE", {}).clear()
     yield
-    kbd._PR_GUARD_CACHE.clear()
+    getattr(kbd, "_PR_GUARD_CACHE", {}).clear()
 
 
 def _task_with_pr_comment(conn) -> str:

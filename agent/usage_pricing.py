@@ -192,6 +192,14 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"): ("0.14", "0.28", "0.0028"),
         "deepseek-v4-pro": ("0.435", "0.87", "0.003625"),
     }),
+    # V4.1-Flash (2026-09-10) renames the flash line to the bare id `deepseek-flash`;
+    # `deepseek-v4-flash` / `-vision-exp` and the deepseek-chat/reasoner aliases now
+    # resolve to it. Off-peak CNY rates per 1M (cache hit / miss / output) 0.02 / 1 / 4;
+    # peak hours (Mon-Fri 09-12, 14-18) bill 2x. Encoded off-peak, same USD ratio as above.
+    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-09", {
+        ("deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+         "deepseek-chat", "deepseek-reasoner"): ("0.14", "0.56", "0.0028"),
+    }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),
     }),

@@ -207,10 +207,13 @@ _SQLITE_VERSION_ROLLBACK = (1, 1)
 _HEADER_PAGE_SIZE_CANDIDATES = (4096, 8192, 16384, 65536, 2048, 1024, 512)
 
 
-_HEADER_REJECTION_HINTS = ("not a database", "unsupported file format")
-# SQLITE_NOTADB — raised when the 16-byte magic (or the version bytes) in
-# page 1 are damaged, i.e. the file is not recognized as a database at all.
-_SQLITE_NOTADB = 26
+# The report text SQLite itself uses for this damage shape; kept in the
+# salvage record so reports stay readable to anyone who saw the raw failure.
+_HEADER_DAMAGE_MESSAGE = (
+    "file is not a database (SQLite magic header absent; detected before "
+    "any connection was opened by hermes_state_dbfile."
+    "has_invalid_sqlite_header_preopen with force=True)"
+)
 
 
 def header_version_bytes(path: Path) -> tuple[int, int]:
@@ -234,41 +237,31 @@ def header_version_bytes(path: Path) -> tuple[int, int]:
 
 
 def detect_database_open_error(path: Path) -> Optional[str]:
-    """Return the header-rejection error when SQLite refuses ``path``, else None.
+    """Return the header-damage diagnosis when *path* is not openable as a
+    SQLite database, else None.
 
-    ``PRAGMA journal_mode`` is the first statement that parses the database
-    header (matching ``hermes_state._db_opens_cleanly``). Only rejections
-    that indict the header itself — ``file is not a database`` /
-    ``unsupported file format`` — are reported here; ``database disk image
-    is malformed`` means the file opens and the schema is damaged, which is
-    the existing page-level lane's normal input, not a header salvage case.
-    Operational errors (busy/locked) are reported as None so the plain
-    flow's own retries stay in charge.
+    Detection delegates to :func:`hermes_state_dbfile.has_invalid_sqlite_header_preopen`
+    with ``force=True``: the SAME side-effect-free pread probe the startup
+    quarantine (``quarantine_invalid_state_db``) uses, so "notadb" carries
+    exactly one meaning across both lanes — a file whose first bytes are not
+    the SQLite magic. ``force`` is correct here because this lane only ever
+    probes offline files (the recovery flow hands over its own snapshot copy;
+    quarantined ``.bak`` sources are closed by definition), so the probe can
+    never disturb a live connection's POSIX locks.
+
+    A header probe (not ``sqlite3.connect`` + PRAGMA) also cannot fabricate
+    sidecars: opening a WAL-shaped file with a live connection can write
+    ``-wal``/``-shm`` into the snapshot directory. A malformed-but-openable
+    file (valid magic, damaged schema pages) is this lane's plain-path input
+    and returns None here, exactly as before.
     """
 
-    code: Optional[int] = None
     try:
-        conn = sqlite3.connect(str(path), isolation_level=None, timeout=1.0)
-    except sqlite3.DatabaseError as exc:
-        text = str(exc)
-        code = getattr(exc, "sqlite_errorcode", None)
-    else:
-        try:
-            conn.execute("PRAGMA journal_mode").fetchone()
-            return None
-        except sqlite3.DatabaseError as exc:
-            text = str(exc)
-            code = getattr(exc, "sqlite_errorcode", None)
-        except sqlite3.Error:
-            return None
-        finally:
-            try:
-                conn.close()
-            except sqlite3.Error:
-                pass
-    lowered = text.lower()
-    if code == _SQLITE_NOTADB or any(hint in lowered for hint in _HEADER_REJECTION_HINTS):
-        return text
+        from hermes_state_dbfile import has_invalid_sqlite_header_preopen
+    except ImportError:  # embed/scaffold installs without the state-db helper
+        return None
+    if has_invalid_sqlite_header_preopen(path, force=True):
+        return _HEADER_DAMAGE_MESSAGE
     return None
 
 
@@ -420,6 +413,10 @@ def salvage_header_damaged_source(
                 "open_error": open_error,
                 "page_size": page_size,
                 "repaired_source": str(repaired),
+                "wal_boundary": (
+                    "recovers up to the last checkpoint; a preserved -wal "
+                    "is not included."
+                ),
             }
             return report
         return {

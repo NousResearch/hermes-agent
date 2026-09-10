@@ -8,6 +8,7 @@ b-tree/schema header bytes), not mocked cursor exceptions.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import sqlite3
 from pathlib import Path
@@ -1232,6 +1233,56 @@ def test_open_error_probe_distinguishes_refused_from_malformed(
     assert probe(healthy) is None
 
 
+def test_detection_shares_the_quarantine_notadb_invariant(
+    tmp_path: Path,
+) -> None:
+    """One meaning for 'notadb': the recovery probe is the startup
+    quarantine probe. For every offline file, detect_database_open_error
+    fires exactly when hermes_state_dbfile.has_invalid_sqlite_header_preopen
+    does — including the zeroed-page shape quarantine treats as invalid."""
+    from hermes_state_dbfile import (
+        has_invalid_sqlite_header_preopen,
+        quarantine_invalid_state_db,
+    )
+
+    import hermes_cli.session_lost_and_found as laf
+
+    shapes: list[tuple[str, Path]] = []
+
+    damaged = tmp_path / "damaged.db"
+    SessionDB(db_path=damaged).close()
+    _corrupt_header(damaged, keep_page_size_bytes=False)
+    shapes.append(("header-damaged", damaged))
+
+    zeroed = tmp_path / "zeroed.db"
+    SessionDB(db_path=zeroed).close()
+    with open(zeroed, "r+b") as fh:
+        fh.write(b"\0" * _page_size(zeroed.read_bytes()))
+    shapes.append(("zeroed", zeroed))
+
+    malformed = tmp_path / "malformed.db"
+    _make_schema_unreadable_source(malformed)
+    shapes.append(("malformed-but-openable", malformed))
+
+    healthy = tmp_path / "healthy.db"
+    SessionDB(db_path=healthy).close()
+    shapes.append(("healthy", healthy))
+
+    for name, path in shapes:
+        assert (laf.detect_database_open_error(path) is not None) == (
+            has_invalid_sqlite_header_preopen(path, force=True)
+        ), f"detection disagrees with the quarantine probe for {name}"
+
+    # The quarantined artifact itself (the shape #106587 leaves on disk) is
+    # what the recovery lane must recognise.
+    live = tmp_path / "state.db"
+    SessionDB(db_path=live).close()
+    _corrupt_header(live, keep_page_size_bytes=False)
+    bak = quarantine_invalid_state_db(live)
+    assert bak is not None and ".notadb-" in bak.name and bak.is_file()
+    assert laf.detect_database_open_error(bak) is not None
+
+
 def test_donor_header_is_a_valid_sqlite_header(tmp_path: Path) -> None:
     """Header candidates: correct magic, page size, and sanitized ver bytes."""
     make_header = _salvage_helper("build_sqlite_header")
@@ -1396,3 +1447,87 @@ def test_run_cli_recover_reports_header_salvage_result(tmp_path: Path) -> None:
         run_cli_lost_and_found_recover(
             hopeless, tmp_path / "hopeless_lf.db", find_sqlite3_cli()
         )
+
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+def test_quarantine_source_recovers_via_sessions_recover_cli(
+    tmp_path: Path,
+) -> None:
+    """E2E through the #106587 handoff: startup quarantines the damaged
+    state.db to <stem>.notadb-<ts>-<pid>.bak, and the operator then runs
+    ``hermes sessions recover --source <bak> --allow-partial`` — the real
+    CLI, real subprocess, temp HERMES_HOME — which must splice the header
+    on its private snapshot, salvage the rows, and leave the .bak bytes
+    untouched. The salvage report must state the WAL boundary explicitly."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from hermes_state_dbfile import quarantine_invalid_state_db
+
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    source = home / "state.db"
+    expected = _make_header_damaged_source(source, keep_page_size_bytes=True)
+
+    # Startup quarantine (the probe-invariant producer): damaged header →
+    # moved aside as a .notadb-… .bak with its sidecars.
+    bak = quarantine_invalid_state_db(source)
+    assert bak is not None, "quarantine must move the header-damaged file"
+    assert ".notadb-" in bak.name and bak.is_file()
+    assert not source.exists()
+    bak_hash = hashlib.sha256(bak.read_bytes()).hexdigest()
+
+    output = home / "recovered.db"
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "hermes_cli.main", "sessions", "recover",
+            "--source", str(bak),
+            "--output", str(output),
+            "--work-dir", str(tmp_path),
+            "--allow-partial",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "BEST-EFFORT page-level salvage verified" in result.stdout
+    assert "active session database was not changed" in result.stdout
+
+    # The quarantined file is the operator's forensic copy: untouched bytes.
+    assert hashlib.sha256(bak.read_bytes()).hexdigest() == bak_hash
+
+    report = json.loads(
+        output.with_name(output.name + ".recovery.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["mode"] == "lost_and_found_salvage"
+    salvage = report["sqlite3_cli"]["header_salvage"]
+    assert salvage["triggered"] is True
+    # Point 3: the report states the WAL boundary in both shapes — the
+    # machine-readable salvage record and the human-facing warning list.
+    assert "recovers up to the last checkpoint" in salvage["wal_boundary"]
+    assert "a preserved -wal is not included" in salvage["wal_boundary"]
+    assert any(
+        "recovers up to the last checkpoint; a preserved -wal is not included"
+        in warning
+        for warning in report["verification"]["warnings"]
+    ), report["verification"]["warnings"]
+
+    conn = sqlite3.connect(str(output))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == expected["sessions"]
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == expected["messages"]
+    finally:
+        conn.close()

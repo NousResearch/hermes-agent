@@ -1022,7 +1022,9 @@ def _recover_via_lost_and_found(
             "header salvage: SQLite refused to open the source "
             f"({salvage_report.get('open_error')}), so a valid header was "
             "spliced onto a private copy and pages were recovered from that "
-            "copy; the source file itself was not modified."
+            "copy; the source file itself was not modified. This salvage "
+            "recovers up to the last checkpoint; a preserved -wal is not "
+            "included."
         )
 
     verification.update(loss_detected=True, complete=False)

@@ -2304,7 +2304,10 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
     for row in stale:
+        if owner_reclaim_paused(conn, row["id"]):
+            continue
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
         hb = row["last_heartbeat_at"]
         # Backstop: a heartbeat older than the max-stale threshold means no

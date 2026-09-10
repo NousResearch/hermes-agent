@@ -156,7 +156,7 @@ def main():
                         assert receipt['client_exit'] == ('rate_limited', kb.KANBAN_RATE_LIMIT_EXIT_CODE), receipt
                         assert receipt['cooldown'] == 'rate_limit_cooldown', receipt
                     elif peer.mode == 'crash':
-                        assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'crashed', receipt
+                        assert task.status == 'running' and task.consecutive_failures == 0 and run['outcome'] is None, receipt
                     elif peer.mode == 'timeout':
                         assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'timed_out', receipt
             finally:

@@ -436,7 +436,10 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
     for row in rows:
+        if owner_reclaim_paused(conn, row["id"]):
+            continue
         lock = row["claim_lock"] or ""
         if not lock.startswith(host_prefix):
             continue
@@ -536,7 +539,10 @@ def detect_stale_running(
         "WHERE t.status = 'running'"
     ).fetchall()
 
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
     for row in rows:
+        if owner_reclaim_paused(conn, row["id"]):
+            continue
         if row["active_started_at"] is None:
             continue
         elapsed = now - int(row["active_started_at"])
@@ -619,7 +625,10 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
         "WHERE status = 'running' "
         "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
     ).fetchall()
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
     for row in rows:
+        if owner_reclaim_paused(conn, row["id"]):
+            continue
         tid = row["id"]
         pid = row["worker_pid"]
         if pid and _kb._pid_alive(pid):
@@ -815,7 +824,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
+        from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
         for row in rows:
+            if owner_reclaim_paused(conn, row["id"]):
+                continue
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
                 continue

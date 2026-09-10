@@ -65,7 +65,7 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
     print(json.dumps(receipt))
     if mode != 'complete':
-        assert receipt['task_status'] == 'ready'
+        assert receipt['task_status'] == ('running' if mode == 'crash' else 'ready')
         return
     assert receipt['task_status'] == 'done' and receipt['source'] == 'kanban'
     assert receipt['tools'] and receipt['task_context'] and receipt['skill_context'] and receipt['hook_effect']

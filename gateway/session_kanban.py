@@ -17,13 +17,13 @@ def build_kanban_policy(connection, params, config):
         raise RuntimeStoreError('permission_denied')
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
-    if (set(params) != {'board', 'task_id', 'run_id', 'claim_lock'}
+    if (set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
             or any(not isinstance(params[k], str) or not params[k] for k in ('board', 'task_id', 'claim_lock'))
             or type(params['run_id']) is not int):
         raise RuntimeStoreError('invalid_params')
     try:
         board = kb._require_slug(params['board'])
-        path = kb.kanban_db_path(board=board).resolve()
+        path = Path(params['db']).resolve(strict=True) if 'db' in params else kb.kanban_db_path(board=board).resolve()
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             task = kb.get_task(conn, params['task_id'])
@@ -34,6 +34,10 @@ def build_kanban_policy(connection, params, config):
                 raise RuntimeStoreError('stale_kanban_claim')
             if Path(resolve_profile_env(task.assignee)).resolve() != Path(authority.profile_id).resolve():
                 raise RuntimeStoreError('profile_mismatch')
+            bound = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
+                                 (task.id, task.current_run_id)).fetchone()
+            if bound and json.loads(bound[0])['request_id'] != 'kanban:' + json.dumps([board, task.id, task.current_run_id], separators=(',', ':')):
+                raise RuntimeStoreError('stale_kanban_claim')
             context = kb.build_worker_context(conn, task.id)
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise RuntimeStoreError('invalid_kanban_claim') from exc
@@ -47,11 +51,12 @@ def build_kanban_policy(connection, params, config):
     if policy.model is None:
         from gateway.run import _resolve_gateway_model
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))
-    context = dict(params, db=str(path), workspace=cwd, branch=task.branch_name, tenant=task.tenant,
+    context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
         skills=list(task.skills or ()), goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
         goal_text='\n\n'.join(p for p in (task.title, task.body) if p), context=context,
         max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True)
+    context['db'] = str(path)
     request = json.loads(policy.request_json)
     request.update(source='kanban', board=board, task_id=task.id, run_id=task.current_run_id)
     return replace(policy, source='kanban', platform='cli', toolsets=tuple(sorted(set(policy.toolsets) | {'kanban'})),
@@ -76,7 +81,7 @@ async def run_task(connection, params):
     if saved:
         policy = restore_policy(saved['policy'])
         context = json.loads(policy.kanban_json or '{}')
-        if (not connection.native_owner or set(params) != {'board', 'task_id', 'run_id', 'claim_lock'}
+        if (not connection.native_owner or set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
                 or any(params[k] != context.get(k) for k in params)):
             raise RuntimeStoreError('permission_denied')
         from gateway.session_local_recovery import restore_local_session
@@ -85,6 +90,23 @@ async def run_task(connection, params):
         policy, private = build_kanban_policy(connection, params, _load_gateway_config())
         ref = create_local_session(authority, connection.actor, {'request_id': request_id},
                                    trusted_policy=policy, trusted_secrets=private)
+    from hermes_cli.kanban_db_connect import connect_closing
+    from hermes_cli import kanban_db as kb
+    import os
+    import psutil
+    context = json.loads(policy.kanban_json)
+    with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+        task = kb.get_task(conn, params['task_id'])
+        if task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']:
+            marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
+                                  (task.id, task.current_run_id)).fetchone()
+            if marker and json.loads(marker[0])['session_id'] != ref.session_id:
+                raise RuntimeStoreError('stale_kanban_claim')
+            if not marker:
+                kb._append_event(conn, task.id, 'owner_admitted',
+                    {'db': str(Path(authority.db.db_path).resolve()), 'session_id': ref.session_id,
+                     'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                    run_id=task.current_run_id)
     await connection.resume(ref, {})
     receipt = await authority.submit(connection.actor, Submission(request_id, ref,
         {'text': f'work kanban task {params["task_id"]}'}, 'queue'))

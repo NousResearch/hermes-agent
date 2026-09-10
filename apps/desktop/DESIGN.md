@@ -245,6 +245,9 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
   from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
+- Composer status groups start collapsed except todos. Progress updates and queue
+  pause/resume preserve the user's disclosure choice. Error banners meet the
+  stack's top edge without a blank padding strip.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.

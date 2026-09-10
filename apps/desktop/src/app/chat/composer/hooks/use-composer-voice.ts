@@ -22,6 +22,7 @@ import type { ChatBarProps } from '../types'
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
+import { useEndVoiceOnSessionSwitch, useStopVoicePlaybackOnUnmount } from './use-voice-session-reset'
 
 interface UseComposerVoiceArgs {
   busy: boolean
@@ -74,7 +75,12 @@ export function useComposerVoice({
     previousSessionIdRef.current = sessionId
   }, [sessionId])
 
-  const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
+  const {
+    cancel: cancelDictation,
+    dictate,
+    voiceActivityState,
+    voiceStatus
+  } = useVoiceRecorder({
     focusInput,
     maxRecordingSeconds,
     onTranscript: insertText,
@@ -164,6 +170,20 @@ export function useComposerVoice({
     // to finish releasing the capture device (see wakePauseBarrierRef).
     beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined
   })
+
+  const endVoiceRef = useRef(conversation.end)
+  const cancelDictationRef = useRef(cancelDictation)
+  endVoiceRef.current = conversation.end
+  cancelDictationRef.current = cancelDictation
+
+  const resetVoiceForSessionSwitch = useCallback(() => {
+    setVoiceConversationActive(false)
+    cancelDictationRef.current()
+    void endVoiceRef.current()
+  }, [])
+
+  useEndVoiceOnSessionSwitch(sessionId, resetVoiceForSessionSwitch)
+  useStopVoicePlaybackOnUnmount()
 
   // eslint-disable-next-line no-restricted-syntax -- ownership token used only by unmount cleanup
   useEffect(() => {

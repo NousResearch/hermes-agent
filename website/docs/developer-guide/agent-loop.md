@@ -70,10 +70,9 @@ run_conversation()
      - chat_completions: OpenAI format as-is
      - codex_responses: convert to Responses API input items
      - anthropic_messages: convert via anthropic_adapter.py
-  6. Inject ephemeral prompt layers (budget warnings, context pressure)
-  7. Apply prompt caching markers if on Anthropic
-  8. Make interruptible API call (_interruptible_api_call)
-  9. Parse response:
+  6. Apply prompt caching markers if on Anthropic
+  7. Make interruptible API call (_interruptible_api_call)
+  8. Parse response:
      - If tool_calls: execute them, append results, loop back to step 5
      - If text response: persist session, flush memory if needed, return
 ```
@@ -209,7 +208,11 @@ The fallback system also covers auxiliary tasks independently — vision, compre
 2. Middle conversation turns are summarized into a compact summary
 3. The last N messages are preserved intact (`compression.protect_last_n`, default: 20)
 4. Tool call/result message pairs are kept together (never split)
-5. A new session lineage ID is generated (compression creates a "child" session)
+5. By default, compression runs in place: the compacted transcript is soft-archived
+   under the same session id (`compression.in_place`, default `true`), so the session
+   keeps one durable id for life. A separate "child" session is only created on the
+   legacy rotation path — i.e. when `compression.in_place` is explicitly set to
+   `false`
 
 ### Session Persistence
 

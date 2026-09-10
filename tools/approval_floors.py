@@ -72,6 +72,14 @@ class _RequiredRule:
         return f"approval_required:{self.review}:{self.pattern}"
 
     @property
+    def superseded_key(self) -> str:
+        """The grant identity this pattern had under the other review policy. Observing the rule
+        under the current policy revokes it (session and permanent), so a ``smart -> human ->
+        smart`` round trip cannot revive a grant nobody under the current policy ever gave."""
+        other = "smart" if self.review == "human" else "human"
+        return f"approval_required:{other}:{self.pattern}"
+
+    @property
     def prompt_description(self) -> str:
         return f"matches approval-required rule '{self.description}'"
 

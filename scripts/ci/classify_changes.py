@@ -296,26 +296,44 @@ def pull_request_changed_files() -> list[str]:
     pr = _pull_request_number()
     if not repo or not pr:
         return []
-    try:
-        completed = subprocess.run(
-            [
-                "gh",
-                "api",
-                "--paginate",
-                f"repos/{repo}/pulls/{pr}/files",
-                "--jq",
-                ".[].filename",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+
+    # Retry logic: try up to 3 times in case of transient failures
+    for attempt in range(1, 4):
+        try:
+            completed = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    "--paginate",
+                    f"repos/{repo}/pulls/{pr}/files",
+                    "--jq",
+                    ".[].filename",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            if attempt == 3:
+                return []
+            continue
+
+        if completed.returncode == 0:
+            files = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+            if files:
+                return files
+            # Empty result on first attempt might be transient; retry
+            if attempt < 3:
+                continue
+            return []
+
+        # Non-zero return code; could be transient (rate limit, etc)
+        if attempt < 3:
+            continue
         return []
-    if completed.returncode != 0:
-        return []
-    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+    return []
 
 
 def main() -> int:

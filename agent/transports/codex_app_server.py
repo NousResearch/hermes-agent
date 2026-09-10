@@ -74,8 +74,8 @@ class CodexAppServerClient:
         if owned_task:
             for key in (*KANBAN_ENV_KEYS, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
                 if key in os.environ:
-                    cmd += ["-c", f"mcp_servers.hermes-mcp.env.{key}={json.dumps(os.environ[key])}"]
-            cmd += ["-c", f'mcp_servers.hermes-mcp.env.{DELEGATED_CHILD_ENV_MARKER}=""']
+                    cmd += ["-c", f"mcp_servers.hermes-tools.env.{key}={json.dumps(os.environ[key])}"]
+            cmd += ["-c", f'mcp_servers.hermes-tools.env.{DELEGATED_CHILD_ENV_MARKER}=""']
         spawn_env = delegated_child_subprocess_env(spawn_env)
         # Kanban workers must write handoff/status to the board DB outside the
         # workspace: keep the sandbox on, add the Kanban root as writable.

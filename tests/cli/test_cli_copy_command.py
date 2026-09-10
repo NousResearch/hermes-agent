@@ -1,4 +1,11 @@
-"""Tests for CLI /copy command."""
+"""Tests for CLI /copy command.
+
+/copy takes one of two paths: native clipboard tools locally, or OSC 52 when
+the session is remote, so the text reaches the terminal the user is actually
+sitting at rather than the remote host's clipboard. Which path runs depends on
+``is_remote_shell_session()``, so every test pins it — otherwise the suite
+passes on a desktop and fails over SSH.
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -25,7 +32,8 @@ def test_copy_copies_latest_assistant_message():
         {"role": "assistant", "content": "latest"},
     ]
 
-    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+    with patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
+         patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
         result = cli_obj.process_command("/copy")
 
     assert result is True
@@ -39,7 +47,8 @@ def test_copy_with_index_uses_requested_assistant_message():
         {"role": "assistant", "content": "two"},
     ]
 
-    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+    with patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
+         patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
         cli_obj.process_command("/copy 1")
 
     mock_copy.assert_called_once_with("one")
@@ -54,7 +63,8 @@ def test_copy_strips_reasoning_blocks_before_copy():
         }
     ]
 
-    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+    with patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
+         patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
         cli_obj.process_command("/copy")
 
     mock_copy.assert_called_once_with("Visible answer")
@@ -90,3 +100,28 @@ def test_copy_native_first_when_local():
     mock_osc52.assert_not_called()
 
 
+def test_copy_uses_osc52_when_the_session_is_remote():
+    """Over SSH the native tools would write the remote host's clipboard."""
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [{"role": "assistant", "content": "svaret"}]
+    cli_obj._write_osc52_clipboard = MagicMock()
+
+    with patch("hermes_cli.clipboard.is_remote_shell_session", return_value=True), \
+         patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+        cli_obj.process_command("/copy")
+
+    cli_obj._write_osc52_clipboard.assert_called_once_with("svaret")
+    mock_copy.assert_not_called()
+
+
+def test_copy_falls_back_to_osc52_when_native_tools_fail():
+    """A failed native write must not silently drop the copy."""
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [{"role": "assistant", "content": "svaret"}]
+    cli_obj._write_osc52_clipboard = MagicMock()
+
+    with patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
+         patch("hermes_cli.clipboard.write_clipboard_text", return_value=False):
+        cli_obj.process_command("/copy")
+
+    cli_obj._write_osc52_clipboard.assert_called_once_with("svaret")

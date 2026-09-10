@@ -475,3 +475,55 @@ class TestEndToEnd:
             result = agent.run_conversation("do the task")
         assert hook.call_count == 1
         assert result["final_response"] == "second"
+
+
+class TestPerTurnReset:
+    def test_nudge_budget_resets_at_turn_boundary(self, tmp_path, monkeypatch):
+        """The one-shot budget is per-turn, not per-session: after one turn
+        consumes the continuation, the next turn on the same agent gets a
+        fresh budget via the canonical per-turn reset contract."""
+        from agent.turn_context import (
+            _PER_TURN_RESET_STATE,
+            _reset_per_turn_agent_state,
+        )
+
+        assert ("_pre_turn_finalize_nudges", 0) in _PER_TURN_RESET_STATE
+        agent = _e2e_agent(tmp_path, monkeypatch, max_iterations=3)
+        setattr(agent, "_pre_turn_finalize_nudges", 1)
+        _reset_per_turn_agent_state(agent)
+        assert getattr(agent, "_pre_turn_finalize_nudges") == 0
+
+    def test_two_consecutive_turns_each_continue_once(
+        self, tmp_path, monkeypatch
+    ):
+        """Same agent, two distinct user turns: each turn independently gets
+        its own one-shot continuation (regression: the counter used to live
+        on the long-lived agent without joining the per-turn reset, so the
+        second turn silently lost its continuation)."""
+        agent = _e2e_agent(tmp_path, monkeypatch, max_iterations=3)
+        answers = iter(
+            [
+                _e2e_response("frag-one"),
+                _e2e_response("final-one"),
+                _e2e_response("frag-two"),
+                _e2e_response("final-two"),
+            ]
+        )
+        agent._interruptible_api_call = lambda _kwargs: next(answers)
+        agent._handle_max_iterations = MagicMock(return_value="summary")
+        # One hook call per turn: the second stop-gate evaluation in each
+        # turn short-circuits on the attempt cap without consulting the hook.
+        hook = MagicMock(side_effect=["keep going turn one", "keep going turn two"])
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.has_hook",
+            lambda name: name == "pre_turn_finalize",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_turn_finalize_continue_message", hook
+        )
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            first = agent.run_conversation("first task")
+            second = agent.run_conversation("second task")
+        assert hook.call_count == 2
+        assert first["final_response"] == "final-one"
+        assert second["final_response"] == "final-two"

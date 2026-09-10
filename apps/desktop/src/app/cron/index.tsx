@@ -935,7 +935,7 @@ function CronJobRuns({
         <div className="flex flex-col gap-px">
           {runs.map(run => (
             <button
-              className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs"
               key={run.id}
               onClick={() => onOpenSession?.(run.id)}
               type="button"

@@ -64,6 +64,57 @@ class TestKnownPrefixes:
         result = redact_sensitive_text(token)
         assert "a" * 14 not in result
 
+    def test_age_keys(self):
+        """age (filo.io) secret and recipient keys mask via their prefixes.
+
+        Secret: "AGE-SECRET-KEY-" + "1" separator + 58 bech32 data chars
+        = 74 total. Recipient: "age1" + 58 = 62. Recipients are public
+        but masked anyway — same body shape as secrets.
+
+        Vectors include the bech32 chars the old buggy class excluded
+        (``0``, ``l``) and exclude the chars it wrongly admitted
+        (``b``, ``i``, ``o``) — this combination pins the character set.
+        """
+        # Body uses only valid bech32 data chars (0, 2-9, a, c-h, j-l, m-n, p-z)
+        body_safe = "K" * 29 + "k" * 29
+        # Body containing chars the old class excluded: '0' and 'l'
+        body_with_0l = "70" * 29  # 58 chars, mixes '0' and '7'
+        # Body containing chars bech32 never has: 'b', 'i', 'o'
+        body_with_bio = "b" * 10 + "i" * 10 + "o" * 10 + "K" * 28
+
+        secret = "AGE-SECRET-KEY-1" + body_safe
+        assert len(secret) == 74
+        recipient = "age1" + body_safe
+        assert len(recipient) == 62
+
+        # Vectors that MUST be masked (real bech32 bodies)
+        must_mask = [
+            "AGE-SECRET-KEY-1" + body_safe,   # 74 chars, all-safe body
+            "age1" + body_safe,                # 62 chars, all-safe body
+            "AGE-SECRET-KEY-1" + body_with_0l, # body contains '0' (valid bech32)
+            "age1" + body_with_0l,             # body contains '0' (valid bech32)
+        ]
+        for key in must_mask:
+            result = redact_sensitive_text(f"generated {key} ok")
+            assert key not in result, f"{key[:20]}… survived redaction"
+
+        # Vectors that MUST NOT be masked (contain invalid bech32 chars)
+        must_not_mask = [
+            "AGE-SECRET-KEY-1" + body_with_bio, # body has b/i/o
+            "age1" + body_with_bio,             # body has b/i/o
+        ]
+        for key in must_not_mask:
+            result = redact_sensitive_text(f"generated {key} ok")
+            assert key in result, f"{key[:20]}… wrongly masked (contains b/i/o)"
+
+    def test_age_prefix_requires_word_boundary_and_length(self):
+        """Prose and short fragments must not false-positive."""
+        for benign in [
+            "the ages1 catalogued sites were visited",  # prose, wrong shape
+            "AGE-SECRET-KEY-SHORT",                      # body far under length
+        ]:
+            assert redact_sensitive_text(benign) == benign
+
 
 
 

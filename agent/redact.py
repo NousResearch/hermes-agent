@@ -69,6 +69,16 @@ _PREFIX_PATTERNS = [
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
     r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
     r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
+    # age (filo.io / str4d) key families — fixed-length bech32 bodies with no
+    # checksum, so the full length is the only discriminator. Secret keys are
+    # "AGE-SECRET-KEY-" (15) + "1" separator + 58 bech32 data chars = 74 total;
+    # recipients are "age1" + 58 = 62. Recipient keys are PUBLIC but masked
+    # anyway: same body shape as secrets and a false positive costs nothing
+    # next to a missed private key. The bech32 data alphabet (BIP 173) is
+    # qpzry9x8gf2tvdw0s3jn54khce6mua7l (excludes b/i/o/1); the class below
+    # covers both cases since bech32 is case-insensitive.
+    r"AGE-SECRET-KEY-1[02-9AC-HJ-NP-Zac-hj-np-z]{58}",  # age secret (private) key
+    r"age1[02-9AC-HJ-NP-Zac-hj-np-z]{58}",               # age recipient (public) key
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
     r"gsk_[A-Za-z0-9]{10,}",            # Groq Cloud API key

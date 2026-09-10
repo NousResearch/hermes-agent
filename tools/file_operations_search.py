@@ -148,22 +148,37 @@ def _mark_rows(row_mark: str) -> str:
             if row_mark else "")
 
 
-def _split_tool_diagnostics(output: str, *, row_mark: str = "") -> tuple[str, str]:
+def _split_tool_diagnostics(output: str, *, row_mark: str = "",
+                            output_mode: str = "content") -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output → ``(diagnostics, payload)``.
     ``_exec`` merges stderr into stdout; classifying by SHAPE lets the exit-2 guard
     tell a pure failure (no payload) from a partial one (one unreadable file, others
     matched) and guarantees error text is never parsed as a match. With ``row_mark``
-    only marked lines are payload (mark removed): file names may hold spaces."""
+    only marked lines are payload (mark removed): file names may hold spaces.
+
+    Without a row mark, ``files_only`` output is classified by mode: every
+    non-diagnostic line is a path, so names containing whitespace survive."""
     diagnostics: list[str] = []
     payload: list[str] = []
     for line in output.split('\n'):
-        if not line.strip():
+        stripped = line.strip()
+        if not stripped:
             continue
         if row_mark:
             (payload.append(line[len(row_mark):]) if line.startswith(row_mark) else diagnostics.append(line))
         # Prefix check first: a match path can contain "-<digit>" (".../pytest-686/...").
         elif line.lstrip().startswith(("rg: ", "grep: ", "find: ")):
             diagnostics.append(line)
+        elif output_mode == "files_only":
+            # In files_only mode every non-diagnostic line is a path.
+            # rg's regex-parse-error block emits indented caret lines and a
+            # trailing "error: ..." line without the tool prefix; those start
+            # with whitespace or "error:" and are not valid paths, so filter
+            # them out.
+            if stripped.startswith("error:") or line != line.lstrip():
+                diagnostics.append(line)
+            else:
+                payload.append(line)
         elif line == "--" or _SEARCH_OUTPUT_RE.match(line):
             payload.append(line)
         else:
@@ -439,7 +454,10 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     usable payload remains. ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
     diagnostics, payload = _split_tool_diagnostics(
-        stdout, row_mark=_FILE_ROW_MARK if output_mode == "files_only" else "")
+        stdout,
+        row_mark=_FILE_ROW_MARK if output_mode == "files_only" else "",
+        output_mode=output_mode,
+    )
     if result.exit_code in _SHELL_EXEC_FAILURE_CODES:
         # The shell could not run the engine at all (126 not executable, 127 not found).
         return SearchResult(error=f"Search failed: {result.stdout.strip() or 'Search error'}",

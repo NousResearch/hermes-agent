@@ -529,6 +529,51 @@ class TestPinTransition:
 
         assert sig_pinned["honcho.pin_peer_name"] != sig_unpinned["honcho.pin_peer_name"]
 
+    def test_cache_busting_signature_reflects_session_prefixes(self, tmp_path, monkeypatch):
+        """Flipping either session prefix mid-flight must invalidate the cached agent.
+
+        Both prefixes feed the same ``resolve_session_name`` output into the
+        provider's ``_session_key``, which is frozen at construction. Without
+        busting, a live flip leaves an existing gateway session bound to its
+        old Honcho session until an unrelated eviction or restart — the same
+        staleness contract covered above for ``pinPeerName``.
+        """
+        from gateway.run import GatewayRunner
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = {"apiKey": "k", "peerName": "Igor", "aiPeer": "hermes"}
+
+        cfg_path.write_text(json.dumps(
+            {**base, "sessionPeerPrefix": False, "sessionAiPeerPrefix": False}
+        ))
+        sig_off = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        cfg_path.write_text(json.dumps(
+            {**base, "sessionPeerPrefix": True, "sessionAiPeerPrefix": True}
+        ))
+        sig_on = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        assert sig_off["honcho.session_peer_prefix"] != sig_on["honcho.session_peer_prefix"]
+        assert sig_off["honcho.session_ai_peer_prefix"] != sig_on["honcho.session_ai_peer_prefix"]
+
+    def test_cache_busting_signature_reflects_workspace(self, tmp_path, monkeypatch):
+        """``hermes honcho peers map`` can repoint a host block's workspace; the cached
+        agent's manager is bound to the old one until the signature changes."""
+        from gateway.run import GatewayRunner
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = {"apiKey": "k", "peerName": "Igor", "aiPeer": "hermes"}
+
+        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "old"}}}))
+        sig_old = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "new"}}}))
+        sig_new = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        assert (sig_old["honcho.workspace"], sig_new["honcho.workspace"]) == ("old", "new")
+
 
 class TestProfilePeerUniqueness:
     """Each Hermes profile can pin to its own unique peerName.

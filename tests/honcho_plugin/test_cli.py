@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 import json
 
+import pytest
+
 
 class TestResolveApiKey:
     """Test _resolve_api_key with various config shapes."""
@@ -273,6 +275,22 @@ class TestCloneHonchoForProfile:
         new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert new_block["runtimePeerPrefix"] == "telegram_"
 
+    def test_session_ai_peer_prefix_carries_into_cloned_profile(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {
+                "hermes": {
+                    "sessionAiPeerPrefix": True,
+                    "peerName": "eri",
+                },
+            },
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes_coder"]
+        assert new_block["sessionAiPeerPrefix"] is True
+
     def test_legacy_pin_peer_name_migrates_to_canonical_on_clone(self, monkeypatch, tmp_path):
         cfg = {
             "apiKey": "***",
@@ -498,6 +516,10 @@ class TestSetupWizardDeploymentShape:
         assert host["userPeerAliases"] == {"7654321": "eri"}
 
 
+    def test_mapping_step_points_at_peers_map(self, monkeypatch, tmp_path, capsys):
+        self._run_setup(monkeypatch, tmp_path, answers=["cloud", "", "eri", "hermetika", "hermes", "s"])
+        assert "hermes honcho peers map" in capsys.readouterr().out
+
     def test_host_pin_user_peer_true_is_detected_as_single(self, monkeypatch, tmp_path):
         """Host-level ``pinUserPeer: true`` must classify as ``single``.
 
@@ -536,6 +558,20 @@ class TestSetupWizardDeploymentShape:
         # Hybrid materialises the root aliases into the host so subsequent
         # operator edits live on the host block they're inspecting.
         assert host["userPeerAliases"] == {"7654321": "eri"}
+
+    @pytest.mark.parametrize("initial_cfg, expected_pin", [
+        (None, True),
+        ({"apiKey": "***", "hosts": {"hermes": {}}}, True),
+        ({"apiKey": "***", "hosts": {"hermes": {"pinUserPeer": False, "peerName": "eri"}}}, False),
+        ({"apiKey": "***", "hosts": {"hermes": {"enabled": True, "workspace": "hermes", "peerName": "eri"}}}, False),
+    ], ids=["fresh-config-defaults-to-single", "empty-host-block-defaults-to-single",
+            "configured-multi-keeps-multi", "existing-install-without-mapping-keys-keeps-multi"])
+    def test_choice_default_follows_config(self, monkeypatch, tmp_path, initial_cfg, expected_pin):
+        """Enter on a fresh config picks the pinned personal shape. An existing install, with or
+        without mapping keys, keeps its detected shape so Enter never merges every account onto one peer."""
+        answers = ["cloud", "", "eri", "hermetika", "hermes"]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinUserPeer"] is expected_pin
 
 
     def test_no_gateway_connected_skips_mapping_when_declined(self, monkeypatch, tmp_path):

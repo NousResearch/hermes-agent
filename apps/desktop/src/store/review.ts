@@ -5,6 +5,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
+import { desktopGitRoot } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
@@ -95,6 +96,11 @@ export const $reviewScopeCwd = atom<null | string>(null)
 // whose worktree the user is reviewing, not broadcast to every mounted tile.
 export const $reviewScopeTarget = atom('main')
 
+// The top-level Git repository root directory. When CWD is inside a subdirectory
+// of a Git repo, Git operations, diffs, and file open targets must resolve against
+// the top-level repository root.
+export const $reviewGitRoot = atom<null | string>(null)
+
 /** The repo the pane is reading right now: its pinned scope, else the active
  *  session's cwd. Exported for pane helpers that join repo-relative paths. */
 export const reviewRepoCwd = (): null | string => $reviewScopeCwd.get()?.trim() || $currentCwd.get()?.trim() || null
@@ -110,7 +116,7 @@ let shipInfoLastCheckedAt = 0
 // The two things every review op needs: the repo cwd + the IPC bridge. Null when
 // either is missing (no session, remote backend), so callers bail in one line.
 function reviewCtx(): { cwd: string; review: ReviewBridge } | null {
-  const cwd = repoCwd()
+  const cwd = $reviewGitRoot.get()?.trim() || repoCwd()
   const review = desktopGit()?.review
 
   return cwd && review ? { cwd, review } : null
@@ -119,8 +125,36 @@ function reviewCtx(): { cwd: string; review: ReviewBridge } | null {
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export async function refreshReview(): Promise<void> {
-  const ctx = reviewCtx()
+  const initialCwd = repoCwd()
+
+  if (!$reviewOpen.get() || !initialCwd) {
+    $reviewFiles.set([])
+    $reviewGitRoot.set(null)
+    $reviewIsRepo.set(Boolean(initialCwd && desktopGit()?.review))
+
+    // Critical: clear loading on the no-cwd / not-a-repo path too. It's set
+    // true (optimistically) before a refresh is scheduled, so skipping it here
+    // strands the pane on a forever-skeleton for a fresh, detached chat.
+    $reviewLoading.set(false)
+
+    return
+  }
+
   const seq = (reviewRefreshSeq += 1)
+
+  try {
+    const resolvedRoot = await desktopGitRoot(initialCwd).catch(() => null)
+
+    if (seq === reviewRefreshSeq && repoCwd() === initialCwd) {
+      $reviewGitRoot.set(resolvedRoot?.trim() || null)
+    }
+  } catch {
+    if (seq === reviewRefreshSeq && repoCwd() === initialCwd) {
+      $reviewGitRoot.set(null)
+    }
+  }
+
+  const ctx = reviewCtx()
 
   if (!$reviewOpen.get() || !ctx) {
     $reviewFiles.set([])
@@ -145,7 +179,7 @@ export async function refreshReview(): Promise<void> {
     const result = await review.list(cwd, 'uncommitted', null)
 
     // Ignore a result that resolved after the cwd moved on.
-    if (seq !== reviewRefreshSeq || repoCwd() !== cwd) {
+    if (seq !== reviewRefreshSeq || repoCwd() !== initialCwd) {
       return
     }
 
@@ -276,6 +310,7 @@ export function closeReview(): void {
   $reviewOpen.set(false)
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')
+  $reviewGitRoot.set(null)
   clearReviewSelection()
 }
 
@@ -394,17 +429,20 @@ async function afterMutation(): Promise<void> {
 }
 
 export async function stageReviewFile(path: null | string): Promise<void> {
-  await desktopGit()?.review?.stage(repoCwd() ?? '', path)
+  const ctx = reviewCtx()
+  await ctx?.review?.stage(ctx.cwd, path)
   await afterMutation()
 }
 
 export async function unstageReviewFile(path: null | string): Promise<void> {
-  await desktopGit()?.review?.unstage(repoCwd() ?? '', path)
+  const ctx = reviewCtx()
+  await ctx?.review?.unstage(ctx.cwd, path)
   await afterMutation()
 }
 
 export async function revertReviewFile(path: null | string): Promise<void> {
-  await desktopGit()?.review?.revert(repoCwd() ?? '', path)
+  const ctx = reviewCtx()
+  await ctx?.review?.revert(ctx.cwd, path)
   await afterMutation()
 }
 
@@ -596,6 +634,7 @@ function onReviewRepoMoved(): void {
   if ($reviewOpen.get()) {
     clearReviewSelection()
     $reviewFiles.set([])
+    $reviewGitRoot.set(null)
     $reviewLoading.set(true)
     scheduleReviewRefresh()
     void refreshShipInfo()

@@ -1008,6 +1008,7 @@ class _ReviewForkState:
     review_agent: Any = None
     review_messages: List[Dict] = field(default_factory=list)
     review_usage: Dict[str, Any] = field(default_factory=dict)
+    review_skipped: bool = False
 
 
 def _release_fork_clients(review_agent: Any) -> None:
@@ -1056,7 +1057,7 @@ def _run_review_fork(
     try:
         if review_run is None or review_run.begin_request(st.review_agent):
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
-            st.review_agent.run_conversation(
+            result = st.review_agent.run_conversation(
                 user_message=(
                     prompt + "\n\nYou can only call " + memory_phrase_prompt +
                     "management tools. Other tools will be denied "
@@ -1064,6 +1065,9 @@ def _run_review_fork(
                 ),
                 conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
             )
+            st.review_skipped = isinstance(result, dict) and result.get("turn_exit_reason") in {
+                "review_request_oversized", "review_request_size_unavailable",
+            }
     finally:
         clear_thread_tool_whitelist()
         # Attribute usage to the PARENT session. Snapshot BEFORE unregister/close so counters
@@ -1152,7 +1156,7 @@ def _run_review_in_thread(
                 e,
             )
             actions = []
-        _log_review_completion(st.review_usage, _classify_review_result(actions))
+        _log_review_completion(st.review_usage, "skipped" if st.review_skipped else _classify_review_result(actions))
         if actions:
             _publish_review_summary(agent, actions)
     except Exception as e:

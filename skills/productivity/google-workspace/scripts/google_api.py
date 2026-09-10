@@ -570,7 +570,12 @@ def calendar_delete(args):
 
 
 def drive_search(args):
+    # Drive's files.list returns trashed files by default; hide them so search
+    # matches what the user sees in Drive's UI. Raw queries are caller-authored
+    # and passed through untouched.
     query = args.query if args.raw_query else f"fullText contains '{args.query}'"
+    if not args.raw_query and not args.include_trashed:
+        query = f"({query}) and trashed = false"
     if _gws_binary():
         results = _run_gws(
             ["drive", "files", "list"],
@@ -1127,6 +1132,11 @@ def main():
     p.add_argument("query")
     p.add_argument("--max", type=int, default=10)
     p.add_argument("--raw-query", action="store_true", help="Use query as raw Drive API query")
+    p.add_argument(
+        "--include-trashed",
+        action="store_true",
+        help="Include files in the Drive trash (excluded by default; ignored with --raw-query)",
+    )
     p.set_defaults(func=drive_search)
 
     p = drv_sub.add_parser("get")

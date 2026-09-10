@@ -136,6 +136,59 @@ def test_api_calendar_list_uses_events_list(api_module):
     assert params["calendarId"] == "primary"
 
 
+def _drive_search_args(api_module, **overrides):
+    defaults = dict(
+        query="quarterly report",
+        max=10,
+        raw_query=False,
+        include_trashed=False,
+        func=api_module.drive_search,
+    )
+    defaults.update(overrides)
+    return api_module.argparse.Namespace(**defaults)
+
+
+def _captured_gws_params(api_module, args):
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout="{}", stderr="")
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.drive_search(args)
+
+    cmd = captured["cmd"]
+    assert cmd[0] == "/usr/bin/gws"
+    return json.loads(cmd[cmd.index("--params") + 1])
+
+
+def test_drive_search_excludes_trashed_by_default(api_module):
+    """Plain search appends `trashed = false` so deleted files don't resurface."""
+    params = _captured_gws_params(api_module, _drive_search_args(api_module))
+    assert params["q"] == "(fullText contains 'quarterly report') and trashed = false"
+
+
+def test_drive_search_include_trashed_flag_keeps_legacy_behavior(api_module):
+    """--include-trashed sends the bare query, the pre-fix behavior."""
+    params = _captured_gws_params(
+        api_module, _drive_search_args(api_module, include_trashed=True)
+    )
+    assert params["q"] == "fullText contains 'quarterly report'"
+
+
+def test_drive_search_raw_query_is_passed_through(api_module):
+    """--raw-query is caller-authored: never rewritten with a trashed clause,
+    even when --include-trashed is also set (it is raw-query that wins)."""
+    params = _captured_gws_params(
+        api_module,
+        _drive_search_args(
+            api_module, query="mimeType='application/pdf'", raw_query=True, include_trashed=True
+        ),
+    )
+    assert params["q"] == "mimeType='application/pdf'"
+
+
 
 
 

@@ -2077,7 +2077,10 @@ def _write_config_state(
     config_path: Path, data: Dict[str, Any], *, allow_omissions: bool,
     extra_content_on_create: Optional[str] = None,
 ) -> None:
-    """Shared comment-preserving config writer; omission policy is selected by the public wrapper."""
+    """Shared comment-preserving config writer; omission policy is selected by the public wrapper.
+
+    The operator settings lock (``hermes_cli.settings_lock``) is enforced in
+    ``atomic_roundtrip_yaml_save``, so every writer that lands here is covered."""
     from utils import atomic_roundtrip_yaml_save
 
     _refuse_failed_read(config_path, data)
@@ -2533,14 +2536,6 @@ def save_config(
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 
-        # Operator settings lock. Enforced HERE rather than in each writer: every config write in
-        # the tree lands in this function, so `hermes config set`, the desktop's config.set RPC and
-        # the web Config page are all covered, and so is a writer added later. Compared against the
-        # on-disk raw config, so a save that leaves every locked path alone still goes through.
-        from hermes_cli.settings_lock import check_write
-
-        check_write(_raw_for_paths, config)
-
         current_normalized = _canonicalize_config(config)
         normalized = current_normalized
         if _raw_for_paths:
@@ -2553,6 +2548,8 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
+        # The operator settings lock is enforced inside the round-trip writer — the seam every
+        # whole-document config.yaml write passes through — not here.
         atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)

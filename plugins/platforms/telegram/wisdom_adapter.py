@@ -501,6 +501,7 @@ class TelegramWisdomMixin:
 
     async def _edit_wisdom_command_view(self, query, view, *, full_details: bool = False) -> None:
         from telegram.constants import ParseMode
+        from telegram.error import BadRequest
         from plugins.platforms.telegram.adapter import _redact_telegram_error_text
 
         message = getattr(query, "message", None)
@@ -517,7 +518,9 @@ class TelegramWisdomMixin:
                     },
                 )
                 return
-            except Exception as exc:
+            except BadRequest as exc:
+                if "message is not modified" in str(exc).lower():
+                    return
                 logger.debug(
                     "[%s] Wisdom command rich edit failed: %s",
                     self.name,
@@ -529,8 +532,9 @@ class TelegramWisdomMixin:
                 parse_mode=ParseMode.HTML,
                 reply_markup=self._wisdom_command_keyboard(view),
             )
-        except Exception:
-            pass
+        except BadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
 
     async def send_wisdom_command(self, raw_args: str, *, source) -> None:
         """Execute and render `/wisdom` inside this Telegram adapter's profile."""

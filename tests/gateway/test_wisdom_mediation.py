@@ -11,6 +11,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.wisdom_command import WisdomAction, WisdomItem, WisdomView
 from tests.gateway.test_slack_wisdom import _adapter as slack_adapter
 from tests.gateway.test_telegram_wisdom_command import _adapter as telegram_adapter
+from tests.wisdom.test_native_install_policy import native_install as native_install
 from tui_gateway.wisdom_mediation import poll
 
 
@@ -255,6 +256,117 @@ async def test_expanded_checks_edit_keeps_full_checklist():
     await adapter._edit_wisdom_command_view(query, current, full_details=True)
     sent = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]
     assert "Final professionalism row" in sent["rich_message"]["html"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface, failure", [
+    ("telegram", "rich_timeout"), ("telegram", "fallback_timeout"),
+    ("telegram", "already_updated"), ("slack", "missing_address"),
+    ("slack", "api_failure"),
+])
+async def test_card_edit_reports_delivery_failure_without_new_message(surface, failure):
+    from telegram.error import BadRequest
+
+    adapter = telegram_adapter() if surface == "telegram" else slack_adapter()
+    current = view()
+    if surface == "telegram":
+        query = SimpleNamespace(message=SimpleNamespace(chat_id=42, message_id=19),
+                                edit_message_text=AsyncMock())
+        adapter._bot.do_api_request.side_effect = (
+            TimeoutError("transport interrupted") if failure == "rich_timeout"
+            else BadRequest("Message is not modified") if failure == "already_updated"
+            else BadRequest("Rich format rejected")
+        )
+        if failure == "fallback_timeout":
+            query.edit_message_text.side_effect = TimeoutError("transport interrupted")
+        edit = adapter._edit_wisdom_command_view(query, current)
+        if failure == "already_updated":
+            await edit
+            query.edit_message_text.assert_not_awaited()
+        else:
+            with pytest.raises(TimeoutError):
+                await edit
+            assert query.edit_message_text.await_count == int(failure == "fallback_timeout")
+        adapter._bot.send_message.assert_not_awaited()
+        assert {call.args[0] for call in adapter._bot.do_api_request.call_args_list} == {"editMessageText"}
+    else:
+        client = SimpleNamespace(chat_update=AsyncMock(side_effect=TimeoutError("transport interrupted")),
+                                 chat_postMessage=AsyncMock())
+        adapter._get_client = Mock(return_value=client)
+        adapter._post_wisdom_response_url = AsyncMock(return_value=False)
+        body = ({"channel": {"id": "D1"}, "message": {"ts": "19"}}
+                if failure == "api_failure" else {"response_url": "https://slack.invalid/response"})
+        with pytest.raises(TimeoutError if failure == "api_failure" else ValueError):
+            await adapter._update_wisdom_interaction(body, current)
+        client.chat_postMessage.assert_not_awaited()
+        assert client.chat_update.await_count == int(failure == "api_failure")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["telegram", "slack"])
+async def test_native_install_retry_after_edit_failure_only_updates_completed_card(native_install, monkeypatch, surface):
+    from dataclasses import replace
+    from hermes_wisdom.consent import WisdomConsent
+    from tests.wisdom.test_native_install_policy import request
+
+    service, original_actor, _ = native_install
+    actor = replace(original_actor, platform=surface,
+                    chat_id="42" if surface == "telegram" else "D1",
+                    scope_id="" if surface == "telegram" else "T1")
+    consent = WisdomConsent(service)
+    consent.queue.register_session(
+        "org-1", session_key=actor.session_key, session_id="session",
+        platform=actor.platform, actor_id=actor.actor_id, private=True,
+        available=True, user_activity=True, address=actor.address,
+    )
+    shown = request(consent, actor, "MANUAL")
+    callback = f"wi:agent:confirm:{shown['id']}"
+    monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: service)
+    adapter = telegram_adapter() if surface == "telegram" else slack_adapter()
+    adapter._run_wisdom_profile_operation = AsyncMock(side_effect=lambda fn, **_: fn())
+    if surface == "telegram":
+        adapter._is_callback_user_authorized = Mock(return_value=True)
+        adapter._bot.do_api_request.side_effect = [TimeoutError("lost edit reply"), {"message_id": 19}]
+        query = SimpleNamespace(from_user=SimpleNamespace(id=actor.actor_id), answer=AsyncMock(),
+                                message=SimpleNamespace(chat_id=42, message_id=19),
+                                edit_message_text=AsyncMock())
+
+        async def click():
+            await adapter._handle_wisdom_callback(
+                query, callback, query_chat_id=actor.chat_id, query_chat_type="private",
+                query_thread_id="", query_user_name="Member",
+            )
+    else:
+        adapter._is_interactive_user_authorized = Mock(return_value=True)
+        adapter._wisdom_interaction_notice = AsyncMock()
+        client = SimpleNamespace(chat_update=AsyncMock(side_effect=[TimeoutError("lost edit reply"), {"ok": True}]),
+                                 chat_postMessage=AsyncMock())
+        adapter._get_client = Mock(return_value=client)
+        body = {"team": {"id": actor.scope_id}, "channel": {"id": actor.chat_id},
+                "user": {"id": actor.actor_id}, "message": {"ts": "19"}}
+
+        async def click():
+            await adapter._handle_wisdom_action(AsyncMock(), body, {"value": callback})
+
+    await click()
+    assert len(service.client.records) == 1
+    assert service.store.installation("skill-1")["state"] == "active"
+    assert consent.resolve("org-1", shown["id"], actor, "inspect")["state"] == "completed"
+    if surface == "telegram":
+        assert any(call.kwargs.get("show_alert") for call in query.answer.call_args_list)
+        query.edit_message_text.assert_not_awaited()
+    else:
+        adapter._wisdom_interaction_notice.assert_awaited_once()
+    await click()
+    assert len(service.client.records) == 1
+    if surface == "telegram":
+        assert adapter._bot.do_api_request.await_count == 2
+        assert "Files installed" in adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["html"]
+        adapter._bot.send_message.assert_not_awaited()
+    else:
+        assert client.chat_update.await_count == 2
+        assert "Files installed" in client.chat_update.call_args.kwargs["text"]
+        client.chat_postMessage.assert_not_awaited()
 
 
 @pytest.mark.asyncio

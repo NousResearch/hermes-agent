@@ -428,6 +428,8 @@ class SlackWisdomMixin:
                 text=text,
                 blocks=blocks,
             )
+            return
+        raise ValueError("This card cannot be updated. Open /wisdom inbox to review its current state.")
 
     async def _wisdom_interaction_notice(self, body, text: str) -> None:
         response_url = str(body.get("response_url") or "")

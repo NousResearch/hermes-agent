@@ -53,6 +53,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 |-------|-------------|------|
 | [`sdlc-review`](/docs/user-guide/skills/bundled/devops/devops-sdlc-review) | Review Kanban handoffs and route verified outcomes. | `devops\sdlc-review` |
 
+## devops
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`sandbox-runner`](/docs/user-guide/skills/bundled/devops/devops-sandbox-runner) | Run untrusted code in disposable isolated sandboxes. | `devops/sandbox-runner` |
+
 ## email
 
 | Skill | Description | Path |

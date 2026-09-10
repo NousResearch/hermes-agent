@@ -520,16 +520,30 @@ class LineAdapter(BasePlatformAdapter):
             return
         if self._bot_user_id and source.get("userId", "") == self._bot_user_id:
             return
-        if not _allowed_for_source(source, allow_all=self.allow_all, user_ids=self.allowed_users,
-                                   group_ids=self.allowed_groups, room_ids=self.allowed_rooms):
-            logger.info("LINE: rejecting unauthorized source %s", source)
+        # Valid 1:1 user message events delegate authorization to the shared gateway
+        # (allow-all / explicit allowlist / pairing all live there -- see
+        # gateway/authz_mixin.py + gateway/pairing.py) so an unknown sender reaches
+        # handle_message and gets a pairing code instead of being dropped silently.
+        # Groups, rooms, malformed sources, and non-message events have no pairing
+        # path here and stay gated at adapter intake by their own allowlists.
+        _, chat_type = _resolve_chat(source)
+        is_user_dm_message = (
+            event_type == "message"
+            and source.get("type") == "user"
+            and bool(source.get("userId"))
+        )
+        if not is_user_dm_message and not _allowed_for_source(
+            source, allow_all=self.allow_all, user_ids=self.allowed_users,
+            group_ids=self.allowed_groups, room_ids=self.allowed_rooms,
+        ):
+            logger.info("LINE: rejecting unauthorized source (chat_type=%s)", chat_type)
             return
         if event_type == "message":
             await self._handle_message_event(event)
         elif event_type == "postback":
             await self._handle_postback_event(event)
         elif event_type in _LIFECYCLE_EVENTS:
-            logger.info("LINE: lifecycle event %s from %s", event_type, source)
+            logger.info("LINE: lifecycle event %s (chat_type=%s)", event_type, chat_type)
         else:
             logger.debug("LINE: ignoring event type %r", event_type)
 

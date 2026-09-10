@@ -11,6 +11,8 @@ Covers LINE adapter behavior from the PR review:
 7. inbound media normalization to gateway message types and MIME metadata
 8. send routing: reply token preferred → push fallback → batched at 5/call
 9. register() metadata + standalone_send shape
+10. _dispatch_event authorization: user DMs delegate to the shared gateway
+    (pairing), groups/rooms stay gated at adapter intake by their own allowlists
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import hashlib
 import hmac
 import base64
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -510,4 +513,223 @@ class TestMediaPublicUrlGuard:
         result = asyncio.run(ad.send_image_file("Uchat", str(img)))
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# 11. _dispatch_event authorization: DM delegation vs group/room gate
+# ---------------------------------------------------------------------------
+
+class TestDispatchEventAuthorization:
+    """``_dispatch_event`` no longer gates 1:1 user DMs with the adapter's local
+    three-allowlist check -- authorization (allow-all / explicit allowlist /
+    pairing) is delegated to the shared gateway once the event reaches
+    ``handle_message``. Groups and rooms have no pairing concept and stay
+    gated at adapter intake by their own allowlists/allow_all."""
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        for key in (
+            "LINE_CHANNEL_ACCESS_TOKEN",
+            "LINE_CHANNEL_SECRET",
+            "LINE_ALLOW_ALL_USERS",
+            "LINE_ALLOWED_USERS",
+            "LINE_ALLOWED_GROUPS",
+            "LINE_ALLOWED_ROOMS",
+            "GATEWAY_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad.handle_message = AsyncMock()
+        return ad
+
+    @staticmethod
+    def _message_event(source, *, webhook_event_id="evt-1"):
+        return {
+            "type": "message",
+            "webhookEventId": webhook_event_id,
+            "replyToken": "reply-token-abc",
+            "source": source,
+            "message": {"type": "text", "id": "m1", "text": "hi"},
+        }
+
+    def test_unknown_user_dm_reaches_handle_message_once_under_duplicate_redelivery(self, adapter):
+        # No allow_all, no allowed_users -- this sender fails the adapter's own
+        # three-allowlist gate, but that gate no longer applies to 1:1 user DMs:
+        # the shared gateway decides (and offers a pairing code) once the event
+        # reaches handle_message. Redelivering the same webhookEventId (LINE's
+        # at-least-once retry) must still yield exactly one handle_message call.
+        assert adapter.allow_all is False
+        assert not adapter.allowed_users
+        event = self._message_event({"type": "user", "userId": "Ustranger"})
+        asyncio.run(adapter._dispatch_event(event))
+        asyncio.run(adapter._dispatch_event(event))
+        adapter.handle_message.assert_awaited_once()
+
+    def test_unknown_user_dm_stashes_reply_token_for_gateway_pairing_reply(self, adapter):
+        # The gateway's pairing-code response rides adapter.send(), which consumes
+        # the stashed reply token -- it must be stashed even for an unauthorized
+        # sender or the pairing reply has no free token to use.
+        event = self._message_event({"type": "user", "userId": "Ustranger"})
+        asyncio.run(adapter._dispatch_event(event))
+        token, expires_at = adapter._reply_tokens.get("Ustranger", ("", 0.0))
+        assert token == "reply-token-abc"
+        assert expires_at > time.time()
+
+    def test_unauthorized_group_denied_at_adapter_intake(self, adapter):
+        event = self._message_event({"type": "group", "groupId": "Cstranger", "userId": "Ustranger"})
+        asyncio.run(adapter._dispatch_event(event))
+        adapter.handle_message.assert_not_awaited()
+
+    def test_unauthorized_room_denied_at_adapter_intake(self, adapter):
+        event = self._message_event({"type": "room", "roomId": "Rstranger", "userId": "Ustranger"})
+        asyncio.run(adapter._dispatch_event(event))
+        adapter.handle_message.assert_not_awaited()
+
+    def test_unknown_source_type_denied_at_adapter_intake(self, adapter):
+        # _resolve_chat historically normalizes unknown source types to "dm";
+        # delegation must nevertheless be limited to an explicit LINE user
+        # source so malformed events cannot bypass adapter intake policy.
+        event = self._message_event({"type": "future-kind", "userId": "Ustranger"})
+        asyncio.run(adapter._dispatch_event(event))
+        adapter.handle_message.assert_not_awaited()
+
+    def test_unknown_user_postback_denied_at_adapter_intake(self, adapter):
+        # Pairing delegation applies only to messages. An unknown user must not
+        # reach the postback cache path, which is not protected by the gateway's
+        # message authorization gate.
+        adapter._handle_postback_event = AsyncMock()
+        event = {
+            "type": "postback",
+            "webhookEventId": "evt-postback",
+            "replyToken": "reply-token-postback",
+            "source": {"type": "user", "userId": "Ustranger"},
+            "postback": {"data": "{}"},
+        }
+        asyncio.run(adapter._dispatch_event(event))
+        adapter._handle_postback_event.assert_not_awaited()
+
+    def test_authorized_group_reaches_handle_message(self, adapter):
+        adapter.allowed_groups = {"Cok"}
+        event = self._message_event({"type": "group", "groupId": "Cok", "userId": "Uok"})
+        asyncio.run(adapter._dispatch_event(event))
+        adapter.handle_message.assert_awaited_once()
+
+    def test_authorized_room_reaches_handle_message(self, adapter):
+        adapter.allowed_rooms = {"Rok"}
+        event = self._message_event({"type": "room", "roomId": "Rok", "userId": "Uok"})
+        asyncio.run(adapter._dispatch_event(event))
+        adapter.handle_message.assert_awaited_once()
+
+    def test_group_allow_all_still_authorizes(self, adapter):
+        adapter.allow_all = True
+        event = self._message_event({"type": "group", "groupId": "Canything", "userId": "Uanything"})
+        asyncio.run(adapter._dispatch_event(event))
+        adapter.handle_message.assert_awaited_once()
+
+    def test_signed_webhook_unknown_dm_pairs_once_without_model_run(self, adapter, caplog):
+        # Exercise signed webhook -> LINE dispatch -> the real shared gateway
+        # authorization/pairing gate. Only an admitted event may reach the model
+        # seam; an unknown DM must instead get one pairing reply, even on LINE
+        # redelivery of the same webhookEventId.
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        runner.adapters = {_line.Platform("line"): adapter}
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.return_value = False
+        runner.pairing_store._is_rate_limited.return_value = False
+        runner.pairing_store.generate_code.return_value = "PAIRCODE"
+        runner._scale_to_zero_note_real_inbound = lambda: None
+        runner._hm_pre_gateway_dispatch_hook = lambda event, source: event
+        runner._is_user_authorized_for_source = runner._is_user_authorized
+
+        model_run = AsyncMock()
+
+        async def gateway_handler(event):
+            admitted = await runner._hm_admit_event(event)
+            if admitted is not None:
+                await model_run(event)
+
+        adapter.handle_message = gateway_handler
+        adapter.send = AsyncMock(return_value=_line.SendResult(success=True))
+
+        body = json.dumps({"events": [self._message_event(
+            {"type": "user", "userId": "Ustranger"}
+        )]}).encode()
+        signature = base64.b64encode(
+            hmac.new(b"sec", body, hashlib.sha256).digest()
+        ).decode()
+        request = MagicMock()
+        request.read = AsyncMock(return_value=body)
+        request.headers = {"X-Line-Signature": signature}
+
+        first = asyncio.run(adapter._handle_webhook(request))
+        second = asyncio.run(adapter._handle_webhook(request))
+
+        assert first.status == second.status == 200
+        runner.pairing_store.generate_code.assert_called_once_with(
+            "line", "Ustranger", "Ustranger"
+        )
+        adapter.send.assert_awaited_once()
+        send_call = adapter.send.await_args
+        assert send_call is not None
+        assert send_call.args[0] == "Ustranger"
+        assert "PAIRCODE" in send_call.args[1]
+        model_run.assert_not_awaited()
+        assert "PAIRCODE" not in caplog.text
+        assert body.decode() not in caplog.text
+
+    def test_line_approval_and_revocation_apply_without_restart(self, adapter, tmp_path):
+        from gateway.config import GatewayConfig
+        from gateway.pairing import PairingStore
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            runner = object.__new__(GatewayRunner)
+            runner.config = GatewayConfig()
+            runner.adapters = {_line.Platform("line"): adapter}
+            runner.pairing_store = store
+            source = SessionSource(
+                platform=_line.Platform("line"),
+                chat_id="Uexact",
+                chat_type="dm",
+                user_id="Uexact",
+                user_name="LINE user",
+            )
+
+            assert runner._is_user_authorized(source) is False
+            code = store.generate_code("line", "Uexact", "LINE user")
+            assert code is not None
+            assert store.approve_code("line", code) == {
+                "user_id": "Uexact",
+                "user_name": "LINE user",
+            }
+            assert runner._is_user_authorized(source) is True
+
+            other_source = SessionSource(
+                platform=_line.Platform("line"),
+                chat_id="Uother",
+                chat_type="dm",
+                user_id="Uother",
+            )
+            assert runner._is_user_authorized(other_source) is False
+            assert store.revoke("line", "Uexact") is True
+            assert runner._is_user_authorized(source) is False
+
+    def test_group_rejection_log_omits_raw_source(self, adapter, caplog):
+        caplog.set_level("INFO")
+        event = self._message_event({"type": "group", "groupId": "Csecret", "userId": "Usecret"})
+        asyncio.run(adapter._dispatch_event(event))
+        assert "Csecret" not in caplog.text
+        assert "Usecret" not in caplog.text
 

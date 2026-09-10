@@ -981,7 +981,7 @@ class _GatewayRestartOutcome:
 
 
 def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None:
-    """Drain/stop every manual (non-service) gateway and print the restart summary.
+    """Drain/stop pre-existing manual gateways and print the restart summary.
 
     Mutates ``out`` in place; raises so the caller's abort recovery fires.
     """
@@ -990,9 +990,18 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         find_gateway_pids, find_profile_gateway_processes, _prepare_profile_gateway_update_restart, _get_service_pids,
         _wait_for_gateway_exit,
     )
-    # Exclude just-restarted service PIDs so we don't kill what systemd/launchd spawned.
+    if out.pre_restart_gateway_pids is None:
+        out.incomplete = True
+        print("  Manual gateway cleanup skipped: pre-restart inventory unavailable.")
+        return
+    # Service lookup can miss a replacement or report its launcher instead. Only
+    # gateways present before service restarts can be stale manual-stop targets.
+    pre_restart_pids = set(out.pre_restart_gateway_pids)
     service_pids = _get_service_pids(all_profiles=True)
-    manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
+    manual_pids = [
+        pid for pid in find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
+        if pid in pre_restart_pids
+    ]
     profile_processes = {
         proc.pid: proc
         for proc in find_profile_gateway_processes(exclude_pids=service_pids)

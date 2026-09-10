@@ -350,8 +350,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       commitContext: repoPath => ipcRenderer.invoke('hermes:git:review:commitContext', repoPath),
       push: repoPath => ipcRenderer.invoke('hermes:git:review:push', repoPath),
       shipInfo: repoPath => ipcRenderer.invoke('hermes:git:review:shipInfo', repoPath),
-      prList: (repoPath, branches, numbers) =>
-        ipcRenderer.invoke('hermes:git:review:prList', repoPath, branches, numbers),
+      prList: (repoPath, branches, numbers, urls) =>
+        ipcRenderer.invoke('hermes:git:review:prList', repoPath, branches, numbers, urls),
       fetchPrComment: (repoPath, url) => ipcRenderer.invoke('hermes:git:review:fetchPrComment', repoPath, url),
       createPr: repoPath => ipcRenderer.invoke('hermes:git:review:createPr', repoPath)
     }

@@ -98,8 +98,8 @@ export function registerGitIpc({ resolveGitBinary, resolveGhBinary }: GitIpcDeps
   )
   ipcMain.handle('hermes:git:review:push', async (_event, repoPath) => reviewPush(repoPath, resolveGitBinary()))
   ipcMain.handle('hermes:git:review:shipInfo', async (_event, repoPath) => reviewShipInfo(repoPath, resolveGhBinary()))
-  ipcMain.handle('hermes:git:review:prList', async (_event, repoPath, branches, numbers) =>
-    reviewPrList(repoPath, resolveGhBinary(), branches, numbers)
+  ipcMain.handle('hermes:git:review:prList', async (_event, repoPath, branches, numbers, urls) =>
+    reviewPrList(repoPath, resolveGhBinary(), branches, numbers, urls)
   )
   ipcMain.handle('hermes:git:review:fetchPrComment', async (_event, repoPath, url) =>
     reviewFetchPrComment(repoPath, resolveGhBinary(), url)

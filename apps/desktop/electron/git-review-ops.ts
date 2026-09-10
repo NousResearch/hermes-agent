@@ -693,7 +693,59 @@ async function reviewFetchPrComment(repoPath, ghBin, url) {
 // branches we actually have sessions on rather than listing the repo's newest
 // PRs and hoping ours are in the page — on a busy repo they are not. One
 // GraphQL request per 50 branches; reads only.
-async function reviewPrList(repoPath, ghBin, branches, numbers) {
+async function reviewPrList(repoPath, ghBin, branches, numbers, urls?: string[]) {
+  // Explicit URLs carry their own repository identity; never resolve them against
+  // a session checkout (which may be unrelated, deleted, or absent).
+  const wantedUrls = [
+    ...new Set(
+      (urls || []).filter(
+        url =>
+          typeof url === 'string' &&
+          /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.{1,2}\/)[A-Za-z0-9_.][A-Za-z0-9_.-]*\/pull\/[1-9][0-9]*\/?$/.test(
+            url
+          ) &&
+          !/\s/.test(url)
+      )
+    )
+  ].slice(0, PR_QUERY_BRANCH_CAP)
+
+  const result =
+    branches?.length || numbers?.length
+      ? await reviewRepoPrList(repoPath, ghBin, branches, numbers)
+      : { ghReady: false, prs: [] }
+
+  let urlsReady = true
+
+  for (let start = 0; start < wantedUrls.length; start += 4) {
+    const batch = await Promise.all(
+      wantedUrls.slice(start, start + 4).map(async url => {
+        const res = await runGh(['pr', 'view', url, '--json', PR_NODE_FIELDS.split(' ').join(',')], undefined, ghBin)
+
+        if (!res.ok) {
+          return null
+        }
+
+        result.ghReady = true
+
+        try {
+          const pr = JSON.parse(res.stdout)
+
+          return pr?.headRefName ? prPayload(pr) : null
+        } catch {
+          return null
+        }
+      })
+    )
+
+    urlsReady &&= batch.every(pr => pr !== null)
+    result.prs.push(...batch.filter(pr => pr !== null))
+  }
+
+  // A partial/network failure must not evict previously confirmed badges.
+  return { ghReady: result.ghReady && urlsReady, prs: [...new Map(result.prs.map(pr => [pr.url, pr])).values()] }
+}
+
+async function reviewRepoPrList(repoPath, ghBin, branches, numbers) {
   let cwd
 
   try {

@@ -439,7 +439,12 @@ declare global {
           // The PR on each of the given branches — plus any known only by
           // number — for badging a list of sessions in one request instead of
           // one `pr view` per checkout.
-          prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<HermesRepoPullRequests>
+          prList: (
+            repoPath: string,
+            branches: string[],
+            numbers?: number[],
+            urls?: string[]
+          ) => Promise<HermesRepoPullRequests>
           // A pasted PR review/issue comment URL resolved to its structured
           // context (author, body, file + line anchor, diff hunk). Null when
           // gh can't answer — the paste stays a plain URL.

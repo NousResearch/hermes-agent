@@ -94,8 +94,13 @@ const remoteGit: GitBridge = {
 
     shipInfo: repoPath => gitGet<HermesReviewShipInfo>('review/ship-info', { path: repoPath }),
 
-    prList: (repoPath, branches, numbers) =>
-      gitPost<HermesRepoPullRequests>('review/pr-list', { branches, numbers: numbers ?? [], path: repoPath }),
+    prList: (repoPath, branches, numbers, urls) =>
+      gitPost<HermesRepoPullRequests>('review/pr-list', {
+        branches,
+        numbers: numbers ?? [],
+        path: repoPath,
+        urls: urls ?? []
+      }),
 
     // Remote gateways have no PR-comment route yet; resolve to null so the
     // paste degrades to a plain URL instead of throwing mid-paste.

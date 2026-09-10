@@ -1,0 +1,20 @@
+{
+  "schema": "v1",
+  "name": "orca-control",
+  "displayName": "Orca Control & Multi-Agent Orchestrator",
+  "version": "1.0.0",
+  "description": "Comprehensive toolkit for managing, orchestrating, and operating the Orca IDE multi-agent runtime server.",
+  "author": "Rafa Martins <rafacpti@gmail.com>",
+  "category": "devops",
+  "tags": [
+    "orca",
+    "orchestration",
+    "multi-agent",
+    "devops",
+    "worktrees",
+    "terminals"
+  ],
+  "entrypoint": "SKILL.md",
+  "platforms": ["linux"],
+  "homepage": "https://github.com/rafacpti23/orca-control-skill"
+}

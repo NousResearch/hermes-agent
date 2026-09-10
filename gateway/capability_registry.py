@@ -376,70 +376,70 @@ class CapabilityRegistry:
         return _unexpired(row["expires_at"], now=int(time.time()))
 
         def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
-        """Resolve exactly one active, unexpired, non-expanding local profile."""
-        if not isinstance(signature, CapabilitySignature):
-            raise TypeError("signature must be a CapabilitySignature")
-        try:
-            with self._connection() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT profile_id, signature_hash, permissions_hash, domain,
-                           actions_json, evidence_class, requested_permissions_json, expires_at
-                    FROM capability_profiles AS profiles
-                    WHERE status = 'active' AND signature_hash = ?
-                      AND permissions_hash = ? AND evidence_class = ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM specialist_profile_revocations AS revocations
-                          WHERE revocations.capability_profile_id = profiles.id
-                            AND revocations.profile_id = profiles.profile_id
-                            AND revocations.signature_hash = profiles.signature_hash
-                            AND revocations.permissions_hash = profiles.permissions_hash
-                      )
-                    ORDER BY profile_id, id
-                    """,
-                    (
-                        signature.signature_hash,
-                        signature.permissions_hash,
-                        signature.evidence_class,
-                    ),
-                ).fetchall()
-        except Exception as exc:
-            return RegistryResolution(
-                status="unavailable",
-                profile=None,
-                reason=f"local capability registry unavailable: {type(exc).__name__}",
-            )
-
-        now = int(time.time())
-        matches: set[str] = set()
-        for row in rows:
-            if not _unexpired(row["expires_at"], now=now):
-                continue
+            """Resolve exactly one active, unexpired, non-expanding local profile."""
+            if not isinstance(signature, CapabilitySignature):
+                raise TypeError("signature must be a CapabilitySignature")
             try:
-                stored = CapabilitySignature(
-                    domain=row["domain"],
-                    actions=tuple(json.loads(row["actions_json"])),
-                    evidence_class=row["evidence_class"],
-                    requested_permissions=tuple(json.loads(row["requested_permissions_json"])),
+                with self._connection() as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT profile_id, signature_hash, permissions_hash, domain,
+                               actions_json, evidence_class, requested_permissions_json, expires_at
+                        FROM capability_profiles AS profiles
+                        WHERE status = 'active' AND signature_hash = ?
+                          AND permissions_hash = ? AND evidence_class = ?
+                          AND NOT EXISTS (
+                              SELECT 1 FROM specialist_profile_revocations AS revocations
+                              WHERE revocations.capability_profile_id = profiles.id
+                                AND revocations.profile_id = profiles.profile_id
+                                AND revocations.signature_hash = profiles.signature_hash
+                                AND revocations.permissions_hash = profiles.permissions_hash
+                          )
+                        ORDER BY profile_id, id
+                        """,
+                        (
+                            signature.signature_hash,
+                            signature.permissions_hash,
+                            signature.evidence_class,
+                        ),
+                    ).fetchall()
+            except Exception as exc:
+                return RegistryResolution(
+                    status="unavailable",
+                    profile=None,
+                    reason=f"local capability registry unavailable: {type(exc).__name__}",
                 )
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            if (
-                stored.signature_hash != row["signature_hash"]
-                or stored.permissions_hash != row["permissions_hash"]
-                or stored.domain != signature.domain
-                or stored.actions != signature.actions
-                or stored.requested_permissions != signature.requested_permissions
-            ):
-                continue
-            matches.add(row["profile_id"])
-
-        if len(matches) == 1:
-            return RegistryResolution(
-                "active_match",
-                next(iter(matches)),
-                "exact active capability profile matched locally",
-            )
-        if len(matches) > 1:
-            return RegistryResolution("ambiguous", None, "multiple active capability profiles matched the requested scope")
-        return RegistryResolution("no_match", None, "no active unexpired profile matched the requested scope")
+    
+            now = int(time.time())
+            matches: set[str] = set()
+            for row in rows:
+                if not _unexpired(row["expires_at"], now=now):
+                    continue
+                try:
+                    stored = CapabilitySignature(
+                        domain=row["domain"],
+                        actions=tuple(json.loads(row["actions_json"])),
+                        evidence_class=row["evidence_class"],
+                        requested_permissions=tuple(json.loads(row["requested_permissions_json"])),
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if (
+                    stored.signature_hash != row["signature_hash"]
+                    or stored.permissions_hash != row["permissions_hash"]
+                    or stored.domain != signature.domain
+                    or stored.actions != signature.actions
+                    or stored.requested_permissions != signature.requested_permissions
+                ):
+                    continue
+                matches.add(row["profile_id"])
+    
+            if len(matches) == 1:
+                return RegistryResolution(
+                    "active_match",
+                    next(iter(matches)),
+                    "exact active capability profile matched locally",
+                )
+            if len(matches) > 1:
+                return RegistryResolution("ambiguous", None, "multiple active capability profiles matched the requested scope")
+            return RegistryResolution("no_match", None, "no active unexpired profile matched the requested scope")

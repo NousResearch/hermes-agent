@@ -1663,6 +1663,10 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
     replace."""
     existing = pending_messages.get(session_key)
     if existing:
+        existing_ids = {m["inbound_id"] for m in existing.original_inputs() if m["inbound_id"]}
+        incoming_ids = {m["inbound_id"] for m in event.original_inputs() if m["inbound_id"]}
+        if incoming_ids and incoming_ids <= existing_ids:
+            return
         existing_type = getattr(existing, "message_type", None)
         existing_is_photo = existing_type == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
@@ -1679,6 +1683,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
+            existing.absorb_input_identity(event)
             if both_photo or incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
@@ -1697,6 +1702,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             return
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
+            existing.absorb_input_identity(event)
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             return
@@ -3506,6 +3512,13 @@ class BasePlatformAdapter(ABC):
                            expected_session_key, session_key)
             return
         # On-entry self-heal: clear a guard whose owner task already exited.
+        if not event.internal and not event.is_command():
+            from gateway.shutdown_flush import record_durable_inbound_event, _has_durable_outbound_transfer
+            if not record_durable_inbound_event(session_key, event):
+                return
+            if _has_durable_outbound_transfer(session_key, event.metadata.get("_hermes_durable_inbound_id", "")):
+                event._gateway_accepted = True
+                return
         if session_key in self._active_sessions:
             self._heal_stale_session_lock(session_key)
         if session_key in self._active_sessions:
@@ -3569,6 +3582,16 @@ class BasePlatformAdapter(ABC):
         # (or collapse distinct wakes into one turn). Its caller can retry admission.
         if event.internal and session_key in self._pending_messages:
             return
+        if not getattr(event, "internal", False):
+            try:
+                from gateway.shutdown_flush import record_durable_inbound_event
+
+                if not record_durable_inbound_event(session_key, event):
+                    logger.error("[%s] Rejecting queued input without durable record for %s", self.name, session_key)
+                    return
+            except Exception:
+                logger.exception("[%s] Durable pending-input record failed for %s", self.name, session_key)
+                return
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
             logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
@@ -3636,7 +3659,8 @@ class BasePlatformAdapter(ABC):
 
     async def _play_tts_file(
         self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
-        metadata: Dict[str, Any], record_delivery: Callable) -> bool:
+        metadata: Dict[str, Any], record_delivery: Callable,
+        obligation_id: Optional[str] = None) -> bool:
         """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
         along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
         caption = None
@@ -3645,41 +3669,71 @@ class BasePlatformAdapter(ABC):
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
         record_delivery(tts_result)
+        if caption and obligation_id is not None:
+            await self._finalize_delivery_obligation(
+                obligation_id, tts_result, event, self._final_delivery_adapter(event.source))
+        elif caption and getattr(tts_result, "success", False):
+            with contextlib.suppress(Exception):
+                from gateway.shutdown_flush import acknowledge_durable_inbound_event
+
+                acknowledge_durable_inbound_event(event)
         return bool(caption and getattr(tts_result, "success", False))
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
-        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
+        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool, *,
+        attachments: Optional[list] = None, metadata: Optional[dict] = None,
+        reply_to: Optional[str] = None) -> tuple[Optional[str], bool]:
         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
         next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
-        or None."""
+        and whether an existing outbound owner already transferred a durable inbound turn. A durable
+        inbound identity takes precedence over regenerated response text."""
+        event = getattr(event, "terminal_event", None) or event
         if is_ephemeral_response or str(event.text or "").lstrip().startswith(
             ("/", self.typed_command_prefix or "!")):
-            return None
+            return None, False
         try:
             from gateway.delivery_ledger import (
                 compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
+            from gateway.shutdown_flush import (
+                acknowledge_durable_inbound_event, durable_inbound_obligation_id)
             if not await asyncio.to_thread(ledger_enabled):
-                return None
+                return None, False
             source = event.source
+            inbound_id = durable_inbound_obligation_id(event)
+            inbound_ids = [m["inbound_id"] for m in event.original_inputs() if m["inbound_id"]]
             # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
             # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
             _ledger_id = getattr(event, "ledger_message_id", None)
             if _ledger_id is None:
                 _ledger_id = getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
-                session_key, str(_ledger_id or ""), text_content)
-            await asyncio.to_thread(
+                session_key, str(_ledger_id or ""), text_content,
+                stable_inbound_id=inbound_id or None)
+            created = await asyncio.to_thread(
                 record_obligation, obligation_id=obligation_id, session_key=session_key,
                 platform=str(getattr(source.platform, "value", source.platform)),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
                 content=text_content,
-                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
-            await asyncio.to_thread(mark_attempting, obligation_id)
-            return obligation_id
+                adapter_profile=getattr(delivery_adapter, "_owner_profile", None),
+                preserve_existing=bool(inbound_id), inbound_ids=inbound_ids,
+                output_payload={"version": 1, "attachments": attachments or [],
+                                "text_complete": not bool(text_content),
+                                "metadata": metadata or {}, "reply_to": reply_to,
+                                "session_key": session_key})
+            if inbound_id:
+                if not created:
+                    return obligation_id, True
+                acknowledge_durable_inbound_event(event)
+            if created:
+                await asyncio.to_thread(mark_attempting, obligation_id)
+            return obligation_id, False
         except Exception:
             logger.debug("delivery ledger record failed", exc_info=True)
-            return None
+            if event.metadata.get("_hermes_durable_inbound_id"):
+                # Never send an unowned response after a failed durable transfer.
+                raise
+            return None, False
 
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
@@ -3692,7 +3746,7 @@ class BasePlatformAdapter(ABC):
         try:
             from gateway.delivery_ledger import is_flood_error, mark_delivered, mark_failed
             if getattr(result, "success", False):
-                await asyncio.to_thread(mark_delivered, obligation_id)
+                await asyncio.to_thread(mark_delivered, obligation_id, self._delivery_receipt_ids(result))
                 return
             error = str(getattr(result, "error", "") or "")
             await asyncio.to_thread(mark_failed, obligation_id, error)
@@ -3710,6 +3764,91 @@ class BasePlatformAdapter(ABC):
                              profile=getattr(delivery_adapter, "_owner_profile", None))
         except Exception:
             logger.debug("delivery ledger update failed", exc_info=True)
+
+    @staticmethod
+    def _delivery_receipt_ids(result: Any) -> list:
+        ids = getattr(result, "continuation_message_ids", None)
+        ids = list(ids) if isinstance(ids, (list, tuple)) else []
+        raw = getattr(result, "raw_response", None)
+        if isinstance(raw, dict) and isinstance(raw.get("message_ids"), (list, tuple)):
+            ids.extend(raw["message_ids"])
+        message_id = getattr(result, "message_id", None)
+        if isinstance(message_id, (str, int)) and str(message_id) and message_id != "__no_edit__":
+            ids.append(str(message_id))
+        return list(dict.fromkeys(str(mid) for mid in ids
+                                  if isinstance(mid, (str, int)) and str(mid) and mid != "__no_edit__"))
+
+    @staticmethod
+    def _delivery_manifest(media_files: list, local_files: list, images: list,
+                           force_document: bool) -> list:
+        """Persist dispatch units, not copies of the response. Missing files stay owed."""
+        manifest = [{"images": images, "complete": False}] if images else []
+        photos = [(p, v) for p, v in media_files
+                  if not v and not force_document and Path(p).suffix.lower() in _IMAGE_EXTS]
+        local_photos = [p for p in local_files
+                        if not force_document and Path(p).suffix.lower() in _IMAGE_EXTS]
+        if photos or local_photos:
+            manifest.append({"media_files": photos, "local_files": local_photos,
+                             "force_document": force_document, "complete": False})
+        for path, voice in media_files:
+            if (path, voice) in photos:
+                continue
+            manifest.append({"media_files": [[path, voice]], "local_files": [],
+                             "force_document": force_document, "complete": False})
+        for path in local_files:
+            if path in local_photos:
+                continue
+            manifest.append({"media_files": [], "local_files": [path],
+                             "force_document": force_document, "complete": False})
+        return manifest
+
+    async def _deliver_ledger_attachments(self, obligation_id: str, event: MessageEvent,
+                                           record_delivery: Optional[Callable] = None) -> bool:
+        """Normal attachment dispatch, with durable per-component confirmation.
+
+        Revalidate on recovery: retaining a path is not permission to bypass the
+        media policy or upload a replaced symlink. A rejected path stays failed.
+        """
+        from gateway.delivery_ledger import output_payload, record_component_receipt, mark_failed
+        payload = await asyncio.to_thread(output_payload, obligation_id)
+        if payload is None:
+            return True
+        for index, item in enumerate(payload["attachments"]):
+            if item.get("complete"):
+                continue
+            results = []
+            metadata = payload["metadata"]
+            if "images" in item:
+                await self._send_image_batch(event, item["images"], metadata, 0, results.append)
+            else:
+                media, local = [], []
+                for path, voice in item["media_files"]:
+                    safe = _validated_delivery_path(path, payload["session_key"], "MEDIA directive path")
+                    if safe:
+                        media.append((safe, voice))
+                for path in item["local_files"]:
+                    safe = _validated_delivery_path(path, payload["session_key"], "local attachment")
+                    if safe:
+                        local.append(safe)
+                if len(media) + len(local) != len(item["media_files"]) + len(item["local_files"]):
+                    results.append(SendResult(success=False, error="attachment unavailable or denied"))
+                else:
+                    await self._deliver_media_attachments(
+                        event, media, local, force_document_attachments=item["force_document"],
+                        human_delay=0, metadata=metadata, record_delivery=results.append)
+            for result in results:
+                if record_delivery:
+                    record_delivery(result)
+            if not results or not all(getattr(result, "success", False) for result in results):
+                error = next((str(getattr(r, "error", "") or "attachment send failed")
+                              for r in results if not getattr(r, "success", False)), "attachment send failed")
+                await asyncio.to_thread(mark_failed, obligation_id, error)
+                logger.error("[%s] response_delivery_dropped: attachment dispatch failed (%s)",
+                             self.name, error)
+                return False
+            receipts = [mid for result in results for mid in self._delivery_receipt_ids(result)]
+            await asyncio.to_thread(record_component_receipt, obligation_id, index, receipts)
+        return True
 
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
@@ -3782,6 +3921,7 @@ class BasePlatformAdapter(ABC):
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
+        obligation_id: Optional[str] = None,
     ) -> "tuple[SendResult, BasePlatformAdapter]":
         """The delivery-ledger bracket every final text goes through, on the CURRENT transport
         (a reconnect may have replaced this adapter): record the obligation before the send,
@@ -3789,12 +3929,21 @@ class BasePlatformAdapter(ABC):
         transport) leaves a ledger row the boot sweep / runtime redelivery can act on. ``event``
         supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
-        (an ephemeral delete must go to the same transport)."""
+        (an ephemeral delete must go to the same transport). ``obligation_id`` reuses the
+        pre-recorded owner from the normal lane instead of creating a second row."""
         delivery_adapter = self._final_delivery_adapter(event.source)
         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
                     len(text_content), event.source.chat_id)
-        obligation_id = await self._record_delivery_obligation(
-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        if obligation_id is None:
+            obligation_id, outbound_already_owned = await self._record_delivery_obligation(
+                event, session_key, text_content, delivery_adapter, is_ephemeral_response,
+                metadata=metadata, reply_to=reply_to)
+            if outbound_already_owned:
+                logger.info(
+                    "[%s] Existing outbound obligation owns durable inbound turn for %s",
+                    self.name, session_key,
+                )
+                return SendResult(success=True), delivery_adapter
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
         if obligation_id is not None:
@@ -3803,12 +3952,23 @@ class BasePlatformAdapter(ABC):
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
-        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
+        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable,
+        obligation_id: Optional[str] = None) -> None:
+        """Normal-lane final: reuse a pre-recorded obligation when supplied, then apply the ledger
+        bracket plus the message-id owner's ephemeral delete."""
+        send_kwargs = {}
+        if obligation_id is not None:
+            send_kwargs["obligation_id"] = obligation_id
         result, delivery_adapter = await self.send_final_ledgered(
             event, session_key, text_content, metadata,
-            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
+            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response,
+            **send_kwargs)
         record_delivery(result)
+        if obligation_id is None and result.success:
+            with contextlib.suppress(Exception):
+                from gateway.shutdown_flush import acknowledge_durable_inbound_event
+
+                acknowledge_durable_inbound_event(event)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
 
@@ -3977,6 +4137,21 @@ class BasePlatformAdapter(ABC):
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                obligation_id, outbound_already_owned = await self._record_delivery_obligation(
+                    event, session_key, text_content, self, is_ephemeral_response,
+                    attachments=self._delivery_manifest(
+                        self.extract_media(response)[0], extracted.local_files, extracted.images,
+                        extracted.force_document_attachments),
+                    metadata=_final_thread_metadata, reply_to=_reply_anchor_for_event(event))
+                if outbound_already_owned:
+                    logger.info(
+                        "[%s] Existing outbound obligation owns durable inbound turn for %s",
+                        self.name, session_key,
+                    )
+                    response = None
+                    text_content = ""
+                    media_files = []
+                    extracted = _ExtractedResponse("", [], [], [], False, "")
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
@@ -3987,7 +4162,7 @@ class BasePlatformAdapter(ABC):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
                             event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
-                            _record_delivery)
+                            _record_delivery, obligation_id)
                     finally:
                         with contextlib.suppress(OSError):
                             os.remove(_tts_path)
@@ -3997,11 +4172,21 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
-                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
-                await self._deliver_attachments(
-                    event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered,
-                    record_delivery=_record_delivery)
+                        is_ephemeral_response, _ephemeral_ttl, _record_delivery, obligation_id)
+                if obligation_id and not outbound_already_owned:
+                    await self._deliver_ledger_attachments(obligation_id, event, _record_delivery)
+                    if not (text_content or extracted.images or extracted.local_files or media_files):
+                        # Preserve the existing empty-extraction diagnostic; this
+                        # path has no remaining attachment to send a second time.
+                        await self._deliver_attachments(
+                            event, extracted, _final_thread_metadata,
+                            anything_sent=delivery_attempted or _tts_caption_delivered,
+                            record_delivery=_record_delivery)
+                elif not outbound_already_owned:
+                    await self._deliver_attachments(
+                        event, extracted, _final_thread_metadata,
+                        anything_sent=delivery_attempted or _tts_caption_delivered,
+                        record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

@@ -157,6 +157,10 @@ def _connect() -> sqlite3.Connection:
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_state_wal import apply_wal_with_fallback
     apply_wal_with_fallback(conn, db_label="state.db (delivery_ledger)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS delivery_input_links (
+        session_key TEXT NOT NULL, inbound_id TEXT NOT NULL,
+        obligation_id TEXT NOT NULL,
+        PRIMARY KEY (session_key, inbound_id))""")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
             obligation_id TEXT PRIMARY KEY,
@@ -175,13 +179,19 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             adapter_profile TEXT
         )"""
     )
-    if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
+    for column in ("adapter_profile", "output_payload"):
+        if column in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
+            continue
         try:
-            conn.execute("ALTER TABLE delivery_obligations ADD COLUMN adapter_profile TEXT")
+            conn.execute(f"ALTER TABLE delivery_obligations ADD COLUMN {column} TEXT")
         except sqlite3.OperationalError as exc:
             # Concurrent first-use connections can both observe the old schema.
             if "duplicate column" not in str(exc).lower():
                 raise
+    conn.execute("""CREATE TABLE IF NOT EXISTS delivery_receipts (
+        obligation_id TEXT NOT NULL, message_id TEXT NOT NULL,
+        PRIMARY KEY (obligation_id, message_id))""")
+    conn.execute("CREATE INDEX IF NOT EXISTS delivery_receipt_message ON delivery_receipts(message_id)")
 
 
 @contextmanager
@@ -245,34 +255,180 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
         return True
 
 
-def compute_obligation_id(session_key: str, message_ref: str, content: str) -> str:
-    """Stable id: same turn + same content re-records idempotently, while distinct threads/topics on one
-    chat never collide (session_key carries platform/chat/thread; ``message_ref`` = inbound message id)."""
-    return hashlib.sha256(f"{session_key}|{message_ref}|{content}".encode("utf-8", "replace")).hexdigest()[:24]
+def compute_obligation_id(
+    session_key: str,
+    message_ref: str,
+    content: str,
+    *,
+    stable_inbound_id: str | None = None,
+) -> str:
+    """Return the canonical delivery identity for one terminal response.
+
+    Ordinary callers retain the historical trigger-message-plus-content id.
+    A durably queued inbound turn supplies ``stable_inbound_id`` instead: the
+    agent may regenerate different wording after a crash, but it must retain
+    one outbound owner rather than create a second reply obligation.
+    """
+    stable_inbound_id = str(stable_inbound_id or "").strip()
+    if stable_inbound_id:
+        payload = f"{session_key}|inbound:{stable_inbound_id}"
+    else:
+        payload = f"{session_key}|{message_ref}|{content}"
+    return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:24]
 
 
-def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
-    """Record a final response as owed to the platform (state='pending')."""
-    now, (pid, started) = time.time(), _owner_stamp()
+def obligation_state(obligation_id: str) -> Optional[str]:
+    """Return the existing outbound owner's state without claiming it."""
+    if not obligation_id:
+        return None
     with _DB_LOCK, _transaction() as conn:
-        conn.execute(
+        row = conn.execute(
+            "SELECT state FROM delivery_obligations WHERE obligation_id=?",
+            (obligation_id,),
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
+def inbound_transfer_state(session_key: str, inbound_id: str) -> Optional[str]:
+    """Resolve a batch member through the ledger, including legacy one-input rows."""
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute(
+            """SELECT COALESCE(o.state, 'transferred') FROM delivery_input_links i
+               LEFT JOIN delivery_obligations o ON o.obligation_id=i.obligation_id
+               WHERE i.session_key=? AND i.inbound_id=?""",
+            (session_key, inbound_id)).fetchone()
+    if row:
+        return str(row[0])
+    return obligation_state(compute_obligation_id(session_key, "", "", stable_inbound_id=inbound_id))
+
+
+def record_obligation(
+    *,
+    obligation_id: str,
+    session_key: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    content: str,
+    adapter_profile: Optional[str] = None,
+    preserve_existing: bool = False,
+    inbound_ids: Optional[List[str]] = None,
+    output_payload: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Record a final response as owed to the platform (state='pending').
+
+    ``preserve_existing`` is used only for durable inbound transfer ids.  A
+    second execution of the same inbound turn must leave its original outbound
+    response intact, not overwrite it with newly generated wording.
+    """
+    now = time.time()
+    stored_profile = str(adapter_profile).strip() if adapter_profile else "default"
+    pid, started = _owner_stamp()
+    with _DB_LOCK, _transaction() as conn:
+        # One transaction transfers the output and ALL original batch members.
+        for inbound_id in inbound_ids or []:
+            linked = conn.execute(
+                "SELECT obligation_id FROM delivery_input_links WHERE session_key=? AND inbound_id=?",
+                (session_key, inbound_id)).fetchone()
+            if linked and linked[0] != obligation_id:
+                raise ValueError("input already belongs to another output")
+        statement = (
+            """INSERT OR IGNORE INTO delivery_obligations
+               (obligation_id, session_key, platform, chat_id, thread_id,
+                content, state, attempts, created_at, updated_at,
+                owner_pid, owner_started_at, adapter_profile)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)"""
+            if preserve_existing else
             """INSERT OR REPLACE INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
                 content, state, attempts, created_at, updated_at,
                 owner_pid, owner_started_at, adapter_profile)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
-            (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
-             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)"""
+        )
+        cursor = conn.execute(
+            statement,
+            (obligation_id, session_key, platform, str(chat_id),
+             str(thread_id) if thread_id else None, content, now, now,
+             pid, started, stored_profile),
+        )
+        created = bool(cursor.rowcount)
+        if created and output_payload is not None:
+            conn.execute("UPDATE delivery_obligations SET output_payload=? WHERE obligation_id=?",
+                         (json.dumps(output_payload), obligation_id))
+        for inbound_id in inbound_ids or []:
+            conn.execute("INSERT OR IGNORE INTO delivery_input_links VALUES (?, ?, ?)",
+                         (session_key, inbound_id, obligation_id))
     _prune()
+    return created
 
 
 def mark_attempting(obligation_id: str) -> None:
     _update_state(obligation_id, "attempting")
 
 
-def mark_delivered(obligation_id: str) -> None:
-    _update_state(obligation_id, "delivered")
+def output_payload(obligation_id: str) -> Optional[Dict[str, Any]]:
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute("SELECT output_payload FROM delivery_obligations WHERE obligation_id=?",
+                           (obligation_id,)).fetchone()
+    return json.loads(row[0]) if row and row[0] else None
+
+
+def record_component_receipt(obligation_id: str, component: Optional[int] = None,
+                             message_ids: Optional[List[str]] = None) -> None:
+    """Commit a confirmed component and its receipts together; text is component None.
+
+    Old rows have no manifest and retain their text-only completion semantics.
+    An accepted send with a lost receipt remains an ambiguous retry, never proof.
+    """
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute("SELECT output_payload FROM delivery_obligations WHERE obligation_id=?",
+                           (obligation_id,)).fetchone()
+        if not row:
+            return
+        payload = json.loads(row[0]) if row[0] else None
+        complete = True
+        if payload is not None:
+            if component is None:
+                payload["text_complete"] = True
+            else:
+                payload["attachments"][component]["complete"] = True
+            complete = payload["text_complete"] and all(
+                item.get("complete", False) for item in payload["attachments"])
+        for message_id in message_ids or []:
+            if isinstance(message_id, (str, int)) and str(message_id):
+                conn.execute("INSERT OR IGNORE INTO delivery_receipts VALUES (?, ?)",
+                             (obligation_id, str(message_id)))
+        conn.execute("""UPDATE delivery_obligations SET output_payload=?,
+                        state=CASE WHEN ? THEN 'delivered' ELSE state END, updated_at=?
+                        WHERE obligation_id=?""",
+                     (json.dumps(payload) if payload is not None else None,
+                      complete, time.time(), obligation_id))
+
+
+def mark_delivered(obligation_id: str, message_ids: Optional[List[str]] = None) -> None:
+    record_component_receipt(obligation_id, message_ids=message_ids)
+
+
+def resolve_reply_receipt(session_key: str, platform: str, chat_id: str,
+                          thread_id: Optional[str], message_id: str) -> Optional[Dict[str, Any]]:
+    """Exact route + receipt association, independent of quotes and compressed text.
+
+    session_key includes the canonical profile/route scope. Ambiguous matches and
+    old rows without a real receipt stay unknown.
+    """
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute("""SELECT o.obligation_id, o.state FROM delivery_receipts r
+            JOIN delivery_obligations o ON o.obligation_id=r.obligation_id
+            WHERE r.message_id=? AND o.session_key=? AND o.platform=? AND o.chat_id=?
+              AND COALESCE(o.thread_id, '')=?""",
+            (str(message_id), session_key, platform, str(chat_id), str(thread_id or ""))).fetchall()
+        if len(rows) != 1:
+            return None
+        oid, state = rows[0]
+        members = conn.execute("SELECT inbound_id FROM delivery_input_links WHERE obligation_id=? ORDER BY inbound_id",
+                               (oid,)).fetchall()
+    return {"obligation_id": oid, "delivery_state": state,
+            "inbound_ids": [row[0] for row in members]}
 
 
 def mark_failed(obligation_id: str, error: str = "") -> None:
@@ -503,6 +659,8 @@ def _prune(now: Optional[float] = None) -> None:
                                     ELSE 2
                                   END, updated_at ASC
                          LIMIT ?)""", (total - _MAX_ROWS,))
+            conn.execute("""DELETE FROM delivery_receipts WHERE obligation_id NOT IN
+                            (SELECT obligation_id FROM delivery_obligations)""")
     except Exception:
         logger.debug("delivery ledger prune failed", exc_info=True)
 

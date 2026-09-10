@@ -84,6 +84,71 @@ class MessageEvent:
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True
 
+    # Captured before batching mutates text/media; input links, not output copies.
+    input_members: List[Dict[str, Any]] = field(default_factory=list)
+    terminal_event: Optional["MessageEvent"] = field(default=None, repr=False, compare=False)
+    # Derived at canonical ingress, never trusted from platform metadata.
+    ingress_provenance: List[Dict[str, Any]] = field(default_factory=list, repr=False, compare=False)
+
+    def original_inputs(self) -> List[Dict[str, Any]]:
+        if self.input_members:
+            return self.input_members
+        return [{
+            "inbound_id": self.metadata.get("_hermes_durable_inbound_id", ""),
+            "message_id": self.message_id, "platform_update_id": self.platform_update_id,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "reply_to_message_id": self.reply_to_message_id, "internal": self.internal,
+            "reply_to_text": self.reply_to_text, "text": self.text,
+            "media_urls": list(self.media_urls), "media_types": list(self.media_types),
+            "media_text_inlined": list(self.media_text_inlined),
+            "message_type": self.message_type.value,
+            "reply_to_author_id": self.reply_to_author_id,
+            "reply_to_author_name": self.reply_to_author_name,
+            "reply_to_is_own_message": self.reply_to_is_own_message,
+        }]
+
+    def retain_inputs(self, members: List[Dict[str, Any]]) -> None:
+        """Rebuild a mixed replay batch from only the untransferred originals.
+
+        Keep this event object: queued/recursive callers hold its identity for
+        the terminal transfer. Never retain a replied-to anchor from a removed
+        member, or enrich an already-answered attachment a second time.
+        """
+        if not members:
+            raise ValueError("cannot rebuild an empty input batch")
+        first = members[0]
+        self.input_members = list(members)
+        self.text = "\n\n".join(m["text"] for m in members if m.get("text"))
+        self.media_urls = [url for m in members for url in m.get("media_urls", [])]
+        self.media_types = [kind for m in members for kind in m.get("media_types", [])]
+        self.media_text_inlined = []
+        for member in members:
+            flags = list(member.get("media_text_inlined", []))
+            self.media_text_inlined.extend(flags + [None] * (len(member.get("media_urls", [])) - len(flags)))
+        self.message_type = MessageType(first.get("message_type", "text"))
+        if any(m.get("message_type") == "photo" for m in members):
+            self.message_type = MessageType.PHOTO
+        for name in ("message_id", "platform_update_id", "reply_to_message_id", "reply_to_text",
+                     "reply_to_author_id", "reply_to_author_name"):
+            setattr(self, name, first.get(name))
+        self.reply_to_is_own_message = first.get("reply_to_is_own_message", False)
+        self.internal = first.get("internal", False)
+        if first.get("timestamp"):
+            self.timestamp = datetime.fromisoformat(first["timestamp"])
+        self.metadata = {**self.metadata, "_hermes_durable_inbound_id": first["inbound_id"]}
+        self.metadata.pop("_hermes_durable_inbound_path", None)
+        self.ledger_message_id = None
+        for name in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts"):
+            if hasattr(self, name):
+                delattr(self, name)
+
+    def absorb_input_identity(self, other: "MessageEvent") -> None:
+        members = self.original_inputs() + other.original_inputs()
+        self.input_members = list({
+            (m["inbound_id"] or (m["message_id"], m["platform_update_id"], m["timestamp"])): m
+            for m in members
+        }.values())
+
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
 

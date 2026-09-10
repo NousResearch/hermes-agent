@@ -1612,6 +1612,8 @@ class GatewayTurnMixin:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
         if prepared.persistence_owner:
             _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
+        if event.ingress_provenance:
+            _user_entry.setdefault("display_metadata", {})["original_inputs"] = event.ingress_provenance
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -1731,7 +1733,11 @@ class GatewayTurnMixin:
         # skip when the agent failed: the error text is new content streaming didn't show.
         if agent_result.get("already_sent") and not agent_result.get("failed"):
             if response and adapter:
-                await self._deliver_media_from_response(response, event, adapter)
+                from gateway.platforms.base import SendResult
+                await self._deliver_queued_first_response(
+                    response, source, adapter, metadata=self._event_thread_metadata(event, source),
+                    session_key=session_key, inbound_event=event, text_already_delivered=True,
+                    stream_consumer=SendResult(success=True, message_id=agent_result.get("delivery_message_id")))
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter:
                 try:
@@ -1965,11 +1971,13 @@ class GatewayTurnMixin:
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
+                inbound_event=event,
                 channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
-                persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
+                persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner,
+                                               "original_inputs": event.ingress_provenance},
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
@@ -1979,6 +1987,7 @@ class GatewayTurnMixin:
             # message's id or it collides with an earlier turn's row carrying the same text. Reply
             # routing is untouched: the anchor still comes from this event.
             if isinstance(agent_result, dict):
+                event.terminal_event = agent_result.get("queued_terminal_event")
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
                 if _terminal_inbound:
                     event.ledger_message_id = str(_terminal_inbound)
@@ -3395,6 +3404,7 @@ class GatewayTurnMixin:
                     # The text send records a delivery-ledger obligation under this key, keyed on
                     # the raw inbound id (the anchor above is only the reply target).
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
+                    inbound_event=turn_ctx.inbound_event,
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
@@ -3513,6 +3523,8 @@ class GatewayTurnMixin:
             source=next_source, session_id=session_id, session_key=next_session_key,
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
             event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+            inbound_event=pending_event,
+            persist_user_display_metadata={"original_inputs": getattr(pending_event, "ingress_provenance", [])} if pending_event else None,
             channel_prompt=next_channel_prompt, message_type=next_message_type,
         )
         merged = _preserve_queued_followup_history_offset(result, followup_result)
@@ -3524,6 +3536,8 @@ class GatewayTurnMixin:
         # so only fill the key while it is still absent: the innermost turn wins.
         if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
             merged = {**merged, "queued_terminal_inbound_id": next_inbound_id}
+        if isinstance(merged, dict) and "queued_terminal_event" not in merged:
+            merged = {**merged, "queued_terminal_event": pending_event}
         return merged
 
     async def _run_agent_cleanup_turn_tasks(
@@ -3674,6 +3688,12 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
             )
 
+        if response.get("already_sent") and _sc is not None:
+            # Only the confirmed terminal consumer supplies receipt identity.
+            message_id = getattr(_sc, "message_id", None)
+            if isinstance(message_id, (str, int)) and message_id != "__no_edit__":
+                response["delivery_message_id"] = str(message_id)
+
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.
 
@@ -3811,6 +3831,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        inbound_event: Optional[MessageEvent] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3830,6 +3851,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, context_prompt=context_prompt, history=history,
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
+            inbound_event=inbound_event,
             channel_prompt=channel_prompt, moa_config=moa_config,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,

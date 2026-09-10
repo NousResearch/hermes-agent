@@ -143,6 +143,44 @@ class TestObligationId:
         assert a != dl.compute_obligation_id("sk1", "msg1", "other")
         assert len(a) == 24
 
+    def test_durable_inbound_identity_ignores_regenerated_wording(self):
+        """One queued user input has one outbound owner across a restart."""
+        first = dl.compute_obligation_id(
+            "sk1", "msg1", "first generated answer", stable_inbound_id="in-1"
+        )
+        replay = dl.compute_obligation_id(
+            "sk1", "msg1", "different regenerated answer", stable_inbound_id="in-1"
+        )
+        assert first == replay
+
+
+def test_preserved_inbound_transfer_never_overwrites_original_reply():
+    oid = dl.compute_obligation_id("sk1", "", "", stable_inbound_id="in-1")
+    assert dl.record_obligation(
+        obligation_id=oid,
+        session_key="sk1",
+        platform="telegram",
+        chat_id="1",
+        thread_id=None,
+        content="canonical reply",
+        preserve_existing=True,
+    )
+    dl.mark_delivered(oid)
+    assert not dl.record_obligation(
+        obligation_id=oid,
+        session_key="sk1",
+        platform="telegram",
+        chat_id="1",
+        thread_id=None,
+        content="regenerated reply must not replace the first",
+        preserve_existing=True,
+    )
+    with dl._connect() as conn:
+        row = conn.execute(
+            "SELECT content, state FROM delivery_obligations WHERE obligation_id=?", (oid,)
+        ).fetchone()
+    assert row == ("canonical reply", "delivered")
+
 
 class TestSweep:
     def test_live_owner_rows_never_claimed(self):

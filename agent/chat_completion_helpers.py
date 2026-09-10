@@ -2034,18 +2034,53 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
     if lm_reasoning_effort is not None:
         summary_kwargs["reasoning_effort"] = lm_reasoning_effort
 
-    # Merge the profile's canonical body even when routing is unset (e.g. required Portal tags).
+    # The summary call bypasses ChatCompletionsTransport, so project the
+    # provider's canonical reasoning policy here as well.  This matters for
+    # reasoning-mandatory routes: their profile may intentionally omit a
+    # disable, while the generic block above would otherwise send one.
     provider_preferences = _provider_preferences_for_agent(agent)
     profile_extra_body = {}
-    with contextlib.suppress(Exception):
+    profile_reasoning_extra = {}
+    summary_profile_top_level = {}
+    try:
         from providers import get_provider_profile
         provider_profile = get_provider_profile(agent.provider)
         if provider_profile is not None:
             profile_extra_body = provider_profile.build_extra_body(
                 session_id=getattr(agent, "session_id", None), provider_preferences=provider_preferences or None,
                 model=agent.model, base_url=agent.base_url, reasoning_config=agent.reasoning_config)
+            profile_reasoning_extra, summary_profile_top_level = (
+                provider_profile.build_api_kwargs_extras(
+                    reasoning_config=agent.reasoning_config,
+                    supports_reasoning=agent._supports_reasoning_extra_body(),
+                    model=agent.model,
+                    base_url=agent.base_url,
+                    session_id=getattr(agent, "session_id", None),
+                )
+            )
+            profile_reasoning_keys = {
+                "reasoning", "reasoning_effort", "thinking", "enable_thinking",
+            }
+            profile_owns_reasoning = provider_profile.owns_reasoning_policy(
+                reasoning_config=agent.reasoning_config,
+                supports_reasoning=agent._supports_reasoning_extra_body(),
+                model=agent.model,
+                base_url=agent.base_url,
+                session_id=getattr(agent, "session_id", None),
+            ) or bool(
+                profile_reasoning_keys.intersection(profile_reasoning_extra or {})
+                or profile_reasoning_keys.intersection(summary_profile_top_level or {})
+            )
+            if profile_owns_reasoning:
+                extra_body.pop("reasoning", None)
+            extra_body.update(profile_reasoning_extra or {})
+    except Exception as exc:
+        logger.warning("Summary provider policy projection failed for %s: %s", agent.provider, exc)
     if profile_extra_body:
         extra_body.update(profile_extra_body)
+    # Profile top-level kwargs intentionally override generic summary defaults
+    # because the profile owns the provider wire contract.
+    summary_kwargs.update(summary_profile_top_level or {})
 
     def _is_openrouter() -> bool:
         return provider_name == "openrouter" or agent._is_openrouter_url()

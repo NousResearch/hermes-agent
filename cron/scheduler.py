@@ -4118,6 +4118,7 @@ def tick(
 from cron.scheduler_delivery import (  # noqa: E402
     _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
     _resolve_delivery_targets,
+    _send_media_via_adapter,  # KENSEI CUSTOM: re-export for legacy import path (tests)
 )
 from cron.scheduler_script import (  # noqa: E402
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,

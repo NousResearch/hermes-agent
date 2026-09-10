@@ -3228,3 +3228,5 @@ for _m in (
     _methods_session_control, _methods_subagents, _methods_control_room, _methods_todo):  # KENSEI CUSTOM
     _m.register(sys.modules[__name__])
 del _m
+
+from tui_gateway.agent_callbacks import _normalise_auq_callback_result  # noqa: F401,E402  # KENSEI: re-export for RPC surface

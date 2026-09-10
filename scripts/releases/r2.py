@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import hmac
 import http.client
+import ntpath
 import os
 import re
 import sys
@@ -399,6 +400,34 @@ def channel_for_tag(tag: str) -> str:
 
 def staging_key_for(tag: str, filename: str) -> str:
     return f"releases/tag/{tag}/{filename}"
+
+
+_FULL_SHA_RE = re.compile(r"[a-f0-9]{40}")
+
+
+def is_full_sha(value: str) -> bool:
+    return bool(isinstance(value, str) and _FULL_SHA_RE.fullmatch(value))
+
+
+def relative_artifact_path(value: str) -> str:
+    """Validate the original path before any filesystem normalization."""
+    if (not isinstance(value, str) or not value or value.startswith("/")
+            or any(part in ("", ".", "..") for part in value.split("/"))
+            or any(c in value for c in "\\:%?#") or any(ord(c) < 32 for c in value)
+            or ntpath.isreserved(value)):
+        raise ValueError("Invalid release artifact path")
+    return value
+
+
+def commit_key_for(commit: str, filename: str) -> str:
+    """Keep nested artifacts inside the exact commit namespace."""
+    return commit_prefix_for(commit) + relative_artifact_path(filename)
+
+
+def commit_prefix_for(commit: str) -> str:
+    if not is_full_sha(commit):
+        raise ValueError("Commit builds require an exact full 40-character SHA")
+    return f"releases/commit/{commit}/"
 
 
 def feed_dir_for(platform: str, channel: str) -> str:

@@ -35,6 +35,13 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
+from urllib.parse import quote
+
+# Direct-script invocation starts with scripts/, not the repository root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.releases import handoff, r2  # noqa: E402
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
 END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
@@ -129,23 +136,141 @@ def filter_names_for_version(names: list[str], version: str) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Commit-build summary: every expected binary of a commit run, built or not.
+# ---------------------------------------------------------------------------
+
+# A row needs a unique receipt-listed artifact and its uploaded object.
+_COMMIT_EXPECTED = [
+    ("Windows x64 (MSIX)", "win32-x64",
+     r"^HermesBundled-[^-]+(?:-canary\.\d+)?-win-x64\.msix$"),
+    ("Windows ARM64 (MSIX)", "win32-arm64",
+     r"^HermesBundled-[^-]+(?:-canary\.\d+)?-win-arm64\.msix$"),
+    ("Windows x64 (Store MSIX)", "win32-x64",
+     r"^Store-HermesBundled-[^-]+(?:-canary\.\d+)?-win-x64\.msix$"),
+    ("Windows ARM64 (Store MSIX)", "win32-arm64",
+     r"^Store-HermesBundled-[^-]+(?:-canary\.\d+)?-win-arm64\.msix$"),
+    ("Windows universal bundle (MSIXBUNDLE)", "windows-universal",
+     r"^HermesBundled-[^-]+(?:-canary\.\d+)?-win\.msixbundle$"),
+    ("Windows universal Store bundle (MSIXBUNDLE)", "windows-universal",
+     r"^Store-HermesBundled-[^-]+(?:-canary\.\d+)?-win\.msixbundle$"),
+    ("macOS Apple Silicon (DMG)", "darwin-arm64",
+     r"^HermesBundled-[^-]+(?:-canary\.\d+)?-mac-arm64\.dmg$"),
+    ("macOS Intel (DMG)", "darwin-x64",
+     r"^HermesBundled-[^-]+(?:-canary\.\d+)?-mac-x64\.dmg$"),
+    ("macOS Apple Silicon (ZIP)", "darwin-arm64",
+     r"^HermesBundled-[^-]+(?:-canary\.\d+)?-mac-arm64\.zip$"),
+    ("macOS Intel (ZIP)", "darwin-x64",
+     r"^HermesBundled-[^-]+(?:-canary\.\d+)?-mac-x64\.zip$"),
+    ("Termux aarch64 (.deb)", "termux", r"^.*\.deb$"),
+]
+
+COMMIT_RECEIPT_NAMES = sorted({leg for _label, leg, _pattern in _COMMIT_EXPECTED})
+_COMMIT_JOBS = {
+    "win32-x64": "build-win32", "win32-arm64": "build-win32",
+    "darwin-x64": "build-darwin", "darwin-arm64": "build-darwin",
+    "windows-universal": "publish-win32-updater", "termux": "termux-deb",
+}
+
+
+def commit_expected_rows(names: list[str],
+                         receipts: dict[str, dict | None]) -> list[dict]:
+    """Classify artifacts from validated receipts without trusting orphan objects."""
+    objects = set(names)
+    rows: list[dict] = []
+    for label, leg, pattern in _COMMIT_EXPECTED:
+        receipt = receipts.get(leg)
+        listed = [r2.commit_key_for(receipt["commit"], row["path"])
+                  for row in receipt["files"]
+                  if re.fullmatch(pattern, row["path"].rsplit("/", 1)[-1])] if receipt else []
+        if receipt is None:
+            state, key = "receipt-missing", None
+        elif not listed:
+            state, key = "receipt-omits", None
+        elif len(listed) > 1:
+            state, key = "ambiguous", None
+        elif listed[0] not in objects:
+            state, key = "object-missing", None
+        else:
+            state, key = "built", listed[0]
+        rows.append({"label": label, "leg": leg, "key": key, "state": state})
+    return rows
+
+
+def render_commit_summary(names: list[str], base_url: str, commit: str,
+                          receipts: dict[str, dict | None],
+                          failed_legs: list[str] | None = None) -> str:
+    """Render every expected product without reading or changing a release."""
+    r2.commit_prefix_for(commit)
+    for leg, receipt in receipts.items():
+        if receipt is not None:
+            handoff.validate_commit_receipt(receipt, commit, leg)
+    base = base_url.rstrip("/")
+    failed = set(failed_legs or [])
+    lines = [
+        f"## Commit build `{commit[:12]}`",
+        "",
+        "| Binary | Status | Download |",
+        "|---|---|---|",
+    ]
+    for row in commit_expected_rows(names, receipts):
+        label, key, state = row["label"], row["key"], row["state"]
+        if state == "built":
+            basename = key.rsplit("/", 1)[-1]
+            link = f"{base}/{quote(key, safe='/')}"
+            lines.append(f"| {label} | ✅ Built | [{basename}]({link}) |")
+        elif state == "receipt-missing":
+            related = failed.intersection({row["leg"], _COMMIT_JOBS[row["leg"]]})
+            blame = f"failed: {', '.join(sorted(related))}" if related \
+                else "leg incomplete or upload interrupted"
+            lines.append(f"| {label} | ❌ Not built ({blame}) | — |")
+        elif state == "object-missing":
+            lines.append(f"| {label} | ❌ Not built (receipt present but object missing) | — |")
+        elif state == "receipt-omits":
+            lines.append(f"| {label} | ❌ Not built (artifact absent from receipt) | — |")
+        else:
+            lines.append(f"| {label} | ❌ Not built (ambiguous: multiple objects match) | — |")
+    for label in ("Linux x64 (AppImage)", "Linux ARM64 (AppImage)"):
+        lines.append(f"| {label} | ❌ Not built (release leg disabled) | — |")
+    return "\n".join([*lines, ""])
+
+
+def read_commit_receipts(commit: str,
+                         names: list[str] | None = None) -> dict[str, dict | None]:
+    """Missing receipts describe incomplete legs; corrupt receipts raise."""
+    out: dict[str, dict | None] = {}
+    for name in (names or COMMIT_RECEIPT_NAMES):
+        try:
+            out[name] = handoff.read_commit_receipt(commit, name)
+        except handoff.MissingReceipt:
+            out[name] = None
+    return out
+
+
+def failed_legs_from_release_needs(release_needs_json: str | None) -> list[str]:
+    """Read failure labels from the optional workflow result summary."""
+    if not release_needs_json:
+        return []
+    try:
+        needs = json.loads(release_needs_json)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(needs, dict):
+        return []
+    return sorted(name for name, info in needs.items()
+                  if isinstance(info, dict) and info.get("result") not in ("success", "skipped"))
+
+
+def r2_object_names_under(prefix: str) -> list[str]:
+    return r2.list_objects(prefix=prefix)["keys"]
+
+
 def r2_object_names(tag: str) -> list[str]:
     """Object keys in the R2 staging dir for `tag`, under releases/tag/<tag>/.
 
-    Exact version match, never prefix: 'v0.28.0' must not pick up
-    '0.28.0-canary.20260818...' objects (they live under their own tag
-    directory, and the basename filter would reject them anyway). The list
-    call shells out to scripts/releases/r2.py, which reads the R2 env vars
-    and needs only Python (no application environment).
+    A tag prefix and exact version match exclude neighboring releases.
     """
-    run = subprocess.run(
-        [sys.executable, "-m", "scripts.releases.r2", "list", "--prefix", f"releases/tag/{tag}/"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
-    if run.returncode != 0:
-        print(f"::error::r2 list failed: {run.stderr.strip() or run.stdout.strip()}")
-        raise SystemExit(1)
-    keys = [line.strip() for line in run.stdout.splitlines() if line.strip()]
+    keys = r2_object_names_under(f"releases/tag/{tag}/")
     return filter_names_for_version(keys, tag.lstrip("v"))
 
 
@@ -159,7 +284,17 @@ def splice(body: str, block: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", required=True)
+    parser.add_argument("--tag", required=False, help="Release tag to render the release-body table for")
+    parser.add_argument("--summary-commit", default=None,
+                        help="Commit-only mode: render the FULL expected-binary matrix for "
+                             "releases/commit/<sha>/ into --summary-out. Never touches a "
+                             "GitHub release; every expected binary gets a row, built or not")
+    parser.add_argument("--summary-out", default=None,
+                        help="With --summary-commit: file the summary block is written to "
+                             "(the workflow passes $GITHUB_STEP_SUMMARY)")
+    parser.add_argument("--summary-failed-legs", default="",
+                        help="With --summary-commit: comma-separated failed job names, "
+                             "blamed on the Not built rows")
     parser.add_argument("--repo", default="NousResearch/hermes-agent")
     parser.add_argument("--r2-base-url", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL"),
                         help="Public base URL of the R2 bucket (default: $CLOUDFLARE_R2_PUBLIC_URL)")
@@ -169,6 +304,37 @@ def main() -> int:
                         help="Render a 'builds in progress' link to this workflow run "
                              "instead of the tables")
     args = parser.parse_args()
+
+    if args.summary_commit and (args.tag or args.pending_run_url):
+        parser.error("--summary-commit cannot be combined with release-body arguments")
+
+    if args.summary_commit:
+
+        if not args.summary_out:
+            print("::error::--summary-out is required with --summary-commit")
+            return 1
+        if not args.r2_base_url:
+            print("::error::--r2-base-url (or CLOUDFLARE_R2_PUBLIC_URL) is required to render the summary")
+            return 1
+        commit = args.summary_commit
+        try:
+            prefix = r2.commit_prefix_for(commit)
+        except ValueError as err:
+            print(f"::error::{err}")
+            return 1
+        names = r2_object_names_under(prefix)
+        receipts = read_commit_receipts(commit)
+        failed_legs = (failed_legs_from_release_needs(os.environ.get("RELEASE_NEEDS"))
+                       or [leg.strip() for leg in args.summary_failed_legs.split(",") if leg.strip()])
+        block = render_commit_summary(names, args.r2_base_url, commit, receipts, failed_legs)
+        with open(args.summary_out, "a", encoding="utf-8") as out:
+            out.write(block)
+        built = sum(1 for row in commit_expected_rows(names, receipts) if row["state"] == "built")
+        print(f"✓ Commit summary appended to {args.summary_out} ({built}/{len(_COMMIT_EXPECTED)} binaries built)")
+        return 0
+
+    if not args.tag:
+        parser.error("--tag is required (or use --summary-commit for a commit build summary)")
 
     view = subprocess.run(
         ["gh", "release", "view", args.tag, "--repo", args.repo,

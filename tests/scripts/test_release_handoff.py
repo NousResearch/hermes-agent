@@ -70,7 +70,8 @@ def test_failed_stage_never_publishes_a_receipt_or_channel(tmp_path, monkeypatch
     real_put = r2.put
 
     def fail_second(**kwargs):
-        if kwargs["key"] == "two.msix":
+        # The transfer API receives the full key, not the basename.
+        if kwargs["key"] == f"releases/tag/{tag}/two.msix":
             raise RuntimeError("upload interrupted")
         real_put(**kwargs)
 
@@ -85,3 +86,53 @@ def test_failed_stage_never_publishes_a_receipt_or_channel(tmp_path, monkeypatch
     with pytest.raises(ValueError, match="identity"):
         handoff.stage("../bad", commit, "win32-x64", tmp_path, ["*.msix"])
     assert r2_server.requests == []
+
+
+@pytest.mark.parametrize("commit_only", [False, True])
+def test_shared_receipt_files_download_once_and_conflicts_leave_targets_intact(tmp_path, r2_server, commit_only):
+    from scripts.releases import handoff
+
+    commit, tag = "a" * 40, "v1.2.3"
+    artifact = tmp_path / "shared.bin"
+    artifact.write_bytes(b"same shared bytes")
+    if commit_only:
+        stage = lambda name: handoff.stage_commit_build(commit, name, tmp_path, ["*.bin"])
+        fetch = lambda target: handoff.fetch_commit_build(commit, ["one", "two"], target)
+        prefix = r2.commit_prefix_for(commit)
+    else:
+        stage = lambda name: handoff.stage(tag, commit, name, tmp_path, ["*.bin"])
+        fetch = lambda target: handoff.fetch(tag, commit, ["one", "two"], target)
+        prefix = r2.staging_key_for(tag, "")
+    stage("one")
+    stage("two")
+    r2_server.requests.clear()
+    target = tmp_path / "download"
+    fetch(target)
+    assert (target / "shared.bin").read_bytes() == artifact.read_bytes()
+    gets = [url for method, url, _ in r2_server.requests if method == "GET"]
+    assert sum(url.endswith(prefix + "shared.bin") for url in gets) == 1
+
+    receipt_key = prefix + "handoff-two.json"
+    receipt = json.loads(r2_server.store[receipt_key][0])
+    receipt["files"][0]["sha256"] = "0" * 64
+    r2_server.store[receipt_key] = (json.dumps(receipt).encode(), '"changed"')
+    before = {file.name: file.read_bytes() for file in target.iterdir()}
+    with pytest.raises(ValueError, match="Conflicting"):
+        fetch(target)
+    assert {file.name: file.read_bytes() for file in target.iterdir()} == before
+
+
+def test_conflicting_bytes_at_the_transport_never_replace_the_object(tmp_path, r2_server):
+    """A conflicting immutable upload must preserve the existing object."""
+    from scripts.releases import handoff
+
+    tag, commit = "v1.2.3", "a" * 40
+    (tmp_path / "one.msix").write_bytes(b"first")
+    handoff.stage(tag, commit, "win32-x64", tmp_path, ["*.msix"])
+    key = f"releases/tag/{tag}/one.msix"
+    assert r2_server.store[key][0] == b"first"
+    handoff.stage(tag, commit, "win32-x64", tmp_path, ["*.msix"])
+    (tmp_path / "one.msix").write_bytes(b"conflicting")
+    with pytest.raises(Exception):
+        handoff.stage(tag, commit, "win32-x64", tmp_path, ["*.msix"])
+    assert r2_server.store[key][0] == b"first"

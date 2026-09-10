@@ -360,6 +360,10 @@ class WisdomConsent:
         operation, plan = self._plan(reference)
         if operation == "setup":
             plan["setup_explanation"] = (json.loads(row["advice_json"] or "{}").get("explanation") or "")[:600]
+        else:
+            plan["not_now_suppression_days"] = WisdomPreferences(
+                self.service
+            ).review_suppression_days(org)
         address = json.loads(session["address_json"])
         if address and address != actor.address:
             raise WisdomNotFound("Wisdom interaction not found")
@@ -742,6 +746,7 @@ class WisdomConsent:
                     org=org,
                     user=preference_user,
                     reference=json.loads(assessment["reference_json"]),
+                    days=value["plan"].get("not_now_suppression_days", 30),
                 )
                 db.execute(
                     "INSERT OR REPLACE INTO wisdom_consent_defer VALUES(?,?,?)",

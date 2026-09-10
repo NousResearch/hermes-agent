@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
 
-from .client import WisdomError
+from .client import AgentLedPolicyResponse, WisdomError
 from .mediation_store import MediationStore
+
+logger = logging.getLogger(__name__)
 
 
 def suppression_key(reference: dict) -> str:
@@ -140,6 +143,22 @@ class WisdomPreferences:
             "suppressed_until": row[0],
             "preference_sync": row[1],
         }
+
+    def review_suppression_days(self, org: str) -> int:
+        """Snapshot verified policy for a later offline Not Now click."""
+        try:
+            user = self.identity(org)
+            policy = AgentLedPolicyResponse.model_validate(
+                self.service.client.agent_led_policy()
+            )
+            if policy.org_id != org or self.identity(org) != user:
+                raise WisdomError("Recommendation policy identity changed")
+            return policy.not_now_suppression_days
+        except Exception as exc:
+            # A policy outage must not prevent inspection or local deferral.
+            # The Gateway replaces this legacy fallback on successful sync.
+            logger.debug("Review suppression policy unavailable (%s)", type(exc).__name__)
+            return 30
 
     def request_mute(self, org: str, duration: str | None) -> dict:
         """Native user action only; fresh authority, then durable local intent."""

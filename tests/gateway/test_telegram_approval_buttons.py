@@ -18,6 +18,7 @@ if _repo not in sys.path:
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
+from tests.wisdom.test_native_install_policy import native_install as native_install
 
 
 def _make_adapter(extra=None):
@@ -272,12 +273,12 @@ class TestTelegramApprovalCallback:
 
     @pytest.mark.asyncio
     async def test_wisdom_update_callback_opens_compatible_review(
-        self, monkeypatch
+        self, monkeypatch, native_install
     ):
         adapter = _make_adapter()
         adapter.set_authorization_check(lambda *args, **kwargs: True)
         query = AsyncMock()
-        query.data = "wi:plan:update:skill-3"
+        query.data = "wi:plan:update:skill-1"
         query.message = MagicMock()
         query.message.chat.type = "private"
         query.message.message_thread_id = None
@@ -286,42 +287,30 @@ class TestTelegramApprovalCallback:
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
         update = MagicMock(callback_query=query)
-        service = MagicMock()
-        service.update_plan.return_value = {
-            "receipt": "wup_deadbeef",
-            "skill_id": "skill-3",
-            "slug": "team-runbook",
-            "version": 3,
-            "compatibility": {"outcome": "compatible"},
-            "modified": False,
-            "sensitive_expansion": [],
-        }
-        service.update_apply.return_value = {
-            "skill_id": "skill-3",
-            "slug": "team-runbook",
-            "version": 3,
-        }
-        service.version_detail.return_value = {"version": {"version": 3, "security_check": {"status": "pass"}}}
+        service, _, _ = native_install
+        service.install_apply(service.install_plan("skill-1@v1")["receipt"])
+        service.client.latest = 2
+        service.update_plan = MagicMock(wraps=service.update_plan)
+        service.update_apply = MagicMock(wraps=service.update_apply)
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
             with patch("hermes_wisdom.service.WisdomService", return_value=service):
                 await adapter._handle_callback_query(update, MagicMock())
 
-        service.require_setup.assert_called_once()
-        service.update_plan.assert_called_once_with("skill-3")
+        service.update_plan.assert_any_call("skill-1")
         service.update_apply.assert_not_called()
         html = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"]["html"]
-        assert "team-runbook" in html and "v3" in html and "Confirm update" in html
+        assert "managed-skill" in html and "v2" in html and "wi:agent:confirm:" in html
 
     @pytest.mark.asyncio
     async def test_wisdom_install_callback_uses_org_default_and_owning_profile(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, native_install
     ):
         adapter = _make_adapter()
         adapter.set_authorization_check(lambda *args, **kwargs: True)
         adapter.set_owner_profile("customer-b")
         query = AsyncMock()
-        query.data = "wi:plan:install:skill-4"
+        query.data = "wi:plan:install:skill-1"
         query.message = MagicMock()
         query.message.chat.type = "private"
         query.message.message_thread_id = None
@@ -330,21 +319,10 @@ class TestTelegramApprovalCallback:
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
         update = MagicMock(callback_query=query)
-        service = MagicMock()
-        service.install_plan.return_value = {
-            "receipt": "wip_deadbeef",
-            "skill_id": "skill-4",
-            "slug": "release-checklist",
-            "version": 2,
-            "compatibility": {"outcome": "compatible"},
-            "allowed": True,
-        }
-        service.install_apply.return_value = {
-            "skill_id": "skill-4",
-            "slug": "release-checklist",
-            "version": 2,
-        }
-        service.version_detail.return_value = {"version": {"version": 2, "security_check": {"status": "pass"}}}
+        service, _, _ = native_install
+        service.client.latest = 2
+        service.install_plan = MagicMock(wraps=service.install_plan)
+        service.install_apply = MagicMock(wraps=service.install_apply)
         entered_profiles = []
 
         class _ProfileScope:
@@ -367,13 +345,14 @@ class TestTelegramApprovalCallback:
             with patch("hermes_wisdom.service.WisdomService", return_value=service):
                 await adapter._handle_callback_query(update, MagicMock())
 
-        service.install_plan.assert_called_once_with("skill-4", update_mode=None)
+        service.install_plan.assert_any_call("skill-1", update_mode=None)
         service.install_apply.assert_not_called()
         assert entered_profiles == [
             tmp_path / "profiles" / "customer-b",
         ]
         html = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"]["html"]
-        assert "release-checklist" in html and "v2" in html and "Confirm install" in html
+        assert "managed-skill" in html and "v2" in html and "wi:agent:confirm:" in html
+        assert "Future updates: Organization default" in html
 
     @pytest.mark.asyncio
     async def test_wisdom_candidate_notification_is_exact_session_and_non_consuming(
@@ -869,11 +848,11 @@ class TestTelegramApprovalCallback:
         query.edit_message_text.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_wisdom_callback_does_not_apply_when_full_review_is_required(self):
+    async def test_wisdom_callback_does_not_apply_when_full_review_is_required(self, native_install):
         adapter = _make_adapter()
         adapter.set_authorization_check(lambda *args, **kwargs: True)
         query = AsyncMock()
-        query.data = "wi:plan:update:skill-3"
+        query.data = "wi:plan:update:skill-1"
         query.message = MagicMock()
         query.message.chat.type = "private"
         query.message.message_thread_id = None
@@ -882,17 +861,14 @@ class TestTelegramApprovalCallback:
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
         update = MagicMock(callback_query=query)
-        service = MagicMock()
-        service.update_plan.return_value = {
-            "receipt": "wup_deadbeef",
-            "skill_id": "skill-3",
-            "slug": "team-runbook",
-            "version": 3,
-            "compatibility": {"outcome": "partial"},
-            "modified": False,
-            "sensitive_expansion": [],
-        }
-        service.version_detail.return_value = {"version": {"version": 3, "security_check": {"status": "pass"}}}
+        service, _, _ = native_install
+        service.install_apply(service.install_plan("skill-1@v1")["receipt"])
+        service.client.latest = 2
+        update_plan = service.update_plan
+        service.update_plan = MagicMock(side_effect=lambda *a, **kw: {
+            **update_plan(*a, **kw), "compatibility": {"outcome": "partial"},
+        })
+        service.update_apply = MagicMock(wraps=service.update_apply)
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
             with patch("hermes_wisdom.service.WisdomService", return_value=service):
@@ -900,8 +876,8 @@ class TestTelegramApprovalCallback:
 
         service.update_apply.assert_not_called()
         html = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"]["html"]
-        assert "full compatibility review" in html
-        assert "Confirm update</tg-button>" not in html
+        assert "Compatibility: partial" in html
+        assert "wi:agent:confirm:" not in html
 
     @pytest.mark.asyncio
     async def test_wisdom_old_update_confirmation_requires_new_review(self):

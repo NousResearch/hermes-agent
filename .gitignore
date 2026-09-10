@@ -121,6 +121,7 @@
 /.install_method
 /_pycache/
 /bin/
+/pm/.lock.json.lock
 /default.tar.gz
 /log.txt
 /sqlite_leak_fix.png

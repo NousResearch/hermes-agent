@@ -21,7 +21,9 @@ any machine by substitution.
 from __future__ import annotations
 
 import json
+import os
 import re
+from copy import deepcopy
 from pathlib import Path
 
 SCHEMA = 1
@@ -65,12 +67,19 @@ def _write(path: Path, data: dict) -> None:
     from hermes_cli.runtime_state import _atomic_bytes
     _atomic_bytes(path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
+
+class StaleLockRow(RuntimeError):
+    """A concurrent editor changed a row that this writer plans to publish."""
+
+
 class Lockfile:
-    """Read side of lock.json. Written only by `pm lock --bump` (cli)."""
+    """Snapshot of lock.json with conflict-checked publication of changed pins."""
 
     def __init__(self, path: Path):
-        self.path = path
-        self._packages = _read(path)["packages"]
+        self.path = Path(path).resolve()
+        self._packages = _read(self.path)["packages"]
+        self._base = deepcopy(self._packages)
+        self._touched: set[str] = set()
 
     def version(self, name: str) -> str | None:
         return (self._packages.get(name) or {}).get("version")
@@ -91,10 +100,31 @@ class Lockfile:
         return sorted(self._packages)
 
     def set_pin(self, name: str, version: str, artifacts: dict[str, dict]) -> None:
-        self._packages[name] = {"version": version, "artifacts": artifacts}
+        self._packages[name] = {"version": version, "artifacts": deepcopy(artifacts)}
+        self._touched.add(name)
 
     def save(self) -> None:
-        _write(self.path, {"schema": SCHEMA, "packages": self._packages})
+        """Merge touched rows under the file's lock, or leave all rows unchanged."""
+        from hermes_cli.runtime_state import _lock
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path.with_name(f".{self.path.name}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            _lock(fd, wait=True)
+            current = _read(self.path, strict=True)["packages"]
+            updated = dict(current)
+            for name in self._touched:
+                intended = self._packages[name]
+                if current.get(name) != self._base.get(name) and current.get(name) != intended:
+                    raise StaleLockRow(f"{name} changed in {self.path}; read the lockfile again and retry")
+                updated[name] = intended
+            if updated != current or not self.path.exists():
+                _write(self.path, {"schema": SCHEMA, "packages": updated})
+            self._packages = updated
+            self._base = deepcopy(updated)
+            self._touched.clear()
+        finally:
+            os.close(fd)
 
 
 def termux_docker_digest() -> str:

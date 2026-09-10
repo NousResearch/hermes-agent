@@ -1489,6 +1489,7 @@ def _run_conversation_turn(
     agent._last_persistence_error_cause = None
     agent._compression_adoption_failed = False
     agent._ephemeral_reasoning_off = False
+    agent._ephemeral_disable_thinking = False  # local patch (2026-09-07)
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
 

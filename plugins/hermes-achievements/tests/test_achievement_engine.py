@@ -73,6 +73,34 @@ class AchievementEngineTests(unittest.TestCase):
         self.assertEqual(result["state"], "secret")
         self.assertEqual(display["name"], "???")
         self.assertNotIn("Permission", display["description"])
+        self.assertEqual(display["criteria_spec"], {"kind": "secret_hidden"})
+
+    def test_display_achievement_includes_locale_neutral_criteria_spec(self):
+        definition = {
+            "id": "terminal_goblin",
+            "threshold_metric": "total_terminal_calls",
+            "tiers": [{"name": "Copper", "threshold": 50}],
+        }
+
+        display = plugin_api.display_achievement({**definition, "state": "discovered"})
+
+        self.assertEqual(display["criteria_spec"], {
+            "kind": "tiered",
+            "metric": "total_terminal_calls",
+            "metric_labels": {"total_terminal_calls": "lifetime terminal calls"},
+            "tiers": [{"name": "Copper", "threshold": 50}],
+        })
+
+    def test_requirement_criteria_spec_contains_metric_label_fallbacks(self):
+        display = plugin_api.display_achievement({
+            "id": "full_send",
+            "state": "discovered",
+            "requirements": [{"metric": "total_terminal_calls", "gte": 10}],
+        })
+
+        self.assertEqual(display["criteria_spec"]["metric_labels"], {
+            "total_terminal_calls": "lifetime terminal calls",
+        })
 
     def test_multi_condition_unlock_requires_all_requirements(self):
         definition = {

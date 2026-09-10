@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home
-from utils import atomic_json_write
+from utils import atomic_json_write, atomic_write_text
 
 if sys.platform == "win32":
     import msvcrt
@@ -42,6 +42,7 @@ _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 # key: (pid_path, cleanup_stale, include_runtime_status) -> (cached_at, file signature, pid)
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple, Optional[int]]] = {}
+_gateway_starts_thread_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,36 @@ class StormInfo(NamedTuple):
     backoff_s: float
 
 
+@contextlib.contextmanager
+def _gateway_starts_file_lock(path: Path):
+    """Serialize the start-ledger transaction across threads and processes."""
+    lock_path = path.with_name(".gateway-starts.lock")
+    handle = open(lock_path, "a+b")
+    windows = _IS_WINDOWS
+    try:
+        # Windows byte-range locks can reject a same-process contender instead
+        # of waiting, so serialize local threads before taking the OS lock.
+        with _gateway_starts_thread_lock:
+            if windows:
+                if os.fstat(handle.fileno()).st_size == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if windows:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def record_start_and_check_storm(
     max_starts: int = 5, window_s: float = 120.0, *, backoff_cap_s: float = 300.0
 ) -> Optional[StormInfo]:
@@ -62,19 +93,18 @@ def record_start_and_check_storm(
     try:
         path = get_hermes_home() / "gateway-starts.log"
         path.parent.mkdir(parents=True, exist_ok=True)
-        now = datetime.now(timezone.utc).timestamp()
-        existing: list[float] = []
-        if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                with contextlib.suppress(ValueError):
-                    existing.append(float(line))
-        existing.append(now)
-        recent = [ts for ts in existing if now - ts <= window_s]
-        # Ring-buffer the persisted file so it stays bounded.
-        to_write = existing[-max(max_starts * 4, 40):]
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text("\n".join(repr(ts) for ts in to_write) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
+        with _gateway_starts_file_lock(path):
+            now = datetime.now(timezone.utc).timestamp()
+            existing: list[float] = []
+            if path.exists():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    with contextlib.suppress(ValueError):
+                        existing.append(float(line))
+            existing.append(now)
+            recent = [ts for ts in existing if now - ts <= window_s]
+            # Ring-buffer the persisted file so it stays bounded.
+            to_write = existing[-max(max_starts * 4, 40):]
+            atomic_write_text(path, "\n".join(repr(ts) for ts in to_write) + "\n")
         if len(recent) <= max_starts:
             return None
         backoff = min(backoff_cap_s, 5.0 * (2 ** min(len(recent) - max_starts, 6)))

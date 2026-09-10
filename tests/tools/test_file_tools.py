@@ -788,7 +788,7 @@ class TestDedupInvalidationTaskResolution:
 
         task_id = "acp-dedup"
         monkeypatch.setattr(tt, "_task_env_overrides", {task_id: {"cwd": str(workspace)}})
-        (workspace / "data.txt").write_text("v1\n")
+        (workspace / "data.txt").write_text("v1\n", encoding="utf-8")
 
         # The task resolves the relative path into the workspace; the default
         # task (the old buggy resolution) would resolve into proc.
@@ -1032,7 +1032,7 @@ class TestNotFoundCache:
         assert _check_not_found_cache("read", str(target), tid) is not None
 
         # Out-of-band creation: plain filesystem write, no tool hook fires.
-        target.write_text("real content\n")
+        target.write_text("real content\n", encoding="utf-8")
 
         # The cached miss must NOT be served once the path exists…
         assert _check_not_found_cache("read", str(target), tid) is None, (
@@ -1056,7 +1056,7 @@ class TestNotFoundCache:
         assert _check_not_found_cache("search", str(missing_dir), tid) is not None
 
         missing_dir.mkdir()
-        (missing_dir / "x.txt").write_text("hi\n")
+        (missing_dir / "x.txt").write_text("hi\n", encoding="utf-8")
 
         assert _check_not_found_cache("search", str(missing_dir), tid) is None, (
             "stale 'Path not found' served after the directory was created"

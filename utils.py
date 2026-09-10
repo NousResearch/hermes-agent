@@ -30,9 +30,9 @@ def is_truthy_value(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
-def env_var_enabled(name: str, default: str = "") -> bool:
+def env_var_enabled(name: str, default: bool = False) -> bool:
     """Return True when an environment variable is set to a truthy value."""
-    return is_truthy_value(os.getenv(name, default), default=False)
+    return is_truthy_value(os.getenv(name), default=default)
 
 
 def _preserve_file_mode(path: Path) -> "int | None":
@@ -411,7 +411,7 @@ def env_float(key: str, default: float = 0.0) -> float:
 
 def env_bool(key: str, default: bool = False) -> bool:
     """Read an environment variable as a boolean."""
-    return is_truthy_value(os.getenv(key, ""), default=default)
+    return is_truthy_value(os.getenv(key), default=default)
 
 
 _PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")

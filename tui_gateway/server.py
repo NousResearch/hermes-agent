@@ -1869,7 +1869,9 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
-        return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else None
+        # An explicitly empty selection is not "all". Keep only client-surface
+        # affordances instead of resurrecting legacy opt-ins via the None path.
+        return sorted(enabled | _gui_surface_toolsets(session_platform))
     except Exception:
         if fallback_notice is not None:
             _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")

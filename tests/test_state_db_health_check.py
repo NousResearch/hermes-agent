@@ -17,6 +17,15 @@ from hermes_state import SessionDB
 from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
 
 
+class _GlobalMissingTokenizerConnection(sqlite3.Connection):
+    """Force the SQLite-version-specific global integrity-check failure."""
+
+    def execute(self, sql, parameters=(), /):
+        if str(sql).strip().lower() == "pragma integrity_check":
+            raise sqlite3.OperationalError("no such tokenizer: cjk_unicode61")
+        return super().execute(sql, parameters)
+
+
 @pytest.fixture
 def state_path(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
@@ -27,6 +36,32 @@ def state_path(tmp_path, monkeypatch):
         for i in range(10):
             db.append_message("health-check", role="user", content=f"pizza recipe {i}")
     return path
+
+
+def test_missing_tokenizer_global_integrity_fallback_detects_ordinary_corruption(
+    state_path, monkeypatch,
+):
+    import hermes_state_repair as repair
+
+    with closing(sqlite3.connect(state_path)) as conn:
+        conn.execute("CREATE TABLE health_sentinel(value INTEGER CHECK(value > 0))")
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute("INSERT INTO health_sentinel VALUES(-1)")
+        conn.commit()
+
+    def connect(path, *, timeout=5.0):
+        return sqlite3.connect(
+            path,
+            timeout=timeout,
+            isolation_level=None,
+            factory=_GlobalMissingTokenizerConnection,
+        )
+
+    monkeypatch.setattr(repair, "_connect_repair_durable", connect)
+    reason = repair._db_opens_cleanly(state_path)
+
+    assert reason is not None
+    assert "health_sentinel" in reason
 
 
 def _canonical_rows(path):

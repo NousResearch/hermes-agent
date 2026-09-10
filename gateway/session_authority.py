@@ -228,11 +228,14 @@ class SessionAuthority:
     async def submit(self, actor: Principal, request: Submission):
         self.authorize(actor, request.ref, 'session:submit')
         self._require_admission_open()
-        if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {'text', 'attachments'}
+        if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {'text', 'attachments', 'finite'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_ingress_media import admit_attachments
-        payload = {'text': request.payload['text'], **admit_attachments(request.payload.get('attachments'))}
+        from gateway.session_finite import admit_finite
+        finite = admit_finite(request.payload)
+        payload = {'text': request.payload['text'], **finite,
+                   **admit_attachments(request.payload.get('attachments'))}
         row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                   session_id=request.ref.session_id, request_id=request.request_id,
                                   payload=payload, intent=request.intent)
@@ -323,7 +326,7 @@ class SessionAuthority:
             return live.controls.respond(ref.session_id, generation, prompt_id, response, kind=kind)
 
     async def _drain(self, ref):
-        from gateway.session_ingress import execute_admission
+        from gateway.session_finite import execute_finite_admission
         live = self.sessions[ref.session_id]
         while True:
             try:
@@ -339,7 +342,7 @@ class SessionAuthority:
                         from gateway.session_automation import check_local_automation
                         check_local_automation(self, ref, first)
                     elif (first['principal_id'] != live.source.user_id
-                          or not {'text'} <= set(first['payload']) <= {'text', 'attachments_v1'}):
+                          or not {'text'} <= set(first['payload']) <= {'text', 'attachments_v1', 'finite'}):
                         raise RuntimeStoreError('permission_denied')
                 if first is not None and 'native_text_v1' in first['payload']:
                     from gateway.session_envelope import check_native_route
@@ -369,7 +372,7 @@ class SessionAuthority:
                 live.event_stream.publish(ref.session_id, {}, event_type='message.start')
                 self._publish_pending(ref)
             try:
-                response = await execute_admission(self, ref, row)
+                response = await execute_finite_admission(self, ref, row)
                 outcome = 'completed'
             except Exception:
                 import logging

@@ -261,6 +261,18 @@ The gateway extracts `MEDIA:/path/to/file` tags from agent replies and ships the
 
 Anything on this list is delivered as a native attachment on platforms that support it (Telegram, Discord, Signal, Slack, WhatsApp, Feishu, Matrix, etc.); on platforms without native support it falls back to a link or plain-text indicator. The **bold** categories were added in the last few releases — if you were relying on the model saying `here is the file: /path/to/report.docx` instead, swap to `MEDIA:/path/to/report.docx` for native delivery.
 
+### Media routing and batching
+
+Inbound media routing on Telegram is table-driven. The adapter maps image extensions and MIME types (currently `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`); voice/audio are handled via the base platform class. These tables are module constants and not user-configurable today.
+
+Rapid bursts (albums, client-side message splits) are debounced into a single agent turn. Operators can tune the timing via environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` | `0.8` | Debounce window for photo/album bursts. Photos arriving within this window are merged into one MessageEvent instead of triggering multiple turns. |
+| `HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS` | `0.3` | Debounce window for rapid consecutive text messages (clamped to `0.08`–`2.0`). Short replies settle in ~180ms via the adaptive fast-path. |
+| `HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS` | `1.0` | Extra window to detect a client-side split of one long message into several updates (clamped between the text batch delay and `4.0`). |
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.

@@ -60,17 +60,25 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         target_home = self.profile_homes().get(profile)
         if target_home is None or params.get('_target_home') != str(target_home):
             raise RuntimeStoreError('permission_denied')
-        if operation in {'submit', 'execute'}:
+        result = {'owner': owner, 'target_home': str(target_home)}
+        if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
                        and t['execution_generation'] == params.get('execution_generation')
                        and t['status'] == 'running'
                        and t['payload'].get('target_member_id', t['payload']['target_profile']) == member
                        and t['payload']['target_profile'] == profile
-                       and t['payload']['prompt'] == params.get('prompt')]
+                       and (operation == 'execute' or (
+                           t['payload']['prompt'] == params.get('prompt')
+                           and t['payload'].get('attachments', []) == (params.get('attachments') or [])))]
             if len(matches) != 1:
                 raise RuntimeStoreError('permission_denied')
-        return {'owner': owner, 'target_home': str(target_home)}
+            payload = matches[0]['payload']
+            result.update(prompt=payload['prompt'], attachments=payload.get('attachments', []))
+            if operation == 'attachment':
+                from gateway.session_hosted_transport import source_attachment_chunk
+                result.update(source_attachment_chunk(self, member, room_id, result['attachments'], params))
+        return result
 
 
     def bindings(self):

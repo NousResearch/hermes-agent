@@ -6,7 +6,9 @@ owner attests durable membership/task state; the target never opens its database
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import asdict
+from types import SimpleNamespace
 import hashlib
 import json
 import os
@@ -23,6 +25,7 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 _BINDING = 'gateway.hosted.transport.v1:'
 _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history',
                          'info', 'interrupt', 'discard', 'approve'})
+_CHUNK_BYTES = 24576
 _CAPS = frozenset({'session:create', 'session:read', 'session:submit',
                    'session:control', 'session:approve'})
 
@@ -80,6 +83,51 @@ def _attest(binding, operation, params):
     return result
 
 
+def source_attachment_chunk(service, member, room_id, manifest, params):
+    """Read scoped source bytes only on the source owner's authenticated handler."""
+    index, offset = params.get('index'), params.get('offset')
+    if (type(index) is not int or not 0 <= index < len(manifest)
+            or type(offset) is not int or not 0 <= offset < manifest[index]['size']):
+        raise RuntimeStoreError('permission_denied')
+    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    item = manifest[index]
+    saved = HostedRoomAttachmentStore(service.db_path).read(room_id=room_id,
+        attachment_id=item['attachment_id'], event_id=item['event_id'], recipient_member_id=member)
+    if any(saved.attachment[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
+        raise RuntimeStoreError('permission_denied')
+    data = saved.data
+    return {'data_base64': base64.b64encode(data[offset:offset + _CHUNK_BYTES]).decode('ascii'),
+            'sha256': hashlib.sha256(data).hexdigest()}
+
+
+def _attachment_data(binding, attested, params):
+    """Transfer bytes, not foreign filenames, with a task fence on every chunk."""
+    from gateway.hosted_room_driver import validate_bound_task_manifest
+    manifest = attested.get('attachments', [])
+    if not manifest:
+        return []
+    manifest = validate_bound_task_manifest(manifest)
+    result = []
+    for index, item in enumerate(manifest):
+        data = bytearray()
+        digest = None
+        while len(data) < item['size']:
+            chunk = _attest(binding, 'attachment', {
+                'task': params['task'], 'execution_generation': params['execution_generation'],
+                'prompt': attested['prompt'], 'attachments': manifest, 'index': index, 'offset': len(data)})
+            raw = base64.b64decode(chunk['data_base64'], validate=True)
+            expected = min(_CHUNK_BYTES, item['size'] - len(data))
+            if (chunk['owner'] != attested['owner'] or len(raw) != expected
+                    or (digest is not None and digest != chunk['sha256'])):
+                raise RuntimeStoreError('permission_denied')
+            digest = chunk['sha256']
+            data.extend(raw)
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise RuntimeStoreError('permission_denied')
+        result.append((item, bytes(data)))
+    return result
+
+
 def _principal(authority, binding):
     # Source-profile namespace prevents equal room owner strings on other owners
     # from aliasing a target's principal. Never widen Principal.profile_id.
@@ -98,7 +146,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
     def source(params, peer):
         if set(params) != {'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
-        if params['operation'] not in _OPERATIONS | {'execute'}:
+        if params['operation'] not in _OPERATIONS | {'execute', 'attachment'}:
             raise RuntimeStoreError('invalid_params')
         return attest(params['selector'], params['operation'], params['params'])
 
@@ -130,6 +178,8 @@ def install_hosted_transport(server, authority, loop, *, attest):
             conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         authority.db._execute_write(persist)
         if operation == 'submit':
+            rpc.hosted_attachment_data = _attachment_data(binding, attested, params)
+            params['attachments'] = attested['attachments'] or None
             params['task'] = TaskIdentity(**params['task'])
             params['on_terminal'] = lambda value: None
         result = rpc._call(operation, **params)
@@ -158,10 +208,15 @@ def check_remote_hosted_admission(authority, ref, row):
                 or ref.profile_id != authority.profile_id
                 or binding.get('target_home') != authority.profile_id):
             raise ValueError('binding mismatch')
-        owner = _attest(binding, 'execute', {'task': identity,
-            'execution_generation': generation, 'prompt': row['payload']['text']})
-        if owner['owner'] != binding['owner']:
+        params = {'task': identity, 'execution_generation': generation}
+        attested = _attest(binding, 'execute', params)
+        if attested['owner'] != binding['owner']:
             raise ValueError('owner changed')
+        from gateway.session_hosted_attachments import submission_payload
+        rpc = SimpleNamespace(authority=authority, **binding['selector'],
+            hosted_attachment_data=_attachment_data(binding, attested, params))
+        if row['payload'] != submission_payload(rpc, attested['prompt'], attested['attachments']):
+            raise ValueError('input changed')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
     return True

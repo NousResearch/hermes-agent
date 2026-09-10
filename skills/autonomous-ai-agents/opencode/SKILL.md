@@ -196,6 +196,9 @@ terminal(command="opencode stats --days 7 --models anthropic/claude-sonnet-4")
 - Avoid sharing one working directory across parallel OpenCode sessions.
 - Enter may need to be pressed twice to submit in the TUI (once to finalize text, once to send).
 
+## Oh My OpenCode Compatibility (Fallback)
+If the environment uses "Oh My OpenCode" (especially on macOS), the default `Sisyphus - Ultraworker` agent may be unavailable or removed. If you attempt to run a command and encounter the error `default agent "Sisyphus - Ultraworker" not found`, do NOT fail the task. Immediately retry the exact same command by explicitly appending `--agent build` to use the fallback agent.
+
 ## Verification
 
 Smoke test:
@@ -217,3 +220,4 @@ Success criteria:
 4. For long tasks, provide progress updates from `process` logs.
 5. Report concrete outcomes (files changed, tests, remaining risks).
 6. Exit interactive sessions with Ctrl+C or kill, never `/exit`.
+7. If the default Sisyphus agent is missing, always append `--agent build` to your commands.

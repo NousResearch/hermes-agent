@@ -773,14 +773,12 @@ class TurnRunner:
             return
         adapter = self._runner._adapter_for_source(ctx.source)
         try:
-            ctx.native_cot = await asyncio.wait_for(
-                adapter.start_native_cot(
-                    ctx.source.chat_id,
-                    ctx.inbound_message_id or ctx.event_message_id,
-                    ctx.native_cot_mode,
-                    str(ctx.message or ""),
-                ),
-                timeout=0.6,
+            start_native_cot = getattr(adapter, "start_native_cot")
+            ctx.native_cot = await start_native_cot(
+                ctx.source.chat_id,
+                ctx.inbound_message_id or ctx.event_message_id,
+                ctx.native_cot_mode,
+                str(ctx.message or ""),
             )
         except Exception as exc:
             logger.warning("Native COT create failed: type=%s", type(exc).__name__)
@@ -798,7 +796,9 @@ class TurnRunner:
         # finish closes event admission synchronously; I/O runs under gateway shutdown ownership.
         task = cot.finish(reason)
         self._runner._retain_background_task(task)
-        deadline = asyncio.get_running_loop().call_later(3.0, task.cancel)
+        # Bridge-compatible COT requests have a 15s per-call budget. Finalization can
+        # require one pending update plus complete, so do not cancel it at the old 3s cap.
+        deadline = asyncio.get_running_loop().call_later(35.0, task.cancel)
 
         def finished(task):
             deadline.cancel()

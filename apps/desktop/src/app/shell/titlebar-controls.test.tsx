@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { TitlebarControls } from './titlebar-controls'
 
@@ -16,10 +17,13 @@ function mount() {
   )
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  setTitlebarAppActionsSide('right')
+  cleanup()
+})
 
 describe('titlebar app-action cluster', () => {
-  it('keeps settings, layout, and HUD on the right so the left titlebar stays free for tabs', () => {
+  it('defaults settings, layout, and HUD to the right so the left titlebar stays free for tabs', () => {
     mount()
 
     const left = screen.getByLabelText('Window controls')
@@ -33,5 +37,18 @@ describe('titlebar app-action cluster', () => {
     expect(within(left).queryByLabelText('Layout editor')).toBeNull()
     expect(within(left).queryByLabelText('HUD mode')).toBeNull()
     expect(within(left).getByLabelText(/Hide sidebar|Show sidebar/)).toBeTruthy()
+  })
+
+  it('moves settings, layout, and HUD to the left when the appearance setting says left', () => {
+    setTitlebarAppActionsSide('left')
+    mount()
+
+    const left = screen.getByLabelText('Window controls')
+    const right = screen.getByLabelText('App controls')
+
+    expect(within(left).getByLabelText('Open settings')).toBeTruthy()
+    expect(within(left).getByLabelText('Layout editor')).toBeTruthy()
+    expect(within(left).getByLabelText('HUD mode')).toBeTruthy()
+    expect(within(right).queryByLabelText('Open settings')).toBeNull()
   })
 })

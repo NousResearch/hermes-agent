@@ -1405,6 +1405,15 @@ export const ja = defineLocale({
   },
 
   skills: {
+    plugins: {
+      kanbanToolsHint:
+        'Desktop スイッチはボードを表示します。Agent スイッチは、このプロファイルの CLI と Desktop チャットに Kanban ツールを許可します。ディスパッチャーは起動しません。',
+      kanbanToolsUnavailable:
+        'このバックエンドのツール設定には Kanban がありません。選択したバックエンドの Hermes を更新すると、ここでエージェントのツールを有効にできます。',
+      kanbanToolsUpdateBackend: 'バックエンドを更新',
+      kanbanToolsSaved: (profile: string) =>
+        `${profile} の Kanban ツール設定を保存しました。新しいチャットで適用されます。既存のチャットは変更されません。`
+    },
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
     tabMcp: 'MCP',
@@ -3462,7 +3471,8 @@ export const ja = defineLocale({
     vaultCodeDesc: site =>
       `${site} がワンタイムコード（SMS、メール、または認証アプリ）を求めています。ここに入力すると Hermes がページに入力します。モデルはコードを一切見ません。`,
     vaultCodeLabel: 'コード',
-    vaultCodeFootnote: 'ヒント：「設定 → パスワードとログイン」でこのログインに認証キーを保存すると、Hermes がコードを自動入力します。',
+    vaultCodeFootnote:
+      'ヒント：「設定 → パスワードとログイン」でこのログインに認証キーを保存すると、Hermes がコードを自動入力します。',
     vaultCodeSkip: 'スキップ',
     vaultCodeConfirm: 'コードを入力'
   },

@@ -1115,6 +1115,15 @@ export const ar = defineLocale({
     }
   },
   skills: {
+    plugins: {
+      kanbanToolsHint:
+        'يعرض مفتاح Desktop اللوحة. يمنح مفتاح Agent أدوات Kanban لمحادثات CLI وDesktop لهذا الملف الشخصي، ولا يشغّل موزّع المهام.',
+      kanbanToolsUnavailable:
+        'لا يعرض هذا الخادم Kanban في إعدادات الأدوات. حدّث Hermes على الخادم المحدد لتفعيل أدوات الوكيل من هنا.',
+      kanbanToolsUpdateBackend: 'حدّث الخادم',
+      kanbanToolsSaved: (profile: string) =>
+        `حُفظت إعدادات أدوات Kanban للملف ${profile}. افتح محادثة جديدة لتطبيقها؛ لن تتغير المحادثات الحالية.`
+    },
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
     all: 'الكل',
@@ -3060,7 +3069,8 @@ export const ar = defineLocale({
     vaultCodeDesc: site =>
       `يطلب ${site} رمزًا لمرة واحدة (رسالة نصية أو بريد إلكتروني أو تطبيق مصادقة). أدخله هنا وسيكتبه Hermes في الصفحة؛ لا يراه النموذج أبدًا.`,
     vaultCodeLabel: 'الرمز',
-    vaultCodeFootnote: 'تلميح: احفظ مفتاح المصادقة مع بيانات الدخول هذه في الإعدادات ← كلمات المرور وتسجيلات الدخول وسيُدخل Hermes الرموز نيابةً عنك.',
+    vaultCodeFootnote:
+      'تلميح: احفظ مفتاح المصادقة مع بيانات الدخول هذه في الإعدادات ← كلمات المرور وتسجيلات الدخول وسيُدخل Hermes الرموز نيابةً عنك.',
     vaultCodeSkip: 'تخطٍ',
     vaultCodeConfirm: 'إدخال الرمز'
   },

@@ -1036,13 +1036,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 scopes = _bind_build_profile_scopes(profile_home)
                 session_db = _open_profile_session_db(profile_home)
             try:
-                from tui_gateway.entry import ensure_mcp_discovery_started, wait_for_mcp_discovery
+                from tui_gateway.entry import ensure_mcp_discovery_started
                 ensure_mcp_discovery_started()
-                # Sync-wait for MCP discovery before building the agent so the tool
-                # registry snapshot includes connected MCP tools. Without this, the
-                # background thread may still be discovering when _make_agent snapshots,
-                # causing all MCP tools to be missing for the session lifetime.
-                wait_for_mcp_discovery(timeout=10.0)
             except Exception:
                 logger.warning("MCP discovery startup failed", exc_info=True)
             try:

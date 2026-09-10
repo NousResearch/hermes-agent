@@ -755,6 +755,28 @@ _STREAM_DROP_MARKERS = (
 )
 
 
+def _rate_limit_guidance(provider: str, model: str) -> str:
+    """Build recovery guidance for a classified terminal rate limit."""
+    provider_label = provider or "the provider"
+    model_label = model or "the selected model"
+    if model and model.lower().endswith(":free"):
+        paid_model = model[:-5]
+        switch_command = f"/model {paid_model}"
+        if provider:
+            switch_command += f" --provider {provider}"
+        return (
+            f"Rate limit reached for `{model_label}` on {provider_label}. "
+            "This model uses a free tier. Retry after the provider's quota "
+            f"resets, switch to a non-free model with `{switch_command}`, or check "
+            "the provider dashboard for account limits and credit options."
+        )
+    return (
+        f"Rate limit reached for `{model_label}` on {provider_label}. "
+        "Retry later, reduce request frequency, or check the provider "
+        "dashboard for account quota details."
+    )
+
+
 def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
@@ -849,6 +871,8 @@ def max_retries_exhausted_result(
         )
     else:
         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+        if is_rate_limited:
+            _final_response += f"\n\n{_rate_limit_guidance(provider, model)}"
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
         # suggest splitting large file writes.

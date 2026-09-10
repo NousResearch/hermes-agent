@@ -201,6 +201,7 @@ Standard Markdown in AI responses is automatically converted to WhatsApp's nativ
 
 | Markdown | WhatsApp | Renders as |
 |----------|----------|------------|
+| `*italic*` | `_italic_` | *italic* |
 | `**bold**` | `*bold*` | **bold** |
 | `~~strikethrough~~` | `~strikethrough~` | ~~strikethrough~~ |
 | `# Heading` | `*Heading*` | Bold text (no native headings) |

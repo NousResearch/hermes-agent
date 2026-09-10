@@ -2498,9 +2498,10 @@ run_with_timeout() {
 # Return success only when the host is an apt release NEWER than the newest one
 # Playwright's platform resolver recognizes — the exact condition that makes
 # `playwright install` hang uninterruptibly (#35166). We scope the override
-# retry to this case rather than retrying on *any* failure, so a genuine
-# network/disk/permission failure doesn't get a mismatched-glibc build forced
-# onto it. Newest Playwright-known apt releases as of this writing: Ubuntu
+# retry to this case rather than applying the platform override on *any*
+# failure, so a genuine network/disk/permission failure doesn't get a
+# mismatched-glibc build forced onto it. The separate IPv4 retry below remains
+# safe for those failures. Newest Playwright-known apt releases: Ubuntu
 # 24.04, Debian 13. Anything above triggers the fallback; everything Playwright
 # already handles (and every non-apt distro) does not.
 playwright_host_unrecognized() {
@@ -2531,62 +2532,146 @@ playwright_fallback_platform() {
     esac
 }
 
-# Run a `playwright install ...` command, and if it fails or hangs (the
-# uninterruptible "Installing Playwright Chromium with system dependencies"
-# stall on apt releases Playwright doesn't recognize yet — Ubuntu 26.04,
-# Debian 14, future distros — see #35166), retry it ONCE with
-# PLAYWRIGHT_HOST_PLATFORM_OVERRIDE pinned to the newest known build.
+# Retry a Playwright install over IPv4 without changing the host's persistent
+# resolver or routing configuration. Playwright uses its own Happy Eyeballs
+# agent in a forked downloader, so NODE_OPTIONS/dns.lookup overrides do not
+# control this path. A short-lived loopback CONNECT proxy does: Playwright's
+# supported HTTPS_PROXY path tunnels through it, while the proxy resolves and
+# opens every upstream socket with AF_INET only.
+run_playwright_install_ipv4() {
+    local timeout_seconds="$1"
+    shift
+
+    local python_bin=""
+    if [ -n "${INSTALL_DIR:-}" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        python_bin="$INSTALL_DIR/venv/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        python_bin="$(command -v python3)"
+    elif command -v python >/dev/null 2>&1; then
+        python_bin="$(command -v python)"
+    else
+        log_warn "Cannot start IPv4 retry: Python is unavailable"
+        return 1
+    fi
+
+    local proxy_dir proxy_script port_file token_file proxy_log proxy_pid proxy_port proxy_token proxy_url retry_rc waited
+    proxy_script="${INSTALL_DIR:-}/scripts/playwright_ipv4_proxy.py"
+    if [ ! -r "$proxy_script" ]; then
+        log_warn "Cannot start IPv4 retry: missing $proxy_script"
+        return 1
+    fi
+
+    proxy_dir="$(mktemp -d "${TMPDIR:-/tmp}/hermes-playwright-ipv4.XXXXXX")" || return 1
+    port_file="$proxy_dir/port"
+    token_file="$proxy_dir/token"
+    proxy_log="$proxy_dir/proxy.log"
+
+    # The helper watches this top-level shell PID and exits if the installer is
+    # killed. Keep run_playwright_install() at top level: bash keeps `$$`
+    # unchanged inside subshells, which would make the helper watch the wrong
+    # parent after a future `$(run_playwright_install ...)` refactor.
+    "$python_bin" "$proxy_script" "$port_file" "$token_file" "$$" >"$proxy_log" 2>&1 &
+    proxy_pid=$!
+    waited=0
+    while { [ ! -s "$port_file" ] || [ ! -s "$token_file" ]; } && [ "$waited" -lt 50 ]; do
+        if ! kill -0 "$proxy_pid" 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+
+    proxy_port=""
+    proxy_token=""
+    if [ -s "$port_file" ]; then
+        # Path.write_text() does not append a newline. `read` still assigns the
+        # final field but returns non-zero at EOF, so preserve the value.
+        IFS= read -r proxy_port < "$port_file" || true
+    fi
+    if [ -s "$token_file" ]; then
+        IFS= read -r proxy_token < "$token_file" || true
+    fi
+    case "$proxy_port" in
+        ''|*[!0-9]*)
+            log_warn "Cannot start IPv4 retry: local CONNECT proxy failed"
+            if [ -s "$proxy_log" ]; then
+                cat "$proxy_log" >&2
+            fi
+            kill "$proxy_pid" 2>/dev/null || true
+            wait "$proxy_pid" 2>/dev/null || true
+            rm -rf "$proxy_dir"
+            return 1
+            ;;
+    esac
+    if [ -z "$proxy_token" ]; then
+        log_warn "Cannot start IPv4 retry: local CONNECT proxy token is missing"
+        kill "$proxy_pid" 2>/dev/null || true
+        wait "$proxy_pid" 2>/dev/null || true
+        rm -rf "$proxy_dir"
+        return 1
+    fi
+
+    proxy_url="http://hermes:$proxy_token@127.0.0.1:$proxy_port"
+    retry_rc=0
+    HTTPS_PROXY="$proxy_url" https_proxy="$proxy_url" NO_PROXY="" no_proxy="" \
+        run_browser_install_with_timeout "$timeout_seconds" "$@" || retry_rc=$?
+    kill "$proxy_pid" 2>/dev/null || true
+    wait "$proxy_pid" 2>/dev/null || true
+    rm -rf "$proxy_dir"
+    return "$retry_rc"
+}
+
+# Run a `playwright install ...` command normally, then retry it ONCE over IPv4
+# if it fails or hangs. On apt releases Playwright doesn't recognize yet
+# (Ubuntu 26.04, Debian 14, future distros — see #35166), that retry also pins
+# PLAYWRIGHT_HOST_PLATFORM_OVERRIDE to the newest known build.
 #
-# The override retry is scoped to the actual hang condition: it fires only when
-# the host is an apt release NEWER than Playwright recognizes
-# (playwright_host_unrecognized). On every release Playwright already supports
-# (Ubuntu <=24.04, Debian <=13) and every non-apt distro, the first attempt is
-# authoritative and a failure is reported as-is — we never force a
-# mismatched-glibc build (microsoft/playwright#35114) onto a host Playwright
-# handles correctly. This is deliberately narrower than a retry-on-any-failure:
-# a network/disk/permission error on a supported host should surface, not get
-# papered over with a platform override. Playwright's maintainers bless this
-# env var as the supported escape hatch for unrecognized platforms
-# (microsoft/playwright#33434); a hardcoded full distro/version table was
-# rejected upstream (microsoft/playwright#33432), so we only need the
-# newest-known floor here.
+# The platform override remains scoped to the actual unrecognized-host
+# condition, so a supported host never receives a mismatched-glibc build
+# (microsoft/playwright#35114). The IPv4 constraint is safe on every host: it
+# changes only DNS address selection for the bounded retry and disappears when
+# the child exits. Playwright's maintainers bless the platform env var as the
+# supported escape hatch for unrecognized platforms
+# (microsoft/playwright#33434).
 #
-# An operator-provided PLAYWRIGHT_HOST_PLATFORM_OVERRIDE is always respected:
-# it is inherited by the first attempt, and the retry is skipped.
+# Operator configuration is authoritative: PLAYWRIGHT_HOST_PLATFORM_OVERRIDE
+# is inherited by both attempts, while a configured HTTPS/ALL proxy disables the
+# IPv4 retry rather than being bypassed.
 #
 # Usage: run_playwright_install <timeout_seconds> npx playwright install [args...]
 run_playwright_install() {
     local timeout_seconds="$1"
     shift
 
-    # First attempt: native platform resolution (inherits any operator override).
-    if run_browser_install_with_timeout "$timeout_seconds" "$@" 2>/dev/null; then
+    local native_rc=0
+    run_browser_install_with_timeout "$timeout_seconds" "$@" 2>/dev/null || native_rc=$?
+    if [ "$native_rc" -eq 0 ]; then
         return 0
     fi
 
-    # Operator already pinned the platform — their choice already applied to the
-    # attempt above; a second identical run won't help.
-    if [ -n "${PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-}" ]; then
-        return 1
+    # A local relay would bypass an operator-mandated egress proxy. Preserve
+    # that policy and surface the original failure instead.
+    if [ -n "${HTTPS_PROXY:-${https_proxy:-${ALL_PROXY:-${all_proxy:-}}}}" ]; then
+        return "$native_rc"
     fi
 
-    # Only retry with an override on the apt releases too new for Playwright to
-    # recognize (the #35166 hang). Any other failure is a real failure and is
-    # surfaced unchanged.
-    if ! playwright_host_unrecognized; then
-        return 1
+    local fallback=""
+    if [ -z "${PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-}" ] && playwright_host_unrecognized; then
+        fallback="$(playwright_fallback_platform)"
     fi
 
-    local fallback
-    fallback="$(playwright_fallback_platform)"
-    if [ -z "$fallback" ]; then
-        return 1  # No usable fallback build for this arch.
+    log_warn "Playwright install failed or timed out — retrying once with IPv4-only DNS resolution"
+    local retry_rc=0
+    if [ -n "$fallback" ]; then
+        log_warn "Playwright doesn't recognize ${DISTRO} ${DISTRO_VERSION} yet — also setting PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$fallback"
+        log_info "(apt releases newer than Playwright knows hang at this step; see #35166)"
+        PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$fallback" \
+            run_playwright_install_ipv4 "$timeout_seconds" "$@" || retry_rc=$?
+    else
+        run_playwright_install_ipv4 "$timeout_seconds" "$@" || retry_rc=$?
     fi
 
-    log_warn "Playwright doesn't recognize ${DISTRO} ${DISTRO_VERSION} yet — retrying with PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$fallback"
-    log_info "(apt releases newer than Playwright knows hang at this step; see #35166)"
-    PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$fallback" \
-        run_browser_install_with_timeout "$timeout_seconds" "$@"
+    return "$retry_rc"
 }
 
 configure_browser_env_from_system_browser() {

@@ -35,6 +35,86 @@ def _free_port() -> int:
     return port
 
 
+@pytest.fixture(autouse=True)
+def _isolate_tool_registry():
+    """Start each test from an empty process-global tool registry.
+
+    Built-in tool modules register at import time, so when one pytest
+    process collects another module first, ``A2AAdapter._advertised_skills()``
+    takes its dynamic path and Agent Card tests advertise leaked tools
+    instead of the configured static capabilities.
+
+    Scope notes: only ``_tools``/``_scoped_tools`` are snapshot/cleared —
+    the registry's other state (``_toolset_aliases``, ``_toolset_checks``,
+    ``_plugin_override_policy``) is configuration/ownership bookkeeping,
+    not tool leakage, and is deliberately left untouched.  This is a
+    process-local fixture: it isolates each test within its pytest worker
+    only.  Under pytest-xdist each worker has its own registry singleton,
+    so cross-worker contamination is impossible and no shared state needs
+    guarding.  Touching the private attributes is intentional — a test
+    fixture may couple to registry internals rather than grow a public
+    reset API for it.
+    """
+    from tools.registry import registry
+
+    with registry._lock:
+        saved_tools = dict(registry._tools)
+        saved_scoped = {k: dict(v) for k, v in registry._scoped_tools.items()}
+        registry._tools.clear()
+        registry._scoped_tools.clear()
+    try:
+        yield
+    finally:
+        with registry._lock:
+            registry._tools.clear()
+            registry._tools.update(saved_tools)
+            registry._scoped_tools.clear()
+            registry._scoped_tools.update(saved_scoped)
+
+
+def test_registry_fixture_restores_state_when_test_body_raises():
+    """Failure path: a test that raises must still get its registrations
+    restored by the autouse fixture — snapshot in, snapshot out."""
+    import pytest as _pytest
+
+    from tools.registry import ToolEntry, registry
+
+    entry = ToolEntry(
+        name="_sentinel_tool_",
+        toolset="_sentinel_ts_",
+        schema={},
+        handler=lambda **kw: {"ok": True},
+        check_fn=None,
+        requires_env=[],
+        is_async=False,
+        description="sentinel for fixture teardown test",
+        emoji="🧪",
+    )
+
+    # Drive the generator-based fixture the way pytest does: prime it,
+    # run a body that registers a tool and raises, then close the
+    # generator (teardown must run on the failure path too).  The fixture
+    # is wrapped by @pytest.fixture, so reach the raw generator through
+    # ``__wrapped__`` instead of calling the fixture directly (deprecated).
+    fixture_gen = _isolate_tool_registry.__wrapped__()
+    next(fixture_gen)
+    try:
+        with registry._lock:
+            registry._tools["_sentinel_tool_"] = entry
+        with _pytest.raises(AssertionError, match="boom"):
+            raise AssertionError("boom")
+    finally:
+        # close() runs the fixture's finally-block (restoring the registry)
+        # even though the body raised; it returns normally once teardown
+        # completes.
+        fixture_gen.close()
+
+    with registry._lock:
+        assert "_sentinel_tool_" not in registry._tools, (
+            "registration leaked past fixture teardown after a raising body"
+        )
+
+
 # --------------------------------------------------------------------------
 # Security
 # --------------------------------------------------------------------------
@@ -255,6 +335,65 @@ class TestAgentCardV1:
     def test_skills_default_when_empty(self):
         assert protocol.skills_from_toolsets([])[0]["id"] == "general"
         assert protocol.skills_from_toolsets({})[0]["id"] == "general"
+
+    def test_card_skills_reflect_registry_state_with_fallback_and_filter(self):
+        """Both _advertised_skills() decision branches that depend on the
+        process-global tool registry — the state the autouse
+        _isolate_tool_registry fixture snapshots — are pinned here:
+
+        1. with a populated registry the card advertises registry contents
+           (the dynamic path the isolation fixture protects); and
+        2. with the registry empty again the card falls back to the
+           configured ``advertised_toolsets`` (static path), instead of
+           advertising stale registrations from another test module.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from tools.registry import ToolEntry, registry
+
+        def _entry(name, toolset):
+            return ToolEntry(
+                name=name,
+                toolset=toolset,
+                schema={},
+                handler=lambda **kw: {"ok": True},
+                check_fn=None,
+                requires_env=[],
+                is_async=False,
+                description="card skills test tool",
+                emoji="🧪",
+            )
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+            "advertised_toolsets": ["_ts_card_"],
+        }))
+
+        # Empty registry (fixture baseline): fallback to the configured
+        # static list — the pre-fixture failure mode advertised nothing
+        # useful here.
+        card = adapter._build_card("http://localhost:9901/")
+        assert {s["id"] for s in card["skills"]} == {"toolset._ts_card_"}
+
+        # Populated registry: the dynamic path wins and tool names become
+        # tags, scoped to the advertised toolsets filter.
+        with registry._lock:
+            registry._tools["_card_tool_a_"] = _entry("_card_tool_a_", "_ts_card_")
+            registry._tools["_card_tool_b_"] = _entry("_card_tool_b_", "_ts_other_")
+        try:
+            card = adapter._build_card("http://localhost:9901/")
+            skill_ids = {s["id"] for s in card["skills"]}
+            assert skill_ids == {"toolset._ts_card_"}
+            card_skill = [s for s in card["skills"] if s["id"] == "toolset._ts_card_"][0]
+            assert "_card_tool_a_" in card_skill["tags"]
+            assert "_card_tool_b_" not in card_skill["tags"]
+        finally:
+            with registry._lock:
+                registry._tools.pop("_card_tool_a_", None)
+                registry._tools.pop("_card_tool_b_", None)
+
+        # Registry restored to the fixture baseline: fallback again.
+        card = adapter._build_card("http://localhost:9901/")
+        assert {s["id"] for s in card["skills"]} == {"toolset._ts_card_"}
 
 
 class TestV1Enums:

@@ -111,6 +111,17 @@ class TestDeepseekVSeriesPassThrough:
         assert result == "deepseek-v4-pro"
 
 
+    def test_deepseek_provider_preserves_bare_flash_id(self):
+        """`deepseek-flash` (the current V4.1 flash id) is first-class too.
+
+        It matches neither the V-series regex nor the canonical set, so it
+        fell through to the retired-slug fallback and every request went out
+        as `deepseek-v4-flash` even when the user selected the published id.
+        """
+        result = normalize_model_for_provider("deepseek-flash", "deepseek")
+        assert result == "deepseek-flash"
+
+
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
 class TestDeepseekCanonicalAndReasonerMapping:

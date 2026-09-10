@@ -48,9 +48,10 @@ opencode_free = OpenCodeFreeProfile(
         "X-Title": "Hermes Agent",
         "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
     },
-    # laguna is the fastest non-UA-gated free model; big-pickle 429s every
+    # laguna-s-2.1-free was delisted by the relay 2026-09-09 (anon 401); the fastest
+    # surviving free model is the lightning-tier Nemotron. big-pickle 429s every
     # client except the opencode CLI's own User-Agent.
-    default_aux_model="laguna-s-2.1-free",
+    default_aux_model="nemotron-3.5-lightning-free",
 )
 
 register_provider(opencode_free)

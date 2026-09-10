@@ -3584,5 +3584,27 @@
     "headline": "Recursively built a Supabase-backed CRM dashboard where each build reuses prior components",
     "quote": "Used the Hermes Desktop App to recursively generate a CRM dashboard where each build reuses components from prior generations; it can also build full videos using official HyperFrame skills — HTML-native, full control over scenes, animations, and rendering.",
     "size": "sm"
+  },
+  {
+    "id": "metedata-hermes-obsidian",
+    "source": "blog",
+    "author": "Mete Polat (Substack)",
+    "url": "https://metedata.substack.com/p/013-my-hermes-and-obsidian-set-up",
+    "date": "2026-05-20",
+    "category": "personal-assistant",
+    "headline": "Hermes turns Telegram voice notes into an Obsidian operating system",
+    "quote": "I send messy voice notes to Hermes through Telegram, and it turns them into structured Obsidian notes on an always-on Mac mini. The same setup now captures and researches business ideas, runs my content engine, adapts weekly fitness plans from feedback, standardizes family recipes, and helps with small purchases - while keeping the underlying knowledge portable in local files.",
+    "size": "lg"
+  },
+  {
+    "id": "metedata-personal-software-home",
+    "source": "blog",
+    "author": "Mete Polat (Substack)",
+    "url": "https://metedata.substack.com/p/016-my-personal-software-journey",
+    "date": "2026-07-28",
+    "category": "dev-workflow",
+    "headline": "Hermes builds and operates my private app library on a Mac mini",
+    "quote": "My agent builds small personal apps for recurring needs, deploys each one in a Docker container on my Mac mini, adds it to a private launcher behind Cloudflare Access, verifies it, and commits the result to Git. The library includes fitness and language-learning canvases, a family calendar, a wishlist, local-event discovery, and Hermes telemetry - all accessible from any device.",
+    "size": "lg"
   }
 ]

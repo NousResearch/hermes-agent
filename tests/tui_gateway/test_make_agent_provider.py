@@ -135,6 +135,7 @@ def test_apply_model_switch_does_not_leak_process_env():
     # Target session recorded a per-session override.
     assert sess_b["model_override"]["model"] == "zai/glm-5.1"
     assert sess_b["model_override"]["provider"] == "zai"
+    assert "api_key" not in sess_b["model_override"]
     # The switched agent mutated in place.
     assert sess_b["agent"].model == "zai/glm-5.1"
     # Sibling session is completely untouched.

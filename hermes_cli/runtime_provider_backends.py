@@ -68,7 +68,8 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
     ``.env``/env or a per-request Entra ID token, trailing ``/v1`` stripped for Anthropic-style
     endpoints (the Anthropic SDK appends /v1/messages itself)."""
     rp = _rp()
-    explicit_api_key = str(explicit_api_key or "").strip()
+    explicit_key_is_callable = callable(explicit_api_key) and not isinstance(explicit_api_key, str)
+    explicit_api_key = explicit_api_key if explicit_key_is_callable else str(explicit_api_key or "").strip()
     explicit_base_url_clean = str(explicit_base_url or "").strip().rstrip("/")
     cfg_base_url, cfg_api_mode, cfg_auth_mode, cfg_entra = "", "chat_completions", "api_key", {}
     if rp._cfg_provider(model_cfg) == "azure-foundry":
@@ -90,12 +91,16 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
     if cfg_api_mode == "anthropic_messages":
         base_url = re.sub(r"/v1/?$", "", base_url)
     if cfg_auth_mode == "entra_id":
+        scope = str(cfg_entra.get("scope") or "").strip()
         # --api-key on the CLI while config says entra_id: honour the explicit string (escape hatch
         # for one-off testing).
-        if explicit_api_key:
+        if explicit_key_is_callable:
+            api_key, source, auth_mode, entra = explicit_api_key, "entra_id", "entra_id", (
+                {"scope": scope} if scope else {}
+            )
+        elif explicit_api_key:
             api_key, source, auth_mode, entra = explicit_api_key, "explicit", "api_key", {}
         else:
-            scope = str(cfg_entra.get("scope") or "").strip()
             api_key, source, auth_mode, entra = _azure_entra_credentials(cfg_entra), "entra_id", "entra_id", (
                 {"scope": scope} if scope else {}
             )

@@ -238,7 +238,7 @@ def _apply_model_switch(
     if pin_session_override and isinstance(session, dict) and not one_turn:
         session["model_override"] = {
             "model": result.new_model, "provider": result.target_provider,
-            "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
+            "base_url": result.base_url, "api_mode": result.api_mode}
     if persist_global:
         _persist_model_switch(result)
     return {

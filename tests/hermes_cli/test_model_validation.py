@@ -587,6 +587,22 @@ class TestProbeApiModelsUserAgent:
         # No Authorization was set, but UA must still be present.
         assert req.get_header("Authorization") is None
 
+    def test_probe_materializes_callable_credentials(self):
+        """Capability probes must mint a callable before constructing auth headers."""
+        from unittest.mock import patch
+
+        body = b'{"data":[{"id":"gpt-4o"}]}'
+        token_provider = lambda: "minted-probe-token"
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            result = probe_api_models(token_provider, "https://example.com/v1")
+
+        assert result["models"] == ["gpt-4o"]
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("Authorization") == "Bearer minted-probe-token"
+
 
 
 

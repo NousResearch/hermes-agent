@@ -511,12 +511,21 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 // membership match exactly.
 let projectSessionsRefreshGeneration = 0
 
+/**
+ * A drill-in read whose answer was thrown away: a newer request superseded it,
+ * or the active gateway/profile moved under it. That is NOT a statement about
+ * the project — the caller must neither render it nor read it as "this project
+ * has no sessions". Returning `null` for both cases is what left an entered
+ * project showing lane headers with no rows (the overview's lanes carry none).
+ */
+export class ProjectSessionsSuperseded extends Error {}
+
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
   const generation = ++projectSessionsRefreshGeneration
   const profile = projectProfile()
 
   if (!profile) {
-    return null
+    throw new ProjectSessionsSuperseded('no profile scope for the entered project')
   }
 
   let context: ActiveProjectsContext | undefined
@@ -531,17 +540,23 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
     )
 
     if (generation !== projectSessionsRefreshGeneration || !stillOnProjectsContext(context)) {
-      return null
+      throw new ProjectSessionsSuperseded('answer superseded before it landed')
     }
 
     return res.project ?? null
   } catch (error) {
+    if (error instanceof ProjectSessionsSuperseded) {
+      throw error
+    }
+
     if (
       generation !== projectSessionsRefreshGeneration ||
       profile !== projectProfile() ||
       (context && !stillOnProjectsContext(context))
     ) {
-      return null
+      // A stale FAILURE is no more evidence than a stale answer: the request
+      // that replaced it owns the outcome.
+      throw new ProjectSessionsSuperseded('superseded request failed')
     }
 
     throw error

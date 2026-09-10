@@ -45,6 +45,28 @@ const projectActivityTime = (project: SidebarProjectTree): number =>
 export const latestProjectSessions = (project: SidebarProjectTree, limit: number): SessionInfo[] =>
   [...projectSessions(project)].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
 
+/**
+ * Whether an entered project's payload can render rows at all.
+ *
+ * The overview tree ships every lane WITHOUT rows (`hydrate=False`, the payload
+ * the sidebar renders immediately on drill-in), so a structure-only node must
+ * never read as content: treating it as one is what left an entered project
+ * showing branch headers with nothing under them while the drill-in read was
+ * still pending or had failed. Rows placed by the live overlay still count —
+ * those are real sessions, not structure.
+ */
+export function enteredProjectHasContent(project: SidebarProjectTree | undefined, hydrated: boolean): boolean {
+  if (!project) {
+    return false
+  }
+
+  if (!hydrated) {
+    return project.repos.some(repo => repo.groups.some(group => group.sessions.length > 0))
+  }
+
+  return project.sessionCount > 0 || project.repos.some(repo => repo.groups.length > 0)
+}
+
 // Home is a fixture, not a project: it always leads the overview, above the
 // active project and outside any hand-picked order.
 const homeFirst = (projects: SidebarProjectTree[]): SidebarProjectTree[] =>

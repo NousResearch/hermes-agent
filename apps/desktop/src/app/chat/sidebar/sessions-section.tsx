@@ -41,6 +41,7 @@ import {
   SidebarWorkspaceGroup,
   type SidebarWorkspaceTree
 } from './projects'
+import { enteredProjectHasContent } from './projects/model'
 import { WorkspaceAddButton } from './projects/workspace-header'
 import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionSkeletons } from './section-states'
@@ -140,6 +141,11 @@ interface SidebarSessionsSectionProps {
   // The entered project's flattened content: main-checkout sessions render
   // directly (no redundant repo/branch header); only linked worktrees nest.
   projectContent?: SidebarProjectTree
+  // Whether `projectContent` is the drill-in read's payload (`hydrated`) rather
+  // than the overview node the sidebar falls back to while that read is pending
+  // or failed — the overview's lanes carry no rows, so it must not read as an
+  // empty project. See `enteredProjectHasContent`.
+  projectContentHydrated?: boolean
   // Live git lanes (`git worktree list`) for repos in the entered project —
   // a VISUAL enhancer only (empty lanes), never session membership.
   projectRepoWorktrees?: Record<string, HermesGitWorktree[]>
@@ -210,6 +216,7 @@ export function SidebarSessionsSection({
   projectsLoading = false,
   onEnterProject,
   projectContent,
+  projectContentHydrated = false,
   projectRepoWorktrees,
   liveSessions,
   removedSessionIds,
@@ -244,9 +251,10 @@ export function SidebarSessionsSection({
   // emits a lane that has sessions, so a lane surviving with zero rows means
   // they were filtered out (pinned) — the branch is real and must still render.
   // A genuinely empty project has no lanes at all and keeps its empty state.
-  const hasProjectContent = Boolean(
-    projectContent && (projectContent.sessionCount > 0 || projectContent.repos.some(repo => repo.groups.length > 0))
-  )
+  // That reasoning only holds for the DRILL-IN payload: the overview node the
+  // sidebar falls back to carries every lane with no rows, so it renders the
+  // skeleton / empty state instead of branch headers with nothing under them.
+  const hasProjectContent = enteredProjectHasContent(projectContent, projectContentHydrated)
 
   const showEmptyState =
     forceEmptyState || (!hasGroupedSessions && !hasProjectOverview && !hasProjectContent && sessions.length === 0)

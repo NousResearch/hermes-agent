@@ -81,7 +81,10 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('./projects/model', () => ({
+vi.mock('./projects/model', async importOriginal => ({
+  // Everything else stays REAL: the drag tests stub only what they replace, so
+  // a new export can never silently vanish from the mock (and blow up render).
+  ...(await importOriginal<typeof import('./projects/model')>()),
   PROJECT_PREVIEW_COUNT: 3,
   SIDEBAR_GROUP_PAGE: 20,
   latestProjectSessions: () => [],
@@ -268,6 +271,7 @@ describe('project-associated new-session drag sources', () => {
         {...baseProps()}
         onNewSessionSplit={onNewSessionSplit}
         projectContent={project({ repos: [repoA, repoB], sessionCount: 1 })}
+        projectContentHydrated
       />
     )
 

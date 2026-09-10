@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { orderProjectsByIds, sortProjectsForOverview } from './model'
-import { NO_PROJECT_ID, type SidebarProjectTree } from './workspace-groups'
+import { enteredProjectHasContent, orderProjectsByIds, sortProjectsForOverview } from './model'
+import {
+  NO_PROJECT_ID,
+  type SidebarProjectTree,
+  type SidebarSessionGroup,
+  type SidebarWorkspaceTree
+} from './workspace-groups'
 
 function makeProject(id: string, sessionCount: number): SidebarProjectTree {
   return {
@@ -74,5 +79,37 @@ describe('sortProjectsForOverview', () => {
     const projects = [makeProject('scanned', 0), active, home()]
 
     expect(ids(sortProjectsForOverview(projects, 'active'))).toEqual([NO_PROJECT_ID, 'active', 'scanned'])
+  })
+})
+
+describe('enteredProjectHasContent', () => {
+  const lane = (sessions: number): SidebarSessionGroup => ({
+    id: 'lane',
+    label: 'main',
+    path: '/repos/p',
+    sessions: Array.from({ length: sessions }, (_, index) => ({ id: `s${index}` }) as never)
+  })
+
+  const repo = (lanes: SidebarSessionGroup[]): SidebarWorkspaceTree => ({
+    id: 'repo',
+    label: 'repo',
+    path: '/repos/p',
+    groups: lanes,
+    sessionCount: lanes.reduce((total, group) => total + group.sessions.length, 0)
+  })
+
+  // The overview tree ships its lanes WITHOUT rows (`hydrate=False`): rendering
+  // that fallback as content is what left an entered project showing branch
+  // headers with nothing under them.
+  it('refuses the structure-only fallback until rows arrive', () => {
+    const structureOnly = { ...makeProject('p', 43), repos: [repo([lane(0)])] }
+
+    expect(enteredProjectHasContent(structureOnly, false)).toBe(false)
+    // …and the very same node, once it carries hydrated rows, is content again.
+    expect(enteredProjectHasContent({ ...structureOnly, repos: [repo([lane(3)])] }, false)).toBe(true)
+    // A hydrated project whose rows were all filtered out (pinned) is still
+    // content: the lanes are real, so the drill-in must keep rendering them.
+    expect(enteredProjectHasContent({ ...structureOnly, repos: [repo([lane(0)])] }, true)).toBe(true)
+    expect(enteredProjectHasContent({ ...makeProject('p', 5), repos: [] }, true)).toBe(true)
   })
 })

@@ -1046,6 +1046,11 @@ export function ChatSidebar({
     [enteredProject, enteredProjectOverlaySessions, removedSessionIds]
   )
 
+  // True only when the drill-in read answered FOR THIS project. Until it does,
+  // `enteredProject` is the overview node — same structure, no lane rows — and
+  // must not be rendered as a project whose sessions are empty.
+  const enteredProjectHydrated = Boolean(enteredProjectTree && enteredProjectTree.id === overviewEnteredProject?.id)
+
   const scopedRepoPaths = useMemo(
     () =>
       enteredProject ? enteredProject.repos.map(repo => repo.path).filter((path): path is string => Boolean(path)) : [],
@@ -1854,6 +1859,7 @@ export function ChatSidebar({
                   inProject ? <ProjectBackRow label={s.projects.back} onClick={exitProjectScope} /> : undefined
                 }
                 projectContent={inProject ? enteredProjectContent : undefined}
+                projectContentHydrated={inProject ? enteredProjectHydrated : undefined}
                 projectOverview={projectOverview}
                 projectOverviewPreviews={overviewPreviews}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}

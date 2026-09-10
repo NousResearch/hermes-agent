@@ -20,6 +20,7 @@ import {
   fetchProjectSessions,
   openProjectCreate,
   pickProjectFolder,
+  ProjectSessionsSuperseded,
   projectIdForCwd,
   projectNameForCwd,
   refreshProjects,
@@ -177,7 +178,9 @@ describe('projects RPC profile forwarding', () => {
 
     await refreshProjects()
     await refreshProjectTree()
-    await fetchProjectSessions('p_123')
+    // The read is reported as SUPERSEDED, never as an answer: resolving `null`
+    // here is what let a caller paint the entered project as empty.
+    await expect(fetchProjectSessions('p_123')).rejects.toBeInstanceOf(ProjectSessionsSuperseded)
 
     expect(request).not.toHaveBeenCalled()
     setShowAllProfiles(false)
@@ -925,7 +928,9 @@ describe('project tree profile isolation', () => {
     })
 
     expect(profileB?.id).toBe('profile-b')
-    await expect(pendingDefault).resolves.toBeNull()
+    // The late answer must be dropped — and reported as superseded, so no
+    // caller can mistake the discarded read for an empty project.
+    await expect(pendingDefault).rejects.toBeInstanceOf(ProjectSessionsSuperseded)
   })
 })
 

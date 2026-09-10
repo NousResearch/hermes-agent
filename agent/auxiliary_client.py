@@ -6598,12 +6598,8 @@ def _resolve_call_client(
             model=resolved_model or model, base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
         )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
-            logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
-                           resolved_provider)
-            effective_provider, client, final_model = resolve_vision_provider_client(
-                provider="auto", model=resolved_model, async_mode=async_mode,
-                main_runtime=main_runtime)
+        # An explicit provider is a privacy and routing boundary. Do not silently
+        # widen it to auto-discovery when that provider is unavailable.
         if client is not None:
             resolved_provider = effective_provider or resolved_provider
     else:

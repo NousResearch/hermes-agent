@@ -1131,6 +1131,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
   const [image, setImage] = useState<null | string>(null)
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
@@ -1139,6 +1140,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setQuery('')
       setChecked({})
       setName('')
+      setDescription('')
       setImage(null)
     }
   }, [open])
@@ -1193,6 +1195,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     updateGroupChat(groupName, (room: GroupChatRoom) => {
       room.members = roomMembers
       room.roomId = roomId
+
+      if (description.trim()) {
+        room.description = description.trim()
+      }
 
       if (image) {
         room.image = image
@@ -1322,6 +1328,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
             seedName={name.trim() || (selected.length ? placeholder : '')}
           />
           <form
+            className="grid gap-2"
             onSubmit={event => {
               event.preventDefault()
               create()
@@ -1333,6 +1340,13 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
               onChange={event => setName(event.target.value)}
               placeholder={placeholder}
               value={name}
+            />
+            <Input
+              aria-label="Group description"
+              maxLength={256}
+              onChange={event => setDescription(event.target.value)}
+              placeholder="Description or focus (optional)"
+              value={description}
             />
           </form>
         </div>

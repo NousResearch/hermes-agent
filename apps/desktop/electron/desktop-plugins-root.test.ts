@@ -110,7 +110,10 @@ describe('reconcileUnifiedDesktopHalves', () => {
       JSON.stringify({ catalog_name: 'cat', repo: 'https://github.com/o/cat.git', sha: 'deadbeef' })
     )
     write(path.join(home, 'plugins', 'raw', 'desktop', 'plugin.js'), 'y')
-    write(path.join(home, 'plugins', 'raw', '.git', 'config'), '[core]\n\tbare = false\n[remote "origin"]\n\turl = file:///srv/raw.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n')
+    write(
+      path.join(home, 'plugins', 'raw', '.git', 'config'),
+      '[core]\n\tbare = false\n[remote "origin"]\n\turl = file:///srv/raw.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+    )
 
     await reconcileUnifiedDesktopHalves(home, appRoot)
 

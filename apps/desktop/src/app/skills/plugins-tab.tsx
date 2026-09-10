@@ -1,5 +1,13 @@
 import { useStore } from '@nanostores/react'
-import { memo, type ReactNode, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
@@ -276,71 +284,71 @@ function PackageRow({
           lacks shows a dash; a half it has but which is missing on this side
           shows the install affordance. */}
       <HalfCell label={p.halfDesktop}>
-          {desktop ? (
-            <Switch
-              aria-label={`${p.halfDesktop}: ${pkg.name}`}
-              checked={desktopOn}
-              onCheckedChange={on => {
-                triggerHaptic('selection')
-                void setPluginEnabled(desktop.id, on)
-              }}
-            />
-          ) : pkg.desktopMissing ? (
-            <Tip label={p.desktopHalfPendingTip}>
-              <span className="text-[0.65rem] text-(--ui-text-tertiary)">{p.desktopHalfPending}</span>
-            </Tip>
-          ) : (
-            <Dash />
-          )}
+        {desktop ? (
+          <Switch
+            aria-label={`${p.halfDesktop}: ${pkg.name}`}
+            checked={desktopOn}
+            onCheckedChange={on => {
+              triggerHaptic('selection')
+              void setPluginEnabled(desktop.id, on)
+            }}
+          />
+        ) : pkg.desktopMissing ? (
+          <Tip label={p.desktopHalfPendingTip}>
+            <span className="text-[0.65rem] text-(--ui-text-tertiary)">{p.desktopHalfPending}</span>
+          </Tip>
+        ) : (
+          <Dash />
+        )}
       </HalfCell>
 
       <HalfCell label={p.halfAgentIn(scopeLabel)}>
-          {agent ? (
-            <>
-              {agent.update_available && (
-                <Button
-                  className="h-5 px-1.5 text-[0.65rem]"
-                  disabled={busy}
-                  onClick={() => onAgentUpdate(agent)}
-                  size="xs"
-                  variant="outline"
-                >
-                  {p.updateToPin(agent.catalog_sha?.slice(0, 8) ?? '')}
-                </Button>
-              )}
-              {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
-              {agentToggleable ? (
-                <Switch
-                  aria-label={`${p.halfAgent}: ${pkg.name}`}
-                  checked={agentOn}
-                  disabled={busy}
-                  onCheckedChange={on => onAgentToggle(agent, on)}
-                />
-              ) : (
-                <Tip label={p.legacyBackend}>
-                  <span>
-                    <Switch aria-label={`${p.halfAgent}: ${pkg.name}`} checked={agentOn} disabled />
-                  </span>
-                </Tip>
-              )}
-            </>
-          ) : pkg.agentMissingInProfile && desktop ? (
-            <Tip label={desktop.packageOrigin?.repo ? p.installAgentHereTip(scopeLabel) : p.installAgentHereNoOrigin}>
-              <span>
-                <Button
-                  className="h-5 px-1.5 text-[0.65rem]"
-                  disabled={!desktop.packageOrigin?.repo}
-                  onClick={() => installAgentHalfHere(desktop, scope)}
-                  size="xs"
-                  variant="outline"
-                >
-                  {p.installAgentHere}
-                </Button>
-              </span>
-            </Tip>
-          ) : (
-            <Dash />
-          )}
+        {agent ? (
+          <>
+            {agent.update_available && (
+              <Button
+                className="h-5 px-1.5 text-[0.65rem]"
+                disabled={busy}
+                onClick={() => onAgentUpdate(agent)}
+                size="xs"
+                variant="outline"
+              >
+                {p.updateToPin(agent.catalog_sha?.slice(0, 8) ?? '')}
+              </Button>
+            )}
+            {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
+            {agentToggleable ? (
+              <Switch
+                aria-label={`${p.halfAgent}: ${pkg.name}`}
+                checked={agentOn}
+                disabled={busy}
+                onCheckedChange={on => onAgentToggle(agent, on)}
+              />
+            ) : (
+              <Tip label={p.legacyBackend}>
+                <span>
+                  <Switch aria-label={`${p.halfAgent}: ${pkg.name}`} checked={agentOn} disabled />
+                </span>
+              </Tip>
+            )}
+          </>
+        ) : pkg.agentMissingInProfile && desktop ? (
+          <Tip label={desktop.packageOrigin?.repo ? p.installAgentHereTip(scopeLabel) : p.installAgentHereNoOrigin}>
+            <span>
+              <Button
+                className="h-5 px-1.5 text-[0.65rem]"
+                disabled={!desktop.packageOrigin?.repo}
+                onClick={() => installAgentHalfHere(desktop, scope)}
+                size="xs"
+                variant="outline"
+              >
+                {p.installAgentHere}
+              </Button>
+            </span>
+          </Tip>
+        ) : (
+          <Dash />
+        )}
       </HalfCell>
     </div>
   )

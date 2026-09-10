@@ -1693,8 +1693,10 @@ export const zh: Translations = {
       kindDesktop: '桌面',
       kindBoth: 'Agent + 桌面',
       installAgentHere: '在此安装',
-      installAgentHereTip: (profile: string) => `桌面部分已加载到本应用，但 agent 部分尚未安装到 ${profile}。在那里安装它。`,
-      installAgentHereNoOrigin: '此配置未安装 agent 部分，且该包是手动复制的（无目录条目或 git 远程），无法从此处安装。请将其文件夹复制到该配置或从 Git 重新安装。',
+      installAgentHereTip: (profile: string) =>
+        `桌面部分已加载到本应用，但 agent 部分尚未安装到 ${profile}。在那里安装它。`,
+      installAgentHereNoOrigin:
+        '此配置未安装 agent 部分，且该包是手动复制的（无目录条目或 git 远程），无法从此处安装。请将其文件夹复制到该配置或从 Git 重新安装。',
       desktopHalfPending: '复制中…',
       desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
       emptyAll: '还没有插件。',

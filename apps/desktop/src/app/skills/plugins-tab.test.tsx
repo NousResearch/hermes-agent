@@ -66,7 +66,14 @@ describe('PluginsTab', () => {
       media: { id: 'media', name: 'Media Studio', kind: 'disk', status: 'loaded', packageName: 'hermes-media-studio' }
     })
     $agentPlugins.set([
-      { description: '', key: 'hermes-media-studio', name: 'hermes-media-studio', source: 'git', status: 'disabled', version: '1' }
+      {
+        description: '',
+        key: 'hermes-media-studio',
+        name: 'hermes-media-studio',
+        source: 'git',
+        status: 'disabled',
+        version: '1'
+      }
     ])
 
     render(<PluginsTab profile="workbot" scopeLabel="workbot" />)

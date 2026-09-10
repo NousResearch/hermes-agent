@@ -86,7 +86,9 @@ describe('scanDiskPlugins (#66899)', () => {
 
       if (dir === '/local/.hermes/desktop-plugins/my-feature') {
         return {
-          entries: [{ isDirectory: false, name: 'README.md', path: '/local/.hermes/desktop-plugins/my-feature/README.md' }]
+          entries: [
+            { isDirectory: false, name: 'README.md', path: '/local/.hermes/desktop-plugins/my-feature/README.md' }
+          ]
         }
       }
 
@@ -121,7 +123,6 @@ describe('scanDiskPlugins (#66899)', () => {
     expect(readFileText).not.toHaveBeenCalled()
     expect($pluginRecords.get().odd).toBeUndefined()
   })
-
 
   it('loads a unified desktop half (app-root copy + package marker) OPT-IN and tags it with its package', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')

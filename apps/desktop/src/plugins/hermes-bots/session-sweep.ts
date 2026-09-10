@@ -1,14 +1,15 @@
 /**
  * The always-hidden reconciliation paths for Bot Mode sessions.
  *
- * Known group-session ids are repaired on load/reconnect. Profile-wide legacy
- * title reconciliation runs only when the user opens that exact bot, avoiding
- * a whole-fleet state.db scan while Desktop is idle.
+ * Known group-session ids and profile-wide Bot Chat title reconciliation both
+ * run on load/reconnect to ensure canonical Bot Chat rows from older versions
+ * or bot-to-bot/CLI flows are always hidden in the Sessions sidebar.
  */
 
 import { host } from '@hermes/plugin-sdk'
 
 import { PROFILE_SESSION_LIST_LIMIT } from './canonical-chat'
+import { cachedUnionRoster } from './data'
 import { $groupChats } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import { backendTargetProfile, botConnectionRoute } from './routing'
@@ -42,7 +43,10 @@ export function startHideSweepScheduler(ctx: HideSweepContext) {
     }
 
     inflight = Promise.resolve()
-      .then(() => hideOwnedBotSessions())
+      .then(() => Promise.all([
+        hideOwnedBotSessions(),
+        reconcileAllBotProfileSessions(),
+      ]))
       .catch(() => undefined)
       .finally(() => {
         inflight = null
@@ -91,6 +95,22 @@ export function startHideSweepScheduler(ctx: HideSweepContext) {
   }
 
   schedule()
+}
+
+/** Run profile-wide Bot Chat title reconciliation for every cached roster
+ *  bot on load/reconnect. This hides canonical Bot Chat rows that the plugin
+ *  never recorded (bot-to-bot/CLI flows, older Desktop versions) so that no
+ *  plumbing session remains visible in the Sessions sidebar without the user
+ *  manually opening that bot first. */
+function reconcileAllBotProfileSessions() {
+  const roster = cachedUnionRoster()
+  const bots = Array.isArray(roster?.profiles) ? roster.profiles : []
+
+  if (!bots.length) {
+    return Promise.resolve()
+  }
+
+  return Promise.all(bots.map(bot => reconcileBotProfileSessions(bot).catch(() => undefined)))
 }
 
 /** One (owner, session id) pair the sweep will hide, plus the key it dedupes

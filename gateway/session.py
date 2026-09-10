@@ -1089,11 +1089,11 @@ class SessionStore(
 
     @staticmethod
     def _supports_conversation_worktree(source: Optional[SessionSource]) -> bool:
-        platform = getattr(getattr(source, "platform", None), "value", "")
-        return str(platform).lower() in {"discord", "photon"}
+        return source is not None
 
-    def _conversation_worktree_manager(self):
-        return self._conversation_worktree_manager_factory(self._db)
+    def _conversation_worktree_manager(self, session_key: Optional[str] = None):
+        db = self._db_for_key(session_key) if session_key else self._db
+        return self._conversation_worktree_manager_factory(db)
 
     @staticmethod
     def _binding_metadata(binding) -> Dict[str, str]:
@@ -1135,7 +1135,7 @@ class SessionStore(
             raise ValueError("conversation_kind must be 'interactive' or 'task'")
         if conversation_kind == "task" or not self._supports_conversation_worktree(entry.origin):
             return
-        manager = self._conversation_worktree_manager()
+        manager = self._conversation_worktree_manager(entry.session_key)
         if manager is None:
             return
         binding = manager.bind_new_root_session(

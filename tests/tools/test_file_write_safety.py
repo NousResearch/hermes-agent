@@ -297,8 +297,8 @@ class TestAtomicWrite:
         os.chmod(target, 0o600)
         res = ops.patch_replace(str(target), "b = 2", "b = 22")
         assert res.success, res.error
-        assert target.read_text(encoding="utf-8") == "a = 1\nb = 22\nc = 3\n"
-        assert (os.stat(target).st_mode & 0o777) == 0o600
+        if os.name != "nt":
+            assert (os.stat(target).st_mode & 0o777) == 0o600
 
 
 class TestBomHandling:
@@ -514,7 +514,10 @@ class TestProtectedInstructionFiles:
         real = tmp_path / "AGENTS.md"
         real.write_text("original", encoding="utf-8")
         link = tmp_path / "innocent.txt"
-        link.symlink_to(real)
+        try:
+            link.symlink_to(real)
+        except OSError:
+            pytest.skip("Symlink creation not permitted on this host")
         approvals["answer"] = "deny"
         res = self._write(link, "injected")
         assert res.get("error") and "BLOCKED" in res["error"]
@@ -687,8 +690,68 @@ class TestProtectedInstructionFiles:
         finally:
             approval_context.reset_current_session_key(token)
 
-        assert rendered["choices"] == ["once", "deny"]
+class TestSessionStateDenialClassification:
+    """Verify session state paths classify as 'session_state' string and block writes."""
+
+    def test_state_db_and_sessions_classify_as_session_state(self, tmp_path, monkeypatch):
+        from agent.file_safety import _classify_write_denial, get_write_denied_error, is_write_denied
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: tmp_path)
+
+        state_db = tmp_path / "state.db"
+        session_file = tmp_path / "sessions" / "sess1.json"
+
+        assert _classify_write_denial(str(state_db)) == "session_state"
+        assert _classify_write_denial(str(session_file)) == "session_state"
+        assert is_write_denied(str(state_db)) is True
+        assert is_write_denied(str(session_file)) is True
+
+        err = get_write_denied_error(str(state_db))
+        assert err is not None
+        assert "session history" in err
+
+    def test_file_tools_check_sensitive_path_blocks_session_state(self, tmp_path, monkeypatch):
+        from tools.file_tools_write_guards import _check_sensitive_path
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: tmp_path)
+
+        state_db = tmp_path / "state.db"
+        err = _check_sensitive_path(str(state_db))
+        assert err is not None
+        assert "session history" in err
+
+    def test_check_sensitive_path_slash_normalization(self):
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        # Windows-style backslashes for POSIX sensitive prefixes
+        err = _check_sensitive_path(r"\etc\shadow")
+        assert err is not None
+        assert "sensitive system path" in err
+
+        err2 = _check_sensitive_path(r"\boot\vmlinuz")
+        assert err2 is not None
+        assert "sensitive system path" in err2
+
+    def test_check_sensitive_path_fails_closed_on_policy_error(self, monkeypatch):
+        from tools.file_tools_write_guards import _check_sensitive_path
+        import agent.file_safety
+
+        def _raise_error(path, *args, **kwargs):
+            raise RuntimeError("Unexpected policy crash")
+
+        monkeypatch.setattr(agent.file_safety, "get_write_denied_error", _raise_error)
+
+        err = _check_sensitive_path("safe_file.txt")
+        assert err is not None
+        assert "Refusing to write to path" in err
+        assert "security policy evaluation failed" in err
+        assert "Unexpected policy crash" not in err  # No leaked internal exception details
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+

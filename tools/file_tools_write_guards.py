@@ -78,7 +78,15 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
-    candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
+    raw_resolved = _resolved_or_raw(filepath, task_id)
+    raw_normalized = os.path.normpath(_expand_tilde(filepath))
+    candidates = (
+        raw_resolved,
+        raw_normalized,
+        raw_resolved.replace("\\", "/"),
+        raw_normalized.replace("\\", "/"),
+        filepath.replace("\\", "/"),
+    )
     if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"
@@ -86,11 +94,23 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and hermes_config in candidates:
+    if hermes_config and (hermes_config in candidates or hermes_config.replace("\\", "/") in candidates):
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+
+    try:
+        from agent.file_safety import get_write_denied_error
+        for probe in (raw_resolved, raw_normalized, filepath):
+            denial_err = get_write_denied_error(probe)
+            if denial_err:
+                return denial_err
+    except (ImportError, ModuleNotFoundError):
+        pass
+    except Exception:
+        return f"Refusing to write to path: security policy evaluation failed for '{filepath}'."
+
     return None
 
 

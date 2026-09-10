@@ -4773,9 +4773,30 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a video natively as a Telegram video message."""
+        video_kwargs: Dict[str, Any] = {"video": None, "caption": self._caption_1024(caption)}
+        try:
+            import subprocess
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height,duration", "-of", "json", video_path],
+                capture_output=True, text=True, timeout=15)
+            stream = json.loads(probe.stdout)["streams"][0]
+            if stream.get("width") and stream.get("height"):
+                video_kwargs["width"] = int(stream["width"])
+                video_kwargs["height"] = int(stream["height"])
+                video_kwargs["supports_streaming"] = True
+                if stream.get("duration"):
+                    video_kwargs["duration"] = int(float(stream["duration"]))
+        except Exception as probe_err:
+            logger.debug("[%s] ffprobe video metadata unavailable for %s: %s", self.name, video_path, probe_err)
+
+        def _build(f):
+            video_kwargs["video"] = f
+            return video_kwargs
+
         return await self._send_local_file(
             "Video", video_path, chat_id, reply_to, metadata, "video",
-            lambda f: {"video": f, "caption": self._caption_1024(caption)},
+            _build,
             lambda e: self._warn_then(
                 "video", e, super(TelegramAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
             ))

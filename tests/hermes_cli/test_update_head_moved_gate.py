@@ -92,6 +92,9 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         hermes_main, "_stash_local_changes_if_needed", lambda *a, **k: None
     )
     monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda *a, **k: 0)
+    # Preserve the mocked gateway module across the simulated post-pull reload;
+    # otherwise this test probes and attempts to stop the host's live fleet.
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
     monkeypatch.setattr(
         hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None
     )
@@ -126,6 +129,13 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions", lambda **k: []
     )
 
 

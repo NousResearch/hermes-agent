@@ -16,7 +16,8 @@ import {
   openPreview,
   previewTabId,
   type PreviewTarget,
-  progressPreviewServerRestart
+  progressPreviewServerRestart,
+  setPreviewRenderMode
 } from './preview'
 
 function fileTarget(source: string): PreviewTarget {
@@ -146,13 +147,43 @@ describe('preview store', () => {
     expect($previewTarget.get()?.label).toBe('new')
   })
 
-  // Browsing to an HTML file means "let me read it"; a tool or link handing you
-  // one means "run it". Same road, different render mode on the target.
-  it('renders browsed html as source and handed-over html live', () => {
+  // Local HTML files default to a live Render, whether opened from the file
+  // browser or handed over by a tool. Source is an explicit fallback only.
+  it('renders browsed html and handed-over html live', () => {
     openPreview(fileTarget('/work/browsed.html'), 'file-browser')
-    expect($previewTarget.get()?.renderMode).toBe('source')
+    expect($previewTarget.get()?.renderMode).toBe('preview')
 
     openPreview(fileTarget('/work/handed.html'), 'tool-result')
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+
+    openPreview(fileTarget('/work/manual.html'), 'manual')
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+  })
+
+  it('preserves an explicit HTML source fallback from the file browser', () => {
+    openPreview({ ...fileTarget('/work/fallback.html'), renderMode: 'source' }, 'file-browser')
+
+    expect($previewTarget.get()?.renderMode).toBe('source')
+  })
+
+  it('switches render mode on the same tab without duplicating it', () => {
+    openPreview(fileTarget('/work/toggle.html'), 'file-browser')
+
+    const tabId = previewTabId(fileTarget('/work/toggle.html'))
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+
+    setPreviewRenderMode(tabId, 'source')
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.id).toBe(tabId)
+    expect($previewTarget.get()?.renderMode).toBe('source')
+
+    setPreviewRenderMode(tabId, 'preview')
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.id).toBe(tabId)
     expect($previewTarget.get()?.renderMode).toBe('preview')
   })
 

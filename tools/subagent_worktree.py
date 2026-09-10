@@ -84,9 +84,13 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
     try:
         wt_path.parent.mkdir(parents=True, exist_ok=True)
         _ensure_gitignore_entry(repo_root)
-        base = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
+        # New work: resolve the remote default branch, not whatever feature branch the parent
+        # happens to be parked on -- a subagent worktree based on a stale local checkout would
+        # silently miss upstream changes (#93590 class).
+        base_ref, _label = resolve_worktree_base(repo_root, prefer_current_upstream=False)
+        base = _run_git(["rev-parse", base_ref], cwd=repo_root)
         base_commit = base.stdout.strip() if base.returncode == 0 else ""
-        result = _run_git(["worktree", "add", str(wt_path), "-b", branch, "HEAD"], cwd=repo_root)
+        result = _run_git(["worktree", "add", str(wt_path), "-b", branch, base_ref], cwd=repo_root)
     except Exception as exc:
         logger.warning("subagent worktree: creation failed: %s", exc)
         return None
@@ -94,8 +98,21 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
         # Common on repos with zero commits (unborn HEAD) — degrade silently.
         logger.warning("subagent worktree: git worktree add failed: %s", result.stderr.strip())
         return None
+    _link_repo_python_environment(Path(repo_root), wt_path)
     logger.info("subagent worktree created: %s (branch %s)", wt_path, branch)
     return {"path": str(wt_path), "branch": branch, "repo_root": repo_root, "base_commit": base_commit}
+
+
+def _link_repo_python_environment(repo_root: Path, wt_path: Path) -> None:
+    """Symlink the parent repo's .venv into the new worktree so a subagent doesn't need to
+    resolve/create its own -- best-effort, never blocks worktree creation on failure."""
+    source_venv = repo_root / ".venv"
+    if not source_venv.is_dir() or (wt_path / ".venv").exists():
+        return
+    try:
+        (wt_path / ".venv").symlink_to(source_venv, target_is_directory=True)
+    except OSError as exc:
+        logger.debug("subagent worktree: could not link .venv: %s", exc)
 
 
 def _base_payload(info: Dict[str, str]) -> Dict[str, Any]:

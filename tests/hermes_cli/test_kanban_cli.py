@@ -182,3 +182,50 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_kanban_watch_unbuffered_stdout(kanban_home, monkeypatch):
+    """Ensure kanban watch configures line-buffered stdout so piped watchers don't lag."""
+    import sys
+    from unittest.mock import MagicMock
+    from hermes_cli.kanban_ops import _cmd_watch
+    import argparse
+
+    args = argparse.Namespace(kinds=None, assignee=None, tenant=None, interval=0.1)
+    
+    mock_stdout = MagicMock()
+    mock_stdout.reconfigure = MagicMock()
+    monkeypatch.setattr(sys, "stdout", mock_stdout)
+    
+    # We want _poll_loop to exit immediately instead of blocking forever.
+    def fake_poll(interval, tick):
+        return 0
+        
+    import hermes_cli.kanban_ops as ko
+    monkeypatch.setattr(ko, "_poll_loop", fake_poll)
+    
+    _cmd_watch(args)
+    
+    mock_stdout.reconfigure.assert_called_once_with(line_buffering=True)
+
+
+def test_kanban_tail_unbuffered_stdout(kanban_home, monkeypatch):
+    """Ensure kanban tail configures line-buffered stdout."""
+    import sys
+    from unittest.mock import MagicMock
+    from hermes_cli.kanban_ops import _cmd_tail
+    import argparse
+
+    args = argparse.Namespace(task_id="t_abc", interval=0.1)
+    
+    mock_stdout = MagicMock()
+    mock_stdout.reconfigure = MagicMock()
+    monkeypatch.setattr(sys, "stdout", mock_stdout)
+    
+    def fake_poll(interval, tick):
+        return 0
+        
+    import hermes_cli.kanban_ops as ko
+    monkeypatch.setattr(ko, "_poll_loop", fake_poll)
+    
+    _cmd_tail(args)
+    
+    mock_stdout.reconfigure.assert_called_once_with(line_buffering=True)

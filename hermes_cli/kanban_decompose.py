@@ -72,6 +72,14 @@ Rules:
   - Pick assignees from the roster by matching the task to the profile's
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
+  - ROUTING-CLASS: if the task body carries an explicit "ROUTING-CLASS: <class>"
+    line near the top (research|build|ops|wiki|review), treat it as the
+    orchestrator's explicit routing decision and PREFER it over description
+    matching when choosing an assignee — pick the roster profile whose role
+    best fits that class.
+  - CONTEXT-SOURCES: if the body lists "CONTEXT-SOURCES: ...", the named
+    sources are authoritative context already gathered for this task (e.g. a
+    linked scouting pre-pass); rely on it and do not ask for more.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
 

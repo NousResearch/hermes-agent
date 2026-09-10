@@ -125,6 +125,7 @@ def bind_worker_context(frame):
             # Reclaim/timeout must track the executing interpreter, not its disposable viewer.
             conn.execute('UPDATE tasks SET worker_pid=? WHERE id=?', (os.getpid(), task.id))
             conn.execute('UPDATE task_runs SET worker_pid=? WHERE id=?', (os.getpid(), context['run_id']))
+            kb._append_event(conn, task.id, 'worker_bound', {'pid': os.getpid(), 'claim_lock': context['claim_lock']}, run_id=context['run_id'])
     os.environ.update(env)
     os.chdir(context['workspace'])
     from agent.shell_hooks import register_from_config
@@ -135,6 +136,36 @@ def run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
         return agent.run_conversation(frame['text'], conversation_history=history)
+    from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+    code = 1
+    try:
+        result = _run_task_turns(agent, frame, history, context)
+        code = KANBAN_RATE_LIMIT_EXIT_CODE if result.get('failed') and result.get('failure_reason') in {'rate_limit', 'billing'} else int(bool(result.get('failed') or result.get('interrupted')))
+        return result
+    finally:
+        import os
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli import kanban_db as kb
+        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+            row = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' ORDER BY id DESC LIMIT 1",
+                (context['task_id'], context['run_id'])).fetchone()
+            if row and json.loads(row[0]) == {'pid': os.getpid(), 'claim_lock': context['claim_lock']}:
+                # Closing a run clears its claim/PID and replaces metadata; keep the
+                # result in the immutable attempt event stream instead.
+                kb._append_event(conn, context['task_id'], 'worker_result',
+                    {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code}, run_id=context['run_id'])
+
+
+def worker_exit_code(path, params):
+    """Read only the dispatcher's exact attempt; never infer success from admission settlement."""
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+        row = conn.execute("SELECT payload FROM task_events WHERE run_id=? AND task_id=? AND kind='worker_result' ORDER BY id DESC LIMIT 1",
+            (params['run_id'], params['task_id'])).fetchone()
+        result = json.loads(row[0]) if row else {}
+        return result.get('exit_code', 1) if result.get('claim_lock') == params['claim_lock'] else 1
+
+
+def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:

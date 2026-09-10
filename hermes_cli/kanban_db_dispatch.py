@@ -750,9 +750,12 @@ class _DeadWorker:
         return "rate_limited" if self.rate_limited else "crashed"
 
 
-def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
+def _classify_dead_worker(pid: int, claimer: Optional[str], exit_code=None) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping."""
     kind, code = _classify_worker_exit(pid)
+    if exit_code is not None:
+        code = exit_code
+        kind = "rate_limited" if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE else ("clean_exit" if code == 0 else "nonzero_exit")
     if kind == "clean_exit":
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
@@ -825,7 +828,15 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"])
+            # Managed interpreters are children of the authority, not this dispatcher.
+            # Their exact-run result survives a dispatcher restart and cannot be reaped here.
+            run = conn.execute(
+                "SELECT e.payload FROM task_events e JOIN tasks t ON t.current_run_id=e.run_id "
+                "WHERE t.id=? AND e.task_id=t.id AND e.kind='worker_result' ORDER BY e.id DESC LIMIT 1",
+                (row["id"],)).fetchone()
+            result = _kb._json_dict(run["payload"]) if run else {}
+            exit_code = result.get("exit_code") if result.get("claim_lock") == row["claim_lock"] and result.get("pid") == pid else None
+            dead = _classify_dead_worker(pid, row["claim_lock"], exit_code)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1097,12 +1108,17 @@ def _record_task_failure(
         return True
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event carrying it."""
+def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *, run_id=None, claim_lock=None) -> None:
+    """Publish the launcher only while this claim has no executing worker yet."""
     with _kb.write_txn(conn):
-        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (int(pid), task_id))
-        run_id = _kb._current_run_id(conn, task_id)
-        if run_id is not None:
+        if run_id is None:
+            run_id = _kb._current_run_id(conn, task_id)
+        cur = conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ? AND status = 'running' "
+            "AND current_run_id IS ? AND worker_pid IS NULL "
+            "AND (? IS NULL OR claim_lock = ?)",
+            (int(pid), task_id, run_id, claim_lock, claim_lock))
+        if cur.rowcount:
             conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
 
@@ -1575,7 +1591,7 @@ def _dispatch_lane_task(
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
-            _set_worker_pid(conn, claimed.id, int(pid))
+            _set_worker_pid(conn, claimed.id, int(pid), run_id=claimed.current_run_id, claim_lock=claimed.claim_lock)
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
         _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
         # consecutive_failures is deliberately NOT reset here: resetting on

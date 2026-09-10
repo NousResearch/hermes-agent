@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 from local_recovery_probe import daemon, websocket, rpc
 
@@ -21,6 +22,19 @@ class Model(BaseHTTPRequestHandler):
         messages = body.get('messages', [])
         if messages:
             self.server.requests.append(body)
+        if messages and not self.server.blocked.is_set():
+            self.server.blocked.set()
+            assert self.server.release.wait(65)
+        if messages and self.server.mode in {'rate_limit', 'billing'}:
+            payload = json.dumps({'error': {'message': 'Rate limit exceeded' if self.server.mode == 'rate_limit' else 'Insufficient quota',
+                'type': 'rate_limit_error' if self.server.mode == 'rate_limit' else 'insufficient_quota',
+                'code': 'rate_limit_exceeded' if self.server.mode == 'rate_limit' else 'insufficient_quota'}}).encode()
+            self.send_response(429)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         has_result = any(m['role'] == 'tool' for m in messages)
         message = {'role': 'assistant', 'content': 'OWNED_COMPLETE'}
         finish = 'stop'
@@ -52,6 +66,8 @@ def main():
     os.environ['HERMES_KANBAN_HOME'] = str(home)
     peer = ThreadingHTTPServer(('127.0.0.1', 0), Model)
     peer.requests = []
+    peer.mode = os.environ.get('KANBAN_PROBE_MODE', 'complete')
+    peer.blocked, peer.release = threading.Event(), threading.Event()
     threading.Thread(target=peer.serve_forever, daemon=True).start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
     os.environ.update(OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
@@ -64,7 +80,7 @@ def main():
     hook.write_text('from pathlib import Path\nPath(' + repr(str(home / 'hook-effect')) + ').write_text("accepted")\n', encoding='utf-8')
     cfg = {'gateway': {'multiplex_profiles': False}, 'model': {'provider': 'custom', 'default': 'loop-model', 'base_url': url},
         'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': ['terminal', 'file']},
-        'terminal': {'backend': 'local'}, 'kanban': {'dispatch_in_gateway': False},
+        'terminal': {'backend': 'local'}, 'agent': {'api_max_retries': 1}, 'kanban': {'dispatch_in_gateway': False},
         'hooks': {'post_tool_call': [{'command': f'{sys.executable} {hook}'}]}}
     (home / 'config.yaml').write_text(json.dumps(cfg), encoding='utf-8')
     from hermes_cli import kanban_db as kb
@@ -72,27 +88,82 @@ def main():
     from hermes_cli import kanban_db_dispatch as dispatch
     # Pin the installed launcher to this checkout for base/fixed argv comparisons.
     dispatch._resolve_hermes_argv = lambda: [sys.executable, '-m', 'hermes_cli.main']
-    _worker_argv = dispatch._worker_argv
+    os.environ['HERMES_KANBAN_CRASH_GRACE_SECONDS'] = '0'
     with closing(connect(board='owned')) as conn:
         tid = kb.create_task(conn, title='KANBAN_TASK_SENTINEL', body='Acceptance: finish owned card', assignee='default',
-            workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'], goal_mode=True, goal_max_turns=2)
-        kb.recompute_ready(conn)
-        task = kb.claim_task(conn, tid)
+            workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'],
+            goal_mode=peer.mode == 'complete', goal_max_turns=2,
+            max_runtime_seconds=3600 if peer.mode == 'timeout' else None)
     env = dict(os.environ)
-    worker_env = env | {'HERMES_KANBAN_TASK': tid, 'HERMES_KANBAN_BOARD': 'owned',
-        'HERMES_KANBAN_RUN_ID': str(task.current_run_id), 'HERMES_KANBAN_CLAIM_LOCK': task.claim_lock,
-        'HERMES_KANBAN_DB': str(kb.kanban_db_path(board='owned'))}
-    params = dict(task_id=tid, board='owned', run_id=task.current_run_id, claim_lock=task.claim_lock)
-    receipt = {}
+    receipt, clients = {}, []
+    original_popen = subprocess.Popen
+    def spawn(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        if 'hermes_cli.kanban_worker_client' in args[0]:
+            clients.append(child)
+            if peer.mode == 'timeout':
+                assert peer.blocked.wait(55), 'managed worker did not reach loopback'
+                with closing(connect(board='owned')) as snapshot:
+                    receipt['managed_pid'] = kb.get_task(snapshot, tid).worker_pid
+        return child
+    def wait_for(predicate):
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(.05)
+        raise AssertionError(('deadline', receipt))
     try:
         with daemon(root, home, env, barrier=False) as (proc, desc):
-            command = _worker_argv(task, 'default', str(home))
-            if os.environ.get('KANBAN_PROBE_TRACE'):
-                command = ['strace', '-f', '-e', 'trace=openat', '-o', str(home / 'client.strace'), *command]
-            result = subprocess.run(command, cwd=workspace, env=worker_env,
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=80)
-            receipt.update(worker_rc=result.returncode, stdout=result.stdout, stderr=result.stderr)
-            assert result.returncode == 0, receipt
+            subprocess.Popen = spawn
+            try:
+                with closing(connect(board='owned')) as conn:
+                    launched = dispatch.dispatch_once(conn, board='owned', max_spawn=1)
+                    assert [s[0] for s in launched.spawned] == [tid], launched
+                    task = kb.get_task(conn, tid)
+                    params = dict(task_id=tid, board='owned', run_id=task.current_run_id, claim_lock=task.claim_lock)
+                    assert peer.blocked.wait(55), 'model never reached'
+                    active = kb.get_task(conn, tid)
+                    receipt.update(client_pid=clients[0].pid, stored_pid=active.worker_pid, run_id=task.current_run_id)
+                    if peer.mode == 'timeout':
+                        receipt['pid_preserved'] = active.worker_pid == receipt['managed_pid'] != clients[0].pid
+                        # Deterministically elapse this owned attempt; keep real timeout/kill logic.
+                        conn.execute('UPDATE task_runs SET started_at=? WHERE id=?', (int(time.time()) - 3601, task.current_run_id))
+                        conn.commit()
+                        swept = dispatch.dispatch_once(conn, board='owned', max_spawn=0)
+                        receipt.update(timed_out=swept.timed_out, managed_dead=not kb._pid_alive(receipt['managed_pid']))
+                        assert receipt['pid_preserved'] and receipt['managed_dead'], receipt
+                    elif peer.mode == 'crash':
+                        import signal
+                        os.kill(active.worker_pid, signal.SIGKILL)
+                    peer.release.set()
+                    if peer.mode != 'timeout':
+                        wait_for(lambda: not kb._pid_alive(active.worker_pid))
+                    wait_for(lambda: not kb._pid_alive(clients[0].pid))
+                    dispatch.reap_worker_zombies()
+                    receipt['client_exit'] = dispatch._classify_worker_exit(clients[0].pid)
+                    dispatch._recent_worker_exits.clear()
+                    swept = dispatch.dispatch_once(conn, board='owned', max_spawn=0)
+                    task = kb.get_task(conn, tid)
+                    run = dict(conn.execute('SELECT * FROM task_runs WHERE id=?', (params['run_id'],)).fetchone())
+                    from gateway.session_kanban import worker_exit_code
+                    assert worker_exit_code(kb.kanban_db_path(board='owned'), params | {'claim_lock': 'foreign'}) == 1
+                    receipt.update(task_status=task.status, failures=task.consecutive_failures, run_outcome=run['outcome'],
+                        run_metadata=kb._json_dict(run['metadata']), rate_limited=swept.rate_limited,
+                        cooldown=dispatch.check_respawn_guard(conn, tid))
+                    if peer.mode in {'rate_limit', 'billing'}:
+                        assert task.status == 'ready' and task.consecutive_failures == 0 and run['outcome'] == 'rate_limited', receipt
+                        assert receipt['client_exit'] == ('rate_limited', kb.KANBAN_RATE_LIMIT_EXIT_CODE), receipt
+                        assert receipt['cooldown'] == 'rate_limit_cooldown', receipt
+                    elif peer.mode == 'crash':
+                        assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'crashed', receipt
+                    elif peer.mode == 'timeout':
+                        assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'timed_out', receipt
+            finally:
+                subprocess.Popen = original_popen
+            if peer.mode != 'complete':
+                return
+            assert receipt['client_exit'] == ('clean_exit', 0), receipt
             async def retry():
                 async with websocket(home, desc) as ws:
                     first = await rpc(ws, 'kanban.run', **params)
@@ -114,11 +185,16 @@ def main():
                 task_context='KANBAN_TASK_SENTINEL' in wire, skill_context='KANBAN_SKILL_SENTINEL' in wire,
                 hook_effect=(home / 'hook-effect').exists())
     finally:
+        peer.release.set()
+        for child in clients:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=10)
         peer.shutdown()
         peer.server_close()
         (home / 'model-requests.json').write_text(json.dumps(peer.requests, indent=2), encoding='utf-8')
         (home / 'receipt.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
-    print(json.dumps(receipt))
+        print(json.dumps(receipt))
 
 
 if __name__ == '__main__':

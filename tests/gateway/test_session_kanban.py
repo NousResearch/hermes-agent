@@ -51,19 +51,43 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
-def test_real_dispatcher_argv_completes_owned_task(tmp_path):
+@pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
+def test_real_dispatcher_lifecycle(tmp_path, mode):
     import os
     import subprocess
     import sys
     repo = Path(__file__).resolve().parents[2]
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'SYSTEMROOT') if k in os.environ}
-    env.update(HOME=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo))
+    env.update(HOME=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE=mode)
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'kanban_owner_probe.py')],
         env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
+    print(json.dumps(receipt))
+    if mode != 'complete':
+        assert receipt['task_status'] == 'ready'
+        return
     assert receipt['task_status'] == 'done' and receipt['source'] == 'kanban'
     assert receipt['tools'] and receipt['task_context'] and receipt['skill_context'] and receipt['hook_effect']
     assert receipt['admissions'] == 1 and receipt['retry_same_session']
     assert receipt['goal_continuation'] and receipt['stable_prefix']
     print(json.dumps(receipt))
+
+
+def test_late_launcher_cannot_stamp_replacement_claim(tmp_path, monkeypatch):
+    from contextlib import closing
+    from hermes_cli import kanban_db as kb, kanban_db_dispatch as dispatch
+    from hermes_cli.kanban_db_connect import connect
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
+    monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
+    monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
+    with closing(connect(board='owned')) as conn:
+        tid = kb.create_task(conn, title='Owned race', assignee='default')
+        old = kb.claim_task(conn, tid)
+        kb.block_task(conn, tid, reason='replace claim', expected_run_id=old.current_run_id)
+        kb.unblock_task(conn, tid)
+        new = kb.claim_task(conn, tid)
+        dispatch._set_worker_pid(conn, tid, 424242, run_id=old.current_run_id, claim_lock=old.claim_lock)
+        assert kb.get_task(conn, tid).worker_pid is None
+        assert conn.execute('SELECT worker_pid FROM task_runs WHERE id=?', (new.current_run_id,)).fetchone()[0] is None

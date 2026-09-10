@@ -250,3 +250,75 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+class TestApiKeyCredentialPoolFallback:
+    """`hermes auth add` persists to the auth.json credential pool and never writes .env, so a row
+    resolved from env vars alone rendered "(not set)" for a provider that was actively serving."""
+
+    @staticmethod
+    def _clean_anthropic_env(monkeypatch, tmp_path):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
+            monkeypatch.delenv(var, raising=False)
+
+    @staticmethod
+    def _render(monkeypatch, pool):
+        import hermes_cli.auth as auth_mod
+        from hermes_cli import status_auth
+
+        if isinstance(pool, Exception):
+            def boom(provider_id=None):
+                raise pool
+            monkeypatch.setattr(auth_mod, "read_credential_pool", boom)
+        else:
+            monkeypatch.setattr(auth_mod, "read_credential_pool", lambda provider_id=None: pool)
+        status_auth._render_api_keys(SimpleNamespace())
+
+    def _anthropic_row(self, out):
+        return next(line for line in out.splitlines() if "Anthropic" in line)
+
+    def test_pool_only_provider_renders_as_configured(self, monkeypatch, capsys, tmp_path):
+        self._clean_anthropic_env(monkeypatch, tmp_path)
+        self._render(monkeypatch, {"anthropic": [{"source": "manual", "label": "Agentic"}]})
+
+        row = self._anthropic_row(capsys.readouterr().out)
+        assert "credential pool (Agentic)" in row
+        assert "(not set)" not in row
+
+    def test_env_value_takes_precedence_over_pool_label(self, monkeypatch, capsys, tmp_path):
+        self._clean_anthropic_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env-value-not-a-real-key")
+        self._render(monkeypatch, {"anthropic": [{"source": "manual", "label": "Agentic"}]})
+
+        row = self._anthropic_row(capsys.readouterr().out)
+        assert "credential pool" not in row
+        assert "sk-ant-env-value-not-a-real-key" not in row
+
+    def test_ambient_borrowed_pool_entry_stays_not_set(self, monkeypatch, capsys, tmp_path):
+        self._clean_anthropic_env(monkeypatch, tmp_path)
+        self._render(monkeypatch, {"anthropic": [{"source": "claude_code", "label": "Claude Code"}]})
+
+        row = self._anthropic_row(capsys.readouterr().out)
+        assert "(not set)" in row
+        assert "credential pool" not in row
+
+    def test_pooled_secret_value_is_never_printed(self, monkeypatch, capsys, tmp_path):
+        self._clean_anthropic_env(monkeypatch, tmp_path)
+        sentinel = "NONSECRET_SENTINEL_POOL_VALUE_DO_NOT_PRINT_123456"
+        self._render(monkeypatch, {
+            "anthropic": [{"source": "manual", "label": "Agentic", "api_key": sentinel}]})
+
+        out = capsys.readouterr().out
+        assert "credential pool (Agentic)" in out
+        assert sentinel not in out
+
+    def test_unreadable_pool_does_not_break_the_section(self, monkeypatch, capsys, tmp_path):
+        self._clean_anthropic_env(monkeypatch, tmp_path)
+        self._render(monkeypatch, OSError("auth.json unreadable"))
+
+        out = capsys.readouterr().out
+        assert "API Keys" in out
+        assert "(not set)" in self._anthropic_row(out)

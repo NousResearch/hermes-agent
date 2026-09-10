@@ -1,0 +1,17 @@
+backports.tarfile-1.2.0.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+backports.tarfile-1.2.0.dist-info/LICENSE,sha256=htoPAa6uRjSKPD1GUZXcHOzN55956HdppkuNoEsqR0E,1023
+backports.tarfile-1.2.0.dist-info/METADATA,sha256=ghXFTq132dxaEIolxr3HK1mZqm9iyUmaRANZQSr6WlE,2020
+backports.tarfile-1.2.0.dist-info/RECORD,,
+backports.tarfile-1.2.0.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+backports.tarfile-1.2.0.dist-info/WHEEL,sha256=GJ7t_kWBFywbagK5eo9IoUwLW6oyOeTKmQ-9iHFVNxQ,92
+backports.tarfile-1.2.0.dist-info/top_level.txt,sha256=cGjaLMOoBR1FK0ApojtzWVmViTtJ7JGIK_HwXiEsvtU,10
+backports/__init__.py,sha256=iOEMwnlORWezdO8-2vxBIPSR37D7JGjluZ8f55vzxls,81
+backports/__pycache__/__init__.cpython-312.pyc,,
+backports/tarfile/__init__.py,sha256=Pwf2qUIfB0SolJPCKcx3vz3UEu_aids4g4sAfxy94qg,108491
+backports/tarfile/__main__.py,sha256=Yw2oGT1afrz2eBskzdPYL8ReB_3liApmhFkN2EbDmc4,59
+backports/tarfile/__pycache__/__init__.cpython-312.pyc,,
+backports/tarfile/__pycache__/__main__.cpython-312.pyc,,
+backports/tarfile/compat/__init__.py,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+backports/tarfile/compat/__pycache__/__init__.cpython-312.pyc,,
+backports/tarfile/compat/__pycache__/py38.cpython-312.pyc,,
+backports/tarfile/compat/py38.py,sha256=iYkyt_gvWjLzGUTJD9TuTfMMjOk-ersXZmRlvQYN2qE,568

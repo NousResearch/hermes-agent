@@ -1,0 +1,140 @@
+Metadata-Version: 2.4
+Name: setuptools
+Version: 79.0.1
+Summary: Easily download, build, install, upgrade, and uninstall Python packages
+Author-email: Python Packaging Authority <distutils-sig@python.org>
+Project-URL: Source, https://github.com/pypa/setuptools
+Project-URL: Documentation, https://setuptools.pypa.io/
+Project-URL: Changelog, https://setuptools.pypa.io/en/stable/history.html
+Keywords: CPAN PyPI distutils eggs package management
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Topic :: System :: Archiving :: Packaging
+Classifier: Topic :: System :: Systems Administration
+Classifier: Topic :: Utilities
+Requires-Python: >=3.9
+Description-Content-Type: text/x-rst
+License-File: LICENSE
+Provides-Extra: test
+Requires-Dist: pytest!=8.1.*,>=6; extra == "test"
+Requires-Dist: virtualenv>=13.0.0; extra == "test"
+Requires-Dist: wheel>=0.44.0; extra == "test"
+Requires-Dist: pip>=19.1; extra == "test"
+Requires-Dist: packaging>=24.2; extra == "test"
+Requires-Dist: jaraco.envs>=2.2; extra == "test"
+Requires-Dist: pytest-xdist>=3; extra == "test"
+Requires-Dist: jaraco.path>=3.7.2; extra == "test"
+Requires-Dist: build[virtualenv]>=1.0.3; extra == "test"
+Requires-Dist: filelock>=3.4.0; extra == "test"
+Requires-Dist: ini2toml[lite]>=0.14; extra == "test"
+Requires-Dist: tomli-w>=1.0.0; extra == "test"
+Requires-Dist: pytest-timeout; extra == "test"
+Requires-Dist: pytest-perf; sys_platform != "cygwin" and extra == "test"
+Requires-Dist: jaraco.develop>=7.21; (python_version >= "3.9" and sys_platform != "cygwin") and extra == "test"
+Requires-Dist: pytest-home>=0.5; extra == "test"
+Requires-Dist: pytest-subprocess; extra == "test"
+Requires-Dist: pyproject-hooks!=1.1; extra == "test"
+Requires-Dist: jaraco.test>=5.5; extra == "test"
+Provides-Extra: doc
+Requires-Dist: sphinx>=3.5; extra == "doc"
+Requires-Dist: jaraco.packaging>=9.3; extra == "doc"
+Requires-Dist: rst.linker>=1.9; extra == "doc"
+Requires-Dist: furo; extra == "doc"
+Requires-Dist: sphinx-lint; extra == "doc"
+Requires-Dist: jaraco.tidelift>=1.4; extra == "doc"
+Requires-Dist: pygments-github-lexers==0.0.5; extra == "doc"
+Requires-Dist: sphinx-favicon; extra == "doc"
+Requires-Dist: sphinx-inline-tabs; extra == "doc"
+Requires-Dist: sphinx-reredirects; extra == "doc"
+Requires-Dist: sphinxcontrib-towncrier; extra == "doc"
+Requires-Dist: sphinx-notfound-page<2,>=1; extra == "doc"
+Requires-Dist: pyproject-hooks!=1.1; extra == "doc"
+Requires-Dist: towncrier<24.7; extra == "doc"
+Provides-Extra: ssl
+Provides-Extra: certs
+Provides-Extra: core
+Requires-Dist: packaging>=24.2; extra == "core"
+Requires-Dist: more_itertools>=8.8; extra == "core"
+Requires-Dist: jaraco.text>=3.7; extra == "core"
+Requires-Dist: importlib_metadata>=6; python_version < "3.10" and extra == "core"
+Requires-Dist: tomli>=2.0.1; python_version < "3.11" and extra == "core"
+Requires-Dist: wheel>=0.43.0; extra == "core"
+Requires-Dist: platformdirs>=4.2.2; extra == "core"
+Requires-Dist: jaraco.functools>=4; extra == "core"
+Requires-Dist: more_itertools; extra == "core"
+Provides-Extra: check
+Requires-Dist: pytest-checkdocs>=2.4; extra == "check"
+Requires-Dist: pytest-ruff>=0.2.1; sys_platform != "cygwin" and extra == "check"
+Requires-Dist: ruff>=0.8.0; sys_platform != "cygwin" and extra == "check"
+Provides-Extra: cover
+Requires-Dist: pytest-cov; extra == "cover"
+Provides-Extra: enabler
+Requires-Dist: pytest-enabler>=2.2; extra == "enabler"
+Provides-Extra: type
+Requires-Dist: pytest-mypy; extra == "type"
+Requires-Dist: mypy==1.14.*; extra == "type"
+Requires-Dist: importlib_metadata>=7.0.2; python_version < "3.10" and extra == "type"
+Requires-Dist: jaraco.develop>=7.21; sys_platform != "cygwin" and extra == "type"
+Dynamic: license-file
+
+.. |pypi-version| image:: https://img.shields.io/pypi/v/setuptools.svg
+   :target: https://pypi.org/project/setuptools
+
+.. |py-version| image:: https://img.shields.io/pypi/pyversions/setuptools.svg
+
+.. |test-badge| image:: https://github.com/pypa/setuptools/actions/workflows/main.yml/badge.svg
+   :target: https://github.com/pypa/setuptools/actions?query=workflow%3A%22tests%22
+   :alt: tests
+
+.. |ruff-badge| image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/charliermarsh/ruff/main/assets/badge/v2.json
+   :target: https://github.com/astral-sh/ruff
+   :alt: Ruff
+
+.. |docs-badge| image:: https://img.shields.io/readthedocs/setuptools/latest.svg
+   :target: https://setuptools.pypa.io
+
+.. |skeleton-badge| image:: https://img.shields.io/badge/skeleton-2025-informational
+   :target: https://blog.jaraco.com/skeleton
+
+.. |codecov-badge| image:: https://img.shields.io/codecov/c/github/pypa/setuptools/master.svg?logo=codecov&logoColor=white
+   :target: https://codecov.io/gh/pypa/setuptools
+
+.. |tidelift-badge| image:: https://tidelift.com/badges/github/pypa/setuptools?style=flat
+   :target: https://tidelift.com/subscription/pkg/pypi-setuptools?utm_source=pypi-setuptools&utm_medium=readme
+
+.. |discord-badge| image:: https://img.shields.io/discord/803025117553754132
+   :target: https://discord.com/channels/803025117553754132/815945031150993468
+   :alt: Discord
+
+|pypi-version| |py-version| |test-badge| |ruff-badge| |docs-badge| |skeleton-badge| |codecov-badge| |discord-badge|
+
+See the `Quickstart <https://setuptools.pypa.io/en/latest/userguide/quickstart.html>`_
+and the `User's Guide <https://setuptools.pypa.io/en/latest/userguide/>`_ for
+instructions on how to use Setuptools.
+
+Questions and comments should be directed to `GitHub Discussions
+<https://github.com/pypa/setuptools/discussions>`_.
+Bug reports and especially tested patches may be
+submitted directly to the `bug tracker
+<https://github.com/pypa/setuptools/issues>`_.
+
+
+Code of Conduct
+===============
+
+Everyone interacting in the setuptools project's codebases, issue trackers,
+chat rooms, and fora is expected to follow the
+`PSF Code of Conduct <https://github.com/pypa/.github/blob/main/CODE_OF_CONDUCT.md>`_.
+
+
+For Enterprise
+==============
+
+Available as part of the Tidelift Subscription.
+
+Setuptools and the maintainers of thousands of other packages are working with Tidelift to deliver one enterprise subscription that covers all of the open source you use.
+
+`Learn more <https://tidelift.com/subscription/pkg/pypi-setuptools?utm_source=pypi-setuptools&utm_medium=referral&utm_campaign=github>`_.

@@ -1,0 +1,66 @@
+Metadata-Version: 2.3
+Name: wheel
+Version: 0.45.1
+Summary: A built-package format for Python
+Keywords: wheel,packaging
+Author-email: Daniel Holth <dholth@fastmail.fm>
+Maintainer-email: Alex Grönholm <alex.gronholm@nextday.fi>
+Requires-Python: >=3.8
+Description-Content-Type: text/x-rst
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: System :: Archiving :: Packaging
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Dist: pytest >= 6.0.0 ; extra == "test"
+Requires-Dist: setuptools >= 65 ; extra == "test"
+Project-URL: Changelog, https://wheel.readthedocs.io/en/stable/news.html
+Project-URL: Documentation, https://wheel.readthedocs.io/
+Project-URL: Issue Tracker, https://github.com/pypa/wheel/issues
+Project-URL: Source, https://github.com/pypa/wheel
+Provides-Extra: test
+
+wheel
+=====
+
+This is a command line tool for manipulating Python wheel files, as defined in
+`PEP 427`_. It contains the following functionality:
+
+* Convert ``.egg`` archives into ``.whl``
+* Unpack wheel archives
+* Repack wheel archives
+* Add or remove tags in existing wheel archives
+
+.. _PEP 427: https://www.python.org/dev/peps/pep-0427/
+
+Historical note
+---------------
+
+This project used to contain the implementation of the setuptools_ ``bdist_wheel``
+command, but as of setuptools v70.1, it no longer needs ``wheel`` installed for that to
+work. Thus, you should install this **only** if you intend to use the ``wheel`` command
+line tool!
+
+.. _setuptools: https://pypi.org/project/setuptools/
+
+Documentation
+-------------
+
+The documentation_ can be found on Read The Docs.
+
+.. _documentation: https://wheel.readthedocs.io/
+
+Code of Conduct
+---------------
+
+Everyone interacting in the wheel project's codebases, issue trackers, chat
+rooms, and mailing lists is expected to follow the `PSF Code of Conduct`_.
+
+.. _PSF Code of Conduct: https://github.com/pypa/.github/blob/main/CODE_OF_CONDUCT.md
+

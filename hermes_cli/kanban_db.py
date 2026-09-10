@@ -473,15 +473,23 @@ def _dir_holds_board(d: Path) -> bool:
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
 ) -> Path:
-    """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
+    """Shared resolver: explicit ``board`` parameter (when set) takes priority
+    over any env-var pin; otherwise the ``env_var`` override, else legacy
+    ``<root>/<default_parts>`` for the ``default`` board, else
+    ``board_dir(slug)/leaf``."""
+    slug = _normalize_board_slug(board)
+    if slug is not None:
+        # Explicit board parameter trumps everything — essential for
+        # cross-board routing from MCP-only sessions where the env pins
+        # one board (HERMES_KANBAN_DB) but the caller needs another.
+        if slug == DEFAULT_BOARD:
+            return kanban_home().joinpath(*default_parts)
+        return board_dir(slug) / leaf
     if env_var:
         override = os.environ.get(env_var, "").strip()
         if override:
             return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
-    if slug is None:
-        slug = get_current_board()
+    slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home().joinpath(*default_parts)
     return board_dir(slug) / leaf

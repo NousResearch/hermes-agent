@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+
+  "$id": "https://setuptools.pypa.io/en/latest/deprecated/distutils/configfile.html",
+  "title": "``tool.distutils`` table",
+  "$$description": [
+    "**EXPERIMENTAL** (NOT OFFICIALLY SUPPORTED): Use ``tool.distutils``",
+    "subtables to configure arguments for ``distutils`` commands.",
+    "Originally, ``distutils`` allowed developers to configure arguments for",
+    "``setup.py`` commands via `distutils configuration files",
+    "<https://setuptools.pypa.io/en/latest/deprecated/distutils/configfile.html>`_.",
+    "See also `the old Python docs <https://docs.python.org/3.11/install/>_`."
+  ],
+
+  "type": "object",
+  "properties": {
+    "global": {
+      "type": "object",
+      "description": "Global options applied to all ``distutils`` commands"
+    }
+  },
+  "patternProperties": {
+    ".+": {"type": "object"}
+  },
+  "$comment": "TODO: Is there a practical way of making this schema more specific?"
+}

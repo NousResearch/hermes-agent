@@ -1,0 +1,15 @@
+tomli-2.0.1.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+tomli-2.0.1.dist-info/LICENSE,sha256=uAgWsNUwuKzLTCIReDeQmEpuO2GSLCte6S8zcqsnQv4,1072
+tomli-2.0.1.dist-info/METADATA,sha256=zPDceKmPwJGLWtZykrHixL7WVXWmJGzZ1jyRT5lCoPI,8875
+tomli-2.0.1.dist-info/RECORD,,
+tomli-2.0.1.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+tomli-2.0.1.dist-info/WHEEL,sha256=jPMR_Dzkc4X4icQtmz81lnNY_kAsfog7ry7qoRvYLXw,81
+tomli/__init__.py,sha256=JhUwV66DB1g4Hvt1UQCVMdfCu-IgAV8FXmvDU9onxd4,396
+tomli/__pycache__/__init__.cpython-312.pyc,,
+tomli/__pycache__/_parser.cpython-312.pyc,,
+tomli/__pycache__/_re.cpython-312.pyc,,
+tomli/__pycache__/_types.cpython-312.pyc,,
+tomli/_parser.py,sha256=g9-ENaALS-B8dokYpCuzUFalWlog7T-SIYMjLZSWrtM,22633
+tomli/_re.py,sha256=dbjg5ChZT23Ka9z9DHOXfdtSpPwUfdgMXnj8NOoly-w,2943
+tomli/_types.py,sha256=-GTG2VUqkpxwMqzmVO4F7ybKddIbAnuAHXfmWQcTi3Q,254
+tomli/py.typed,sha256=8PjyZ1aVoQpRVvt71muvuq5qE-jTFZkK-GLHkhdebmc,26

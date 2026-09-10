@@ -413,9 +413,17 @@ export function VaultSettings() {
             )
           }
           description={
-            <span className="flex flex-wrap items-center gap-2">
+            // identifier · origin · date, separated so the row scans as three facts; the origin is
+            // omitted when the label already IS the host (save-on-page items are labelled by host).
+            <span className="flex flex-wrap items-center gap-x-2">
               {item.identifier && <span className="truncate">{v.identifierShown(item.identifier)}</span>}
-              {item.origin && <span className="truncate">{item.origin}</span>}
+              {item.origin && item.origin.replace(/^https?:\/\//, '') !== item.label && (
+                <>
+                  {item.identifier && <span aria-hidden className="text-(--ui-text-tertiary)">·</span>}
+                  <span className="truncate">{item.origin}</span>
+                </>
+              )}
+              <span aria-hidden className="text-(--ui-text-tertiary)">·</span>
               <span>{v.createdOn(formatCreated(item.created_at))}</span>
             </span>
           }

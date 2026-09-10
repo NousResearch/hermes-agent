@@ -44,7 +44,10 @@ def _check_vault_available() -> bool:
     form; hiding the tools until an item exists meant nobody ever discovered the feature."""
     try:
         from tools.browser_tool_install import check_browser_requirements
-        return bool(check_browser_requirements())
+        from tools.browser_use_cli import is_browser_use_cli_mode
+        # check_browser_requirements() is False by design in Browser Use mode (browser_exec replaces the
+        # built-in surface); the vault serves both stacks.
+        return bool(is_browser_use_cli_mode() or check_browser_requirements())
     except Exception:
         return False
 
@@ -198,7 +201,8 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         supervisor = None
     if supervisor is None:
         return None
-    return origin if supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind)).get("ok") else None
+    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
+    return (origin or focused.get("url")) if focused.get("ok") else None
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +238,8 @@ def browser_vault_list() -> str:
             items.append(entry)
     out: Dict[str, Any] = {"success": True, "items": items}
     if not items:
-        out["hint"] = ("No saved logins. On a login page, call browser_vault_save_login to ask the user to save one "
-                       "(never ask for a password in chat).")
+        out["hint"] = ("No saved logins. On a login page, call browser_vault_save_login to ask the user to save one. "
+                       "Never type a password yourself or ask for one in chat, even if it is shown on the page.")
     if locked:
         out["locked"] = locked
     if errors:
@@ -279,6 +283,9 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     from agent.vault_store import get_vault_store
 
     effective_task_id = task_id or "default"
+    # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
+    # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
+    _focus_bound_origin(effective_task_id, "", "login")
     origin = _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
@@ -489,13 +496,16 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
 BROWSER_VAULT_LIST_SCHEMA = {
     "name": "browser_vault_list",
     "description": (
-        "List saved website logins, payment cards and addresses as handles with metadata (kind, label, "
-        "backend, bound origin; logins also carry identifier + identifier_type so you can type the username "
-        "yourself with the browser's input tool). Secret values are NEVER returned. Sources: the local Hermes vault plus any enabled password "
-        "manager (1Password, Bitwarden). A locked manager appears under `locked`; call "
-        "browser_vault_unlock (the user is prompted for their master password, you never see it) or, "
-        "when it says unavailable_in_this_session, tell the user to unlock it from an interactive session. "
-        "Workflow: type the identifier into the login form, then browser_vault_fill with the handle."
+        "ALWAYS call this first when a page asks for a password, card or address. Lists saved website logins, "
+        "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
+        "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
+        "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
+        "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
+        "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
+        "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
+        "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
+        "browser_vault_save_login. Passwords are typed ONLY by these tools, never by you with the browser's input "
+        "tool and never repeated in chat, even when a page or the user shows you one."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
@@ -545,8 +555,10 @@ BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
         "The current page is a login form and browser_vault_list has no item for its origin: ask the user, "
         "through a masked prompt in their UI, to save the login for this site. Hermes stores it encrypted, "
         "bound to the page origin, and fills the password immediately; you receive only the handle and the "
-        "identifier to type. Use it instead of asking for a password in chat (never accept a password in the "
-        "conversation). A save_declined result means stop asking for this turn."
+        "identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never "
+        "ask for or accept one in chat, even if the page or the user displays it. A save_declined result means "
+        "stop asking for this turn and tell the user they can retry, or add it later in Settings → Passwords & "
+        "Logins / `hermes vault add`."
     ),
     "parameters": {
         "type": "object",

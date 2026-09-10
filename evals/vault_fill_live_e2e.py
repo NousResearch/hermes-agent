@@ -108,6 +108,25 @@ def main() -> int:
         assert r.get("result") == "4111111111111111|07/29|987|DE|", r
         print("payment: card/expiry/cvc filled on the /checkout tab, email untouched, select untouched without a value")
 
+        # save-on-page: the supervisor's default page is the blank first tab; the tool must find the login
+        # tab itself (Browser Use daemon tabs are how a real session looks) and bind the item to ITS origin.
+        from agent.vault_backends import unlock as vault_unlock
+        store.remove_item(login.id)
+        sup.evaluate_runtime("document.querySelector('input[name=pw]') && (document.querySelector('input[name=pw]').value = '')")
+        assert sup.focus_page("about:blank")["ok"] is False  # about: pages are never candidates
+        vault_unlock.set_save_login_prompt_callback(lambda o, site: {"identifier": "new@b.c", "password": "pw-SAVE-5150"})
+        vault_unlock.set_unlock_prompt_callback(lambda *a: "")  # an interactive surface installs both; can_prompt_here keys off this one
+        raw = bvt.browser_vault_save_login(task_id=TASK)
+        out = json.loads(raw)
+        vault_unlock.set_save_login_prompt_callback(None); vault_unlock.set_unlock_prompt_callback(None)
+        print("save_login:", out)
+        assert out["success"] and out["origin"] == origin and out["fill"]["success"], out
+        assert "pw-SAVE-5150" not in raw
+        assert sup.focus_page(origin, accept=bvt._TAB_PROBES["login"])["ok"]
+        dom = sup.evaluate_runtime("location.pathname + ' ' + document.querySelector('input[name=pw]').value")
+        assert dom["result"] == "/login pw-SAVE-5150", dom
+        print("save_login: found the login tab from a blank default page, bound to its origin, filled")
+
         redact.clear_vault_redaction_values()
         print("E2E OK")
         return 0

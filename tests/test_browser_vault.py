@@ -266,11 +266,16 @@ class TestBrowserVaultTools:
         from tools import browser_vault_tool
 
         empty = VaultStore(base_dir=tmp_path / "empty-vault")
-        with patch("agent.vault_store.get_vault_store", return_value=empty):
+        with patch("agent.vault_store.get_vault_store", return_value=empty), \
+             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
             with patch("tools.browser_tool_install.check_browser_requirements", return_value=True):
                 assert browser_vault_tool._check_vault_available() is True
             with patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
                 assert browser_vault_tool._check_vault_available() is False
+        # Browser Use mode: check_browser_requirements() is False by design, the vault must still ride along
+        with patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=True), \
+             patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
+            assert browser_vault_tool._check_vault_available() is True
 
     def test_list_returns_identifier_never_password(self, store):
         from tools import browser_vault_tool
@@ -662,3 +667,14 @@ class TestManagerAutoDetection:
                 assert {b.name for b in base.enabled_backends()} == {"local", "onepassword"}
         with patch.object(base, "is_installed", return_value=False), patch.object(base, "_cfg", return_value={}):
             assert [b.name for b in base.enabled_backends()] == ["local"]
+
+
+def test_every_vault_tool_is_in_the_browser_toolset():
+    """toolsets.py is a hand-maintained list; a tool registered here but missing there is invisible to the model
+    (live: browser_vault_save_login was registered, tested, and never offered)."""
+    import toolsets
+    from tools import browser_vault_tool  # noqa: F401  (registers)
+    from tools.registry import registry
+
+    registered = {e.name for e in registry.get_all_entries() if e.name.startswith("browser_vault_")}
+    assert registered <= set(toolsets.TOOLSETS["browser"]["tools"]), registered - set(toolsets.TOOLSETS["browser"]["tools"])

@@ -282,7 +282,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             for t in targets:
                 url = str(t.get("url") or "")
                 try:
-                    if t.get("type") == "page" and normalize_origin(url) == origin:
+                    # origin="" = any http(s) page (used to FIND the login tab before its origin is known)
+                    if t.get("type") == "page" and url.startswith(("http://", "https://")) \
+                            and (not origin or normalize_origin(url) == origin):
                         candidates.append((t["targetId"], url))
                 except Exception:
                     continue
@@ -297,7 +299,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 with self._state_lock:
                     self._page_session_id = sid
                 return {"ok": True, "url": url}
-            return _fail(f"no open page on {origin}" + (" with the expected form" if accept and candidates else ""))
+            return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
         try:
             return _schedule(_focus(), loop, timeout=timeout + 1)

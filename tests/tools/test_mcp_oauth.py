@@ -1162,3 +1162,38 @@ def test_humanize_non_registration_403_passthrough():
         )
         is None
     )
+
+
+def test_humanize_redirect_uri_rejected_400():
+    """DCR providers (e.g. Gamma) that require a public HTTPS redirect_uri reject Hermes' default
+    loopback callback with a 400 before any browser step -- the paste-back fallback in
+    ``_announce_authorization_url`` never gets a chance to run. Regression test for the raw
+    "Registration failed: 400 {...}" dump a headless user saw instead of actionable next steps."""
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    msg = humanize_oauth_registration_error(
+        "gamma",
+        RuntimeError(
+            'Registration failed: 400 {"message":"redirect_uri not allowed: '
+            'http://127.0.0.1:27890/callback","error":"Bad Request","statusCode":400}'
+        ),
+        server_url="https://mcp.gamma.app/mcp",
+    )
+    assert msg is not None
+    assert "oauth.redirect_uri" in msg
+    assert "--auth header" in msg
+
+
+def test_humanize_redirect_uri_rejection_does_not_shadow_403_path():
+    """A 403 on a redirect_uri-mentioning message should still take the registration-allowlist
+    branch, not the 400 redirect-rejection branch -- the two conditions are mutually exclusive on
+    the status code, but guard against a future edit collapsing them."""
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    msg = humanize_oauth_registration_error(
+        "some-server",
+        RuntimeError("HTTP 403: Forbidden — registration denied for this redirect_uri"),
+        server_url="https://mcp.example.com/mcp",
+    )
+    assert msg is not None
+    assert "pre-approved OAuth clients" in msg

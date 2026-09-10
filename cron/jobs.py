@@ -1640,7 +1640,7 @@ def _normalized_inference_axes(
     )
 
 
-_MONITOR_COMMIT_POLICIES = {"detection_time", "after_delivery"}
+_MONITOR_COMMIT_POLICIES = {"detection_time", "after_delivery", "safe_retry"}
 
 
 def _normalize_monitor_commit_policy(
@@ -1995,6 +1995,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
+        if job.get("monitor_commit_policy") == "safe_retry":
+            from cron import monitor_pending
+            desired = {**job, **updates}
+            if (desired.get("monitor_commit_policy") != "safe_retry"
+                    or monitor_pending._binding(desired) != monitor_pending._binding(job)):
+                pending = monitor_pending.inspect(job)
+                if pending and pending["state"] != "acked":
+                    raise ValueError("Monitor recovery is pending; reconcile its outcome before changing the job")
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         previous_inference_axes = _normalized_inference_axes(job)

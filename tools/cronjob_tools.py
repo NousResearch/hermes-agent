@@ -967,8 +967,8 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "monitor_commit_policy": {
                 "type": "string",
-                "enum": ["detection_time", "after_delivery"],
-                "description": "Optional commit boundary for monitor state. detection_time (default) advances the stored hash as soon as the change is detected. after_delivery keeps the prior hash until the triggered agent run AND its delivery succeed, so a transient failure retries the same change next tick instead of losing it. Requires a monitor."
+                "enum": ["detection_time", "after_delivery", "safe_retry"],
+                "description": "Optional commit boundary for monitor state. detection_time (default) advances the stored hash as soon as the change is detected. after_delivery keeps the prior hash until the triggered agent run AND its delivery succeed, so a transient failure retries the same change next tick instead of losing it. safe_retry retains unresolved work and allows at most two attempts only after confirmed pre-effect failures. Requires a monitor."
             },
             "no_agent": {
                 "type": "boolean",

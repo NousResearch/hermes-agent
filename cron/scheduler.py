@@ -1341,11 +1341,13 @@ def _apply_monitor_gate(
             True, f"{header}**Status:** no_change (agent run suppressed)\n", SILENT_MARKER, None,
         ), extra_prompt
     # Changed (or first run): inject monitor context via the per-run seam, then normal agent run.
-    if job.get("monitor_commit_policy") == "after_delivery":
+    if job.get("monitor_commit_policy") in {"after_delivery", "safe_retry"}:
         # Deferred commit: check_monitor deliberately did NOT persist the hash. Stage it so the
         # bookkeeping tail can commit it only after the agent succeeded AND delivery reported no
         # error; anything short of that leaves the old hash so this observation retries.
         pending_commit = {"new_hash": _mon.new_hash, "output": _mon.output}
+        if _mon.pending_token:
+            pending_commit["token"] = _mon.pending_token
         # The defer list is the only channel that crosses the process boundary; the job-dict
         # key is a same-process fallback for callers that don't pass `defer_monitor_commit`,
         # popped by the decision point in the same execution. Never persist this key — it is
@@ -2290,6 +2292,8 @@ def run_job(
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
+    from cron.monitor_pending import Attempt
+    monitor_attempt = Attempt(job)
     scope = _CronRunScope(job, job_id, execution_id)
     try:
         scope.enter()
@@ -2311,11 +2315,21 @@ def run_job(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
         _audit = _FireAudit(job, job_id, model)
+        monitor_attempt.attach(agent)
+        monitor_attempt.started = True
 
         result = _run_agent_with_watchdog(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
+        monitor_attempt.result = result
+        if monitor_attempt.token and result.get("completed") is not True and result.get("failed") is not True:
+            partial = result.get("final_response")
+            monitor_attempt.response = partial if isinstance(partial, str) and partial else None
+            raise RuntimeError("Monitor generation did not report verified completion")
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        monitor_attempt.response = final_response
+        if monitor_attempt.token and not final_response.strip():
+            raise RuntimeError("Monitor generation returned no result")
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
@@ -2356,6 +2370,7 @@ def run_job(
                     defer_agent_teardown.append(agent)
             else:
                 _teardown_cron_agent(agent, job_id)
+        monitor_attempt.finish(_worker_state)
 
 
 def _teardown_cron_agent(
@@ -2730,7 +2745,9 @@ def _save_compose_deliver(
     # retry rather than be consumed by a run the operator never saw.
     pending_monitor = job.get("_monitor_pending_commit")
     requires_delivery = _monitor_event_requires_delivery(pending_monitor)
-    if job.get("monitor_commit_policy") == "after_delivery" and pending_monitor and d.success:
+    if job.get("monitor_commit_policy") == "safe_retry" and pending_monitor:
+        requires_delivery = requires_delivery or _normalize_deliver_value(job.get("deliver")) != "local"
+    if job.get("monitor_commit_policy") in {"after_delivery", "safe_retry"} and pending_monitor and d.success:
         d.monitor_retry = (
             deliver_content.strip() == MONITOR_RETRY_MARKER
             or (
@@ -2831,6 +2848,14 @@ def _commit_deferred_monitor_state(
 
     from cron.monitor import commit_monitor_state
 
+    if job.get("monitor_commit_policy") == "safe_retry":
+        from cron import monitor_pending
+        retained = monitor_pending.inspect(job)
+        if (not retained or retained["state"] != "ready"
+                or retained["token"] != pending.get("token")
+                or job.get("last_delivery_unverified") or job.get("last_delivery_queued")):
+            raise monitor_pending.RecoveryRequired("monitor delivery outcome requires reconciliation")
+
     with fence.side_effect_fence() as owns_commit:
         # Ownership revalidation does file I/O (heartbeat_fire_claim); do it BEFORE taking
         # _running_lock. Shutdown holds that lock while marking jobs interrupted, so blocking
@@ -2851,6 +2876,8 @@ def _commit_deferred_monitor_state(
             if execution_token is not None:
                 _monitor_commit_in_progress.add(execution_token)
         commit_monitor_state(job["id"], pending.get("new_hash"), pending.get("output") or "")
+        if job.get("monitor_commit_policy") == "safe_retry":
+            monitor_pending.acknowledge(job, pending["token"])
         logger.info(
             "Job '%s': deferred monitor commit persisted hash=%s",
             job["id"], str(pending.get("new_hash") or "")[:12])
@@ -3028,7 +3055,7 @@ def _run_one_job_body(
             "defer_agent_teardown": _deferred_agents,
             "extra_prompt": extra_prompt,
             "execution_id": execution_id}
-        if job.get("monitor_commit_policy") == "after_delivery":
+        if job.get("monitor_commit_policy") in {"after_delivery", "safe_retry"}:
             # Only deferred-commit monitors need the staging list; keeping it off the default
             # call keeps the signature that every other caller (and test double) expects.
             _run_kwargs["defer_monitor_commit"] = _deferred_monitor_commits

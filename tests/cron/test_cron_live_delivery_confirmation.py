@@ -404,3 +404,31 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
 def test_scheduler_module_exposes_the_confirmation_helper():
     """Guard the import surface the delivery block depends on."""
     assert callable(sched_delivery._confirm_adapter_delivery)
+
+
+def test_safe_retry_requires_acknowledgement_without_fallback_send():
+    for result, accepted in ((_SendResult(), False),
+                             (_SendResult(message_id=True), False),
+                             (_SendResult(message_id={"id": "bad"}), False),
+                             (_SendResult(success=False), False),
+                             (_SendResult(message_id=1234), True)):
+        job = {**_job(), "monitor_commit_policy": "safe_retry"}
+        error, sent, fallback = _run(job, "summary", result)
+        assert len(sent) == 1 and fallback == []
+        assert (error is None) == accepted
+
+
+def test_safe_retry_timeout_never_resends_when_cancel_would_succeed(monkeypatch):
+    class LostConfirmation(Future):
+        def set_result(self, result):
+            pass  # provider coroutine ran, but its acknowledgement was lost
+        def result(self, timeout=None):
+            raise TimeoutError("confirmation lost")
+        def cancel(self):
+            raise AssertionError("cancellation cannot prove that the provider did nothing")
+
+    monkeypatch.setitem(globals(), "Future", LostConfirmation)
+    job = {**_job(), "monitor_commit_policy": "safe_retry"}
+    error, sent, fallback = _run(job, "summary", _SendResult(message_id=1234))
+    assert len(sent) == 1 and fallback == []
+    assert error and "outcome unknown" in error

@@ -1219,7 +1219,7 @@ def test_cronjob_tool_create_and_update_monitor_commit_policy(hermes_env):
     policy_schema = CRONJOB_SCHEMA["parameters"]["properties"][
         "monitor_commit_policy"
     ]
-    assert policy_schema["enum"] == ["detection_time", "after_delivery"]
+    assert set(policy_schema["enum"]) == {"detection_time", "after_delivery", "safe_retry"}
 
     _write_script(hermes_env, "mon.sh", "echo hi\n")
     created = json.loads(
@@ -1303,3 +1303,83 @@ def test_cronjob_tool_update_clears_monitor_script(hermes_env):
     )
     assert result.get("success") is True
     assert get_job(created["job_id"]).get("monitor_script") is None
+
+
+def test_safe_retry_keeps_pending_input_and_bounds_pre_effect_attempts(hermes_env, monkeypatch):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+    from cron import monitor_pending
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "safe_retry"})
+    observed = {"result": {"failed": True, "completed": False, "error": "HTTP 429"}}
+    _install_agent_stubs(monkeypatch, observed)
+    assert sched.run_one_job(get_job(job["id"])) is True
+    first = monitor_pending.inspect(get_job(job["id"]))
+    assert first["state"] == "retry"
+    with pytest.raises(ValueError, match="reconcile"):
+        update_job(job["id"], {"monitor_commit_policy": "detection_time"})
+    with pytest.raises(monitor_pending.RecoveryRequired):
+        monitor_pending.resume(dict(get_job(job["id"]), prompt="changed contract"))
+    _write_script(hermes_env, job["monitor_script"], "echo 'state B'\n")
+    observed["result"] = {"completed": True, "final_response": "handled A", "messages": []}
+    assert sched.run_one_job(get_job(job["id"])) is True
+    assert monitor_pending.inspect(get_job(job["id"]))["state"] == "acked"
+    with pytest.raises(monitor_pending.RecoveryRequired):
+        monitor_pending.settle(get_job(job["id"]), first["token"], response="stale")
+    assert "state A" in observed["prompts"][-1]
+    assert "state B" not in observed["prompts"][-1]
+    assert observed["agent_runs"] == 2
+    assert sched.run_one_job(get_job(job["id"])) is True
+    assert "state B" in observed["prompts"][-1]
+    assert sched.run_one_job(get_job(job["id"])) is True
+    assert observed["agent_runs"] == 3  # committed B is now suppressed
+
+    _write_script(hermes_env, job["monitor_script"], "echo 'state C'\n")
+    observed["result"] = {"failed": True, "completed": False, "error": "HTTP 429"}
+    for _ in range(3):
+        sched.run_one_job(get_job(job["id"]))
+    assert observed["agent_runs"] == 5  # two attempts, no unbounded retry
+    assert monitor_pending.inspect(get_job(job["id"]))["state"] == "unknown"
+
+
+def test_safe_retry_never_regenerates_unknown_delivery_or_tool_effects(hermes_env, monkeypatch):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+    from cron import monitor_pending
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "safe_retry"})
+    observed = {"result": {"completed": True, "final_response": "saved summary", "messages": []}}
+    _install_agent_stubs(monkeypatch, observed)
+    sends = []
+    def ambiguous_send(*args, **kwargs):
+        sends.append(args[1])
+        raise TimeoutError("provider acknowledgement unavailable")
+    monkeypatch.setattr(sched, "_deliver_result", ambiguous_send)
+    sched.run_one_job(get_job(job["id"]))
+    retained = monitor_pending.inspect(get_job(job["id"]))
+    assert retained["state"] == "ready" and retained["response"] == "saved summary"
+    sched.run_one_job(get_job(job["id"]))
+    assert observed["agent_runs"] == 1
+    assert sends.count("saved summary") == 1
+
+    # A terminated process and a finished tool-bearing failure both retain work.
+    other = _make_monitor_job(hermes_env, "echo 'other event'\n")
+    update_job(other["id"], {"monitor_commit_policy": "safe_retry"})
+    import run_agent
+    def failed_after_tool(self, *args, **kwargs):
+        observed["agent_runs"] += 1
+        self.tool_start_callback("call", "terminal", {})
+        return {"failed": True, "completed": False, "error": "HTTP 429"}
+    monkeypatch.setattr(run_agent.AIAgent, "run_conversation", failed_after_tool)
+    sched.run_one_job(get_job(other["id"]))
+    assert monitor_pending.inspect(get_job(other["id"]))["state"] == "unknown"
+    sched.run_one_job(get_job(other["id"]))
+    assert observed["agent_runs"] == 2
+    crashed = _make_monitor_job(hermes_env, "echo 'crash event'\n")
+    update_job(crashed["id"], {"monitor_commit_policy": "safe_retry"})
+    crashed = get_job(crashed["id"])
+    monitor_pending.begin(crashed, "crash event")
+    with pytest.raises(monitor_pending.RecoveryRequired):
+        monitor_pending.resume(crashed)

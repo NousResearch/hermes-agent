@@ -49,6 +49,7 @@ class MonitorOutcome:
     error: Optional[str] = None
     new_hash: Optional[str] = None
     output: Optional[str] = None
+    pending_token: Optional[str] = None
 
 
 def hash_monitor_output(output: str) -> str:
@@ -154,7 +155,14 @@ def check_monitor(job: dict) -> MonitorOutcome:
     On failure nothing is persisted.
     """
     job_id = str(job.get("id") or "")
-    ok, output = _run_monitor_source(job)
+    pending = None
+    if job.get("monitor_commit_policy") == "safe_retry":
+        from cron import monitor_pending
+        try:
+            pending = monitor_pending.resume(job)
+        except monitor_pending.RecoveryRequired as exc:
+            return MonitorOutcome(ok=False, error=str(exc))
+    ok, output = (True, pending["output"]) if pending else _run_monitor_source(job)
     if not ok:
         return MonitorOutcome(ok=False, error=output)
 
@@ -162,7 +170,7 @@ def check_monitor(job: dict) -> MonitorOutcome:
     raw_state = job.get("monitor_state")
     last_hash = raw_state.get("last_output_hash") if isinstance(raw_state, dict) else None
 
-    if last_hash is not None and new_hash == last_hash:
+    if pending is None and last_hash is not None and new_hash == last_hash:
         return MonitorOutcome(ok=True, changed=False)
 
     first_run = last_hash is None
@@ -187,7 +195,15 @@ def check_monitor(job: dict) -> MonitorOutcome:
             f"### Diff (previous → current)\n\n```diff\n{diff}\n```\n\n" + current
         )
 
-    if job.get("monitor_commit_policy") != "after_delivery":
+    if job.get("monitor_commit_policy") == "safe_retry" and pending is None:
+        from cron import monitor_pending
+        try:
+            pending = monitor_pending.begin(job, output)
+        except monitor_pending.RecoveryRequired as exc:
+            return MonitorOutcome(ok=False, error=str(exc))
+        if pending is None:
+            return MonitorOutcome(ok=True, changed=False)
+    elif job.get("monitor_commit_policy") not in {"after_delivery", "safe_retry"}:
         _persist_monitor_state(job_id, new_hash, output)
     return MonitorOutcome(
         ok=True,
@@ -196,6 +212,7 @@ def check_monitor(job: dict) -> MonitorOutcome:
         context_block=context_block,
         new_hash=new_hash,
         output=output,
+        pending_token=pending["token"] if pending else None,
     )
 
 

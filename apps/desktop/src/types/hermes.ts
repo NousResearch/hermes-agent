@@ -880,6 +880,9 @@ export interface AnalyticsTotals {
   total_sessions: number
 }
 
+export type CronReasoningEffortOption =
+  'inherit' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
+
 export interface CronJob {
   deliver?: null | string
   enabled: boolean
@@ -892,6 +895,7 @@ export interface CronJob {
   no_agent?: boolean
   prompt?: null | string
   provider?: null | string
+  reasoning_effort?: false | null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
@@ -904,6 +908,7 @@ export interface CronJobCreatePayload {
   name?: string
   prompt: string
   provider?: string
+  reasoning_effort?: false | null | string
   schedule: string
 }
 
@@ -920,6 +925,7 @@ export interface CronJobUpdates {
   name?: string
   prompt?: string
   provider?: null | string
+  reasoning_effort?: false | null | string
   schedule?: string
 }
 

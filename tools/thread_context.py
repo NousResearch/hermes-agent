@@ -29,7 +29,11 @@ def _callback_api():
     return ((tt._get_approval_callback, tt.set_approval_callback),
             (tt._get_sudo_password_callback, tt.set_sudo_password_callback),
             (vault_unlock.get_unlock_prompt_callback, vault_unlock.set_unlock_prompt_callback),
-            (vault_unlock.get_save_login_prompt_callback, vault_unlock.set_save_login_prompt_callback))
+            (vault_unlock.get_save_login_prompt_callback, vault_unlock.set_save_login_prompt_callback),
+            # Not a prompt callback, but the same per-thread gap applies: an unlock committed from
+            # this worker must still see the session id the parent thread bound, or it records a
+            # None owner that release_session() can never match (see vault_backends/unlock.py).
+            (vault_unlock.get_current_session_id, vault_unlock.set_current_session_id))
 
 
 def propagate_context_to_thread(target: Callable) -> Callable:

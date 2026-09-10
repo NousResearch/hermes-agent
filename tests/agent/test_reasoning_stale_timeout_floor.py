@@ -60,6 +60,9 @@ import pytest
     # ``deepseek-v4-flash`` still aliases onto it server-side.
     ("deepseek/deepseek-flash", 600.0),
     ("deepseek-flash", 600.0),
+    # 4.1 refresh (2026-09) — a discrete slug, not a substring of `deepseek-v4-flash`.
+    ("deepseek/deepseek-v4.1-flash", 600.0),
+    ("deepseek-v4.1-flash-tk", 600.0),
     # Qwen QwQ + Qwen3 thinking variants (qwen3 family entry matches all).
     ("qwen/qwq-32b-preview", 300.0),
     ("qwen/qwen3-235b-a22b-thinking", 180.0),

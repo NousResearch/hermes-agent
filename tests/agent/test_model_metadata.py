@@ -390,6 +390,22 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_deepseek_v4_1_refresh_does_not_fall_back_to_128k(self):
+        """The 4.1 refresh is a discrete slug, not a substring of ``deepseek-v4-flash``.
+
+        Without a catalog entry the longest-key-first scan falls through to the
+        legacy 128K ``deepseek`` catch-all, so a relay alias such as
+        ``deepseek-v4.1-flash-tk`` silently reports a 128K window.
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            for model_id in ("deepseek-v4.1-flash", "deepseek-v4.1-flash-tk"):
+                assert get_model_context_length(model_id) == 1_048_576, model_id
+
 
 
 
@@ -1709,6 +1725,13 @@ class TestGenericPreCatalogStaleGuard:
         assert _stale_pre_catalog_cache_entry("qwen3.6-plus", 131_072)
         assert _stale_pre_catalog_cache_entry("alibaba/qwen3.6-plus", 131_072)
         assert not _stale_pre_catalog_cache_entry("qwen3.6-plus", 1_048_576)
+        # deepseek-v4.1-flash (1M): the dotted slug missed "deepseek-v4-flash", so pre-fix
+        # builds persisted the 128,000 "deepseek" catch-all.
+        assert _stale_pre_catalog_cache_entry("deepseek-v4.1-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek-v4.1-flash-tk", 128_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek-v4.1-flash", 1_048_576)
+        # Legacy DeepSeek slugs keep their genuine 128K window.
+        assert not _stale_pre_catalog_cache_entry("deepseek-v3.2", 128_000)
         # A 256K value for qwen3.6-plus is above the "qwen" catch-all —
         # could be a genuine probe result, so it is NOT dropped.
         assert not _stale_pre_catalog_cache_entry("qwen3.6-plus", 262_144)

@@ -189,7 +189,7 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # Off-peak USD rates (peak = 2x, Mon-Fri 01-04 + 06-10 UTC). ``deepseek-v4-flash`` and the
     # retired deepseek-chat / deepseek-reasoner aliases are served by V4.1-Flash at the Flash price.
     ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-09-10", {
-        ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
+        ("deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {

@@ -150,6 +150,15 @@ def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
     assert entry.source == "official_docs_snapshot"
 
 
+def test_deepseek_v4_1_flash_pricing_matches_flash_tier():
+    """The 4.1 refresh bills at the Flash rate, not "unknown cost" (see #24218 class)."""
+    entry = get_pricing_entry("deepseek-v4.1-flash", provider="deepseek")
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+    flash = get_pricing_entry("deepseek-flash", provider="deepseek")
+    assert entry.input_cost_per_million == flash.input_cost_per_million
+
+
 def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     """Models absent from the bundled table still use endpoint pricing."""
     monkeypatch.setattr(

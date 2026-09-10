@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -188,13 +188,67 @@ class HolographicMemoryProvider(MemoryProvider):
         if is_truthy_value(self._config.get("auto_extract", False)) and self._store and messages:
             self._auto_extract_facts(messages)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
-            try:
-                self._store.add_fact(content, category="user_pref" if target == "user" else "general")
-            except Exception as e:
-                logger.debug("Holographic memory_write mirror failed: %s", e)
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in memory writes as facts (add/replace/remove).
+
+        ``add`` inserts the entry content as a fact (deduped by content).
+        ``replace`` and ``remove`` keep the holographic store in sync with the
+        built-in store by locating the fact that mirrored the prior entry
+        (via ``old_text`` in ``metadata``) and updating or deleting it. Without
+        this, a replaced/removed MEMORY.md entry leaves a stale fact behind.
+        """
+        if not self._store:
+            return
+        try:
+            category = "user_pref" if target == "user" else "general"
+
+            if action == "add":
+                if content:
+                    self._store.add_fact(content, category=category)
+                return
+
+            old_text = str((metadata or {}).get("old_text") or "").strip()
+            if not old_text:
+                # No anchor to match against; nothing to sync.
+                return
+
+            matches = self._store.find_facts_by_substring(old_text)
+            if not matches:
+                # The prior entry was never mirrored (e.g. created before this
+                # plugin was active, or added as a bare pointer). For replace,
+                # mirror the new content so the store isn't missing it; for
+                # remove there is nothing to do.
+                if action == "replace" and content:
+                    self._store.add_fact(content, category=category)
+                return
+
+            if action == "remove":
+                # Delete every fact that mirrored the removed entry. Multiple
+                # matches happen when the same entry was re-added with slightly
+                # different wording (the duplicate-accumulation bug this fixes).
+                for m in matches:
+                    self._store.remove_fact(m["fact_id"])
+                return
+
+            # action == "replace": update the best match, retire redundant dupes.
+            best = matches[0]
+            new_content = content.strip() if content else ""
+            if not new_content:
+                # Replace with empty content is effectively a remove.
+                for m in matches:
+                    self._store.remove_fact(m["fact_id"])
+                return
+            self._store.update_fact(best["fact_id"], content=new_content)
+            for extra in matches[1:]:
+                self._store.remove_fact(extra["fact_id"])
+        except Exception as e:
+            logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
         # Close on the caller's thread: leaving the shared connection (+ write lock) to GC keeps it alive on a gateway.

@@ -218,7 +218,16 @@ export function makeUnsignedOauthError(): Error {
 }
 
 export function isReauthRequiredError(error: unknown): boolean {
-  return Boolean((error as any)?.isReauthRequired)
+  if (Boolean((error as any)?.isReauthRequired)) {
+    return true
+  }
+
+  // Wrappers (IPC, pool catch) often copy only `message`. Without this
+  // fallback startHermes treats unsigned OAuth as a transient remote fault
+  // and retries "Resolving Hermes backend" forever.
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message.includes(REMOTE_UNSIGNED_OAUTH_MESSAGE) || message.includes(REMOTE_SESSION_EXPIRED_MESSAGE)
 }
 
 function supersededError() {

@@ -13267,20 +13267,9 @@ async function startHermes() {
       ...getWindowState()
     }
   })().catch(async error => {
-    if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
-      throw error
-    }
-
-    const failedProcess = backendConnectionState.invalidate()
-    stopBackendChild(failedProcess)
-    await waitForBackendExit(failedProcess)
-
-    if (error instanceof FirstRunSetupResetError) {
-      throw error
-    }
-
     const message = error instanceof Error ? error.message : String(error)
     const hostKeyChanged = isHostKeyChangedBootFailure(error)
+    const isReauth = isReauthRequiredError(error)
 
     // Carry structured Cloud-down metadata through the boot-progress / IPC
     // boundary when present, so the renderer overlay can key on it rather than
@@ -13294,29 +13283,47 @@ async function startHermes() {
         : NaN
     )
 
-    // Only latch LOCAL boot failures. A remote failure (lapsed session / mint
-    // timeout / host briefly unreachable across sleep) is transient and has no
-    // child 'exit' handler to clear the cache — latching it would wedge the app
-    // on "session expired" until a full restart, defeating reconnect, the
-    // "Sign out & sign in" reload, and the wake-recovery revalidate path.
-    if (shouldLatchBackendStartFailure({ attemptedRemote })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
+    // Latches MUST be assigned before any await (and before the superseded
+    // early-return). waitForBackendExit yields the event loop; hermes:api from
+    // refreshProfiles then calls startHermes, passes the still-empty latch,
+    // and re-logs "Resolving Hermes backend" forever on unsigned OAuth.
+    if (!(error instanceof FirstRunSetupResetError)) {
+      // Only latch LOCAL boot failures. A remote failure (lapsed session / mint
+      // timeout / host briefly unreachable across sleep) is transient and has no
+      // child 'exit' handler to clear the cache — latching it would wedge the app
+      // on "session expired" until a full restart, defeating reconnect, the
+      // "Sign out & sign in" reload, and the wake-recovery revalidate path.
+      if (shouldLatchBackendStartFailure({ attemptedRemote })) {
+        backendStartFailure = error instanceof Error ? error : new Error(message)
+      }
+
+      // A host-key CHANGE is the terminal exception among remote failures: SSH
+      // fails closed until the user verifies the change and clears the stale
+      // known_hosts entry, so retrying re-drives the identical doomed boot (one
+      // bundle showed 157 consecutive failures over 2.5h). Latch it like a local
+      // failure — reset/repair/apply-config clear the latch after the user fixes
+      // known_hosts.
+      if (shouldLatchHostKeyChangedFailure({ attemptedRemote, isReauth: false, isHostKeyChanged: hostKeyChanged })) {
+        backendStartFailure = error instanceof Error ? error : new Error(message)
+      }
+
+      // A confirmed reauth rejection latches separately: it can't self-heal, and
+      // leaving it unlatched hides the overlay's "Sign in" button on every retry.
+      if (shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth })) {
+        remoteReauthFailure = error instanceof Error ? error : new Error(message)
+      }
     }
 
-    // A host-key CHANGE is the terminal exception among remote failures: SSH
-    // fails closed until the user verifies the change and clears the stale
-    // known_hosts entry, so retrying re-drives the identical doomed boot (one
-    // bundle showed 157 consecutive failures over 2.5h). Latch it like a local
-    // failure — reset/repair/apply-config clear the latch after the user fixes
-    // known_hosts.
-    if (shouldLatchHostKeyChangedFailure({ attemptedRemote, isReauth: false, isHostKeyChanged: hostKeyChanged })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
+    if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
+      throw error
     }
 
-    // A confirmed reauth rejection latches separately: it can't self-heal, and
-    // leaving it unlatched hides the overlay's "Sign in" button on every retry.
-    if (shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth: isReauthRequiredError(error) })) {
-      remoteReauthFailure = error instanceof Error ? error : new Error(message)
+    const failedProcess = backendConnectionState.invalidate()
+    stopBackendChild(failedProcess)
+    await waitForBackendExit(failedProcess)
+
+    if (error instanceof FirstRunSetupResetError) {
+      throw error
     }
 
     updateBootProgress(
@@ -13333,7 +13340,7 @@ async function startHermes() {
         // sign-in affordance.
         retryable: isRetryableRemoteBootFailure({
           attemptedRemote,
-          isReauth: isReauthRequiredError(error),
+          isReauth,
           isHostKeyChanged: hostKeyChanged
         }),
         running: false,

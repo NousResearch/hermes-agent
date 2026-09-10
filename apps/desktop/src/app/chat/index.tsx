@@ -96,7 +96,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
   onAttachPrCommentUrl?: (url: string) => boolean
-  onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
+  onPasteClipboardImage: (opts?: { silent?: boolean; wslHostOnly?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
   onPickImages: () => void

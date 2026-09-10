@@ -49,7 +49,7 @@ export interface ChatBarProps {
   /** Pasted GitHub PR-comment deep link → structured review attachment.
    *  Returns true when the paste was consumed as an attachment. */
   onAttachPrCommentUrl?: (url: string) => boolean
-  onPasteClipboardImage?: (opts?: { silent?: boolean }) => Promise<boolean> | void
+  onPasteClipboardImage?: (opts?: { silent?: boolean; wslHostOnly?: boolean }) => Promise<boolean> | void
   onPickFiles?: () => void
   onPickFolders?: () => void
   onPickImages?: () => void

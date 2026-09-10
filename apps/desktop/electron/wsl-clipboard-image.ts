@@ -99,4 +99,40 @@ function readWslWindowsClipboardImage({
   return null
 }
 
-export { decodeClipboardImageBase64, encodePowerShellCommand, powershellCandidates, readWslWindowsClipboardImage }
+// Resolution policy for the hermes:saveClipboardImage IPC. General reads keep
+// Electron's native clipboard image first (explicit image paste), with the WSL
+// host read as fallback. `wslHostOnly` is the narrow probe the composer uses
+// when the paste already carries path-shaped text: only a WSL host bitmap may
+// claim it — never clipboard.readImage(), which outside WSL could hand back an
+// unrelated image and silently replace the pasted text. Deps injectable.
+function resolveClipboardImagePng({
+  wslHostOnly = false,
+  isWsl,
+  readNativeImage,
+  readHostImage = readWslWindowsClipboardImage
+}: {
+  wslHostOnly?: boolean
+  isWsl: boolean
+  readNativeImage: () => { isEmpty: () => boolean; toPNG: () => Buffer } | null
+  readHostImage?: () => Buffer | null
+}) {
+  if (!wslHostOnly) {
+    const image = readNativeImage()
+
+    if (image && !image.isEmpty()) {
+      return image.toPNG()
+    }
+  }
+
+  // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the
+  // Linux clipboard Electron reads — pull it straight off the Windows one.
+  return isWsl ? readHostImage() : null
+}
+
+export {
+  decodeClipboardImageBase64,
+  encodePowerShellCommand,
+  powershellCandidates,
+  readWslWindowsClipboardImage,
+  resolveClipboardImagePng
+}

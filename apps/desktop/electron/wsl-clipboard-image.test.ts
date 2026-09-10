@@ -6,7 +6,8 @@ import {
   decodeClipboardImageBase64,
   encodePowerShellCommand,
   powershellCandidates,
-  readWslWindowsClipboardImage
+  readWslWindowsClipboardImage,
+  resolveClipboardImagePng
 } from './wsl-clipboard-image'
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -121,4 +122,88 @@ test('powershellCandidates lists the bare name first, then the absolute fallback
   const candidates = powershellCandidates()
   assert.equal(candidates[0], 'powershell.exe')
   assert.ok(candidates.some(c => c.endsWith('WindowsPowerShell/v1.0/powershell.exe')))
+})
+
+function nativeImage(png) {
+  return { isEmpty: () => false, toPNG: () => png }
+}
+
+const emptyNativeImage = { isEmpty: () => true, toPNG: () => Buffer.alloc(0) }
+
+test('resolveClipboardImagePng general paste prefers the native clipboard image', () => {
+  const png = fakePngBuffer()
+
+  const result = resolveClipboardImagePng({
+    isWsl: false,
+    readNativeImage: () => nativeImage(png),
+    readHostImage: () => null
+  })
+
+  assert.ok(result && result.equals(png))
+})
+
+test('resolveClipboardImagePng general paste falls back to the WSL host image when native is empty', () => {
+  const png = fakePngBuffer()
+
+  const result = resolveClipboardImagePng({
+    isWsl: true,
+    readNativeImage: () => emptyNativeImage,
+    readHostImage: () => png
+  })
+
+  assert.ok(result && result.equals(png))
+})
+
+test('resolveClipboardImagePng wslHostOnly probe returns the WSL host bitmap (success)', () => {
+  const png = fakePngBuffer()
+  let nativeReads = 0
+
+  const result = resolveClipboardImagePng({
+    wslHostOnly: true,
+    isWsl: true,
+    readNativeImage: () => {
+      nativeReads += 1
+
+      return nativeImage(fakePngBuffer(32))
+    },
+    readHostImage: () => png
+  })
+
+  assert.ok(result && result.equals(png))
+  // Even on WSL a stale Linux-clipboard image must not beat the host bitmap.
+  assert.equal(nativeReads, 0)
+})
+
+test('resolveClipboardImagePng wslHostOnly probe returns null when the WSL host has no image (failure)', () => {
+  const result = resolveClipboardImagePng({
+    wslHostOnly: true,
+    isWsl: true,
+    readNativeImage: () => nativeImage(fakePngBuffer()),
+    readHostImage: () => null
+  })
+
+  assert.equal(result, null)
+})
+
+test('resolveClipboardImagePng wslHostOnly probe is a no-op outside WSL, never reading the native clipboard', () => {
+  // The composer probes with wslHostOnly when the paste already carries
+  // path-shaped text: outside WSL the answer must be "no image" — without
+  // this, an unrelated clipboard.readImage() hit would replace the text.
+  let nativeReads = 0
+
+  const result = resolveClipboardImagePng({
+    wslHostOnly: true,
+    isWsl: false,
+    readNativeImage: () => {
+      nativeReads += 1
+
+      return nativeImage(fakePngBuffer())
+    },
+    readHostImage: () => {
+      throw new Error('must not shell out to PowerShell off WSL')
+    }
+  })
+
+  assert.equal(result, null)
+  assert.equal(nativeReads, 0)
 })

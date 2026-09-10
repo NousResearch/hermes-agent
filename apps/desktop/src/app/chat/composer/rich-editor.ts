@@ -296,6 +296,34 @@ function atTokenBoundary(editor: HTMLElement, range: Range | null): boolean {
  *  `consumeBefore` characters immediately before the caret are swallowed by the
  *  insert. That's how a paste into an open `@url:` scope replaces the scope
  *  instead of stacking on it (`@url:@url:\`https://…\``). */
+/** Insert plain text at the caret (replacing any selection). Pastes use this
+ *  instead of `execCommand('insertText')` — Chromium's editing pipeline is
+ *  ~O(n²) on large multiline blobs. */
+export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
+  const hit = composerSelectionRange(editor)
+  const fragment = document.createDocumentFragment()
+
+  appendTextWithBreaks(fragment, text)
+
+  const tail = fragment.lastChild
+
+  if (hit) {
+    hit.range.deleteContents()
+    hit.range.insertNode(fragment)
+  } else {
+    editor.append(fragment)
+  }
+
+  if (tail) {
+    const caret = document.createRange()
+    caret.setStartAfter(tail)
+    caret.collapse(true)
+    const selection = hit?.selection ?? window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(caret)
+  }
+}
+
 export function insertComposerContentsAtCaret(editor: HTMLElement, text: string, consumeBefore = 0) {
   const scoped = consumeBefore > 0 ? rangeBeforeCaret(editor, consumeBefore) : null
 

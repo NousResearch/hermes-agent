@@ -1,5 +1,12 @@
 export interface SetupStatusSnapshot {
   provider_configured?: boolean
+  /** Additive launch-profile fields (newer backends only; absent on older
+   *  ones). Carried for consumers that read the record — readiness itself
+   *  still keys on `provider_configured` + `setup.runtime_check`. */
+  ready?: boolean
+  free_tier?: boolean
+  other_providers?: boolean
+  inference_provider?: string
 }
 
 export interface RuntimeCheckSnapshot {

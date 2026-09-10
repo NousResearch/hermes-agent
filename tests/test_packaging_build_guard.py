@@ -74,12 +74,21 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
     artifacts = list(tmp_path.glob(artifact_glob))
     assert artifacts
 
-    expected = {
+    expected_manifests = {
         path.relative_to(PROJECT_ROOT).as_posix()
         for pattern in ("plugin.yaml", "plugin.yml")
         for path in (PROJECT_ROOT / "plugins").rglob(pattern)
     }
-    assert expected, "expected bundled plugin manifests under plugins/"
+    assert expected_manifests, "expected bundled plugin manifests under plugins/"
+
+    photon_sidecar = PROJECT_ROOT / "plugins" / "platforms" / "photon" / "sidecar"
+    expected_sidecar = {
+        path.relative_to(PROJECT_ROOT).as_posix()
+        for path in photon_sidecar.iterdir()
+        if path.is_file() and not path.name.startswith(".")
+    }
+    assert expected_sidecar, "expected Photon sidecar runtime files"
+    expected = expected_manifests | expected_sidecar
 
     if kind == "wheel":
         with zipfile.ZipFile(artifacts[0]) as wheel:
@@ -93,4 +102,4 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
             }
 
     missing = sorted(expected - shipped)
-    assert not missing, f"{kind} omits bundled plugin manifests: {missing}"
+    assert not missing, f"{kind} omits bundled plugin runtime files: {missing}"

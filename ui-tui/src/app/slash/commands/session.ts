@@ -18,6 +18,7 @@ import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
+import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
 import type { SlashCommand } from '../types.js'
 
 const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
@@ -136,6 +137,10 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: { refresh: true } })
       }
 
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('model', arg, ctx)
+      }
+
       const switchModel = (confirmExpensiveModel = false) =>
         ctx.gateway
           .rpc<ConfigSetResponse>('config.set', {
@@ -239,6 +244,9 @@ export const sessionCommands: SlashCommand[] = [
     help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('compress', arg, ctx)
+      }
       ctx.gateway
         .rpc<SessionCompressResponse>('session.compress', {
           session_id: ctx.sid,
@@ -247,14 +255,17 @@ export const sessionCommands: SlashCommand[] = [
         .then(
           ctx.guarded<SessionCompressResponse>(r => {
             const current = getUiState()
-            const authorityKeys = ['stored_session_id', 'execution_epoch', 'execution_generation', 'execution_state', 'running'] as const
+            const authorityKeys = [
+              'stored_session_id',
+              'execution_epoch',
+              'execution_generation',
+              'execution_state',
+              'running'
+            ] as const
 
             // Compression is not attachment: a delayed reply cannot replace a
             // newer turn/owner, nor replace its transcript with an old snapshot.
-            if (
-              current.busy !== ctx.ui.busy ||
-              authorityKeys.some(key => current.info?.[key] !== ctx.ui.info?.[key])
-            ) {
+            if (current.busy !== ctx.ui.busy || authorityKeys.some(key => current.info?.[key] !== ctx.ui.info?.[key])) {
               return
             }
 
@@ -317,6 +328,9 @@ export const sessionCommands: SlashCommand[] = [
     help: 'branch the session',
     name: 'branch',
     run: (arg, ctx) => {
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('branch', arg, ctx)
+      }
       ctx.gateway.rpc<SessionBranchResponse>('session.branch', { name: arg, session_id: ctx.sid }).then(
         ctx.guarded<SessionBranchResponse>(r => {
           if (!r.session_id) {
@@ -651,7 +665,10 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!mode || mode === 'status') {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy' })
+          .rpc<ConfigGetValueResponse>('config.get', {
+            key: 'busy',
+            ...(ctx.gateway.gw.isCanonical ? { session_id: ctx.sid } : {})
+          })
           .then(
             ctx.guarded<ConfigGetValueResponse>(r => {
               const current = r.value || 'interrupt'
@@ -662,10 +679,18 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
+        .rpc<ConfigSetResponse>('config.set', {
+          key: 'busy',
+          value: mode,
+          ...(ctx.gateway.gw.isCanonical ? { session_id: ctx.sid } : {})
+        })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
             const next = r.value || mode
+
+            if (next === 'queue' || next === 'steer' || next === 'interrupt') {
+              patchUiState({ busyInputMode: next })
+            }
             ctx.transcript.sys(`busy input mode: ${next}`)
           })
         )

@@ -88,6 +88,12 @@ def get_secret_source(env_var: str) -> str | None:
     return _SECRET_SOURCES.get(env_var)
 
 
+def secret_source_names() -> tuple[str, ...]:
+    """Every env-var name some profile's external secret source supplied (names only — the map is
+    process-wide, so a value must be resolved through the active profile's secret scope)."""
+    return tuple(_SECRET_SOURCES)
+
+
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Return the external-secret value snapshot for ``hermes_home``."""
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))

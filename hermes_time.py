@@ -91,3 +91,24 @@ def now() -> datetime:
     """Current time as a tz-aware datetime: configured zone, else server-local."""
     tz = get_timezone()
     return datetime.now(tz) if tz is not None else datetime.now().astimezone()
+
+
+def format_epoch(ts: Optional[float]) -> Optional[str]:
+    """Render a Unix epoch as wall-clock text in the configured timezone.
+
+    Returns ISO-8601 with an explicit UTC offset, e.g. ``2026-09-09 20:18:49+07:00``.
+    Returns ``None`` for ``None`` and for anything unusable — callers hand this straight
+    into a JSON payload, so it must never raise.
+    """
+    if ts is None:
+        return None
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return None
+    tz = get_timezone()
+    try:
+        dt = datetime.fromtimestamp(ts, tz) if tz is not None else datetime.fromtimestamp(ts).astimezone()
+    except (OverflowError, OSError, ValueError):
+        return None
+    return dt.isoformat(sep=" ", timespec="seconds")

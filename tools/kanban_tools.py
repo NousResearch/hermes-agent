@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
+import hermes_time
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
@@ -320,10 +321,25 @@ _ATTACHMENT_FIELDS = tuple(
     "id filename content_type size uploaded_by stored_path created_at".split())
 _CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
 
+# Epoch fields that also get a "<name>_local" companion (#107400): the model was
+# converting bare epochs to wall-clock time in its head and getting it wrong.
+_TIMESTAMP_FIELDS = frozenset({"created_at", "started_at", "completed_at", "ended_at"})
+
 
 def _fields(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
-    """``{name: getattr(obj, name)}``; every value None when ``obj`` is None."""
-    return {n: getattr(obj, n) if obj is not None else None for n in names}
+    """``{name: getattr(obj, name)}``; every value None when ``obj`` is None.
+
+    Timestamp fields (see ``_TIMESTAMP_FIELDS``) also get a ``<name>_local`` string
+    rendered in the configured timezone, so the model can quote it instead of
+    converting the epoch itself.
+    """
+    out: dict[str, Any] = {}
+    for n in names:
+        value = getattr(obj, n) if obj is not None else None
+        out[n] = value
+        if n in _TIMESTAMP_FIELDS:
+            out[f"{n}_local"] = hermes_time.format_epoch(value)
+    return out
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:

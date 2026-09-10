@@ -1357,6 +1357,31 @@ _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
 
+# Markers that tell a restart apart from a crash.  ``.update_in_progress``
+# is written by ``hermes update`` (CLI) and ``.update_pending.json`` by the
+# in-chat ``/update`` flow; either one means the restart the user is about to
+# see was asked for, so the notification should read as a planned update
+# instead of the generic "your task was interrupted" warning.
+_UPDATE_MARKER_IN_PROGRESS = ".update_in_progress.json"
+_UPDATE_MARKER_CHAT_PENDING = ".update_pending.json"
+# An abandoned marker (update killed before it could clean up) must not
+# mislabel a genuine crash restart hours later.
+_UPDATE_MARKER_MAX_AGE_SECONDS = 3600.0
+
+
+def _planned_update_marker() -> Optional[Path]:
+    """Return the fresh update marker driving this restart, if any."""
+    for name in (_UPDATE_MARKER_IN_PROGRESS, _UPDATE_MARKER_CHAT_PENDING):
+        path = _hermes_home / name
+        try:
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            continue
+        if age <= _UPDATE_MARKER_MAX_AGE_SECONDS:
+            return path
+    return None
+
+
 _CONTROL_INTERRUPT_MESSAGES = frozenset(
     {
         _INTERRUPT_REASON_STOP.lower(),
@@ -3636,14 +3661,23 @@ class GatewayRunner:
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
-        action = "restarting" if self._restart_requested else "shutting down"
-        hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
-            if self._restart_requested
-            else "Your current task will be interrupted."
-        )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        # An update-driven restart is expected — say so, rather than sending
+        # the same ⚠️ wording a crash restart sends.
+        if self._restart_requested and _planned_update_marker() is not None:
+            msg = (
+                "⬆️ Updating Hermes — planned restart, back in a moment. "
+                "Your current task will be interrupted; send any message once "
+                "I'm back and I'll try to resume where you left off."
+            )
+        else:
+            action = "restarting" if self._restart_requested else "shutting down"
+            hint = (
+                "Your current task will be interrupted. "
+                "Send any message after restart and I'll try to resume where you left off."
+                if self._restart_requested
+                else "Your current task will be interrupted."
+            )
+            msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -4727,6 +4761,16 @@ class GatewayRunner:
                 )
             finally:
                 _clear_planned_restart_notification()
+
+        # Consume the CLI update marker once startup notifications have had
+        # their chance to read it — cleared here (not inside the notifier) so
+        # a deployment with no home channel doesn't leave it behind to
+        # mislabel the next crash restart.  The chat-``/update`` marker is
+        # owned by the update watcher, which clears it when the update ends.
+        try:
+            (_hermes_home / _UPDATE_MARKER_IN_PROGRESS).unlink(missing_ok=True)
+        except OSError as e:
+            logger.debug("Failed to clear update marker: %s", e)
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -15514,7 +15558,12 @@ class GatewayRunner:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        # Close the loop on the "updating" notice sent before we exited, so the
+        # pair reads as one planned event rather than two unexplained ones.
+        if _planned_update_marker() is not None:
+            message = "⬆️ Update complete — Hermes is back on the new version and ready."
+        else:
+            message = "♻️ Gateway online — Hermes is back and ready."
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)

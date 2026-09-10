@@ -10957,6 +10957,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except OSError:
                 pass
 
+        # Tell the gateway the restart it is about to perform is a planned
+        # update, so its shutdown/startup notifications read as an update
+        # instead of the generic "task interrupted" crash warning.  The new
+        # gateway clears this marker once it has announced it is back.
+        try:
+            _update_marker = get_hermes_home() / ".update_in_progress.json"
+            _update_marker.write_text(
+                json.dumps({"source": "cli", "started_at": _time.time()})
+            )
+        except OSError:
+            pass
+
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.

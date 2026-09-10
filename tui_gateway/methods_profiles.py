@@ -234,6 +234,32 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
 
+# hermes_cli.federation._write_role_identity() writes federation_role.json with these plus
+# manifest_version/profile_aliases/model_policy* -- a roster row needs only the governed
+# identity a Bot Mode teammate presents to peers, not the seeding provenance.
+_FEDERATION_ROLE_FIELDS = (
+    "role_id", "display_name", "department", "authority", "schedule", "skills", "toolsets", "handoffs",
+)
+
+
+def _profile_federation_role_field(row: dict, profile_dir) -> None:
+    """Attach ``federation_role`` from federation_role.json when present and valid; omit the key
+    entirely on any missing/unreadable/malformed file (a profile with no federation role is the
+    overwhelming common case, not an error)."""
+    def load():
+        role_path = Path(profile_dir) / "federation_role.json"
+        if not role_path.is_file():
+            return None
+        data = json.loads(role_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("schema_name") != "hermes_federation_role_v1":
+            return None
+        return {key: data[key] for key in _FEDERATION_ROLE_FIELDS if key in data}
+
+    role = _try(load, None)
+    if role:
+        row["federation_role"] = role
+
+
 @_profile_handler("profiles.list", 5061)
 def _(rid, params: dict) -> dict:
     """List Hermes profiles. ``include_sessions`` (default true) adds ``last_session`` /
@@ -248,6 +274,7 @@ def _(rid, params: dict) -> dict:
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
+        _profile_federation_role_field(row, Path(str(p.path)))
         out.append(row)
     # bot_mode_protocol: this backend injects the Bot Mode teammate-messaging protocol into every
     # session, so clients must not append it to SOUL.md.

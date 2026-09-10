@@ -158,3 +158,46 @@ class TestTelegramUtf16EntityOffsets:
         entity = _telegram_mention_entity(text, mention="/new@hermes_bot", entity_type="bot_command")
         msg = _message(text=text, entities=[entity])
         assert TelegramAdapter._extract_bot_mention_usernames(msg) == {"hermes_bot"}
+
+
+class TestBotTriggerTextCleaning:
+    """_clean_bot_trigger_text strips our own handle but must keep the whitespace
+    separating a group command (/cmd@botname <args>) from its arguments (#107082).
+
+    Telegram's group command menu auto-disambiguates to the /cmd@botname form; the
+    old trailing ``\\s*`` in the strip regex swallowed the command↔args separator,
+    so ``get_command()`` glued the args onto the command name and the message fell
+    through to default busy handling (interrupt instead of queue)."""
+
+    def test_group_command_keeps_arg_separator(self):
+        adapter = _make_adapter()
+        assert adapter._clean_bot_trigger_text("/queue@hermes_bot 帮我整理") == "/queue 帮我整理"
+
+    def test_group_command_still_resolves_as_command_with_args(self):
+        from gateway.platforms.event import MessageEvent
+
+        adapter = _make_adapter()
+        event = MessageEvent(text=adapter._clean_bot_trigger_text("/queue@hermes_bot do something"))
+        assert event.get_command() == "queue"
+        assert event.get_command_args() == "do something"
+
+    def test_command_without_args_unchanged(self):
+        adapter = _make_adapter()
+        assert adapter._clean_bot_trigger_text("/new@hermes_bot") == "/new"
+
+    def test_standalone_mention_still_cleaned(self):
+        adapter = _make_adapter()
+        assert adapter._clean_bot_trigger_text("@hermes_bot 你好") == "你好"
+
+    def test_punctuated_mention_still_cleaned(self):
+        adapter = _make_adapter()
+        assert adapter._clean_bot_trigger_text("@hermes_bot: run it") == "run it"
+
+    def test_mid_sentence_mention_tokens_preserved(self):
+        adapter = _make_adapter()
+        assert adapter._clean_bot_trigger_text("hey @hermes_bot do X") == "hey do X"
+
+    def test_multiline_mention_keeps_newline_boundaries(self):
+        adapter = _make_adapter()
+        cleaned = adapter._clean_bot_trigger_text("line one\n@hermes_bot line two")
+        assert cleaned.splitlines()[0] == "line one"

@@ -5392,7 +5392,11 @@ class TelegramAdapter(BasePlatformAdapter):
         bot_username = self._current_bot_username()
         if not text or not bot_username:
             return text
-        cleaned = re.sub(rf"(?i)@{re.escape(bot_username)}\b[,:\-]*\s*", "", text).strip()
+        # Whitespace collapses to the LEFT of the handle, never to its right: in a
+        # group command (/cmd@botname <args>) the whitespace after the handle is the
+        # command↔args separator and must survive (#107082). Left-side [ \t]* keeps
+        # mid-text mentions from leaving doubled spaces without eating newlines.
+        cleaned = re.sub(rf"(?i)[ \t]*@{re.escape(bot_username)}\b[,:\-]*", "", text).strip()
         return cleaned or text
 
     def _topic_gates_pass(self, thread_id, *, warn_non_numeric: bool) -> Optional[bool]:

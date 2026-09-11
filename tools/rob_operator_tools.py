@@ -95,7 +95,14 @@ def _run(command: str, *, timeout: int = _DEFAULT_TIMEOUT_S, host: str | None = 
     duration_ms = int((time.monotonic() - started) * 1000)
 
     combined = (proc.stdout or "") + (("\n[stderr]\n" + proc.stderr) if proc.stderr else "")
-    combined = redact_text(combined)[:_MAX_OUTPUT_CHARS]
+    # Bound BEFORE redacting, not after: redact_text's cost scales with
+    # input size, and an unbounded command (docker logs, git diff, ...)
+    # can produce megabytes of output — redacting the full thing before
+    # truncating means the bound this line exists to enforce doesn't
+    # actually cap the CPU cost of getting there. Truncating first is safe
+    # from a leak perspective too: content past the cut is simply absent
+    # from the output, never partially redacted-then-exposed.
+    combined = redact_text(combined[:_MAX_OUTPUT_CHARS])
     if proc.returncode != 0:
         return ToolResult(ok=False, error=combined or f"exited {proc.returncode}", duration_ms=duration_ms)
     return ToolResult(ok=True, output=combined, duration_ms=duration_ms)

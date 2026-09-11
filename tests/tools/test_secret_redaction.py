@@ -5,6 +5,8 @@ exposure that happened during this engagement (a `docker inspect` env dump
 whose name-only filter missed the embedded password inside the URI value).
 """
 
+import time
+
 from tools.secret_redaction import redact_mapping, redact_text
 
 
@@ -281,3 +283,26 @@ class TestFailClosedBehavior:
 
     def test_none_safe(self):
         assert redact_text(None) is None
+
+
+class TestUriPatternNotCatastrophicallySlow:
+    """Regression: `_URI_CREDENTIAL_PATTERN`'s scheme group was an
+    unbounded `[a-zA-Z0-9+.-]*` — on a long run of scheme-shaped characters
+    with no `://` ever following, the greedy match backtracks one
+    character at a time from every one of n start positions, an O(n^2)
+    blowup. Live-proven through the real, registered `rob_http_probe` tool:
+    ~30s of CPU on a 200,000-char adversarial line. Bounding the scheme's
+    repetition (no real URI scheme is anywhere near 16 characters) removes
+    the pathological case without narrowing what actually gets redacted."""
+
+    def test_long_alnum_run_with_no_scheme_separator_is_fast(self):
+        adversarial = "a" * 200_000
+        started = time.monotonic()
+        redact_text(adversarial)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"took {elapsed:.2f}s — expected well under 1s"
+
+    def test_realistic_uri_still_redacted_after_bounding(self):
+        # The bound must not break genuinely long-ish real schemes.
+        assert "hunter2" not in redact_text("mongodb+srv://user:hunter2@cluster0.example.net/db")
+        assert "hunter2" not in redact_text("postgresql://user:hunter2@host:5432/db")

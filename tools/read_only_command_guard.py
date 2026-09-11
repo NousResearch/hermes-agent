@@ -140,21 +140,46 @@ def _allow() -> GuardResult:
     return GuardResult(allowed=True)
 
 
-_FIND_DENIED_PREDICATES = {
-    "-exec",
-    "-execdir",
-    "-ok",
-    "-okdir",
-    "-delete",
-    "-fprintf",
-    "-fls",
-}
+# Allowlist-first, not a denylist: an earlier version denied a fixed set
+# of mutating/executing predicates (-exec, -execdir, -ok, -okdir, -delete,
+# -fprintf, -fls) and simply never enumerated GNU find's other two
+# file-writing predicates, -fprint and -fprint0 (both create a file if
+# absent and TRUNCATE it if present — confirmed live: `find /tmp -maxdepth
+# 0 -fprint /tmp/x` created /tmp/x; run against a file with real content,
+# it destroyed that content). This is the exact same denylist antipattern
+# `_validate_curl`/`_validate_journalctl` were rewritten away from after
+# repeated bypasses — inverted the same way here before it needed its own
+# incident: a predicate/option is permitted only if it exactly matches one
+# of the safe, read-only set below (test/print/traverse predicates and
+# find's own boolean operators). Anything else, including any future
+# find predicate this code didn't anticipate, is denied by not being a
+# match — not by needing to be individually enumerated as dangerous.
+_FIND_ALLOWED_TOKENS = frozenset({
+    "-name", "-iname", "-path", "-ipath", "-regex", "-iregex",
+    "-type", "-maxdepth", "-mindepth",
+    "-mtime", "-mmin", "-ctime", "-cmin", "-atime", "-amin",
+    "-size", "-newer", "-samefile",
+    "-empty", "-perm", "-user", "-group", "-uid", "-gid", "-links", "-inum",
+    "-readable", "-writable", "-executable",
+    "-print", "-print0",
+    "-prune", "-depth", "-follow", "-xdev", "-mount", "-daystart", "-noleaf",
+    "-not", "-a", "-and", "-o", "-or", "!", "(", ")",
+})
+
+# find's own `+N`/`-N`/`N` numeric-threshold argument convention (e.g.
+# `-mtime -7`, `-size +10k`) — a plain value, never a predicate, and
+# denying it outright (it starts with `-` like a flag) would break every
+# legitimate use of a "less than" time/size qualifier.
+_FIND_NUMERIC_ARG_PATTERN = re.compile(r"^[+-]?\d+[A-Za-z]{0,2}$")
 
 
 def _validate_find(argv: list[str]) -> GuardResult:
     for tok in argv[1:]:
-        if tok in _FIND_DENIED_PREDICATES:
-            return _deny("find", f"find predicate '{tok}' can mutate or execute — denied")
+        if not tok.startswith("-") or tok in _FIND_ALLOWED_TOKENS:
+            continue
+        if _FIND_NUMERIC_ARG_PATTERN.match(tok):
+            continue
+        return _deny("find", f"find predicate/option '{tok}' is not in the read-only allowlist")
     return _allow()
 
 
@@ -456,7 +481,7 @@ def _validate_tailscale(argv: list[str]) -> GuardResult:
 # no subcommand semantics to police. `find` still gets a validator because
 # its *predicates*, not a subcommand, are what can mutate.
 _ALLOWED_SIMPLE = frozenset({
-    "ls", "cat", "head", "tail", "grep", "rg", "stat", "file", "readlink",
+    "ls", "cat", "head", "tail", "grep", "stat", "readlink",
     "du", "df", "pwd",
     "ps", "pgrep", "pstree", "uptime", "uname", "free", "id", "whoami",
     "which", "whereis",
@@ -469,6 +494,33 @@ _ALLOWED_SIMPLE = frozenset({
     "cd",
 })
 
+
+def _validate_file(argv: list[str]) -> GuardResult:
+    """`file` sat in `_ALLOWED_SIMPLE` (allowed outright, no validator at
+    all) even though `-C`/`--compile` writes a compiled magic database to
+    disk — confirmed live: `file -C -m /tmp/x` created `x.mgc` in the
+    current directory. An allowlisted-with-no-validator entry is the same
+    blind spot as an incomplete denylist elsewhere in this module; `file`
+    is common enough to keep, with its one write flag denied."""
+    for tok in argv[1:]:
+        flag = tok.split("=", 1)[0]
+        if flag in ("-C", "--compile"):
+            return _deny("file", f"'{flag}' is not permitted (writes a compiled magic file)")
+    return _allow()
+
+
+def _validate_rg(argv: list[str]) -> GuardResult:
+    """`rg` sat in `_ALLOWED_SIMPLE` alongside `grep`, but unlike grep it
+    has `--pre <command>`, which spawns an arbitrary executable per
+    searched file — not installed on NiPoGi today, but the allowlist entry
+    itself was already live regardless of what's installed."""
+    for tok in argv[1:]:
+        flag = tok.split("=", 1)[0]
+        if flag in ("--pre", "--pre-glob"):
+            return _deny("rg", f"'{flag}' is not permitted (spawns an external command per file)")
+    return _allow()
+
+
 _SUBCOMMAND_VALIDATORS = {
     "find": _validate_find,
     "git": _validate_git,
@@ -479,6 +531,8 @@ _SUBCOMMAND_VALIDATORS = {
     "openssl": _validate_openssl,
     "ip": _validate_ip,
     "tailscale": _validate_tailscale,
+    "file": _validate_file,
+    "rg": _validate_rg,
 }
 
 # Executables that are an unconditional escape hatch regardless of args —

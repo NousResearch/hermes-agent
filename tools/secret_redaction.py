@@ -118,7 +118,18 @@ def _redact_name_value_pairs(line: str) -> str:
 # empty username) — redact only the credential portion, keep the
 # scheme/host visible since that's the useful diagnostic part.
 _URI_CREDENTIAL_PATTERN = re.compile(
-    r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)"
+    # The scheme's repeating group was unbounded (`*`), which is
+    # catastrophic on a long run of scheme-shaped characters with no
+    # `://` ever following (e.g. a long alnum blob in an HTTP response
+    # body or a log line) — the greedy match consumes to end-of-line and
+    # then backtracks one character at a time from every one of n start
+    # positions, an O(n^2) blowup confirmed live: ~30s of CPU on a 200,000
+    # -char adversarial line through the real, registered `rob_http_probe`
+    # tool. No real URI scheme is anywhere near this long (the longest in
+    # common use, e.g. "postgresql"/"mongodb+srv", is under 16 chars) —
+    # bounding the repetition removes the pathological case entirely
+    # without narrowing what actually gets redacted.
+    r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]{0,15}://)"
     r"(?P<user>[^:@/\s]*):(?P<pass>[^@/\s]+)"
     r"(?P<at>@)"
 )

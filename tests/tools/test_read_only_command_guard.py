@@ -38,10 +38,48 @@ class TestFilesystemAllowed:
 
     def test_find_readonly(self):
         assert allowed("find /var/log -name '*.log' -mtime -1")
+        assert allowed("find /tmp -type f -size +10k -mtime -7")
+        assert allowed("find . -maxdepth 2 -iname '*.py' -not -path '*/node_modules/*'")
+
+    def test_find_write_predicates_denied(self):
+        # Regression: an earlier denylist enumerated -exec/-execdir/-ok/
+        # -okdir/-delete/-fprintf/-fls but omitted GNU find's other two
+        # file-writing predicates, -fprint and -fprint0 — both CREATE a
+        # file if absent and TRUNCATE it if present. Live-proven before
+        # this fix: `find /tmp -maxdepth 0 -fprint /tmp/x` created /tmp/x;
+        # run against a file with real content, it destroyed that content.
+        # This validator is now an allowlist, so any current or future
+        # find predicate this code didn't anticipate is denied by not
+        # being a match, not by needing individual enumeration.
+        assert denied("find /tmp -maxdepth 0 -fprint /tmp/x")
+        assert denied("find /tmp -maxdepth 0 -fprint0 /tmp/x")
+        assert denied("find /tmp -maxdepth 0 -fprintf '%p\\n' /tmp/x")
+        assert denied("find /tmp -maxdepth 0 -fls /tmp/x")
+        assert denied("find . -exec rm {} +")
+        assert denied("find . -execdir rm {} +")
+        assert denied("find . -ok rm {} \\;")
+        assert denied("find . -okdir rm {} \\;")
+        assert denied("find . -delete")
 
     def test_stat_file_readlink(self):
         assert allowed("stat /etc/hostname")
         assert allowed("file /bin/ls")
+        assert allowed("file -i /bin/ls")
+
+    def test_file_compile_flag_denied(self):
+        # Regression: `file` sat in the plain allowlist with NO validator
+        # at all — `-C`/`--compile` writes a compiled magic database to
+        # disk, live-proven (`file -C -m /tmp/x` created `x.mgc`).
+        assert denied("file -C -m /tmp/x")
+        assert denied("file --compile -m /tmp/x")
+
+    def test_rg_pre_flag_denied(self):
+        # Regression: `rg` sat in the plain allowlist with NO validator —
+        # unlike grep, ripgrep's `--pre <command>` spawns an arbitrary
+        # executable per searched file.
+        assert denied("rg --pre /usr/bin/id -e . /etc/hostname")
+        assert denied("rg --pre-glob '*.txt' -e . .")
+        assert allowed("rg --json foo .")
         assert allowed("readlink -f /etc/resolv.conf")
 
     def test_du_df_pwd(self):

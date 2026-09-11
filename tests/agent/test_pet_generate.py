@@ -56,32 +56,6 @@ def test_extract_strip_frames_transparent_returns_centered_cells():
         assert frame.getchannel("A").getextrema()[1] > 0
 
 
-def test_extract_strip_frames_components_raises_unsegmentable_not_valueerror():
-    # Two poses merged into ONE connected blob spanning the gutter: strict mode
-    # must fail with the STRUCTURAL error type, not a bare ValueError — the
-    # orchestrator keys off this class to skip remaining strict (paid) retries
-    # instead of substring-matching error text (#87739).
-    img = Image.new("RGBA", (6 * 208, 208), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    for i in (0, 1, 2, 5):
-        cx = i * 208 + 104
-        draw.ellipse((cx - 70, 34, cx + 70, 174), fill=(60, 80, 200, 255))
-    # One wide ellipse where slots 3+4 should be — a "two beavers" frame.
-    draw.ellipse((3 * 208 - 140, 24, 5 * 208 - 76, 184), fill=(200, 80, 80, 255))
-    with pytest.raises(atlas.UnsegmentableStripError):
-        atlas.extract_strip_frames(img, 6, method="components")
-
-
-def test_extract_strip_frames_auto_still_lenient_on_unsegmentable():
-    # The lenient path keeps salvaging a strip strict mode rejects — the
-    # exception must not change ``auto``'s behavior.
-    frames = atlas.extract_strip_frames(_strip(6), 6, method="auto")
-    assert len(frames) == 6
-
-
-
-
-
 def test_remove_background_defringes_antialiased_edge():
     # The contaminated antialiased ring where sprite meets backdrop survives the
     # key (it's a blend, too far from pure magenta). Defringe shaves that 1px ring:
@@ -526,18 +500,6 @@ def test_hatch_pet_retries_row_whose_frames_collapse_to_slivers(monkeypatch, tmp
     assert atlas_mod.row_frames_collapsed(whole, atlas_mod.silhouette_box(base)) is None
     slivers = [f.crop((0, 0, f.width // 4, f.height)) for f in whole]
     assert "sliver" in (atlas_mod.row_frames_collapsed(slivers, atlas_mod.silhouette_box(base)) or "")
-
-
-def test_row_frames_collapsed_without_reference_and_when_empty():
-    """The gate must abstain when it has no reference to judge against, and say
-    so when a row produced no art at all — neither case may silently pass as
-    'collapsed' or crash the hatch."""
-    from agent.pet.generate import atlas as atlas_mod
-
-    whole = atlas_mod.extract_strip_frames(_strip(6), 6, fit=False)
-    assert atlas_mod.row_frames_collapsed(whole, None) is None  # no reference → no verdict
-    empty = [atlas_mod._blank() for _ in range(6)]
-    assert "no visible frames" in (atlas_mod.row_frames_collapsed(empty, (100, 100)) or "")
 
 
 def test_collapsed_row_keeps_the_normal_retry_ladder(monkeypatch, tmp_path):

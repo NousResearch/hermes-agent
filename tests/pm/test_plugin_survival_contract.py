@@ -81,6 +81,7 @@ def test_sidecar_no_root_pyproject_excludes_nested_and_external(tmp_path, monkey
         '[project]\nname = "mnemosyne-sidecar"\nversion = "1.0.0"\n', encoding="utf-8"
     )
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     assert ws._is_member_candidate(wrapper) is False, (
@@ -162,6 +163,7 @@ def admission_env(tmp_path, monkeypatch):
     ensure = importlib.import_module("pm.ensure")
     import pm.paths
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(pm.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ws.paths, "repo_root", lambda: core)

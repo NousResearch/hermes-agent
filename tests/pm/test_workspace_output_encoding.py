@@ -2,6 +2,8 @@
 
 import importlib
 import locale
+import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -41,9 +43,12 @@ def test_uv_failure_retains_utf8_build_diagnostic(
     raw = diagnostic.encode("utf-8") + suffix + b"\n"
     expected = diagnostic + ("�" if suffix else "")
     monkeypatch.setattr(ws, "_generate_pyproject", lambda *a, **k: (tmp_path, False))
-    from pathlib import Path
+    from pm.environment import PythonEnvironment
 
-    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(sys.executable), Path(sys.executable)))
+    environment = PythonEnvironment(
+        uv=Path(sys.executable), python=Path(sys.executable),
+        destination=tmp_path / "venv", cache=tmp_path / "cache", env=dict(os.environ),
+    )
     completed = []
 
     def run_uv(cmd, **kwargs):
@@ -55,9 +60,10 @@ def test_uv_failure_retains_utf8_build_diagnostic(
         completed.append(result)
         return result
 
-    monkeypatch.setattr(ws.subprocess, "run", run_uv)
+    monkeypatch.setattr("pm.environment.subprocess.run", run_uv)
     with pytest.raises(InstallError) as excinfo:
-        ws.lock_and_sync([], venv_dir=tmp_path / "venv", root=tmp_path)
+        ws.lock_and_sync([], venv_dir=environment.destination, root=tmp_path,
+                         source=tmp_path, environment=environment)
 
     assert type(excinfo.value) is InstallError  # A build error is not a resolver conflict.
     assert excinfo.value.cause == f"uv {stage} exited 17: {expected}"

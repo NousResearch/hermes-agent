@@ -141,7 +141,8 @@ build_editable = build_wheel
     return source, uv, env
 
 
-def test_public_build_installs_all_extras_at_explicit_destination(installable_project, tmp_path, monkeypatch):
+@pytest.mark.parametrize("sealed", [False, True])
+def test_public_build_installs_all_extras_at_explicit_destination(installable_project, tmp_path, monkeypatch, sealed):
     from pm import build_environment
     import pm.paths
     import pm.workspace
@@ -154,11 +155,17 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     executable = build_environment(
         source=source, python=Path(sys.executable), out=tmp_path / "native environment",
         cache=tmp_path / "cache", env=env, all_extras=True, offline=True,
+        sealed=sealed,
     )
     assert _run([str(executable), "-I", "-c",
                  "import root_app, member_dep, chosen_dep, other_dep; print(root_app.VALUE)"],
                 cwd=tmp_path, env=env) == "installed from the explicit source"
     assert executable.parent.parent == tmp_path / "native environment"
+    from hermes_cli.runtime_paths import site_packages
+
+    site = site_packages(executable.parent.parent)
+    assert (site / "_virtualenv.pth").exists() is not sealed
+    assert (site / "construction_root.pth").is_file(), "load-bearing .pth must survive sealing"
     assert (source / "uv.lock").read_bytes() == locked
     assert dict(os.environ) == before
     assert not Path(env["HERMES_HOME"]).exists()
@@ -320,6 +327,11 @@ def test_failed_build_removes_only_its_candidate(installable_project, tmp_path, 
                                           out=previous, env=env, cache=tmp_path / "cache", offline=True)
     cfg = (previous / "pyvenv.cfg").read_bytes()
     source_lock = (source / "uv.lock").read_bytes()
+    # Check destination refusal with valid inputs. The contract does not specify
+    # which error comes first when the source is also damaged.
+    with pytest.raises(FileExistsError):
+        build_environment(source=source, python=Path(sys.executable),
+                          out=previous, env=env, cache=tmp_path / "cache", offline=True)
     if damage == "source":
         (source / "root_app.py").unlink()
     elif damage == "check":
@@ -334,9 +346,6 @@ def test_failed_build_removes_only_its_candidate(installable_project, tmp_path, 
         build_environment(source=source, python=Path(sys.executable),
                                  out=candidate, env=env, cache=tmp_path / "cold-cache", offline=True)
     assert not candidate.exists()
-    with pytest.raises(FileExistsError):
-        build_environment(source=source, python=Path(sys.executable),
-                                 out=previous, env=env, cache=tmp_path / "cache", offline=True)
     assert (previous / "pyvenv.cfg").read_bytes() == cfg
     assert _run([str(executable), "-I", "-c", "import base_dep; print(base_dep.__version__)"],
                 cwd=tmp_path, env=env) == "1.0"

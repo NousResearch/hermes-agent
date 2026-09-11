@@ -490,12 +490,18 @@ def _terminate_update_check_fetch(proc: subprocess.Popen) -> bool:
                 creationflags=windows_hide_flags(),
             )
         except (OSError, subprocess.TimeoutExpired):
-            proc.kill()
-            proc.wait(timeout=5)
+            with suppress(OSError):
+                proc.kill()
+            with suppress(OSError, subprocess.TimeoutExpired):
+                proc.wait(timeout=5)
             return False
         if killed.returncode != 0:
-            proc.kill()
-        proc.wait(timeout=5)
+            with suppress(OSError):
+                proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
         return killed.returncode == 0
 
     import signal
@@ -505,6 +511,8 @@ def _terminate_update_check_fetch(proc: subprocess.Popen) -> bool:
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         pass
+    except OSError:
+        return False
     with suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=1)
 
@@ -512,17 +520,26 @@ def _terminate_update_check_fetch(proc: subprocess.Popen) -> bool:
         os.killpg(pgid, 0)
     except ProcessLookupError:
         return True
+    except OSError:
+        return False
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    proc.wait(timeout=5)
+    except OSError:
+        return False
+    try:
+        proc.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
     deadline = _time.monotonic() + 5
     while _time.monotonic() < deadline:
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
             return True
+        except OSError:
+            return False
         _time.sleep(0.05)
     return False
 
@@ -551,25 +568,22 @@ def _run_update_check_fetch(
         **_no_prompt_git_kwargs(),
         **_update_check_fetch_popen_kwargs(),
     )
-    safe_to_sweep = True
     try:
         stdout, stderr = proc.communicate(timeout=timeout_seconds)
         result = subprocess.CompletedProcess(
             cmd, proc.returncode, stdout=stdout, stderr=stderr
         )
     except subprocess.TimeoutExpired:
-        safe_to_sweep = _terminate_update_check_fetch(proc)
+        _terminate_update_check_fetch(proc)
         result = subprocess.CompletedProcess(
             cmd,
             124,
             stdout="",
             stderr=f"git fetch timed out after {timeout_seconds:g} seconds",
         )
-
-    if result.returncode != 0 and safe_to_sweep:
-        from hermes_cli.gitlock import clear_stale_tmp_packs
-
-        clear_stale_tmp_packs(repo_root, min_age_seconds=0)
+    except BaseException:
+        _terminate_update_check_fetch(proc)
+        raise
     return result
 
 

@@ -28,7 +28,7 @@ class _FetchProcess:
         return self._stdout, self._stderr
 
 
-def test_update_check_fetch_is_bounded_and_sweeps_timeout_artifacts(tmp_path: Path) -> None:
+def test_update_check_fetch_is_bounded_and_terminates_timeout_tree(tmp_path: Path) -> None:
     from hermes_cli import update_cmd
 
     proc = _FetchProcess(timeout=True)
@@ -37,7 +37,6 @@ def test_update_check_fetch_is_bounded_and_sweeps_timeout_artifacts(tmp_path: Pa
         patch.object(
             update_cmd, "_terminate_update_check_fetch", return_value=True
         ) as terminate,
-        patch("hermes_cli.gitlock.clear_stale_tmp_packs") as clear,
     ):
         result = update_cmd._run_update_check_fetch(
             ["git"], [], "origin", "main", tmp_path
@@ -52,60 +51,49 @@ def test_update_check_fetch_is_bounded_and_sweeps_timeout_artifacts(tmp_path: Pa
     else:
         assert popen.call_args.kwargs["start_new_session"] is True
     terminate.assert_called_once_with(proc)
-    clear.assert_called_once_with(tmp_path, min_age_seconds=0)
 
 
-def test_update_check_fetch_does_not_sweep_if_tree_cannot_be_reaped(tmp_path: Path) -> None:
+def test_update_check_fetch_returns_timeout_if_tree_cannot_be_reaped(tmp_path: Path) -> None:
     from hermes_cli import update_cmd
 
     proc = _FetchProcess(timeout=True)
     with (
         patch.object(update_cmd.subprocess, "Popen", return_value=proc),
         patch.object(update_cmd, "_terminate_update_check_fetch", return_value=False),
-        patch("hermes_cli.gitlock.clear_stale_tmp_packs") as clear,
     ):
         result = update_cmd._run_update_check_fetch(
             ["git"], [], "origin", "main", tmp_path
         )
 
     assert result.returncode == 124
-    clear.assert_not_called()
 
 
-def test_update_check_fetch_sweeps_artifacts_after_git_failure(tmp_path: Path) -> None:
+def test_update_check_fetch_preserves_git_failure(tmp_path: Path) -> None:
     from hermes_cli import update_cmd
 
     failed = _FetchProcess(returncode=128, stderr="fatal: transfer aborted")
-    with (
-        patch.object(update_cmd.subprocess, "Popen", return_value=failed),
-        patch("hermes_cli.gitlock.clear_stale_tmp_packs") as clear,
-    ):
+    with patch.object(update_cmd.subprocess, "Popen", return_value=failed):
         result = update_cmd._run_update_check_fetch(
             ["git"], ["--depth", "1"], "origin", "main", tmp_path
         )
 
     assert result.returncode == 128
     assert result.stderr == "fatal: transfer aborted"
-    clear.assert_called_once_with(tmp_path, min_age_seconds=0)
 
 
-def test_update_check_fetch_keeps_success_path_cleanup_free(tmp_path: Path) -> None:
+def test_update_check_fetch_preserves_success(tmp_path: Path) -> None:
     from hermes_cli import update_cmd
 
     succeeded = _FetchProcess()
-    with (
-        patch.object(update_cmd.subprocess, "Popen", return_value=succeeded),
-        patch("hermes_cli.gitlock.clear_stale_tmp_packs") as clear,
-    ):
+    with patch.object(update_cmd.subprocess, "Popen", return_value=succeeded):
         result = update_cmd._run_update_check_fetch(
             ["git"], [], "origin", "main", tmp_path
         )
 
     assert result.returncode == 0
-    clear.assert_not_called()
 
 
-def test_update_check_fetch_timeout_stops_spawned_child_before_sweep(
+def test_update_check_fetch_timeout_stops_spawned_child_before_return(
     tmp_path: Path,
 ) -> None:
     from hermes_cli import update_cmd
@@ -120,24 +108,7 @@ def test_update_check_fetch_timeout_stops_spawned_child_before_sweep(
         encoding="utf-8",
     )
 
-    def assert_child_stopped(*_args, **_kwargs) -> list[str]:
-        import psutil
-
-        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
-        try:
-            child = psutil.Process(child_pid)
-        except psutil.NoSuchProcess:
-            return []
-        assert not child.is_running() or child.status() == psutil.STATUS_ZOMBIE
-        return []
-
-    with (
-        patch.object(update_cmd, "UPDATE_CHECK_FETCH_TIMEOUT_SECONDS", 0.5),
-        patch(
-            "hermes_cli.gitlock.clear_stale_tmp_packs",
-            side_effect=assert_child_stopped,
-        ),
-    ):
+    with patch.object(update_cmd, "UPDATE_CHECK_FETCH_TIMEOUT_SECONDS", 2.5):
         result = update_cmd._run_update_check_fetch(
             [sys.executable, str(script)], [], "origin", "main", tmp_path
         )
@@ -172,3 +143,24 @@ def test_update_check_fetch_reports_effective_timeout(tmp_path: Path) -> None:
         )
 
     assert result.stderr == "git fetch timed out after 10 seconds"
+
+
+def test_update_check_fetch_interrupt_terminates_tree(tmp_path: Path) -> None:
+    from hermes_cli import update_cmd
+
+    proc = _FetchProcess()
+    proc.communicate = lambda timeout=None: (_ for _ in ()).throw(KeyboardInterrupt())
+    with (
+        patch.object(update_cmd.subprocess, "Popen", return_value=proc),
+        patch.object(update_cmd, "_terminate_update_check_fetch") as terminate,
+    ):
+        try:
+            update_cmd._run_update_check_fetch(
+                ["git"], [], "origin", "main", tmp_path
+            )
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError("KeyboardInterrupt was not propagated")
+
+    terminate.assert_called_once_with(proc)

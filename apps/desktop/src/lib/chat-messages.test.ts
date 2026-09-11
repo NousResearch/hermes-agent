@@ -1417,7 +1417,8 @@ describe('sealOpenToolParts', () => {
 
     const next = sealOpenToolParts(messages)
 
-    expect(next[0].parts[0]).toHaveProperty('result')
+    expect(next[0].parts[0]).not.toHaveProperty('result')
+    expect(next[0].parts[0].completedAt).toBeDefined()
   })
 
   it('leaves already-completed tool parts untouched', () => {
@@ -1444,7 +1445,8 @@ describe('sealOpenToolParts', () => {
     const next = sealOpenToolParts(messages)
 
     expect(next[0].parts[0]).toBe(text)
-    expect(next[0].parts[1]).toHaveProperty('result')
+    expect(next[0].parts[1]).not.toHaveProperty('result')
+    expect(next[0].parts[1].completedAt).toBeDefined()
   })
 
   it('returns the same array reference when nothing needs sealing', () => {

@@ -22,7 +22,7 @@ export function skillActivityTitle(part: SkillCall, live = true): string | undef
   const args = parseMaybeObject(part.args)
   const result = parseMaybeObject(part.result)
 
-  const failed = Boolean(
+  const failed = result.success !== true && result.ok !== true && Boolean(
     part.isError || extractToolErrorMessage(part.result) || result.success === false || result.ok === false
   )
 

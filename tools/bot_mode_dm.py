@@ -325,6 +325,39 @@ def _unlink_dm_file(path: str) -> None:
         os.unlink(path)
 
 
+def _delivery_receipt_path(path: str) -> Path:
+    return Path(f"{path}.receipt.json")
+
+
+def _read_delivery_receipt(path: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(_delivery_receipt_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_delivery_receipt(
+    path: str, argv: list[str], *, stdin_file: bool, reason: str, error: str,
+    profile_home: Path | None = None, author: Optional[dict] = None, returncode: int = 1,
+) -> dict[str, Any]:
+    receipt = {
+        "status": "not_delivered" if reason == "target_busy" else "ambiguous",
+        "reason": reason or "unknown",
+        "error": error,
+        "delivery_id": hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest(),
+        "payload_file": path,
+        "returncode": returncode,
+        "retry_command": _delivery_command(
+            argv, path, stdin_file=stdin_file, profile_home=profile_home, author=author,
+        ),
+    }
+    _delivery_receipt_path(path).write_text(
+        json.dumps(receipt, ensure_ascii=False, sort_keys=True), encoding="utf-8",
+    )
+    return receipt
+
+
 def _write_dm_file(content: str) -> str:
     """The message rides a temp file — never inline shell text."""
     cleanup_bot_dm_cache()
@@ -361,9 +394,9 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
-def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
+def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> tuple[int, str, str]:
     """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
-    the transport's streams and returns its exit code. Transient failures re-run the
+    the transport's streams and returns ``(exit code, reason, error)``. Transient failures re-run the
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
     compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
 
@@ -390,19 +423,23 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
         # never ran — tell the sender plainly instead of leaking a raw lease error.
         # See #100523.
         who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
-        print(json.dumps({
-            "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
-                     "surface right now, so your message was NOT delivered. Try again later.",
-            "reason": "target_busy",
-        }))
-        return 1
+        error = (
+            f"Delivery failed: @{who}'s Bot Chat is open on another "
+            "surface right now, so your message was NOT delivered. Try again later."
+        )
+        return 1, "target_busy", error
     # Re-emit the transport's streams: stdout is the reply text the
     # completion notification carries back to the sending agent.
     for stream, text in ((sys.stdout, proc.stdout), (sys.stderr, proc.stderr)):
         if text:
             stream.write(text)
             stream.flush()
-    return proc.returncode
+    if proc.returncode != 0:
+        from tools.bot_failure_reasons import classify_agent_error
+
+        detail = (proc.stderr or proc.stdout or "").strip()[-500:]
+        return proc.returncode, classify_agent_error(detail), detail
+    return 0, "", ""
 
 
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
@@ -471,8 +508,10 @@ def _local_delivery_home(argv: list[str]) -> Path | None:
 def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                   profile_home: Path | None = None, author: Optional[dict] = None) -> int:
     """Route to the live owner before attempting a CLI transport. Live deliveries
-    retain their intent/payload and immutable receipt; only CLI/peer payloads are
-    removed after consumption. The CLI turn window holds the profile lock, so two
+    retain their intent/payload and immutable receipt; CLI/peer payloads are
+    removed only after successful consumption. A failed CLI/peer attempt keeps the
+    payload and a typed receipt so a re-run reports that outcome instead of sending
+    the DM twice. The CLI turn window holds the profile lock, so two
     deliveries into one profile queue; a bounded wait ends in a 'target_busy' refusal.
     ``author`` rides to the child as HERMES_TURN_AUTHOR; ``hermes peer dm`` forwards it in the request body.
 
@@ -482,6 +521,15 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     ever minted. Auth/quota/config failures never retry. Peer transports (stdin mode) retry on their own
     gateway's deliver path, not here.
     """
+    cached_receipt = _read_delivery_receipt(dm_file)
+    if cached_receipt is not None:
+        print(json.dumps(cached_receipt, ensure_ascii=False))
+        if cached_receipt.get("status") == "delivered":
+            return 0
+        try:
+            return int(cached_receipt.get("returncode") or 1)
+        except (TypeError, ValueError):
+            return 1
     # The live consumer owns turn admission; never compete for its CLI lease.
     if not stdin_file:
         home = profile_home or _local_delivery_home(argv)
@@ -496,19 +544,44 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                 return 1
             if record is not None:
                 return _wait_live_dm(record["profile_home"], record["delivery_id"])
+    delivered = False
+    failure_reason = "unknown"
+    failure_error = ""
+    returncode = 1
     try:
         from tools.bot_relay import delivery_env
 
         env = delivery_env(author)
         with _delivery_lock(argv, stdin_file=stdin_file):
             if not stdin_file:
-                return _run_local_turn(argv, dm_file, env=env)
-            # Keep the file open until the transport exits; cleanup occurs
-            # after subprocess.run returns, not merely after stdin reaches EOF.
-            with open(dm_file, "r", encoding="utf-8") as stream:
-                return subprocess.run(argv, stdin=stream, check=False, env=env).returncode
+                returncode, failure_reason, failure_error = _run_local_turn(argv, dm_file, env=env)
+            else:
+                # Keep the file open until the transport exits; cleanup occurs
+                # after subprocess.run returns, not merely after stdin reaches EOF.
+                with open(dm_file, "r", encoding="utf-8") as stream:
+                    returncode = subprocess.run(argv, stdin=stream, check=False, env=env).returncode
+            delivered = returncode == 0
+            return returncode
+    except Exception as exc:
+        failure_reason = getattr(exc, "reason", None) or "unknown"
+        failure_error = str(exc)
+        if failure_reason == "target_busy":
+            return 1
+        raise
     finally:
-        _unlink_dm_file(dm_file)
+        if delivered:
+            _unlink_dm_file(dm_file)
+            _delivery_receipt_path(dm_file).unlink(missing_ok=True)
+        else:
+            try:
+                receipt = _write_delivery_receipt(
+                    dm_file, argv, stdin_file=stdin_file, reason=failure_reason,
+                    error=failure_error, profile_home=profile_home, author=author,
+                    returncode=returncode,
+                )
+                print(json.dumps(receipt, ensure_ascii=False))
+            except Exception:
+                logger.warning("failed to retain undelivered DM payload", exc_info=True)
 
 
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,

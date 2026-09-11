@@ -428,7 +428,13 @@ def _extract_notebook(path: str) -> str:
             continue
         counts[typ] += 1
         suffix = f" {counts[typ]}" if typ != "raw" else ""
-        source = _source_text(cell.get("source", "")).rstrip("\n")
+        # nbformat v3 code cells use "input"; a present "source" key remains
+        # authoritative even when its value is empty or null.
+        if typ == "code" and "source" not in cell:
+            body = cell.get("input", "")
+        else:
+            body = cell.get("source", "")
+        source = _source_text(body).rstrip("\n")
         out += [f"# ── {_CELL_LABELS[typ]} cell{suffix} ──", source, ""]
         rendered = _notebook_outputs(cell, jq_pointer, nb_name) if typ == "code" else ""
         if rendered:

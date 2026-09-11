@@ -13,7 +13,7 @@ must:
   incomplete installations, and install when missing.
 
 The pre-install arch probe that used to live alongside this function was
-deleted (see top-of-file comment in tools_config.py) — the upstream
+deleted (see the release-probe comment in tools_config_cua.py) — the upstream
 installer has CUA_DRIVER_RS_BAKED_VERSION baked in by CD and errors
 cleanly on missing-arch assets, and the upgrade path uses
 ``cua_driver_update_check()`` (which shells `cua-driver check-update
@@ -61,7 +61,7 @@ def _runtime_manifest(version="0.20.0", *, omit=None):
 
 class TestCuaDriverRuntimeContract:
     def test_current_manifest_is_ready(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         result = SimpleNamespace(
             returncode=0,
@@ -80,7 +80,7 @@ class TestCuaDriverRuntimeContract:
 
     @pytest.mark.parametrize("version", ["0.19.4", "bad-version"])
     def test_old_or_unversioned_driver_needs_repair(self, version):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         result = SimpleNamespace(
             returncode=0,
@@ -94,7 +94,7 @@ class TestCuaDriverRuntimeContract:
         assert state["reason"]
 
     def test_incomplete_manifest_needs_repair(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         result = SimpleNamespace(
             returncode=0,
@@ -128,7 +128,7 @@ class TestInstallCuaDriverUpgrade:
         no subprocess, no path handling, no import — so there is nothing
         underneath the branch for a real host to falsify.
         """
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config, "_print_warning") as warn, \
              patch("platform.system", return_value="FreeBSD"):
@@ -137,7 +137,7 @@ class TestInstallCuaDriverUpgrade:
 
     def test_non_upgrade_on_unsupported_platform_warns(self):
         """Same narrow exception as above — see that test's docstring."""
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config, "_print_warning") as warn, \
              patch("platform.system", return_value="FreeBSD"):
@@ -145,7 +145,7 @@ class TestInstallCuaDriverUpgrade:
             warn.assert_called()
 
     def test_upgrade_with_binary_present_runs_installer(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
@@ -164,7 +164,7 @@ class TestInstallCuaDriverUpgrade:
             assert kwargs.get("verbose") is False
 
     def test_upgrade_without_binary_runs_installer(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
@@ -179,7 +179,7 @@ class TestInstallCuaDriverUpgrade:
         branch, which this lane takes for real."""
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         fake_proc = MagicMock()
         fake_proc.pid = 1
@@ -212,7 +212,7 @@ class TestInstallCuaDriverUpgrade:
         """``linux_only``: same POSIX Popen path as the test above."""
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         fake_proc = MagicMock()
         fake_proc.pid = 1
@@ -245,7 +245,7 @@ class TestInstallCuaDriverUpgrade:
         import subprocess
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         fake_proc = MagicMock()
         fake_proc.pid = 1
@@ -280,7 +280,7 @@ class TestInstallCuaDriverUpgrade:
         fake_proc.communicate.assert_called_once_with(timeout=120)
 
     def test_upgrade_can_suppress_installer_progress(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(
                  tools_config.shutil,
@@ -310,7 +310,7 @@ class TestInstallCuaDriverUpgrade:
         assert runner.call_args.kwargs["show_progress"] is False
 
     def test_upgrade_non_writable_install_target_skips_refresh(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
@@ -327,7 +327,7 @@ class TestInstallCuaDriverUpgrade:
             )
 
     def test_fresh_install_non_writable_install_target_skips_install(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
@@ -353,7 +353,7 @@ class TestInstallCuaDriverUpgrade:
         """
         import os
 
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         writable = tools_config._cua_install_target_writable()
         if os.path.isdir("/Applications"):
@@ -362,7 +362,7 @@ class TestInstallCuaDriverUpgrade:
             assert writable is True
 
     def test_non_upgrade_with_binary_skips_install(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
@@ -383,7 +383,7 @@ class TestInstallCuaDriverUpgrade:
             runner.assert_not_called()
 
     def test_non_upgrade_repairs_incompatible_existing_driver(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         incompatible = {
             "ready": False,
@@ -416,7 +416,7 @@ class TestInstallCuaDriverUpgrade:
         assert runner.call_args.kwargs["label"] == "Repairing"
 
     def test_incompatible_explicit_override_is_not_replaced(self, monkeypatch):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/opt/custom/cua-driver")
         incompatible = {
@@ -443,7 +443,7 @@ class TestInstallCuaDriverUpgrade:
     def test_missing_explicit_override_does_not_install_standard_driver(
         self, monkeypatch, upgrade
     ):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/missing/custom/cua-driver")
         with patch.object(
@@ -457,7 +457,7 @@ class TestInstallCuaDriverUpgrade:
         runner.assert_not_called()
 
     def test_non_upgrade_without_binary_runs_installer(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
@@ -493,7 +493,7 @@ class TestRequireConfirmedUpdate:
         """
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         _which_names = {"curl", "powershell"}
         if not binary_missing:
@@ -515,7 +515,7 @@ class TestRequireConfirmedUpdate:
                      "reason": "",
                  },
              ), \
-             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+             patch("tools.computer_use.cua_backend_driver.cua_driver_update_check",
                    return_value=check_state), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner, \
@@ -637,7 +637,7 @@ class TestRequireConfirmedUpdate:
         wedge)."""
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         incompatible = {
             "ready": False,
@@ -657,7 +657,7 @@ class TestRequireConfirmedUpdate:
                  side_effect=[incompatible,
                               {"ready": True, "version": "0.20.0", "reason": ""}],
              ), \
-             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+             patch("tools.computer_use.cua_backend_driver.cua_driver_update_check",
                    return_value=None) as check, \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner, \
@@ -689,7 +689,7 @@ class TestUpdateCheckTimeoutDefaults:
 
     def _captured_timeout(self):
         from unittest.mock import MagicMock
-        from tools.computer_use import cua_backend
+        from tools.computer_use import cua_backend_driver
 
         captured = {}
 
@@ -699,11 +699,11 @@ class TestUpdateCheckTimeoutDefaults:
             m.stdout = '{"update_available": false, "current_version": "1.0"}'
             return m
 
-        with patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+        with patch("tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
                    return_value="/x/cua-driver"), \
              patch("tools.computer_use.cua_backend.subprocess.run",
                    side_effect=fake_run):
-            cua_backend.cua_driver_update_check()
+            cua_backend_driver.cua_driver_update_check()
         return captured.get("timeout")
 
     @pytest.mark.windows_only
@@ -721,7 +721,7 @@ class TestUpdateCheckTimeoutDefaults:
 
     def test_explicit_timeout_wins(self):
         from unittest.mock import MagicMock
-        from tools.computer_use import cua_backend
+        from tools.computer_use import cua_backend_driver
 
         captured = {}
 
@@ -731,11 +731,11 @@ class TestUpdateCheckTimeoutDefaults:
             m.stdout = "{}"
             return m
 
-        with patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+        with patch("tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
                    return_value="/x/cua-driver"), \
              patch("tools.computer_use.cua_backend.subprocess.run",
                    side_effect=fake_run):
-            cua_backend.cua_driver_update_check(timeout=3.0)
+            cua_backend_driver.cua_driver_update_check(timeout=3.0)
         assert captured.get("timeout") == 3.0
 
 
@@ -761,7 +761,7 @@ class TestArchProbeRemoval:
     """
 
     def test_probe_function_is_gone(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
         assert not hasattr(tools_config, "_check_cua_driver_asset_for_arch")
         assert not hasattr(tools_config, "_latest_cua_driver_rs_release")
 
@@ -771,7 +771,7 @@ class TestArchProbeRemoval:
         line. install.sh errors cleanly when the arch has no asset, so the
         probe was duplicate gatekeeping.
         """
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         # No platform fake: "does Python hit the GitHub API?" is host-agnostic,
         # and ``which`` is stubbed so the host's own fetch tool resolves.
@@ -793,7 +793,7 @@ class TestArchProbeRemoval:
         short-circuits the network re-install via the binary's native
         ``check-update --json`` verb.
         """
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
@@ -837,7 +837,7 @@ class TestPosixStaleInstallLockClear:
         os.environ.pop("CUA_DRIVER_RS_HOME", None)
 
     def test_dead_holder_lock_is_cleared(self, tmp_path):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         dead_pid = 4194000  # above default pid_max on most systems
         lock = self._make_lock(tmp_path, pid=dead_pid)
@@ -847,14 +847,14 @@ class TestPosixStaleInstallLockClear:
 
     def test_live_holder_lock_is_kept(self, tmp_path):
         import os
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         lock = self._make_lock(tmp_path, pid=os.getpid())
         tools_config._clear_stale_cua_install_lock()
         assert lock.exists()
 
     def test_pidless_fresh_lock_is_kept(self, tmp_path):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         lock = self._make_lock(tmp_path, pid=None)
         tools_config._clear_stale_cua_install_lock()
@@ -863,7 +863,7 @@ class TestPosixStaleInstallLockClear:
     def test_pidless_old_lock_is_cleared(self, tmp_path):
         import os
         import time
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         lock = self._make_lock(tmp_path, pid=None)
         old = time.time() - (tools_config._CUA_LOCK_STALE_AFTER + 60)
@@ -875,7 +875,7 @@ class TestPosixStaleInstallLockClear:
     def test_no_lock_is_noop(self, tmp_path):
         import os
         os.environ["CUA_DRIVER_RS_HOME"] = str(tmp_path / ".cua-driver")
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
         tools_config._clear_stale_cua_install_lock()  # must not raise
 
 
@@ -886,7 +886,7 @@ class TestWindowsStaleInstallLockClearDispatch:
         test — on Linux the faked platform asserted the dispatch and skipped
         the ``.install.lock.d`` directory that really exists here.
         """
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(
                  tools_config, "_clear_stale_windows_cua_install_lock"
@@ -917,7 +917,7 @@ class TestWindowsStaleInstallLockClear:
         os.environ.pop("CUA_DRIVER_RS_HOME", None)
 
     def test_unlocked_lock_file_is_cleared(self, tmp_path):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         lock = self._make_lock(tmp_path)
         with patch.object(tools_config, "_print_info"):
@@ -928,7 +928,7 @@ class TestWindowsStaleInstallLockClear:
     def test_lock_held_with_file_share_none_is_kept(self, tmp_path):
         import ctypes
         from ctypes import wintypes
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         lock = self._make_lock(tmp_path)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -979,7 +979,7 @@ class TestInstallerTimeoutKillsProcessGroup:
         import signal
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         killed = {}
         sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
@@ -1016,7 +1016,7 @@ class TestInstallerTimeoutKillsProcessGroup:
         assert fake_proc.communicate.call_count == 2
 
     def test_timeout_ceiling_exceeds_upstream_lock_window(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
         # The upstream installer waits up to 600s before reclaiming a stale
         # lock; our ceiling must give that window room to complete.
         assert tools_config._CUA_INSTALLER_TIMEOUT > tools_config._CUA_LOCK_STALE_AFTER
@@ -1024,7 +1024,7 @@ class TestInstallerTimeoutKillsProcessGroup:
     @pytest.mark.linux_only
     def test_installer_runs_in_new_session_on_posix(self):
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         captured = {}
         fake_proc = MagicMock()
@@ -1049,7 +1049,7 @@ class TestInstallerTimeoutKillsProcessGroup:
     def test_windows_timeout_kills_descendants_and_parent(self):
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         child = MagicMock()
         parent = MagicMock()
@@ -1087,7 +1087,7 @@ class TestInstallerTimeoutKillsProcessGroup:
         import psutil
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         parent = MagicMock()
         parent.children.side_effect = psutil.AccessDenied(pid=12345)
@@ -1130,7 +1130,7 @@ class TestInstallerTimeoutDrainIsBounded:
     """
 
     def test_drain_grace_is_short_relative_to_the_run_ceiling(self):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         # This is a grace period for a pipe that a live process is holding
         # open, not a second budget for the install itself — the install is
@@ -1148,7 +1148,7 @@ class TestInstallerTimeoutDrainIsBounded:
         """
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         fake_proc = MagicMock()
         fake_proc.pid = 12345
@@ -1185,7 +1185,7 @@ class TestInstallerTimeoutDrainIsBounded:
         """
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         fake_proc = MagicMock()
         fake_proc.pid = 12345
@@ -1225,7 +1225,7 @@ class TestInstallerTimeoutDrainIsBounded:
         import psutil
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         child = MagicMock()
         child.kill.side_effect = psutil.AccessDenied(pid=999)
@@ -1270,7 +1270,7 @@ class TestInstallerTimeoutDrainIsBounded:
         """
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         parent = MagicMock()
         parent.children.return_value = []
@@ -1310,7 +1310,7 @@ class TestInstallerNoShell:
 
     def _run(self, download_rc=0):
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         calls = []
         fake_proc = MagicMock()
@@ -1363,7 +1363,7 @@ class TestInstallerNoShell:
         import os
         captured = {}
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         fake_proc = MagicMock()
         fake_proc.pid = 1
@@ -1407,7 +1407,7 @@ class TestConfirmedVersionPinning:
         """Version pinning also applies to explicit installer runs."""
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/x/" + n
@@ -1421,7 +1421,7 @@ class TestConfirmedVersionPinning:
                  "_cua_driver_contract_status",
                  return_value={"ready": True, "version": "0.20.0", "reason": ""},
              ), \
-             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+             patch("tools.computer_use.cua_backend_driver.cua_driver_update_check",
                    return_value=check_state), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner, \
@@ -1477,7 +1477,7 @@ class TestRunInstallerPinEnv:
     def _run(self, pin_version):
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         captured = {}
         fake_proc = MagicMock()
@@ -1521,7 +1521,7 @@ class TestWindowsAutostartRepair:
         True unconditionally off Windows, so only the fake made the schtasks
         probe run at all.
         """
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         calls = []
 
@@ -1547,7 +1547,7 @@ class TestWindowsAutostartRepair:
         repair hook are both inside the ``is_windows`` branch, so on Linux the
         fake selected a branch whose `powershell` doesn't exist on PATH."""
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         captured = {}
         fake_proc = MagicMock()
@@ -1590,7 +1590,7 @@ class TestWindowsAutostartRepair:
         """``windows_only``: same early return off Windows — the elevated
         PowerShell command string is only built on a real Windows host.
         """
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         calls = []
         driver = (
@@ -1639,7 +1639,7 @@ class TestCuaVersionSummary:
 
     @staticmethod
     def _summary(raw, **kw):
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         return tools_config._cua_version_summary(raw, **kw)
 
@@ -1679,7 +1679,7 @@ class TestUnattendedRefreshPreflights:
              system="Linux"):
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config
+        from hermes_cli import tools_config_cua as tools_config
 
         proc = MagicMock()
         proc.communicate.return_value = ("ok", None)

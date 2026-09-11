@@ -1,11 +1,12 @@
 """Regression tests for browser session cleanup and screenshot recovery."""
 
 from unittest.mock import patch
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 class TestScreenshotPathRecovery:
     def test_extracts_standard_absolute_path(self):
-        from tools.browser_tool import _extract_screenshot_path_from_text
+        from tools.browser_tool_snapshot import _extract_screenshot_path_from_text
 
         assert (
             _extract_screenshot_path_from_text("Screenshot saved to /tmp/foo.png")
@@ -13,7 +14,7 @@ class TestScreenshotPathRecovery:
         )
 
     def test_extracts_quoted_absolute_path(self):
-        from tools.browser_tool import _extract_screenshot_path_from_text
+        from tools.browser_tool_snapshot import _extract_screenshot_path_from_text
 
         assert (
             _extract_screenshot_path_from_text(
@@ -53,12 +54,12 @@ class TestBrowserCleanup:
         with (
             patch("tools.browser_tool._maybe_stop_recording") as mock_stop,
             patch(
-                "tools.browser_tool._run_browser_command",
+                "tools.browser_tool_session._run_browser_command",
                 return_value={"success": True},
             ) as mock_run,
             patch("tools.browser_tool.os.path.exists", return_value=False),
         ):
-            browser_tool.cleanup_browser("task-1")
+            bt_lifecycle.cleanup_browser("task-1")
 
         assert "task-1" not in browser_tool._active_sessions
         assert "task-1" not in browser_tool._session_last_activity
@@ -75,8 +76,8 @@ class TestBrowserCleanup:
         browser_tool._session_last_activity["task-2"] = 2.0
         browser_tool._recording_sessions.update({"task-1", "task-2"})
 
-        with patch("tools.browser_tool.cleanup_all_browsers") as mock_cleanup_all:
-            browser_tool._emergency_cleanup_all_sessions()
+        with patch("tools.browser_tool_lifecycle.cleanup_all_browsers") as mock_cleanup_all:
+            bt_lifecycle._emergency_cleanup_all_sessions()
 
         mock_cleanup_all.assert_called_once_with()
         assert browser_tool._active_sessions == {}
@@ -133,7 +134,7 @@ class TestInactivityJanitorMultiplex:
         home_tok = set_hermes_home_override(str(p1))
         scope_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(p1))
         try:
-            self.bt._update_session_activity("t1")
+            bt_lifecycle._update_session_activity("t1")
             self.bt._active_sessions["t1"] = {"session_name": "s1", "bb_session_id": None}
         finally:
             secret_scope.reset_secret_scope(scope_tok)
@@ -148,11 +149,11 @@ class TestInactivityJanitorMultiplex:
             return {"success": True}
 
         with (
-            patch("tools.browser_tool._run_browser_command", side_effect=fake_close),
+            patch("tools.browser_tool_session._run_browser_command", side_effect=fake_close),
             patch("tools.browser_camofox._delete", return_value={}),
             patch("tools.browser_tool.os.path.exists", return_value=False),
         ):
-            self.bt._cleanup_inactive_browser_sessions()
+            bt_lifecycle._cleanup_inactive_browser_sessions()
 
         assert seen == {"home": str(p1), "url": "http://127.0.0.1:1"}
         assert "t1" not in self.bt._session_last_activity
@@ -167,20 +168,20 @@ class TestInactivityJanitorMultiplex:
         provider = MagicMock()
 
         with (
-            patch("tools.browser_tool.cleanup_browser", side_effect=RuntimeError("boom")),
-            patch("tools.browser_tool._get_cloud_provider", return_value=provider),
+            patch("tools.browser_tool_lifecycle.cleanup_browser", side_effect=RuntimeError("boom")),
+            patch("tools.browser_tool_cloud._get_cloud_provider", return_value=provider),
             patch("tools.browser_tool.os.path.exists", return_value=False),
         ):
             for _ in range(self.bt.MAX_INACTIVITY_CLEANUP_FAILURES - 1):
-                self.bt._cleanup_inactive_browser_sessions()
+                bt_lifecycle._cleanup_inactive_browser_sessions()
             # An activity touch must NOT reset the failure budget.
-            self.bt._update_session_activity("t1")
+            bt_lifecycle._update_session_activity("t1")
             self.bt._session_last_activity["t1"] = 1.0
             assert self.bt._cleanup_failures["t1"] == self.bt.MAX_INACTIVITY_CLEANUP_FAILURES - 1
             assert "t1" in self.bt._active_sessions
             provider.close_session.assert_not_called()
 
-            self.bt._cleanup_inactive_browser_sessions()
+            bt_lifecycle._cleanup_inactive_browser_sessions()
 
         provider.close_session.assert_called_once_with("bb-1")
         assert "t1" not in self.bt._active_sessions

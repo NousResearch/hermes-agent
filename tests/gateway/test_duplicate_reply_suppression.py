@@ -20,9 +20,9 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
     SendResult,
 )
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_key
 
 

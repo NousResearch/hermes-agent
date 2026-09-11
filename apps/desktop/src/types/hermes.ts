@@ -280,6 +280,35 @@ export interface MessagingPlatformTestResponse {
   state?: null | string
 }
 
+// -- Telegram QR onboarding ---------------------------------------------------
+// The Nous pairing service mints a bot on the user's behalf: the desktop shows
+// a QR/deep link, Telegram confirms, the backend receives the token and writes
+// it (plus the allowlist) into the target profile's .env, then restarts the
+// gateway best-effort.
+
+export interface TelegramOnboardingStartResponse {
+  deep_link: string
+  expires_at: string
+  pairing_id: string
+  qr_payload: string
+  suggested_username: string
+}
+
+export type TelegramOnboardingStatusResponse =
+  | { bot_username: null | string; expires_at: string; owner_user_id?: null | string; status: 'ready' }
+  | { expires_at: string; status: 'waiting' }
+
+export interface TelegramOnboardingApplyResponse {
+  bot_username?: null | string
+  needs_restart: boolean
+  ok: boolean
+  platform: 'telegram'
+  restart_action?: string
+  restart_error?: string
+  restart_pid?: null | number
+  restart_started?: boolean
+}
+
 // -- Webhooks (subscription CRUD) --------------------------------------------
 // Incoming HTTP event routes served by the webhook gateway platform. Backed by
 // the same JSON store the CLI/dashboard use; per-route HMAC secrets are
@@ -591,6 +620,9 @@ export interface SessionMessage {
    */
   args?: unknown
   codex_reasoning_items?: unknown
+  /** Responses-API assistant message items; text parts here are the
+   *  user-visible reply when `content` persisted empty (#68321). */
+  codex_message_items?: unknown
   content: unknown
   /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
   display_content?: unknown
@@ -600,7 +632,7 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?:
-    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | string
+    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | 'steer' | string
   /**
    * A backend older than this app can still serve this as unparsed JSON text,
    * so readers must narrow before indexing into it.
@@ -742,6 +774,8 @@ export interface UsageStats {
   calls: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_usd?: number
   input: number
@@ -801,6 +835,8 @@ export interface ContextBreakdown {
   categories: ContextUsageCategory[]
   context_max: number
   context_percent: number
+  context_estimated?: boolean
+  context_source?: string
   context_used: number
   estimated_total: number
   model?: string
@@ -1406,6 +1442,9 @@ export interface BackendUpdateCheckResponse {
 
 export interface AuxiliaryTaskAssignment {
   base_url: string
+  /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
+   *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */
+  local_endpoint?: boolean
   model: string
   provider: string
   task: string
@@ -1434,11 +1473,10 @@ export interface MoaConfigResponse {
       aggregator_temperature: number
       degraded_reference_policy: 'loud' | 'silent'
       enabled: boolean
-      max_tokens: number
+
       reference_models: MoaModelSlot[]
       reference_temperature: number
-      /** Optional advisor output cap — round-tripped, not edited here. */
-      reference_max_tokens?: number | null
+
       /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
       fanout?: string
       reference_timeout: number | null
@@ -1448,7 +1486,7 @@ export interface MoaConfigResponse {
   aggregator_temperature: number
   degraded_reference_policy: 'loud' | 'silent'
   enabled: boolean
-  max_tokens: number
+
   reference_models: MoaModelSlot[]
   reference_temperature: number
   reference_timeout: number | null
@@ -1488,7 +1526,6 @@ export interface CronModelImpactJob {
 
 export interface CronModelImpact {
   available: boolean
-  guard_enabled: boolean
   affected_count: number
   truncated: boolean
   jobs: CronModelImpactJob[]

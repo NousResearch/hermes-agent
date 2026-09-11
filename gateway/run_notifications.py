@@ -835,7 +835,8 @@ class GatewayNotificationsMixin:
                 return
         from hermes_constants import get_default_hermes_root
         from hermes_state import _default_db_path, classify_persistence_error, format_session_db_unavailable
-        if classify_persistence_error(error) == "corrupt":
+        cause = classify_persistence_error(error)
+        if cause == "corrupt":
             # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
             db_path = _default_db_path()
             backups_dir = get_default_hermes_root() / "backups"
@@ -853,6 +854,15 @@ class GatewayNotificationsMixin:
                 "vulnerable sqlite3 CLI can corrupt it further\n"
                 f"3. Restore from a backup in {backups_dir}/\n"
                 "Run `hermes doctor` for sanitized diagnostics."
+            )
+        elif cause == "fts_index":
+            # Index-scoped corruption: the message tables are not damaged, so the recover /
+            # restore advice above would be destructive on a healthy file (#97794).
+            message = (
+                "⚠️ Session database reported a corruption error confined to the search index "
+                "(FTS5); the message tables are not damaged. Messages may not be persisted until "
+                "it is repaired: run `hermes doctor --fix`, then restart the gateway. Do not run "
+                "recovery tools or restore a backup unless `hermes doctor` confirms damage."
             )
         else:
             message = (

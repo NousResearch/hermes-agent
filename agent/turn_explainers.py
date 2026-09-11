@@ -151,6 +151,16 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "3. Restore from a backup in {backups_dir}/\n"
         "Then send your message again."
     ),
+    # SQLite scoped the corruption to the FTS index and the derived indexes could not be
+    # detached, so this write did not land; the message store itself is intact (#97794).
+    "fts_index": (
+        "the turn was stopped because the session search index (FTS5) "
+        "is corrupt and could not be detached, so this message was not "
+        "saved. The message store itself is not damaged: do not run "
+        "recovery tools or restore a backup. Run `hermes doctor --fix` "
+        "(or restart Hermes, which repairs the index on open), then "
+        "send your message again."
+    ),
     "disk": (
         "the turn was stopped because session storage could not "
         "be written (the transcript would have been lost on "

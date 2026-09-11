@@ -173,6 +173,26 @@ def test_explanation_persistence_corrupt_backups_dir_follows_hermes_home(monkeyp
     assert "{backups_dir}" not in out
 
 
+def test_explanation_persistence_fts_index_never_advises_recovery():
+    """#97794: an FTS-scoped failure must never send the user down the recover /
+    restore-backup path on a healthy file, and must not claim the transcript was lost."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "fts_index"
+    )
+    lower = out.lower()
+    assert out.strip() != ""
+    assert "sessions recover" not in lower
+    assert ".recover" not in lower
+    # Negative advice ("do not ... restore a backup") is fine; instructions are not.
+    assert "recovery options" not in lower
+    assert "restore from a backup" not in lower and "backups/" not in lower
+    assert "would have been lost" not in lower
+    assert "free" not in lower  # never disk-space advice
+    assert "hermes doctor" in lower
+    assert "search index" in lower and "not damaged" in lower
+    assert "send your message again" in lower  # the handle stays live
+
+
 def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "replaced"
@@ -350,6 +370,7 @@ def test_persistence_error_causes_tuple_matches_classifier():
         "Session 'abc' is being compressed by another writer",
         "Session turn lease lost; refusing transcript write for 'abc'",
         "database disk image is malformed",
+        'fts5: corrupt structure record for table "messages_fts"',
         "FATAL: state.db was replaced underneath the gateway",
         "FATAL: a live process holds a deleted state.db-wal or state.db-shm inode.",
         "database or disk is full",
@@ -358,6 +379,63 @@ def test_persistence_error_causes_tuple_matches_classifier():
     )
     for probe in probes:
         assert classify_persistence_error(probe) in PERSISTENCE_ERROR_CAUSES
+
+
+def test_classify_persistence_error_fts_provenance_order():
+    """Result code first, prose only without one — the #96038 rule the write-repair gate
+    already enforces, now shared with the classifier so there is one definition of
+    "provably FTS-only" (#97794 review)."""
+    import sqlite3
+
+    from hermes_state import SessionDB, classify_persistence_error
+    from hermes_state_errors import SQLITE_CORRUPT_VTAB, is_fts_scoped_corruption_error
+
+    def _err(text, code=None, cls=sqlite3.DatabaseError):
+        exc = cls(text)
+        if code is not None:
+            exc.sqlite_errorcode = code
+        return exc
+
+    # Tier 1 — a known result code decides. SQLITE_CORRUPT_VTAB is FTS-scoped even with the
+    # generic text older SQLite builds emit; bare SQLITE_CORRUPT / SQLITE_NOTADB are unscoped.
+    vtab = _err("database disk image is malformed", SQLITE_CORRUPT_VTAB)
+    assert classify_persistence_error(vtab) == "fts_index"
+    assert SessionDB._is_fts_write_corruption_error(vtab)  # same verdict as the write gate
+    assert classify_persistence_error(
+        _err("database disk image is malformed", sqlite3.SQLITE_CORRUPT)
+    ) == "corrupt"
+    assert classify_persistence_error(
+        _err("file is not a database", sqlite3.SQLITE_NOTADB)
+    ) == "corrupt"
+    # A contradictory known code outranks FTS-looking prose (the #96038 regression shape).
+    contradictory = _err(
+        'fts5: corrupt structure record for table "messages_fts"',
+        sqlite3.SQLITE_CONSTRAINT_TRIGGER,
+        sqlite3.IntegrityError,
+    )
+    assert not is_fts_scoped_corruption_error(contradictory)
+    assert classify_persistence_error(contradictory) != "fts_index"
+    assert not SessionDB._is_fts_write_corruption_error(contradictory)
+
+    # Tier 2 — no code (Python < 3.11, RPC-wrapped strings): the report must name a
+    # messages_fts* object. Both shapes from #97794's evidence logs qualify.
+    assert classify_persistence_error(
+        _err('fts5: corrupt structure record for table "messages_fts"')
+    ) == "fts_index"
+    assert classify_persistence_error(
+        'fts5: corruption found reading blob 2061584302081 from table "messages_fts"'
+    ) == "fts_index"
+    assert classify_persistence_error(
+        'fts5: corrupt structure record for table "messages_fts_trigram"'
+    ) == "fts_index"
+    assert classify_persistence_error(
+        "malformed inverted index for FTS5 table main.messages_fts"
+    ) == "fts_index"
+    # Generic markers without provenance stay conservative; fts5 text without corruption,
+    # or an FTS name without a corruption marker, is not corruption at all.
+    assert classify_persistence_error("database disk image is malformed") == "corrupt"
+    assert classify_persistence_error('fts5: syntax error near "x"') == "unknown"
+    assert classify_persistence_error("no such table: messages_fts") == "unknown"
 
 
 # --------------------------------------------------------------------------

@@ -301,6 +301,7 @@ import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
+  primaryStartupProfile,
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -314,7 +315,12 @@ import {
   resolveRouteProfile
 } from './profile-delete-routing'
 import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
-import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
+import {
+  dispatchProfileMutationWithStartupPreference,
+  prepareProfileRenameLifecycle,
+  profileMutationIsLocal,
+  profileRenameFromRequest
+} from './profile-rename-routing'
 import {
   buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
@@ -11455,11 +11461,10 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
   await wait(1000)
 }
 
-// The profile the primary (window) backend runs as. readActiveDesktopProfile()
-// returns the desktop's stored preference, or null when unset (legacy launch
-// that defers to active_profile / default).
+// A remembered startup preference must not relabel the live primary backend:
+// its process and config home stay fixed until a real teardown/re-home.
 function primaryProfileKey() {
-  return readActiveDesktopProfile() || 'default'
+  return backendConnectionState.getProfile() || readActiveDesktopProfile() || 'default'
 }
 
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
@@ -12856,7 +12861,10 @@ async function prepareProfileDeleteRequest(request) {
   }
 
   if (decision.action === 'teardown-primary') {
-    writeActiveDesktopProfile('default')
+    if (readActiveDesktopProfile() === decision.profile) {
+      writeActiveDesktopProfile('default')
+    }
+
     await Promise.all([teardownPrimaryBackendAndWait(), teardownPoolBackendAndWait(decision.profile)])
 
     return decision.profile
@@ -12871,6 +12879,7 @@ async function prepareProfileRenameRequest(request) {
   return prepareProfileRenameLifecycle(request, {
     isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
     primaryProfileKey,
+    readActiveDesktopProfile,
     reloadPrimaryWindow: () => {
       mainWindow?.reload()
     },
@@ -12943,8 +12952,15 @@ async function startHermes() {
   // no-op when the preference file already exists.
   migrateActiveProfileIfMissing()
 
-  const connectionAttempt = backendConnectionState.startAttempt()
-  const primaryProfile = primaryProfileKey()
+  // Capture before any asynchronous startup work. Routing, argv and process
+  // ownership must agree even if profile:remember runs while startup waits.
+  const activeProfile = primaryStartupProfile(
+    readActiveDesktopProfile(),
+    managedPrimaryRestoreOwners.values().next().value?.profile
+  )
+
+  const primaryProfile = activeProfile || 'default'
+  const connectionAttempt = backendConnectionState.startAttempt(primaryProfile)
 
   // Legacy path callers without an explicit profile belong to the primary
   // window backend. Profile-scoped callers still pass their key directly.
@@ -13006,13 +13022,12 @@ async function startHermes() {
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
     const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
+
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
     // unset preference keeps the legacy launch so existing installs are
     // unaffected.
-    const activeProfile = readActiveDesktopProfile()
-
     if (activeProfile) {
       backendArgs.unshift('--profile', activeProfile)
     }
@@ -13061,7 +13076,7 @@ async function startHermes() {
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
-    const profile = primaryProfileKey()
+    const profile = primaryProfile
     const parentStartMarker = await desktopParentStartMarker()
     const backendNonce = crypto.randomBytes(16).toString('hex')
     const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
@@ -16752,15 +16767,22 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
   if (deletingProfile && registryConnectionId) {
-    return dispatchConnectionScopedProfileDelete(request, {
-      acquire: profile => profileDeletionGate.acquire(profile),
-      connectionKind: connectionId => registryConnectionKind(connectionId),
-      dispatch: routeProfile =>
-        dispatchRegistryApiRequest(request, registryConnectionId, routeProfile, deletingProfile),
-      isDefaultProfile: profile => profile === 'default',
-      isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
-      prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
-      teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
+    return dispatchProfileMutationWithStartupPreference(request, {
+      local: registryConnectionKind(registryConnectionId) === 'local',
+      primaryProfileKey,
+      readActiveDesktopProfile,
+      writeActiveDesktopProfile,
+      dispatch: () =>
+        dispatchConnectionScopedProfileDelete(request, {
+          acquire: profile => profileDeletionGate.acquire(profile),
+          connectionKind: connectionId => registryConnectionKind(connectionId),
+          dispatch: routeProfile =>
+            dispatchRegistryApiRequest(request, registryConnectionId, routeProfile, deletingProfile),
+          isDefaultProfile: profile => profile === 'default',
+          isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
+          prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
+          teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
+        })
     })
   }
 
@@ -16770,7 +16792,15 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
   const releaseProfileDeletion = profileDeletionGate.acquire(mutatingProfile)
 
-  return handleHermesApiRequest(request).finally(releaseProfileDeletion)
+  return dispatchProfileMutationWithStartupPreference(request, {
+    local: registryConnectionId
+      ? registryConnectionKind(registryConnectionId) === 'local'
+      : profileMutationIsLocal(request?.profile, profileRouteOptions(request?.profile, request)),
+    primaryProfileKey,
+    readActiveDesktopProfile,
+    writeActiveDesktopProfile,
+    dispatch: () => handleHermesApiRequest(request)
+  }).finally(releaseProfileDeletion)
 })
 
 // Main serializes cross-window ambient claims.

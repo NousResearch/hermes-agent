@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 
 import { test, vi } from 'vitest'
 
+import { createBackendConnectionState } from './backend-connection-state'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
+  primaryStartupProfile,
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 
@@ -125,6 +127,31 @@ test('an already-saved remote bypasses every local startup step', async () => {
   assert.equal(options.prepareLocalBackend.mock.calls.length, 0)
   assert.equal(options.waitForDecision.mock.calls.length, 0)
   assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+})
+
+test('managed recovery restores the captured owner while the next ordinary launch honors the saved profile', async () => {
+  const owner = { profile: 'ssh-primary', connection: { baseUrl: 'http://127.0.0.1:43210' } }
+
+  for (const saved of [null, 'writer']) {
+    const state = createBackendConnectionState<unknown, unknown>()
+    const restoring = primaryStartupProfile(saved, owner.profile)
+    state.startAttempt(restoring || 'default')
+
+    const options = startupOptions({
+      resolveRemote: vi.fn(async () => state.getProfile() === owner.profile ? owner.connection : null),
+    })
+
+    const result = await runPrimaryBackendStartup(options)
+    assert.equal(result.kind, 'remote')
+    assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+    assert.equal(state.getProfile(), owner.profile)
+
+    state.invalidate()
+    const coldStart = primaryStartupProfile(saved)
+    assert.equal(coldStart, saved)
+    state.startAttempt(coldStart || 'default')
+    assert.equal(state.getProfile(), saved || 'default')
+  }
 })
 
 test('remote apply fails clearly when no saved remote can be resolved', async () => {

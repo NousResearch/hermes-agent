@@ -1,4 +1,5 @@
-import { profileNameFromPath } from './profile-delete-routing'
+import { type ProfileRouteOptions, resolveProfileBackendRoute } from './connection-config'
+import { profileNameFromDeleteRequest, profileNameFromPath } from './profile-delete-routing'
 
 export interface ProfileRenameRequest {
   body?: unknown
@@ -14,11 +15,58 @@ export interface ProfileRename {
 export interface ProfileRenameLifecycleDeps {
   isValidProfileName: (profile: string) => boolean
   primaryProfileKey: () => string
+  readActiveDesktopProfile: () => null | string
   reloadPrimaryWindow: () => void
   restartPrimaryBackend: () => Promise<void>
   teardownPoolBackendAndWait: (profile: string) => Promise<void>
   teardownPrimaryBackendAndWait: () => Promise<void>
   writeActiveDesktopProfile: (profile: string) => void
+}
+
+interface ProfileMutationStartupDeps<T> {
+  dispatch: () => Promise<T>
+  local: boolean
+  primaryProfileKey: () => string
+  readActiveDesktopProfile: () => null | string
+  writeActiveDesktopProfile: (profile: string) => void
+}
+
+export function profileMutationIsLocal(profile: unknown, options: ProfileRouteOptions): boolean {
+  const route = resolveProfileBackendRoute(profile, options)
+
+  return route.backend === 'pool'
+    ? !options.profileRemoteOverride
+    : !options.primaryRemoteActive && !options.globalRemote
+}
+
+/** A live pooled workspace can also be the next-launch choice. Changing its
+ * name/home must update that choice without re-homing the primary backend. */
+export async function dispatchProfileMutationWithStartupPreference<T>(
+  request: ProfileRenameRequest,
+  deps: ProfileMutationStartupDeps<T>
+): Promise<T> {
+  const rename = profileRenameFromRequest(request)
+  const oldName = rename?.oldName ?? profileNameFromDeleteRequest(request)
+  const remembered = deps.local && oldName && oldName !== 'default' && deps.readActiveDesktopProfile() === oldName
+  const rehomesRememberedPrimary = remembered && deps.primaryProfileKey() === oldName
+
+  try {
+    const result = await deps.dispatch()
+
+    if (remembered && deps.readActiveDesktopProfile() === oldName) {
+      deps.writeActiveDesktopProfile(rename?.newName ?? 'default')
+    }
+
+    return result
+  } catch (error) {
+    // Primary deletion temporarily uses default to avoid respawning the home
+    // being removed. Keep a failed mutation from discarding the saved choice.
+    if (rehomesRememberedPrimary && deps.readActiveDesktopProfile() === 'default') {
+      deps.writeActiveDesktopProfile(oldName)
+    }
+
+    throw error
+  }
 }
 
 export interface ProfileRenameLifecycle {
@@ -93,15 +141,21 @@ export async function prepareProfileRenameLifecycle(
     }
   }
 
-  // Make `default` the temporary primary before stopping the old backend.
-  // Concurrent primary requests then share the temporary connection instead
-  // of respawning the old profile and recreating its directory mid-rename.
-  deps.writeActiveDesktopProfile('default')
+  // Re-home through the remembered workspace, using default temporarily only
+  // when the renamed primary is itself remembered. Concurrent requests must
+  // not respawn the old profile and recreate its directory mid-rename.
+  const remembersPrimary = deps.readActiveDesktopProfile() === rename.oldName
+
+  if (remembersPrimary) {
+    deps.writeActiveDesktopProfile('default')
+  }
 
   try {
     await deps.teardownPrimaryBackendAndWait()
   } catch (error) {
-    deps.writeActiveDesktopProfile(rename.oldName)
+    if (remembersPrimary && deps.readActiveDesktopProfile() === 'default') {
+      deps.writeActiveDesktopProfile(rename.oldName)
+    }
 
     try {
       await deps.restartPrimaryBackend()
@@ -114,7 +168,9 @@ export async function prepareProfileRenameLifecycle(
 
   return {
     complete: async () => {
-      deps.writeActiveDesktopProfile(rename.newName)
+      if (remembersPrimary && deps.readActiveDesktopProfile() === 'default') {
+        deps.writeActiveDesktopProfile(rename.newName)
+      }
 
       try {
         await deps.teardownPrimaryBackendAndWait()
@@ -125,7 +181,9 @@ export async function prepareProfileRenameLifecycle(
     kind: 'primary',
     rename,
     rollback: async () => {
-      deps.writeActiveDesktopProfile(rename.oldName)
+      if (remembersPrimary && deps.readActiveDesktopProfile() === 'default') {
+        deps.writeActiveDesktopProfile(rename.oldName)
+      }
 
       try {
         await deps.teardownPrimaryBackendAndWait()

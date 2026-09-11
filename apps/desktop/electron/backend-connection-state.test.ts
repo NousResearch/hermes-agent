@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { createBackendConnectionState } from './backend-connection-state'
+import { resolveProfileApiRequest } from './connection-config'
 
 type FakeProcess = { id: string }
 
@@ -104,4 +105,53 @@ test('an invalidated attempt cannot attach a late-spawned process', () => {
 
   assert.equal(state.attachProcess(staleAttempt, { id: 'late' }), null)
   assert.equal(state.getProcess(), null)
+})
+
+test('remembering another startup profile cannot retarget config reads or saves on a live backend', () => {
+  const state = createBackendConnectionState<FakeProcess, string>()
+  let rememberedProfile = 'default'
+  const attempt = state.startAttempt(rememberedProfile)
+  state.setPromise(attempt, Promise.resolve('default-backend'))
+  rememberedProfile = 'writer'
+
+  for (const method of ['GET', 'PUT']) {
+    assert.deepEqual(resolveProfileApiRequest('writer', '/api/config', {
+      primaryProfile: state.getProfile() || rememberedProfile,
+      requestMethod: method,
+    }), { backendProfile: null, requestPath: '/api/config?profile=writer' })
+  }
+
+  state.invalidate()
+  state.startAttempt(rememberedProfile)
+  assert.equal(state.getProfile(), 'writer')
+  assert.deepEqual(resolveProfileApiRequest('writer', '/api/config', {
+    primaryProfile: state.getProfile() || rememberedProfile,
+    requestMethod: 'PUT',
+  }), { backendProfile: null, requestPath: '/api/config' })
+})
+
+test('only the current backend lifecycle can clear the captured primary profile', () => {
+  const state = createBackendConnectionState<FakeProcess, string>()
+  const oldAttempt = state.startAttempt('default')
+  state.setPromise(oldAttempt, Promise.resolve('old'))
+  const oldOwner = state.attachProcess(oldAttempt, { id: 'old' })!
+  state.invalidate()
+  assert.equal(state.getProfile(), null)
+
+  const current = state.startAttempt('writer')
+  state.setPromise(current, Promise.resolve('current'))
+  const owner = state.attachProcess(current, { id: 'current' })!
+  assert.equal(state.clearForCurrentProcess(oldOwner), false)
+  assert.equal(state.clearPromiseForAttempt(oldAttempt), false)
+  assert.equal(state.getProfile(), 'writer')
+  assert.equal(state.clearForCurrentProcess(owner), true)
+  assert.equal(state.getProfile(), null)
+
+  // Remote attempts have a promise but no child process: rejection must also
+  // release the captured identity so a real reconnect can choose a new one.
+  const remote = state.startAttempt('remote-profile')
+  state.setPromise(remote, Promise.resolve('remote'))
+  assert.equal(state.getProfile(), 'remote-profile')
+  assert.equal(state.clearPromiseForAttempt(remote), true)
+  assert.equal(state.getProfile(), null)
 })

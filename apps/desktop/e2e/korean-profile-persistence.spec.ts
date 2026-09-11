@@ -161,7 +161,12 @@ for (const initialProfile of ['default', 'writer'] as const) {
             contentType: 'image/png',
           })
           await page.evaluate(() => { window.location.hash = '#/skills?tab=toolsets' })
-          await expect(page.getByPlaceholder('도구 세트 검색...', { exact: true })).toBeVisible()
+          const toolsetSearch = page.getByPlaceholder('도구 세트 검색...', { exact: true })
+          await expect(toolsetSearch).toBeVisible()
+          await toolsetSearch.fill('terminal')
+          const terminalDescription = page.getByText('터미널, 프로세스', { exact: true }).first()
+          await expect(terminalDescription).toBeVisible({ timeout: 60_000 })
+          await terminalDescription.click()
           await testInfo.attach('korean-capabilities', {
             body: await page.screenshot({ timeout: 5_000 }),
             contentType: 'image/png',

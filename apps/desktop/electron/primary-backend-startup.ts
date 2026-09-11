@@ -1,5 +1,11 @@
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
+/** A managed repair restores its captured backend owner; an ordinary launch
+ * uses the next-launch preference. Null preserves the legacy unpinned CLI. */
+export function primaryStartupProfile(savedProfile: null | string, restoringProfile?: string): null | string {
+  return restoringProfile ?? savedProfile
+}
+
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
   connectRemote: (remote: Remote) => Promise<Connection>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>

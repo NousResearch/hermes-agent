@@ -12,10 +12,17 @@ export function createBackendConnectionState<TProcess, TConnection>() {
   let generation = 0
   let process: TProcess | null = null
   let promise: Promise<TConnection> | null = null
+  let profile: string | null = null
 
   return {
-    startAttempt(): BackendConnectionAttempt<TConnection> {
+    startAttempt(nextProfile = 'default'): BackendConnectionAttempt<TConnection> {
+      profile = nextProfile
+
       return { generation, promise: null }
+    },
+
+    getProfile(): string | null {
+      return profile
     },
 
     setPromise(attempt: BackendConnectionAttempt<TConnection>, nextPromise: Promise<TConnection>): boolean {
@@ -53,6 +60,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
 
       process = null
       promise = null
+      profile = null
 
       return true
     },
@@ -63,6 +71,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       }
 
       promise = null
+      profile = null
 
       return true
     },
@@ -81,6 +90,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       generation += 1
       process = null
       promise = null
+      profile = null
 
       return currentProcess
     }

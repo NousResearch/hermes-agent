@@ -56,6 +56,14 @@ function renderSubmitHook({
   const onSteer = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
   const queueCurrentDraft = vi.fn(() => true)
+  const activeQueueSessionKeyRef = { current: sessionKey }
+  const stashAt = vi.fn()
+
+  const loadIntoComposer = vi.fn((value: string) => {
+    draftRef.current = value
+    editorRef.current.textContent = value
+  })
+
   let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
 
   const clearDraft = vi.fn(() => {
@@ -94,7 +102,7 @@ function renderSubmitHook({
     () =>
       useComposerSubmit({
         activeQueueSessionKey: sessionKey,
-        activeQueueSessionKeyRef: { current: sessionKey },
+        activeQueueSessionKeyRef,
         attachments,
         busy,
         compacting,
@@ -106,7 +114,7 @@ function renderSubmitHook({
         exitQueuedEdit: vi.fn(() => false),
         focusInput: vi.fn(),
         inputDisabled,
-        loadIntoComposer: vi.fn(),
+        loadIntoComposer,
         onCancel,
         onSteer,
         onSubmit,
@@ -115,13 +123,18 @@ function renderSubmitHook({
         queuedPrompts: [],
         sessionId: 'runtime-session',
         setComposerText: vi.fn(),
-        stashAt: vi.fn()
+        stashAt
       }),
     { wrapper: Wrapper }
   )
 
   return {
+    activeQueueSessionKeyRef,
+    loadIntoComposer,
+    stashAt,
     clearDraft,
+    draftRef,
+    editorRef,
     hook,
     onCancel,
     onSteer,
@@ -139,6 +152,74 @@ function renderSubmitHook({
 }
 
 describe('useComposerSubmit external request routing', () => {
+  it('retains rejected busy text without queuing it or losing newly typed text', async () => {
+    const { hook, onSubmit, draftRef, editorRef, queueCurrentDraft, onSteer } = renderSubmitHook({
+      busy: true,
+      text: 'first instruction'
+    })
+
+    let finish!: (accepted: boolean) => void
+    onSubmit.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+    await act(async () => hook.result.current.submitDraft())
+    expect(draftRef.current).toBe('')
+    draftRef.current = 'new draft'
+    editorRef.current.textContent = 'new draft'
+    await act(async () => finish(false))
+    expect(draftRef.current).toBe('first instruction\n\nnew draft')
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onSteer).not.toHaveBeenCalled()
+  })
+
+  it('restores a rejected busy send only into its original composer scope', async () => {
+    const { hook, onSubmit, activeQueueSessionKeyRef, loadIntoComposer, stashAt } = renderSubmitHook({
+      busy: true,
+      text: 'original instruction'
+    })
+
+    let finish!: (accepted: boolean) => void
+    onSubmit.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+    await act(async () => hook.result.current.submitDraft())
+    activeQueueSessionKeyRef.current = 'another-chat'
+    await act(async () => finish(false))
+    expect(loadIntoComposer).not.toHaveBeenCalled()
+    expect(stashAt).toHaveBeenCalledExactlyOnceWith('stored-session', 'original instruction')
+  })
+
+  it('leaves explicit redirect controls on their original callback', async () => {
+    const { hook, onSteer, onSubmit } = renderSubmitHook({ busy: true, text: 'correct immediately' })
+    await act(async () => hook.result.current.steerDraft())
+    expect(onSteer).toHaveBeenCalledExactlyOnceWith('correct immediately')
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('routes ordinary busy text through backend policy, not explicit redirect', async () => {
+    const { hook, onSubmit, onSteer, onCancel } = renderSubmitHook({
+      busy: true,
+      text: 'keep working, and cover the reconnect case'
+    })
+
+    await act(async () => hook.result.current.submitDraft())
+
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith('keep working, and cover the reconnect case', {
+      busyInput: true,
+      attachments: [],
+      sessionId: 'runtime-session',
+      composerScope: 'stored-session'
+    })
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
@@ -271,7 +352,7 @@ describe('useComposerSubmit busy-turn routing', () => {
   })
 
   it('treats a payload mid-turn as send (steer), not stop', async () => {
-    const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+    const { hook, onCancel, onSubmit, onSteer, queueCurrentDraft } = renderSubmitHook({
       busy: true,
       text: 'change course'
     })
@@ -280,10 +361,11 @@ describe('useComposerSubmit busy-turn routing', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('change course', expect.objectContaining({ busyInput: true }))
+    )
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
-    expect(onSubmit).not.toHaveBeenCalled()
   })
 
   it('queues a plain-text follow-up while the active turn is compacting', () => {
@@ -431,13 +513,15 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
 
   it('skips the question before steering a busy turn', async () => {
     parkClarify('runtime-session')
-    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'change course' })
+    const { hook, onSubmit, onSteer } = renderSubmitHook({ busy: true, text: 'change course' })
 
     act(() => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('change course', expect.objectContaining({ busyInput: true }))
+    )
     expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', { request_id: 'req-runtime-session', answer: '' })
   })
 
@@ -539,13 +623,15 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
   it("ignores another session's blocking prompt and still steers", async () => {
     setApprovalRequest({ command: 'ls', description: 'other', sessionId: 'other-session' })
 
-    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'change course' })
+    const { hook, onSubmit, onSteer, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'change course' })
 
     act(() => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('change course', expect.objectContaining({ busyInput: true }))
+    )
     expect(queueCurrentDraft).not.toHaveBeenCalled()
   })
 

@@ -50,6 +50,7 @@ import type {
   ImageAttachResponse,
   SessionRedirectResponse
 } from '../../../types'
+import { useBusyInputMode } from '../use-busy-input-mode'
 
 import {
   appendMidTurnUserMessage,
@@ -66,6 +67,7 @@ import {
   type SurvivorUserRowIds
 } from './rewind'
 import { useSlashCommand } from './slash'
+import { submitBusyPrompt } from './steering'
 import { useSubmitPrompt } from './submit'
 import {
   blobToDataUrl,
@@ -278,6 +280,12 @@ export function usePromptActions({
 }: PromptActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
+  const getBusyInputMode = useBusyInputMode({
+    sessionId: activeSessionId,
+    storedSessionId: selectedStoredSessionIdRef.current,
+    requestGateway
+  })
 
   const appendSessionTextMessage = useCallback(
     (
@@ -604,25 +612,6 @@ export function usePromptActions({
     updateSessionState
   })
 
-  const submitText = useCallback(
-    async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = sanitizeComposerInput(rawText).trim()
-      const attachments = options?.attachments ?? $composerAttachments.get()
-
-      if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
-        triggerHaptic('selection')
-        // Forward the explicit target (background queue drain, tile) — dropping
-        // it ran the command against whatever chat happened to be in front.
-        await executeSlashCommand(visibleText, options?.sessionId ? { sessionId: options.sessionId } : undefined)
-
-        return true
-      }
-
-      return await submitPromptText(rawText, options)
-    },
-    [executeSlashCommand, submitPromptText]
-  )
-
   const transcribeVoiceAudio = useCallback(
     async (audio: Blob) => {
       if (!sttEnabled) {
@@ -820,6 +809,60 @@ export function usePromptActions({
       return false
     },
     [activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef, updateSessionState]
+  )
+
+  const submitText = useCallback(
+    async (rawText: string, options?: SubmitTextOptions) => {
+      if (options?.busyInput) {
+        const sessionId = options.sessionId ?? activeSessionIdRef.current
+
+        if (!sessionId) {
+          return false
+        }
+
+        return submitBusyPrompt({
+          mode: getBusyInputMode(sessionId),
+          text: rawText,
+          sessionId,
+          storedSessionId:
+            options.storedSessionId ??
+            $sessionStates.get()[sessionId]?.storedSessionId ??
+            (sessionId === activeSessionIdRef.current ? selectedStoredSessionIdRef.current : null),
+          composerScope: options.composerScope,
+          attachments: options.attachments ?? [],
+          foregroundBusy: busyRef.current,
+          request: requestGateway,
+          update: updateSessionState,
+          submit: submitPromptText,
+          redirect: text => (sessionId === activeSessionIdRef.current ? redirectPrompt(text) : false)
+        })
+      }
+
+      const visibleText = sanitizeComposerInput(rawText).trim()
+      const attachments = options?.attachments ?? $composerAttachments.get()
+
+      if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
+        triggerHaptic('selection')
+        // Forward the explicit target (background queue drain, tile) — dropping
+        // it ran the command against whatever chat happened to be in front.
+        await executeSlashCommand(visibleText, options?.sessionId ? { sessionId: options.sessionId } : undefined)
+
+        return true
+      }
+
+      return await submitPromptText(rawText, options)
+    },
+    [
+      activeSessionIdRef,
+      busyRef,
+      executeSlashCommand,
+      getBusyInputMode,
+      redirectPrompt,
+      requestGateway,
+      selectedStoredSessionIdRef,
+      submitPromptText,
+      updateSessionState
+    ]
   )
 
   // After a durable rewind the surviving bubbles' cached rowIds are stale (the

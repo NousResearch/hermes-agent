@@ -66,6 +66,7 @@ export interface WiringActions extends SidebarActions, ChatActions {
   openCommandCenterSection: (section: CommandCenterSection) => void
   requestGateway: GatewayRequester
   selectModel: ComponentProps<typeof ModelMenuPanel>['onSelectModel']
+  useProfileDefault: NonNullable<ComponentProps<typeof ModelMenuPanel>['onUseProfileDefault']>
   toggleCommandCenter: () => void
 }
 

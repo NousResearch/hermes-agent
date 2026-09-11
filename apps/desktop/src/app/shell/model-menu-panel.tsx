@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useContext, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { Codicon } from '@/components/ui/codicon'
@@ -15,6 +15,7 @@ import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from 
 import { $visibleModels } from '@/store/model-visibility'
 import { notifyError } from '@/store/notifications'
 import {
+  $currentModelSource,
   $defaultReasoningEffort,
   markComposerSelectionManual,
   setCurrentFastMode,
@@ -23,7 +24,7 @@ import {
 import { sessionTileDelegate } from '@/store/session-states'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
-import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
+import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from './model-catalog-menu'
 
 export { ModelMenuCloseContext } from './model-catalog-menu'
 
@@ -39,6 +40,7 @@ interface ModelMenuPanelProps {
   gateway?: HermesGateway
   ownerConnectionId?: string
   onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
+  onUseProfileDefault?: () => Promise<void> | void
   profile?: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
@@ -52,6 +54,7 @@ interface ModelMenuPanelProps {
 export function ModelMenuPanel({
   gateway,
   onSelectModel,
+  onUseProfileDefault,
   ownerConnectionId,
   profile = 'default',
   requestGateway
@@ -68,10 +71,12 @@ export function ModelMenuPanel({
   const currentModel = useStore(view.$model)
   const currentProvider = useStore(view.$provider)
   const currentReasoningEffort = useStore(view.$reasoningEffort)
+  const currentModelSource = useStore($currentModelSource)
   const modelPresets = useStore($modelPresets)
   const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
   const visibleModels = useStore($visibleModels)
   const touchesPrimary = view.kind === 'primary'
+  const closeMenu = useContext(ModelMenuCloseContext)
 
   // Subscribe to the SAME query the menu runs (identical key ⇒ React Query
   // dedupes, no second fetch). It must be a live subscription, not a cache
@@ -246,17 +251,32 @@ export function ModelMenuPanel({
     <ModelCatalogMenu
       controller={controller}
       footer={
-        <DropdownMenuItem
-          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-          disabled={refreshing}
-          onSelect={event => {
-            event.preventDefault()
-            void refreshModels()
-          }}
-        >
-          <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
-          {copy.refreshModels}
-        </DropdownMenuItem>
+        <>
+          {touchesPrimary && currentModelSource === 'manual' && onUseProfileDefault ? (
+            <DropdownMenuItem
+              className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+              data-testid="composer-use-profile-default"
+              onSelect={() => {
+                void onUseProfileDefault()
+                closeMenu()
+              }}
+            >
+              <Codicon name="discard" size="0.75rem" />
+              {copy.useProfileDefault}
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem
+            className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+            disabled={refreshing}
+            onSelect={event => {
+              event.preventDefault()
+              void refreshModels()
+            }}
+          >
+            <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+            {copy.refreshModels}
+          </DropdownMenuItem>
+        </>
       }
       gateway={gateway}
       includeMoa

@@ -2497,6 +2497,7 @@ export const ar = defineLocale({
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
       refreshModels: 'تحديث النماذج',
+      useProfileDefault: 'استخدام الإعداد الافتراضي للملف الشخصي',
       fast: 'سريع'
     },
     modelOptions: {

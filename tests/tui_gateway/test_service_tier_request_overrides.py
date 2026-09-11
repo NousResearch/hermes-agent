@@ -179,3 +179,13 @@ def test_typed_fast_on_uses_provider_appropriate_key():
     _mirror(agent, "on")
 
     assert agent.request_overrides == {"speed": "fast"}
+
+
+def test_resolver_crash_fails_open_to_no_overrides():
+    """A resolver bug must not break agent construction: fail open to an
+    unpinned build rather than a failed one (coverage idea from #101524)."""
+    with patch("hermes_cli.models.resolve_fast_mode_overrides", side_effect=RuntimeError("boom")):
+        kwargs = _build("priority")
+
+    assert kwargs["service_tier"] == "priority"
+    assert not kwargs.get("request_overrides")

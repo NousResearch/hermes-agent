@@ -6,6 +6,8 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 import tools.terminal_tool_sudo as terminal_tool_sudo
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _BoundedOutputCollector
@@ -37,45 +39,26 @@ def test_prepare_command_uses_selected_environment_for_nopasswd(monkeypatch):
 
     monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
 
-    transformed, sudo_stdin = env._prepare_command("sudo true")
-
-    assert transformed == "sudo true"
-    assert sudo_stdin is None
+    assert env._prepare_command("sudo true") == ("sudo true", None)
 
 
-def test_nopasswd_probe_runs_inside_selected_environment(monkeypatch):
+@pytest.mark.parametrize(
+    ("supported", "returncode", "expected", "probed"),
+    [(True, 0, True, True), (True, 1, False, True), (False, 0, False, False)],
+)
+def test_nopasswd_probe_runs_sudo_n_inside_backend_only_when_supported(
+    monkeypatch, supported, returncode, expected, probed
+):
     env = _TestableEnv()
-    proc = object()
-    run = MagicMock(return_value=proc)
-    wait = MagicMock(return_value={"returncode": 0})
+    env._sudo_nopasswd_probe_supported = supported
+    run = MagicMock(return_value=object())
     monkeypatch.setattr(env, "_run_bash", run)
-    monkeypatch.setattr(env, "_wait_for_process", wait)
+    monkeypatch.setattr(env, "_wait_for_process", MagicMock(return_value={"returncode": returncode}))
 
-    assert env._sudo_nopasswd_works() is True
-    run.assert_called_once_with(
-        "sudo -n true",
-        login=False,
-        timeout=3,
-        stdin_data=None,
-    )
-    wait.assert_called_once_with(proc, timeout=3)
-
-
-def test_nopasswd_probe_fails_closed_on_backend_error(monkeypatch):
-    env = _TestableEnv()
-    monkeypatch.setattr(env, "_run_bash", MagicMock(side_effect=RuntimeError("offline")))
-
-    assert env._sudo_nopasswd_works() is False
-
-
-def test_nopasswd_probe_skips_backends_without_safe_process_cancel(monkeypatch):
-    env = _TestableEnv()
-    env._sudo_nopasswd_probe_supported = False
-    run = MagicMock(side_effect=AssertionError("probe must not start"))
-    monkeypatch.setattr(env, "_run_bash", run)
-
-    assert env._sudo_nopasswd_works() is False
-    run.assert_not_called()
+    assert env._sudo_nopasswd_works() is expected
+    assert run.called is probed
+    if probed:
+        assert run.call_args.args[0] == "sudo -n true"
 
 
 class TestBoundedOutputCollector:

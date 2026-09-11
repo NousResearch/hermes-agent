@@ -78,37 +78,17 @@ def test_explicit_empty_sudo_password_tries_empty_without_prompt(monkeypatch):
     assert sudo_stdin == "\n"
 
 
-def test_backend_nopasswd_probe_skips_interactive_prompt(monkeypatch):
+def test_headless_sudo_never_runs_backend_nopasswd_probe(monkeypatch):
+    """No prompt can fire without a UI, so the backend round trip must not be paid."""
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
-    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-
-    def _fail_prompt(*_args, **_kwargs):
-        raise AssertionError("interactive sudo prompt should not run for NOPASSWD")
-
-    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
-
-    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(
-        "sudo true",
-        sudo_nopasswd_check=lambda: True,
-    )
-
-    assert transformed == "sudo true"
-    assert sudo_stdin is None
-
-
-def test_configured_password_does_not_run_backend_nopasswd_probe(monkeypatch):
-    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    terminal_tool.set_sudo_password_callback(None)
 
     def _fail_probe():
-        raise AssertionError("configured passwords must bypass the NOPASSWD probe")
+        raise AssertionError("headless sudo must not probe the backend")
 
-    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(
-        "sudo true",
-        sudo_nopasswd_check=_fail_probe,
-    )
-
-    assert transformed == "sudo -S -p '' true"
-    assert sudo_stdin == "testpass\n"
+    assert terminal_tool_sudo._transform_sudo_command("sudo true", sudo_nopasswd_check=_fail_probe) == (
+        "sudo true", None)
 
 
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():

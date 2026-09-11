@@ -34,7 +34,7 @@ import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
-import { TITLEBAR_DRAG_FILL_INSET, useWindowControlsOverlap } from '../../geometry'
+import { useTitlebarDragFillInset, useWindowControlsOverlap } from '../../geometry'
 import { emptyPaneLifecycleState, reconcilePaneLifecycle } from '../../pane-lifecycle'
 import { hiddenPaneProps, PaneGroupContext, PaneLifecycleContext, PaneVisibleContext } from '../../pane-visibility'
 import {
@@ -254,6 +254,7 @@ export function TreeGroup({
   const dragging = useStore($treeDragging)
   const editMode = useStore($layoutEditMode)
   const wcOverlap = useWindowControlsOverlap(ref, !topEdge)
+  const dragFillInset = useTitlebarDragFillInset(ref, topEdge)
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
@@ -529,7 +530,7 @@ export function TreeGroup({
               <div
                 className="min-w-0 flex-1 [-webkit-app-region:drag]"
                 data-titlebar-drag-fill=""
-                style={{ marginLeft: TITLEBAR_DRAG_FILL_INSET }}
+                style={{ marginLeft: dragFillInset }}
               />
               {rightEdge && (
                 <div className="flex shrink-0">
@@ -548,7 +549,7 @@ export function TreeGroup({
               className="flex min-w-0"
               style={
                 tabsInTitlebar
-                  ? { height: TITLEBAR_HEIGHT, marginLeft: TITLEBAR_DRAG_FILL_INSET }
+                  ? { height: TITLEBAR_HEIGHT, marginLeft: dragFillInset }
                   : undefined
               }
             >

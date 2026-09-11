@@ -42,19 +42,76 @@ export function intersect(a: Rect, b: Rect): Rect | null {
 }
 
 /**
- * CSS length that starts a titlebar drag fill after the fixed window-control
- * cluster. When the zone already begins past the cluster (`--workspace-left`
- * ≥ cluster right edge) this is 0. Cut the strip — Electron's no-drag
- * carve-out of fixed/transformed elements is unreliable.
+ * Where a titlebar drag fill must start so it never covers the app's fixed
+ * window-control cluster (`--titlebar-controls-left` + `--titlebar-controls-width`).
+ * Measured against the ZONE's own viewport left edge, not `--workspace-left`:
+ * a tool zone rendered between a minimized rail and the workspace starts at
+ * x≈28 while the workspace starts hundreds of px further right, so a
+ * workspace-keyed inset was 0 exactly where the strip slid under the cluster.
+ * Electron's no-drag carve-out of fixed elements is unreliable — cut the strip.
  *
- * start = max(0, controlsLeft + controlsWidth - workspaceLeft)
+ * start = max(0, controlsLeft + controlsWidth - zoneLeft)
+ *
+ * `useTitlebarDragFillInset` passes the measured cluster right edge as
+ * `controlsLeft` with width 0.
  */
-export const TITLEBAR_DRAG_FILL_INSET =
-  'max(0px, calc(var(--titlebar-controls-left, 0px) + var(--titlebar-controls-width, 0px) - var(--workspace-left, 0px)))'
+export function titlebarDragFillStart(controlsLeft: number, controlsWidth: number, zoneLeft: number): number {
+  return Math.max(0, controlsLeft + controlsWidth - zoneLeft)
+}
 
-/** Pixel form of `TITLEBAR_DRAG_FILL_INSET` for callers with resolved lengths. */
-export function titlebarDragFillStart(controlsLeft: number, controlsWidth: number, workspaceLeft: number): number {
-  return Math.max(0, controlsLeft + controlsWidth - workspaceLeft)
+/** Right edge (viewport px) of the fixed left window-control cluster, 0 when
+ *  none is mounted (overlay/extension views hide it). Measured from the DOM:
+ *  the reserving CSS vars live inline on the shell wrapper as `calc()`s and
+ *  do not resolve through `getPropertyValue`. */
+function leftControlClusterRight(): number {
+  const el = document.querySelector<HTMLElement>('[data-titlebar-cluster="left"]')
+
+  if (!el) {
+    return 0
+  }
+
+  const r = el.getBoundingClientRect()
+
+  return r.width > 0 ? r.right : 0
+}
+
+/** Live px inset for a top-edge zone's drag fill (see `titlebarDragFillStart`). */
+export function useTitlebarDragFillInset(ref: RefObject<HTMLElement | null>, enabled = true): number {
+  const [inset, setInset] = useState(0)
+
+  useLayoutEffect(() => {
+    const el = ref.current
+
+    if (!enabled || !el) {
+      setInset(0)
+
+      return
+    }
+
+    const update = () => {
+      const next = titlebarDragFillStart(leftControlClusterRight(), 0, el.getBoundingClientRect().x)
+
+      setInset(prev => (prev === next ? prev : next))
+    }
+
+    update()
+
+    // A sibling collapsing shifts this zone without resizing the window; the
+    // tree store is the signal for that, the observer covers the zone's own
+    // track changes, `resize` covers the rest.
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    window.addEventListener('resize', update)
+    const unsubTree = $layoutTree.listen(() => requestAnimationFrame(update))
+
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', update)
+      unsubTree()
+    }
+  }, [enabled, ref])
+
+  return inset
 }
 
 // ---------------------------------------------------------------------------

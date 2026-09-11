@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { TITLEBAR_DRAG_FILL_INSET, titlebarDragFillStart } from './geometry'
+import { titlebarDragFillStart } from './geometry'
 
 describe('titlebarDragFillStart', () => {
   it('is 0 when the zone already starts past the control cluster', () => {
@@ -10,12 +10,11 @@ describe('titlebarDragFillStart', () => {
   it('cuts the fill so it starts after the cluster when the zone slides under it', () => {
     expect(titlebarDragFillStart(98, 96, 28)).toBe(166)
   })
-})
 
-describe('TITLEBAR_DRAG_FILL_INSET', () => {
-  it('references the published titlebar and workspace CSS vars', () => {
-    expect(TITLEBAR_DRAG_FILL_INSET).toContain('--titlebar-controls-left')
-    expect(TITLEBAR_DRAG_FILL_INSET).toContain('--titlebar-controls-width')
-    expect(TITLEBAR_DRAG_FILL_INSET).toContain('--workspace-left')
+  it('keys on the zone, not the workspace: a tool zone at x=28 beside a workspace at x=692 still gets cut', () => {
+    // Regression: the inset was computed from --workspace-left (692 → 0 inset)
+    // while the terminal zone itself sat at 28 under the cluster.
+    expect(titlebarDragFillStart(98, 24, 28)).toBe(94)
+    expect(titlebarDragFillStart(98, 24, 692)).toBe(0)
   })
 })

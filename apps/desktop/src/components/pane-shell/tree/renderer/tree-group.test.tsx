@@ -1,8 +1,9 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { stubResizeObserver } from '@/test/jsdom'
 
 import type { GroupNode } from '../model'
 import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
@@ -42,6 +43,8 @@ const toggle = (label: string) =>
   globalThis.document.querySelector<HTMLButtonElement>(
     `[data-tree-group="terminal-zone"] button[aria-label="${label}"]`
   )!
+
+beforeEach(stubResizeObserver)
 
 afterEach(() => {
   if (root) {
@@ -144,38 +147,48 @@ describe('TreeGroup', () => {
     }
   })
 
-  it('cuts the titlebar drag filler so it cannot cover the window-control cluster', () => {
+  it("cuts the titlebar drag filler by the zone's own overlap with the window-control cluster", () => {
     vi.stubGlobal('CSS', { escape: (value: string) => value })
-    render(
-      <TreeGroup
-        node={{
-          active: 'gone',
-          id: 'empty-zone',
-          minimized: false,
-          panes: ['gone'],
-          type: 'group'
-        }}
-        topEdge
-      />
-    )
 
-    const header = container!.querySelector('[data-panel-header]')!
+    // Fixed cluster at x=98..122; the zone sits at x=28 (beside a minimized
+    // rail), NOT at the workspace's left edge, so the fill starts 122-28 = 94px in.
+    const cluster = globalThis.document.createElement('div')
+    cluster.dataset.titlebarCluster = 'left'
+    globalThis.document.body.append(cluster)
 
-    const filler =
-      header.querySelector('[data-titlebar-drag-fill]') ??
-      [...header.querySelectorAll('div')].find(
-        el =>
-          el.className.includes('flex-1') &&
-          el.className.includes('-webkit-app-region:drag') &&
-          el.childElementCount === 0
+    const rect = (x: number, width: number) =>
+      ({ bottom: 34, height: 34, left: x, right: x + width, toJSON: () => ({}), top: 0, width, x, y: 0 }) as DOMRect
+
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        return this === cluster ? rect(98, 24) : rect(28, 672)
+      })
+
+    try {
+      render(
+        <TreeGroup
+          node={{
+            active: 'gone',
+            id: 'empty-zone',
+            minimized: false,
+            panes: ['gone'],
+            type: 'group'
+          }}
+          topEdge
+        />
       )
 
-    expect(filler).toBeTruthy()
-    expect(filler!.getAttribute('data-titlebar-drag-fill')).not.toBeNull()
-    const css = `${filler!.className} ${filler!.getAttribute('style') ?? ''}`
-    expect(css).toMatch(/--titlebar-controls-left/)
-    expect(css).toMatch(/--titlebar-controls-width/)
+      const filler = container!.querySelector<HTMLElement>('[data-panel-header] [data-titlebar-drag-fill]')!
+
+      expect(filler).toBeTruthy()
+      expect(filler.style.marginLeft).toBe('94px')
+    } finally {
+      rectSpy.mockRestore()
+      cluster.remove()
+    }
   })
+
 
   it('points the docked-zone chevron in the collapse or restore action direction', () => {
     disposePane = registry.register({

@@ -6,6 +6,7 @@ preflight exemption, create-time validation, the subprocess delivery lane,
 and the delivery-targets listing used by UI pickers.
 """
 
+import os
 import subprocess
 from unittest import mock
 
@@ -143,6 +144,29 @@ def test_deliver_runs_canonical_bot_chat_lane():
     assert "--query-file" in argv
     # Message rides a temp file, never inline argv (quote/expansion safety).
     assert not any("the output" in str(a) for a in argv)
+    # Never inherit a possibly-deleted worker cwd (#102941).
+    assert "cwd" in calls["kwargs"]
+    assert calls["kwargs"]["cwd"]
+    assert os.path.isdir(calls["kwargs"]["cwd"])
+
+
+def test_deliver_uses_stable_cwd_not_caller_cwd(tmp_path, monkeypatch):
+    """Bot-chat spawn must pin cwd to an existing directory (profile home)."""
+    home = tmp_path / "profile-home"
+    home.mkdir()
+    calls = {}
+
+    def fake_run(argv, **kwargs):
+        calls["kwargs"] = kwargs
+        return _completed()
+
+    monkeypatch.setattr(sched_delivery, "_bot_chat_delivery_cwd", lambda: str(home))
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is None
+    assert calls["kwargs"]["cwd"] == str(home)
 
 
 def test_deliver_named_profile_uses_p_flag_and_clears_home():

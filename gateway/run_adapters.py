@@ -853,6 +853,7 @@ class GatewayAdapterLifecycleMixin:
             except Exception as e:
                 logger.error("Failed to start adapters for profile '%s': %s", profile_name, e, exc_info=True)
         self._record_served_profiles(active, profile_homes)
+        self._restore_secondary_completion_ledgers(profile_homes)
         return connected
 
     def _primary_resource_claims(self, active: str) -> Dict[tuple, str]:

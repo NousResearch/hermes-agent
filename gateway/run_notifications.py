@@ -8,6 +8,7 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
@@ -1279,6 +1280,25 @@ class GatewayNotificationsMixin:
             claim.proceed, claim.early_result = False, False
         return claim
 
+    def _completion_event_scope(self, evt: dict):
+        """Profile runtime scope of the session a completion event targets (a no-op context when the
+        event is the default profile's or the scope is already installed).
+
+        The pre-flight (``_classify_completion_target`` → ``_session_db``) and every durable-ledger op
+        (``tools.async_delegation`` → ``get_hermes_home()/state.db``) resolve from the ambient scope.
+        The supervised ``_async_delegation_watcher`` and startup-recovered process watchers run under
+        the ROOT scope, so a secondary profile's completion was looked up in the DEFAULT profile's
+        state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever."""
+        from gateway.run import _async_profile_runtime_scope
+        from hermes_constants import get_hermes_home_override
+        source = self._build_process_event_source(evt)
+        if source is None or not getattr(source, "profile", None):
+            return contextlib.nullcontext()
+        profile_home = self._resolve_profile_home_for_source(source)
+        if get_hermes_home_override() == str(profile_home):
+            return contextlib.nullcontext()
+        return _async_profile_runtime_scope(profile_home)
+
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
@@ -1287,6 +1307,13 @@ class GatewayNotificationsMixin:
         True means adapter admission, not model execution; None means deduplicated or
         terminal. False remains retryable. Claims are settled together for every sibling.
         """
+        async with self._completion_event_scope(evt):
+            return await self._deliver_completion_notification_scoped(
+                synth_text, evt, sibling_claims=sibling_claims)
+
+    async def _deliver_completion_notification_scoped(
+        self, synth_text: str, evt: dict, *, sibling_claims=(),
+    ) -> Optional[bool]:
         from gateway.wake import WakeNotAccepted
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
@@ -1476,6 +1503,11 @@ class GatewayNotificationsMixin:
         consolidated text of every sibling THIS runner claimed (siblings owned elsewhere are excluded;
         their claims are acked only after adapter acceptance). True after acceptance, False to requeue
         the group, None when nothing is deliverable here (retry siblings requeued)."""
+        # The group shares one session_key, hence one profile: scope the pre-checks and sibling claims too.
+        async with self._completion_event_scope(group[0]):
+            return await self._deliver_async_delegation_group_scoped(group)
+
+    async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
         from gateway.run import _format_gateway_process_notification
         from tools.process_registry import process_registry as _pr
         # API delivery does not start a model turn, so there is nothing to coalesce.
@@ -1534,6 +1566,26 @@ class GatewayNotificationsMixin:
             for evt, _claim_id in siblings:
                 _pr.completion_queue.put(evt)
         return delivered
+
+    def _restore_secondary_completion_ledgers(self, profile_homes) -> None:
+        """Re-queue undelivered async completions from every SECONDARY profile's ledger. The process
+        registry restores only the launch profile's ``state.db`` at import; a secondary's rows would
+        otherwise never be replayed after a restart."""
+        from gateway.run import _profile_runtime_scope
+        from tools.async_delegation import restore_undelivered_completions
+        from tools.process_registry import process_registry as _pr
+        primary = getattr(self, "_primary_profile_name", None)
+        for profile_name, profile_home in profile_homes:
+            if profile_name == primary:
+                continue
+            try:
+                with _profile_runtime_scope(Path(profile_home), {}):
+                    restored = restore_undelivered_completions(_pr.completion_queue)
+            except Exception:
+                logger.warning("Could not restore async completions for profile %r", profile_name, exc_info=True)
+                continue
+            if restored:
+                logger.info("Restored %d undelivered async completion(s) for profile %r", restored, profile_name)
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async completions and pattern notifications even while sessions are idle.

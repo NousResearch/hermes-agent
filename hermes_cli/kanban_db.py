@@ -4295,7 +4295,10 @@ def _worktree_holds_unmerged(worktree_path: str) -> bool:
     (preserve the worktree / inherit it) — fail-safe, never silently discard.
     """
     try:
-        from cli import _worktree_has_unpushed_commits, _worktree_is_dirty
+        # 2026-09-11: was ``from cli import ...`` — cli stopped exporting _worktree_is_dirty when
+        # upstream moved both predicates to hermes_cli.worktree_ops, so this import always failed
+        # and the guard always answered True (every decomposed child inherited the parent tree).
+        from hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty
     except Exception:
         _log.warning(
             "decompose: cannot import cli worktree predicates for %s — "

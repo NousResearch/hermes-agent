@@ -11,7 +11,6 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
-import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
@@ -19,8 +18,8 @@ import {
   $handoffError,
   $setupHandoff,
   firstTaskTitle,
-  guideSourceConnectionId,
   parseHandoffPlan,
+  readGuideHandoffReceipt,
   requestSetupHandoff,
   retrySetupHandoff,
   SETUP_PROFILE
@@ -117,7 +116,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   try {
     completed =
       !!storedId &&
-      readHandoffReceipt(handoffReceiptKey(guideSourceConnectionId(storedId), storedId))?.status === 'accepted'
+      readGuideHandoffReceipt(storedId).receipt?.status === 'accepted'
   } catch (receiptError) {
     error = String(receiptError)
   }

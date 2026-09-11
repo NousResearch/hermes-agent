@@ -68,6 +68,7 @@ export function getManagementProfile(): string {
 // cron (which has its own per-job profile params), profiles themselves — is
 // machine-global or self-scoped and must NOT be rewritten.
 const PROFILE_SCOPED_PREFIXES = [
+  "/api/creations",
   "/api/status",
   "/api/gateway",
   "/api/analytics",
@@ -249,6 +250,7 @@ export async function authedFetch(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
+  url = withManagementProfile(url);
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {

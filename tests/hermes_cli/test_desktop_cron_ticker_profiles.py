@@ -53,7 +53,9 @@ def _providers(monkeypatch):
     return sp, builtin
 
 
-def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path):
+def test_profile_homes_passed_to_builtin_as_live_membership(
+    monkeypatch, _providers, tmp_path
+):
     _sp, builtin = _providers
     homes = [
         ("default", tmp_path / "root"),
@@ -67,10 +69,16 @@ def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path
 
     assert builtin.start_kwargs is not None
     assert builtin.start_kwargs["interval"] == 7
-    assert builtin.start_kwargs["profile_homes"] == homes
+    current_profile_homes = builtin.start_kwargs["profile_homes"]
+    assert callable(current_profile_homes)
+    assert list(current_profile_homes()) == homes
+    assert callable(builtin.start_kwargs["profile_gate"])
+
+    homes.pop()
+    assert list(current_profile_homes()) == homes
 
 
-def test_single_profile_keeps_legacy_path(monkeypatch, _providers, tmp_path):
+def test_single_profile_still_passes_live_membership(monkeypatch, _providers, tmp_path):
     _sp, builtin = _providers
     import hermes_cli.profiles as profiles_mod
 
@@ -82,7 +90,12 @@ def test_single_profile_keeps_legacy_path(monkeypatch, _providers, tmp_path):
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=9)
 
-    assert builtin.start_kwargs == {"interval": 9}
+    assert builtin.start_kwargs is not None
+    assert builtin.start_kwargs["interval"] == 9
+    current_profile_homes = builtin.start_kwargs["profile_homes"]
+    assert callable(current_profile_homes)
+    assert list(current_profile_homes()) == [("default", tmp_path / "root")]
+    assert callable(builtin.start_kwargs["profile_gate"])
 
 
 def test_enumeration_failure_fails_open(monkeypatch, _providers):

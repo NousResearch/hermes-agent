@@ -698,6 +698,52 @@ def test_existing_profile_homes_filters_deleted(tmp_path):
     assert [p for p in as_paths] == [live]
 
 
+def test_multiplex_ticker_refreshes_profile_membership_each_cycle(tmp_path):
+    """A profile created after startup is picked up without restarting."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    default_home = tmp_path / "default"
+    added_home = tmp_path / "profiles" / "added"
+    (default_home / "cron").mkdir(parents=True)
+    homes = [("default", default_home)]
+    ticked = []
+    added = threading.Event()
+    stop = threading.Event()
+
+    def profile_homes():
+        return list(homes)
+
+    def tracking_tick(*_args, **_kwargs):
+        home = get_hermes_home().resolve()
+        ticked.append(home)
+        if home == added_home.resolve():
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=tracking_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0.01, "profile_homes": profile_homes},
+            daemon=True,
+        )
+        thread.start()
+
+        assert _wait_until(lambda: default_home.resolve() in ticked)
+        (added_home / "cron").mkdir(parents=True)
+        homes.append(("added", added_home))
+        added.set()
+        assert _wait_until(lambda: added_home.resolve() in ticked)
+
+        stop.set()
+        thread.join(timeout=5)
+
+    assert added.is_set()
+    assert not thread.is_alive()
+
+
 def _run_multiplex_capture(tmp_path, *, profile_adapters, shared_adapters):
     """Run the multiplex ticker one full cycle and return the ``adapters``
     object passed to ``tick()`` for the default profile and the secondary

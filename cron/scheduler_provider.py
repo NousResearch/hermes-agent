@@ -462,10 +462,20 @@ class InProcessCronScheduler(CronScheduler):
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
 
+        def current_profile_homes():
+            entries = profile_homes() if callable(profile_homes) else profile_homes
+            return list(entries)
+
+        try:
+            initial_profile_homes = current_profile_homes()
+        except BaseException as e:
+            logger.error("Cron profile membership error: %s", e, exc_info=True)
+            initial_profile_homes = []
+
         logger.info(
             "Multiplex cron scheduler started for %d profile(s): %s",
-            len(profile_homes),
-            [p[0] if isinstance(p, tuple) else p for p in profile_homes],
+            len(initial_profile_homes),
+            [p[0] if isinstance(p, tuple) else p for p in initial_profile_homes],
         )
 
         def tick_adapters_for(profile_name):
@@ -482,7 +492,7 @@ class InProcessCronScheduler(CronScheduler):
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's
         # cron workspace via the heartbeat below (#47368).
-        for entry in _existing_profile_homes(profile_homes):
+        for entry in _existing_profile_homes(initial_profile_homes):
             _, home = _profile_entry(entry)
             try:
                 with _profile_cron_scope(home):
@@ -506,13 +516,23 @@ class InProcessCronScheduler(CronScheduler):
             # Worst failure this cycle (fd exhaustion wins); backoff applied once per cycle.
             # See #87644.
             _cycle_exc: BaseException | None = None
-            cycle_homes = [_profile_entry(e) for e in _existing_profile_homes(profile_homes)]
+            try:
+                cycle_homes = [
+                    _profile_entry(e) for e in _existing_profile_homes(current_profile_homes())
+                ]
+            except BaseException as e:
+                logger.error("Cron profile membership error: %s", e, exc_info=True)
+                cycle_homes = []
+                _tick_error = f"{type(e).__name__}: {e}"
+                consecutive_failures = _note_tick_failure(e, consecutive_failures)
             if profile_gate is not None:
                 cycle_homes = [
                     (name, home) for name, home in cycle_homes if profile_gate(name, home)
                 ]
             try:
-                if can_dispatch is not None and not can_dispatch():
+                if _tick_error is not None:
+                    pass
+                elif can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
                     for _pname, home in cycle_homes:

@@ -1,4 +1,7 @@
 """Phase 4: lifecycle guard + per-profile observability."""
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from gateway.config import GatewayConfig
@@ -39,6 +42,53 @@ def test_cron_profile_homes_follow_allowlist(tmp_path, monkeypatch):
     )
 
     assert [name for name, _home in homes] == ["default", "worker"]
+
+
+def test_gateway_cron_receives_live_profile_resolver(monkeypatch, tmp_path):
+    """Gateway cron resolves profiles again after scheduler startup."""
+    import cron.scheduler_provider as scheduler_provider
+    import gateway.run as gateway_run
+
+    provider = scheduler_provider.InProcessCronScheduler()
+    monkeypatch.setattr(scheduler_provider, "resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr(
+        scheduler_provider,
+        "scheduler_for_profile_mode",
+        lambda resolved, **_kwargs: resolved,
+    )
+
+    homes = [("default", tmp_path / "default")]
+    monkeypatch.setattr(gateway_run, "_multiplex_profile_homes", lambda _config: list(homes))
+    started_threads = []
+
+    class RecordingThread:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            started_threads.append(self)
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(gateway_run.threading, "Thread", RecordingThread)
+    runner = SimpleNamespace(
+        config=GatewayConfig(multiplex_profiles=True),
+        adapters={},
+        _profile_adapters={},
+        _draining=False,
+        _external_drain_active=False,
+    )
+
+    async def start_threads():
+        gateway_run._start_gateway_start_cron_and_housekeeping(runner)
+
+    asyncio.run(start_threads())
+
+    profile_homes = started_threads[0].kwargs["kwargs"]["profile_homes"]
+    assert callable(profile_homes)
+    assert profile_homes() == homes
+
+    homes.append(("worker", tmp_path / "profiles" / "worker"))
+    assert profile_homes() == homes
 
 
 class TestNamedProfileMultiplexerGuard:

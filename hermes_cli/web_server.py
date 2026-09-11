@@ -101,22 +101,21 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
             from hermes_cli.profiles import profiles_to_serve
 
             profile_homes = list(profiles_to_serve(multiplex=True))
-            if len(profile_homes) > 1:
-                start_kwargs["profile_homes"] = profile_homes
-                # Stand down, per tick, for a profile whose OWN gateway runs:
-                # it ticks with live adapters, and the tick-lock race would
-                # otherwise deliver through the standalone path (#100489).
-                from hermes_cli.profiles import _check_gateway_running
+            start_kwargs["profile_homes"] = lambda: profiles_to_serve(multiplex=True)
+            # Stand down, per tick, for a profile whose OWN gateway runs:
+            # it ticks with live adapters, and the tick-lock race would
+            # otherwise deliver through the standalone path (#100489).
+            from hermes_cli.profiles import _check_gateway_running
 
-                start_kwargs["profile_gate"] = lambda _name, home: not _check_gateway_running(Path(home))
-                from hermes_logging import enable_profile_log_routing
+            start_kwargs["profile_gate"] = lambda _name, home: not _check_gateway_running(Path(home))
+            from hermes_logging import enable_profile_log_routing
 
-                enable_profile_log_routing(profile_homes)
-                _log.info(
-                    "Desktop cron scheduler will tick %d profile(s): %s",
-                    len(profile_homes),
-                    [name for name, _home in profile_homes],
-                )
+            enable_profile_log_routing(profile_homes)
+            _log.info(
+                "Desktop cron scheduler will tick %d profile(s): %s",
+                len(profile_homes),
+                [name for name, _home in profile_homes],
+            )
         except Exception:
             # Fail open to the single-store ticker so the active profile keeps firing.
             _log.exception("Desktop cron: profile enumeration failed; ticking active profile only")

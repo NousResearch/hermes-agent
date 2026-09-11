@@ -1,21 +1,21 @@
 ---
-title: "Canvas — Canvas LMS integration — fetch enrolled courses and assignments using API token authentication"
+title: "Canvas — Fetch Canvas LMS courses and assignments via API token"
 sidebar_label: "Canvas"
-description: "Canvas LMS integration — fetch enrolled courses and assignments using API token authentication"
+description: "Fetch Canvas LMS courses and assignments via API token"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Canvas
 
-Canvas LMS integration — fetch enrolled courses and assignments using API token authentication.
+Fetch Canvas LMS courses and assignments via API token.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/productivity/canvas` |
-| Path | `optional-skills/productivity/canvas` |
+| Path | `optional-skills/productivity\canvas` |
 | Version | `1.0.0` |
 | Author | community |
 | License | MIT |

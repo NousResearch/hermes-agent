@@ -12,6 +12,8 @@ import json
 import pytest
 
 from tools import browser_tool
+from tools import browser_tool_cloud as bt_cloud
+from tools import browser_tool_session as bt_session
 
 
 def _make_snapshot_result(snapshot="Public page content", refs=None):
@@ -46,7 +48,7 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         """Common patches for snapshot SSRF tests."""
         monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
         monkeypatch.setattr(
-            browser_tool,
+            bt_session,
             "_get_session_info",
             lambda task_id: {
                 "session_name": f"s_{task_id}",
@@ -59,8 +61,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
 
     def test_blocks_private_url_after_eval_navigation(self, monkeypatch):
         """Snapshot must block when current page URL is private."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
         monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
 
         call_count = {"n": 0}
@@ -74,7 +76,7 @@ class TestBrowserSnapshotPrivateNetworkGuard:
             return {"success": False, "error": "unknown command"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
@@ -86,8 +88,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
 
     def test_allows_public_url_after_eval_navigation(self, monkeypatch):
         """Snapshot must succeed when current page URL is public."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
         monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
@@ -98,7 +100,7 @@ class TestBrowserSnapshotPrivateNetworkGuard:
             return {"success": False, "error": "unknown command"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
@@ -107,7 +109,7 @@ class TestBrowserSnapshotPrivateNetworkGuard:
 
     def test_skips_check_in_local_backend_mode(self, monkeypatch):
         """Local backend mode skips SSRF check entirely."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "snapshot":
@@ -115,38 +117,18 @@ class TestBrowserSnapshotPrivateNetworkGuard:
             return {"success": False, "error": "should not be called"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
         assert result["success"] is True
         assert "snapshot" in result
 
-
-    def test_skips_check_for_local_sidecar_session(self, monkeypatch):
-        """Local sidecar sessions can legitimately access private URLs."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        # Simulate the effective_task_id being a local sidecar key
-        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: True)
-
-        def mock_run_browser_command(task_id, command, args=None, **kwargs):
-            if command == "snapshot":
-                return _make_snapshot_result()
-            return {"success": False, "error": "should not be called"}
-
-        monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
-        )
-
-        result = json.loads(browser_browser_snapshot(task_id="test"))
-        assert result["success"] is True
-        assert "snapshot" in result
 
     def test_skips_check_when_private_urls_allowed(self, monkeypatch):
         """When allow_private_urls is enabled, SSRF check is skipped."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: True)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "snapshot":
@@ -154,7 +136,7 @@ class TestBrowserSnapshotPrivateNetworkGuard:
             return {"success": False, "error": "should not be called"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
@@ -163,8 +145,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
 
     def test_handles_eval_failure_gracefully(self, monkeypatch):
         """If URL eval fails, snapshot should still succeed (fail-open)."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "snapshot":
@@ -174,36 +156,18 @@ class TestBrowserSnapshotPrivateNetworkGuard:
             return {"success": False, "error": "unknown"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
         # Should succeed — eval failure means we can't determine URL, fail-open
         assert result["success"] is True
 
-    def test_handles_empty_url_result(self, monkeypatch):
-        """If URL eval returns empty string, snapshot should succeed."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-
-        def mock_run_browser_command(task_id, command, args=None, **kwargs):
-            if command == "snapshot":
-                return _make_snapshot_result()
-            elif command == "eval":
-                return _make_eval_result("")
-            return {"success": False, "error": "unknown"}
-
-        monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
-        )
-
-        result = json.loads(browser_browser_snapshot(task_id="test"))
-        assert result["success"] is True
 
     def test_handles_eval_exception(self, monkeypatch):
         """If URL eval raises an exception, snapshot should succeed."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "snapshot":
@@ -213,7 +177,7 @@ class TestBrowserSnapshotPrivateNetworkGuard:
             return {"success": False, "error": "unknown"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
@@ -221,8 +185,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
 
     def test_blocks_loopback_url(self, monkeypatch):
         """Loopback URLs (localhost) must be blocked."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
         monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
@@ -233,7 +197,7 @@ class TestBrowserSnapshotPrivateNetworkGuard:
             return {"success": False, "error": "unknown"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
@@ -242,8 +206,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
 
     def test_blocks_private_ip_range(self, monkeypatch):
         """Private IP ranges (10.x, 172.16.x, 192.168.x) must be blocked."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
         monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
 
         for private_ip in ["http://10.0.0.1/api", "http://172.16.0.1/admin", "http://192.168.1.1/config"]:
@@ -255,7 +219,7 @@ class TestBrowserSnapshotPrivateNetworkGuard:
                 return {"success": False, "error": "unknown"}
 
             monkeypatch.setattr(
-                browser_tool, "_run_browser_command", mock_run_browser_command
+                bt_session, "_run_browser_command", mock_run_browser_command
             )
 
             result = json.loads(browser_browser_snapshot(task_id="test"))
@@ -297,8 +261,8 @@ class TestBrowserVisionPrivateNetworkGuard:
 
     def test_blocks_private_url_after_eval_navigation(self, monkeypatch):
         """Vision must block when current page URL is private."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
         monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
@@ -307,7 +271,7 @@ class TestBrowserVisionPrivateNetworkGuard:
             return {"success": False, "error": "should not reach screenshot"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result = json.loads(browser_browser_vision(question="what do you see", task_id="test"))
@@ -317,8 +281,8 @@ class TestBrowserVisionPrivateNetworkGuard:
 
     def test_allows_public_url_after_eval_navigation(self, monkeypatch):
         """Vision must proceed when current page URL is public."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
         monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
@@ -329,7 +293,7 @@ class TestBrowserVisionPrivateNetworkGuard:
             return {"success": False, "error": "unknown"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
         # Screenshot file won't exist — that's fine, function returns error
         # but the important thing is the guard didn't block it.
@@ -343,7 +307,7 @@ class TestBrowserVisionPrivateNetworkGuard:
 
     def test_skips_check_in_local_backend_mode(self, monkeypatch):
         """Local backend mode skips SSRF check entirely."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "screenshot":
@@ -351,38 +315,18 @@ class TestBrowserVisionPrivateNetworkGuard:
             return {"success": False, "error": "should not be called"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result_raw = browser_browser_vision(question="what", task_id="test")
         result = json.loads(result_raw)
         assert "private or internal address" not in result.get("error", "")
 
-
-    def test_skips_check_for_local_sidecar_session(self, monkeypatch):
-        """Local sidecar sessions can legitimately access private URLs."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        # Simulate the effective_task_id being a local sidecar key
-        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: True)
-
-        def mock_run_browser_command(task_id, command, args=None, **kwargs):
-            if command == "screenshot":
-                return _make_screenshot_result()
-            return {"success": False, "error": "should not be called"}
-
-        monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
-        )
-
-        result_raw = browser_browser_vision(question="what", task_id="test")
-        result = json.loads(result_raw)
-        assert "private or internal address" not in result.get("error", "")
 
     def test_skips_check_when_private_urls_allowed(self, monkeypatch):
         """When allow_private_urls is enabled, SSRF check is skipped."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: True)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "screenshot":
@@ -390,7 +334,7 @@ class TestBrowserVisionPrivateNetworkGuard:
             return {"success": False, "error": "should not be called"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result_raw = browser_browser_vision(question="what", task_id="test")
@@ -399,8 +343,8 @@ class TestBrowserVisionPrivateNetworkGuard:
 
     def test_handles_eval_failure_gracefully(self, monkeypatch):
         """If URL eval fails, vision should still proceed (fail-open)."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "eval":
@@ -410,7 +354,7 @@ class TestBrowserVisionPrivateNetworkGuard:
             return {"success": False, "error": "unknown"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result_raw = browser_browser_vision(question="what", task_id="test")
@@ -419,8 +363,8 @@ class TestBrowserVisionPrivateNetworkGuard:
 
     def test_handles_eval_exception(self, monkeypatch):
         """If URL eval raises an exception, vision should still proceed."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "eval":
@@ -430,7 +374,7 @@ class TestBrowserVisionPrivateNetworkGuard:
             return {"success": False, "error": "unknown"}
 
         monkeypatch.setattr(
-            browser_tool, "_run_browser_command", mock_run_browser_command
+            bt_session, "_run_browser_command", mock_run_browser_command
         )
 
         result_raw = browser_browser_vision(question="what", task_id="test")

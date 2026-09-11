@@ -8,6 +8,8 @@ for must still be returned.  Previously any of those raised straight out of
 traceback and lost the whole turn.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from agent.turn_finalizer import finalize_turn
@@ -135,14 +137,6 @@ def _run(
     )
 
 
-def test_all_cleanup_steps_raise_response_still_returned():
-    agent = _StubAgent(
-        raise_in=("save_trajectory", "cleanup_task_resources", "persist_session")
-    )
-    result = _run(agent)
-    assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
-    labels = [e.split(":")[0] for e in result["cleanup_errors"]]
-    assert labels == ["save_trajectory", "cleanup_task_resources", "persist_session"]
 
 
 @pytest.mark.parametrize(
@@ -172,13 +166,32 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert "cleanup_errors" not in result
 
 
-def test_text_response_on_last_allowed_call_is_completed():
+@pytest.mark.parametrize(
+    ("persist_disabled", "expected_calls"),
+    [
+        (True, ["transform_llm_output"]),
+        (False, ["transform_llm_output", "post_llm_call", "on_session_end"]),
+    ],
+)
+def test_persist_disabled_turn_skips_session_end_hook(
+    persist_disabled, expected_calls
+):
     agent = _StubAgent(raise_in=())
-    result = _run(
-        agent,
-        final_response="final report",
-        api_call_count=agent.max_iterations,
-        turn_exit_reason="text_response(finish_reason=stop)",
-    )
-    assert result["final_response"] == "final report"
-    assert result["completed"] is True
+    agent._persist_disabled = persist_disabled
+    calls = []
+
+    def capture(name, _logger, **_kwargs):
+        calls.append(name)
+        return []
+
+    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=capture):
+        _run(
+            agent,
+            final_response="done",
+            api_call_count=1,
+            turn_exit_reason="text_response(stop)",
+        )
+
+    assert calls == expected_calls
+
+

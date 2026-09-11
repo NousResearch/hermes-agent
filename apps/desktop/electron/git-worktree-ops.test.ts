@@ -227,7 +227,10 @@ test('listBaseBranches: lists local branches and flags the default', async () =>
 
     assert.deepEqual(names, [trunk, 'feature'].sort())
     // No remote → all local.
-    assert.equal(branches.every(b => !b.isRemote), true)
+    assert.equal(
+      branches.every(b => !b.isRemote),
+      true
+    )
     // The trunk is flagged as the default.
     assert.equal(branches.find(b => b.name === trunk).isDefault, true)
     assert.equal(branches.find(b => b.name === 'feature').isDefault, false)
@@ -254,10 +257,215 @@ test('addWorktree: base param branches off a specified local branch', async () =
     await ensureGitRepo('git', dir)
     execFileSync('git', ['branch', 'staging'], { cwd: dir })
 
-    const result = await addWorktree(dir, { base: 'staging', branch: 'new-from-staging', name: 'new-from-staging' }, 'git')
+    const result = await addWorktree(
+      dir,
+      { base: 'staging', branch: 'new-from-staging', name: 'new-from-staging' },
+      'git'
+    )
 
     assert.equal(result.branch, 'new-from-staging')
     assert.equal(git('-C', result.path, 'merge-base', 'HEAD', 'staging').length > 0, true)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('addWorktree: base origin/main does not set up upstream tracking', async () => {
+  // Two repos: a bare "remote" and a clone, so origin/main resolves as a
+  // remote-tracking ref — the condition that triggers auto-tracking.
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-remote-'))
+  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-clone-'))
+  const git = (...args) => execFileSync('git', args, { cwd: cloneDir }).toString().trim()
+
+  try {
+    // Seed the remote with a commit on main. Inline identity so it works
+    // on CI runners with no global git config.
+    execFileSync('git', ['init', '-b', 'main', remoteDir])
+    execFileSync('git', [
+      '-C',
+      remoteDir,
+      '-c',
+      'user.email=hermes@localhost',
+      '-c',
+      'user.name=Hermes',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'root'
+    ])
+
+    // Clone so origin/main exists as a remote-tracking ref.
+    execFileSync('git', ['clone', remoteDir, cloneDir])
+
+    const result = await addWorktree(
+      cloneDir,
+      { base: 'origin/main', branch: 'feature-branch', name: 'feature-branch' },
+      'git'
+    )
+
+    assert.equal(result.branch, 'feature-branch')
+
+    // The new branch must NOT have an upstream — like `git checkout origin/main
+    // && git checkout -b feature-branch`, not `git worktree add -b … origin/main`.
+    let hasUpstream = true
+
+    try {
+      execFileSync('git', ['-C', result.path, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+    } catch {
+      hasUpstream = false
+    }
+
+    assert.equal(hasUpstream, false)
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
+
+// A pair of repos: a bare "remote" with `main` and the extra branches in
+// `branches`, plus a clone of it. Returns both paths. The caller must remove
+// them.
+function seedRemoteAndClone(label, branches) {
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-remote-`))
+  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-clone-`))
+
+  const remoteGit = (...args) =>
+    execFileSync('git', ['-C', remoteDir, ...args])
+      .toString()
+      .trim()
+
+  execFileSync('git', ['init', '-b', 'main', remoteDir])
+  remoteGit('-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes', 'commit', '--allow-empty', '-m', 'root')
+
+  for (const branch of branches) {
+    remoteGit('branch', branch)
+  }
+
+  execFileSync('git', ['clone', remoteDir, cloneDir])
+
+  return { cloneDir, remoteDir }
+}
+
+test('listBranches: offers remote branches that have no local counterpart', async () => {
+  const { cloneDir, remoteDir } = seedRemoteAndClone('branches-remote', ['teammate-work'])
+
+  try {
+    const branches = await listBranches(cloneDir, 'git')
+    const byName = new Map(branches.map(b => [b.name, b]))
+
+    // The teammate's branch is only on the remote. The list therefore offers it
+    // by its remote-tracking name, with a flag that lets the UI say "track
+    // remote".
+    const remoteOnly = byName.get('origin/teammate-work')
+
+    assert.ok(remoteOnly)
+    assert.equal(remoteOnly.isRemote, true)
+    assert.equal(remoteOnly.checkedOut, false)
+    assert.equal(remoteOnly.isDefault, false)
+    assert.equal(remoteOnly.worktreePath, null)
+
+    // `main` is checked out locally, so it shows once as a local branch.
+    // "origin/main" is a duplicate of a branch that is already in the list.
+    assert.equal(byName.get('main').isRemote, false)
+    assert.equal(byName.has('origin/main'), false)
+
+    // "origin/HEAD" is an alias for the default branch of the remote. It is not
+    // a branch.
+    assert.equal(
+      branches.some(b => b.name.endsWith('/HEAD')),
+      false
+    )
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
+
+test('addWorktree: a remote branch becomes a local branch tracking it', async () => {
+  const { cloneDir, remoteDir } = seedRemoteAndClone('convert-remote', ['teammate-work'])
+
+  try {
+    const result = await addWorktree(cloneDir, { existingBranch: 'origin/teammate-work' }, 'git')
+
+    const inTree = (...args) =>
+      execFileSync('git', ['-C', result.path, ...args])
+        .toString()
+        .trim()
+
+    // The worktree is on a local branch that has the name of the remote one. It
+    // is not on a detached HEAD, which is the result of a checkout of
+    // "origin/teammate-work".
+    assert.equal(result.branch, 'teammate-work')
+    assert.equal(inTree('branch', '--show-current'), 'teammate-work')
+    assert.match(result.path, /[/\\]\.worktrees[/\\]teammate-work/)
+
+    // The branch tracks the remote branch, so push and pull work with no more
+    // setup.
+    assert.equal(inTree('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'), 'origin/teammate-work')
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
+
+test('addWorktree: a remote default branch gets its own worktree, not a home switch', async () => {
+  const { cloneDir, remoteDir } = seedRemoteAndClone('convert-remote-default', [])
+
+  const git = (...args) =>
+    execFileSync('git', ['-C', cloneDir, ...args])
+      .toString()
+      .trim()
+
+  try {
+    // Move the main checkout off `main`, which makes "origin/main" convertible.
+    // The local `main` is then free, but the request names the remote-tracking
+    // ref.
+    git('switch', '-c', 'rawr')
+    git('branch', '-D', 'main')
+
+    const result = await addWorktree(cloneDir, { existingBranch: 'origin/main' }, 'git')
+
+    // "switch home" applies to a local default branch. A remote ref always gets
+    // a new worktree, so the main checkout stays where the user put it.
+    assert.equal(result.branch, 'main')
+    assert.notEqual(fs.realpathSync(result.path), fs.realpathSync(cloneDir))
+    assert.equal(git('branch', '--show-current'), 'rawr')
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
+
+test('switchBranch: non-repo dir short-circuits instead of throwing', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sw-'))
+
+  try {
+    // A plain folder pinned as a project (no .git): its lane label is the
+    // folder basename, not a branch — switching must no-op, not error, so
+    // callers like "+" new session can proceed with a plain session.
+    const result = await switchBranch(dir, '国创大赛', 'git')
+
+    assert.deepEqual(result, { branch: null })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('switchBranch: repo dir still validates the branch name and switches', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sw-'))
+
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: dir })
+    execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: dir })
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir })
+    execFileSync('git', ['commit', '--allow-empty', '-m', 'root'], { cwd: dir })
+
+    // Existing behaviour preserved: an illegal branch name still errors.
+    await assert.rejects(() => switchBranch(dir, '///', 'git'), /Branch name is required/)
+
+    // And switching to a real branch still works.
+    const result = await switchBranch(dir, 'main', 'git')
+    assert.deepEqual(result, { branch: 'main' })
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

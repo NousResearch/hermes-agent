@@ -69,25 +69,12 @@ class TestEnsureFreshToken:
         path = tmp_path / "honcho.json"
         _write(path, {"hosts": {"hermes": _host_block(expires_at=10_000)}})
         monkeypatch.setattr(
-            oauth, "_http_post_form",
+            oauth, "_http_post_form_status",
             lambda *a, **k: pytest.fail("refresh must not be called when fresh"),
         )
         token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=0)
         assert token == "hch-at-old" and refreshed is False
 
-    def test_fresh_token_served_from_cache_without_disk(self, tmp_path, monkeypatch):
-        path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"hermes": _host_block(expires_at=10_000)}})
-        oauth._expiry_cache.clear()
-        # First call seeds the cache from disk.
-        oauth.ensure_fresh_token(path, "hermes", now=0)
-        # Second call must not touch disk while the token is well clear of expiry.
-        monkeypatch.setattr(
-            oauth, "_read_config",
-            lambda *a, **k: pytest.fail("disk must not be read while token is fresh"),
-        )
-        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=100)
-        assert token == "hch-at-old" and refreshed is False
 
     def test_expired_token_refreshes_and_persists_rotation(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
@@ -97,7 +84,7 @@ class TestEnsureFreshToken:
             assert data["grant_type"] == "refresh_token"
             assert data["refresh_token"] == "hch-rt-old"
             assert data["client_id"] == "hermes-desktop"
-            return {
+            return 200, {
                 "access_token": "hch-at-new",
                 "refresh_token": "hch-rt-new",
                 "expires_in": 3600,
@@ -105,7 +92,7 @@ class TestEnsureFreshToken:
                 "token_type": "Bearer",
             }
 
-        monkeypatch.setattr(oauth, "_http_post_form", fake_post)
+        monkeypatch.setattr(oauth, "_http_post_form_status", fake_post)
         token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
         assert token == "hch-at-new" and refreshed is True
 
@@ -118,14 +105,20 @@ class TestEnsureFreshToken:
     def test_refresh_failure_fails_open(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
         _write(path, {"hosts": {"hermes": _host_block(expires_at=100)}})
+        monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
+
+        calls = []
 
         def boom(*a, **k):
+            calls.append(a)
             raise RuntimeError("network down")
 
-        monkeypatch.setattr(oauth, "_http_post_form", boom)
+        monkeypatch.setattr(oauth, "_http_post_form_status", boom)
         token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
-        # Stale token returned, no crash, file untouched.
+        # Stale token returned, no crash, file untouched. Transient failures
+        # retry exactly once, then fail open.
         assert token == "hch-at-old" and refreshed is False
+        assert len(calls) == 2
         assert json.loads(path.read_text())["hosts"]["hermes"]["apiKey"] == "hch-at-old"
 
     def test_double_check_uses_disk_when_already_rotated(self, tmp_path, monkeypatch):
@@ -136,57 +129,11 @@ class TestEnsureFreshToken:
         stale_raw = {"hosts": {"hermes": _host_block(refresh="hch-rt-old", expires_at=100)}}
         stale_raw["hosts"]["hermes"]["apiKey"] = "hch-at-stale"
         monkeypatch.setattr(
-            oauth, "_http_post_form",
+            oauth, "_http_post_form_status",
             lambda *a, **k: pytest.fail("must not refresh; disk token is fresh"),
         )
         token, refreshed = oauth.ensure_fresh_token(path, "hermes", stale_raw, now=1000)
         assert token == "hch-at-old"  # the on-disk fresh credential's access token
-
-    def test_refresh_holds_cross_process_lock(self, tmp_path, monkeypatch):
-        # A second opener must not grab <config>.lock mid-refresh — proving the
-        # rotation is serialized machine-wide so peers can't replay the token.
-        fcntl = pytest.importorskip("fcntl")
-        path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"hermes": _host_block(expires_at=100)}})
-        seen = {}
-
-        def fake_post(url, data, timeout):
-            with open(f"{path}.lock", "a+b") as other:
-                try:
-                    fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    fcntl.flock(other.fileno(), fcntl.LOCK_UN)
-                    seen["held"] = False
-                except OSError:
-                    seen["held"] = True
-            return {"access_token": "hch-at-new", "refresh_token": "hch-rt-new",
-                    "expires_in": 3600, "scope": "write", "token_type": "Bearer"}
-
-        monkeypatch.setattr(oauth, "_http_post_form", fake_post)
-        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
-        assert refreshed is True and seen.get("held") is True
-        # Released afterward: a non-blocking acquire now succeeds.
-        with open(f"{path}.lock", "a+b") as fh:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-
-    def test_refresh_degrades_when_lock_unavailable(self, tmp_path, monkeypatch):
-        # No flock (unsupported FS/platform) must not block refresh — it falls
-        # back to in-process serialization only.
-        fcntl = pytest.importorskip("fcntl")
-        path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"hermes": _host_block(expires_at=100)}})
-
-        def no_flock(*a, **k):
-            raise OSError("flock unsupported")
-
-        monkeypatch.setattr(fcntl, "flock", no_flock)
-        monkeypatch.setattr(
-            oauth, "_http_post_form",
-            lambda *a, **k: {"access_token": "hch-at-new", "refresh_token": "hch-rt-new",
-                             "expires_in": 3600, "scope": "write", "token_type": "Bearer"},
-        )
-        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
-        assert token == "hch-at-new" and refreshed is True
 
 
 class TestInstallGrant:

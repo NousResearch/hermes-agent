@@ -11,8 +11,23 @@ import {
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
   scheduleResumeScrollToBottom,
+  signalFreshSessionBoundary,
   writeActiveSessionFile
 } from '../app/useSessionLifecycle.js'
+
+describe('fresh session boundary', () => {
+  it('signals only when a live session is replaced by a different session', () => {
+    const onFreshSessionStarted = vi.fn()
+
+    expect(signalFreshSessionBoundary('old-session', 'new-session', onFreshSessionStarted)).toBe(true)
+    expect(signalFreshSessionBoundary(null, 'first-session', onFreshSessionStarted)).toBe(false)
+    expect(signalFreshSessionBoundary('same-session', 'same-session', onFreshSessionStarted)).toBe(false)
+    expect(signalFreshSessionBoundary('old-session', null, onFreshSessionStarted)).toBe(false)
+    expect(signalFreshSessionBoundary('old-session', 'new-session')).toBe(false)
+    expect(onFreshSessionStarted).toHaveBeenCalledOnce()
+    expect(onFreshSessionStarted).toHaveBeenCalledWith('new-session')
+  })
+})
 
 describe('writeActiveSessionFile', () => {
   let dir = ''
@@ -73,6 +88,7 @@ describe('resume scroll settle', () => {
     let sticky = true
     let lastManualScrollAt = 0
     const scrollToBottom = vi.fn()
+
     const cancel = scheduleResumeScrollToBottom(
       {
         current: {
@@ -101,6 +117,7 @@ describe('resume scroll settle', () => {
   it('cancels pending resume snaps', () => {
     vi.useFakeTimers()
     const scrollToBottom = vi.fn()
+
     const cancel = scheduleResumeScrollToBottom(
       {
         current: {
@@ -122,6 +139,7 @@ describe('resume scroll settle', () => {
     vi.useFakeTimers()
     let sticky = false
     const scrollToBottom = vi.fn()
+
     const cancel = scheduleResumeScrollToBottom(
       {
         current: {

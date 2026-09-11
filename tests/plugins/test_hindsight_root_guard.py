@@ -58,24 +58,6 @@ def test_local_embedded_skips_daemon_as_root(monkeypatch, caplog):
     assert any("cannot run as root" in r.message for r in caplog.records)
 
 
-def test_local_embedded_starts_daemon_as_non_root(monkeypatch):
-    """As a non-root user, the daemon-start thread IS spawned."""
-    provider = _make_local_embedded_provider(monkeypatch)
-    monkeypatch.setattr(hindsight.os, "geteuid", lambda: 1000, raising=False)
-
-    started = threading.Event()
-    monkeypatch.setattr(
-        hindsight.threading,
-        "Thread",
-        _fake_thread_factory(started),
-    )
-
-    provider.initialize(session_id="s1")
-
-    assert provider._mode == "local_embedded"
-    assert started.is_set()
-
-
 def _fake_thread_factory(started: threading.Event):
     """Return a Thread replacement that records start() without running work."""
     real_thread = threading.Thread

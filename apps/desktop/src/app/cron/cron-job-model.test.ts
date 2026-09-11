@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
+import {
+  cronEditorUpdates,
+  jobIsScriptOnly,
+  parseCronDeliveryTargets,
+  toggleCronDeliveryTarget,
+  validateCronEditor
+} from './cron-job-model'
 
 describe('jobIsScriptOnly', () => {
   it('is true when no_agent is set and a script is present', () => {
@@ -31,11 +37,33 @@ describe('validateCronEditor', () => {
   })
 })
 
+describe('cron delivery targets', () => {
+  it('parses comma-separated targets and removes duplicates', () => {
+    expect(parseCronDeliveryTargets('local, telegram,local')).toEqual(['local', 'telegram'])
+  })
+
+  it('falls back to local for an empty stored value', () => {
+    expect(parseCronDeliveryTargets('')).toEqual(['local'])
+  })
+
+  it('adds a second target in the scheduler comma-separated format', () => {
+    expect(toggleCronDeliveryTarget('local', 'origin', true)).toBe('local,origin')
+  })
+
+  it('removes one target while keeping the other selection', () => {
+    expect(toggleCronDeliveryTarget('local,origin', 'local', false)).toBe('origin')
+  })
+
+  it('does not allow the final delivery target to be unchecked', () => {
+    expect(toggleCronDeliveryTarget('origin', 'origin', false)).toBe('origin')
+  })
+})
+
 describe('cronEditorUpdates', () => {
   it('omits prompt when saving a script-only job with an empty prompt', () => {
     expect(
       cronEditorUpdates(
-        { deliver: 'local', name: 'Weekly', prompt: '', schedule: '0 9 * * 1' },
+        { deliver: 'local', model: '', name: 'Weekly', prompt: '', provider: '', schedule: '0 9 * * 1' },
         { scriptOnlyJob: true }
       )
     ).toEqual({
@@ -48,9 +76,46 @@ describe('cronEditorUpdates', () => {
   it('includes prompt when the user typed one on a script-only job', () => {
     expect(
       cronEditorUpdates(
-        { deliver: 'email', name: 'Weekly', prompt: 'note', schedule: '0 9 * * 1' },
+        { deliver: 'email', model: '', name: 'Weekly', prompt: 'note', provider: '', schedule: '0 9 * * 1' },
         { scriptOnlyJob: true }
       ).prompt
     ).toBe('note')
+  })
+
+  it('writes the model override for agent jobs', () => {
+    const updates = cronEditorUpdates(
+      {
+        deliver: 'local',
+        model: 'claude-sonnet-4',
+        name: 'Daily',
+        prompt: 'go',
+        provider: 'anthropic',
+        schedule: '0 9 * * *'
+      },
+      { scriptOnlyJob: false }
+    )
+
+    expect(updates.model).toBe('claude-sonnet-4')
+    expect(updates.provider).toBe('anthropic')
+  })
+
+  it('clears a previous pin when the override is reset to default', () => {
+    const updates = cronEditorUpdates(
+      { deliver: 'local', model: '', name: 'Daily', prompt: 'go', provider: '', schedule: '0 9 * * *' },
+      { scriptOnlyJob: false }
+    )
+
+    expect(updates.model).toBe(null)
+    expect(updates.provider).toBe(null)
+  })
+
+  it('never touches model fields on script-only jobs', () => {
+    const updates = cronEditorUpdates(
+      { deliver: 'local', model: 'x', name: 'Weekly', prompt: '', provider: 'y', schedule: '0 9 * * 1' },
+      { scriptOnlyJob: true }
+    )
+
+    expect('model' in updates).toBe(false)
+    expect('provider' in updates).toBe(false)
   })
 })

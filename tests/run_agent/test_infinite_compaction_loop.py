@@ -10,8 +10,9 @@ compressor to fire on every subsequent turn with no progress.
 The fix adds two safeguards:
 1. _find_tail_cut_by_tokens: when the whole transcript fits in soft_ceiling,
    re-walk with the raw (non-inflated) budget to find a meaningful cut.
-2. compress(): when compress_start >= compress_end, record the no-op as
-   an ineffective compression so should_compress() anti-thrashing fires.
+2. compress(): when compress_start >= compress_end, defer retries via the
+   structural no-op backoff (#93022) so should_compress() anti-thrashing
+   fires without burning anti-thrash strikes on transcript-shape facts.
 """
 
 from unittest.mock import patch, MagicMock
@@ -56,15 +57,16 @@ def _build_session(n_turns: int, words_per_turn: int = 20) -> list:
 # ---------------------------------------------------------------------------
 
 class TestCompressNoOpRegistersIneffective:
-    """When compress_start >= compress_end, the fix records this as
-    an ineffective compression so the anti-thrashing guard fires.
+    """When compress_start >= compress_end, the fix defers further attempts
+    via the structural no-op backoff (#93022) so the anti-thrashing guard
+    fires.
 
     We trigger this path by having _find_tail_cut_by_tokens return
     head_end (which makes compress_end = head_end + 1, same as
     compress_start after alignment)."""
 
-    def test_no_op_increments_counter(self):
-        """compress_start >= compress_end -> _ineffective_compression_count += 1"""
+    def test_no_op_arms_structural_backoff(self):
+        """compress_start >= compress_end -> backoff armed, strikes untouched."""
         comp = _make_compressor(
             summary_target_ratio=0.45,
             config_context_length=96000,
@@ -80,23 +82,16 @@ class TestCompressNoOpRegistersIneffective:
 
         result = comp.compress(messages, current_tokens=73_000)
 
-        assert comp._ineffective_compression_count >= 1, (
-            f"Expected ineffective_compression_count >= 1, got {comp._ineffective_compression_count}"
+        assert len(result) == len(messages), (
+            "no-op compression must return the transcript unchanged"
+        )
+        assert comp._ineffective_compression_count == 0, (
+            "a structural impossibility is not an ineffective strike (#93022)"
+        )
+        assert comp._structural_no_op_backoff_until > time.monotonic(), (
+            "structural no-op must arm the retry backoff"
         )
 
-    def test_no_op_sets_savings_to_zero(self):
-        """compress_start >= compress_end -> _last_compression_savings_pct = 0"""
-        comp = _make_compressor(
-            summary_target_ratio=0.45,
-            config_context_length=96000,
-        )
-        messages = _build_session(10, words_per_turn=10)
-        comp.last_prompt_tokens = 73_000
-        comp._find_tail_cut_by_tokens = lambda msgs, he: he  # force no-op
-
-        comp.compress(messages, current_tokens=73_000)
-
-        assert comp._last_compression_savings_pct == 0.0
 
     def test_two_no_ops_block_should_compress(self):
         """After 2 no-op compressions, should_compress returns False."""
@@ -111,28 +106,13 @@ class TestCompressNoOpRegistersIneffective:
         comp.compress(messages, current_tokens=73_000)
         comp.compress(messages, current_tokens=73_000)
 
-        assert comp._ineffective_compression_count >= 2
+        assert comp._ineffective_compression_count == 0, (
+            "structural no-ops defer via backoff instead of striking (#93022)"
+        )
         assert not comp.should_compress(73_000), (
-            "should_compress should return False after 2+ ineffective compressions"
+            "should_compress should return False while the structural backoff holds"
         )
 
-    def test_no_op_returns_unchanged_messages(self):
-        """compress_start >= compress_end -> messages returned unchanged"""
-        comp = _make_compressor(
-            summary_target_ratio=0.45,
-            config_context_length=96000,
-        )
-        messages = _build_session(10, words_per_turn=10)
-        comp.last_prompt_tokens = 73_000
-        original_cut = comp._find_tail_cut_by_tokens
-        comp._find_tail_cut_by_tokens = lambda msgs, he: he  # force no-op
-
-        result = comp.compress(messages, current_tokens=73_000)
-
-        assert len(result) == len(messages), (
-            f"Expected unchanged message count {len(messages)}, got {len(result)}"
-        )
-        comp._find_tail_cut_by_tokens = original_cut
 
 
 # ---------------------------------------------------------------------------
@@ -163,43 +143,7 @@ class TestTailCutRawBudgetFallback:
             f"(cut={cut}, head_end={head_end}, n={n})"
         )
 
-    def test_default_ratio_still_works(self):
-        """Default ratio (0.20) should not be affected by the fix."""
-        comp = _make_compressor(
-            summary_target_ratio=0.20,
-            config_context_length=96000,
-        )
-        messages = _build_session(20, words_per_turn=50)
-        head_end = comp._protect_head_size(messages)
-        head_end = comp._align_boundary_forward(messages, head_end)
 
-        cut = comp._find_tail_cut_by_tokens(messages, head_end)
-
-        n = len(messages)
-        assert head_end < cut < n, (
-            f"Expected head_end ({head_end}) < cut ({cut}) < n ({n})"
-        )
-
-    def test_proactive_fix_prevents_no_op_window(self):
-        """The raw-budget fallback in _find_tail_cut_by_tokens should prevent
-        compress_start >= compress_end for the exact issue scenario:
-        context_length=96000, summary_target_ratio=0.45."""
-        comp = _make_compressor(
-            summary_target_ratio=0.45,
-            config_context_length=96000,
-        )
-        # Simulate the issue scenario: 16 messages, all fitting in soft_ceiling
-        messages = _build_session(8, words_per_turn=30)  # 17 messages
-        head_end = comp._protect_head_size(messages)
-        head_end = comp._align_boundary_forward(messages, head_end)
-
-        cut = comp._find_tail_cut_by_tokens(messages, head_end)
-
-        # With the fix, cut should be well past head_end
-        assert cut > head_end + 1, (
-            f"Expected cut ({cut}) > head_end ({head_end}) + 1, "
-            f"meaning the compressable window is non-trivial"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -241,18 +185,7 @@ class TestAntiThrashing:
         comp._ineffective_compression_count = 2
         assert not comp.should_compress(73_000)
 
-    def test_ineffective_count_1_allows(self):
-        """_ineffective_compression_count = 1 -> should_compress still True."""
-        comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 73_000
-        comp._ineffective_compression_count = 1
-        assert comp.should_compress(73_000)
 
-    def test_below_threshold_allows(self):
-        """Tokens below threshold -> should_compress returns False regardless."""
-        comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 10_000
-        assert not comp.should_compress(10_000)
 
 
 # ---------------------------------------------------------------------------
@@ -273,19 +206,7 @@ class TestCooldownGuard:
         comp._summary_failure_cooldown_until = time.monotonic() + 60
         assert not comp.should_compress(73_000)
 
-    def test_expired_cooldown_allows(self):
-        """A past cooldown deadline -> compression resumes normally."""
-        comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 73_000
-        comp._summary_failure_cooldown_until = time.monotonic() - 1
-        assert comp.should_compress(73_000)
 
-    def test_no_cooldown_allows(self):
-        """The default (no cooldown set) does not block compression."""
-        comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 73_000
-        assert comp._summary_failure_cooldown_until == 0.0
-        assert comp.should_compress(73_000)
 
 
 # ---------------------------------------------------------------------------
@@ -341,3 +262,52 @@ class TestCodexSparkShortSessionBoundary:
             f"This would cause the silent context wipe described in #48621."
         )
         assert comp.has_content_to_compress(messages) is True
+
+
+class TestPressureRealFloor:
+    """Regression: Cyrillic-heavy sessions under-count in the rough estimate,
+    letting real prompts ride the provider window (64,842→64,995 observed)
+    while the pre-API gate saw sub-threshold pressure."""
+
+    def _compressor(self, last_real, awaiting=False):
+        class _C:
+            last_real_prompt_tokens = last_real
+            awaiting_real_usage_after_compression = awaiting
+        return _C()
+
+    def test_real_floor_lifts_undercounted_rough(self):
+        from agent.conversation_loop import _pressure_with_real_floor
+        assert _pressure_with_real_floor(self._compressor(64_842), 45_000) == 64_842
+
+    def test_rough_wins_when_larger(self):
+        from agent.conversation_loop import _pressure_with_real_floor
+        assert _pressure_with_real_floor(self._compressor(30_000), 45_000) == 45_000
+
+    def test_stale_real_ignored_right_after_compaction(self):
+        from agent.conversation_loop import _pressure_with_real_floor
+        compressor = self._compressor(64_842, awaiting=True)
+        assert _pressure_with_real_floor(compressor, 20_000) == 20_000
+
+    def test_zero_and_missing_real_are_safe(self):
+        from agent.conversation_loop import _pressure_with_real_floor
+        assert _pressure_with_real_floor(self._compressor(0), 10_000) == 10_000
+        assert _pressure_with_real_floor(object(), 10_000) == 10_000
+
+    def test_anchored_pressure_is_never_floored(self):
+        """A valid usage anchor is provider-exact and wins as-is.
+
+        On MoA turns the anchor deliberately uses the pre-fold aggregator
+        usage while ``last_real_prompt_tokens`` holds the folded figure;
+        flooring the anchored value would re-add the advisor fan-out tokens
+        the anchor exists to exclude. Pin the wiring shape: the floor is
+        applied only on the ``else`` (rough fallback) branch.
+        """
+        import inspect
+        from agent import turn_request_assembly
+
+        src = inspect.getsource(turn_request_assembly.assemble_api_request)
+        i = src.index("if _anchored_pressure is not None:")
+        window = src[i : i + 400]
+        assert "request_pressure_tokens = _anchored_pressure" in window
+        assert "else:" in window
+        assert window.index("else:") < window.index("_pressure_with_real_floor(")

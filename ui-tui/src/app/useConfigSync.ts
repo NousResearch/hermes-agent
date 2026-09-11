@@ -7,6 +7,7 @@ import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from 
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
+import { applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
 import {
   type BusyInputMode,
   DEFAULT_INDICATOR_STYLE,
@@ -26,6 +27,20 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
   raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
+
+// `display.status_bar.fields` — the SAME key the classic CLI bar honors
+// (PR #98250). A non-empty list filters status-rule segments; missing/empty/
+// malformed = null (user hasn't customized → show the default set). Unknown
+// names pass through harmlessly — the renderer only tests membership.
+export const normalizeStatusBarFields = (raw: unknown): null | ReadonlySet<string> => {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return null
+  }
+
+  const cleaned = raw.map(v => String(v).trim().toLowerCase()).filter(Boolean)
+
+  return cleaned.length ? new Set(cleaned) : null
+}
 
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
@@ -128,6 +143,56 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
   }
 }
 
+// ── MCP revision handshake ───────────────────────────────────────────
+//
+// The poll must not ack an MCP config revision until the server confirms it
+// actually LOADED it. Advancing `accepted` before the reload succeeds loses
+// revisions permanently: quietRpc collapses a failed reload to null, the
+// next poll sees the same mcp_rev, and the new config never applies until
+// an unrelated MCP edit. So `accepted` only moves on a confirmed reload —
+// to the server's loaded_rev (what discovery actually read), falling back
+// to the requested rev for older gateways. Retries are decoupled from
+// mtime: every poll re-compares, so a transiently broken server heals on
+// the next tick.
+
+export interface McpRevState {
+  /** Last revision the server CONFIRMED it loaded (or boot baseline). */
+  accepted: string
+  /** A reload RPC is outstanding — don't stack another every poll tick. */
+  inFlight: boolean
+}
+
+export const syncMcpReload = async (
+  gw: GatewayClient,
+  sid: string,
+  nextMcpRev: string,
+  state: McpRevState,
+  onReloaded?: () => void
+): Promise<void> => {
+  if (!nextMcpRev || nextMcpRev === state.accepted || state.inFlight) {
+    return
+  }
+
+  state.inFlight = true
+
+  try {
+    const r = await quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', {
+      confirm: true,
+      rev: nextMcpRev,
+      session_id: sid
+    })
+
+    if (r?.status === 'reloaded') {
+      state.accepted = String(r.loaded_rev || nextMcpRev)
+      onReloaded?.()
+    }
+    // Failure (null) or confirm_required: leave `accepted` unchanged so the
+    // next poll tick retries the same revision.
+  } finally {
+    state.inFlight = false
+  }
+}
+
 const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceRecordKey => {
   const raw = cfg?.config?.voice?.record_key
 
@@ -188,10 +253,11 @@ const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number =
 export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setBellOnPrompt?: (v: boolean) => void
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
-  applyDisplay(cfg, setBell, setVoiceRecordKey)
+  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
 
   return cfg
 }
@@ -199,11 +265,17 @@ export async function hydrateFullConfig(
 export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setBellOnPrompt?: (v: boolean) => void
 ) => {
   const d = cfg?.config?.display ?? {}
+  const approvals = cfg?.config?.approvals
 
   setBell(!!d.bell_on_complete)
+
+  setBellOnPrompt?.(!!d.bell_on_prompt)
+
+  applyConfiguredTuiTheme(d.tui_theme)
 
   // Only push the voice record key when the RPC actually returned a
   // config payload. ``quietRpc()`` collapses failures to ``null``; if we
@@ -217,10 +289,16 @@ export const applyDisplay = (
   }
 
   patchUiState({
+    battery: !!d.battery,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
+    // Fail safe: only YAML boolean false disables the prompt. A transient
+    // config RPC failure (cfg=null) preserves the last known policy instead
+    // of silently changing approval behavior until the next successful poll.
+    ...(cfg ? { destructiveSlashConfirm: approvals?.destructive_slash_confirm !== false } : {}),
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
+    focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: normalizeMouseTracking(d),
@@ -229,18 +307,24 @@ export const applyDisplay = (
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
-    streaming: d.streaming !== false
+    statusBarFields: normalizeStatusBarFields(d.status_bar?.fields),
+    streaming: d.streaming !== false,
+    // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
+    // no separate TUI knob.
+    timestamps: d.timestamps === true
   })
 }
 
 export function useConfigSync({
   gw,
   setBellOnComplete,
+  setBellOnPrompt,
   setVoiceEnabled,
   setVoiceRecordKey,
   sid
 }: UseConfigSyncOptions) {
   const mtimeRef = useRef(0)
+  const mcpRevRef = useRef<McpRevState>({ accepted: '', inFlight: false })
 
   useEffect(() => {
     if (!sid) {
@@ -254,9 +338,14 @@ export function useConfigSync({
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
+      // Seed the MCP revision baseline too: after a normal boot mtime is
+      // already non-zero, so the poller's baseline branch never runs, and an
+      // unset baseline would make the FIRST cosmetic write (mtime bump, same
+      // mcp_rev) look like an MCP change and fire a needless reload.mcp.
+      mcpRevRef.current.accepted = String(r?.mcp_rev ?? '')
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
-  }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
+    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
+  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
     if (!sid) {
@@ -266,13 +355,27 @@ export function useConfigSync({
     const id = setInterval(() => {
       quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
         const next = Number(r?.mtime ?? 0)
+        const nextMcpRev = String(r?.mcp_rev ?? '')
 
         if (!mtimeRef.current) {
           if (next) {
             mtimeRef.current = next
+            mcpRevRef.current.accepted = nextMcpRev
           }
 
           return
+        }
+
+        // Reload MCP only when the MCP-relevant config actually changed.
+        // Cosmetic writes (/skin, /statusbar, /theme) bump mtime constantly;
+        // reconnecting every MCP server for those costs seconds and made
+        // skin switching feel glacial. The handshake runs on EVERY poll tick
+        // (not just mtime changes) so a failed reload retries until the
+        // server confirms the revision was loaded.
+        if (nextMcpRev) {
+          void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () =>
+            turnController.pushActivity('MCP reloaded after config change')
+          )
         }
 
         if (!next || next === mtimeRef.current) {
@@ -281,20 +384,26 @@ export function useConfigSync({
 
         mtimeRef.current = next
 
-        quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-          r => r && turnController.pushActivity('MCP reloaded after config change')
-        )
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+        // Older gateways don't send mcp_rev — fall back to
+        // reload-on-any-change there (no ack tracking possible).
+        if (!nextMcpRev) {
+          quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
+            r => r && turnController.pushActivity('MCP reloaded after config change')
+          )
+        }
+
+        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
       })
     }, MTIME_POLL_MS)
 
     return () => clearInterval(id)
-  }, [gw, setBellOnComplete, setVoiceRecordKey, sid])
+  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceRecordKey, sid])
 }
 
 export interface UseConfigSyncOptions {
   gw: GatewayClient
   setBellOnComplete: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void
   setVoiceEnabled: (v: boolean) => void
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
   sid: null | string

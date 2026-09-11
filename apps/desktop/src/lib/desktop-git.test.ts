@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection } from '@/hermes'
 import { $connection } from '@/store/session'
 
 import { desktopGit } from './desktop-git'
@@ -21,6 +22,12 @@ const api = vi.fn(async ({ path }: { path: string }) => {
     return { diff: 'remote-diff' }
   }
 
+  if (path.startsWith('/api/git/branches')) {
+    return {
+      branches: [{ checkedOut: false, isDefault: false, isRemote: true, name: 'origin/feature', worktreePath: null }]
+    }
+  }
+
   return { ok: true }
 })
 
@@ -31,9 +38,16 @@ describe('desktop git facade', () => {
   })
 
   afterEach(() => {
+    setApiRequestConnection(null)
     vi.unstubAllGlobals()
     vi.clearAllMocks()
     $connection.set(null)
+  })
+
+  it('returns undefined after the renderer global is torn down', () => {
+    vi.stubGlobal('window', undefined)
+
+    expect(desktopGit()).toBeUndefined()
   })
 
   it('uses Electron git locally', async () => {
@@ -78,6 +92,27 @@ describe('desktop git facade', () => {
     })
   })
 
+  it('routes remote git reads and writes through the active registered gateway', async () => {
+    setApiRequestConnection('remote-user')
+    $connection.set({ mode: 'remote', profile: 'default' } as never)
+
+    await desktopGit()?.repoStatus('/srv/work')
+    await desktopGit()?.review.stage('/srv/work', 'a.txt')
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'remote-user',
+      path: '/api/git/status?path=%2Fsrv%2Fwork',
+      profile: 'default'
+    })
+    expect(api).toHaveBeenCalledWith({
+      body: { file: 'a.txt', path: '/srv/work' },
+      connectionId: 'remote-user',
+      method: 'POST',
+      path: '/api/git/review/stage',
+      profile: 'default'
+    })
+  })
+
   it('sends mutations as POST bodies on a remote gateway', async () => {
     $connection.set({ mode: 'remote' } as never)
 
@@ -89,5 +124,26 @@ describe('desktop git facade', () => {
       path: '/api/git/review/stage'
     })
     expect(localGit.review.stage).not.toHaveBeenCalled()
+  })
+
+  // The ⌘⇧B "convert a branch into a worktree" flow (#81724): on a remote
+  // gateway both halves must reach the backend mirror — the picker's branch
+  // list (which now carries remote-tracking refs) and the worktree add that
+  // receives the picked `origin/…` name.
+  it('routes the convert-a-branch worktree flow through the backend on a remote gateway', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    await expect(desktopGit()?.branchList('/srv/work')).resolves.toEqual([
+      { checkedOut: false, isDefault: false, isRemote: true, name: 'origin/feature', worktreePath: null }
+    ])
+    expect(api).toHaveBeenCalledWith({ path: '/api/git/branches?path=%2Fsrv%2Fwork' })
+
+    await desktopGit()?.worktreeAdd('/srv/work', { existingBranch: 'origin/feature' })
+
+    expect(api).toHaveBeenCalledWith({
+      body: { existingBranch: 'origin/feature', path: '/srv/work' },
+      method: 'POST',
+      path: '/api/git/worktree/add'
+    })
   })
 })

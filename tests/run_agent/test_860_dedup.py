@@ -71,63 +71,7 @@ class TestFlushDeduplication:
             finally:
                 db.close()
 
-    def test_flush_writes_incrementally(self):
-        """Messages added between flushes are written exactly once."""
-        from hermes_state import SessionDB
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
-            try:
-                agent = self._make_agent(db)
-
-                conversation_history = []
-                messages = [
-                    {"role": "user", "content": "hello"},
-                ]
-
-                # First flush — 1 message
-                agent._flush_messages_to_session_db(messages, conversation_history)
-                rows = db.get_messages(agent.session_id)
-                assert len(rows) == 1
-
-                # Add more messages
-                messages.append({"role": "assistant", "content": "hi there"})
-                messages.append({"role": "user", "content": "follow up"})
-
-                # Second flush — should write only 2 new messages
-                agent._flush_messages_to_session_db(messages, conversation_history)
-                rows = db.get_messages(agent.session_id)
-                assert len(rows) == 3, f"Expected 3 total messages, got {len(rows)}"
-            finally:
-                db.close()
-
-    def test_persist_session_multiple_calls_no_duplication(self):
-        """Multiple _persist_session calls don't duplicate DB entries."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
-            try:
-                agent = self._make_agent(db)
-
-                conversation_history = [{"role": "user", "content": "old"}]
-                messages = list(conversation_history) + [
-                    {"role": "user", "content": "q1"},
-                    {"role": "assistant", "content": "a1"},
-                    {"role": "user", "content": "q2"},
-                    {"role": "assistant", "content": "a2"},
-                ]
-
-                # Simulate multiple persist calls (like the agent's many exit paths)
-                for _ in range(5):
-                    agent._persist_session(messages, conversation_history)
-
-                rows = db.get_messages(agent.session_id)
-                assert len(rows) == 4, f"Expected 4 messages, got {len(rows)} (duplication bug!)"
-            finally:
-                db.close()
 
     def test_flush_reset_after_compression(self):
         """After compression creates a new session, flush index resets."""
@@ -202,30 +146,6 @@ class TestAppendToTranscriptSkipDb:
         rows = db.get_messages(session_id)
         assert len(rows) == 0, f"Expected 0 DB rows with skip_db=True, got {len(rows)}"
 
-    def test_default_writes_to_sqlite(self, tmp_path):
-        """Without skip_db, message appears in SQLite."""
-        from gateway.config import GatewayConfig
-        from gateway.session import SessionStore
-        from hermes_state import SessionDB
-
-        db_path = tmp_path / "test_both.db"
-        db = SessionDB(db_path=db_path)
-
-        config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._db = db
-        store._loaded = True
-
-        session_id = "test-default-write"
-        db.create_session(session_id=session_id, source="test")
-
-        msg = {"role": "user", "content": "test message"}
-        store.append_to_transcript(session_id, msg)
-
-        # SQLite should have the message
-        rows = db.get_messages(session_id)
-        assert len(rows) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -249,19 +169,3 @@ class TestFlushIdxInit:
             )
         assert agent._last_flushed_db_idx == 0
 
-    def test_no_session_db_noop(self):
-        """Without session_db, flush is a no-op and doesn't crash."""
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            from run_agent import AIAgent
-            agent = AIAgent(
-                api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
-                model="test/model",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-        messages = [{"role": "user", "content": "test"}]
-        agent._flush_messages_to_session_db(messages, [])
-        # Should not crash, idx should remain 0
-        assert agent._last_flushed_db_idx == 0

@@ -61,238 +61,24 @@ def test_classify_consolidated_via_write_file_evidence(curator_env):
     assert result["pruned"] == []
 
 
-def test_classify_pruned_when_no_destination_reference(curator_env):
-    """Removed skill with no referencing tool call = pruned."""
-    result = curator_env._classify_removed_skills(
-        removed=["old-stale-thing"],
-        added=[],
-        after_names={"keeper"},
-        tool_calls=[
-            {"name": "skills_list", "arguments": "{}"},
-            {"name": "skill_manage", "arguments": json.dumps({
-                "action": "patch", "name": "keeper",
-                "old_string": "foo", "new_string": "bar",
-            })},
-        ],
-    )
-    assert result["consolidated"] == []
-    assert len(result["pruned"]) == 1
-    assert result["pruned"][0]["name"] == "old-stale-thing"
 
 
-def test_classify_consolidated_into_newly_created_umbrella(curator_env):
-    """Removed skill absorbed into a skill that was created THIS run."""
-    result = curator_env._classify_removed_skills(
-        removed=["anthropic-api"],
-        added=["llm-providers"],  # new umbrella
-        after_names={"llm-providers"},
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "create",
-                    "name": "llm-providers",
-                    "content": "# LLM Providers\n\n## anthropic-api\nMerged from the old anthropic-api skill.\n",
-                }),
-            },
-        ],
-    )
-    assert len(result["consolidated"]) == 1
-    assert result["consolidated"][0]["name"] == "anthropic-api"
-    assert result["consolidated"][0]["into"] == "llm-providers"
 
 
-def test_classify_handles_underscore_hyphen_variants(curator_env):
-    """Names with hyphens match underscore forms in paths/content and vice versa."""
-    result = curator_env._classify_removed_skills(
-        removed=["open-webui-setup"],
-        added=[],
-        after_names={"webui"},
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "write_file",
-                    "name": "webui",
-                    "file_path": "references/open_webui_setup.md",
-                    "file_content": "...",
-                }),
-            },
-        ],
-    )
-    assert len(result["consolidated"]) == 1
-    assert result["consolidated"][0]["into"] == "webui"
 
 
-def test_classify_self_reference_does_not_count(curator_env):
-    """A tool call that targets the removed skill itself is NOT consolidation."""
-    # e.g. the curator patched the skill once and later archived it
-    result = curator_env._classify_removed_skills(
-        removed=["doomed"],
-        added=[],
-        after_names={"keeper"},
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "patch",
-                    "name": "doomed",  # same as removed
-                    "old_string": "x",
-                    "new_string": "y",
-                }),
-            },
-        ],
-    )
-    assert result["consolidated"] == []
-    assert result["pruned"][0]["name"] == "doomed"
 
 
-def test_classify_destination_must_exist_after_run(curator_env):
-    """A reference to a skill that doesn't exist after the run can't be the umbrella."""
-    result = curator_env._classify_removed_skills(
-        removed=["thing"],
-        added=[],
-        after_names={"keeper"},  # "ghost" not in here
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "write_file",
-                    "name": "ghost",  # not in after_names
-                    "file_path": "references/thing.md",
-                    "file_content": "...",
-                }),
-            },
-        ],
-    )
-    assert result["consolidated"] == []
-    assert result["pruned"][0]["name"] == "thing"
 
 
-def test_classify_mixed_run_produces_both_buckets(curator_env):
-    """A realistic run: one skill consolidated, one skill pruned."""
-    result = curator_env._classify_removed_skills(
-        removed=["absorbed-skill", "dead-skill"],
-        added=["umbrella"],
-        after_names={"umbrella", "keeper"},
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "write_file",
-                    "name": "umbrella",
-                    "file_path": "references/absorbed-skill.md",
-                    "file_content": "...",
-                }),
-            },
-        ],
-    )
-    assert len(result["consolidated"]) == 1
-    assert result["consolidated"][0]["name"] == "absorbed-skill"
-    assert result["consolidated"][0]["into"] == "umbrella"
-    assert len(result["pruned"]) == 1
-    assert result["pruned"][0]["name"] == "dead-skill"
 
 
-def test_classify_handles_malformed_arguments_string(curator_env):
-    """Truncated/malformed JSON in arguments falls back to substring match."""
-    # Arguments truncated to 400 chars may not parse as JSON.
-    truncated_raw = (
-        '{"action":"write_file","name":"umbrella","file_path":"references/'
-        'absorbed-skill.md","file_content":"long content that was cut off mid'
-    )
-    result = curator_env._classify_removed_skills(
-        removed=["absorbed-skill"],
-        added=[],
-        after_names={"umbrella"},
-        tool_calls=[
-            {"name": "skill_manage", "arguments": truncated_raw},
-        ],
-    )
-    # Fallback substring match finds "absorbed-skill" in the raw truncated string
-    # even though json.loads fails — but it can't identify target="umbrella"
-    # because _raw is the only haystack and there's no dict access. The
-    # classifier only promotes to "consolidated" if it can identify a target
-    # skill from args.get("name"). Ensure we fail safe: no false positive.
-    # (This is a correctness floor — better to prune-label than hallucinate
-    # an umbrella that wasn't really used.)
-    assert result["consolidated"] == []
-    assert len(result["pruned"]) == 1
 
 
-def test_classify_no_false_positive_short_name_in_file_path(curator_env):
-    """Short skill name that is a substring of another filename = pruned, not consolidated."""
-    # e.g. "api" should NOT match "references/api-design.md"
-    result = curator_env._classify_removed_skills(
-        removed=["api"],
-        added=[],
-        after_names={"conventions"},
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "write_file",
-                    "name": "conventions",
-                    "file_path": "references/api-design.md",
-                    "file_content": "# API Design\n...",
-                }),
-            },
-        ],
-    )
-    assert result["consolidated"] == [], (
-        "Short name 'api' should NOT match file_path 'references/api-design.md'"
-    )
-    assert len(result["pruned"]) == 1
-    assert result["pruned"][0]["name"] == "api"
 
 
-def test_classify_no_false_positive_short_name_in_content(curator_env):
-    """Short skill name embedded in longer word in content = pruned, not consolidated."""
-    # e.g. "test" should NOT match content "running latest tests"
-    result = curator_env._classify_removed_skills(
-        removed=["test"],
-        added=[],
-        after_names={"umbrella"},
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "patch",
-                    "name": "umbrella",
-                    "old_string": "old",
-                    "new_string": "running latest tests with pytest",
-                }),
-            },
-        ],
-    )
-    assert result["consolidated"] == [], (
-        "Short name 'test' should NOT match 'latest' via word boundary"
-    )
-    assert len(result["pruned"]) == 1
 
 
-def test_classify_still_matches_exact_word_in_content(curator_env):
-    """Word-boundary match still works for exact word occurrences."""
-    # "api" SHOULD match content "use the api gateway"
-    result = curator_env._classify_removed_skills(
-        removed=["api"],
-        added=[],
-        after_names={"gateway"},
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "edit",
-                    "name": "gateway",
-                    "content": "# Gateway\n\nUse the api gateway for all requests.\n",
-                }),
-            },
-        ],
-    )
-    assert len(result["consolidated"]) == 1, (
-        "'api' should match as a standalone word in content"
-    )
-    assert result["consolidated"][0]["into"] == "gateway"
 
 
 def test_report_md_splits_consolidated_and_pruned_sections(curator_env):
@@ -400,51 +186,12 @@ def test_parse_structured_summary_missing_block(curator_env):
     assert out == {"consolidations": [], "prunings": []}
 
 
-def test_parse_structured_summary_malformed_yaml(curator_env):
-    text = "```yaml\nthis: is\n  not: [valid yaml\n```"
-    out = curator_env._parse_structured_summary(text)
-    assert out == {"consolidations": [], "prunings": []}
 
 
-def test_parse_structured_summary_empty_lists(curator_env):
-    text = "```yaml\nconsolidations: []\nprunings: []\n```"
-    out = curator_env._parse_structured_summary(text)
-    assert out == {"consolidations": [], "prunings": []}
 
 
-def test_parse_structured_summary_ignores_bare_strings(curator_env):
-    """Entries that aren't dicts (e.g. a model wrote bare names) are skipped."""
-    text = (
-        "```yaml\n"
-        "consolidations:\n"
-        "  - just-a-bare-string\n"
-        "  - from: real-entry\n"
-        "    into: umbrella\n"
-        "    reason: valid\n"
-        "prunings: []\n"
-        "```"
-    )
-    out = curator_env._parse_structured_summary(text)
-    assert len(out["consolidations"]) == 1
-    assert out["consolidations"][0]["from"] == "real-entry"
 
 
-def test_parse_structured_summary_missing_required_fields(curator_env):
-    """Consolidation entries without from+into are skipped."""
-    text = (
-        "```yaml\n"
-        "consolidations:\n"
-        "  - from: only-from\n"
-        "    reason: no into\n"
-        "  - into: only-into\n"
-        "  - from: good\n"
-        "    into: umbrella\n"
-        "prunings: []\n"
-        "```"
-    )
-    out = curator_env._parse_structured_summary(text)
-    assert len(out["consolidations"]) == 1
-    assert out["consolidations"][0]["from"] == "good"
 
 
 # ---------------------------------------------------------------------------
@@ -452,111 +199,14 @@ def test_parse_structured_summary_missing_required_fields(curator_env):
 # ---------------------------------------------------------------------------
 
 
-def test_reconcile_model_wins_when_umbrella_exists(curator_env):
-    """Model claim + umbrella in destinations → model authority (with reason)."""
-    out = curator_env._reconcile_classification(
-        removed=["anthropic-api"],
-        heuristic={"consolidated": [], "pruned": [{"name": "anthropic-api"}]},
-        model_block={
-            "consolidations": [{
-                "from": "anthropic-api",
-                "into": "llm-providers",
-                "reason": "duplicate",
-            }],
-            "prunings": [],
-        },
-        destinations={"llm-providers"},
-    )
-    assert len(out["consolidated"]) == 1
-    e = out["consolidated"][0]
-    assert e["name"] == "anthropic-api"
-    assert e["into"] == "llm-providers"
-    assert e["reason"] == "duplicate"
-    assert e["source"] == "model"
-    assert out["pruned"] == []
 
 
-def test_reconcile_model_hallucinates_umbrella(curator_env):
-    """Model names a non-existent umbrella — downgrade, prefer heuristic if any."""
-    out = curator_env._reconcile_classification(
-        removed=["thing"],
-        heuristic={
-            "consolidated": [{"name": "thing", "into": "real-umbrella", "evidence": "..."}],
-            "pruned": [],
-        },
-        model_block={
-            "consolidations": [{
-                "from": "thing",
-                "into": "nonexistent-umbrella",
-                "reason": "confused",
-            }],
-            "prunings": [],
-        },
-        destinations={"real-umbrella"},
-    )
-    assert len(out["consolidated"]) == 1
-    e = out["consolidated"][0]
-    assert e["into"] == "real-umbrella"
-    assert "tool-call audit" in e["source"]
-    assert e["model_claimed_into"] == "nonexistent-umbrella"
 
 
-def test_reconcile_model_hallucinates_with_no_heuristic_evidence(curator_env):
-    """Model names a non-existent umbrella AND no tool-call evidence → prune."""
-    out = curator_env._reconcile_classification(
-        removed=["ghost"],
-        heuristic={"consolidated": [], "pruned": [{"name": "ghost"}]},
-        model_block={
-            "consolidations": [{
-                "from": "ghost",
-                "into": "nonexistent",
-                "reason": "wrong",
-            }],
-            "prunings": [],
-        },
-        destinations={"real-umbrella"},
-    )
-    assert out["consolidated"] == []
-    assert len(out["pruned"]) == 1
-    assert "fallback" in out["pruned"][0]["source"]
 
 
-def test_reconcile_heuristic_catches_model_omission(curator_env):
-    """Model forgot to list a consolidation, heuristic found it."""
-    out = curator_env._reconcile_classification(
-        removed=["forgotten"],
-        heuristic={
-            "consolidated": [{
-                "name": "forgotten",
-                "into": "umbrella",
-                "evidence": "write_file on umbrella referenced forgotten.md",
-            }],
-            "pruned": [],
-        },
-        model_block={"consolidations": [], "prunings": []},
-        destinations={"umbrella"},
-    )
-    assert len(out["consolidated"]) == 1
-    e = out["consolidated"][0]
-    assert e["into"] == "umbrella"
-    assert "model omitted" in e["source"]
 
 
-def test_reconcile_model_prunes_with_reason(curator_env):
-    """Model says pruned, heuristic agrees, we surface the reason."""
-    out = curator_env._reconcile_classification(
-        removed=["stale-skill"],
-        heuristic={"consolidated": [], "pruned": [{"name": "stale-skill"}]},
-        model_block={
-            "consolidations": [],
-            "prunings": [{"name": "stale-skill", "reason": "superseded by bundled skill"}],
-        },
-        destinations=set(),
-    )
-    assert len(out["pruned"]) == 1
-    e = out["pruned"][0]
-    assert e["reason"] == "superseded by bundled skill"
-    assert e["source"] == "model"
 
 
 def test_reconcile_model_block_visible_in_full_report(curator_env):
@@ -647,33 +297,8 @@ def test_extract_absorbed_into_picks_up_consolidation(curator_env):
     }
 
 
-def test_extract_absorbed_into_empty_string_is_explicit_prune(curator_env):
-    """absorbed_into='' is recorded as an explicit prune declaration."""
-    declarations = curator_env._extract_absorbed_into_declarations([
-        {
-            "name": "skill_manage",
-            "arguments": json.dumps({
-                "action": "delete",
-                "name": "stale",
-                "absorbed_into": "",
-            }),
-        },
-    ])
-    assert declarations == {"stale": {"into": "", "declared": True}}
 
 
-def test_extract_absorbed_into_missing_arg_ignored(curator_env):
-    """Delete call without absorbed_into is skipped — fallback to heuristic."""
-    declarations = curator_env._extract_absorbed_into_declarations([
-        {
-            "name": "skill_manage",
-            "arguments": json.dumps({
-                "action": "delete",
-                "name": "legacy-skill",
-            }),
-        },
-    ])
-    assert declarations == {}
 
 
 def test_extract_absorbed_into_ignores_non_delete_actions(curator_env):
@@ -693,51 +318,12 @@ def test_extract_absorbed_into_ignores_non_delete_actions(curator_env):
     assert declarations == {}
 
 
-def test_extract_absorbed_into_accepts_dict_arguments(curator_env):
-    """arguments can arrive as a dict (defensive path) — still works."""
-    declarations = curator_env._extract_absorbed_into_declarations([
-        {
-            "name": "skill_manage",
-            "arguments": {
-                "action": "delete",
-                "name": "narrow",
-                "absorbed_into": "umbrella",
-            },
-        },
-    ])
-    assert declarations == {"narrow": {"into": "umbrella", "declared": True}}
 
 
-def test_extract_absorbed_into_strips_whitespace(curator_env):
-    declarations = curator_env._extract_absorbed_into_declarations([
-        {
-            "name": "skill_manage",
-            "arguments": json.dumps({
-                "action": "delete",
-                "name": "  narrow  ",
-                "absorbed_into": "  umbrella  ",
-            }),
-        },
-    ])
-    assert declarations == {"narrow": {"into": "umbrella", "declared": True}}
 
 
-def test_extract_absorbed_into_ignores_non_skill_manage_calls(curator_env):
-    declarations = curator_env._extract_absorbed_into_declarations([
-        {"name": "terminal", "arguments": json.dumps({"command": "ls"})},
-        {"name": "read_file", "arguments": json.dumps({"path": "/tmp/x"})},
-    ])
-    assert declarations == {}
 
 
-def test_extract_absorbed_into_handles_malformed_arguments(curator_env):
-    """Garbage JSON in arguments must not crash the extractor."""
-    declarations = curator_env._extract_absorbed_into_declarations([
-        {"name": "skill_manage", "arguments": "{not json"},
-        {"name": "skill_manage", "arguments": None},
-        {"name": "skill_manage"},  # no arguments key at all
-    ])
-    assert declarations == {}
 
 
 # ---------------------------------------------------------------------------
@@ -772,83 +358,12 @@ def test_reconcile_absorbed_into_beats_everything_else(curator_env):
     assert "absorbed_into" in e["source"]
 
 
-def test_reconcile_absorbed_into_empty_is_explicit_prune(curator_env):
-    """absorbed_into='' takes precedence and routes to pruned, not fallback."""
-    out = curator_env._reconcile_classification(
-        removed=["stale"],
-        heuristic={"consolidated": [], "pruned": [{"name": "stale"}]},
-        model_block={"consolidations": [], "prunings": []},
-        destinations=set(),
-        absorbed_declarations={
-            "stale": {"into": "", "declared": True},
-        },
-    )
-    assert out["consolidated"] == []
-    assert len(out["pruned"]) == 1
-    assert "model-declared prune" in out["pruned"][0]["source"]
 
 
-def test_reconcile_absorbed_into_nonexistent_target_falls_through(curator_env):
-    """If the declared umbrella doesn't exist in destinations, fall through to
-    heuristic/YAML logic. Shouldn't happen in practice (the tool validates at
-    delete time) but the reconciler is defensive."""
-    out = curator_env._reconcile_classification(
-        removed=["thing"],
-        heuristic={
-            "consolidated": [{"name": "thing", "into": "real-umbrella", "evidence": "..."}],
-            "pruned": [],
-        },
-        model_block={"consolidations": [], "prunings": []},
-        destinations={"real-umbrella"},
-        absorbed_declarations={
-            "thing": {"into": "ghost-umbrella", "declared": True},
-        },
-    )
-    assert len(out["consolidated"]) == 1
-    assert out["consolidated"][0]["into"] == "real-umbrella"
-    assert "tool-call audit" in out["consolidated"][0]["source"]
 
 
-def test_reconcile_declaration_preserves_yaml_reason(curator_env):
-    """When the model both declared absorbed_into AND emitted YAML with reason,
-    the reason carries through so REPORT.md still has it."""
-    out = curator_env._reconcile_classification(
-        removed=["narrow"],
-        heuristic={"consolidated": [], "pruned": []},
-        model_block={
-            "consolidations": [{
-                "from": "narrow",
-                "into": "umbrella",
-                "reason": "duplicate of umbrella's main content",
-            }],
-            "prunings": [],
-        },
-        destinations={"umbrella"},
-        absorbed_declarations={
-            "narrow": {"into": "umbrella", "declared": True},
-        },
-    )
-    assert len(out["consolidated"]) == 1
-    e = out["consolidated"][0]
-    assert e["into"] == "umbrella"
-    assert "absorbed_into" in e["source"]
-    assert e["reason"] == "duplicate of umbrella's main content"
 
 
-def test_reconcile_without_declarations_preserves_legacy_behavior(curator_env):
-    """Backward compat: no absorbed_declarations arg → all existing logic intact."""
-    out = curator_env._reconcile_classification(
-        removed=["thing"],
-        heuristic={
-            "consolidated": [{"name": "thing", "into": "umbrella", "evidence": "..."}],
-            "pruned": [],
-        },
-        model_block={"consolidations": [], "prunings": []},
-        destinations={"umbrella"},
-        # no absorbed_declarations — defaults to None → behaves identically to pre-change
-    )
-    assert len(out["consolidated"]) == 1
-    assert out["consolidated"][0]["into"] == "umbrella"
 
 
 def test_reconcile_mixed_declarations_and_legacy_calls(curator_env):
@@ -910,35 +425,6 @@ def test_rename_summary_empty_when_nothing_archived(curator_env):
     assert result == ""
 
 
-def test_rename_summary_consolidation_shows_target(curator_env):
-    """Consolidated skills render as `name → umbrella` with the actual target."""
-    result = curator_env._build_rename_summary(
-        before_names={"pdf-extraction", "docx-extraction", "document-tools"},
-        after_report=[{"name": "document-tools", "state": "active"}],
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "delete",
-                    "name": "pdf-extraction",
-                    "absorbed_into": "document-tools",
-                }),
-            },
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "delete",
-                    "name": "docx-extraction",
-                    "absorbed_into": "document-tools",
-                }),
-            },
-        ],
-        model_final="",
-    )
-    assert "archived 2 skill(s):" in result
-    assert "pdf-extraction → document-tools" in result
-    assert "docx-extraction → document-tools" in result
-    assert "full report: hermes curator status" in result
 
 
 def test_rename_summary_pruned_marked_explicitly(curator_env):
@@ -1030,96 +516,7 @@ def test_rename_summary_mixed_consolidation_and_pruning(curator_env):
 # ---------------------------------------------------------------------------
 
 
-def test_rename_summary_pin_hint_appears_when_consolidation_produced_umbrella(curator_env):
-    """When at least one skill was absorbed into an umbrella, hint at pinning it."""
-    result = curator_env._build_rename_summary(
-        before_names={"pdf-extraction", "docx-extraction", "document-tools"},
-        after_report=[{"name": "document-tools", "state": "active"}],
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "delete",
-                    "name": "pdf-extraction",
-                    "absorbed_into": "document-tools",
-                }),
-            },
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "delete",
-                    "name": "docx-extraction",
-                    "absorbed_into": "document-tools",
-                }),
-            },
-        ],
-        model_final="",
-    )
-    assert "hermes curator pin document-tools" in result
-    assert "keep an umbrella stable" in result
 
 
-def test_rename_summary_pin_hint_skipped_for_pruned_only_runs(curator_env):
-    """Pruned-only runs have nothing surviving to pin — hint should not appear."""
-    result = curator_env._build_rename_summary(
-        before_names={"old-flaky-thing", "another-stale", "keeper"},
-        after_report=[{"name": "keeper", "state": "active"}],
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "delete",
-                    "name": "old-flaky-thing",
-                    "absorbed_into": "",
-                }),
-            },
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "delete",
-                    "name": "another-stale",
-                    "absorbed_into": "",
-                }),
-            },
-        ],
-        model_final="",
-    )
-    # Block still renders (skills were archived) but no pin hint.
-    assert "archived 2 skill(s):" in result
-    assert "hermes curator pin" not in result
-    assert "keep an umbrella stable" not in result
 
 
-def test_rename_summary_pin_hint_picks_one_umbrella_when_multiple_absorbed(curator_env):
-    """Multiple umbrellas → hint shows one example (alphabetically first), not a list."""
-    result = curator_env._build_rename_summary(
-        before_names={"a-skill", "b-skill", "umbrella-zeta", "umbrella-alpha"},
-        after_report=[
-            {"name": "umbrella-zeta", "state": "active"},
-            {"name": "umbrella-alpha", "state": "active"},
-        ],
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "delete",
-                    "name": "a-skill",
-                    "absorbed_into": "umbrella-zeta",
-                }),
-            },
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "delete",
-                    "name": "b-skill",
-                    "absorbed_into": "umbrella-alpha",
-                }),
-            },
-        ],
-        model_final="",
-    )
-    # Sorted picks alphabetically first.
-    assert "hermes curator pin umbrella-alpha" in result
-    # Exactly one hint line, not one per umbrella.
-    pin_lines = [ln for ln in result.splitlines() if "hermes curator pin" in ln]
-    assert len(pin_lines) == 1

@@ -1,21 +1,21 @@
 ---
-title: "Hyperframes"
+title: "Hyperframes — Render MP4/WebM videos from HTML compositions"
 sidebar_label: "Hyperframes"
-description: "Create HTML-based video compositions, animated title cards, social overlays, captioned talking-head videos, audio-reactive visuals, and shader transitions us..."
+description: "Render MP4/WebM videos from HTML compositions"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Hyperframes
 
-Create HTML-based video compositions, animated title cards, social overlays, captioned talking-head videos, audio-reactive visuals, and shader transitions using HyperFrames. HTML is the source of truth for video. Use when the user wants a rendered MP4/WebM from an HTML composition, wants to animate text/logos/charts over media, needs captions synced to audio, wants TTS narration, or wants to convert a website into a video.
+Render MP4/WebM videos from HTML compositions.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/hyperframes` |
-| Path | `optional-skills/creative/hyperframes` |
+| Path | `optional-skills/creative\hyperframes` |
 | Version | `1.0.0` |
 | Author | heygen-com |
 | License | Apache-2.0 |
@@ -57,14 +57,16 @@ Do **not** use this skill for:
 npx hyperframes init my-video               # scaffold a project
 cd my-video
 npx hyperframes lint                        # validate before preview/render
-npx hyperframes preview                     # live-reload browser preview (port 3002)
+npx hyperframes preview                     # live-reload preview (long-lived server, port 3002)
 npx hyperframes render --output final.mp4   # render to MP4
 npx hyperframes doctor                      # diagnose environment issues
 ```
 
+`preview` is a **long-lived** Next.js server that holds Chrome render workers open. Always stop it when done (see [Cleanup](#cleanup)) — a forgotten preview keeps idle `chrome-headless-shell` workers alive that, on GPU-less hosts (WSL, containers, CI), spin a CPU core each indefinitely via software WebGL (swiftshader).
+
 Render flags: `--quality draft|standard|high` · `--fps 24|30|60` · `--format mp4|webm` · `--docker` (reproducible) · `--strict`.
 
-Full CLI reference: [references/cli.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/cli.md).
+Full CLI reference: [references/cli.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/cli.md).
 
 ## Setup (one-time)
 
@@ -78,7 +80,7 @@ The script:
 3. Pre-caches `chrome-headless-shell` via Puppeteer — **required** for best-quality rendering via Chrome's `HeadlessExperimental.beginFrame` capture path.
 4. Runs `npx hyperframes doctor` and reports the result.
 
-See [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/troubleshooting.md) if setup fails.
+See [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/troubleshooting.md) if setup fails.
 
 ## Procedure
 
@@ -115,7 +117,7 @@ Write the static HTML+CSS for the **hero frame first** — no GSAP yet. The `.sc
 
 Only after the hero frame looks right, add `gsap.from()` entrances (animate **to** the CSS position) and `gsap.to()` exits (animate **from** it).
 
-See [references/composition.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/composition.md) for the full data-attribute schema and composition rules.
+See [references/composition.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/composition.md) for the full data-attribute schema and composition rules.
 
 ### 4. Animate with GSAP
 
@@ -126,7 +128,7 @@ Every composition must:
 - Be deterministic — no `Math.random()`, `Date.now()`, or wall-clock logic. Use a seeded PRNG if you need pseudo-randomness.
 - Build synchronously — no `async`/`await`, `setTimeout`, or Promises around timeline construction.
 
-See [references/gsap.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/gsap.md) for the core GSAP API (tweens, eases, stagger, timelines).
+See [references/gsap.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/gsap.md) for the core GSAP API (tweens, eases, stagger, timelines).
 
 ### 5. Transitions between scenes
 
@@ -162,11 +164,26 @@ npx hyperframes render --quality high --output final.mp4     # final delivery
 
 ### 8. Website-to-video (if the user gives a URL)
 
-Use the 7-step capture-to-video workflow in [references/website-to-video.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/website-to-video.md): capture → DESIGN.md → SCRIPT.md → storyboard → composition → render → deliver.
+Use the 7-step capture-to-video workflow in [references/website-to-video.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/website-to-video.md): capture → DESIGN.md → SCRIPT.md → storyboard → composition → render → deliver.
+
+## Cleanup
+
+`render` is one-shot (workers exit when it finishes). `preview` is **not** — it runs a background Next.js server that keeps Chrome workers resident until you stop it. Never leave one running: on GPU-less hosts each idle worker's swiftshader process pegs a CPU core, and a preview left open for days stacks up multiple.
+
+Stop a preview when the user is done reviewing (or before starting a new one):
+
+```bash
+pkill -f "hyperframes.*preview"     # the Studio server (frees port 3002)
+pkill -f chrome-headless-shell      # its render workers; only safe if nothing else uses them
+```
+
+If unsure whether other tools use `chrome-headless-shell`, check first: `pgrep -af chrome-headless-shell`. Recover a wedged host (many idle workers spinning CPU) the same way — see [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/troubleshooting.md#runaway-cpu-from-leftover-preview-workers).
 
 ## Pitfalls
 
-- **`HeadlessExperimental.beginFrame' wasn't found`** — Chromium 147+ removed this protocol. Ensure you're on `hyperframes@>=0.4.2` (auto-detects and falls back to screenshot mode). Escape hatch: `export PRODUCER_FORCE_SCREENSHOT=true`. See [hyperframes#294](https://github.com/heygen-com/hyperframes/issues/294) and [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/troubleshooting.md).
+- **Leaving `preview` running** — it's a long-lived server holding Chrome workers; on WSL/containers/CI those idle workers spin a CPU core each (software WebGL). Stop it when done — see [Cleanup](#cleanup).
+
+- **`HeadlessExperimental.beginFrame' wasn't found`** — Chromium 147+ removed this protocol. Ensure you're on `hyperframes@>=0.4.2` (auto-detects and falls back to screenshot mode). Escape hatch: `export PRODUCER_FORCE_SCREENSHOT=true`. See [hyperframes#294](https://github.com/heygen-com/hyperframes/issues/294) and [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/troubleshooting.md).
 - **System Chrome (not `chrome-headless-shell`)** — renders hang for 120s then timeout. Run `npx puppeteer browsers install chrome-headless-shell` (setup.sh does this). `hyperframes doctor` reports which binary will be used.
 - **`repeat: -1` anywhere** — breaks the capture engine. Always compute a finite repeat count.
 - **`gsap.set()` on clip elements that enter later** — the element doesn't exist at page load. Use `tl.set(selector, vars, timePosition)` inside the timeline instead, at or after the clip's `data-start`.
@@ -197,9 +214,9 @@ If `hyperframes render` fails, run `npx hyperframes doctor` and attach its outpu
 
 ## References
 
-- [composition.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/composition.md) — data attributes, timeline contract, non-negotiable rules, typography/asset rules
-- [cli.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/cli.md) — every CLI command (init, capture, lint, validate, inspect, preview, render, transcribe, tts, doctor, browser, info, upgrade, benchmark)
-- [gsap.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/gsap.md) — GSAP core API for HyperFrames (tweens, eases, stagger, timelines, matchMedia)
-- [features.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/features.md) — captions, TTS, audio-reactive, marker highlighting, transitions (load on demand)
-- [website-to-video.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/website-to-video.md) — 7-step capture-to-video workflow
-- [troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/troubleshooting.md) — OpenClaw fix, env vars, common render errors
+- [composition.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/composition.md) — data attributes, timeline contract, non-negotiable rules, typography/asset rules
+- [cli.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/cli.md) — every CLI command (init, capture, lint, validate, inspect, preview, render, transcribe, tts, doctor, browser, info, upgrade, benchmark)
+- [gsap.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/gsap.md) — GSAP core API for HyperFrames (tweens, eases, stagger, timelines, matchMedia)
+- [features.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/features.md) — captions, TTS, audio-reactive, marker highlighting, transitions (load on demand)
+- [website-to-video.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/website-to-video.md) — 7-step capture-to-video workflow
+- [troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\hyperframes/references/troubleshooting.md) — OpenClaw fix, env vars, common render errors

@@ -1,17 +1,24 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
+import { FREE_TIER_MODEL } from '@/store/free-tier'
+import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   $desktopOnboarding,
+  ackFreeTierIntro,
+  clearFreeTierIntro,
   clearPendingProviderOAuth,
   closeManualOnboarding,
   confirmOnboardingModel,
@@ -23,24 +30,39 @@ import {
   refreshOnboarding,
   saveOnboardingApiKey,
   setOnboardingMode,
+  startManualOnboarding,
   startProviderOAuth
 } from '@/store/onboarding'
 import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
-import { FeaturedProviderRow, KeyProviderRow, ProviderRow, sortProviders } from './providers'
+import { DecodedLabel } from './glyph'
+import {
+  FeaturedProviderRow,
+  FireworksProviderRow,
+  LocalModelsProviderRow,
+  OpenRouterProviderRow,
+  ProviderRow,
+  sortProviders
+} from './providers'
 
 export {
   FeaturedProviderRow,
+  FireworksProviderRow,
   KeyProviderRow,
+  LocalModelsProviderRow,
+  OpenRouterProviderRow,
   ProviderRow,
   providerTitle,
   sortProviders
 } from './providers'
 
+import { requestGatewayForProfile } from '@/store/gateway'
+
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
   onCompleted?: () => void
+  profile: string
   requestGateway: OnboardingContext['requestGateway']
 }
 
@@ -54,18 +76,20 @@ export interface ApiKeyOption {
   short?: string
 }
 
+// Curated order mirrors CANONICAL_PROVIDERS: Fireworks sits #2 overall (after
+// Nous Portal OAuth), ahead of OpenRouter and the rest of the key catalog.
 const API_KEY_OPTIONS: ApiKeyOption[] = [
-  {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    envKey: 'OPENROUTER_API_KEY',
-    docsUrl: 'https://openrouter.ai/keys'
-  },
   {
     id: 'fireworks',
     name: 'Fireworks AI',
     envKey: 'FIREWORKS_API_KEY',
     docsUrl: 'https://app.fireworks.ai/settings/users/api-keys'
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    envKey: 'OPENROUTER_API_KEY',
+    docsUrl: 'https://openrouter.ai/keys'
   },
   {
     id: 'openai',
@@ -167,19 +191,29 @@ function useApiKeyCatalog(): ApiKeyOption[] {
 // → surface-out (520ms, held back by [transition-delay:660ms]). Finalize after.
 const ONBOARDING_EXIT_MS = 1180
 
-export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway }: DesktopOnboardingOverlayProps) {
+export function DesktopOnboardingOverlay({
+  enabled,
+  onCompleted,
+  profile,
+  requestGateway
+}: DesktopOnboardingOverlayProps) {
   const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
-  const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted })
-  ctxRef.current = { requestGateway, onCompleted }
+  const onCompletedRef = useRef(onCompleted)
+  onCompletedRef.current = onCompleted
+  const targetProfile = onboarding.targetProfile ?? profile
 
+  // Async flows retain the initiating route even after the overlay closes.
   const ctx = useMemo<OnboardingContext>(
     () => ({
-      requestGateway: (...args) => ctxRef.current.requestGateway(...args),
-      onCompleted: () => ctxRef.current.onCompleted?.()
+      profile: targetProfile,
+      requestGateway: onboarding.targetProfile
+        ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
+        : requestGateway,
+      onCompleted: () => onCompletedRef.current?.()
     }),
-    []
+    [onboarding.targetProfile, targetProfile, requestGateway]
   )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
@@ -202,6 +236,38 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
 
     setLeaving(true)
     window.setTimeout(() => confirmOnboardingModel(ctx), ONBOARDING_EXIT_MS)
+  }
+
+  // The free-tier intro's three doors share one exit: consume the notice, play
+  // the same dissolve, then run whatever the door opens onto. `after` runs at
+  // the END so a sign-in dialog or provider picker never appears behind a
+  // still-fading overlay.
+  const dismissFreeTierIntro = async (after?: () => void) => {
+    if (leaving) {
+      return
+    }
+
+    // The screen is keyed on the backend's notice flag: only a recorded ack takes it down.
+    // A failed ack leaves it in place for another try rather than hiding the only notice.
+    if (!(await ackFreeTierIntro(ctx))) {
+      return
+    }
+
+    const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+    if (reduce) {
+      clearFreeTierIntro()
+      after?.()
+
+      return
+    }
+
+    setLeaving(true)
+    window.setTimeout(() => {
+      setLeaving(false)
+      clearFreeTierIntro()
+      after?.()
+    }, ONBOARDING_EXIT_MS)
   }
 
   useEffect(() => {
@@ -245,14 +311,14 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
   // do we know whether to dismiss (true) or surface the picker (false).
   // EXCEPTION: manual mode (user opened the selector from a working app to
   // add/switch a provider) shows the overlay regardless of configured state.
-  if (onboarding.configured === true && !onboarding.manual) {
+  if (onboarding.configured === true && !onboarding.manual && !onboarding.freeTierReady) {
     return null
   }
 
   // The user chose "I'll choose a provider later" on first run. Stay out of the
   // way on every subsequent launch — they re-enter via Settings → Providers
   // (manual mode), which sets manual=true and bypasses this gate.
-  if (onboarding.firstRunSkipped && !onboarding.manual) {
+  if (onboarding.firstRunSkipped && !onboarding.manual && !onboarding.freeTierReady) {
     return null
   }
 
@@ -273,21 +339,29 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
   // In manual mode the app is already configured, so the flow is "ready"
   // immediately — no runtime gate needed. Otherwise wait for the readiness
   // check (configured === false) before showing the picker.
-  const ready = onboarding.manual || (enabled && onboarding.configured === false)
-  const showPicker = flow.status === 'idle' || flow.status === 'success'
+  // The free-tier intro owns the overlay while it is up: the app is already
+  // configured, so there is no picker to show and no runtime gate to wait on.
+  // A manual open (the user asked for the picker) outranks it.
+  const freeTierIntro = onboarding.freeTierReady && !onboarding.manual && flow.status === 'idle'
+  const ready = freeTierIntro || onboarding.manual || (enabled && onboarding.configured === false)
+  const showPicker = !freeTierIntro && (flow.status === 'idle' || flow.status === 'success')
   // The final "you're in" screen drops the card chrome and floats centered on
   // the surface — same bare, cinematic treatment as the connecting overlay.
-  const bare = ready && !showPicker && flow.status === 'confirming_model'
+  const bare = ready && (freeTierIntro || (!showPicker && flow.status === 'confirming_model'))
 
   return (
     <div
       className={cn(
-        'fixed inset-0 z-1300 flex items-center justify-center bg-(--ui-chat-surface-background) p-6 transition-opacity duration-[520ms] ease-out',
+        'fixed inset-0 z-(--z-onboarding) flex items-center justify-center bg-(--ui-chat-surface-background) p-6 transition-opacity duration-[520ms] ease-out',
         // On the bare confirm screen, hold the surface (text-out + hold) so the
         // per-element exit plays before it dissolves.
         bare && leaving ? '[transition-delay:660ms]' : '',
         leaving ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Masks the whole app until onboarding finishes — must stay filled under
+      // window glass or the shell shows through. Contract:
+      // `[data-glass-opaque]` in styles.css.
+      data-glass-opaque=""
     >
       <div
         className={cn(
@@ -317,7 +391,9 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
         <div className="grid gap-3 p-5">
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready ? (
-            showPicker ? (
+            freeTierIntro ? (
+              <FreeTierReadyPanel leaving={leaving} onDismiss={dismissFreeTierIntro} />
+            ) : showPicker ? (
               <Picker ctx={ctx} />
             ) : (
               <FlowPanel ctx={ctx} flow={flow} leaving={leaving} onBegin={finalizeOnboarding} />
@@ -326,6 +402,70 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
             <Preparing boot={boot} />
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The one-time free-tier welcome, shown when the free tier is what serves this
+ * user. Bare and centered like the model-confirm screen it stands in for: this
+ * IS their "you're in" moment, so it names the route, its model and its price,
+ * and offers the two ways out of it (a real account, or a provider of their
+ * own) without making either the default.
+ */
+function FreeTierReadyPanel({
+  leaving,
+  onDismiss
+}: {
+  leaving: boolean
+  onDismiss: (after?: () => void) => Promise<void>
+}) {
+  const { t } = useI18n()
+  const copy = t.freeTier
+
+  return (
+    <div className="grid place-items-center gap-7 py-6 text-center">
+      <DecodedLabel leaving={leaving} text={copy.readyTitle} />
+
+      <div
+        className={cn(
+          'grid justify-items-center gap-1.5 transition duration-[360ms] ease-out',
+          leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[0.625rem] uppercase tracking-[0.2em] text-muted-foreground">
+            {t.onboarding.defaultModel}
+          </span>
+          <Badge size="xs" variant="success">
+            {t.onboarding.freeTier}
+          </Badge>
+        </div>
+        <p className="font-mono text-base">{FREE_TIER_MODEL}</p>
+        <p className="font-mono text-xs text-muted-foreground">{copy.readyCaption}</p>
+      </div>
+
+      <div
+        className={cn(
+          'grid justify-items-center gap-2 transition duration-[360ms] ease-out',
+          leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
+        )}
+      >
+        <Button onClick={() => void onDismiss()} type="button">
+          {copy.begin}
+        </Button>
+        <Button onClick={() => void onDismiss(() => openFreeTierSignIn())} size="xs" type="button" variant="text">
+          {copy.signInInstead}
+        </Button>
+        <Button
+          onClick={() => void onDismiss(() => startManualOnboarding(null))}
+          size="xs"
+          type="button"
+          variant="text"
+        >
+          {copy.otherProviders}
+        </Button>
       </div>
     </div>
   )
@@ -353,15 +493,12 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
       <p className="text-sm text-muted-foreground">
         {installing ? t.onboarding.preparingInstall : t.onboarding.starting}
       </p>
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            'h-full rounded-full bg-primary transition-[width] duration-300 ease-out',
-            hasError && 'bg-destructive'
-          )}
-          style={{ width: `${progress}%` }}
-        />
-      </div>
+      <Progress
+        aria-label={installing ? t.onboarding.preparingInstall : t.onboarding.starting}
+        destructive={hasError}
+        size="lg"
+        value={progress / 100}
+      />
       <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
         <span className="truncate">{boot.message}</span>
         <span>{progress}%</span>
@@ -410,10 +547,12 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   // Which key-form option to preselect when we flip to 'apikey' mode. The
   // OpenRouter row selects its key; the generic link lands on the first option.
   const [apiKeyInitialEnv, setApiKeyInitialEnv] = useState<string | undefined>(undefined)
+
   const openKeyForm = (envKey?: string) => {
     setApiKeyInitialEnv(envKey)
     setOnboardingMode('apikey')
   }
+
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
   const apiKeyOptions = useApiKeyCatalog()
@@ -448,21 +587,45 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
   const featured = ordered.find(p => p.id === FEATURED_ID) ?? null
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
-  // Collapse the secondary providers behind a disclosure only when Nous
-  // Portal is present to anchor the choice — otherwise show the full list.
-  const collapsible = Boolean(featured) && rest.length > 0
+  // Collapse the secondary providers behind a disclosure whenever Nous Portal
+  // is present to anchor the choice — otherwise show the full list. The
+  // Fireworks/OpenRouter key rows always live behind the disclosure, so the
+  // toggle is warranted even when there are no other OAuth providers.
+  const collapsible = Boolean(featured)
   const showRest = !collapsible || showAll
+
+  // "Run models locally" leaves the picker for Settings -> Providers ->
+  // Local Models, where install/download live. First-run: persist the skip
+  // (same contract as ChooseLaterLink) so the blocking overlay never
+  // re-nags; manual mode just closes. window.location keeps this picker
+  // router-independent (it renders outside the route tree on first run).
+  const openLocalModels = () => {
+    if (manual) {
+      closeManualOnboarding()
+    } else {
+      dismissFirstRunOnboarding()
+    }
+
+    window.location.hash = '#/settings?tab=providers&pview=local'
+  }
 
   return (
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
         {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        {/* The no-account path: everything runs on this machine. Shipped
+            behind the --local launch flag. (Fireworks moved into the
+            expanded list on main.) */}
+        {$localModelsEnabled.get() ? <LocalModelsProviderRow onClick={openLocalModels} /> : null}
         {showRest ? (
           <>
+            {/* Fireworks leads the expanded list, matching CANONICAL_PROVIDERS
+                (Nous → Fireworks), but stays hidden until the user opens it. */}
+            <FireworksProviderRow onClick={() => openKeyForm('FIREWORKS_API_KEY')} />
             {rest.map(p => (
               <ProviderRow key={p.id} onSelect={select} provider={p} />
             ))}
-            <KeyProviderRow onClick={() => openKeyForm('OPENROUTER_API_KEY')} />
+            <OpenRouterProviderRow onClick={() => openKeyForm('OPENROUTER_API_KEY')} />
           </>
         ) : null}
       </div>
@@ -483,13 +646,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
             In manual mode the overlay already has a close affordance, so the
             "choose later" escape would be redundant — hide it. */}
         {manual ? <span /> : <ChooseLaterLink />}
-        <Button
-          className="-mr-2 font-medium"
-          onClick={() => openKeyForm()}
-          size="xs"
-          type="button"
-          variant="text"
-        >
+        <Button className="-mr-2 font-medium" onClick={() => openKeyForm()} size="xs" type="button" variant="text">
           {t.onboarding.haveApiKey}
         </Button>
       </div>
@@ -644,7 +801,7 @@ export function ApiKeyForm({
           autoFocus
           className="font-mono"
           onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submit()}
+          onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submit()}
           placeholder={
             currentRedacted ??
             (alreadySet ? t.onboarding.replaceCurrent : option.placeholder || t.onboarding.pasteApiKey)
@@ -657,7 +814,7 @@ export function ApiKeyForm({
             autoComplete="off"
             className="font-mono"
             onChange={e => setLocalKey(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && void submit()}
+            onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submit()}
             placeholder={t.onboarding.localApiKeyPlaceholder}
             type="password"
             value={localKey}

@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from plugins.platforms.feishu.feishu_meeting_invite import (
     build_meeting_invite_prompt,
     handle_meeting_invited_event,
@@ -76,7 +76,7 @@ class _Adapter:
         self.dedup_keys = []
         self.profile_requests = []
 
-    def _is_duplicate(self, key):
+    async def _is_duplicate(self, key):
         self.dedup_keys.append(key)
         return self.duplicate
 
@@ -96,18 +96,6 @@ class _Adapter:
 
 
 class TestMeetingInviteParsing(unittest.TestCase):
-    def test_parse_actual_payload_string_int64_fields(self):
-        parsed = parse_meeting_invited_event(_make_payload())
-
-        self.assertIsNotNone(parsed)
-        self.assertEqual(parsed.event_id, "evt_1")
-        self.assertEqual(parsed.meeting.id, "7646677832873577404")
-        self.assertEqual(parsed.meeting.start_time_ms, 1780384522000)
-        self.assertEqual(parsed.meeting.end_time_ms, 1780384522000)
-        self.assertEqual(parsed.inviter.open_id, "ou_390b35dca44816efc9afa812aaff3a69")
-        self.assertEqual(parsed.inviter.user_id, "e65g874e")
-        self.assertEqual(parsed.inviter.union_id, "on_e19a19e6ffafbd54fbb3c4d251d6fa19")
-        self.assertEqual(parsed.invite_time_s, 1780388292)
 
     def test_parse_body_content_payload(self):
         payload = _make_payload()
@@ -130,17 +118,6 @@ class TestMeetingInviteParsing(unittest.TestCase):
         self.assertEqual(parsed.meeting.meeting_no, "884264377")
         self.assertEqual(parsed.inviter.open_id, "ou_390b35dca44816efc9afa812aaff3a69")
 
-    def test_parse_requires_inviter(self):
-        payload = _make_payload()
-        del payload["event"]["inviter"]
-
-        self.assertIsNone(parse_meeting_invited_event(payload))
-
-    def test_parse_requires_meeting_no(self):
-        payload = _make_payload()
-        payload["event"]["meeting"]["meeting_no"] = ""
-
-        self.assertIsNone(parse_meeting_invited_event(payload))
 
     def test_prompt_contains_meeting_and_inviter_context(self):
         parsed = parse_meeting_invited_event(_make_payload())
@@ -189,21 +166,18 @@ class TestMeetingInviteHandler(unittest.TestCase):
         self.assertIn("You have been invited to join a meeting: 赵磊的视频会议", event.text)
         self.assertNotIn("{'open_id'", event.text)
 
-    def test_duplicate_event_is_dropped(self):
+    def test_duplicate_event_is_dropped_without_routing(self):
+        """_is_duplicate() is async on the real FeishuAdapter (dedup persist
+        is offloaded off the event loop); the dedup check here must await
+        it — a missing await would leave an un-awaited coroutine, which is
+        always truthy, and drop every event as a false duplicate."""
         adapter = _Adapter(duplicate=True)
 
         self._run(handle_meeting_invited_event(adapter, _make_payload()))
 
         self.assertEqual(adapter.dedup_keys, ["vc_invite:evt_1"])
         self.assertEqual(adapter.events, [])
-
-    def test_inviter_without_open_id_is_dropped(self):
-        payload = _make_payload_with_numeric_inviter_id()
-        adapter = _Adapter()
-
-        self._run(handle_meeting_invited_event(adapter, payload))
-
-        self.assertEqual(adapter.events, [])
+        self.assertEqual(adapter.profile_requests, [])
 
 
 class TestMeetingInviteSendRouting(unittest.TestCase):

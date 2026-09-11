@@ -220,6 +220,11 @@ chown_hermes_tree() {
         echo "[stage2] Warning: chown $target failed (rootless container?) — continuing"
 }
 
+tree_has_non_hermes_owner() {
+    target="$1"
+    find "$target" \( ! -user hermes -o ! -group hermes \) -print -quit 2>/dev/null | grep -q .
+}
+
 needs_chown=false
 if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
     needs_chown=true
@@ -243,7 +248,7 @@ if [ "$needs_chown" = true ]; then
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
     for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing lazy-packages; do
-        if [ -e "$HERMES_HOME/$sub" ]; then
+        if [ -e "$HERMES_HOME/$sub" ] && tree_has_non_hermes_owner "$HERMES_HOME/$sub"; then
             chown_hermes_tree "$HERMES_HOME/$sub"
         fi
     done
@@ -273,18 +278,36 @@ fi
 # are invoked via `docker exec <container> hermes …` (which defaults
 # to root unless `-u` is passed), and that breaks the cont-init
 # reconciler (02-reconcile-profiles) which runs as hermes and walks
-# the profiles dir. Idempotent; skipped on rootless containers where
-# chown would fail.
-if [ -d "$HERMES_HOME/profiles" ]; then
+# the profiles dir. Skip the recursive walk when the tree is already
+# owned correctly so warm boots do not rescan huge profile caches.
+# Idempotent; skipped on rootless containers where chown would fail.
+if [ -d "$HERMES_HOME/profiles" ] && tree_has_non_hermes_owner "$HERMES_HOME/profiles"; then
     chown_hermes_tree "$HERMES_HOME/profiles"
 fi
 
 # Always reset ownership of $HERMES_HOME/cron on every boot for the same
 # docker-exec/root-write reason as profiles/. The cron scheduler state
 # (jobs.json) must stay readable by the unprivileged hermes runtime even
-# after root-context maintenance commands or scheduler writes.
-if [ -d "$HERMES_HOME/cron" ]; then
+# after root-context maintenance commands or scheduler writes. Skip the
+# recursive walk when the tree is already owned correctly (same warm-boot
+# gate as profiles/).
+if [ -d "$HERMES_HOME/cron" ] && tree_has_non_hermes_owner "$HERMES_HOME/cron"; then
     chown_hermes_tree "$HERMES_HOME/cron"
+fi
+
+# Always ensure logs/gateways is hermes-owned (#45258). Formerly healed by
+# restartable gateway log/run chown — removed due to symlink TOCTOU
+# (CWE-59/367). The targeted data-volume chown above only runs when the
+# top-level $HERMES_HOME is mis-owned, so a warm volume with hermes-owned
+# HERMES_HOME but root-owned logs/gateways would otherwise leave
+# s6-setuidgid hermes mkdir failing with Permission denied. Non-recursive:
+# profile leaf dirs are each created/owned by their own log/run as hermes.
+if [ -d "$HERMES_HOME/logs/gateways" ]; then
+    if refuse_symlinked_path "chown" "$HERMES_HOME/logs/gateways"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true
+    fi
 fi
 
 # Always reset ownership of pairing data on every boot, same docker-exec/
@@ -294,13 +317,14 @@ fi
 # silently leaving the approved user unauthorized (#10270). The targeted
 # data-volume chown above only runs when the top-level $HERMES_HOME is
 # mis-owned, so warm boots skip it — this block makes a container restart
-# self-heal. Tiny directory (a handful of small JSON files), so the cost
-# is negligible.
-if [ -d "$HERMES_HOME/platforms/pairing" ]; then
+# self-heal. Tiny directory (a handful of small JSON files), so even the
+# ownership pre-scan is negligible; gated for consistency with profiles/
+# and cron/.
+if [ -d "$HERMES_HOME/platforms/pairing" ] && tree_has_non_hermes_owner "$HERMES_HOME/platforms/pairing"; then
     chown_hermes_tree "$HERMES_HOME/platforms/pairing"
 fi
 # Legacy location (pre-consolidated layout).
-if [ -d "$HERMES_HOME/pairing" ]; then
+if [ -d "$HERMES_HOME/pairing" ] && tree_has_non_hermes_owner "$HERMES_HOME/pairing"; then
     chown_hermes_tree "$HERMES_HOME/pairing"
 fi
 
@@ -407,6 +431,89 @@ seed_one ".env" ".env.example"
 seed_one "config.yaml" "cli-config.yaml.example"
 seed_one "SOUL.md" "docker/SOUL.md"
 
+# --- Ensure a gateway api_server key exists (loopback control plane) ---
+# The gateway's aiohttp api_server refuses to start without a strong
+# API_SERVER_KEY (>=16 chars; startup guard in gateway/platforms/api_server.py).
+# Hosted deployments need that listener on loopback so the dashboard — the
+# container's only public HTTP door — can forward Chronos cron fires into the
+# GATEWAY process, where the live platform adapters (relay, E2EE) live. The
+# cron-fire route itself is NAS-JWT-authed, not key-authed; the key gates the
+# rest of the api_server surface. Generate once, persist in .env (mounted
+# volume), never overwrite an operator-provided value. Loopback-only: the
+# default bind host is 127.0.0.1 and the Fly service only exposes the
+# dashboard's port, so this listener is never publicly reachable.
+#
+# CREATE .env when it is missing rather than requiring it to exist (OOF-285):
+# the first-boot seed above depends on /opt/hermes/.env.example being present
+# in the image, and when it isn't (the .dockerignore excluded it for a long
+# stretch of releases) seed_one is a silent no-op, no .env ever exists, this
+# keygen never ran, the api_server never started, and every scheduled cron
+# fire on the instance was silently lost. The key must not depend on the
+# example-file seed having worked.
+#
+# OPERATOR-PROVIDED KEYS WIN: if the container environment already carries
+# API_SERVER_KEY (documented `docker run -e API_SERVER_KEY=...` flow), do
+# not generate one. Hermes loads $HERMES_HOME/.env with override=True, so
+# a generated key written here would silently SHADOW the operator's env
+# key and 401 every client still using the supplied credential.
+if [ -n "${API_SERVER_KEY:-}" ]; then
+    if [ -f "$HERMES_HOME/.env" ] && grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
+        echo "[stage2] Warning: API_SERVER_KEY is set in both the container environment and $HERMES_HOME/.env — the .env value wins at runtime (loaded with override=True)"
+    else
+        # The env key is the effective key on this boot (no .env key wins
+        # over it). The api_server startup guard refuses keys shorter than
+        # 16 chars; since this branch skips generation, a weak operator key
+        # means the server stays DOWN (cron fires lost), not just 401s.
+        # Warn where the operator will look — the boot log. Checked only in
+        # this branch: when a strong .env key wins at runtime, the warning
+        # would be false (the server does start).
+        if [ "${#API_SERVER_KEY}" -lt 16 ]; then
+            echo "[stage2] Warning: container-provided API_SERVER_KEY is shorter than 16 characters — the gateway api_server will refuse to start (cron fires unavailable). Generate a strong secret, e.g. \`openssl rand -hex 32\`."
+        fi
+        # A stale empty `API_SERVER_KEY=` line (left by an old seed) would
+        # clobber the container-provided key at runtime: .env is loaded with
+        # override=True and python-dotenv sets the empty string, which fails
+        # the api_server's startup guard — the exact silent-cron-loss symptom
+        # this hook exists to prevent. Drop it so the operator key wins.
+        if [ -f "$HERMES_HOME/.env" ] && ! refuse_symlinked_path "clean" "$HERMES_HOME/.env"; then
+            sed -i '/^API_SERVER_KEY=$/d' "$HERMES_HOME/.env" 2>/dev/null || true
+        fi
+        echo "[stage2] API_SERVER_KEY provided via container environment — skipping generation"
+    fi
+elif ! grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
+    if refuse_symlinked_path "append" "$HERMES_HOME/.env"; then
+        :
+    else
+        if [ ! -f "$HERMES_HOME/.env" ]; then
+            # Create an empty, owner-only .env so the append below (and any
+            # later runtime save_env_value writes) have a durable target.
+            # Created under a restrictive umask so the file is 0600 from the
+            # first instant — no touch→chmod window, and no dependence on a
+            # silenced chmod succeeding. The chown/chmod block below still
+            # re-tightens perms every boot.
+            (umask 077 && as_hermes touch "$HERMES_HOME/.env") 2>/dev/null || true
+        fi
+        if [ -f "$HERMES_HOME/.env" ]; then
+            _gen_key=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+            if [ -n "$_gen_key" ]; then
+                # Drop an empty assignment line if the seed left one behind,
+                # then append the generated key. The append is guarded: on a
+                # read-only volume / full disk it must degrade to the warning
+                # below, not abort the whole stage2 hook under `set -e`.
+                sed -i '/^API_SERVER_KEY=$/d' "$HERMES_HOME/.env" 2>/dev/null || true
+                if printf 'API_SERVER_KEY=%s\n' "$_gen_key" >> "$HERMES_HOME/.env" 2>/dev/null; then
+                    echo "[stage2] Generated API_SERVER_KEY for the loopback gateway api_server"
+                else
+                    echo "[stage2] Warning: could not write API_SERVER_KEY to $HERMES_HOME/.env (read-only volume?) — gateway api_server (cron fires) will be unavailable"
+                fi
+            fi
+            unset _gen_key
+        else
+            echo "[stage2] Warning: could not create $HERMES_HOME/.env — gateway api_server (cron fires) will be unavailable"
+        fi
+    fi
+fi
+
 # .env holds API keys and secrets — restrict to owner-only access. Applied
 # unconditionally (not only on first-seed) so a host-mounted .env that was
 # created with a permissive umask gets tightened on every container start.
@@ -416,6 +523,29 @@ if [ -f "$HERMES_HOME/.env" ]; then
     else
         chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
         chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
+    fi
+fi
+
+# --- Grant the gateway access to the Fly Machines API socket (scale-to-zero) ---
+# On Fly, flyd mounts the local Machines API ("flaps") unix socket at /.fly/api
+# owned root:root 0755. The gateway's scale-to-zero self-suspend
+# (gateway/scale_to_zero.py suspend_self) must POST to it, but the gateway runs
+# as the unprivileged `hermes` user — without this it gets EACCES on every
+# suspend attempt and the machine can never sleep (fail-awake; verified live on
+# staging 2026-08-20: "flaps suspend request failed: [Errno 13]"). This hook
+# runs as root before user services (the gateway) start, so grant group access
+# here. Scope note: group-write exposes the WHOLE local Machines API to the
+# hermes group (any group member could e.g. stop/suspend this machine), not
+# just the suspend endpoint — accepted because the agent already executes
+# arbitrary user code as that same principal and the socket only controls THIS
+# machine. No-op off Fly (socket absent).
+if [ -S /.fly/api ]; then
+    if refuse_symlinked_path "chgrp/chmod" /.fly/api; then
+        :
+    elif chgrp hermes /.fly/api 2>/dev/null && chmod g+w /.fly/api 2>/dev/null; then
+        echo "[stage2] Granted hermes group access to the Fly Machines API socket"
+    else
+        echo "[stage2] Warning: could not grant group access to /.fly/api — scale-to-zero self-suspend will fail EACCES (fail-awake)"
     fi
 fi
 
@@ -452,11 +582,12 @@ fi
 # the credential is replaced. An orchestrator that manages the container can
 # supply a freshly-issued session via HERMES_AUTH_JSON_REBOOTSTRAP (distinct
 # from the create-only *_BOOTSTRAP var); this helper swaps ONLY the
-# providers.nous entry, and ONLY when the on-disk entry is provably terminal.
-# Every other case (healthy, rotating, absent, or unparseable auth.json) is a
-# no-op, so it is safe to leave the env set across restarts and never risks
-# clobbering a good/rotated token. Runs as its own stdlib-only subprocess (no
-# app imports) and always exits 0.
+# providers.nous entry when the on-disk entry is provably terminal OR the
+# orchestrator seed has a later obtained_at timestamp. The latter covers the
+# stop/update/start sequence where NAS already revoked the still-healthy-looking
+# local session. Older/incomparable seeds remain no-ops, so leaving the env set
+# cannot roll a healthy rotated token backward. Runs as its own stdlib-only
+# subprocess (no app imports) and always exits 0.
 if [ -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]; then
     if refuse_symlinked_path "reseed" "$HERMES_HOME/auth.json"; then
         :

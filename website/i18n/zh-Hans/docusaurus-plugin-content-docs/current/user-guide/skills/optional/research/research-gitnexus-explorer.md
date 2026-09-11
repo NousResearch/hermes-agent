@@ -21,7 +21,7 @@ description: "使用 GitNexus 为代码库建立索引，并通过 Web UI + Clou
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `gitnexus`, `code-intelligence`, `knowledge-graph`, `visualization` |
-| 相关 skill | [`native-mcp`](/user-guide/skills/bundled/mcp/mcp-native-mcp), [`codebase-inspection`](/user-guide/skills/bundled/github/github-codebase-inspection) |
+| 相关 skill | [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`codebase-inspection`](/user-guide/skills/bundled/github/github-codebase-inspection) |
 
 ## 参考：完整 SKILL.md
 

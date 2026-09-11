@@ -1,24 +1,13 @@
 """Ollama Cloud provider profile.
 
-Ollama Cloud's OpenAI-compatible ``/v1/chat/completions`` endpoint
-supports top-level ``reasoning_effort`` with values ``none``, ``low``,
-``medium``, ``high``, and ``max`` (the last being undocumented but
-empirically confirmed for DeepSeek V4 — ``max`` produces ~2.5× more
-thinking tokens than ``high``).
-
-This profile maps Hermes's ``xhigh`` → ``max`` to unlock DeepSeek V4's
-"Max thinking" tier through Ollama Cloud.  ``low`` / ``medium`` / ``high``
-pass through unchanged.
-
-When reasoning is explicitly disabled (``enabled: false`` or
-``effort: "none"``), ``reasoning_effort`` is omitted entirely so the
-model runs in non-thinking mode.
+Top-level ``reasoning_effort`` on /v1/chat/completions accepts none|low|medium|
+high|max (``max`` is undocumented but real — ~2.5x more thinking tokens on
+DeepSeek V4); Hermes' ``xhigh`` maps to ``max``.
 """
-
-from __future__ import annotations
 
 from typing import Any
 
+from agent.reasoning_effort import OLLAMA_CLOUD_EFFORTS, OLLAMA_CLOUD_OVERRIDES, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -27,47 +16,28 @@ class OllamaCloudProfile(ProviderProfile):
     """Ollama Cloud — maps xhigh→max via top-level reasoning_effort."""
 
     def build_api_kwargs_extras(
-        self,
-        *,
-        reasoning_config: dict | None = None,
-        **ctx: Any,
+        self, *, reasoning_config: dict | None = None, supports_reasoning: bool = False, **ctx: Any
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Emit top-level ``reasoning_effort`` for Ollama Cloud.
-
-        The ``supports_reasoning`` flag passed by the transport is
-        deliberately ignored — this profile always handles reasoning
-        when ``reasoning_config`` is present.
-        """
-        top_level: dict[str, Any] = {}
-
-        if reasoning_config and isinstance(reasoning_config, dict):
-            enabled = reasoning_config.get("enabled", True)
-            if enabled is False:
-                return {}, {}  # omit → model runs without thinking
-
-            effort = (reasoning_config.get("effort") or "").strip().lower()
-            if not effort:
-                # No explicit effort requested — let the model decide
-                return {}, {}
-            if effort == "none":
-                return {}, {}  # explicit none → suppress thinking
-            if effort in ("xhigh", "max", "ultra"):
-                top_level["reasoning_effort"] = "max"
-            elif effort in ("low", "medium", "high"):
-                top_level["reasoning_effort"] = effort
-            else:
-                # Unknown value — forward as-is, let the API decide
-                top_level["reasoning_effort"] = effort
-
-        return {}, top_level
+        """Gated on ``supports_reasoning`` (resolved from the model's /api/show
+        ``thinking`` capability) so non-thinking models get no meaningless field."""
+        if not supports_reasoning or not reasoning_config or not isinstance(reasoning_config, dict):
+            return {}, {}
+        # Ollama Cloud defaults to thinking ON and ignores extra_body.thinking
+        # (verified live); top-level reasoning_effort:"none" is the ONLY off switch.
+        effort = (reasoning_config.get("effort") or "").strip().lower()
+        if reasoning_config.get("enabled", True) is False or effort == "none":
+            return {}, {"reasoning_effort": "none"}
+        if not effort:
+            return {}, {}  # let the server default (thinking ON) apply
+        # "minimal" 400s -> clamps to low; xhigh rounds up to max. Bespoke
+        # levels outside the ladder are omitted rather than risking a 400.
+        clamped = clamp_effort(effort, OLLAMA_CLOUD_EFFORTS, OLLAMA_CLOUD_OVERRIDES)
+        return {}, {"reasoning_effort": clamped} if clamped in OLLAMA_CLOUD_EFFORTS else {}
 
 
 ollama_cloud = OllamaCloudProfile(
-    name="ollama-cloud",
-    aliases=("ollama_cloud",),
-    default_aux_model="nemotron-3-nano:30b",
-    env_vars=("OLLAMA_API_KEY",),
-    base_url="https://ollama.com/v1",
+    name="ollama-cloud", aliases=("ollama_cloud",), default_aux_model="nemotron-3-nano:30b",
+    env_vars=("OLLAMA_API_KEY",), base_url="https://ollama.com/v1",
 )
 
 register_provider(ollama_cloud)

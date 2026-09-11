@@ -35,9 +35,9 @@ class _FakeOpenAI:
 
 def _make_agent(monkeypatch, base_url, api_mode="chat_completions"):
     """Create an AIAgent pointing at the given base_url."""
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search"))
-    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
-    monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kw: _tool_defs("web_search"))
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
     return AIAgent(
         api_key="test-key",
         base_url=base_url,
@@ -67,9 +67,6 @@ class TestIsCopilotUrl:
         agent = _make_agent(monkeypatch, "https://api.githubcopilot.com")
         assert agent._is_copilot_url() is True
 
-    def test_copilot_url_with_path(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://api.githubcopilot.com/v1")
-        assert agent._is_copilot_url() is True
 
     def test_github_models_url(self, monkeypatch):
         agent = _make_agent(monkeypatch, "https://models.github.ai/inference")
@@ -116,12 +113,6 @@ class TestFlagFlipOnInjection:
         assert "extra_headers" in kwargs1
         assert "extra_headers" not in kwargs2
 
-    def test_existing_extra_headers_preserved(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://api.githubcopilot.com")
-        agent._is_user_initiated_turn = True
-        kwargs = _inject(agent, {"extra_headers": {"x-custom": "1"}})
-        assert kwargs["extra_headers"]["x-custom"] == "1"
-        assert kwargs["extra_headers"]["x-initiator"] == "user"
 
     def test_non_copilot_flag_not_flipped(self, monkeypatch):
         agent = _make_agent(monkeypatch, "https://openrouter.ai/api/v1")

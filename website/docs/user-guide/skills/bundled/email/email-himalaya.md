@@ -15,7 +15,7 @@ Himalaya CLI: IMAP/SMTP email from terminal.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/email/himalaya` |
+| Path | `skills/email\himalaya` |
 | Version | `1.1.0` |
 | Author | community |
 | License | MIT |
@@ -228,13 +228,13 @@ Note: `himalaya message write` without piped input opens `$EDITOR`. This works w
 
 ### Move/Copy Emails
 
-Move to folder:
+Move to folder (target folder comes first, then the message ID):
 
 ```bash
 himalaya message move "Archive" 42
 ```
 
-Copy to folder:
+Copy to folder (target folder comes first, then the message ID):
 
 ```bash
 himalaya message copy "Important" 42

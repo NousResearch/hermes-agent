@@ -14,6 +14,7 @@ import { resolveRequestedPathForIpc } from './hardening'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
+const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
@@ -43,7 +44,20 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  // `gitBin` is resolved inside the Electron main process from known install
+  // locations or PATH — never renderer/user input. simple-git's custom-binary
+  // validation rejects paths containing spaces (the default Windows install is
+  // `C:\Program Files\Git\cmd\git.exe`), which silently broke the Review pane.
+  // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
+  // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
+  // could resolve a repo-local git.exe).
+  return simpleGit({
+    baseDir: cwd,
+    binary: gitBin || 'git',
+    maxConcurrentProcesses: 4,
+    trimmed: false,
+    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+  })
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -240,7 +254,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       const range = scope === 'branch' ? `${base}...HEAD` : base
       const summary = await git.diffSummary([range])
 
-      const files = summary.files.map(file => ({
+      const files = summary.files.slice(0, REVIEW_FILE_CAP).map(file => ({
         path: resolveRenamePath(file.file),
         added: 'insertions' in file ? file.insertions : 0,
         removed: 'deletions' in file ? file.deletions : 0,
@@ -249,12 +263,22 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       }))
 
       // "Last turn" also surfaces files created since the baseline (untracked).
-      if (scope === 'lastTurn') {
-        const status = await git.status()
+      if (scope === 'lastTurn' && files.length < REVIEW_FILE_CAP) {
+        // Keep untracked directories compact. A recursive status can produce
+        // hundreds of thousands of rows for browser profiles, generated
+        // artifacts, or dependency trees before the response reaches the
+        // renderer.
+        const status = await git.status(['--untracked-files=normal'])
+        const knownPaths = new Set(files.map(file => file.path))
 
         for (const path of status.not_added) {
-          if (!files.some(f => f.path === path)) {
+          if (files.length >= REVIEW_FILE_CAP) {
+            break
+          }
+
+          if (!knownPaths.has(path)) {
             files.push({ path, added: 0, removed: 0, status: '?', staged: false })
+            knownPaths.add(path)
           }
         }
       }
@@ -267,7 +291,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
 
     // Default: uncommitted (staged + unstaged + untracked), one row per path.
     const [status, staged, unstaged] = await Promise.all([
-      git.status(),
+      // `normal` reports an untracked directory as one row instead of walking
+      // every descendant. The result is also capped before per-file stat/read
+      // work and before crossing the Electron IPC boundary.
+      git.status(['--untracked-files=normal']),
       git.diffSummary(['--cached']),
       git.diffSummary([])
     ])
@@ -275,7 +302,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     const stagedCounts = countsByPath(staged)
     const unstagedCounts = countsByPath(unstaged)
 
-    const files = status.files.map(file => {
+    const files = status.files.slice(0, REVIEW_FILE_CAP).map(file => {
       const filePath = resolveRenamePath(file.path)
       const sc = stagedCounts.get(filePath) || { added: 0, removed: 0 }
       const uc = unstagedCounts.get(filePath) || { added: 0, removed: 0 }
@@ -557,6 +584,182 @@ async function reviewShipInfo(repoPath, ghBin) {
   }
 }
 
+// GraphQL asks per branch, so the answer can't be crowded out the way a
+// `gh pr list` page can. Aliases let one request carry many branches; 50 keeps
+// the document well inside GitHub's node budget.
+const PR_QUERY_BRANCH_CHUNK = 50
+const PR_QUERY_BRANCH_CAP = 300
+
+const PR_NODE_FIELDS = 'number state isDraft isCrossRepository title url headRefName'
+
+function prQueryFor(owner, name, branches, numbers) {
+  const fields = [
+    ...branches.map(
+      (branch, i) =>
+        `b${i}: pullRequests(headRefName: ${JSON.stringify(branch)}, first: 5, ` +
+        `orderBy: {field: CREATED_AT, direction: DESC}) ` +
+        `{ nodes { ${PR_NODE_FIELDS} } }`
+    ),
+    // A PR recovered from a transcript is known by number, and asking for it
+    // directly also tells us its branch — so it lands in the same by-branch map
+    // as everything else.
+    ...numbers.map((number, i) => `n${i}: pullRequest(number: ${number}) { ${PR_NODE_FIELDS} }`)
+  ].join('\n')
+
+  return `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {\n${fields}\n} }`
+}
+
+const prPayload = pr => ({
+  branch: String(pr.headRefName),
+  draft: Boolean(pr.isDraft),
+  number: Number(pr.number) || 0,
+  state: String(pr.state || '').toLowerCase(),
+  title: String(pr.title || ''),
+  url: String(pr.url || '')
+})
+
+// A GitHub review-comment / issue-comment URL, as pasted from the browser.
+// Captures owner, repo, PR number, and the comment kind + id. Review threads
+// deep-link as `#discussion_r<id>`; conversation-tab comments as
+// `#issuecomment-<id>`.
+const PR_COMMENT_URL_RE =
+  /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:\/[^#\s]*)?#(discussion_r|issuecomment-)(\d+)$/
+
+function parsePrCommentUrl(url) {
+  const match = PR_COMMENT_URL_RE.exec(String(url || '').trim())
+
+  if (!match) {
+    return null
+  }
+
+  const [, owner, repo, prNumber, kind, id] = match
+
+  return { id, kind: kind === 'discussion_r' ? 'review' : 'issue', owner, prNumber: Number(prNumber), repo }
+}
+
+// Resolve a pasted PR comment URL into the structured context the composer
+// attaches: author, body, and — for review comments — the file, line range,
+// and the diff hunk the comment anchors to. Reads only; any failure (gh
+// missing, unauthenticated, private repo, deleted comment) yields null and the
+// paste falls back to being a plain URL.
+async function reviewFetchPrComment(repoPath, ghBin, url) {
+  const parsed = parsePrCommentUrl(url)
+
+  if (!parsed) {
+    return null
+  }
+
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review comment fetch' })
+  } catch {
+    return null
+  }
+
+  const endpoint =
+    parsed.kind === 'review'
+      ? `repos/${parsed.owner}/${parsed.repo}/pulls/comments/${parsed.id}`
+      : `repos/${parsed.owner}/${parsed.repo}/issues/comments/${parsed.id}`
+
+  const res = await runGh(['api', endpoint], cwd, ghBin)
+
+  if (!res.ok) {
+    return null
+  }
+
+  try {
+    const data = JSON.parse(res.stdout)
+
+    return {
+      author: String(data?.user?.login || ''),
+      body: String(data?.body || ''),
+      diffHunk: parsed.kind === 'review' ? String(data?.diff_hunk || '') : '',
+      kind: parsed.kind,
+      // `line` is the comment's anchor in the current diff; null once the code
+      // moved on (outdated comment) — `original_line` still says where it was.
+      line: data?.line ?? data?.original_line ?? null,
+      path: parsed.kind === 'review' ? String(data?.path || '') : '',
+      prNumber: parsed.prNumber,
+      startLine: data?.start_line ?? data?.original_start_line ?? null,
+      url: String(data?.html_url || url)
+    }
+  } catch {
+    return null
+  }
+}
+
+// The PR for each of the given branches, keyed by branch. Asks GitHub about the
+// branches we actually have sessions on rather than listing the repo's newest
+// PRs and hoping ours are in the page — on a busy repo they are not. One
+// GraphQL request per 50 branches; reads only.
+async function reviewPrList(repoPath, ghBin, branches, numbers) {
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review PR list' })
+  } catch {
+    return { ghReady: false, prs: [] }
+  }
+
+  const wanted = [...new Set((branches || []).filter(Boolean).map(String))].slice(0, PR_QUERY_BRANCH_CAP)
+  const byNumber = [...new Set((numbers || []).map(Number).filter(Boolean))].slice(0, PR_QUERY_BRANCH_CAP)
+
+  if (wanted.length === 0 && byNumber.length === 0) {
+    return { ghReady: false, prs: [] }
+  }
+
+  const repo = await runGh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], cwd, ghBin)
+  const [owner, name] = repo.stdout.trim().split('/')
+
+  if (!repo.ok || !owner || !name) {
+    // gh missing, unauthenticated, or no GitHub remote — all "nothing to badge".
+    return { ghReady: false, prs: [] }
+  }
+
+  const prs = []
+  const chunks = []
+
+  for (let start = 0; start < wanted.length; start += PR_QUERY_BRANCH_CHUNK) {
+    chunks.push([wanted.slice(start, start + PR_QUERY_BRANCH_CHUNK), []])
+  }
+
+  for (let start = 0; start < byNumber.length; start += PR_QUERY_BRANCH_CHUNK) {
+    chunks.push([[], byNumber.slice(start, start + PR_QUERY_BRANCH_CHUNK)])
+  }
+
+  for (const [branchChunk, numberChunk] of chunks) {
+    const query = prQueryFor(owner, name, branchChunk, numberChunk)
+    const res = await runGh(['api', 'graphql', '-f', `query=${query}`], cwd, ghBin)
+
+    if (!res.ok) {
+      continue
+    }
+
+    try {
+      const repository = JSON.parse(res.stdout)?.data?.repository ?? {}
+
+      for (const key of Object.keys(repository)) {
+        // Asked for by number, so it's ours by construction — a fork PR can't
+        // be recovered from our own transcript. Asked for by branch, it has to
+        // prove it: fork PRs share our branch namespace, and a contributor's
+        // `main` is how a session on trunk ends up badged with a stranger's PR.
+        const pr = key.startsWith('n')
+          ? repository[key]
+          : (repository[key]?.nodes ?? []).find(node => node && !node.isCrossRepository)
+
+        if (pr?.headRefName) {
+          prs.push(prPayload(pr))
+        }
+      }
+    } catch {
+      // A malformed chunk drops its branches; the rest still resolve.
+    }
+  }
+
+  return { ghReady: true, prs }
+}
+
 // Create a PR for the current branch (pushing first so gh has a remote ref),
 // letting gh fill title/body from the commits. Returns the new PR url.
 async function reviewCreatePr(repoPath, gitBin, ghBin) {
@@ -610,7 +813,11 @@ async function repoStatus(repoPath, gitBin) {
   let status
 
   try {
-    status = await git.status()
+    // The coding rail needs compact change truth, not every generated file.
+    // `simple-git` defaults bare `-u` to recursive `all`, which can make a
+    // generated workspace consume gigabytes before the 200-row UI cap is
+    // applied. `normal` reports each untracked directory as one entry.
+    status = await git.status(['--untracked-files=normal'])
   } catch {
     // Not a repo / git unavailable / remote backend.
     return null
@@ -652,11 +859,10 @@ async function repoStatus(repoPath, gitBin) {
   }
 
   // `git diff HEAD` ignores untracked files, so a turn that only creates new
-  // files (the common case — a fresh module, a demo dir) showed +0 in the rail
-  // while the review pane counted them. Fold untracked insertions into `added`
-  // so the rail matches reality. Bounded (size cap + concurrency) like the
-  // review tree; only the capped file slice is counted so a huge untracked tree
-  // can't stall the probe.
+  // files (the common case — a fresh module) showed +0 in the rail while the
+  // review pane counted them. Fold top-level untracked file insertions into
+  // `added`; directories reported by the compact `normal` scan intentionally
+  // remain at zero rather than recursively walking their contents.
   try {
     const untracked = status.not_added.slice(0, 500)
 
@@ -677,13 +883,17 @@ async function repoStatus(repoPath, gitBin) {
 export {
   branchBase,
   fileDiffVsHead,
+  gitFor,
   repoStatus,
   resolveRenamePath,
+  REVIEW_FILE_CAP,
   reviewCommit,
   reviewCommitContext,
   reviewCreatePr,
   reviewDiff,
+  reviewFetchPrComment,
   reviewList,
+  reviewPrList,
   reviewPush,
   reviewRevert,
   reviewRevParse,

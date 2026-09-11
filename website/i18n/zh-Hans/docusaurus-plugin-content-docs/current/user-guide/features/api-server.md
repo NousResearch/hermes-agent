@@ -352,10 +352,20 @@ API 服务器提供对 hermes-agent 工具集的完整访问权限，**包括终
 
 ### config.yaml
 
+相同的设置也可以写在 `~/.hermes/config.yaml` 中嵌套的 `gateway.api_server:` 小节下：
+
 ```yaml
-# 暂不支持——请使用环境变量。
-# config.yaml 支持将在未来版本中推出。
+gateway:
+  api_server:
+    enabled: true
+    port: 8642
+    host: 127.0.0.1
+    key: your-secret-key
+    cors_origins: http://localhost:3000
+    model_name: my-hermes
 ```
+
+`port`、`key`、`host`、`cors_origins` 和 `model_name` 会自动桥接到该平台的 `extra` 设置中，行为与对应的 `API_SERVER_*` 环境变量完全一致。环境变量优先于 `config.yaml` 中的值。该配置块同样可以放在 `gateway.platforms.api_server:` 或顶层 `platforms.api_server:` 小节下。
 
 ## 安全响应头
 

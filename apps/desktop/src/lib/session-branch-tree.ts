@@ -5,10 +5,23 @@ export interface SidebarSessionEntry {
   session: SessionInfo
 }
 
+export interface FlattenSessionsOptions {
+  /**
+   * Keep the input root order instead of re-sorting by group recency.
+   * Use for hand-ordered surfaces (pinned ids, manual recents drag) so a
+   * turn completing can't float a row. Branch children still nest under
+   * their parent; sibling branches stay ordered by their own recency.
+   */
+  preserveOrder?: boolean
+}
+
 const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
 
 /** Flat list with branch/fork sessions nested visually under their parent. */
-export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): SidebarSessionEntry[] {
+export function flattenSessionsWithBranches(
+  sessions: readonly SessionInfo[],
+  options: FlattenSessionsOptions = {}
+): SidebarSessionEntry[] {
   if (sessions.length < 2) {
     return sessions.map(session => ({ session }))
   }
@@ -53,6 +66,7 @@ export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): S
   // A group sorts by its freshest member, so activity on any branch lifts the
   // whole parent→branches cluster together instead of stranding the parent at
   // its own stale timestamp. Memoized — each subtree is folded at most once.
+  // Skipped when preserveOrder is set: the caller already chose positions.
   const groupRecencyMemo = new Map<string, number>()
 
   const groupRecency = (session: SessionInfo): number => {
@@ -92,11 +106,13 @@ export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): S
     children?.forEach((child, index) => emit(child, index === children.length - 1 ? '└─ ' : '├─ '))
   }
 
-  sessions
-    .filter(session => !nestedIds.has(session.id))
-    .map((session, index) => ({ index, session }))
-    .sort((a, b) => groupRecency(b.session) - groupRecency(a.session) || a.index - b.index)
-    .forEach(({ session }) => emit(session))
+  const roots = sessions.filter(session => !nestedIds.has(session.id)).map((session, index) => ({ index, session }))
+
+  if (!options.preserveOrder) {
+    roots.sort((a, b) => groupRecency(b.session) - groupRecency(a.session) || a.index - b.index)
+  }
+
+  roots.forEach(({ session }) => emit(session))
 
   for (const session of sessions) {
     if (!seen.has(session.id)) {

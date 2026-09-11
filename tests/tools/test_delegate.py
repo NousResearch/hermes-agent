@@ -21,6 +21,8 @@ from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
+    _build_children,
+    _get_child_toolsets,
     _get_max_concurrent_children,
     _load_config,
     delegate_task,
@@ -30,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_child_toolsets,
 )
 from hermes_state import SessionDB
 
@@ -146,6 +149,73 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("Fix the tests", prompt)
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
+
+
+class TestConfiguredChildToolsets(unittest.TestCase):
+    def test_missing_and_null_config_preserve_inheritance(self):
+        with patch("tools.delegate_tool_config._cfg", return_value={}):
+            self.assertIsNone(_get_child_toolsets())
+        with patch("tools.delegate_tool_config._cfg", return_value={"child_toolsets": None}):
+            self.assertIsNone(_get_child_toolsets())
+
+    def test_explicit_profile_is_normalized_and_reaches_children(self):
+        with patch(
+            "tools.delegate_tool_config._cfg",
+            return_value={"child_toolsets": [" terminal ", "file", "terminal"]},
+        ):
+            self.assertEqual(_get_child_toolsets(), ["terminal", "file"])
+
+        child = MagicMock()
+        credentials = {
+            "model": "child-model", "provider": "custom", "base_url": "",
+            "api_key": "test-key", "api_mode": "chat_completions",
+            "request_overrides": {}, "command": None, "args": None,
+        }
+        with (
+            patch("tools.delegate_tool._get_child_toolsets", return_value=["terminal", "file"]),
+            patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=child) as build,
+        ):
+            children, error = _build_children(
+                [{"goal": "Inspect files", "context": None, "role": "leaf"}], [None],
+                credentials, top_role="leaf", max_iterations=1,
+                parent_agent=_make_mock_parent(), routing_cfg={}, live_deleg_id=None,
+                live_writers=[None],
+            )
+        self.assertIsNone(error)
+        self.assertEqual(len(children), 1)
+        self.assertEqual(build.call_args.kwargs["toolsets"], ["terminal", "file"])
+
+    def test_empty_profile_resolves_to_zero_tools(self):
+        parent = types.SimpleNamespace(enabled_toolsets=["terminal", "file"], disabled_toolsets=[])
+        with patch("tools.delegate_tool_toolsets._get_inherit_mcp_toolsets", return_value=False):
+            enabled, disabled = _resolve_child_toolsets(parent, [], "leaf")
+        self.assertEqual(enabled, [])
+        self.assertIn("delegation", disabled)
+
+    def test_empty_profile_keeps_orchestrator_at_zero_tools(self):
+        parent = types.SimpleNamespace(enabled_toolsets=["terminal", "file"], disabled_toolsets=[])
+        with patch("tools.delegate_tool_toolsets._get_inherit_mcp_toolsets", return_value=False):
+            enabled, _ = _resolve_child_toolsets(parent, [], "orchestrator")
+        self.assertEqual(enabled, [])
+
+    def test_inherited_orchestrator_still_receives_delegation(self):
+        parent = types.SimpleNamespace(enabled_toolsets=["terminal", "file"], disabled_toolsets=[])
+        with patch("tools.delegate_tool_toolsets._get_inherit_mcp_toolsets", return_value=False):
+            enabled, _ = _resolve_child_toolsets(parent, None, "orchestrator")
+        self.assertIn("terminal", enabled)
+        self.assertIn("delegation", enabled)
+
+    def test_invalid_profile_values_fail_closed(self):
+        with patch("tools.delegate_tool_config._cfg", return_value={"child_toolsets": "terminal"}):
+            self.assertEqual(_get_child_toolsets(), [])
+        with patch("tools.delegate_tool_config._cfg", return_value={"child_toolsets": ["terminal", 1]}):
+            self.assertEqual(_get_child_toolsets(), [])
+
+    def test_schema_never_exposes_toolsets(self):
+        properties = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        task_properties = properties["tasks"]["items"]["properties"]
+        self.assertNotIn("toolsets", properties)
+        self.assertNotIn("toolsets", task_properties)
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):

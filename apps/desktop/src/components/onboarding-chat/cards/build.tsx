@@ -7,7 +7,7 @@
 
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
@@ -176,33 +176,33 @@ export function ProgressCard({ attrs, locked }: CardProps) {
   const messages = useStore(view.$messages)
   const messageId = useAuiState(state => state.message.id)
   const title = (attrs.title ?? '').trim() || 'Working on it'
-  const index = messages.findIndex(message => message.id === messageId)
-  const previous = index < 0 ? [] : messages.slice(0, index)
+  const steps = useMemo(() => {
+    const index = messages.findIndex(message => message.id === messageId)
+    const previous = index < 0 ? [] : messages.slice(0, index)
 
-  const steps = previous.flatMap(message => {
-    const directives = message.parts.flatMap(part =>
-      part.type === 'text' ? (segmentTranscriptDirectives(part.text) ?? []) : []
-    )
-
-    const progress = directives
-      .filter(
-        segment =>
-          segment.kind === 'directive' &&
-          segment.directive.name === 'onboarding' &&
-          segment.directive.attrs.step === 'progress'
+    return previous.flatMap(message => {
+      const directives = message.parts.flatMap(part =>
+        part.type === 'text' ? (segmentTranscriptDirectives(part.text) ?? []) : []
       )
-      .at(-1)
 
-    return progress?.kind === 'directive'
-      ? [{ id: message.id, title: progress.directive.attrs.title?.trim() || 'Working on it' }]
-      : []
-  })
+      const progress = directives
+        .filter(
+          segment =>
+            segment.kind === 'directive' &&
+            segment.directive.name === 'onboarding' &&
+            segment.directive.attrs.step === 'progress'
+        )
+        .at(-1)
 
-  steps.push({ id: messageId, title })
+      return progress?.kind === 'directive'
+        ? [{ id: message.id, title: progress.directive.attrs.title?.trim() || 'Working on it' }]
+        : []
+    })
+  }, [messages, messageId])
 
   return (
     <div className="my-3 grid max-w-md gap-1.5" data-onboarding-card>
-      {steps.map(step => {
+      {[...steps, { id: messageId, title }].map(step => {
         const current = step.id === messageId
 
         return (

@@ -1,13 +1,5 @@
-/**
- * Onboarding presence — one tiny dependency-free flag the first-run surfaces
- * raise while they own the screen (intro cinematic and guided solo chat).
- *
- * Exists so leaf infrastructure (the update toast, future ambient
- * notifications) can ask "is onboarding on screen?" WITHOUT importing the
- * feature stores — updates.ts pulling intro-reveal/assembly
- * dragged their whole import chains into every test that mocks around it.
- * Surfaces push state in; consumers read a boolean out.
- */
+/** Keeps ambient UI from covering onboarding without importing the
+ *  intro-reveal and guided-chat dependency chains into leaf stores. */
 
 import { atom } from 'nanostores'
 
@@ -35,12 +27,10 @@ export function setOnboardingSurfaceActive(surface: OnboardingSurface, active: b
   $onboardingSurfaces.set(next.size === 0 ? EMPTY : next)
 }
 
-/** True while any first-run surface owns the screen. */
 export function onboardingSurfaceActive(): boolean {
   return $onboardingSurfaces.get().size > 0
 }
 
-/** Hard reset for tests. */
 export function resetOnboardingPresenceForTests(): void {
   $onboardingSurfaces.set(EMPTY)
 }

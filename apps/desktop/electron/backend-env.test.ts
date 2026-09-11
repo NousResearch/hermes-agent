@@ -189,3 +189,36 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
 test('appendUniquePathEntries drops empty entries and keeps first occurrence', () => {
   assert.equal(appendUniquePathEntries([':/a::/b', ['/a', '/c']], { delimiter: ':' }), '/a:/b:/c')
 })
+
+test('appendUniquePathEntries is case-insensitive and trailing-separator insensitive (issue #108508)', () => {
+  // Trailing separator variants of the same dir must dedupe (was: produced
+  // 4 trailing-backslash duplicates in this user's Windows registry PATH).
+  assert.equal(
+    appendUniquePathEntries(
+      ['C:\\Foo', 'C:\\Foo\\', 'C:\\Foo\\\\', ['C:\\foo', 'C:\\FOO']],
+      { delimiter: ';' }
+    ),
+    'C:\\Foo'
+  )
+
+  // Mixed-case: only first occurrence wins, regardless of case
+  assert.equal(
+    appendUniquePathEntries(
+      ['C:\\Program Files\\Git\\bin', 'c:\\program files\\git\\bin', 'C:\\Program Files\\Git\\bin\\'],
+      { delimiter: ';' }
+    ),
+    'C:\\Program Files\\Git\\bin'
+  )
+
+  // Non-duplicate entries still pass through
+  assert.equal(
+    appendUniquePathEntries(['C:\\A', 'C:\\B', 'c:\\a'], { delimiter: ';' }),
+    'C:\\A;C:\\B'
+  )
+
+  // Empty entries are still dropped
+  assert.equal(
+    appendUniquePathEntries(['', 'C:\\X', '', 'C:\\x'], { delimiter: ';' }),
+    'C:\\X'
+  )
+})

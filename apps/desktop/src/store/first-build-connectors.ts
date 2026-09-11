@@ -23,13 +23,16 @@ export interface FirstBuildConnectorState {
   toolCallId: string
   rows: FirstBuildConnectorRow[]
   started: boolean
+  /** The "[setup] links opened" note, held until the session is idle. A submit
+   *  while the model's turn runs is rejected by the gateway, and the model
+   *  usually calls wait in that same turn, so the note is a fallback cue. */
+  pendingNote?: string
 }
 
 export const $firstBuildConnections = map<Record<string, FirstBuildConnectorState>>({})
 
 interface OpenLinksDeps {
   open?: (url: string) => Promise<void>
-  submit: (text: string) => void
 }
 
 export async function openFirstBuildLinks(storedId: string, part: FirstBuildConnectorPart, deps: OpenLinksDeps) {
@@ -93,8 +96,33 @@ export async function openFirstBuildLinks(storedId: string, part: FirstBuildConn
   const outcomes = await Promise.allSettled(links.map(link => open(link.url)))
   const opened = links.filter((_link, index) => outcomes[index].status === 'fulfilled')
 
-  if (opened.length) {
-    deps.submit(`[setup] links opened for ${opened.map(link => link.connector).join(', ')}`)
+  const state = $firstBuildConnections.get()[storedId]
+
+  if (opened.length && state?.toolCallId === part.toolCallId) {
+    $firstBuildConnections.setKey(storedId, {
+      ...state,
+      pendingNote: `[setup] links opened for ${opened.map(link => link.connector).join(', ')}`
+    })
+  }
+}
+
+/** Deliver the held note once the session is idle, if the connect that minted
+ *  the links is still the newest connector part. A newer part means the model
+ *  already moved on (it called wait itself), and the note would only confuse it. */
+export function flushFirstBuildNote(
+  storedId: string,
+  newestToolCallId: string | undefined,
+  busy: boolean,
+  submit: (text: string) => boolean
+): void {
+  const state = $firstBuildConnections.get()[storedId]
+
+  if (!state?.pendingNote || busy) {
+    return
+  }
+
+  if (newestToolCallId !== state.toolCallId || submit(state.pendingNote)) {
+    $firstBuildConnections.setKey(storedId, { ...state, pendingNote: undefined })
   }
 }
 

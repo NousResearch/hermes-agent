@@ -2,12 +2,14 @@ import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
+import { useSessionView } from '@/app/chat/session-view'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
-import { connectorTitle } from '@/lib/connector-tools'
+import { connectorTitle, latestConnectorPart } from '@/lib/connector-tools'
 import {
   $firstBuildConnections,
   type FirstBuildConnectorPart,
+  flushFirstBuildNote,
   openFirstBuildLinks,
   watchFirstBuildWait
 } from '@/store/first-build-connectors'
@@ -31,6 +33,12 @@ export function FirstBuildConnectorOffer({
   target
 }: FirstBuildConnectorOfferProps) {
   const connections = useStore($firstBuildConnections, { keys: [storedId] })
+  const view = useSessionView()
+  const busy = useStore(view.$busy)
+  const messages = useStore(view.$messages)
+  const newest = latestConnectorPart(messages)
+  const newestToolCallId = newest?.type === 'tool-call' ? newest.toolCallId : undefined
+  const pendingNote = connections[storedId]?.pendingNote
   const { t } = useI18n()
   const { toolCallId, toolName, args, result } = part
 
@@ -38,12 +46,15 @@ export function FirstBuildConnectorOffer({
     void openFirstBuildLinks(
       storedId,
       { toolCallId, toolName, args, result },
-      {
-        open: window.hermesDesktop?.openExternal ? url => window.hermesDesktop.openExternal(url) : undefined,
-        submit: text => void requestComposerSubmit(text, { displayKind: 'hidden', target })
-      }
+      { open: window.hermesDesktop?.openExternal ? url => window.hermesDesktop.openExternal(url) : undefined }
     )
-  }, [storedId, toolCallId, toolName, args, result, target])
+  }, [storedId, toolCallId, toolName, args, result])
+
+  useEffect(() => {
+    flushFirstBuildNote(storedId, newestToolCallId, busy, text =>
+      requestComposerSubmit(text, { displayKind: 'hidden', target })
+    )
+  }, [storedId, newestToolCallId, busy, pendingNote, target])
 
   useEffect(
     () =>

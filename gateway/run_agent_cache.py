@@ -383,19 +383,21 @@ class GatewayAgentCacheMixin:
             if interrupt_event is not None:
                 interrupt_event._hermes_run_generation = int(generation)
 
-    async def _interrupt_and_clear_session(
-        self, session_key: str, source: SessionSource, *, interrupt_reason: str,
-        invalidation_reason: str, release_running_state: bool = True,
-    ) -> None:
-        """Interrupt the current run and clear queued session state consistently."""
+    def _interrupt_running_turn(self, session_key: str, *, interrupt_reason: str, invalidation_reason: str) -> int:
+        """Sync core shared by /stop, /new and eviction: request a hard interrupt on the in-flight
+        agent, invalidate its run generation, and reap the tool processes that turn spawned.
+        Returns the post-bump generation."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
-        if not session_key:
-            return
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
         _process_task_id, _process_baseline = "", None
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            request_hard_interrupt(running_agent, interrupt_reason)
+            try:
+                request_hard_interrupt(running_agent, interrupt_reason)
+            except Exception:
+                # A raising interrupt implementation must not leave the slot unroutable: the
+                # generation bump and release below are the cleanup that matters.
+                logger.warning("Failed to interrupt running agent for %s; continuing", session_key, exc_info=True)
             _process_task_id = getattr(running_agent, "_gateway_turn_process_task_id", "")
             _process_baseline = getattr(running_agent, "_gateway_turn_process_baseline", None)
         # Bump the generation BEFORE scheduling the reap thread and capture the post-bump value:
@@ -414,6 +416,19 @@ class GatewayAgentCacheMixin:
                 name=f"gateway-turn-reaper-{_process_task_id[:12]}",
                 daemon=True,
             ).start()
+        return _generation_at_interrupt
+
+    async def _interrupt_and_clear_session(
+        self, session_key: str, source: SessionSource, *, interrupt_reason: str,
+        invalidation_reason: str, release_running_state: bool = True,
+    ) -> None:
+        """Interrupt the current run and clear queued session state consistently."""
+        if not session_key:
+            return
+        state = self._peek_session_state(session_key)
+        self._interrupt_running_turn(
+            session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
+        )
         adapter = self._adapter_for_source(source)
         interrupt_session_activity = getattr(type(adapter), "interrupt_session_activity", None)
         if adapter and callable(interrupt_session_activity):

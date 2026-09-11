@@ -682,6 +682,19 @@ PLATFORM_HINTS = {
 
 Not all platforms need hints — only add one if the agent's behavior should differ.
 
+### 9b. Channel Capabilities entry
+
+**`gateway/channel_capabilities.py`** — Add a matching entry to `CHANNEL_CAPABILITIES`
+describing the platform's interaction mode (`sync` / `async` / `autonomous`),
+response style, length / format limits, and any media-delivery summary or
+actions. The gateway injects this uniformly into the session-context prompt
+right after the `**Source:**` line, so every channel — including webhook /
+callback surfaces — gets consistent behavioral guidance instead of relying
+solely on `PLATFORM_HINTS`. The block is keyed by `src.platform.value` (and
+optionally `src.chat_type`); both are already hashed in the prompt-cache
+change key, so a static entry is pin-safe. Keep `media`/`actions` empty when
+you genuinely don't know what the adapter supports — never invent capability.
+
 ### 10. Tests
 
 Create `tests/gateway/test_newplat.py` covering:

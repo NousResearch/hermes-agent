@@ -140,6 +140,15 @@ example "you are on a terminal, avoid Markdown." The built-in defaults
 live in `PLATFORM_HINTS` (`agent/system_prompt.py`); plugin-provided
 platforms supply theirs through the platform registry.
 
+Complementing per-surface `PLATFORM_HINTS` is the **Channel Capabilities** block
+(`gateway/channel_capabilities.py`), a uniform behavioral-guidance block
+(interaction mode, response style, length/format limits, media summary,
+actions) injected into the gateway session-context prompt immediately
+after `**Source:**`. It covers every `Platform` member (built-in and
+bundled-plugin) including webhook / callback surfaces that `PLATFORM_HINTS`
+doesn't reach, and it is pin-safe because it is keyed only by
+`src.platform.value` (already in the change key).
+
 An administrator can append to or replace a single platform's hint from
 `config.yaml` via the top-level `platform_hints` key, without touching
 any other platform:

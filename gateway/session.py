@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
+from .channel_capabilities import channel_capabilities_block
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
@@ -390,6 +391,14 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             chat = src.chat_name or _chat_label(src.chat_id)
             desc = SessionSource._describe(src.chat_type, user, chat)
         lines.append(f"**Source:** {platform_name} ({_format_untrusted_prompt_value(desc)})")
+
+    # Uniform channel-awareness injection (issue #45122, Phase 1): a structured
+    # behavioral guidance block keyed by src.platform.value (and chat_type).
+    # Both inputs are already in _ephemeral_change_key, so the block is
+    # pin-safe (no env/config/adapter state read).
+    cap_block = channel_capabilities_block(src.platform.value, src.chat_type)
+    if cap_block:
+        lines.append(cap_block)
 
     if src.chat_topic:
         lines.append(f"**Channel Topic:** {_format_untrusted_prompt_value(src.chat_topic)}")

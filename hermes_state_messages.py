@@ -1287,6 +1287,31 @@ class SessionMessagesMixin:
         parent_id = session.get("parent_session_id")
         return parent_id in markers if parent_id else any(m is not None for m in markers)
 
+    def _is_lineage_boundary_child_row(self, session: Dict[str, Any]) -> bool:
+        """True for a parent-bound branch, delegate, reset, or tool edge.
+
+        Compression continuations inherit ``model_config`` verbatim, so a marker for an older
+        parent is not a boundary on the current edge. Malformed config does not invent a
+        boundary.
+        """
+        if session.get("source") == "tool":
+            return True
+        cfg = session.get("model_config")
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except json.JSONDecodeError:
+                return False
+        if not isinstance(cfg, dict):
+            return False
+        parent_id = session.get("parent_session_id")
+        markers = (
+            cfg.get("_branched_from"),
+            cfg.get("_delegate_from"),
+            cfg.get("_reset_from"),
+        )
+        return parent_id in markers if parent_id else any(m is not None for m in markers)
+
     def is_explicit_fork_child(self, session_id: str) -> bool:
         """Read-only :meth:`_is_explicit_fork_child_row`; a missing row is not a fork (prompt_cache_scope keeps
         a declared conversation key from crossing the fork boundary)."""

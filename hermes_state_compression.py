@@ -505,7 +505,7 @@ class SessionCompressionMixin:
         seen = {session_id}
         while current:
             parent_id = current.get("parent_session_id")
-            if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current):
+            if not parent_id or parent_id in seen or self._is_lineage_boundary_child_row(current):
                 break
             parent = _row(parent_id)
             if not parent or parent.get("end_reason") != "compression":
@@ -680,15 +680,7 @@ class SessionCompressionMixin:
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
-        if not parent_id or self._is_explicit_fork_child_row(child):
-            return False
-        cfg = child.get("model_config")
-        if isinstance(cfg, str):
-            try:
-                cfg = json.loads(cfg)
-            except json.JSONDecodeError:
-                cfg = None
-        if isinstance(cfg, dict) and cfg.get("_reset_from") == parent_id:
+        if not parent_id or self._is_lineage_boundary_child_row(child):
             return False
         parent = self.get_session(parent_id)
         return bool(parent and parent.get("end_reason") == "compression")
@@ -696,7 +688,7 @@ class SessionCompressionMixin:
     def get_compression_lineage(self, session_id: str) -> List[str]:
         """Return compression ancestors through tip in chronological order."""
         session = self.get_session(session_id)
-        if not session or self._is_explicit_fork_child_row(session):
+        if not session or self._is_lineage_boundary_child_row(session):
             return [session_id] if session else []
         root = session
         ancestors = {root["id"]}

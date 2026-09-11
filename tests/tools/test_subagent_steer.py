@@ -38,6 +38,7 @@ def _with_registered(
     owner_session_id: str | None = None,
     owner_transport=None,
     owner_session_record=None,
+    owner_agent_session_id: str | None = None,
 ) -> None:
     _register_subagent(
         {
@@ -50,6 +51,7 @@ def _with_registered(
             "owner_session_id": owner_session_id,
             "owner_transport": owner_transport,
             "owner_session_record": owner_session_record,
+            "owner_agent_session_id": owner_agent_session_id,
         }
     )
 
@@ -136,6 +138,7 @@ def test_status_snapshot_never_leaks_owner_or_lifecycle_metadata():
         owner_session_id="private-owner",
         owner_transport=owner_transport,
         owner_session_record=owner_session_record,
+        owner_agent_session_id="durable-owner",
     )
     try:
         snapshot = next(
@@ -144,6 +147,7 @@ def test_status_snapshot_never_leaks_owner_or_lifecycle_metadata():
             if item["subagent_id"] == "sid-private-metadata"
         )
         assert snapshot["status"] == "running"
+        assert snapshot["owner_agent_session_id"] == "durable-owner"
         assert "agent" not in snapshot
         assert "owner_session_id" not in snapshot
         assert "owner_transport" not in snapshot

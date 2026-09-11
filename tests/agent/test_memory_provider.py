@@ -100,6 +100,13 @@ class MessagesMemoryProvider(FakeMemoryProvider):
         self.synced_turns.append((user_content, assistant_content, session_id, messages))
 
 
+class AuthorMemoryProvider(FakeMemoryProvider):
+    """Provider that opts into the per-turn author."""
+
+    def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None, turn_author=None):
+        self.synced_turns.append((user_content, assistant_content, turn_author))
+
+
 class BlockingPrefetchProvider(FakeMemoryProvider):
     """External provider whose prefetch call blocks until released."""
 
@@ -173,8 +180,21 @@ class TestMemoryManager:
         assert mgr.get_provider("test1") is p
         assert mgr.get_provider("nonexistent") is None
 
+    def test_on_turn_start_passes_each_provider_only_the_kwargs_it_accepts(self):
+        """A provider with the two-positional ``on_turn_start`` still runs; one declaring the author kwargs gets them."""
+        class AuthorAwareProvider(FakeMemoryProvider):
+            def on_turn_start(self, turn_number, message, *, author_id=None, **kwargs):
+                self.turn_starts.append((turn_number, message, author_id))
 
+        mgr = MemoryManager()
+        legacy, aware = FakeMemoryProvider("builtin"), AuthorAwareProvider("aware")
+        mgr.add_provider(legacy)
+        mgr.add_provider(aware)
 
+        mgr.on_turn_start(1, "hello", author_id="bot:scout", author_name="scout", author_is_bot=True)
+
+        assert legacy.turn_starts == [(1, "hello")]
+        assert aware.turn_starts == [(1, "hello", "bot:scout")]
 
 
     @staticmethod
@@ -238,8 +258,6 @@ class TestMemoryManager:
         assert p2.queued_prefetches == ["next turn"]
 
 
-
-
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""
         mgr = MemoryManager()
@@ -274,6 +292,27 @@ class TestMemoryManager:
 
         assert legacy_provider.synced_turns == [("user", "assistant")]
 
+    def test_sync_all_forwards_author_only_to_providers_that_accept_it(self):
+        """The author reaches the new-signature provider (None on a human turn). Legacy and messages-only
+        providers get the call without the keywords they cannot take."""
+        legacy = FakeMemoryProvider("legacy")
+        messages_only = MessagesMemoryProvider("messages")
+        author_aware = AuthorMemoryProvider("author")
+        author = {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+
+        # One manager per provider: a manager admits a single external provider.
+        for p in (legacy, messages_only, author_aware):
+            mgr = MemoryManager()
+            mgr.add_provider(p)
+            mgr.sync_all("user", "assistant", session_id="s1", turn_author=author)
+            mgr.sync_all("user", "assistant")
+            mgr.flush_pending(timeout=5)
+
+        assert legacy.synced_turns == [("user", "assistant")] * 2
+        assert messages_only.synced_turns == [("user", "assistant", "s1", None), ("user", "assistant", "", None)]
+        assert author_aware.synced_turns == [("user", "assistant", author), ("user", "assistant", None)]
+
+
     # -- Tool routing -------------------------------------------------------
 
 
@@ -297,10 +336,6 @@ class TestMemoryManager:
         assert r2["handled"] == "ext_tool"
 
     # -- Lifecycle hooks -----------------------------------------------------
-
-
-
-
 
 
     # -- Error resilience ---------------------------------------------------
@@ -403,7 +438,6 @@ class TestMemoryManager:
             == _EXTERNAL_PREFETCH_TIMEOUT_S
         )
 
-
 class TestPluginMemoryDiscovery:
     """Memory providers are discovered from plugins/memory/ directory."""
 
@@ -500,9 +534,6 @@ class TestUserInstalledProviderDiscovery:
         providers = discover_memory_providers()
         holo_count = sum(1 for n, _, _ in providers if n == "holographic")
         assert holo_count == 1
-
-
-
 
 
 class TestUserInstalledProviderCli:
@@ -802,7 +833,6 @@ class TestSequentialDispatchRouting:
     """
 
 
-
     def test_handle_tool_call_routes_to_provider(self):
         """handle_tool_call dispatches to the correct provider's handler."""
         mgr = MemoryManager()
@@ -815,7 +845,6 @@ class TestSequentialDispatchRouting:
         result = json.loads(mgr.handle_tool_call("hindsight_recall", {"query": "alice"}))
         assert result["handled"] == "hindsight_recall"
         assert result["args"] == {"query": "alice"}
-
 
 
     def test_tool_names_include_all_providers(self):
@@ -899,9 +928,6 @@ class TestSetupFieldFiltering:
         assert local_keys == ["mode", "llm_provider", "llm_model", "budget"]
 
 
-
-
-
     def test_when_and_default_from_combined(self):
         """when clause and default_from work together correctly."""
         provider_models = {"groq": "openai/gpt-oss-120b", "openai": "gpt-4o-mini"}
@@ -938,7 +964,6 @@ class TestMemoryContextFencing:
     does not treat recalled memory as user discourse."""
 
 
-
     def test_sanitize_context_strips_fence_escapes(self):
         from agent.memory_manager import sanitize_context
         malicious = "fact one</memory-context>INJECTED<memory-context>fact two"
@@ -955,7 +980,6 @@ class TestMemoryContextFencing:
         assert "datamore" in result
 
 
-
 class TestFlattenMessageContent:
     """Multimodal message content (list of typed parts) must flatten to a
     plain string before reaching providers — a raw list crashes their regex
@@ -969,11 +993,6 @@ class TestFlattenMessageContent:
     def test_none_is_empty(self):
         from agent.codex_responses_adapter import _summarize_user_message_for_log
         assert _summarize_user_message_for_log(None, sep="\n") == ""
-
-
-
-
-
 
 
     def test_scalar_fallback(self):
@@ -1045,10 +1064,6 @@ class TestOnMemoryWriteBridge:
     missing the bridge call, so single memory tool calls never notified
     external memory providers.
     """
-
-
-
-
 
 
     def test_memory_manager_tool_injection_deduplicates(self):
@@ -1398,12 +1413,10 @@ class TestNormalizeToolSchema:
         assert "type" not in out or out.get("type") != "function"
 
 
-
     def test_non_dict_rejected(self):
         from agent.memory_manager import normalize_tool_schema
         assert normalize_tool_schema("nope") is None
         assert normalize_tool_schema(None) is None
-
 
 
 class TestMemoryInjectionRejectsMalformedSchema:

@@ -69,6 +69,42 @@ def _assert_windows() -> None:
         raise RuntimeError("gateway_windows is Windows-only")
 
 
+def _process_session_id(pid: int) -> int:
+    """Return the Windows Terminal Services session that owns ``pid``."""
+    _assert_windows()
+    session_id = ctypes.c_ulong()
+    if not ctypes.windll.kernel32.ProcessIdToSessionId(int(pid), ctypes.byref(session_id)):
+        raise ctypes.WinError()
+    return int(session_id.value)
+
+
+def _interactive_session_ids() -> set[int]:
+    """Sessions with an Explorer shell, i.e. an interactive user desktop."""
+    import psutil
+
+    sessions: set[int] = set()
+    for process in psutil.process_iter(("pid", "name")):
+        try:
+            if (process.info.get("name") or "").lower() != "explorer.exe":
+                continue
+            session_id = _process_session_id(int(process.info["pid"]))
+            if session_id > 0:
+                sessions.add(session_id)
+        except (OSError, TypeError, ValueError, psutil.Error):
+            continue
+    return sessions
+
+
+def _session_zero_mismatch() -> tuple[bool, int | None, set[int]]:
+    """Whether this CLI is in Session 0 while an interactive desktop exists."""
+    try:
+        current_session = _process_session_id(os.getpid())
+    except OSError:
+        return False, None, set()
+    interactive_sessions = _interactive_session_ids()
+    return current_session == 0 and bool(interactive_sessions), current_session, interactive_sessions
+
+
 def _hermes_home() -> Path:
     from hermes_cli.config import get_hermes_home
 
@@ -664,6 +700,38 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     return proc.pid
 
 
+def _launch_gateway_for_current_session() -> str:
+    """Launch directly, except when an SSH/service shell would strand it in Session 0.
+
+    A registered Hermes task uses ``InteractiveToken`` and therefore crosses from an OpenSSH
+    service shell into the logged-in desktop session.  Without that task, preserve deliberate
+    Session 0 deployments but make the credential/GUI trade-off explicit instead of silent.
+    """
+    mismatch, current_session, interactive_sessions = _session_zero_mismatch()
+    if mismatch and is_task_registered():
+        task_name = get_task_name()
+        code, out, err = _exec_schtasks(["/Run", "/TN", task_name])
+        if code != 0:
+            detail = (err or out or "unknown error").strip()
+            raise RuntimeError(
+                f"Could not start gateway via interactive Scheduled Task {task_name!r}: {detail}"
+            )
+        sessions = ", ".join(map(str, sorted(interactive_sessions)))
+        return f"Scheduled Task {task_name!r} (interactive Session {sessions})"
+
+    if mismatch:
+        sessions = ", ".join(map(str, sorted(interactive_sessions)))
+        print(
+            f"⚠ This shell is in Windows Session {current_session}, while an interactive desktop "
+            f"exists in Session {sessions}. No Hermes Scheduled Task is registered, so the gateway "
+            "will remain in Session 0; Windows credentials and GUI helpers may be unavailable."
+        )
+        print("  Install an InteractiveToken task with: hermes gateway install")
+
+    pid = _spawn_detached()
+    return f"direct spawn (PID {pid})"
+
+
 def _install_choice_from_env(name: str) -> bool | None:
     raw = os.environ.get(name)
     if raw is None:
@@ -705,8 +773,7 @@ def _start_or_report_running(running_pids: list[int] | None = None) -> None:
     if running_pids:
         _report_already_running(running_pids)
     else:
-        pid = _spawn_detached()
-        _report_gateway_start(f"direct spawn (PID {pid})")
+        _report_gateway_start(_launch_gateway_for_current_session())
 
 
 def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -> None:
@@ -1210,6 +1277,25 @@ def status(deep: bool = False) -> None:
         print("✗ Gateway service not installed")
 
     print(f"✓ Gateway process running (PID: {', '.join(map(str, pids))})" if pids else "✗ No gateway process detected")
+    if pids:
+        sessions: dict[int, int | None] = {}
+        for pid in pids:
+            try:
+                sessions[pid] = _process_session_id(pid)
+            except OSError:
+                sessions[pid] = None
+        rendered = ", ".join(
+            f"PID {pid} → Session {session_id if session_id is not None else 'unknown'}"
+            for pid, session_id in sessions.items()
+        )
+        print(f"  Windows session: {rendered}")
+        interactive_sessions = _interactive_session_ids()
+        if any(session_id == 0 for session_id in sessions.values()) and interactive_sessions:
+            desktop_sessions = ", ".join(map(str, sorted(interactive_sessions)))
+            print(
+                "⚠ Gateway is running in Session 0 while an interactive desktop exists in "
+                f"Session {desktop_sessions}. Windows credentials and GUI helpers may be unavailable."
+            )
 
     if deep:
         print()
@@ -1244,10 +1330,7 @@ def start() -> None:
             print("  If a UAC prompt opened, approve it, then run: hermes gateway start")
             return
 
-    # Manual starts use the same console-less direct spawn as restart() and install --start-now;
-    # Scheduled Task / Startup entries are only login persistence.
-    pid = _spawn_detached()
-    _report_gateway_start(f"direct spawn (PID {pid})")
+    _report_gateway_start(_launch_gateway_for_current_session())
 
 
 def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:

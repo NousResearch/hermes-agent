@@ -176,23 +176,37 @@ hermes gateway install
 
 What happens under the hood:
 
-1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN Hermes_Gateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
+1. Registers an `InteractiveToken` Scheduled Task named `Hermes_Gateway` that runs at your login with standard (non-elevated) permissions.
 2. If schtasks is blocked by group policy, falls back to writing a small `Hermes_Gateway.vbs` launcher (run hidden via `wscript.exe`) into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same effect, slightly cruder. A VBScript is used rather than a `cmd.exe` shortcut because a console allocated at logon can receive a close event that kills the gateway before it finishes starting.
-3. Spawns the gateway **detached via `pythonw.exe`** — not `python.exe`. `pythonw.exe` has no console attached, which immunizes it against `CTRL_C_EVENT` broadcasts from sibling processes (a real issue that used to kill the gateway when you Ctrl+C'd anything in the same process group).
+3. Starts the gateway with a hidden console so command-line children such as Git inherit it without flashing windows.
 
-Flags used when spawning: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
+Flags used for direct spawns: `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
 
 ### Manage
 
 ```powershell
-hermes gateway status      # Merged view: schtasks + Startup folder + running PID
-hermes gateway start       # Starts the scheduled task now
+hermes gateway status      # Merged view: task/login item + PID + Windows Session ID
+hermes gateway start
 hermes gateway stop        # Graceful SIGTERM equivalent (TerminateProcess via psutil)
 hermes gateway restart
 hermes gateway uninstall   # Removes schtasks entry, Startup shortcut, pid file
 ```
 
 `hermes gateway status` is idempotent — call it a thousand times in a row and it will never accidentally kill the gateway. (Pre-PR #21561 it silently did, via `os.kill(pid, 0)` colliding with `CTRL_C_EVENT` at the C level — see "process management internals" below if you care about the story.)
+
+Windows OpenSSH runs as a service in **Session 0**. If you run `hermes gateway start`,
+`hermes gateway restart`, or an update that cold-starts the gateway from an SSH shell while
+an interactive desktop is logged in, Hermes starts the gateway through the registered
+`InteractiveToken` task so it returns to that desktop session. Without a registered task,
+Hermes preserves the direct Session 0 launch but prints a warning: Credential Manager and GUI
+helpers may be unavailable there. `hermes gateway status` always reports the gateway's Session
+ID and warns when a Session 0 gateway coexists with an interactive desktop.
+
+`InteractiveToken` intentionally ties the task to a logged-in desktop: credentials and GUI
+helpers work, but the gateway stops being available after logout. Configuring Task Scheduler as
+S4U ("run whether user is logged on or not") makes it survive logout by running it in Session 0,
+with the same credential-store and desktop limitations. Use that mode only when those limitations
+are deliberate.
 
 ### Why not a Windows Service?
 

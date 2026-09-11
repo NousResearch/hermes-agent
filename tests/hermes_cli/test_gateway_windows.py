@@ -174,6 +174,56 @@ def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
     assert str(tmp_path) not in warnings[0].getMessage()
 
 
+@pytest.mark.windows_only
+def test_launch_gateway_routes_session_zero_through_interactive_task(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_session_zero_mismatch", lambda: (True, 0, {1}))
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: calls.append(args) or (0, "SUCCESS", ""),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_spawn_detached",
+        lambda: pytest.fail("Session 0 must not directly spawn when an interactive task is available"),
+    )
+
+    via = gateway_windows._launch_gateway_for_current_session()
+
+    assert calls == [["/Run", "/TN", "Hermes_Gateway"]]
+    assert "interactive Session 1" in via
+
+
+@pytest.mark.windows_only
+def test_launch_gateway_warns_before_deliberate_session_zero_spawn(monkeypatch, capsys):
+    monkeypatch.setattr(gateway_windows, "_session_zero_mismatch", lambda: (True, 0, {1}))
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: 4242)
+
+    via = gateway_windows._launch_gateway_for_current_session()
+
+    output = capsys.readouterr().out
+    assert via == "direct spawn (PID 4242)"
+    assert "will remain in Session 0" in output
+    assert "hermes gateway install" in output
+
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [4242])
+    monkeypatch.setattr(gateway_windows, "_process_session_id", lambda _pid: 0)
+    monkeypatch.setattr(gateway_windows, "_interactive_session_ids", lambda: {1})
+
+    gateway_windows.status()
+
+    status_output = capsys.readouterr().out
+    assert "PID 4242 → Session 0" in status_output
+    assert "Gateway is running in Session 0" in status_output
+
+
 class TestStableWindowsGatewayWorkingDir:
     def test_stable_gateway_working_dir_uses_hermes_home(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"

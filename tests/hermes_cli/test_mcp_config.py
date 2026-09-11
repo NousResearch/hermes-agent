@@ -533,6 +533,34 @@ class TestProbeEnvResolution:
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
+    def test_probe_propagates_explicit_connect_timeout_to_config(self, monkeypatch):
+        """An explicit `connect_timeout=` override (e.g. `hermes mcp login`'s 315s, extended so a
+        user has time to finish an OAuth browser flow) must reach `config["connect_timeout"]` —
+        that's what tools/mcp_tool_transport.py::_negotiate_session bounds session.initialize()
+        with. Left stale at its unrelated 60s default, the still-pending OAuth callback wait gets
+        cancelled mid-flow well before the caller's intended deadline."""
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class _FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            seen["config"] = config
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+
+        mc._probe_single_server(
+            "travelermd", {"url": "https://mcp.traveler.md/mcp", "auth": "oauth"}, connect_timeout=315.0
+        )
+
+        assert seen["config"]["connect_timeout"] == 315.0
+
 
 class TestProbeCapabilityGating:
     """The ``details`` probe must not fire prompts/list or resources/list at

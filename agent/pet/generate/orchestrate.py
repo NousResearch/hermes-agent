@@ -173,8 +173,11 @@ def _generate_row(spec: tuple[str, int, int], *, base: Path, label: str, style: 
 
     Self-healing: a roll whose poses touch (no gutters) slices badly, so
     ``components`` (raises on touching poses) drives regeneration and only the
-    final attempt uses lenient ``auto`` slicing. Returns ``(state, None)`` when
-    cancelled or every attempt failed.
+    final attempt uses lenient ``auto`` slicing. A
+    :class:`~agent.pet.generate.atlas.UnsegmentableStripError` skips the
+    remaining strict retries — the defect is in the art, and each strict retry
+    is a paid image call that will fail the same way (#87739). Returns
+    ``(state, None)`` when cancelled or every attempt failed.
     """
     state, _row, count = spec
     t0 = time.monotonic()
@@ -190,8 +193,20 @@ def _generate_row(spec: tuple[str, int, int], *, base: Path, label: str, style: 
                 provider=sprite, prefix=f"pet_row_{state}", aspect_ratio="landscape",
             )
             # fit=False keeps raw columns so normalize_cells registers the whole pet at once.
-            method = "components" if attempt < _ROW_GEN_ATTEMPTS - 1 else "auto"
-            frames = atlas.extract_strip_frames(strips[0], count, method=method, fit=False)
+            strict = attempt < _ROW_GEN_ATTEMPTS - 1
+            method = "components" if strict else "auto"
+            try:
+                frames = atlas.extract_strip_frames(strips[0], count, method=method, fit=False)
+            except atlas.UnsegmentableStripError as exc:
+                # The art itself is unsegmentable (merged poses): a stricter
+                # re-roll would fail identically and cost another image call.
+                # Jump straight to the lenient attempt.
+                logger.warning("pet hatch %r: row %r unsegmentable (attempt %d/%d) — skipping strict retries: %s", slug, state, attempt + 1, _ROW_GEN_ATTEMPTS, exc)
+                if strict:
+                    method = "auto"
+                    frames = atlas.extract_strip_frames(strips[0], count, method="auto", fit=False)
+                else:
+                    raise
             logger.info("pet hatch %r: row %r ready in %.1fs (attempt %d)", slug, state, time.monotonic() - t0, attempt + 1)
             return state, frames
         except Exception as exc:  # noqa: BLE001 - retried; one bad row is tolerated

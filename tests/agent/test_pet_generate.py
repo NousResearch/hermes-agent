@@ -56,6 +56,30 @@ def test_extract_strip_frames_transparent_returns_centered_cells():
         assert frame.getchannel("A").getextrema()[1] > 0
 
 
+def test_extract_strip_frames_components_raises_unsegmentable_not_valueerror():
+    # Two poses merged into ONE connected blob spanning the gutter: strict mode
+    # must fail with the STRUCTURAL error type, not a bare ValueError — the
+    # orchestrator keys off this class to skip remaining strict (paid) retries
+    # instead of substring-matching error text (#87739).
+    img = Image.new("RGBA", (6 * 208, 208), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    for i in (0, 1, 2, 5):
+        cx = i * 208 + 104
+        draw.ellipse((cx - 70, 34, cx + 70, 174), fill=(60, 80, 200, 255))
+    # One wide ellipse where slots 3+4 should be — a "two beavers" frame.
+    draw.ellipse((3 * 208 - 140, 24, 5 * 208 - 76, 184), fill=(200, 80, 80, 255))
+    with pytest.raises(atlas.UnsegmentableStripError):
+        atlas.extract_strip_frames(img, 6, method="components")
+
+
+def test_extract_strip_frames_auto_still_lenient_on_unsegmentable():
+    # The lenient path keeps salvaging a strip strict mode rejects — the
+    # exception must not change ``auto``'s behavior.
+    frames = atlas.extract_strip_frames(_strip(6), 6, method="auto")
+    assert len(frames) == 6
+
+
+
 
 
 def test_remove_background_defringes_antialiased_edge():
@@ -407,6 +431,50 @@ def test_hatch_pet_idle_fallback_when_row_fails(monkeypatch, tmp_path):
 
     result = orchestrate.hatch_pet(base_image=base, slug="fallbacky", concept="a fox")
     assert "idle" in result.states  # filled by the base-image fallback
+
+
+def test_hatch_pet_skips_strict_retries_on_unsegmentable_row(monkeypatch, tmp_path):
+    """A row whose poses are merged (unsegmentable under strict ``components``)
+    goes straight to lenient ``auto`` on the SAME strip instead of paying for
+    more strict re-rolls — the #87739 retry-amplification case."""
+    from agent.pet.generate import atlas as atlas_mod
+    from agent.pet.generate import imagegen, orchestrate
+
+    base = tmp_path / "base.png"
+    _strip(1).save(base)
+
+    attempts: dict[str, int] = {}
+    idle_methods: list[str] = []
+
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
+        attempts[prefix] = attempts.get(prefix, 0) + 1
+        state = prefix.replace("pet_row_", "")
+        count = dict((s, c) for s, _, c in atlas_mod.ROW_SPECS).get(state, 6)
+        path = tmp_path / f"{prefix}_{attempts[prefix]}.png"
+        _strip(count).save(path)
+        return [path]
+
+    real_extract = atlas_mod.extract_strip_frames
+
+    def tracking_extract(strip, count, *args, method="auto", **kwargs):
+        if Path(strip).name.startswith("pet_row_idle"):
+            idle_methods.append(method)
+            if method == "components":
+                raise atlas_mod.UnsegmentableStripError("could not segment 6 padded sprites from strip")
+        return real_extract(strip, count, *args, method=method, **kwargs)
+
+    monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
+    monkeypatch.setattr(imagegen, "generate", fake_generate)
+    monkeypatch.setattr(atlas_mod, "extract_strip_frames", tracking_extract)
+
+    result = orchestrate.hatch_pet(base_image=base, slug="unseg-skip", concept="a fox")
+
+    # One paid call for idle: strict failed → lenient salvaged the SAME strip.
+    assert attempts["pet_row_idle"] == 1
+    assert idle_methods == ["components", "auto"]
+    assert "idle" in result.states
+    assert not list(tmp_path.glob("pet_row_*"))  # strips still cleaned up
+
 
 
 

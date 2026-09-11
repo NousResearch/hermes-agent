@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 import logging
 import os
 import shutil
+import shlex
 import sys
 import json
 import re
@@ -8924,7 +8925,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if exec_cmd:
                         user_args = cmd_original[len(base_cmd):].strip()
                         if "{args}" in exec_cmd:
-                            exec_cmd = exec_cmd.replace("{args}", user_args)
+                            exec_cmd = exec_cmd.replace("{args}", shlex.quote(user_args))
                         try:
                             # shell=True is intentional: quick_commands are user-defined
                             # shell snippets from config.yaml — not agent/LLM controlled.

@@ -408,7 +408,9 @@ class TestFocusRegainRedraw:
 
         assert calls == ["redraw"]
 
-    def test_focus_regain_redraw_is_rate_limited(self, bare_cli):
+    def test_focus_regain_redraw_is_rate_limited(self, bare_cli, monkeypatch):
+        clock = {"now": 10.0}
+        monkeypatch.setattr(cli_mod.time, "monotonic", lambda: clock["now"])
         calls = []
         bare_cli._force_full_redraw = lambda: calls.append("redraw")
 

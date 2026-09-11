@@ -559,7 +559,8 @@ class SessionMessagesMixin:
 
     def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
-        lock_holder: Optional[str] = None, tail_count: int = 0) -> int:
+        lock_holder: Optional[str] = None, tail_count: int = 0,
+        system_prompt: Optional[str] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -569,6 +570,8 @@ class SessionMessagesMixin:
         rows are the verbatim carried tail; their originals and the clones' originals are superseded
         duplicates and get rewind flags (``active=0, compacted=0``) so search doesn't return each carried
         message once per compaction. ``model_config_patch`` merges in the same txn (``None`` removes a key).
+        ``system_prompt``, when given, is stored in that same write so an in-place compaction cannot leave
+        transcript and prompt on opposite sides of a crash (#84722).
 
         Concurrent-append safety (#75316): when *watermark* is provided (the value of
         :meth:`get_active_message_watermark` captured at compression START), rows that arrived during the
@@ -614,8 +617,30 @@ class SessionMessagesMixin:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
                 tool_calls_total += tail_tool_calls
-            conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
-                (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
+            # message_count / tool_call_count reflect the LIVE (active) set —
+            # the archived rows are still on disk but not part of the live count.
+            # system_prompt, when given, is persisted in this same write so an
+            # in-place compaction cannot leave transcript and prompt on opposite
+            # sides of a crash (#84722).
+            system_prompt_hash = None
+            if system_prompt is not None:
+                system_prompt_hash = self._store_system_prompt(conn, system_prompt)
+            sets = ["message_count = ?", "tool_call_count = ?"]
+            params: list = [inserted, tool_calls_total]
+            if patch:
+                sets.append("model_config = ?")
+                params.append(patched_model_config)
+            if system_prompt is not None:
+                sets.append("system_prompt_hash = ?")
+                sets.append("system_prompt = NULL")
+                params.append(system_prompt_hash)
+            params.append(session_id)
+            conn.execute(
+                f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            if system_prompt is not None:
+                self._delete_unreferenced_system_prompts(conn)
             return inserted
         return self._execute_write(_do)
 

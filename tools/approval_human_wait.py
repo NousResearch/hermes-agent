@@ -53,10 +53,14 @@ def human_wait_ceiling() -> float:
     deadline. Also the bound on the authorization gate's serialization-lock
     acquire in agent/tool_executor.py, so the two cannot drift. Never call while
     holding ``_human_wait_lock`` — it reads the config cache.
-    ``_get_approval_timeout`` caps at ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so the
-    value is always safe for ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``."""
+    The final sum is capped at ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so adding
+    the margin cannot make ``Lock.acquire(timeout=...)`` overflow."""
+    from agent.deadline import MAX_SAFE_TIMEOUT_S
     from tools import approval_context
-    return float(approval_context._get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
+    return min(
+        float(approval_context._get_approval_timeout()) + HUMAN_WAIT_MARGIN_S,
+        MAX_SAFE_TIMEOUT_S,
+    )
 
 
 def _clamped_window_seconds(started: float, now: float, ceiling: float) -> float:

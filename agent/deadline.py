@@ -1,8 +1,8 @@
 """Unified deadline layer — one bounded-execution primitive, one timeout resolver (#85125).
 
 * :func:`resolve_timeout` — ``timeouts:`` in config.yaml > legacy env var > default.
-* :func:`clamp_timeout` — huge timeouts overflow ``time_t`` in ``Lock.acquire`` /
-  ``Thread.join`` on macOS (#83220), so every timeout is capped.
+* :func:`clamp_timeout` — huge timeouts overflow platform wait primitives in
+  ``Lock.acquire`` / ``Thread.join`` (#83220), so every timeout is capped.
 * :func:`run_bounded_async` / :func:`run_bounded_sync` — wall-clock deadlines driven by
   a daemon ``threading.Timer`` / worker thread, so a blocked event loop cannot disable them.
 * :func:`kill_process_tree` — portable whole-tree termination.
@@ -34,8 +34,10 @@ __all__ = [
     "run_bounded_async", "run_bounded_sync", "kill_process_tree",
 ]
 
-# One year: semantically "unbounded" yet far below any platform time_t limit (#83220).
-MAX_SAFE_TIMEOUT_S = 31_536_000.0
+# Windows threading waits use a 32-bit microsecond timeout internally, whose
+# ceiling is about 4294.967s. POSIX keeps the one-year cap established for the
+# macOS time_t overflow in #83220.
+MAX_SAFE_TIMEOUT_S = 4_294.0 if sys.platform == "win32" else 31_536_000.0
 
 # Grace after a deadline fires before concluding the loop thread is blocked and dumping stacks.
 _LOOP_BLOCKED_DUMP_GRACE_S = 5.0

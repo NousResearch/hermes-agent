@@ -1,5 +1,5 @@
 """Regression tests for #83220: oversized approvals.timeout must never
-overflow platform wait primitives (macOS time_t OverflowError).
+overflow platform wait primitives.
 
 The clamp lives at the single config-read site (_get_approval_timeout), so
 every consumer — CLI prompt thread.join, gateway poll deadline, human-wait
@@ -78,7 +78,7 @@ class TestApprovalTimeoutOverflowClamp:
         monkeypatch.setattr(builtins, "__import__", _blocked)
         with _with_configured_timeout(10**18):
             value = _get_approval_timeout()
-        assert value == 365 * 24 * 3600
+        assert value == int(MAX_SAFE_TIMEOUT_S)
         # Still platform-safe for the crashing primitive.
         lock = threading.Lock()
         assert lock.acquire(timeout=value)
@@ -108,11 +108,11 @@ class TestApprovalTimeoutOverflowClamp:
         assert not t.is_alive()
 
     def test_human_wait_ceiling_inherits_clamp(self):
-        from tools.approval_human_wait import HUMAN_WAIT_MARGIN_S, human_wait_ceiling
+        from tools.approval_human_wait import human_wait_ceiling
 
         with _with_configured_timeout(10**18):
             ceiling = human_wait_ceiling()
-        assert ceiling == float(int(MAX_SAFE_TIMEOUT_S)) + HUMAN_WAIT_MARGIN_S
+        assert ceiling == MAX_SAFE_TIMEOUT_S
         lock = threading.Lock()
         assert lock.acquire(timeout=ceiling)
         lock.release()

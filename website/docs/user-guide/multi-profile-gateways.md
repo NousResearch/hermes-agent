@@ -274,8 +274,11 @@ non-list value fails safely to default-only.
 
 The resulting served set also controls `/p/<profile>/` API and webhook prefixes,
 runtime status, profile-route eligibility, and which profiles the in-process
-cron scheduler ticks. A named profile outside the allowlist may still run its
-own standalone gateway.
+cron scheduler ticks (the Desktop backend's ticker follows the same allowlist and
+stands down for any profile a running multiplexer already serves). A multiplexer
+started as `hermes -p <name> gateway run` always ticks its own profile's cron store
+as well. A named profile outside the allowlist may still run its own standalone
+gateway.
 
 ### Routing shared-bot chats to profiles (`profile_routes`)
 
@@ -343,9 +346,12 @@ default-profile behavior.
 
 Cron jobs owned by a routed profile deliver through the shared bot too, but
 only to targets an enabled route with a `chat_id`/`thread_id` maps to that
-profile — a routed profile's job targeting an unrouted chat (or a chat routed
-to another profile) is never sent through the shared bot. Guild-only routes do
-not qualify a cron target; add a `chat_id` route for the delivery channel.
+profile (a `guild_id + chat_id` route qualifies its channel) — a routed
+profile's job targeting an unrouted chat (or a chat routed to another profile)
+is never sent through the shared bot. Guild-only routes do not qualify a cron
+target; add a `chat_id` route for the delivery channel. The routed profile does
+not need its own `platforms.<platform>` block for this: the shared bot's
+authorization comes from the route, not from the satellite's config.
 
 ## Start, stop, or restart all gateways at once
 

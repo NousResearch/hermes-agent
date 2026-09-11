@@ -25,9 +25,9 @@
 import { atom } from 'nanostores'
 
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
-import { readKey, writeKey } from '@/lib/storage'
 import { machineDescription } from '@/store/machine'
 import type { OnboardingAnswers } from '@/store/onboarding-answers'
+import { $onboardingGate } from '@/store/onboarding-gate'
 import { PLAIN_SPEECH } from '@/store/onboarding-script'
 
 /** Profile name of the onboarding guide. Prefixed so it can't collide with a
@@ -38,8 +38,6 @@ export const SETUP_PROFILE = 'hermes-setup'
  *  list. Exact-title lookup is how kickoff re-finds it across relaunches, so
  *  this string is also a registry key — change the words, keep them stable. */
 export const SETUP_CHAT_TITLE = 'Welcome to Hermes'
-
-const HANDOFF_DONE_KEY = 'hermes-setup-handoff-done-v1'
 
 export type SetupHandoffPhase = 'done' | 'error' | 'opening' | 'pending'
 
@@ -92,11 +90,9 @@ export interface SetupSession {
 
 export const $setupSession = atom<null | SetupSession>(null)
 
-/** Raise the handoff request (once per task — re-parses and re-mounts of the
- *  directive are no-ops, and a relaunch after a completed handoff stays
- *  quiet thanks to the storage latch). */
+/** The request atom suppresses remounts; the phase record suppresses relaunches. */
 export function requestSetupHandoff(task: string, brief: string, plan: HandoffPlan, guide: SetupSession): boolean {
-  if ($setupHandoff.get() !== null || readKey(HANDOFF_DONE_KEY) === '1') {
+  if ($setupHandoff.get() !== null || $onboardingGate.get().phase === 'done') {
     return false
   }
 
@@ -105,19 +101,7 @@ export function requestSetupHandoff(task: string, brief: string, plan: HandoffPl
   return true
 }
 
-/** Burn the relaunch latch — the build session exists and its chat is open. */
-export function markSetupHandoffDone(): void {
-  writeKey(HANDOFF_DONE_KEY, '1')
-}
-
-/** True once a handoff completed on this install (survives relaunch) — used
- *  by the card to render its settled state when the atom is long gone. */
-export function hasCompletedSetupHandoff(): boolean {
-  return readKey(HANDOFF_DONE_KEY) === '1'
-}
-
 export function resetSetupHandoffForTests(): void {
-  writeKey(HANDOFF_DONE_KEY, null)
   $setupHandoff.set(null)
   $setupSession.set(null)
 }

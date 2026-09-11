@@ -12,7 +12,6 @@ import {
   buildFirstTaskSeedMessages,
   buildHandoffCompleteNote,
   firstTaskTitle,
-  markSetupHandoffDone,
   SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
 import { declinedLookAround, showProfileSignpost } from '@/components/onboarding-chat/signpost'
@@ -258,7 +257,6 @@ export function useOnboardingHandoff({
         await request(receipt.owner, 'session.title', { session_id: receipt.runtimeId, title: chatTitle }).catch(
           error => console.warn('[handoff] title could not be saved', error)
         )
-        markSetupHandoffDone()
         completeOnboardingFlow()
         $handoffError.set(null)
         dismissNotification('onboarding-handoff')

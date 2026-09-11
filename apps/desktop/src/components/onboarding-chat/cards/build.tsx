@@ -18,7 +18,6 @@ import { Chip } from '@/components/onboarding-chat/chip'
 import {
   $setupHandoff,
   firstTaskTitle,
-  hasCompletedSetupHandoff,
   parseHandoffPlan,
   requestSetupHandoff,
   SETUP_PROFILE
@@ -26,6 +25,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { segmentTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
+import { $onboardingGate } from '@/store/onboarding-gate'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
@@ -97,8 +97,8 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
  * session on the user's default profile, seeds it, and moves the user there.
  *
  * Nothing to ask — the build's shape was settled by the `first` step and there
- * is one surface now, so the card just narrates: opening → landed. Both
- * latches (atom + storage) make re-parses, re-mounts, and relaunches inert,
+ * is one surface now, so the card just narrates: opening → landed. The request
+ * atom and phase record make re-parses, re-mounts, and relaunches inert,
  * and a locked (replayed) transcript never re-fires.
  */
 export function HandoffCard({ attrs, locked }: CardProps) {
@@ -109,10 +109,11 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const brief = (attrs.brief ?? '').trim().slice(0, 240)
   const plan = parseHandoffPlan(attrs.plan)
   const state = useStore($setupHandoff)
+  const completed = useStore($onboardingGate).phase === 'done'
   const error = useStore($handoffError)
 
   useEffect(() => {
-    if (!task || !brief || locked || !storedId || !runtimeId || $setupHandoff.get() || hasCompletedSetupHandoff()) {
+    if (!task || !brief || locked || !storedId || !runtimeId || $setupHandoff.get() || completed) {
       return
     }
 
@@ -140,13 +141,13 @@ export function HandoffCard({ attrs, locked }: CardProps) {
     return () => {
       cancelled = true
     }
-  }, [brief, locked, plan, task, storedId, runtimeId])
+  }, [brief, locked, plan, task, storedId, runtimeId, completed])
 
   if (!task || !brief) {
     return null
   }
 
-  const settled = state?.phase === 'done' || (state === null && hasCompletedSetupHandoff())
+  const settled = state?.phase === 'done' || (state === null && completed)
   const failed = state?.phase === 'error'
   const title = state?.sessionTitle ?? firstTaskTitle(task)
 

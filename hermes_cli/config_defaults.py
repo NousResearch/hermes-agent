@@ -2200,6 +2200,9 @@ DEFAULT_CONFIG = {
             "binary_path": "",      # absolute path to op; empty = PATH.
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
+            # Vault name/ID passed as `--vault` on item reads; required by service-account tokens,
+            # which have no default vault. Empty = omit (fine for account/session auth).
+            "vault": "",
         },
         "bitwarden": {
             "enabled": False,       # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
